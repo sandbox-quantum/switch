@@ -545,6 +545,12 @@ export async function runSharedHost(
               `Switch refused the usage of turn ${row.turn_id}, so it is not counted against the workspace: ${error.message}`
             );
             report = { kind: 'activity', row };
+          } else if (report.row.delivery) {
+            const { delivery, ...row } = report.row;
+            console.warn(
+              `Switch refused how message ${row.item_id} was delivered, so platforms do not say it was ${delivery}: ${error.message}`
+            );
+            report = { kind: 'activity', row };
           } else if (report.row.subagent) {
             const { subagent: _subagent, ...row } = report.row;
             console.warn(
@@ -915,16 +921,18 @@ export async function runSharedHost(
         }
         const room = await roomInstructionsFor(event.roomId);
         const preface = [instructionsNote, room.note].filter((note) => note !== null);
+        const snapshot = host!.snapshot();
         const command = roomCommand({
           agentId,
           sessionId: options.session.sessionId,
-          epoch: host!.snapshot().session.epoch,
+          epoch: snapshot.session.epoch,
           roomId: event.roomId,
           message: message.data,
           surface: 'switch-web',
           attachments,
           preface: preface.length ? preface.join('\n\n') : null,
           firstOfConversation: !startedHere(),
+          canSteer: snapshot.session.capabilities.input === 'steer',
         });
         if (message.data.payload.routed || message.data.payload.follow_up)
           host!.unaskedRoomTurn(command.commandId);

@@ -1,6 +1,6 @@
 import { CANARY_SWITCH_VERSION, COMPATIBLE_SWITCH_VERSION } from '@shared/app-identity';
 import { BUILD_FEATURE_FLAGS } from '@shared/core/feature-flags/feature-flags';
-import type { TelemetryFlintEnv } from '../telemetry/config';
+import type { TelemetryEnv } from '../telemetry/config';
 import {
   LOCAL_SERVER_ADMIN_EMAIL,
   LOCAL_SERVER_BIND_ADDR,
@@ -30,7 +30,7 @@ export type LocalServerEnvParams = {
    * The Amplitude project the server's usage lands in: the Console build's
    * own, so a development build's server is as much `local` as the app.
    */
-  telemetryEnvironment: TelemetryFlintEnv;
+  telemetryEnvironment: TelemetryEnv;
   /** Whether the person this server runs for is staff, as Console tells it. */
   telemetryInternal: boolean;
   /** The relay the server sends its usage to: the one the app reports to. */

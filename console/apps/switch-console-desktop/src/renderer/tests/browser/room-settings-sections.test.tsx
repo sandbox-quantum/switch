@@ -11,6 +11,7 @@ const getRoomDetail = vi.hoisted(() => vi.fn());
 const setRoomAgentJoinEvents = vi.hoisted(() => vi.fn());
 const createRoomRole = vi.hoisted(() => vi.fn());
 const setRoomArchived = vi.hoisted(() => vi.fn());
+const setRoomAdmin = vi.hoisted(() => vi.fn());
 const permissions = vi.hoisted(() => ({
   value: {
     canWrite: true,
@@ -19,7 +20,9 @@ const permissions = vi.hoisted(() => ({
     canAddPeople: true,
     canRemoveMembers: true,
     canManage: true,
-  },
+    canArchive: true,
+    canManageAdmins: true,
+  } as Record<string, boolean>,
 }));
 const admin = vi.hoisted(() => ({ value: true }));
 // Who owns the room's agent; the viewer is `u-me`.
@@ -43,6 +46,7 @@ vi.mock('@renderer/lib/ipc', () => ({
       setRoomAgentJoinEvents,
       createRoomRole,
       setRoomArchived,
+      setRoomAdmin,
       updateRoom: vi.fn(),
       syncRoomName: vi.fn(),
       listAgents: vi.fn(() =>
@@ -111,10 +115,13 @@ const ROOM = {
   externalChannelUrl: null,
   ownerId: 'u-1',
   viewerIsMember: true,
+  viewerIsRoomAdmin: false,
   isConsoleChat: false,
   createdAt: '2026-10-01T09:00:00+00:00',
   agentIds: ['a-1'],
   connectedUserNames: ['ada'],
+  roomAdmins: [],
+  roomAdminCandidates: [],
   linkedChannelName: null,
   readVisibility: 'public',
   writeVisibility: 'private',
@@ -152,6 +159,8 @@ beforeEach(() => {
       Promise.resolve([{ ...params.role, heldBy: [] }])
   );
   setRoomArchived.mockReset();
+  setRoomAdmin.mockReset();
+  setRoomAdmin.mockImplementation(() => Promise.resolve(ROOM));
   setRoomArchived.mockImplementation((params: { archived: boolean }) =>
     Promise.resolve({ ...ROOM, archived: params.archived })
   );
@@ -162,6 +171,8 @@ beforeEach(() => {
     canAddPeople: true,
     canRemoveMembers: true,
     canManage: true,
+    canArchive: true,
+    canManageAdmins: true,
   };
   admin.value = true;
   listBridgePeople.mockReset();
@@ -465,7 +476,7 @@ describe('room settings for someone who may only read the room', () => {
     };
     const el = await renderPanel();
     expect(el.textContent).toContain(
-      'Only Ada or a workspace admin can change this room’s settings.'
+      'Only Ada, a room admin or a workspace admin can change this room’s settings.'
     );
     expect(el.querySelector('[aria-label="Access"]')).toBeNull();
     expect(button(el, /^Add agent$/)).toBeUndefined();
@@ -512,5 +523,118 @@ describe('room settings for someone who may only read the room', () => {
     expect(el.querySelector('[aria-label="Add agents"]')).not.toBeNull();
     expect(el.querySelector('[aria-label="Add people"]')).toBeNull();
     expect(el.querySelector('[aria-label="reviewer-bot in this room"]')).toBeNull();
+  });
+});
+
+describe('room admins in the side column', () => {
+  const ADA = { userId: 'u-ada', name: 'Ada Lovelace', grantedBy: 'u-1', grantedAt: '2026-11-01' };
+  const BOB = { userId: 'u-bob', name: 'Bob Stone' };
+
+  beforeEach(() => {
+    listBridgePeople.mockResolvedValue([
+      { username: 'ada', externalUserId: 'U1', linkedUserIds: ['u-ada'], linkedName: 'Ada L.' },
+      { username: 'bob', externalUserId: 'U2', linkedUserIds: ['u-bob'], linkedName: 'Bob' },
+    ]);
+  });
+
+  async function menuItems(el: HTMLElement, label: string): Promise<HTMLElement[]> {
+    await act(async () => await new Promise((resolve) => setTimeout(resolve, 0)));
+    await click(el.querySelector<HTMLElement>(`[aria-label="${label} in this room"]`)!);
+    return [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')];
+  }
+
+  function fold(el: HTMLElement, title: string): HTMLElement | null {
+    return el.querySelector<HTMLElement>(`section[aria-label="${title}"]`);
+  }
+
+  it('marks who is a room admin, matched by who linked the username, and lists them', async () => {
+    getRoomDetail.mockResolvedValue({
+      ...ROOM,
+      connectedUserNames: ['ada', 'bob'],
+      roomAdmins: [ADA],
+      roomAdminCandidates: [BOB],
+    });
+    const el = await renderPanel('side');
+    await act(async () => await new Promise((resolve) => setTimeout(resolve, 0)));
+    const people = fold(el, 'People seen here')!;
+    const rows = [...people.querySelectorAll('.group')].map((row) => row.textContent);
+    expect(rows.find((row) => row?.includes('ada ('))).toContain('room admin');
+    expect(rows.find((row) => row?.includes('bob ('))).not.toContain('room admin');
+    expect(fold(el, 'Room admins')!.textContent).toContain('Ada Lovelace');
+  });
+
+  it('lets the owner make someone a room admin, and take them off', async () => {
+    const detail = {
+      ...ROOM,
+      connectedUserNames: ['ada', 'bob'],
+      roomAdmins: [ADA],
+      roomAdminCandidates: [BOB],
+    };
+    getRoomDetail.mockResolvedValue(detail);
+    setRoomAdmin.mockResolvedValue(detail);
+    const el = await renderPanel('side');
+    let items = await menuItems(el, 'bob');
+    await click(items.find((item) => item.textContent === 'Make room admin')!);
+    expect(setRoomAdmin).toHaveBeenCalledWith({
+      workspaceId: 'ws-1',
+      roomId: 'room-1',
+      userId: 'u-bob',
+      admin: true,
+    });
+
+    items = await menuItems(fold(el, 'Room admins')!, 'Ada Lovelace');
+    await click(items.find((item) => item.textContent === 'Remove room admin')!);
+    expect(setRoomAdmin).toHaveBeenLastCalledWith({
+      workspaceId: 'ws-1',
+      roomId: 'room-1',
+      userId: 'u-ada',
+      admin: false,
+    });
+  });
+
+  it('offers the room’s candidates from Add room admin', async () => {
+    getRoomDetail.mockResolvedValue({ ...ROOM, roomAdmins: [], roomAdminCandidates: [BOB] });
+    const el = await renderPanel('side');
+    expect(fold(el, 'Room admins')!.textContent).toContain('No room admins yet.');
+    await click(el.querySelector<HTMLElement>('[aria-label="Add room admin"]')!);
+    const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!;
+    expect(dialog.textContent).toContain('Bob Stone');
+    await click(button(dialog, /Bob Stone/)!);
+    expect(setRoomAdmin).toHaveBeenCalledWith({
+      workspaceId: 'ws-1',
+      roomId: 'room-1',
+      userId: 'u-bob',
+      admin: true,
+    });
+  });
+
+  it('lets a room admin step down, and choose nobody else', async () => {
+    permissions.value = { ...permissions.value, canManage: false, canManageAdmins: false };
+    getRoomDetail.mockResolvedValue({
+      ...ROOM,
+      viewerIsRoomAdmin: true,
+      roomAdmins: [ADA, { ...ADA, userId: 'u-me', name: 'Me' }],
+      roomAdminCandidates: [],
+    });
+    const el = await renderPanel('side');
+    const admins = fold(el, 'Room admins')!;
+    expect(admins.querySelector('[aria-label="Add room admin"]')).toBeNull();
+    expect(admins.querySelector('[aria-label="Ada Lovelace in this room"]')).toBeNull();
+    const items = await menuItems(admins, 'Me');
+    expect(items.map((item) => item.textContent)).toEqual(['Step down as room admin']);
+    await click(items[0]!);
+    expect(setRoomAdmin).toHaveBeenCalledWith({
+      workspaceId: 'ws-1',
+      roomId: 'room-1',
+      userId: 'u-me',
+      admin: false,
+    });
+  });
+
+  it('shows no room admins from a server that predates them', async () => {
+    permissions.value = { ...permissions.value, canManageAdmins: false };
+    const el = await renderPanel('side');
+    expect(fold(el, 'Room admins')).toBeNull();
+    expect(el.textContent).not.toContain('room admin');
   });
 });

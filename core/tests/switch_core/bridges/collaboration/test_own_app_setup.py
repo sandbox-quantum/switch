@@ -122,3 +122,26 @@ class TestCheckingSlackTokens:
                 await check_slack(http, bot_token="xoxb-1", app_token="xapp-1")
             with pytest.raises(SetupCheckError, match="starts with xoxb-"):
                 await check_slack(http, bot_token="xapp-1", app_token="xapp-1")
+
+    async def test_names_the_scopes_an_app_lacks_before_it_is_connected(self) -> None:
+        """An app built by hand without users:read connects, then fails the
+        first time a person links their account; say so up front."""
+        granted = ",".join(s for s in BOT_SCOPES if s != "users:read")
+
+        def handle(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/api/auth.test":
+                return httpx.Response(
+                    200,
+                    json={"ok": True, "team_id": "T123"},
+                    headers={"x-oauth-scopes": granted},
+                )
+            return httpx.Response(200, json={"ok": True, "url": "wss://x"})
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as http:
+            with pytest.raises(SetupCheckError) as refused:
+                await check_slack(http, bot_token="xoxb-1", app_token="xapp-1")
+        assert "missing the users:read scope" in str(refused.value)
+        assert "Reinstall to Workspace" in str(refused.value)
+
+    async def test_an_app_from_the_manifest_has_every_scope_it_needs(self) -> None:
+        assert set(own_app_setup.REQUIRED_SLACK_SCOPES) <= set(BOT_SCOPES)

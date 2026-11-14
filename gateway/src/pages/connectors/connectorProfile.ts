@@ -4,16 +4,23 @@
  * connector is off in the workspace and who can change that, and the lines
  * its facts and lists read.
  */
-import type { ConnectedPerson, ServiceConnection, ServiceGrant } from "../../data/api";
+import type {
+  ConnectedPerson,
+  ServiceConnection,
+  ServiceGrant,
+  ServicePasteMethod,
+  SignInOutcome,
+} from "../../data/api";
 
 /** Connected in any state: a connection that needs a fresh sign-in is still theirs. */
 export function isConnected(connection: Pick<ServiceConnection, "status">): boolean {
   return connection.status !== "not_connected";
 }
 
-/** "Connected as ada · Read and write"; null while not connected. */
+/** "Connected as ada · Read and write", or what a pasted token reaches in
+ * place of the level; null while not connected. */
 export function connectedAsLine(
-  connection: Pick<ServiceConnection, "status" | "auth_type" | "consent" | "external_identity">,
+  connection: Pick<ServiceConnection, "status" | "auth_type" | "consent" | "external_identity" | "access_note">,
 ): string | null {
   if (!isConnected(connection)) return null;
   if (connection.auth_type === "api_key")
@@ -23,24 +30,91 @@ export function connectedAsLine(
   const who = connection.external_identity
     ? `Connected as ${connection.external_identity}`
     : "Connected";
+  if (connection.access_note) return `${who} · ${connection.access_note}`;
   const access =
     connection.consent === "write" ? "Read and write" : connection.consent === "read" ? "Read" : null;
   return access ? `${who} · ${access}` : who;
 }
 
-/** How someone connects from this page: a key they paste here, or a sign-in
- * at the vendor, which finishes in Switch Console. Null where nothing can be
- * connected now: not built yet, off here, or with nothing to sign in
- * through; the page says why. */
+export type ConnectWay = "key" | "web" | "paste" | "console";
+
+/** How someone connects from here: a key they paste, a sign-in at the
+ * vendor that comes back to this page, a token pasted in place of a sign-in
+ * that can only come back to Switch Console, or that sign-in alone. Null
+ * where nothing can be connected now: not built yet, off here, or with
+ * nothing to sign in through; the page says why. */
 export function connectWay(
-  connection: Pick<ServiceConnection, "enabled" | "auth_type" | "workspace_enabled" | "connectable">,
-): "key" | "console" | null {
+  connection: Pick<
+    ServiceConnection,
+    "enabled" | "auth_type" | "workspace_enabled" | "connectable" | "web_sign_in" | "paste"
+  >,
+): ConnectWay | null {
   if (!connection.enabled || !connection.workspace_enabled || !connection.connectable) return null;
-  return connection.auth_type === "api_key" ? "key" : "console";
+  if (connection.auth_type === "api_key") return "key";
+  if (connection.web_sign_in) return "web";
+  return connection.paste.length > 0 ? "paste" : "console";
 }
 
+/** Whether the connection was made by pasting a token or keys. */
+export function isPasted(connection: Pick<ServiceConnection, "method">): boolean {
+  return connection.method === "token" || connection.method === "keys";
+}
+
+/** How long a pasted credential lasts, as its dialog and page say it. */
+export function pastedLasts(name: string, expires: ServicePasteMethod["expires"]): string {
+  return expires === "vendor" ? `Expires on the date you set in ${name}.` : `Never expires; only ${name} can revoke it.`;
+}
+
+export const CONSOLE_SIGN_IN_NOTE =
+  "To sign in with your account instead, connect it from Switch Console on your computer.";
+
 export const CONSOLE_CONNECT_NOTE =
-  "Signing in finishes in Switch Console on your computer: open its Connectors, and connect it there.";
+  "Its sign-in can only finish in Switch Console on your computer: open its Connectors, and connect it there.";
+
+/** Said under "Connected as" when the connection no longer works; null while it does. */
+export function brokenLine(
+  connection: Pick<ServiceConnection, "status" | "auth_type" | "web_sign_in" | "method" | "reconnect_reason">,
+): string | null {
+  if (connection.status === "active" || connection.status === "not_connected") return null;
+  if (connection.auth_type === "api_key") return "Its key needs replacing before agents can use it again.";
+  if (isPasted(connection))
+    return (
+      connection.reconnect_reason ??
+      (connection.method === "token"
+        ? "Its token needs replacing before agents can use it again."
+        : "Its keys need replacing before agents can use them again.")
+    );
+  return connection.web_sign_in
+    ? "It needs a fresh sign-in before agents can use it again."
+    : "It needs a fresh sign-in, from Switch Console, before agents can use it again.";
+}
+
+/** What the connector's page says when the browser comes back from a
+ * sign-in it started: a success toast, a notice to keep, or why it failed. */
+export function signInOutcomeMessage(
+  outcome: SignInOutcome,
+  connector: string,
+): { toast: string | null; error: string | null } {
+  if (outcome.status === "connected")
+    return {
+      toast: outcome.account ? `Connected to ${connector} as ${outcome.account}.` : `${connector} is connected.`,
+      error: null,
+    };
+  if (outcome.status === "failed")
+    return { toast: null, error: outcome.error ?? `${connector} sign-in failed. Connect again.` };
+  return { toast: null, error: `The ${connector} sign-in didn't finish. Connect again.` };
+}
+
+/** "Project management · 3 people connected": the category, and for a
+ * workspace admin how many people here have connected it. */
+export function catalogueMeta(
+  connection: Pick<ServiceConnection, "category">,
+  peopleConnected: number | null,
+): string {
+  if (peopleConnected === null) return connection.category;
+  const people = peopleConnected === 1 ? "1 person" : `${peopleConnected} people`;
+  return `${connection.category} · ${people} connected`;
+}
 
 /**
  * Why the connector is off in this workspace, and who can turn it back on;

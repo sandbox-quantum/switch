@@ -253,6 +253,19 @@ export interface WorkspaceMembership {
   role: string;
   organization_role: string | null;
   organization_id: string | null;
+  archived_at: string | null;
+}
+
+/** One of the organization's workspaces, as its Workspaces page lists it. */
+export interface OrganizationWorkspace extends WorkspaceMembership {
+  created_at: string;
+  users: number;
+  agents: number;
+  rooms: number;
+  admins: string[];
+  can_archive: boolean;
+  archive_blocked_reason: string | null;
+  can_restore: boolean;
 }
 
 /** A workspace's message retention window; `message_retention_days: null` keeps messages forever. */
@@ -260,6 +273,18 @@ export interface RetentionPolicy {
   message_retention_days: number | null;
   updated_at: string | null;
   updated_by_user_id: string | null;
+}
+
+/** One row of `GET /gateway/tenants/{tenant_id}/private-channel-rooms`. */
+export interface PrivateChannelRoom {
+  room_id: string;
+  name: string;
+  bridge_id: string;
+  channel_type: string | null;
+  people: number;
+  members_listed: boolean | null;
+  cautions: string[];
+  recommended: boolean;
 }
 
 /** One row of `GET /gateway/tenants/{tenant_id}/people`. `kind: 'member'` is someone taking part from Switch Console. */
@@ -562,6 +587,20 @@ export class SwitchClient {
     return this.gateway("GET", "/organizations/current/issues");
   }
 
+  /** `GET /gateway/organizations/current/guardrails` — the Switch Trust policy the organization connected; organization admin only. */
+  async organizationGuardrails(): Promise<{
+    connected: boolean;
+    policy_id: string | null;
+    policy_name: string | null;
+  }> {
+    return this.gateway("GET", "/organizations/current/guardrails");
+  }
+
+  /** `DELETE /gateway/organizations/current/guardrails` — disconnect the organization's Switch Trust policy. */
+  async disconnectOrganizationGuardrails(): Promise<{ connected: boolean }> {
+    return this.gateway("DELETE", "/organizations/current/guardrails");
+  }
+
   /** `GET /gateway/organizations/current` — the current workspace's organization and the caller's role there. */
   async currentOrganization(): Promise<{
     id: string;
@@ -581,11 +620,126 @@ export class SwitchClient {
     return this.gateway("GET", "/tenants/counts");
   }
 
-  /** `GET /gateway/organizations/current/workspaces` — the current organization's workspaces the caller may enter. */
-  async organizationWorkspaces(): Promise<WorkspaceMembership[]> {
-    return this.gateway<WorkspaceMembership[]>(
+  /** `GET /gateway/organizations/current/workspaces` — the current organization's workspaces the caller may enter, as its Workspaces page lists them. */
+  async organizationWorkspaces(): Promise<OrganizationWorkspace[]> {
+    return this.gateway<OrganizationWorkspace[]>(
       "GET",
       "/organizations/current/workspaces",
+    );
+  }
+
+  /** `POST /gateway/organizations/current/workspaces/{id}/archive` — close one of the organization's workspaces; organization admin only. */
+  async archiveOrganizationWorkspace(
+    workspaceId: string,
+  ): Promise<{ id: string; name: string; archived_at: string | null }> {
+    return this.gateway(
+      "POST",
+      `/organizations/current/workspaces/${encodeURIComponent(workspaceId)}/archive`,
+    );
+  }
+
+  /** `POST /gateway/organizations/current/workspaces/{id}/members` — add someone already in the organization to one of its workspaces. */
+  async addToOrganizationWorkspace(
+    workspaceId: string,
+    userId: string,
+    role: "admin" | "member",
+  ): Promise<{ id: string; name: string; role: string; archived: boolean }> {
+    return this.gateway(
+      "POST",
+      `/organizations/current/workspaces/${encodeURIComponent(workspaceId)}/members`,
+      { user_id: userId, role },
+    );
+  }
+
+  /** `PATCH /gateway/organizations/current` — rename the organization; its admins only. */
+  async renameOrganization(name: string): Promise<{ id: string; name: string }> {
+    return this.gateway("PATCH", "/organizations/current", { name });
+  }
+
+  /** `PATCH /gateway/organizations/current/workspaces/{id}` — rename one of the organization's workspaces. */
+  async renameOrganizationWorkspace(
+    workspaceId: string,
+    name: string,
+  ): Promise<{ id: string; name: string }> {
+    return this.gateway(
+      "PATCH",
+      `/organizations/current/workspaces/${encodeURIComponent(workspaceId)}`,
+      { name },
+    );
+  }
+
+  /** `PUT /gateway/organizations/current/workspaces/{id}/admins` — choose a workspace's admins among its members who are not organization admins. */
+  async setOrganizationWorkspaceAdmins(
+    workspaceId: string,
+    userIds: string[],
+  ): Promise<{ id: string; name: string; admins: string[] }> {
+    return this.gateway(
+      "PUT",
+      `/organizations/current/workspaces/${encodeURIComponent(workspaceId)}/admins`,
+      { user_ids: userIds },
+    );
+  }
+
+  /** `PATCH /gateway/organizations/current/workspaces/{id}/members/{user_id}` — change someone's role in one of the organization's workspaces. */
+  async changeOrganizationWorkspaceRole(
+    workspaceId: string,
+    userId: string,
+    role: "admin" | "member",
+  ): Promise<{ id: string; name: string; role: string; archived: boolean }> {
+    return this.gateway(
+      "PATCH",
+      `/organizations/current/workspaces/${encodeURIComponent(workspaceId)}/members/${encodeURIComponent(userId)}`,
+      { role },
+    );
+  }
+
+  /** `GET /gateway/organizations/current/workspaces/{id}/members/{user_id}/removal` — who would receive what they own there. */
+  async previewOrganizationWorkspaceRemoval(
+    workspaceId: string,
+    userId: string,
+  ): Promise<{ handed_over_to: { user_id: string } | null }> {
+    return this.gateway(
+      "GET",
+      `/organizations/current/workspaces/${encodeURIComponent(workspaceId)}/members/${encodeURIComponent(userId)}/removal`,
+    );
+  }
+
+  /** `DELETE /gateway/organizations/current/workspaces/{id}/members/{user_id}` — remove someone from one of the organization's workspaces. */
+  async removeFromOrganizationWorkspace(
+    workspaceId: string,
+    userId: string,
+  ): Promise<{ ok: boolean }> {
+    return this.gateway(
+      "DELETE",
+      `/organizations/current/workspaces/${encodeURIComponent(workspaceId)}/members/${encodeURIComponent(userId)}`,
+    );
+  }
+
+  /**
+   * `POST /gateway/organizations/current/workspaces/{id}/invitations` — an
+   * invite link to one of the organization's workspaces. The token is a
+   * bearer credential, so it goes to the run's issued secrets.
+   */
+  async inviteToOrganizationWorkspace(
+    workspaceId: string,
+    role: "admin" | "member",
+  ): Promise<string> {
+    const { token } = await this.gateway<{ token: string }>(
+      "POST",
+      `/organizations/current/workspaces/${encodeURIComponent(workspaceId)}/invitations`,
+      { role },
+    );
+    this.issued.record(token);
+    return token;
+  }
+
+  /** `POST /gateway/organizations/current/workspaces/{id}/restore` — open an archived workspace again. */
+  async restoreOrganizationWorkspace(
+    workspaceId: string,
+  ): Promise<{ id: string; name: string; archived_at: string | null }> {
+    return this.gateway(
+      "POST",
+      `/organizations/current/workspaces/${encodeURIComponent(workspaceId)}/restore`,
     );
   }
 
@@ -763,6 +917,10 @@ export class SwitchClient {
     bridgeId: string | null;
     agentNames: string[];
     userNames: string[];
+    /** The new channel's type; a public channel unless given. */
+    channelType?: string;
+    /** Overrides the visibility the room would take from its channel. */
+    readVisibility?: "public" | "private";
   }): Promise<RoomDetail> {
     const row = await this.gateway<RawRoom>("POST", "/rooms", {
       name: params.name,
@@ -772,8 +930,9 @@ export class SwitchClient {
         : {
             bridge_id: params.bridgeId,
             internal_only: false,
-            channel_type: "channel_public",
+            channel_type: params.channelType ?? "channel_public",
           }),
+      ...(params.readVisibility ? { read_visibility: params.readVisibility } : {}),
       agent_names: params.agentNames,
       user_names: params.userNames,
     });
@@ -1296,6 +1455,14 @@ export class SwitchClient {
   }
 
   /**
+   * `PATCH /gateway/tenants/{tenant_id}` — rename the bound workspace. Whoever
+   * administers it: its admins, its organization's admin and the operator.
+   */
+  async renameTenant(tenantId: string, name: string): Promise<{ id: string; name: string }> {
+    return this.gateway("PATCH", `/tenants/${encodeURIComponent(tenantId)}`, { name });
+  }
+
+  /**
    * `DELETE /gateway/tenants/{tenant_id}` — delete the bound workspace, once it
    * is empty, by typing its name. Its own admins only. The server re-mints the
    * session onto the caller's only other workspace, if there is exactly one,
@@ -1325,6 +1492,15 @@ export class SwitchClient {
       id: params.id,
       new_owner_id: params.newOwnerId,
     });
+  }
+
+  /**
+   * `GET /gateway/auth/me/deletion` — what deleting the signed-in account
+   * would be refused with now, or null when it would go ahead.
+   */
+  async accountDeletionRefusal(): Promise<string | null> {
+    const check = await this.gateway<{ refusal: string | null }>("GET", "/auth/me/deletion");
+    return check.refusal;
   }
 
   /** `DELETE /gateway/users/{user_id}` — the deployment operator deletes someone's whole account. */
@@ -1369,6 +1545,53 @@ export class SwitchClient {
     return this.gateway("PUT", `/tenants/${encodeURIComponent(tenantId)}/retention`, {
       message_retention_days: days,
     });
+  }
+
+  /** `GET /gateway/tenants/{tenant_id}/private-channel-rooms/count` — how many Public rooms sit on private channels. */
+  async countPrivateChannelRooms(tenantId: string): Promise<number> {
+    const result = await this.gateway<{ count: number }>(
+      "GET",
+      `/tenants/${encodeURIComponent(tenantId)}/private-channel-rooms/count`,
+    );
+    return result.count;
+  }
+
+  /** `GET /gateway/tenants/{tenant_id}/private-channel-rooms` — those rooms, to review; changes nothing. */
+  async previewPrivateChannelRooms(tenantId: string): Promise<PrivateChannelRoom[]> {
+    const result = await this.gateway<{ rooms: PrivateChannelRoom[] }>(
+      "GET",
+      `/tenants/${encodeURIComponent(tenantId)}/private-channel-rooms`,
+    );
+    return result.rooms;
+  }
+
+  /** `POST /gateway/tenants/{tenant_id}/private-channel-rooms/ask-platform` — ask the apps about rooms of unrecorded channel type. */
+  async askPlatformAboutRooms(
+    tenantId: string,
+    roomIds?: string[],
+  ): Promise<{
+    answered: { room_id: string; channel_type: string }[];
+    unanswered: { room_id: string; reason: string }[];
+    stopped: string | null;
+    remaining: number;
+  }> {
+    return this.gateway(
+      "POST",
+      `/tenants/${encodeURIComponent(tenantId)}/private-channel-rooms/ask-platform`,
+      roomIds === undefined ? {} : { room_ids: roomIds },
+    );
+  }
+
+  /** `POST /gateway/tenants/{tenant_id}/private-channel-rooms/make-private` — make the confirmed rooms Private. */
+  async makeRoomsPrivate(
+    tenantId: string,
+    roomIds: string[],
+  ): Promise<{ changed: string[]; skipped: { room_id: string; reason: string }[] }> {
+    return this.gateway(
+      "POST",
+      `/tenants/${encodeURIComponent(tenantId)}/private-channel-rooms/make-private`,
+      { room_ids: roomIds },
+    );
   }
 
   /** `DELETE /gateway/tenants/{tenant_id}/retention` — keep messages forever again. */
@@ -1477,7 +1700,10 @@ export class SwitchClient {
   ): Promise<{ id: string; displayName: string }> {
     const rows = await this.gateway<
       {
-        id: string;
+        // `GET /gateway/collaborations` names it `bridge_id`; `id` is kept
+        // for servers that answered with that.
+        bridge_id?: string;
+        id?: string;
         bridge_type: string;
         display_name: string;
         is_default?: boolean;
@@ -1490,7 +1716,9 @@ export class SwitchClient {
       );
     }
     const row = ofType.find((candidate) => candidate.is_default) ?? ofType[0]!;
-    return { id: row.id, displayName: row.display_name };
+    const id = row.bridge_id ?? row.id;
+    if (!id) throw new Error(`The ${type} collaboration bridge came back without an id`);
+    return { id, displayName: row.display_name };
   }
 
   /**

@@ -398,7 +398,7 @@ class TestTheToggle:
             )
 
         assert named.status_code == 403
-        assert "owner or a workspace admin" in named.json()["detail"]
+        assert "a room admin or a workspace admin" in named.json()["detail"]
         assert cleared.status_code == 403
         metadata = await _metadata(session_factory, room.id)
         assert AUTO_ROUTE_FALLBACK_KEY not in metadata

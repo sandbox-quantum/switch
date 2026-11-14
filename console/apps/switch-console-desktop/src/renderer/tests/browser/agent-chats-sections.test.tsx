@@ -72,6 +72,11 @@ vi.mock('@renderer/features/managed-agents/use-managed-agents', async (importOri
   ...(await importOriginal<object>()),
   useRunsOnThisComputer: () => machine.thisComputer,
 }));
+// The profile's power and move buttons start and stop the agent through the
+// server; what they call is covered where they are drawn (rooms-sidebar-polish).
+vi.mock('@renderer/features/managed-agents/use-managed-agent-actions', () => ({
+  useManagedAgentActions: () => ({ busy: false, setDesiredState: vi.fn(), remove: vi.fn() }),
+}));
 vi.mock('@renderer/features/managed-agents/agent-connections-tab', () => ({
   useAgentServiceGrants: () => grants,
   AgentConnectionsTab: (props: { agentId: string; agentName: string }) => (
@@ -155,9 +160,11 @@ afterEach(() => {
   container.remove();
 });
 
-/** The section buttons under the agent's profile, by their labels. */
+/** The section buttons under the agent's profile (they toggle; its actions do not). */
 const navButtons = () => [
-  ...container.querySelectorAll<HTMLButtonElement>('[role="toolbar"][aria-label="Agent"] button'),
+  ...container.querySelectorAll<HTMLButtonElement>(
+    '[role="toolbar"][aria-label="Agent"] button[aria-pressed]'
+  ),
 ];
 const navLabels = () => navButtons().map((button) => button.getAttribute('aria-label'));
 const navItem = (label: string) =>
@@ -166,6 +173,12 @@ const navItem = (label: string) =>
 it("puts Connectors under the agent's profile, before Agent settings, and opens it there", async () => {
   await act(async () => root.render(<AgentChats agent={AGENT} />));
   expect(navLabels()).toEqual(['Connectors', 'Agent settings']);
+  // The agent's own actions follow its sections.
+  expect(
+    [...container.querySelectorAll('[role="toolbar"][aria-label="Agent"] button')].map((b) =>
+      b.getAttribute('aria-label')
+    )
+  ).toEqual(['Connectors', 'Agent settings', 'Turn off agent', 'Move to another device…']);
   expect(navItem('Connectors').getAttribute('aria-pressed')).toBe('false');
 
   await act(async () => navItem('Connectors').click());

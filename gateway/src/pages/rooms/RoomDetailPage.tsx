@@ -38,6 +38,7 @@ import {
   addRoomAgents,
   addRoomUsers,
   archiveRoom,
+  canArchiveRoom,
   createRoomRole,
   deleteRoom,
   deleteRoomRole,
@@ -59,6 +60,7 @@ import {
   formatDateTime,
   sentenceCase,
 } from "../../theme/format";
+import RoomAdminsSection from "./RoomAdminsSection";
 import RoomAutoRouteSection from "./RoomAutoRouteSection";
 import RoomGroupSection from "./RoomGroupSection";
 import RoomGraphView from "./RoomGraphView";
@@ -153,12 +155,7 @@ export default function RoomDetailPage() {
         <Divider />
         {room.auto_route && (
           <>
-            <RoomAutoRouteSection
-              room={room}
-              autoRoute={room.auto_route}
-              canWrite={canWrite}
-              canManage={canManage}
-            />
+            <RoomAutoRouteSection room={room} autoRoute={room.auto_route} canWrite={canWrite} />
             <Divider />
           </>
         )}
@@ -175,6 +172,12 @@ export default function RoomDetailPage() {
           viewerId={viewerId}
           onChanged={refetch}
         />
+        {showRoomAdmins(room) && (
+          <>
+            <Divider />
+            <RoomAdminsSection room={room} viewerId={viewerId} onChanged={refetch} />
+          </>
+        )}
         <Divider />
         <RoomResourcesSection
           roomId={room.id}
@@ -193,7 +196,7 @@ export default function RoomDetailPage() {
             <BridgeSection room={room} />
           </>
         )}
-        {canWrite && (
+        {canArchiveRoom(room) && (
           <>
             <Divider />
             <ArchiveSection room={room} onChanged={refetch} />
@@ -233,6 +236,25 @@ export default function RoomDetailPage() {
       />
     </Box>
   );
+}
+
+/** Room admins are shown on servers that have them, to whoever may choose
+ * them or once there are any. */
+function showRoomAdmins(room: RoomDetail): boolean {
+  if (room.room_admins === undefined) return false;
+  return Boolean(room.can_manage_admins) || room.room_admins.length > 0;
+}
+
+/** The names of the room's room admins, to mark them where the room lists
+ * its people by name. */
+function roomAdminNames(room: RoomDetail): Set<string> {
+  return new Set(
+    (room.room_admins ?? []).flatMap((admin) => (admin.name ? [admin.name] : [])),
+  );
+}
+
+function personLabel(name: string, adminNames: Set<string>): string {
+  return adminNames.has(name) ? `${name} · Room admin` : name;
 }
 
 // ── Room info (read-only) ───────────────────────────────────────────────────
@@ -668,7 +690,7 @@ function EditableFieldsSection({
       </Typography>
       {!canWrite && (
         <Alert severity="info">
-          Only this room's owner and admins can change these settings.
+          Only this room's owner, its room admins and workspace admins can change these settings.
         </Alert>
       )}
       {error && <Alert severity="error">{error}</Alert>}
@@ -709,6 +731,11 @@ function EditableFieldsSection({
         optionLabels={ROOM_ACCESS_OPTION_LABELS}
         sx={{ maxWidth: 360 }}
       />
+      {canWrite && !canManage && (
+        <Typography variant="caption" color="text.secondary">
+          Only the room's owner or a workspace admin can change who can see it.
+        </Typography>
+      )}
       <Box>
         <Button
           variant="contained"
@@ -858,6 +885,7 @@ function ParticipantsSection({
   const platformMembership = room.channel_type === "group" || room.channel_type === "direct";
   const canInviteAgents = room.can_invite_agents;
   const canAddPeople = room.can_add_people;
+  const adminNames = roomAdminNames(room);
   const canRemove = (agentId: string) =>
     !platformMembership && (room.can_remove_members || ownAgentIds.has(agentId));
 
@@ -881,7 +909,7 @@ function ParticipantsSection({
               status={room.agent_statuses[id]}
               receivesJoinEvents={room.join_event_listeners.includes(id)}
               onToggleJoinEvents={
-                // The room's owner or an admin, or the agent's own owner.
+                // Whoever may change the room, or the agent's own owner.
                 !(canWrite || ownAgentIds.has(id)) || working
                   ? undefined
                   : (next) => handleToggleJoinEvents(id, next)
@@ -937,7 +965,11 @@ function ParticipantsSection({
           <Stack direction="row" spacing={1} flexWrap="wrap" sx={{ mb: 1 }}>
             {/* Two people may share a name, so a name alone does not key a chip. */}
             {room.connected_user_names.map((name, index) => (
-              <Chip key={`${index}:${name}`} label={name} size="small" />
+              <Chip
+                key={`${index}:${name}`}
+                label={personLabel(name, adminNames)}
+                size="small"
+              />
             ))}
           </Stack>
           <Typography variant="caption" color="text.secondary">
@@ -953,7 +985,7 @@ function ParticipantsSection({
           </Typography>
           <Stack direction="row" spacing={1} flexWrap="wrap" sx={{ mb: 1 }}>
             {room.connected_user_names.map((name) => (
-              <Chip key={name} label={name} size="small" />
+              <Chip key={name} label={personLabel(name, adminNames)} size="small" />
             ))}
             {room.connected_user_names.length === 0 && (
               <Typography variant="body2" color="text.secondary">

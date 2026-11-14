@@ -1,23 +1,9 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { BridgeDetail } from "../../data/api";
+import { bridgeDetail } from "./testFixtures";
 import TeamsPlacementDialog from "./TeamsPlacementDialog";
 
-const bridge: BridgeDetail = {
-  bridge_id: "b1",
-  bridge_type: "teams",
-  display_name: "Acme Corp",
-  status: "active",
-  agent_greetings_enabled: true,
-  channel_creation_supported: true,
-  channel_creation_enabled: false,
-  room_count: 2,
-  created_at: "2026-01-01",
-  attention: null,
-  team_placement_supported: true,
-  can_manage: true,
-  can_delete: true,
-};
+const bridge = bridgeDetail({ team_placement_supported: true });
 
 function placements(
   overrides: Partial<{
@@ -110,6 +96,68 @@ describe("TeamsPlacementDialog", () => {
       expect(post).toBeTruthy();
       expect(String(post?.[0])).toContain("/collaborations/b1/teams/t2");
     });
+  });
+
+  it("waits for the first team Switch joins to show as the default", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const team = (has_switch: boolean, is_default: boolean) => ({
+      team_id: "t2",
+      name: "Sales",
+      has_switch,
+      is_default,
+    });
+    const reads = [
+      placements({ teams: [team(false, false)], default_team_id: null }),
+      // Added, but the copy holding the connection has not stored the
+      // default yet.
+      placements({ teams: [team(true, false)], default_team_id: null }),
+      placements({ teams: [team(true, true)], default_team_id: "t2" }),
+    ];
+    let read = 0;
+    mockFetch((_url, init) => {
+      if (init?.method === "POST") return new Response(null, { status: 204 });
+      const body = reads[Math.min(read, reads.length - 1)];
+      read += 1;
+      return jsonResponse(200, body);
+    });
+    render(
+      <TeamsPlacementDialog bridge={bridge} onClose={() => {}} onChanged={() => {}} />,
+    );
+
+    await screen.findByText("Sales");
+    fireEvent.click(screen.getByRole("switch"));
+    await waitFor(() => expect(read).toBe(2));
+    expect((screen.getByRole("radio") as HTMLInputElement).checked).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(1500);
+
+    await waitFor(() => {
+      expect((screen.getByRole("radio") as HTMLInputElement).checked).toBe(true);
+    });
+    await vi.advanceTimersByTimeAsync(1500 * 6);
+    expect(read).toBe(3);
+    vi.useRealTimers();
+  });
+
+  it("does not wait for a default when one is already set", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let reads = 0;
+    mockFetch((_url, init) => {
+      if (init?.method === "POST") return new Response(null, { status: 204 });
+      reads += 1;
+      return jsonResponse(200, placements());
+    });
+    render(
+      <TeamsPlacementDialog bridge={bridge} onClose={() => {}} onChanged={() => {}} />,
+    );
+
+    await screen.findByText("Sales");
+    fireEvent.click(screen.getAllByRole("switch")[1]);
+    await waitFor(() => expect(reads).toBe(2));
+    await vi.advanceTimersByTimeAsync(1500 * 6);
+
+    expect(reads).toBe(2);
+    vi.useRealTimers();
   });
 
   it("removes Switch from a team the switch is flipped off for", async () => {

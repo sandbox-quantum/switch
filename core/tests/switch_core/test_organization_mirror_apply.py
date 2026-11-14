@@ -14,6 +14,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core import organization_mirror
+from switch_core.bridges.agent.registration_bootstrap import (
+    BOOTSTRAP_OWNER_MARKER_META_KEY,
+)
 from switch_core.connections.broker import ServiceBroker, ServiceError
 from switch_core.connections.loader import CATALOG
 from switch_core.connections.sign_in_flows import SignInFlows
@@ -467,6 +470,58 @@ class TestGranting:
         [(action, details)] = await _organization_events(owner, world.organization_id)
         assert action == OrganizationAuditAction.MEMBER_ADDED_FROM_DIRECTORY
         assert details == {"source": "daily_check", "role": "member"}
+
+    @pytest.mark.parametrize("already_member", [True, False])
+    async def test_the_service_account_is_never_made_org_admin(
+        self, rls_harness: RLSHarness, already_member: bool
+    ) -> None:
+        """Agents added with the shared registration token act with its role,
+        so the directory listing it as an admin is refused and recorded: a
+        member stays one, and one joining joins as a member."""
+        owner = rls_harness.owner
+        world = await _World.make(owner)
+        robot = _id("robot")
+        async with owner() as session:
+            session.add(
+                User(
+                    id=robot,
+                    name=robot,
+                    email=f"{robot}@example.invalid",
+                    role="user",
+                    metadata_={BOOTSTRAP_OWNER_MARKER_META_KEY: True},
+                )
+            )
+            await session.flush()
+            if already_member:
+                session.add(
+                    OrganizationMember(
+                        organization_id=world.organization_id,
+                        user_id=robot,
+                        role="member",
+                    )
+                )
+            await session.commit()
+
+        await apply_from_directory(
+            rls_harness.restricted,
+            _dependencies(rls_harness.restricted),
+            organization_id=world.organization_id,
+            workos_organization_id=world.workos_organization_id,
+            user_id=robot,
+            wanted="org_admin",
+            source="daily_check",
+        )
+
+        assert await _role(owner, world.organization_id, robot) == "member"
+        events = await _organization_events(owner, world.organization_id)
+        assert (
+            OrganizationAuditAction.DIRECTORY_CONFLICT,
+            {"source": "daily_check", "kind": "service_account_not_admin"},
+        ) in events
+        assert all(
+            action != OrganizationAuditAction.MEMBER_PROMOTED_FROM_DIRECTORY
+            for action, _ in events
+        )
 
 
 class TestARetryAfterAFailure:

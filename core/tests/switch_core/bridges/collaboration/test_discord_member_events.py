@@ -338,6 +338,21 @@ async def test_a_server_too_big_to_read_whole_is_not_listed() -> None:
     assert guild.chunks == 0
 
 
+async def test_whether_members_can_be_listed_follows_the_same_conditions() -> None:
+    small = _Guild([_Channel(10, {1})], [_Member(1, "ann")])
+    big = _Guild([_Channel(10, {1})], [_Member(1, "ann")], member_count=10**6)
+
+    listed, _ = _adapter(small, {"10"})
+    no_intent, _ = _adapter(small, {"10"}, members_intent=False)
+    too_big, _ = _adapter(big, {"10"})
+
+    assert listed.can_list_channel_members("10", "channel_private") is True
+    assert no_intent.can_list_channel_members("10", "channel_private") is False
+    assert too_big.can_list_channel_members("10", "channel_private") is False
+    # Asking reads no members.
+    assert small.chunks == 0 and big.chunks == 0
+
+
 async def test_a_failed_read_is_an_incomplete_listing() -> None:
     guild = _Guild([_Channel(10, {1})], [_Member(1, "ann")])
     guild.chunk_error = TimeoutError()

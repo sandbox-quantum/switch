@@ -105,6 +105,7 @@ _COLLABORATORS = (
     "resource_service",
     "protocol",
     "user_changes",
+    "trust_connection_check",
 )
 
 

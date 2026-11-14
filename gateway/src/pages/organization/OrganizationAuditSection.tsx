@@ -12,6 +12,7 @@ import { formatDate } from "../../theme/format";
 const ACTION_LABELS: Record<string, string> = {
   "organization.created": "Organization created",
   "organization.workspace_created": "Workspace added",
+  "organization.workspace_renamed": "Workspace renamed",
   "organization.role_changed": "Organization role changed",
   "organization.member_removed": "User removed",
   "organization.connector_app_saved": "Connector app saved",

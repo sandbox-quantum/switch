@@ -282,7 +282,7 @@ describe("MachinesPage", () => {
     fireEvent.click(await screen.findByLabelText("Revoke laptop"));
     const text = (await screen.findByText(/loses access to Switch immediately/)).textContent ?? "";
     expect(text).not.toMatch(/key/);
-    expect(text).toMatch(/stay placed, and offline, until you move them/);
+    expect(text).toMatch(/are taken off it, and run again\s+once you put them on another device/);
   });
 
   it("stops a running agent by changing what is wanted", async () => {

@@ -66,10 +66,6 @@ function built(path: string, open: readonly Persona[]): MatrixPage {
   return { path, open, status: "built" };
 }
 
-function planned(path: string, open: readonly Persona[]): MatrixPage {
-  return { path, open, status: "planned" };
-}
-
 export const PAGES: Record<MatrixLayout, readonly MatrixPage[]> = {
   current: [
     built("/ecosystem", EVERYONE),
@@ -91,6 +87,7 @@ export const PAGES: Record<MatrixLayout, readonly MatrixPage[]> = {
     built("/collaborations", EVERYONE),
     built("/registration-keys", EVERYONE),
     built("/workspace", EVERYONE),
+    built("/workspace/private-channel-rooms", ADMINS),
     // Every workspace is in an organization, and today's page shows it to
     // anyone in one; what it lets them do is the page's own business.
     built("/organization", EVERYONE),
@@ -115,25 +112,26 @@ export const PAGES: Record<MatrixLayout, readonly MatrixPage[]> = {
     built("/templates/:id", EVERYONE),
     built("/agents", EVERYONE),
     built("/agents/:agentId", EVERYONE),
-    planned("/connectors", EVERYONE),
+    built("/connectors", EVERYONE),
     built("/connectors/:connectorId", EVERYONE),
 
     built("/settings/general", EVERYONE),
+    built("/workspace/private-channel-rooms", ADMINS),
     built("/settings/users", EVERYONE),
     built("/settings/messaging-apps", EVERYONE),
     built("/settings/connectors", EVERYONE),
     built("/settings/api-keys", EVERYONE),
-    planned("/settings/guardrails", EVERYONE),
+    built("/settings/guardrails", EVERYONE),
     built("/settings/devices", EVERYONE),
     built("/usage", ADMINS),
-    planned("/settings/account", EVERYONE),
+    built("/settings/account", EVERYONE),
 
     built("/settings/org/general", ORGANIZATION_ADMIN_OR_OPERATOR),
     built("/settings/org/workspaces", ORGANIZATION_ADMIN_OR_OPERATOR),
     built("/settings/org/users", ORGANIZATION_ADMIN_OR_OPERATOR),
     built("/settings/org/connectors", ORGANIZATION_ADMIN),
-    planned("/settings/org/guardrails", ORGANIZATION_ADMIN),
-    planned("/settings/org/devices", ORGANIZATION_ADMIN),
+    built("/settings/org/guardrails", ORGANIZATION_ADMIN),
+    built("/settings/org/devices", ORGANIZATION_ADMIN),
     built("/settings/org/audit-log", ORGANIZATION_ADMIN),
 
     built("/platform/workspaces", OPERATOR),
@@ -170,6 +168,8 @@ export const REDIRECTS: Record<MatrixLayout, readonly MatrixRedirect[]> = {
     { from: "/settings/org/workspaces", to: "/organization" },
     { from: "/settings/org/users", to: "/organization" },
     { from: "/settings/org/connectors", to: "/organization" },
+    { from: "/settings/org/guardrails", to: "/organization" },
+    { from: "/settings/org/devices", to: "/organization" },
     { from: "/settings/org/audit-log", to: "/organization" },
     { from: "/platform", to: "/operator/workspaces" },
     { from: "/platform/workspaces", to: "/operator/workspaces" },

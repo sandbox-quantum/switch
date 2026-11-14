@@ -134,7 +134,7 @@ class TestRemoveAgentFromRoom:
         room_id = await _room_with(session_factory, [target])
 
         with pytest.raises(
-            RoomPermissionError, match="room's owner or a workspace admin"
+            RoomPermissionError, match="room's owner, a room admin or a workspace admin"
         ):
             await svc.remove_agent_from_room(caller, room_id, "alice-agent")
         assert rooms.removed == []
@@ -279,7 +279,7 @@ class TestRemoveUsersFromRoom:
         room_id = await _room_with(session_factory, [caller], owner_id=alice)
 
         with pytest.raises(
-            RoomPermissionError, match="room's owner or a workspace admin"
+            RoomPermissionError, match="room's owner, a room admin or a workspace admin"
         ):
             await svc.remove_users_from_room(caller, room_id, ["carol"])
         assert rooms.calls == []
