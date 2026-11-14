@@ -18,17 +18,17 @@ from switch_core.connections.loader import (
 PLACEHOLDERS = {
     "asana",
     "bitbucket",
-    "microsoft-365",
     "new-relic",
     "salesforce",
     "box",
     "canva",
     "vercel",
 }
+DRAFTS = {"microsoft-365"}
 
 
 def test_shipped_catalog_enables_its_live_connectors():
-    assert set(CATALOG) == PLACEHOLDERS | {
+    assert set(CATALOG) == PLACEHOLDERS | DRAFTS | {
         "github",
         "airtable",
         "atlassian",
@@ -50,7 +50,7 @@ def test_shipped_catalog_enables_its_live_connectors():
         "notion",
         "sentry",
     ]
-    assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS)
+    assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS | DRAFTS)
     assert "SKILL.md" in CATALOG["github"].skill_files
     assert "SKILL.md" in CATALOG["airtable"].skill_files
     assert "SKILL.md" in CATALOG["atlassian"].skill_files
@@ -85,6 +85,35 @@ def test_shipped_identity_arguments_only_refer_to_the_caller():
         if identity is None or identity.arguments is None:
             continue
         assert set(identity.arguments.values()) <= SELF_REFERENCES, slug
+
+
+def test_microsoft_365_draft_records_the_transport_but_not_unverified_access():
+    entry = CATALOG["microsoft-365"]
+    definition = entry.definition
+    assert definition.enabled is False
+    assert definition.adapter == "oauth"
+    assert definition.auth.refresh == "reusable"
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    assert (oauth.registration, oauth.client_settings, oauth.redirect) == (
+        "static",
+        "MICROSOFT_365",
+        ["core"],
+    )
+    authority = "https://login.microsoftonline.com/organizations/oauth2/v2.0"
+    assert oauth.authorization_url == f"{authority}/authorize"
+    assert oauth.token_url == f"{authority}/token"
+    assert oauth.revocation_url is None and not oauth.revocation_discovered
+    assert oauth.remove_access is not None
+    assert definition.mcp is not None and definition.cli is None
+    assert [(server.name, server.url) for server in definition.mcp.servers] == [
+        ("microsoft-365", "https://workiq.svc.cloud.microsoft/mcp")
+    ]
+    # Neither a Graph identity endpoint nor guessed access/lifetime values
+    # can make an untested Work IQ connection appear complete.
+    assert definition.auth.identity is None
+    assert definition.access is None and definition.token is None
+    assert entry.skill_files == {}
 
 
 def test_the_shipped_google_entry_signs_in_and_runs_gws_as_the_spike_found_it_must():
@@ -550,6 +579,16 @@ def catalog_copy(tmp_path):
     root = tmp_path / "catalog"
     shutil.copytree(CATALOG_ROOT, root)
     return root
+
+
+def test_microsoft_365_draft_cannot_be_enabled_by_flipping_the_flag(catalog_copy):
+    path = catalog_copy / "microsoft-365" / "connection.yaml"
+    path.write_text(path.read_text().replace("enabled: false", "enabled: true"))
+    with pytest.raises(
+        CatalogError,
+        match="(?s)microsoft-365 is invalid.*an enabled entry needs token, access",
+    ):
+        load_catalog(catalog_copy)
 
 
 def test_rejects_unknown_keys(catalog_copy):
