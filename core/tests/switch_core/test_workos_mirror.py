@@ -80,7 +80,7 @@ class _WorkOS:
         )
 
     async def events(
-        self, types: tuple[str, ...], *, after: str | None, range_start: str
+        self, types: tuple[str, ...], *, after: str | None, range_start: datetime
     ) -> list[dict[str, Any]]:
         assert types == EVENT_TYPES
         self.asked.append({"after": after, "range_start": range_start})

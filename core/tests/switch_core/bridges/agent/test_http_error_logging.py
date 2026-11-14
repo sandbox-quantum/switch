@@ -80,9 +80,12 @@ async def test_a_refused_request_logs_info_and_a_server_failure_an_error(
 ) -> None:
     records = await _records(caplog, "GET", f"/refused/{status}")
     assert [r.levelno for r in records] == [level]
-    assert (
-        f"→ {status}: post_message does not accept: room_id" in records[0].getMessage()
-    )
+    message = records[0].getMessage()
+    # The method, the route template and the status: never the raw path,
+    # which carries ids, nor the refusal's detail text.
+    assert message == f"GET /refused/{{status}} → {status}"
+    assert f"/refused/{status}" not in message
+    assert "post_message does not accept" not in message
 
 
 @pytest.mark.asyncio

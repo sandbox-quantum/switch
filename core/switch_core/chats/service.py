@@ -53,7 +53,7 @@ from switch_core.authz import (
 )
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.bridges.agent.registration_bootstrap import is_bootstrap_owner
-from switch_core.chats import MEMBER_CLIENT_TYPE
+from switch_core.chats import MEMBER_CLIENT_TYPE, is_console_chat
 from switch_core.chats.views import (
     COMMAND_EVENT_TYPE,
     MESSAGE_EVENT_TYPE,
@@ -108,12 +108,15 @@ from switch_core.room_service import RoomCreateConfig, RoomService
 from switch_core.session_activity.listener import AgentSessionActivityListener
 from switch_core.session_activity.maintenance import ACTIVITY_RETENTION
 from switch_core.sessions.attachments import normalise_mime_type
-from switch_core.telemetry import TelemetryService, emit_safely
+from switch_core.telemetry import TelemetryService, emit_after_commit, emit_safely
+from switch_core.telemetry.ages import age_days
+from switch_core.telemetry.snapshot import normalise_channel_type
 from switch_core.tenant_context import tenant_scope
 from switch_core.transport.content import media_content, message_content
 from switch_core.transport.observer import (
     ParticipantMessage,
     ParticipantMessageObserver,
+    observe_safely,
 )
 from switch_core.transport.types import MessageFormat
 from switch_core.trust.attachments import AttachmentsVerdict, check_attachments
@@ -1036,7 +1039,12 @@ class ChatService:
         async with tenant_session(self.session_factory, tenant_id) as session:
             await self._require_tenant_member(session, tenant_id, user_id)
 
-    async def _make_group(self, session: AsyncSession, room: Room) -> None:
+    async def _make_group(
+        self,
+        session: AsyncSession,
+        room: Room,
+        trigger: Literal["person_added", "agent_added"],
+    ) -> None:
         """Turn a Switch Console direct chat into a group, for good.
 
         Written in the transaction that adds the person or agent, with the
@@ -1054,6 +1062,32 @@ class ChatService:
             .values(channel_type="channel_private")
         )
         room.channel_type = "channel_private"
+        emit_after_commit(
+            session,
+            self._telemetry,
+            "console_chat_became_group",
+            {"trigger": trigger, "age_days": age_days(room.created_at)},
+        )
+
+    @staticmethod
+    def _member_properties(
+        room: Room, member_kind: Literal["person", "agent"]
+    ) -> dict[str, str | bool]:
+        """What `console_member_added` and `console_member_removed` share."""
+        return {
+            "member_kind": member_kind,
+            "channel_type": normalise_channel_type(room.channel_type),
+            "console_chat": is_console_chat(room),
+        }
+
+    @staticmethod
+    def _list_properties(room: Room) -> dict[str, str | bool | float | None]:
+        """What `console_room_hidden` and `console_room_shown` carry."""
+        return {
+            "channel_type": normalise_channel_type(room.channel_type),
+            "age_days": age_days(room.created_at),
+            "console_chat": is_console_chat(room),
+        }
 
     async def add_member(
         self, tenant_id: str, actor: User, room_id: str, target_user_id: str
@@ -1067,10 +1101,10 @@ class ChatService:
         client = await self.member_actor(tenant_id, target)
         async with tenant_session(self.session_factory, tenant_id) as session:
             room = await self._locked_room(session, room.id)
+            already_in = await self._is_in_room(session, client.id, room.id)
             # The creator is the direct chat's own person; anyone else makes a group.
             if target_user_id not in (room.created_by, room.owner_id):
-                await self._make_group(session, room)
-            already_in = await self._is_in_room(session, client.id, room.id)
+                await self._make_group(session, room, "person_added")
             with tenant_scope(tenant_id):
                 joined = await self._provisioning.record_join(
                     session, room.transport_room_id, client.transport_user_id
@@ -1080,6 +1114,11 @@ class ChatService:
         joined()
         if not already_in:
             emit_safely(self._telemetry, "room_users_added", {"user_count": 1})
+            emit_safely(
+                self._telemetry,
+                "console_member_added",
+                self._member_properties(room, "person"),
+            )
         await self._make_lasting(tenant_id, target_user_id, room.id)
         async with tenant_session(self.session_factory, tenant_id) as session:
             member_ids = [member.id for member, _ in await self.members(session, room)]
@@ -1121,6 +1160,14 @@ class ChatService:
             await self._provisioning.kick_user(
                 room.transport_room_id, client.transport_user_id
             )
+        emit_safely(
+            self._telemetry,
+            "console_member_removed",
+            {
+                **self._member_properties(room, "person"),
+                "left": actor.id == target_user_id,
+            },
+        )
         await self._make_lasting(tenant_id, target_user_id, room.id)
         async with tenant_session(self.session_factory, tenant_id) as session:
             member_ids = [member.id for member, _ in await self.members(session, room)]
@@ -1151,7 +1198,13 @@ class ChatService:
             with_agents=lambda session: self._group_if_several_agents(session, room),
         )
         async with tenant_session(self.session_factory, tenant_id) as session:
-            return await self._room(session, tenant_id, room_id)
+            room = await self._room(session, tenant_id, room_id)
+        emit_safely(
+            self._telemetry,
+            "console_member_added",
+            self._member_properties(room, "agent"),
+        )
+        return room
 
     async def _locked_room(self, session: AsyncSession, room_id: str) -> Room:
         """The room row, locked against another membership change until this
@@ -1172,7 +1225,7 @@ class ChatService:
         concurrent add counts this one's agent once this one commits."""
         locked = await self._locked_room(session, room.id)
         if len(await self._room_store.get_agent_ids(session, room.id)) > 1:
-            await self._make_group(session, locked)
+            await self._make_group(session, locked, "agent_added")
 
     async def remove_agent(
         self, tenant_id: str, actor: User, room_id: str, agent_id: str
@@ -1186,6 +1239,11 @@ class ChatService:
             if agent_id not in await self._room_store.get_agent_ids(session, room.id):
                 return
         await self._room_service.remove_agents_from_room(room.id, [agent_id])
+        emit_safely(
+            self._telemetry,
+            "console_member_removed",
+            {**self._member_properties(room, "agent"), "left": False},
+        )
 
     async def archive(self, tenant_id: str, user: User, room_id: str) -> None:
         async with tenant_session(self.session_factory, tenant_id) as session:
@@ -1263,8 +1321,31 @@ class ChatService:
     ) -> None:
         async with tenant_session(self.session_factory, tenant_id) as session:
             room, _ = await self.require_member(session, tenant_id, user, room_id)
+            head = await self._message_store.head_seq(session, room.id)
+            # Hidden until something new is said: a row behind the head is a
+            # chat already back on the list.
+            hidden_through = await session.scalar(
+                select(ChatHidden.hidden_through_seq).where(
+                    ChatHidden.user_id == user.id, ChatHidden.room_id == room.id
+                )
+            )
+            was_hidden = hidden_through is not None and hidden_through >= head
+            if hidden and not was_hidden:
+                emit_after_commit(
+                    session,
+                    self._telemetry,
+                    "console_room_hidden",
+                    self._list_properties(room),
+                )
+            elif was_hidden and not hidden:
+                emit_after_commit(
+                    session,
+                    self._telemetry,
+                    "console_room_shown",
+                    self._list_properties(room),
+                )
             if hidden:
-                through = await self._message_store.head_seq(session, room.id)
+                through = head
                 await session.execute(
                     pg_insert(ChatHidden)
                     .values(
@@ -1635,7 +1716,6 @@ class ChatService:
                                 created_by=user.id,
                                 owner_id=user.id,
                                 read_visibility=read_visibility or "private",
-                                write_visibility=write_visibility or "private",
                                 acting_user_id=user.id,
                                 created_by_kind="user",
                                 chat_operation_id=operation_id,
@@ -1838,6 +1918,7 @@ class ChatService:
         mention_agent_ids: list[str],
         mention_user_ids: list[str],
         mention_spans: list[ChatMention],
+        command: tuple[str, str] | None,
     ) -> tuple[Room, list[Message]]:
         """Post the user's message, every part of it in one transaction.
 
@@ -1914,6 +1995,12 @@ class ChatService:
                 for upload_id in upload_ids
             ]
             root = await self._thread_root(session, room, thread_root_id)
+            # `!set-alias @helper @h`, typed here as on any platform, is a room
+            # command: written as the command event a bridge writes for it, so
+            # the room's command handling runs it, rather than as a message the
+            # agents read. Its mentions are its arguments, written as typed.
+            if command is not None:
+                mentions, people, mention_spans, typed = [], [], [], []
             shift = 0
             if mentions:
                 written = body
@@ -1967,6 +2054,21 @@ class ChatService:
                 contents[0][MENTIONS_KEY] = named_people
             posted: list[Message] = []
             routed: list[Routed] = []
+            if command is not None:
+                name, args = command
+                contents = [
+                    {
+                        "command": name,
+                        "args": args,
+                        "user_id": client.transport_user_id,
+                        "user_name": user.name,
+                        **(
+                            {"m.relates_to": contents[0]["m.relates_to"]}
+                            if "m.relates_to" in contents[0]
+                            else {}
+                        ),
+                    }
+                ]
             for index, content in enumerate(contents):
                 message = message_row(
                     room_id=room.id,
@@ -1974,7 +2076,9 @@ class ChatService:
                     sender_id=client.transport_user_id,
                     sender_client_id=client.id,
                     sender_name=user.name,
-                    event_type=MESSAGE_EVENT_TYPE,
+                    event_type=MESSAGE_EVENT_TYPE
+                    if command is None
+                    else COMMAND_EVENT_TYPE,
                     content=content,
                     client_txn_id=f"{request_id}:{index}",
                 )
@@ -2030,26 +2134,19 @@ class ChatService:
         thread_root: str | None,
     ) -> None:
         """Tell the observer a person said something, once per post however
-        many files it carried. After the commit, and guarded: the message is
-        already posted, and a failure here must not tell the sender otherwise,
-        or their retry would post it twice."""
-        try:
-            self._message_observer.observe(
-                ParticipantMessage(
-                    tenant_id=tenant_id,
-                    room_id=room_id,
-                    sender_client_id=client_id,
-                    sender_role=MEMBER_CLIENT_TYPE,
-                    sender_is_app=False,
-                    has_attachment=bool(uploads),
-                    in_thread=thread_root is not None,
-                )
-            )
-        except Exception:
-            logger.exception(
-                "Message observer failed on a Switch Console post; the message "
-                "itself was sent."
-            )
+        many files it carried. After the commit, so guarded."""
+        observe_safely(
+            self._message_observer,
+            ParticipantMessage(
+                tenant_id=tenant_id,
+                room_id=room_id,
+                sender_client_id=client_id,
+                sender_role=MEMBER_CLIENT_TYPE,
+                sender_is_app=False,
+                has_attachment=bool(uploads),
+                in_thread=thread_root is not None,
+            ),
+        )
 
     async def control(
         self,

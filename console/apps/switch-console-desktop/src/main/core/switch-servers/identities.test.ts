@@ -8,6 +8,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
  * before that links on the spot and sends no such field — Console talks to
  * both, so a missing field has to read as the old behaviour, never as a
  * pending link with no code.
+ *
+ * Console also asks for a message to the account with a number to tap
+ * (CHOO-4121). A server that predates it ignores the ask and sends no `prompt`,
+ * which reads as no message, leaving the code as it was.
  */
 
 const getSessionCookie = vi.hoisted(() => vi.fn());
@@ -73,6 +77,8 @@ const CODE = {
   instructions: 'Post `!link-account 7KQ2-M9XD` from that account.',
 };
 
+const PROMPT = { number: 42, sent: true, unavailable_reason: null };
+
 const fetchMock = vi.fn();
 
 /** Answer the claim with `claim`, and the bridge list with `BRIDGES`. */
@@ -95,7 +101,7 @@ afterEach(() => {
 });
 
 describe('claimIdentityOnServer', () => {
-  it('says it can show a code, which a current server requires', async () => {
+  it('says it can show a code, which a current server requires, and asks for a message', async () => {
     serve(response(200, SUMMARY));
 
     await claimIdentityOnServer(SERVER, PARAMS);
@@ -105,6 +111,7 @@ describe('claimIdentityOnServer', () => {
       external_user_id: 'U1',
       username: 'ada',
       expects_confirmation: true,
+      wants_prompt: true,
     });
   });
 
@@ -128,6 +135,7 @@ describe('claimIdentityOnServer', () => {
         expiresAt: '2026-10-27T12:30:00Z',
         expiresInSeconds: 1800,
         instructions: 'Post `!link-account 7KQ2-M9XD` from that account.',
+        prompt: null,
       },
       alreadyLinked: false,
     });
@@ -161,6 +169,20 @@ describe('claimIdentityOnServer', () => {
 
     await expect(claimIdentityOnServer(SERVER, PARAMS)).resolves.toMatchObject({
       alreadyLinked: false,
+    });
+  });
+
+  it('carries the message the server sent the account with the code', async () => {
+    serve(
+      response(200, {
+        ...SUMMARY,
+        link_request: { user_id: 'u1', code: { ...CODE, prompt: PROMPT } },
+      })
+    );
+
+    await expect(claimIdentityOnServer(SERVER, PARAMS)).resolves.toMatchObject({
+      kind: 'pending',
+      code: { code: '7KQ2-M9XD', prompt: { number: 42, sent: true, unavailableReason: null } },
     });
   });
 
@@ -201,7 +223,7 @@ describe('claimIdentityOnServer', () => {
 });
 
 describe('issueLinkCodeOnServer', () => {
-  it('returns the fresh code', async () => {
+  it('returns the fresh code, asking for a fresh message with it', async () => {
     fetchMock.mockResolvedValue(response(200, CODE));
 
     await expect(issueLinkCodeOnServer(SERVER, 'b1', 'eu-1')).resolves.toEqual({
@@ -211,11 +233,57 @@ describe('issueLinkCodeOnServer', () => {
         expiresAt: '2026-10-27T12:30:00Z',
         expiresInSeconds: 1800,
         instructions: 'Post `!link-account 7KQ2-M9XD` from that account.',
+        prompt: null,
       },
     });
-    const [url, init] = fetchMock.mock.calls[0] as [string, { method: string }];
+    const [url, init] = fetchMock.mock.calls[0] as [string, { method: string; body: string }];
     expect(url).toBe('https://switch.example.com/gateway/collaborations/b1/identities/eu-1/code');
     expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body)).toEqual({ wants_prompt: true });
+  });
+
+  it('reads the message sent with the code', async () => {
+    fetchMock.mockResolvedValue(response(200, { ...CODE, prompt: PROMPT }));
+
+    await expect(issueLinkCodeOnServer(SERVER, 'b1', 'eu-1')).resolves.toMatchObject({
+      code: { prompt: { number: 42, sent: true, unavailableReason: null } },
+    });
+  });
+
+  it('reads the link that opens the message', async () => {
+    const link = 'https://slack.com/app_redirect?channel=D42&team=T1';
+    fetchMock.mockResolvedValue(response(200, { ...CODE, prompt: { ...PROMPT, link } }));
+
+    await expect(issueLinkCodeOnServer(SERVER, 'b1', 'eu-1')).resolves.toMatchObject({
+      code: { prompt: { number: 42, sent: true, link } },
+    });
+  });
+
+  it('reads no link from a server that predates it', async () => {
+    fetchMock.mockResolvedValue(response(200, { ...CODE, prompt: PROMPT }));
+
+    await expect(issueLinkCodeOnServer(SERVER, 'b1', 'eu-1')).resolves.toMatchObject({
+      code: { prompt: { link: null } },
+    });
+  });
+
+  it('reads why no message could be sent', async () => {
+    const reason = 'Slack does not let Switch message this person directly.';
+    fetchMock.mockResolvedValue(
+      response(200, { ...CODE, prompt: { number: 42, sent: false, unavailable_reason: reason } })
+    );
+
+    await expect(issueLinkCodeOnServer(SERVER, 'b1', 'eu-1')).resolves.toMatchObject({
+      code: { prompt: { number: 42, sent: false, unavailableReason: reason } },
+    });
+  });
+
+  it('reads a null message as none', async () => {
+    fetchMock.mockResolvedValue(response(200, { ...CODE, prompt: null }));
+
+    await expect(issueLinkCodeOnServer(SERVER, 'b1', 'eu-1')).resolves.toMatchObject({
+      code: { prompt: null },
+    });
   });
 
   it('reads a code from a server that sends no lifetime', async () => {

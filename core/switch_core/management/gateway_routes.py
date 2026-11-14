@@ -2,10 +2,12 @@
 
 Cookie-authenticated through `get_current_user`, which binds the caller's
 tenant; every route then acts only on the caller's own controllers and
-agents. Someone else's is answered exactly like one that does not exist, so
-these routes disclose nothing about another person's machines. The agent list
-(`gateway/agents.py`) names the device each agent is placed on to its owner
-and to workspace admins, who see every device in their workspace.
+agents, except that an admin of the workspace, or of its organization, sees
+every device and managed agent in it (`GET /workspace`), and removes any of
+them. Someone else's is otherwise answered exactly like one that does not
+exist, so these routes disclose nothing about another person's machines.
+The agent list (`gateway/agents.py`) names the device each agent is placed
+on to its owner and to workspace admins too.
 
 Failures use the same error envelope as the controller routes.
 """
@@ -17,11 +19,13 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from switch_core.authz import Principal
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.connections.broker import ServiceBroker, get_service_broker
 from switch_core.db.models import ServiceTokenIssuance, User, require_tenant_id
-from switch_core.gateway.auth import get_current_user
-from switch_core.gateway.dependencies import get_protocol, get_session
+from switch_core.db.stores.user_store import UserStore
+from switch_core.gateway.auth import get_current_user, get_tenant_is_admin
+from switch_core.gateway.dependencies import get_protocol, get_session, get_user_store
 from switch_core.management.dependencies import get_management
 from switch_core.management.errors import ManagementRoute
 from switch_core.management.schemas import (
@@ -36,21 +40,25 @@ from switch_core.management.schemas import (
 )
 from switch_core.management.sealed_logins import PutSealedLoginRequest
 from switch_core.management.service import ManagementService, placement_from
+from switch_core.management.workspace_devices import workspace_devices
 
 router = APIRouter(route_class=ManagementRoute, tags=["agent management"])
 
 Management = Annotated[ManagementService, Depends(get_management)]
 Session = Annotated[AsyncSession, Depends(get_session)]
 CurrentUser = Annotated[User, Depends(get_current_user)]
+IsAdmin = Annotated[bool, Depends(get_tenant_is_admin)]
 Protocol = Annotated[AgentCore, Depends(get_protocol)]
 Broker = Annotated[ServiceBroker, Depends(get_service_broker)]
 
 
 def _controller(view: dict[str, Any]) -> dict[str, Any]:
     """`view` with what the caller may do with the machine. Every machine
-    these routes return is the caller's own, to rename and remove; removing a
-    revoked one again changes nothing, which `revoked_at` says."""
-    return {**view, "can_edit": True, "can_remove": True}
+    these routes return is the caller's own, to rename and remove, but for a
+    cloud device, which Switch names and removes (`service.refuse_cloud`);
+    removing a revoked one again changes nothing, which `revoked_at` says."""
+    yours = view["kind"] != "ec2"
+    return {**view, "can_edit": yours, "can_remove": yours}
 
 
 def _managed_agent(view: dict[str, Any]) -> dict[str, Any]:
@@ -111,6 +119,27 @@ async def enroll_console(
     return {"controller_id": controller.id, "credential": credential}
 
 
+@router.get("/workspace")
+async def list_workspace_devices(
+    session: Session,
+    user: CurrentUser,
+    is_admin: IsAdmin,
+    management: Management,
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+) -> dict[str, list[dict[str, Any]]]:
+    """The workspace's devices, managed agents and operations, as the caller
+    may see them: everyone's to an admin, their own to anyone else, each
+    naming its owner and what the caller may do with it. Console reads the
+    caller's own from the lists below."""
+    return await workspace_devices(
+        session,
+        management,
+        user_store,
+        require_tenant_id(),
+        Principal(user.id, is_admin),
+    )
+
+
 @router.get("/controllers")
 async def list_controllers(
     session: Session, user: CurrentUser, management: Management
@@ -148,11 +177,16 @@ async def revoke_controller(
     controller_id: str,
     session: Session,
     user: CurrentUser,
+    is_admin: IsAdmin,
     management: Management,
     broker: Broker,
 ) -> dict[str, bool]:
-    await management.revoke_controller(
-        session, require_tenant_id(), user.id, controller_id
+    """Remove the device: its owner's, or anyone's to an admin."""
+    await management.remove_controller(
+        session,
+        require_tenant_id(),
+        controller_id,
+        owner_id=None if is_admin else user.id,
     )
     await _revoke_controller_tokens(
         session, broker, ServiceTokenIssuance.controller_id == controller_id
@@ -297,11 +331,16 @@ async def delete_managed_agent(
     agent_id: str,
     session: Session,
     user: CurrentUser,
+    is_admin: IsAdmin,
     management: Management,
     broker: Broker,
 ) -> dict[str, bool]:
+    """Stop managing the agent: its owner's, or anyone's to an admin."""
     await management.delete_managed_agent(
-        session, require_tenant_id(), user.id, agent_id
+        session,
+        require_tenant_id(),
+        agent_id,
+        owner_id=None if is_admin else user.id,
     )
     await _revoke_controller_tokens(
         session, broker, ServiceTokenIssuance.agent_id == agent_id

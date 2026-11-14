@@ -3,6 +3,7 @@ one to boot (the controller it enrolled as, or a one-time code to enroll with),
 and recording what the operator controller observed of it."""
 
 import json
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -47,6 +48,7 @@ from switch_core.gateway.dependencies import (
 from switch_core.gateway.hosted_controller import router
 from switch_core.gateway.hosted_machines import router as machines_router
 from switch_core.keys import Keyring
+from switch_core.logging_context import STRUCTURED_FIELDS
 from switch_core.providers.hosted import HostedControllerSettings
 from switch_core.tenant_context import tenant_scope
 from tests.switch_core.hosted_machine_helpers import (
@@ -1168,6 +1170,27 @@ async def test_idle_machine_whose_agents_were_removed_keeps_its_disk(controller_
     assert retain_until <= datetime.now(UTC) + timedelta(days=7)
 
 
+@pytest.mark.parametrize(
+    ("agents", "reason"), [(1, "idle"), (0, "retained")], ids=["stopped", "released"]
+)
+async def test_an_idle_machine_going_quiet_is_counted_either_way(
+    controller_app, machine_metrics, agents, reason
+):
+    """Idle with agents, it's stopped; idle with none, it's released with its
+    disk kept. Both are the machine going quiet, counted apart by reason."""
+    app = controller_app
+    await _idle_ready(app, minutes=30, agents=agents)
+    await list_machines(app.client)
+    stopped = [
+        dict(point.attributes)["reason"]
+        for payload in machine_metrics.collect()
+        if payload.name == "switch.hosted.machine_events"
+        for point in payload.numbers
+        if dict(point.attributes)["event"] == "stopped"
+    ]
+    assert stopped == [reason]
+
+
 async def test_a_machine_asleep_with_agents_stays_asleep(controller_app):
     app = controller_app
     await enrolled(app, agents=1)
@@ -1479,3 +1502,297 @@ async def test_an_observed_error_is_reported_by_its_code_once(controller_app, re
         )
 
     assert reported.events("cloud_machine_failed") == [{"reason": "needs_attention"}]
+
+
+@pytest.fixture
+def machine_metrics():
+    """An installed metrics registry, as with OTLP configured."""
+    from switch_core.observability.metrics import MetricsRegistry, install, uninstall
+
+    registry = MetricsRegistry()
+    install(registry)
+    yield registry
+    uninstall()
+
+
+def _failure_reasons(registry) -> list[str]:
+    return sorted(
+        dict(point.attributes)["reason"]
+        for payload in registry.collect()
+        if payload.name == "switch.hosted.machine_events"
+        for point in payload.numbers
+        if dict(point.attributes)["event"] == "failed"
+    )
+
+
+@pytest.mark.parametrize(
+    ("revision", "reported_hours_ago", "reason"),
+    [
+        (1, None, "never_connected"),
+        # A retry after a failed first launch moves the revision on, but the
+        # machine has still never run.
+        (3, None, "never_connected"),
+        (3, 2, "wake_failed"),
+    ],
+)
+async def test_a_machine_that_was_woken_and_never_connected_counts_as_wake_failed(
+    controller_app,
+    reported,
+    machine_metrics,
+    caplog,
+    revision,
+    reported_hours_ago,
+    reason,
+):
+    """A machine that has reported before and then misses its connect
+    deadline (a wake or a restart that didn't come back) counts as
+    `wake_failed` on the hosted metric and log line. One that never reported
+    is a first launch, retried or not. Product telemetry keeps its
+    `never_connected`."""
+    app = controller_app
+    await update_machine(
+        app.factory,
+        app.machine_id,
+        state="provisioning",
+        revision=revision,
+        running_observed_at=datetime.now(UTC) - timedelta(minutes=11),
+        heartbeat_at=(
+            None
+            if reported_hours_ago is None
+            else datetime.now(UTC) - timedelta(hours=reported_hours_ago)
+        ),
+    )
+    caplog.set_level(logging.WARNING, logger="switch_core.gateway.hosted_controller")
+    await list_machines(app.client)
+
+    assert reported.events("cloud_machine_failed") == [{"reason": "never_connected"}]
+    assert _failure_reasons(machine_metrics) == [reason]
+    (line,) = [r for r in caplog.records if "failed:" in r.getMessage()]
+    fields = getattr(line, STRUCTURED_FIELDS)["switch"]
+    assert fields == {
+        "event": "hosted.machine_failed",
+        "reason": reason,
+        "machine": app.machine_id,
+    }
+    assert "event.name" not in json.dumps(getattr(line, STRUCTURED_FIELDS))
+
+
+@pytest.mark.parametrize(
+    ("desired_state", "reason"),
+    [
+        ("stopped", "stop_failed"),
+        ("retained", "stop_failed"),
+        ("deleted", "stop_failed"),
+        ("running", "reported"),
+    ],
+)
+async def test_an_error_while_stopping_counts_as_stop_failed(
+    controller_app, reported, machine_metrics, desired_state, reason
+):
+    """An error observed while the machine is wanted stopped, retained or
+    deleted counts as `stop_failed` on the hosted metric; while it's wanted
+    running, as the report it is. Product telemetry keeps its reason."""
+    app = controller_app
+    await update_machine(
+        app.factory,
+        app.machine_id,
+        state="stopping",
+        desired_state=desired_state,
+        stop_reason="owner" if desired_state == "stopped" else None,
+    )
+    await observe(
+        app.client,
+        app.machine_id,
+        state="error",
+        revision=1,
+        error="The instance would not stop.",
+    )
+
+    assert reported.events("cloud_machine_failed") == [{"reason": "reported"}]
+    assert _failure_reasons(machine_metrics) == [reason]
+
+
+@pytest.mark.parametrize(
+    ("extra", "accepted"),
+    [
+        ({"cloud_errors": [{"call": "launch", "kind": "capacity", "count": 2}]}, True),
+        ({"cloud_errors": []}, True),
+        ({"reconciler_errors": {"cloud": 3, "core_api": 0}}, True),
+        (
+            {
+                "cloud_errors": [
+                    {"call": "launch", "kind": "capacity", "count": 1, "code": "X"}
+                ]
+            },
+            False,
+        ),
+        (
+            {
+                "cloud_errors": [
+                    {"call": "RunInstances", "kind": "capacity", "count": 1}
+                ]
+            },
+            False,
+        ),
+        ({"cloud_errors": [{"call": "launch", "kind": "capacity", "count": 0}]}, False),
+        (
+            {"cloud_errors": [{"call": "launch", "kind": "capacity", "count": 10**7}]},
+            False,
+        ),
+        (
+            {"cloud_errors": [{"call": "launch", "kind": "capacity", "count": 1}] * 29},
+            False,
+        ),
+        ({"reconciler_errors": {"cloud": -1}}, False),
+        ({"reconciler_errors": {"cloud": 10**7}}, False),
+        ({"reconciler_errors": {"free text": 1}}, False),
+    ],
+)
+async def test_the_reconcilers_error_fields_are_strict_and_never_stored(
+    controller_app, extra, accepted
+):
+    """The reconciler's error fields have strict types: a value outside them
+    is refused. They're counted (below), never stored on the machine."""
+    app = controller_app
+    await update_machine(app.factory, app.machine_id, state="provisioning")
+    before = await machine_of(app.factory, app.machine_id)
+    response = await app.client.post(
+        f"/hosted-controller/machines/{app.machine_id}/observation",
+        headers=HEADERS,
+        json={"state": "provisioning", "revision": 1, **extra},
+    )
+    assert (response.status_code == 200) is accepted, response.text
+    after = await machine_of(app.factory, app.machine_id)
+    assert (after.state, after.error, after.heartbeat) == (
+        before.state,
+        before.error,
+        before.heartbeat,
+    )
+
+
+def _counted(registry, name: str) -> dict[tuple[tuple[str, str], ...], float]:
+    return {
+        tuple(sorted(dict(point.attributes).items())): point.value
+        for payload in registry.collect()
+        if payload.name == name
+        for point in payload.numbers
+    }
+
+
+async def test_the_reconcilers_errors_are_counted_from_the_shared_fixture(
+    controller_app, machine_metrics
+):
+    """The observation the reconciler sends (the same fixture its
+    own tests build) counts its cloud error by call and kind, and its own
+    errors by kind."""
+    app = controller_app
+    body = fixture("controller_observation_with_errors.json")
+    await update_machine(
+        app.factory, app.machine_id, state="provisioning", revision=body["revision"]
+    )
+    await observe(app.client, app.machine_id, **body)
+    collected = list(machine_metrics.collect())
+
+    def points(name: str) -> dict:
+        return {
+            tuple(sorted(dict(point.attributes).items())): point.value
+            for payload in collected
+            if payload.name == name
+            for point in payload.numbers
+        }
+
+    assert points("switch.hosted.cloud_errors") == {
+        (("backend", "vm"), ("call", "describe"), ("kind", "throttled")): 1.0,
+        (("backend", "vm"), ("call", "launch"), ("kind", "capacity")): 1.0,
+    }
+    assert points("switch.hosted.controller_errors") == {
+        (("kind", "cloud"),): 2.0,
+        (("kind", "core_api"),): 1.0,
+    }
+    saved = await machine_of(app.factory, app.machine_id)
+    assert "cloud_errors" not in (saved.heartbeat or {})
+
+
+async def test_a_stale_observation_still_counts_its_errors(
+    controller_app, machine_metrics
+):
+    """Core answers 200 to an observation for an old revision, so the
+    reconciler forgets what it sent: those errors count too, once."""
+    app = controller_app
+    await update_machine(app.factory, app.machine_id, state="provisioning", revision=3)
+    await observe(
+        app.client,
+        app.machine_id,
+        state="provisioning",
+        revision=2,
+        cloud_errors=[{"call": "stop", "kind": "throttled", "count": 3}],
+    )
+    assert _counted(machine_metrics, "switch.hosted.cloud_errors") == {
+        (("backend", "vm"), ("call", "stop"), ("kind", "throttled")): 3.0
+    }
+
+
+@pytest.mark.parametrize(
+    ("state", "observed"), [("deleted", "running"), ("error", "provisioning")]
+)
+async def test_an_observation_core_ignores_still_counts_its_errors(
+    controller_app, machine_metrics, state, observed
+):
+    """Core answers 200 and changes nothing for a deleted machine, or one in
+    error that the observation can't replace. The reconciler forgets what it
+    sent, so the answer still commits, and the errors count once."""
+    app = controller_app
+    await update_machine(app.factory, app.machine_id, state=state)
+    await observe(
+        app.client,
+        app.machine_id,
+        state=observed,
+        revision=1,
+        reconciler_errors={"cloud": 2},
+    )
+    assert _counted(machine_metrics, "switch.hosted.controller_errors") == {
+        (("kind", "cloud"),): 2.0
+    }
+
+
+async def test_an_observation_that_fails_before_its_commit_counts_nothing(
+    controller_app, machine_metrics, monkeypatch
+):
+    """The answer isn't a 200, so the reconciler keeps the batch and sends it
+    again: counting it here as well would count it twice."""
+    app = controller_app
+    await update_machine(app.factory, app.machine_id, state="provisioning")
+
+    def broken(*_args, **_kwargs):
+        raise RuntimeError("fails before the commit")
+
+    monkeypatch.setattr(hosted_controller, "_report_failure", broken)
+    try:
+        response = await app.client.post(
+            f"/hosted-controller/machines/{app.machine_id}/observation",
+            headers=HEADERS,
+            json={"state": "error", "revision": 1, "reconciler_errors": {"cloud": 2}},
+        )
+    except RuntimeError:
+        pass
+    else:
+        assert response.status_code >= 500
+    assert _counted(machine_metrics, "switch.hosted.controller_errors") == {}
+
+
+async def test_errors_for_an_unknown_machine_are_not_counted(
+    controller_app, machine_metrics
+):
+    """Refused with a 404, so the reconciler keeps them and sends them again:
+    counting them here would count them twice."""
+    response = await controller_app.client.post(
+        "/hosted-controller/machines/00000000-0000-4000-8000-00000000dead/observation",
+        headers=HEADERS,
+        json={
+            "state": "provisioning",
+            "revision": 1,
+            "reconciler_errors": {"cloud": 4},
+        },
+    )
+    assert response.status_code == 404, response.text
+    assert _counted(machine_metrics, "switch.hosted.controller_errors") == {}

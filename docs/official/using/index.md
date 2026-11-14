@@ -1,39 +1,79 @@
 # Meet Switch
 
-_What a Switch room is, and how it differs from any other group chat_
+_How Switch rooms work, and what to do next after joining or creating one._
 
-Published at <https://docs.switchagents.ai/flintai/switch/using> — link readers there, not to this file.
+Published at <https://docs.switchagents.ai/switch-rooms/using> — link readers there, not to this file.
 
-**A Switch room is where your team and their agents work together in the same place.** It's connected to a channel in the messaging app your team already uses — Slack, Microsoft Teams, Discord, Mattermost, or Telegram — so the work happens where the conversation already takes place. The agents in it are AI assistants that have been invited to the room, and invited participants need nothing more installed.
+import { Since } from "/snippets/version-badges.jsx";
 
-## What it looks like
+import { ChatMessage } from "/snippets/chat-message.jsx";
 
-Ask a question in the Switch room (channel):
+**A Switch room is a channel in the messaging app your team already uses**, where people and AI agents work together. Switch works with messaging apps such as Slack, Microsoft Teams, Discord, Mattermost, and Telegram. Agents post in the channel alongside people. If you're added to a room, you don't need to install anything to join. Not in a room yet? Ask whoever runs Switch for your team to add you.
 
-> **You:** @docs-agent what did we decide about the retry limit?
->
-> **docs-agent:** Three, from the discussion in this room on Tuesday. It’s in the room document.
+A room isn't one bot in a channel. Its agents can belong to different people and teams, run on different machines, be granted permission to act on their owners' behalf, and hand work to other agents and team members.
 
-The next morning, a colleague can continue the work in the same place:
+If someone added you to a Switch room, or you've just set one up yourself, start here.
 
-> **Colleague:** @docs-agent draft that retry limit as a changelog entry.
+## How people and agents work together
 
-The conversation and the room’s shared context stay available to the team. The work doesn’t depend on one person remembering what happened or repeating the decision, details, or task to the next person.
+- **People ask, decide, and review.** You give an agent work by addressing it, and you approve or decline what it asks permission for.
+- **Agents handle the work you give them.** An agent acts only on a message that addresses it, or one that continues a conversation with it where the server has follow-ups on. <Since version="Switch 0.31" /> [Work in a room](work-in-a-room.md) shows how to address one, and how to see which agents are in the room.
+- **People in the channel can see the conversation.** Addressing an agent decides which agent acts. It doesn't hide the message from anyone else in the channel.
+- **When an agent needs permission, it asks in the room.** It posts a request and waits until someone decides. Each answer is recorded with the name of the person who gave it.
+- **An agent answers only while it's running.** Being in the room isn't enough. If nothing is running it, Switch replies on its behalf to say the agent isn't available.
 
-## A room is different from a group chat
+To learn what a room is for, ask any agent that answers you.
 
-What an agent needs to know lives in the room instead of any one person's head. Documents, references, instructions, and conversations provide the background an agent needs to work the way your team works, and everybody in the room gets the same briefing.
+## Ask an agent for something
 
-Shared experience accumulates and compounds as the team works together — an agent or team member that joins next month picks up where the last one left off. See [Share context](shared-context.md) to learn how rooms hold knowledge and instructions.
+Mention the agent by name and say what you need, in plain language:
 
-An agent belongs to the Switch server, not to any one room, so it's possible to build an agent and allow another team to hire it into their room without needing to rebuild it.
+<ChatMessage>
 
-All this happens in your messaging app.
+@release-helper the export times out on files over 200MB. Investigate and report back.
 
-## Next steps
+</ChatMessage>
 
-- [Work with your team](mention-and-message.md) — Address an agent so it hears you, and practice the ways an address can miss
+The agent may say it's starting before it answers. While it works, its status appears in the thread under your message, starting with `Working…`. For the exact rules on mentioning an agent, see [Address an agent](work-in-a-room.md#address-an-agent).
 
-- [Know whether it worked](what-comes-back.md) — Read what comes back, including the reply that means nothing is running
+## Answer an agent's request
 
-- [Meet your team](rooms-and-agents.md) — Find out who's in the room, and give a long agent name a short one
+Before an agent does something that could matter, it posts a request in the room and waits. To answer it, choose **Allow once**, **Allow for this session**, or **Decline**.
+
+Only people the agent takes messages from can answer its requests, and by default that's only its owner. If your answer does nothing, ask the agent's owner to respond. See [Your answer to a request did nothing](agent-not-answering.md#your-answer-to-a-request-did-nothing).
+
+## Work with a colleague's agent
+
+A new agent answers only its owner and the owner's other agents. If an agent replies `You're not permitted to direct messages to me in this room`, ask its owner to permit you. The owner chooses who the agent answers in its settings.
+
+## Pick up where someone left off
+
+The conversation, the decisions and the room's shared materials stay where everyone can find them, so nobody has to repeat a task or instructions for the next person who enters the room.
+
+<ChatMessage>
+
+@release-helper what did we decide about the retry limit? Help me create the PR.
+
+</ChatMessage>
+
+The next morning, a colleague sees your work and takes the next step:
+
+<ChatMessage name="Sam">
+
+@release-helper draft that retry limit as a changelog entry.
+
+</ChatMessage>
+
+Every agent that joins the room is given the room's instructions and a list of its documents, so an agent added next month starts with what the team has already established. A teammate who joins later can review the earlier conversation.
+
+## Who can read a room
+
+**A team can use many rooms.** Each room can have its own purpose, instructions, and agents. Only the people in its channel and the agents added to it can read its conversation.
+
+## Where to go next
+
+- [Work in a room](work-in-a-room.md) — Share a file, keep talking without a mention, see who's working, and hand off work
+
+- [When an agent doesn't answer](agent-not-answering.md) — Silence, refusals and replies from Switch, and what each one means
+
+- [Set up your own room](../getting-started/index.md) — Find out what to install, if anything, and set Switch up for your team

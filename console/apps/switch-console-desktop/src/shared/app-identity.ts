@@ -82,7 +82,7 @@ export const RELEASE_REPO_NAME = 'switch';
 // run among them, which starts the server with feature flags a stable release
 // may not know yet), so it needs the server canary runs.
 export const STABLE_SWITCH_VERSION = '0.31.0';
-export const CANARY_SWITCH_VERSION = '0.32.0-rc.4';
+export const CANARY_SWITCH_VERSION = '0.32.0-rc.5';
 export const COMPATIBLE_SWITCH_VERSION =
   isCanary || isDev ? CANARY_SWITCH_VERSION : STABLE_SWITCH_VERSION;
 

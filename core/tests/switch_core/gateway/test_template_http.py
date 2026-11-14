@@ -196,6 +196,7 @@ class TestOverTheWire:
 
         raw = await client.get(f"/templates/{created['id']}/content")
         assert raw.headers["x-content-type-options"] == "nosniff"
+        assert raw.headers["content-security-policy"] == "default-src 'none'; sandbox"
         assert raw.headers["content-type"].startswith("application/x-yaml")
 
     async def test_the_two_endpoints_agree_on_a_document_s_size(

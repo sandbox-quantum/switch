@@ -18,6 +18,7 @@ from unittest.mock import MagicMock
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.chats import CHAT_OPERATION_ID_KEY, MEMBER_CLIENT_TYPE
 from switch_core.db.models import (
     Agent,
     ApiKey,
@@ -192,6 +193,7 @@ async def _a_slack_room(tenant_id: str, room_id: str) -> _RoomFacts:
         channel_type="channel_public",
         user_count=1,
         agent_count=1,
+        console_chat="false",
     )
 
 
@@ -248,6 +250,7 @@ class TestMessageSent:
                     "sender_kind": "user",
                     "bridge_platform": "slack",
                     "channel_type": "channel_private",
+                    "console_chat": "false",
                     "room_user_count": 2,
                     "room_agent_count": 1,
                     "has_attachment": False,
@@ -355,6 +358,37 @@ class TestMessageSent:
         assert properties["channel_type"] == "unknown"
         assert "room_user_count" not in properties
         assert "room_agent_count" not in properties
+        assert properties["console_chat"] == "unknown"
+
+    async def test_a_console_chat_message_says_the_room_is_one(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            room = await _room(session, bridge_platform=None, channel_type="direct")
+            room.metadata_ = {CHAT_OPERATION_ID_KEY: "op"}
+            member = await _client(session, MEMBER_CLIENT_TYPE)
+            await _join(session, member.id, room)
+            await session.commit()
+        sink = _RecordingSink()
+        service = _service(sink)
+        messages = MessageTelemetry(telemetry=service, session_factory=session_factory)
+
+        messages.observe(
+            ParticipantMessage(
+                tenant_id=TENANT_ZERO,
+                room_id=room.id,
+                sender_client_id=member.id,
+                sender_role=MEMBER_CLIENT_TYPE,
+                sender_is_app=False,
+                has_attachment=False,
+                in_thread=False,
+            )
+        )
+
+        [(_, properties)] = await _reported(messages, service, sink)
+        assert properties["sender_kind"] == "member"
+        assert properties["console_chat"] == "true"
+        assert properties["room_user_count"] == 1
 
 
 class TestAnAgentsMessage:
@@ -376,6 +410,7 @@ class TestAnAgentsMessage:
                     "known_agent_type": "codex",
                     "bridge_platform": "slack",
                     "channel_type": "channel_private",
+                    "console_chat": "false",
                     "room_user_count": 2,
                     "room_agent_count": 1,
                     "has_attachment": False,
@@ -431,6 +466,7 @@ class TestAgentMessageReceived:
                     "known_agent_type": "claude-code",
                     "bridge_platform": "slack",
                     "channel_type": "channel_private",
+                    "console_chat": "false",
                     "has_attachment": False,
                     "agent_live": True,
                 },
@@ -878,7 +914,11 @@ class TestHowLongLookupsAreKept:
         )
         telemetry = MessageTelemetry(telemetry=MagicMock(), session_factory=MagicMock())
         room = _RoomFacts(
-            bridge_platform="slack", channel_type="channel", user_count=2, agent_count=1
+            bridge_platform="slack",
+            channel_type="channel",
+            user_count=2,
+            agent_count=1,
+            console_chat="false",
         )
         telemetry._rooms.put(("t", "room"), room)
         telemetry._sender_kinds.put(("t", "@alice:test"), "user")

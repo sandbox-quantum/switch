@@ -1,6 +1,7 @@
-import { Box, Button, Card, Stack, Typography } from "@mui/material";
-import type { ReactNode } from "react";
+import { Alert, Box, Button, Card, Stack, Typography } from "@mui/material";
+import { type ReactNode, useState } from "react";
 import { useAuth } from "../../data/AuthContext";
+import LinkNoticeBanner from "../../layout/LinkNoticeBanner";
 
 /** The layout the sign-in page uses, for the screens a signed-in person sees
  * before they are in a workspace. */
@@ -14,6 +15,16 @@ export default function CenteredCard({
   children: ReactNode;
 }) {
   const { user, logout } = useAuth();
+  // A sign-out that works leaves this screen; one that fails says so.
+  const [signOutError, setSignOutError] = useState<string | null>(null);
+  const signOut = async () => {
+    setSignOutError(null);
+    try {
+      await logout();
+    } catch (err) {
+      setSignOutError(`Couldn't sign out: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
   return (
     <Box
       sx={{
@@ -32,6 +43,7 @@ export default function CenteredCard({
         <Typography variant="body2" sx={{ mb: 3, color: "text.secondary" }}>
           {subtitle}
         </Typography>
+        <LinkNoticeBanner />
         {children}
         <Stack
           direction="row"
@@ -40,10 +52,15 @@ export default function CenteredCard({
           <Typography variant="caption" sx={{ color: "text.secondary" }} noWrap>
             {user ? `Signed in as ${user.email}` : ""}
           </Typography>
-          <Button size="small" color="inherit" onClick={logout}>
+          <Button size="small" color="inherit" onClick={() => void signOut()}>
             Sign out
           </Button>
         </Stack>
+        {signOutError && (
+          <Alert severity="error" sx={{ mt: 2, overflowWrap: "anywhere" }}>
+            {signOutError}
+          </Alert>
+        )}
       </Card>
     </Box>
   );

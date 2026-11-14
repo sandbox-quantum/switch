@@ -115,6 +115,7 @@ def _world(
             keyring=TEST_KEYRING,
             public_url=PUBLIC,
             server_name="switch.example.com",
+            redirects={},
         ),
     )
     broker = ServiceBroker(
@@ -129,11 +130,12 @@ def _world(
         workspace_services=WorkspaceServiceStore(),
         workspace_gate=workspace_gate,
         public_url=PUBLIC,
+        allow_non_expiring_keys=False,
     )
     harness = build_harness(session_factory)
     harness.gateway_app.state.service_broker = broker
     harness.gateway_app.state.service_flows = ServiceFlows(
-        PUBLIC, SignInFlows(harness.session_factory, TEST_KEYRING)
+        PUBLIC, {}, SignInFlows(harness.session_factory, TEST_KEYRING)
     )
     harness.gateway_app.include_router(service_connections_router)
     harness.gateway_app.include_router(service_flows_router)
@@ -211,6 +213,7 @@ def _another_client(world: World, session_factory) -> OAuthAdapter:
             keyring=TEST_KEYRING,
             public_url=PUBLIC,
             server_name="switch.example.com",
+            redirects={},
         ),
     )[SERVICE]
     assert isinstance(adapter, OAuthAdapter)
@@ -266,6 +269,53 @@ class TestTheClientSignedInThrough:
             )
         [google] = [c for c in listed.json()["connections"] if c["slug"] == SERVICE]
         assert google["status"] == "needs_reauthorization"
+
+
+class TestFromTheWeb:
+    """Google returns sign-ins to Core's callback, so a person connects it
+    from the dashboard, with no Switch Console involved."""
+
+    async def test_the_list_offers_it_on_the_web(self, session_factory) -> None:
+        world = _world(session_factory)
+        ada = await add_member(session_factory, "ada")
+        async with world.harness.client() as client:
+            listed = await client.get(
+                "/gateway/service-connections", cookies=cookies_for(ada)
+            )
+        [google] = [c for c in listed.json()["connections"] if c["slug"] == SERVICE]
+        assert (google["connectable"], google["web_sign_in"]) == (True, True)
+
+    async def test_connects_from_the_browser_with_offline_access(
+        self, session_factory
+    ) -> None:
+        world = _world(session_factory)
+        ada = await add_member(session_factory, "ada")
+        session_cookie = cookies_for(ada)
+        async with world.harness.client() as client:
+            started = await client.post(
+                f"{FLOWS}/web", cookies=session_cookie, headers={"Origin": PUBLIC}
+            )
+            assert started.status_code == 200, started.text
+            state = started.json()["id"]
+            left = await client.get(
+                started.json()["url"].removeprefix(PUBLIC), cookies=session_cookie
+            )
+            assert left.status_code == 307, left.text
+            assert left.headers["location"].startswith(GOOGLE_AUTHORIZE)
+            back = urlsplit(world.google.authorize(left.headers["location"]))
+            returned = await client.get(
+                f"{back.path}?{back.query}",
+                cookies={**session_cookie, **dict(left.cookies)},
+            )
+            assert returned.status_code == 303, returned.text
+            assert returned.headers["location"] == (
+                f"/connectors/{SERVICE}?sign_in={state}"
+            )
+            outcome = await client.get(f"{FLOWS}/{state}", cookies=session_cookie)
+        assert outcome.json()["status"] == "connected"
+        connection = await _connection(session_factory, ada.id)
+        assert connection.oauth_client_id == STATIC_CLIENT_ID
+        assert connection.status == "active"
 
 
 class TestSignIn:
@@ -479,6 +529,7 @@ class TestTheProfileChanging:
                 {SERVICE: connection},
                 [],
                 {},
+                set(),
             )
         [google] = [entry for entry in services if entry["slug"] == SERVICE]
         assert google["connection"] == "needs_reauthorization"
@@ -692,8 +743,8 @@ class TestAvailability:
             (
                 False,
                 {},
-                "Google Workspace is not set up here. Whoever runs Switch can set "
-                "it up in Switch Console, under Admin → Connector apps.",
+                "Google Workspace's connector app isn't set up on this server "
+                "yet. Whoever runs Switch can set it up.",
                 "app_not_set_up",
             ),
             (

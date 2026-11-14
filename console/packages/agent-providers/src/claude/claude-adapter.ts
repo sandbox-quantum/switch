@@ -36,6 +36,7 @@ import type {
 import {
   ProviderConversationUnavailableError,
   ProviderSessionError,
+  SteerNotSentError,
   ProviderUnavailableError,
 } from '../adapter';
 import type {
@@ -642,6 +643,8 @@ export class ClaudeAdapter implements ProviderAdapter {
     };
 
     const steeredInto = session.turn?.turnId;
+    if (input.expectedTurnId && steeredInto !== input.expectedTurnId)
+      throw new SteerNotSentError('The authorized turn is no longer running.');
     if (session.turn) {
       session.turn.outstanding.add(uuid);
     } else {

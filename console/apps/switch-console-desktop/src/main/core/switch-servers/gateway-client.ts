@@ -29,6 +29,7 @@ import {
   type WorkspaceServiceChange,
   connectionAgentsSchema,
   connectionCatalogSchema,
+  knownPasteMethods,
   knownUnavailableCode,
   serviceConnectionsSchema,
   workspaceServiceChangeSchema,
@@ -62,9 +63,12 @@ import {
   SERVICE_CALLBACK_PATH,
   type ServiceFlowStart,
   type ServiceKeyConnected,
+  type ServicePaste,
+  type ServicePasteConnected,
   serviceFlowSchema,
   serviceFlowStartSchema,
   serviceKeyConnectedSchema,
+  servicePasteConnectedSchema,
 } from '@shared/core/switch-servers/service-connection';
 import {
   type ServiceGrants,
@@ -97,6 +101,7 @@ import {
   type RemoteBridge,
   type RemoteBridgeType,
   type RemoteExternalUser,
+  type RemoteRoomAdmin,
   type RemoteRoomDetail,
   type RemoteRoomGroup,
   type RemoteRoomRole,
@@ -126,7 +131,7 @@ import {
   type RoomResourceKind,
   type NewRoomChannel,
   type RoomAccess,
-  visibilityForAccess,
+  roomAccessForChannel,
 } from '@shared/core/switch-servers/switch-servers';
 import type {
   Invitation,
@@ -1116,6 +1121,13 @@ function isoTimestamp(raw: string): string {
   return parsed.toISOString();
 }
 
+/** `raw` as `isoTimestamp` writes it, or as it came when it does not parse:
+ * a room with an odd date still belongs in the list. */
+function isoTimestampOr(raw: string): string {
+  const parsed = new Date(raw.replace(' ', 'T'));
+  return Number.isNaN(parsed.getTime()) ? raw : parsed.toISOString();
+}
+
 function mapInvitation(json: InvitationJson): Invitation {
   return {
     id: json.id,
@@ -1460,6 +1472,7 @@ type AgentSummaryJson = {
   known_agent_type: string | null;
   known_agent_options?: Record<string, unknown> | null;
   addressing_policy?: AddressingPolicy | null;
+  mid_turn_delivery?: 'steer' | 'queue';
   icon_url?: string | null;
   created_at: string;
 };
@@ -1479,6 +1492,7 @@ function toRemoteAgentSummary(json: AgentSummaryJson): RemoteAgentSummary {
     knownAgentType: json.known_agent_type,
     knownAgentOptions: json.known_agent_options ?? null,
     addressingPolicy: json.addressing_policy ?? null,
+    midTurnDelivery: json.mid_turn_delivery,
     iconUrl: json.icon_url ?? null,
     createdAt: json.created_at,
   };
@@ -1741,6 +1755,23 @@ export async function updateAgentIcon(
     method: 'PUT',
     body: { icon_url: iconUrl },
   });
+  return toRemoteAgentSummary((await res.json()) as AgentSummaryJson);
+}
+
+export async function updateMidTurnDelivery(
+  server: SwitchServer,
+  agentId: string,
+  mode: 'steer' | 'queue'
+): Promise<RemoteAgentSummary> {
+  const res = await gatewayFetch(
+    server,
+    `/agents/${encodeURIComponent(agentId)}/mid-turn-delivery`,
+    {
+      authenticated: true,
+      method: 'PUT',
+      body: { mid_turn_delivery: mode },
+    }
+  );
   return toRemoteAgentSummary((await res.json()) as AgentSummaryJson);
 }
 
@@ -2113,8 +2144,13 @@ export async function fetchBridgeTypes(server: SwitchServer): Promise<RemoteBrid
 /** Slack's create-app page, filled in with the app this server needs. */
 export async function fetchSlackOwnAppSetup(server: SwitchServer): Promise<SlackOwnAppSetup> {
   const res = await gatewayFetch(server, '/collaborations/setup/slack', { authenticated: true });
-  const body = z.object({ create_url: z.string() }).parse(await res.json());
-  return { createUrl: body.create_url };
+  const body = z
+    .object({ create_url: z.string(), manifest: z.record(z.string(), z.unknown()).optional() })
+    .parse(await res.json());
+  return {
+    createUrl: body.create_url,
+    manifestJson: body.manifest ? JSON.stringify(body.manifest, null, 2) : null,
+  };
 }
 
 /**
@@ -2484,6 +2520,14 @@ type LinkCodeJson = {
   /** Absent from a server that predates it. */
   expires_in_seconds?: number;
   instructions: string;
+  /** Absent from a server that predates it, and null when none was asked for. */
+  prompt?: {
+    number: number;
+    sent: boolean;
+    unavailable_reason?: string | null;
+    /** Absent from a server that predates it. */
+    link?: string | null;
+  } | null;
 };
 
 /** The gateway `ExternalUserSummary` wire shape. `link_request` is set when a
@@ -2499,11 +2543,21 @@ type ExternalUserSummaryJson = {
 };
 
 export function mapLinkCode(json: LinkCodeJson): LinkCode {
+  const prompt = json.prompt ?? null;
   return {
     code: json.code,
     expiresAt: json.expires_at,
     expiresInSeconds: json.expires_in_seconds ?? null,
     instructions: json.instructions,
+    prompt:
+      prompt === null
+        ? null
+        : {
+            number: prompt.number,
+            sent: prompt.sent,
+            unavailableReason: prompt.unavailable_reason ?? null,
+            link: prompt.link ?? null,
+          },
   };
 }
 
@@ -2592,6 +2646,8 @@ export async function searchBridgeDirectory(
  * the account (`link_request`); see {@link issueIdentityLinkCode}. A claim that
  * does not say it can show that code (`expects_confirmation`) gets it as the
  * text of a 409 instead, which is all a Console from before then shows.
+ * `wants_prompt` asks it also to message the account with a number to tap; a
+ * server that predates that ignores it.
  */
 export async function claimBridgeIdentity(
   server: SwitchServer,
@@ -2608,6 +2664,7 @@ export async function claimBridgeIdentity(
         external_user_id: params.externalUserId,
         username: params.username,
         expects_confirmation: true,
+        wants_prompt: true,
       },
     }
   );
@@ -2619,8 +2676,9 @@ export async function claimBridgeIdentity(
  * (`POST /collaborations/{id}/identities/{rowId}/code`), for a link still
  * pending or one made before links had to be confirmed. It replaces any code
  * issued before; the server keeps none, so this is also how a lost code is
- * "shown again". 409 means the link is already confirmed (or the account cannot
- * be linked at all), 404 that there is nothing to confirm.
+ * "shown again". It sends the account a new message to tap as well, retiring the
+ * last one's buttons. 409 means the link is already confirmed (or the account
+ * cannot be linked at all), 404 that there is nothing to confirm.
  */
 export async function issueIdentityLinkCode(
   server: SwitchServer,
@@ -2630,7 +2688,7 @@ export async function issueIdentityLinkCode(
   const res = await gatewayFetch(
     server,
     `/collaborations/${encodeURIComponent(bridgeId)}/identities/${encodeURIComponent(externalUserRowId)}/code`,
-    { authenticated: true, method: 'POST' }
+    { authenticated: true, method: 'POST', body: { wants_prompt: true } }
   );
   return mapLinkCode((await res.json()) as LinkCodeJson);
 }
@@ -3530,16 +3588,27 @@ type RoomSummaryJson = {
   external_channel_url?: string | null;
   owner_id?: string | null;
   viewer_is_member?: boolean;
+  viewer_is_room_admin?: boolean;
   is_console_chat?: boolean;
   /** Its people are its Switch members; absent from a server too old to count them. */
   people_are_members?: boolean;
   archived: boolean;
   created_at: string;
+  /** Absent from a server too old to say. */
+  last_message_at?: string | null;
   write_visibility?: string;
   /** What the caller may do with the room, decided by the routes' own rules; absent from an older server. */
   can_write?: boolean;
   can_change_members?: boolean;
+  can_invite_agents?: boolean;
+  can_add_people?: boolean;
+  can_attach?: boolean;
+  can_remove_members?: boolean;
   can_manage?: boolean;
+  /** Absent from a server that predates room admins, where archiving took `can_manage`. */
+  can_archive?: boolean;
+  /** Absent from a server that predates room admins. */
+  can_manage_admins?: boolean;
   can_unlink?: boolean;
   group_id?: string | null;
   group_name?: string | null;
@@ -3560,10 +3629,14 @@ function mapRoomSummary(r: RoomSummaryJson): RemoteRoomSummary {
     externalChannelUrl: r.external_channel_url ?? null,
     ownerId: r.owner_id ?? null,
     viewerIsMember: r.viewer_is_member ?? false,
+    viewerIsRoomAdmin: r.viewer_is_room_admin ?? false,
     isConsoleChat: r.is_console_chat ?? false,
     ...(r.people_are_members !== undefined ? { peopleAreMembers: r.people_are_members } : {}),
     archived: r.archived,
-    createdAt: r.created_at,
+    // In the same form as every other time Console orders rooms by, which
+    // the server writes with a space where ISO 8601 has a `T`.
+    createdAt: isoTimestampOr(r.created_at),
+    lastMessageAt: r.last_message_at ? isoTimestampOr(r.last_message_at) : null,
     // The same reading as a room's detail, so the list and the room page offer the same changes.
     writeVisibility: visibilityOf(r.write_visibility),
     ...(r.read_visibility !== undefined ? { readVisibility: visibilityOf(r.read_visibility) } : {}),
@@ -3577,7 +3650,16 @@ function mapRoomSummary(r: RoomSummaryJson): RemoteRoomSummary {
             canWrite: r.can_write,
             // Who is in a room took write access until the server said otherwise.
             canChangeMembers: r.can_change_members ?? r.can_write,
+            // Bringing agents in took the same as any member change until the server said otherwise.
+            canInviteAgents: r.can_invite_agents ?? r.can_change_members ?? r.can_write,
+            // Each of these was one write or members flag on an older server.
+            canAddPeople: r.can_add_people ?? r.can_change_members ?? r.can_write,
+            canAttach: r.can_attach ?? r.can_write,
+            canRemoveMembers: r.can_remove_members ?? r.can_change_members ?? r.can_write,
             canManage: r.can_manage,
+            // Archiving took managing the room until room admins.
+            canArchive: r.can_archive ?? r.can_manage,
+            canManageAdmins: r.can_manage_admins ?? false,
             // Detaching took write access until the server said otherwise.
             canUnlink: r.can_unlink ?? r.can_write,
           },
@@ -3598,6 +3680,9 @@ type RoomDetailJson = RoomSummaryJson & {
   instructions?: string | null;
   agent_ids?: string[];
   connected_user_names?: string[];
+  /** Absent from a server that predates room admins. */
+  room_admins?: RoomAdminJson[];
+  room_admin_candidates?: { user_id: string; name: string }[];
   /** Absent from a server that predates it; kept absent rather than read as
    * "no channel", so the delete dialog can say it does not know. */
   channel_on_delete?: ChannelRetirement | null;
@@ -3616,6 +3701,23 @@ type RoomDetailJson = RoomSummaryJson & {
   /** Absent from a server that predates decision routing. */
   auto_route?: RoomAutoRouteJson;
 };
+
+/** The gateway `RoomAdminEntry` wire shape. */
+type RoomAdminJson = {
+  user_id: string;
+  name?: string | null;
+  granted_by?: string | null;
+  granted_at: string;
+};
+
+function mapRoomAdmin(a: RoomAdminJson): RemoteRoomAdmin {
+  return {
+    userId: a.user_id,
+    name: a.name ?? null,
+    grantedBy: a.granted_by ?? null,
+    grantedAt: a.granted_at,
+  };
+}
 
 /** The server's visibility words; anything else reads as private, the narrower of the two. */
 function visibilityOf(value: string | undefined): RoomVisibility {
@@ -3649,6 +3751,11 @@ function mapRoomDetail(r: RoomDetailJson): RemoteRoomDetail {
     instructions: r.instructions ?? null,
     agentIds: r.agent_ids ?? [],
     connectedUserNames: r.connected_user_names ?? [],
+    roomAdmins: (r.room_admins ?? []).map(mapRoomAdmin),
+    roomAdminCandidates: (r.room_admin_candidates ?? []).map((p) => ({
+      userId: p.user_id,
+      name: p.name,
+    })),
     channelOnDelete: r.channel_on_delete,
     linkedChannelName: r.linked_channel_name ?? null,
     readVisibility: visibilityOf(r.read_visibility),
@@ -3705,6 +3812,21 @@ export async function fetchRoomAgentIds(server: SwitchServer, roomId: string): P
 }
 
 /**
+ * A room's visibility as a server takes it. A private room also says its
+ * write visibility is private: a server with room permission tiers ignores
+ * it, and an older one refuses private-read with public-write (the pair a
+ * once "read & write" room would otherwise be left with) and would store a
+ * new private room writable by everyone.
+ */
+function roomVisibilityBody(access: RoomVisibility): {
+  read_visibility: RoomVisibility;
+  write_visibility?: RoomVisibility;
+} {
+  return access === 'private'
+    ? { read_visibility: 'private', write_visibility: 'private' }
+    : { read_visibility: 'public' };
+}
+/**
  * Change a room's own settings (`PATCH /rooms/{id}`). Requires write access to
  * the room; the gateway returns the room as it now stands, so the caller reads
  * back what was actually stored rather than assuming its own input landed.
@@ -3720,17 +3842,15 @@ export async function updateRoom(
     description?: string;
     instructions?: string;
     readVisibility?: RoomVisibility;
-    writeVisibility?: RoomVisibility;
   }
 ): Promise<RemoteRoomDetail> {
-  const { readVisibility, writeVisibility, ...fields } = changes;
+  const { readVisibility, ...fields } = changes;
   const res = await gatewayFetch(server, `/rooms/${encodeURIComponent(roomId)}`, {
     authenticated: true,
     method: 'PATCH',
     body: {
       ...fields,
-      ...(readVisibility !== undefined ? { read_visibility: readVisibility } : {}),
-      ...(writeVisibility !== undefined ? { write_visibility: writeVisibility } : {}),
+      ...(readVisibility !== undefined ? roomVisibilityBody(readVisibility) : {}),
     },
   });
   return mapRoomDetail((await res.json()) as RoomDetailJson);
@@ -3810,6 +3930,27 @@ export async function setRoomArchived(
   return mapRoomDetail((await res.json()) as RoomDetailJson);
 }
 
+/**
+ * Make a person in the room one of its room admins, or take them off
+ * (`PUT|DELETE /rooms/{id}/admins/{userId}`). Choosing them takes the room's
+ * owner or a workspace admin; a room admin may take themselves off. The
+ * server refuses someone who cannot be one (an agent, or someone not in the
+ * room) in its own words.
+ */
+export async function setRoomAdmin(
+  server: SwitchServer,
+  roomId: string,
+  userId: string,
+  admin: boolean
+): Promise<RemoteRoomDetail> {
+  const res = await gatewayFetch(
+    server,
+    `/rooms/${encodeURIComponent(roomId)}/admins/${encodeURIComponent(userId)}`,
+    { authenticated: true, method: admin ? 'PUT' : 'DELETE' }
+  );
+  return mapRoomDetail((await res.json()) as RoomDetailJson);
+}
+
 /** The archived rooms the signed-in user can see (`GET /rooms?include_archived=true`, archived only). */
 export async function fetchArchivedRooms(server: SwitchServer): Promise<RemoteRoomSummary[]> {
   const res = await gatewayFetch(server, '/rooms?include_archived=true', { authenticated: true });
@@ -3880,6 +4021,30 @@ export async function addRoomAgents(
     method: 'POST',
     body: { agent_ids: agentIds },
   });
+}
+
+/**
+ * The ids of the agents the signed-in person may bring in
+ * (`GET /rooms/agent-candidates`): into `roomId`, less those already in it,
+ * or into a new room when it is null. The server's invite rule decides, so a
+ * picker built from it never offers an agent the invite would refuse.
+ *
+ * Null from a server from before the route (it answers 404), where every
+ * agent is offered and the invite itself says no.
+ */
+export async function fetchRoomAgentCandidates(
+  server: SwitchServer,
+  roomId: string | null
+): Promise<string[] | null> {
+  const query = roomId === null ? '' : `?room_id=${encodeURIComponent(roomId)}`;
+  let res: Response;
+  try {
+    res = await gatewayFetch(server, `/rooms/agent-candidates${query}`, { authenticated: true });
+  } catch (cause) {
+    if (cause instanceof GatewayError && cause.status === 404) return null;
+    throw cause;
+  }
+  return ((await res.json()) as { agent_ids: string[] }).agent_ids;
 }
 
 /**
@@ -4078,13 +4243,15 @@ export async function createRoom(
     /** Null for a new public channel. */
     channel: NewRoomChannel | null;
     groupId: string | null;
-    /** The server's default (open to the workspace) when absent. */
-    /** Null for the server's default. */
+    /** Null takes it from the channel, as the server decides. */
     access: RoomAccess | null;
   }
 ): Promise<RemoteRoomSummary> {
   const channel = params.channel ?? { kind: 'new', private: false };
-  const visibility = params.access ? visibilityForAccess(params.access) : null;
+  // What the dialog shows is what is asked for: a new channel's visibility is
+  // sent rather than left to the server, which an older one would not apply.
+  // An existing channel's is the platform's, which only the server can read.
+  const access = params.access ?? roomAccessForChannel(channel);
   const res = await gatewayFetch(server, '/rooms', {
     authenticated: true,
     method: 'POST',
@@ -4099,12 +4266,7 @@ export async function createRoom(
         ? { external_channel_id: channel.externalChannelId }
         : { channel_type: channel.private ? 'channel_private' : 'channel_public' }),
       ...(params.groupId ? { group_id: params.groupId } : {}),
-      ...(visibility
-        ? {
-            read_visibility: visibility.readVisibility,
-            write_visibility: visibility.writeVisibility,
-          }
-        : {}),
+      ...(access ? roomVisibilityBody(access) : {}),
       agent_ids: params.agentIds,
       ...(params.userNames?.length ? { user_names: params.userNames } : {}),
     },
@@ -4193,14 +4355,23 @@ export async function getConnectionCatalog(
     status: !entry.enabled ? 'coming_soon' : entry.status === 'active' ? 'connected' : entry.status,
     unavailable_reason: entry.enabled ? entry.unavailable_reason : null,
     unavailable_code: entry.enabled ? knownUnavailableCode(entry.unavailable_code) : null,
+    read_only_reason: entry.enabled ? entry.read_only_reason : null,
     pass_through: entry.pass_through,
     token_lifetime: entry.token_lifetime,
     agent_access_note: entry.agent_access_note,
     loopback_ports: entry.loopback_ports,
     key: entry.key,
+    sign_in_choices: entry.sign_in_choices,
+    paste: knownPasteMethods(entry.paste),
     external_identity: entry.external_identity,
+    method: entry.method,
+    access_note: entry.access_note,
+    reconnect_code: entry.reconnect_code,
+    reconnect_reason: entry.reconnect_reason,
+    choices: entry.choices,
     consent: entry.consent,
     workspace_enabled: entry.workspace_enabled,
+    organization_locked: entry.organization_locked,
   }));
 }
 
@@ -4217,14 +4388,23 @@ async function getOlderCatalog(server: SwitchServer): Promise<ConnectionCatalogE
         connectable: entry.enabled && entry.slug === 'github',
         unavailable_reason: null,
         unavailable_code: null,
+        read_only_reason: null,
         pass_through: false,
         token_lifetime: null,
         agent_access_note: null,
         loopback_ports: null,
         key: null,
+        sign_in_choices: null,
+        paste: [],
         external_identity: null,
+        method: null,
+        access_note: null,
+        reconnect_code: null,
+        reconnect_reason: null,
+        choices: null,
         consent: null,
         workspace_enabled: null,
+        organization_locked: false,
       }))
   );
 }
@@ -4541,20 +4721,30 @@ const serviceFlows = (service: string) =>
  * the browser. That is normally the server's own address; an older server that
  * still keeps its dashboard on a host of its own may name that host instead, so
  * either is accepted, over HTTPS.
+ *
+ * `choices` are what the person picked before signing in (a vendor's site),
+ * sent only where there are some: a server from before choices refuses a start
+ * that names them.
  */
 export async function startServiceConnection(
   server: SwitchServer,
   service: string,
-  input: { port: number; state: string; completion_secret: string }
+  input: {
+    port: number;
+    state: string;
+    completion_secret: string;
+    choices: Record<string, string>;
+  }
 ): Promise<ServiceFlowStart> {
   if (!isHttpsOrLoopback(new URL(server.url)))
     throw new Error('Service connections require HTTPS, unless the server is on this computer.');
+  const { choices, ...start } = input;
   const value = serviceFlowStartSchema.parse(
     await (
       await gatewayFetch(server, serviceFlows(service), {
         authenticated: true,
         method: 'POST',
-        body: input,
+        body: Object.keys(choices).length > 0 ? { ...start, choices } : start,
       })
     ).json()
   );
@@ -4569,14 +4759,32 @@ export async function startServiceConnection(
           (own) => own !== null && new URL(own).origin === url.origin
         ) &&
         url.pathname === `/gateway${serviceFlows(service)}/authorize` &&
-        url.searchParams.get('state') === value.id
+        url.searchParams.get('state') === value.id &&
+        (value.callback_url === null || isOwnCallback(value.callback_url, url, service))
       : url.protocol === 'https:' &&
         url.searchParams.get('state') === value.id &&
         url.searchParams.get('redirect_uri') ===
-          `http://127.0.0.1:${input.port}${SERVICE_CALLBACK_PATH}`);
+          `http://127.0.0.1:${input.port}${SERVICE_CALLBACK_PATH}` &&
+        value.callback_url === null);
   if (!valid) throw new Error('The server returned an invalid sign-in URL.');
   return value;
 }
+
+/**
+ * Whether `callback` is the callback beside Core's authorize step at
+ * `authorize`, as an admin would allow-list it at the vendor: same origin, the
+ * service's own path, nothing else.
+ */
+function isOwnCallback(callback: string, authorize: URL, service: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(callback);
+  } catch {
+    return false;
+  }
+  return url.href === `${authorize.origin}/gateway${serviceFlows(service)}/callback`;
+}
+
 export async function getServiceFlow(server: SwitchServer, service: string, id: string) {
   return serviceFlowSchema.parse(
     await (
@@ -4611,6 +4819,24 @@ export async function completeServiceConnection(
     })
     .parse(await response.json());
 }
+/**
+ * Hand on what the vendor sent the listener in place of a code: the server
+ * fails the flow with it, so it reads failed with the vendor's reason at once.
+ */
+export async function failServiceConnection(
+  server: SwitchServer,
+  service: string,
+  id: string,
+  error: string,
+  description: string | null,
+  completionSecret: string
+) {
+  await gatewayFetch(server, `${serviceFlows(service)}/${encodeURIComponent(id)}/fail`, {
+    authenticated: true,
+    method: 'POST',
+    body: { error, error_description: description, completion_secret: completionSecret },
+  });
+}
 export async function cancelServiceConnection(server: SwitchServer, service: string, id: string) {
   await gatewayFetch(server, `${serviceFlows(service)}/${encodeURIComponent(id)}`, {
     authenticated: true,
@@ -4634,6 +4860,25 @@ export async function connectServiceWithKey(
     { authenticated: true, method: 'PUT', body: { fields } }
   );
   return serviceKeyConnectedSchema.parse(await response.json());
+}
+/**
+ * Connect `service`, which people sign in to, with a credential pasted in
+ * place of the sign-in (a token, or keys, as its `paste` offers) at what was
+ * picked for its choices (a site): Switch checks it at the service before
+ * keeping it, and never sends it back. A refusal is thrown as a key's is, its
+ * `detail` written for the person.
+ */
+export async function connectServiceWithPaste(
+  server: SwitchServer,
+  service: string,
+  paste: ServicePaste
+): Promise<ServicePasteConnected> {
+  const response = await gatewayFetch(
+    server,
+    `/service-connections/${encodeURIComponent(service)}/paste`,
+    { authenticated: true, method: 'PUT', body: paste }
+  );
+  return servicePasteConnectedSchema.parse(await response.json());
 }
 /** Disconnect `service`: its grants go with it, and what was issued is revoked. */
 export async function disconnectService(server: SwitchServer, service: string) {

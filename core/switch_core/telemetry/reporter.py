@@ -200,6 +200,7 @@ class SnapshotReporter:
                     channel_type=room.channel_type,
                     agent_count=room.agent_count,
                     created_by_kind=room.created_by_kind,
+                    console_chat=room.console_chat,
                 )
 
             await self._report_first_room_active(active)
@@ -257,6 +258,8 @@ class SnapshotReporter:
                     turn_agent_to_human=counts.turn_agent_to_human,
                     turn_agent_to_agent=counts.turn_agent_to_agent,
                     is_partial=partial,
+                    console_account_active=counts.console_account_active,
+                    console_only_account_active=counts.console_only_account_active,
                     tenant_failed_count=counts.tenant_failed_count,
                 )
             except Exception:
