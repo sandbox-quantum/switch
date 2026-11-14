@@ -114,6 +114,8 @@ describe("the Connectors catalogue", () => {
     const soon = screen.getByRole("region", { name: "Coming soon" });
     expect(within(soon).getByText("Asana")).toBeTruthy();
     expect(within(soon).queryByText("Datadog")).toBeNull();
+    expect(faded(within(soon).getByText("Asana"))).toBe(true);
+    expect(faded(screen.getByText("Datadog"))).toBe(false);
   });
 
   it("searches the coming soon section too, and leaves out a section with no match", async () => {
@@ -328,3 +330,11 @@ describe("the Connectors catalogue", () => {
     expect(screen.getByTestId("where").textContent).toBe("/connectors/atlassian");
   });
 });
+
+/** Whether the card holding this text is shown faded. */
+function faded(node: HTMLElement): boolean {
+  for (let el: HTMLElement | null = node; el; el = el.parentElement) {
+    if (getComputedStyle(el).opacity === "0.6") return true;
+  }
+  return false;
+}

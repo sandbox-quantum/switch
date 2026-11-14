@@ -22,7 +22,7 @@ export function ConnectorTile({
 }: {
   slug: string;
   name: string;
-  /** Opening nothing: a service not built yet. Its badge says so. */
+  /** Shown faded and opening nothing: a service not built yet. */
   inert: boolean;
   /** What the whole tile opens; null for a tile whose control is all it offers. */
   onOpen: (() => void) | null;
@@ -39,7 +39,7 @@ export function ConnectorTile({
     <div
       className={cn(
         'relative flex items-start gap-3 rounded-lg border border-border p-4 transition-colors',
-        !inert && onOpen && 'hover:bg-background-tertiary-2'
+        inert ? 'opacity-60' : onOpen && 'hover:bg-background-tertiary-2'
       )}
     >
       <ConnectionIcon slug={slug} name={name} size="lg" />
