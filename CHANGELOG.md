@@ -404,9 +404,11 @@ version of their own to them without also giving them a release of their own.
 #### Changed
 - **The dashboard's Connectors page lists coming soon services in their own
   section**, faded, under the ones people can use, with a count for each, and
-  the catalog lists 20 more of them. Yours ends with a card saying how many
-  more services All offers, and a search there that matches nothing connected
-  says how many match under All, with a Show button that keeps the search.
+  the catalog lists 20 more of them. Its All tab is now Discover, where the
+  page always opens, as in Switch Console. Yours ends with a card saying how
+  many more services Discover offers, and a search there that matches nothing
+  connected says how many match on Discover, with a Show button that keeps the
+  search.
   Cards on Yours no longer carry the green connected tick. A connector's
   category must now be one of a fixed list.
 - **Removing a device takes its agents off it.** They stop, and run again

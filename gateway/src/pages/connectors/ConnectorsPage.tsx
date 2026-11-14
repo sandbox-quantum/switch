@@ -31,23 +31,23 @@ import KeyDialog from "./KeyDialog";
 import PasteDialog from "./PasteDialog";
 import { useLeaveToSignIn } from "./signIn";
 
-type Tab = "yours" | "all";
+type Tab = "yours" | "discover";
 
-/** The trailing card on Yours, which opens All. */
+/** The trailing card on Yours, which opens Discover. */
 function browseMoreText(count: number, query: string): string {
   const noun = count === 1 ? "connector" : "connectors";
   const needle = query.trim();
   return needle
-    ? `${count} more ${noun} ${count === 1 ? "matches" : "match"} “${needle}” under All`
+    ? `${count} more ${noun} ${count === 1 ? "matches" : "match"} “${needle}” on Discover`
     : `Browse ${count} more ${noun}`;
 }
 
-/** What Yours says when nothing of the person's matches a search but All has some that do. */
+/** What Yours says when nothing of the person's matches a search but Discover has some that do. */
 function yoursSearchEmptyText(query: string, count: number, soon: number): string {
   const lead = `None of your connectors match “${query.trim()}”.`;
   return count > 0
-    ? `${lead} ${count} under All ${count === 1 ? "does" : "do"}.`
-    : `${lead} ${soon} coming soon under All.`;
+    ? `${lead} ${count} on Discover ${count === 1 ? "does" : "do"}.`
+    : `${lead} ${soon} coming soon on Discover.`;
 }
 
 /** A badge whose reason shows on hover, and is read out with the card by a
@@ -117,7 +117,8 @@ function CardState({
 
 /**
  * Connectors: the services your agents can reach in this workspace, and
- * where you connect your own account to each. Yours and All, and a search.
+ * where you connect your own account to each. It opens on Discover, the
+ * whole catalogue; Yours has what you connected. A search covers both.
  * A connector the workspace has off still shows, saying so, since hiding it
  * would make a decision look like a missing row; whether it is on is
  * Settings › Connectors' to change, never this page's. A workspace admin also
@@ -140,7 +141,7 @@ export default function ConnectorsPage() {
   const [error, setError] = useState<string | null>(null);
   const [peopleError, setPeopleError] = useState<string | null>(null);
   const [connectError, setConnectError] = useState<string | null>(null);
-  const [tab, setTab] = useState<Tab | null>(null);
+  const [tab, setTab] = useState<Tab>("discover");
   const [query, setQuery] = useState("");
   const [keyFor, setKeyFor] = useState<ServiceConnection | null>(null);
   const [pasteFor, setPasteFor] = useState<ServiceConnection | null>(null);
@@ -152,9 +153,6 @@ export default function ConnectorsPage() {
     try {
       const listed = await fetchServiceConnections();
       setConnections(listed);
-      // Yours, unless there is nothing of yours yet to show; chosen on the
-      // first read only, so connecting one later doesn't switch tabs.
-      setTab((chosen) => chosen ?? (listed.some(isConnected) ? "yours" : "all"));
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -176,9 +174,9 @@ export default function ConnectorsPage() {
   }, [admin]);
 
   const connected = useMemo(() => (connections ?? []).filter(isConnected), [connections]);
-  const shown: Tab = tab ?? "all";
-  // From Yours, what All has for the search that could be connected, and the
-  // coming soon services it finds, counted apart as All counts them.
+  const shown = tab;
+  // From Yours, what Discover has for the search that could be connected, and
+  // the coming soon services it finds, counted apart as Discover counts them.
   const [beyond, soon] = useMemo(() => {
     if (shown !== "yours") return [0, 0];
     const found = (connections ?? []).filter((c) => !isConnected(c) && matchesQuery(c, query));
@@ -248,7 +246,7 @@ export default function ConnectorsPage() {
                   aria-label="Which connectors to show"
                 >
                   <ToggleButton value="yours">Yours</ToggleButton>
-                  <ToggleButton value="all">All</ToggleButton>
+                  <ToggleButton value="discover">Discover</ToggleButton>
                 </ToggleButtonGroup>
               }
               emptyMessage={
@@ -257,7 +255,7 @@ export default function ConnectorsPage() {
                 ) : beyond > 0 || soon > 0 ? (
                   <>
                     {query.trim() ? yoursSearchEmptyText(query, beyond, soon) : "You haven't connected anything yet."}{" "}
-                    <Button size="small" variant="outlined" onClick={() => setTab("all")} sx={{ ml: 1 }}>
+                    <Button size="small" variant="outlined" onClick={() => setTab("discover")} sx={{ ml: 1 }}>
                       {query.trim() ? "Show" : `Browse ${beyond} ${beyond === 1 ? "connector" : "connectors"}`}
                     </Button>
                   </>
@@ -271,7 +269,7 @@ export default function ConnectorsPage() {
                 shown === "yours" &&
                 beyond > 0 && (
                   <ButtonBase
-                    onClick={() => setTab("all")}
+                    onClick={() => setTab("discover")}
                     sx={{
                       justifyContent: "flex-start",
                       gap: 1.5,
