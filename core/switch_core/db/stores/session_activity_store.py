@@ -6,7 +6,7 @@ transaction, and the bound tenant scopes every read through row-level security.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import (
@@ -38,6 +38,8 @@ if TYPE_CHECKING:
 TURN_ITEM_ID = "turn"
 # The ends a turn can be run again from: it failed, or it was stopped.
 RETRYABLE_TURN_STATUSES = frozenset({"error", "interrupted"})
+# The states a turn can be cancelled before execution starts: it is queued.
+CANCELLABLE_TURN_STATUSES = frozenset({"queued"})
 
 
 class ApprovalRequestStore:
@@ -388,6 +390,48 @@ class AgentSessionActivityStore:
             .limit(1)
         )
         return result.scalar_one_or_none()
+
+    async def newest_queued_turn(
+        self, session: AsyncSession, agent_id: str, room_id: str | None = None
+    ) -> AgentSessionActivityItem | None:
+        """The agent's most recently reported queued turn row awaiting pickup."""
+        stmt = select(AgentSessionActivityItem).where(
+            AgentSessionActivityItem.agent_id == agent_id,
+            AgentSessionActivityItem.item_id == TURN_ITEM_ID,
+            AgentSessionActivityItem.status == "queued",
+        )
+        if room_id is not None:
+            stmt = stmt.where(AgentSessionActivityItem.room_id == room_id)
+        result = await session.execute(
+            stmt.order_by(AgentSessionActivityItem.created_at.desc()).limit(1)
+        )
+        return result.scalar_one_or_none()
+
+    async def cancel_turn(
+        self,
+        session: AsyncSession,
+        agent_id: str,
+        room_id: str,
+        turn_id: str,
+        *,
+        reason: str = "Cancelled by user before the agent picked it up.",
+    ) -> bool:
+        """Atomically transition a queued turn to interrupted with a cancellation reason."""
+        result = await session.execute(
+            update(AgentSessionActivityItem)
+            .where(
+                AgentSessionActivityItem.agent_id == agent_id,
+                AgentSessionActivityItem.room_id == room_id,
+                AgentSessionActivityItem.turn_id == turn_id,
+                AgentSessionActivityItem.status == "queued",
+            )
+            .values(
+                status="interrupted",
+                text=reason,
+                updated_at=datetime.now(UTC),
+            )
+        )
+        return bool(result.rowcount and result.rowcount > 0)
 
     async def for_room(
         self, session: AsyncSession, room_id: str, since: datetime

@@ -54,6 +54,7 @@ from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_runtime_state_store import AgentRuntimeStateStore
 from switch_core.db.stores.room_store import auto_route_fallback_in
 from switch_core.db.stores.session_activity_store import (
+    CANCELLABLE_TURN_STATUSES,
     RETRYABLE_TURN_STATUSES,
     AgentSessionActivityStore,
 )
@@ -294,11 +295,18 @@ _CONTROL_BODIES: dict[str, dict[str, str]] = {
     "reset": {"type": "session.reset"},
     "compact": {"type": "session.compact"},
     "interrupt": {"type": "turn.interrupt", "turnId": CURRENT},
+    "cancel": {"type": "turn.cancel", "turnId": CURRENT},
 }
 
 
 def retry_target(args: str) -> str | None:
     """The message a `!retry @agent <message id>` names: the token after the target."""
+    tokens = args.split()
+    return tokens[1] if len(tokens) > 1 and tokens[0].startswith("@") else None
+
+
+def cancel_target(args: str) -> str | None:
+    """The message a `!cancel @agent [message id]` names, if specified."""
     tokens = args.split()
     return tokens[1] if len(tokens) > 1 and tokens[0].startswith("@") else None
 
@@ -334,6 +342,13 @@ def room_control_frame(
             "type": "message.retry",
             "messageId": target_message_id,
         }
+    elif action == "cancel":
+        body = {
+            "type": "turn.cancel",
+            "turnId": CURRENT,
+        }
+        if target_message_id is not None:
+            body["messageId"] = target_message_id
     else:
         body = _CONTROL_BODIES.get(action)
     if body is None:
@@ -535,6 +550,86 @@ async def _retry_refusal(
     return None
 
 
+async def _cancel_refusal(
+    client: AgentRecipient,
+    room_id: str,
+    event: CommandEvent,
+    agent: Agent,
+    message_id: str | None,
+) -> tuple[str | None, AgentSessionActivityItem | None]:
+    """Why a typed `!cancel` may not run, or (None, turn): the message must be
+    in this room, sent by whoever asks or asked by someone who manages the room,
+    and the agent's turn for it must be queued and unstarted."""
+    store = AgentSessionActivityStore()
+    async with client.session_factory() as session:
+        if message_id:
+            message = (
+                await session.execute(
+                    select(Message).where(
+                        Message.room_id == room_id,
+                        Message.transport_event_id == message_id,
+                    )
+                )
+            ).scalar_one_or_none()
+            if message is None:
+                return "Could not cancel: that message is not in this room.", None
+            if message.sender_id != event.user_id and not await _manages_room(
+                client, session, room_id, event.user_id
+            ):
+                return (
+                    "Could not cancel: only whoever sent that message, or someone who "
+                    "manages the room, can cancel it.",
+                    None,
+                )
+            turn = await store.turn_for_message(session, agent.id, room_id, message_id)
+        else:
+            turn = await store.newest_queued_turn(session, agent.id, room_id)
+            if turn is None:
+                running = await store.newest_running_turn(session, agent.id)
+                if running and running.room_id == room_id:
+                    return (
+                        f"Could not cancel: {agent.name} has already started working on that turn. "
+                        f"Use `!interrupt @{agent.name}` to stop a running turn.",
+                        None,
+                    )
+                return (
+                    f"Could not cancel: {agent.name} has no queued message waiting to be processed.",
+                    None,
+                )
+            if turn.message_id:
+                msg = (
+                    await session.execute(
+                        select(Message).where(
+                            Message.room_id == room_id,
+                            Message.transport_event_id == turn.message_id,
+                        )
+                    )
+                ).scalar_one_or_none()
+                if msg and msg.sender_id != event.user_id and not await _manages_room(
+                    client, session, room_id, event.user_id
+                ):
+                    return (
+                        "Could not cancel: only whoever sent that message, or someone who "
+                        "manages the room, can cancel it.",
+                        None,
+                    )
+
+    if turn is None:
+        return f"Could not cancel: {agent.name} has no turn for that message.", None
+    if turn.status == "running":
+        return (
+            f"Could not cancel: {agent.name} has already started working on that message. "
+            f"Use `!interrupt @{agent.name}` to stop a running turn.",
+            None,
+        )
+    if turn.status not in CANCELLABLE_TURN_STATUSES:
+        return (
+            f"Could not cancel: {agent.name} has no queued message waiting to be processed.",
+            None,
+        )
+    return None, turn
+
+
 async def _manages_room(
     client: AgentRecipient,
     session: AsyncSession,
@@ -609,8 +704,21 @@ async def _decide_control_command(
             return say(
                 f"Could not send {command}: the room command has no stable message ID."
             )
-        target = retry_target(event.args) if command == "retry" else None
-        if command == "retry":
+        target = (
+            retry_target(event.args)
+            if command == "retry"
+            else cancel_target(event.args)
+            if command == "cancel"
+            else None
+        )
+        target_turn: AgentSessionActivityItem | None = None
+        if command == "cancel":
+            refusal, target_turn = await _cancel_refusal(
+                client, meta.room_id, event, agent, target
+            )
+            if refusal is not None:
+                return say(refusal)
+        elif command == "retry":
             if target is None:
                 return say(
                     "Could not retry: the command names no message to run again."
@@ -633,7 +741,16 @@ async def _decide_control_command(
         )
 
         async def relay() -> None:
+            if command == "cancel" and target_turn is not None:
+                async with client.session_factory() as session:
+                    await AgentSessionActivityStore().cancel_turn(
+                        session, agent.id, meta.room_id, target_turn.turn_id
+                    )
+                    await session.commit()
             if client._connections.relay_session_command(agent.id, frame):
+                await _reply(client, room, event, texts.ack)
+                return
+            if command == "cancel":
                 await _reply(client, room, event, texts.ack)
                 return
             await _reply(
@@ -780,6 +897,29 @@ _RETRY = ControlTexts(
         "from Switch Console."
     ),
 )
+_CANCEL = ControlTexts(
+    ack="Cancelled the queued message.",
+    unsupported="I can't cancel queued messages — this isn't supported for me.",
+    no_live_session=(
+        "I have no active session in this room, so there's nothing to cancel."
+    ),
+    no_session=(
+        "I can't cancel from here — my session wasn't started from "
+        "Switch Console."
+    ),
+)
+
+
+async def _cmd_cancel(
+    client: AgentRecipient, room: RoomRef, event: CommandEvent, _is_direct: bool
+) -> None:
+    await _dispatch_control_command(client, room, event, "cancel", _CANCEL)
+
+
+async def _decide_cancel(
+    client: AgentRecipient, room: RoomRef, event: CommandEvent
+) -> ControlDecision:
+    return await _decide_control_command(client, room, event, "cancel", _CANCEL)
 
 
 async def _cmd_retry(
@@ -2663,6 +2803,23 @@ COMMANDS: list[Command] = [
         args_spec=(
             CommandArg(
                 "target", "Agent name, alias, or role to interrupt", required=True
+            ),
+        ),
+        addressed=_addressed_by_required_first_mention,
+        admin_check=_check_control_target,
+    ),
+    Command(
+        "cancel",
+        "Cancel a queued message before an agent starts working on it. "
+        "Usage: `!cancel @agent-name [message-id]` or `!cancel @role`.",
+        _cmd_cancel,
+        decide=_decide_cancel,
+        args_spec=(
+            CommandArg("target", "Agent name, alias, or role to cancel", required=True),
+            CommandArg(
+                "message",
+                "Optional message ID to cancel (defaults to latest queued message)",
+                required=False,
             ),
         ),
         addressed=_addressed_by_required_first_mention,
