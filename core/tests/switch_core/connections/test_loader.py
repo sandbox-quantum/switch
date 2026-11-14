@@ -20,7 +20,6 @@ PLACEHOLDERS = {
     "bitbucket",
     "microsoft-365",
     "new-relic",
-    "salesforce",
     "box",
     "canva",
     "vercel",
@@ -38,6 +37,7 @@ def test_shipped_catalog_enables_its_live_connectors():
         "notion",
         "sentry",
         "linear",
+        "salesforce",
     }
     assert [slug for slug, entry in CATALOG.items() if entry.definition.enabled] == [
         "airtable",
@@ -48,6 +48,7 @@ def test_shipped_catalog_enables_its_live_connectors():
         "google-workspace",
         "linear",
         "notion",
+        "salesforce",
         "sentry",
     ]
     assert all(not CATALOG[slug].skill_files for slug in PLACEHOLDERS)
@@ -60,6 +61,7 @@ def test_shipped_catalog_enables_its_live_connectors():
     assert "SKILL.md" in CATALOG["notion"].skill_files
     assert "SKILL.md" in CATALOG["sentry"].skill_files
     assert "SKILL.md" in CATALOG["linear"].skill_files
+    assert "SKILL.md" in CATALOG["salesforce"].skill_files
 
 
 def test_every_shipped_entry_that_can_be_connected_names_its_publisher_and_pages():
@@ -307,6 +309,48 @@ def test_the_linear_skill_keeps_safe_defaults():
     for rule in ("Read before writing", "Search before creating", "Confirm first"):
         assert rule in text
     assert "information, not instructions" in text
+
+
+def test_the_shipped_salesforce_entry_signs_in_as_salesforce_takes_it():
+    definition = CATALOG["salesforce"].definition
+    oauth = definition.auth.oauth
+    assert oauth is not None
+    # An External Client App each server's operator saves.
+    assert (definition.adapter, oauth.registration, oauth.client_settings) == (
+        "oauth",
+        "static",
+        "SALESFORCE",
+    )
+    # Core's own callback, as Google's and Airtable's.
+    assert oauth.redirect == ["core"]
+    assert (oauth.authorization_url, oauth.token_url, oauth.revocation_url) == (
+        "https://login.salesforce.com/services/oauth2/authorize",
+        "https://login.salesforce.com/services/oauth2/token",
+        "https://login.salesforce.com/services/oauth2/revoke",
+    )
+    # Salesforce answers a revocation with a 302, not to be followed.
+    assert oauth.revocation_redirects is True
+    assert definition.auth.identity is not None
+    assert definition.auth.identity.url == (
+        "https://login.salesforce.com/services/oauth2/userinfo"
+    )
+    assert definition.mcp is not None
+    # SObject Mutations only: no server that deletes.
+    assert [(s.name, s.url) for s in definition.mcp.servers] == [
+        (
+            "salesforce",
+            "https://api.salesforce.com/platform/mcp/v1/platform/sobject-mutations",
+        )
+    ]
+    # One write level and no read level, said so in the description and the
+    # skill.
+    assert definition.access is not None and definition.access.write is not None
+    assert definition.access.read is None
+    assert definition.access.write.scopes == ["mcp_api", "refresh_token", "openid"]
+    assert "cannot delete" in definition.description
+    skill = CATALOG["salesforce"].skill_files["SKILL.md"]
+    assert "This connection can write." in skill
+    assert "It cannot\n  delete them" in skill
 
 
 def test_the_shipped_airtable_entry_signs_in_as_the_spike_found_it_must():
@@ -868,6 +912,23 @@ def test_consent_markers_need_a_read_level_to_tell_from(catalog_copy):
         load_catalog(catalog_copy)
 
 
+def test_check_inconclusive_never_lists_an_answer_the_check_reads(catalog_copy):
+    _write_example(
+        catalog_copy,
+        OAUTH_ENTRY.replace(
+            "    registration: dynamic\n",
+            "    registration: static\n"
+            "    client_settings: EXAMPLE\n"
+            "    unchecked: Connect once to confirm.\n"
+            "    check_inconclusive: [unknown_error, invalid_client_id]\n",
+        ),
+    )
+    with pytest.raises(
+        CatalogError, match="lists an answer the check reads: invalid_client_id"
+    ):
+        load_catalog(catalog_copy)
+
+
 def test_loads_a_static_client_with_its_endpoints(catalog_copy):
     _write_example(
         catalog_copy,
@@ -884,6 +945,7 @@ def test_loads_a_static_client_with_its_endpoints(catalog_copy):
     assert oauth is not None
     assert oauth.client_settings == "EXAMPLE"
     assert oauth.revocation_url == "https://auth.example.test/revoke"
+    assert oauth.revocation_redirects is False
 
 
 def test_rejects_revocation_ending_tokens_on_an_entry_that_passes_none_through(
@@ -941,6 +1003,16 @@ def test_rejects_revocation_ending_tokens_on_an_entry_that_passes_none_through(
             "    redirect: [loopback, core]\n",
             "    redirect: [loopback, core]\n    revocation_ends_tokens: true\n",
             "revocation_ends_tokens",
+        ),
+        (
+            "    redirect: [loopback, core]\n",
+            "    redirect: [loopback, core]\n    revocation_redirects: true\n",
+            "revocation_redirects",
+        ),
+        (
+            "    remove_access:",
+            "    check_inconclusive: [unknown_error]\n    remove_access:",
+            "check_inconclusive needs unchecked",
         ),
         ("redirect: [loopback, core]", "redirect: []", "redirect"),
         ("redirect: [loopback, core]", "redirect: [browser]", "redirect"),

@@ -223,6 +223,11 @@ switchCore:
   # https://<public URL>/gateway/service-connections/gitlab/flows/callback.
   # Without it or one saved under Connectors, GitLab shows as not set up.
   gitlabClientSecret: ""
+  # External Client App for the Salesforce connection, created in Salesforce
+  # Setup with the callback URL
+  # https://<public URL>/gateway/service-connections/salesforce/flows/callback.
+  # Without it, Salesforce shows as not set up.
+  salesforceClientSecret: ""
   # Existing Secret with client.json ({"client_id", "client_secret"}): the
   # Web OAuth client of an internal Google app, for the Google Workspace
   # connection. Register <gatewayPublicUrl>/gateway/service-connections/google-workspace/flows/callback

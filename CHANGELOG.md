@@ -269,6 +269,14 @@ version of their own to them without also giving them a release of their own.
 - **switch-core reports which bridge crashed.** `switch.bridges.crashed` is 1
   per crashed collaboration bridge, tagged with its platform and display name,
   and 0 once it runs again, so the bridge alert can name it.
+- **The Salesforce connection.** A person connects Salesforce from Switch
+  Console, and a granted agent reads, queries, creates and updates records, as
+  that person, through Salesforce's hosted SObject Mutations MCP server, which
+  cannot delete. A Salesforce admin enables the server and creates an External
+  Client App; each server's operator saves it under Connector apps, or names it
+  in `SALESFORCE_CLIENT_CONFIG_PATH` (Helm: `switchCore.salesforceClientSecret`);
+  see `docs/old/salesforce-setup.md`. Sign-ins come back to the server, so it
+  needs `GATEWAY_PUBLIC_URL`.
 - **An agent is told when Switch Trust changed or flagged what it sent.** The
   result of `post_message` and `send_targeted_message`, the agent HTTP message
   endpoint, the status endpoint, and the media upload endpoint (for a caption
