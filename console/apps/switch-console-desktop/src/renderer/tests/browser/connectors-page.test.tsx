@@ -600,6 +600,23 @@ async function disconnect(page: HTMLElement): Promise<void> {
   await vi.waitFor(() => expect(dialog()).toBeNull());
 }
 
+it('shows the warning a disconnect gives, with the page it names as a link', async () => {
+  serveDisconnect();
+  const page_url = 'https://vendor.example.test/settings/tokens';
+  workspaces.disconnectService.mockResolvedValue({
+    warning: `Switch cannot revoke it. Delete it there: ${page_url}`,
+  });
+  const page = await render();
+  await openAtlassian(page);
+
+  await act(async () => button(/^Disconnect$/, page)!.click());
+  const dialog = () => document.querySelector<HTMLElement>('[data-slot="dialog-content"]');
+  await vi.waitFor(() => expect(dialog()?.textContent).toContain('M1 loses Atlassian.'));
+  await act(async () => button(/^Disconnect$/, dialog()!)!.click());
+  await vi.waitFor(() => expect(dialog()?.querySelector('a')?.getAttribute('href')).toBe(page_url));
+  expect(dialog()!.querySelector('a')!.textContent).toBe(page_url);
+});
+
 it('offers Connect on the profile after a disconnect, made in the workspace shown', async () => {
   serveDisconnect();
   const page = await render();

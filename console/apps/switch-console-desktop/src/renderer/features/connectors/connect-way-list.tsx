@@ -1,6 +1,6 @@
 import { KeyRound, ShieldCheck } from 'lucide-react';
 import type { ConnectWay, ConnectWayName } from '@renderer/features/connectors/connect-flow';
-import { RecommendedBadge } from '@renderer/lib/components/provider-status-badges';
+import { StatusBadge } from '@renderer/lib/ui/status-badge';
 import { cn } from '@renderer/utils/utils';
 
 /**
@@ -51,7 +51,11 @@ export function ConnectWayList({
               <span className="flex items-center gap-2 text-sm font-medium">
                 <Icon aria-hidden className="size-4 text-foreground-muted" />
                 {way.title}
-                {way.recommended && <RecommendedBadge />}
+                {way.recommended && (
+                  <StatusBadge tone="info" className="text-[10px]">
+                    Recommended
+                  </StatusBadge>
+                )}
               </span>
               <span className="block text-xs text-foreground-muted">{way.line}</span>
               {way.lasts && (
