@@ -51,7 +51,7 @@ export default function CatalogueGrid<T extends CatalogueConnector>({
           type="search"
           value={query}
           onChange={(event) => onQueryChange(event.target.value)}
-          placeholder="Search by name or category"
+          placeholder="Search by name, category or description"
           sx={{ flex: 1, minWidth: 0 }}
           slotProps={{
             htmlInput: { "aria-label": "Search connectors" },

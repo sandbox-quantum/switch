@@ -165,9 +165,9 @@ describe("the Connectors catalogue", () => {
     const search = screen.getByRole("searchbox", { name: "Search connectors" });
 
     fireEvent.change(search, { target: { value: "drive" } });
-    expect(screen.getByText(/None of your connectors match "drive"\. 1 under All does\./)).toBeTruthy();
+    expect(screen.getByText(/None of your connectors match “drive”\. 1 under All does\./)).toBeTruthy();
     fireEvent.change(search, { target: { value: "asana" } });
-    expect(screen.getByText(/None of your connectors match "asana"\. 1 coming soon under All\./)).toBeTruthy();
+    expect(screen.getByText(/None of your connectors match “asana”\. 1 coming soon under All\./)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Show" }));
     expect(screen.getByRole("button", { name: "All" }).getAttribute("aria-pressed")).toBe("true");
     expect((search as HTMLInputElement).value).toBe("asana");
@@ -175,7 +175,7 @@ describe("the Connectors catalogue", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Yours" }));
     fireEvent.change(search, { target: { value: "zzz" } });
-    expect(screen.getByText('No connectors match "zzz".')).toBeTruthy();
+    expect(screen.getByText('No connector matches “zzz”.')).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Show" })).toBeNull();
   });
 

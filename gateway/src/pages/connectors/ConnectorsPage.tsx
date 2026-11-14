@@ -38,13 +38,13 @@ function browseMoreText(count: number, query: string): string {
   const noun = count === 1 ? "connector" : "connectors";
   const needle = query.trim();
   return needle
-    ? `${count} more ${noun} ${count === 1 ? "matches" : "match"} "${needle}" under All`
+    ? `${count} more ${noun} ${count === 1 ? "matches" : "match"} “${needle}” under All`
     : `Browse ${count} more ${noun}`;
 }
 
 /** What Yours says when nothing of the person's matches a search but All has some that do. */
 function yoursSearchEmptyText(query: string, count: number, soon: number): string {
-  const lead = `None of your connectors match "${query.trim()}".`;
+  const lead = `None of your connectors match “${query.trim()}”.`;
   return count > 0
     ? `${lead} ${count} under All ${count === 1 ? "does" : "do"}.`
     : `${lead} ${soon} coming soon under All.`;
@@ -253,7 +253,7 @@ export default function ConnectorsPage() {
               }
               emptyMessage={
                 shown !== "yours" ? (
-                  `No connectors match "${query.trim()}".`
+                  `No connector matches “${query.trim()}”.`
                 ) : beyond > 0 || soon > 0 ? (
                   <>
                     {query.trim() ? yoursSearchEmptyText(query, beyond, soon) : "You haven't connected anything yet."}{" "}
@@ -262,7 +262,7 @@ export default function ConnectorsPage() {
                     </Button>
                   </>
                 ) : query.trim() ? (
-                  `No connectors match "${query.trim()}".`
+                  `No connector matches “${query.trim()}”.`
                 ) : (
                   "You haven't connected anything yet."
                 )
