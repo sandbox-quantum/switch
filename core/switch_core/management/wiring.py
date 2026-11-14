@@ -53,6 +53,9 @@ from switch_core.management.controller_routes import router as controller_router
 from switch_core.management.dependencies import init_management_dependencies
 from switch_core.management.gateway_routes import router as gateway_router
 from switch_core.management.notifier import ControllerNotifier
+from switch_core.management.organization_devices import (
+    router as organization_devices_router,
+)
 from switch_core.management.service import ManagementService, ManagementSettings
 from switch_core.management.signals import ControllerSignals
 from switch_core.process_lease import ProcessLease
@@ -224,6 +227,7 @@ def mount_gateway_routes(gateway_app: FastAPI) -> None:
     route added here reaches the coverage gate.
     """
     gateway_app.include_router(gateway_router, prefix=GATEWAY_PREFIX)
+    gateway_app.include_router(organization_devices_router)
 
 
 def create_management(

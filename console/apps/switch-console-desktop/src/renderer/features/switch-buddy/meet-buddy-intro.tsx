@@ -1,5 +1,5 @@
 import { motion, useAnimate, useReducedMotion } from 'motion/react';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { BuddyFace, useBuddyExpression } from './buddy-face';
 import { INTRO_BUBBLE_CLASS, IntroBubbles, buddyIntroLines } from './buddy-intro-lines';
 
@@ -66,10 +66,13 @@ export function MeetBuddyIntro({
   firstName,
   play,
   onPlayed,
+  after,
 }: {
   firstName: string | null;
   play: boolean;
   onPlayed: () => void;
+  /** Drawn under the lines once they are all said, as the last turn of the chat. */
+  after: ReactNode;
 }) {
   const reduced = useReducedMotion() ?? false;
   const animated = play && !reduced;
@@ -209,6 +212,17 @@ export function MeetBuddyIntro({
               onTyped={() => nextBubble(index)}
             />
           ))}
+          {bubble >= lines.length && (
+            <motion.div
+              className="self-stretch"
+              style={{ transformOrigin: '0% 0%' }}
+              initial={animated ? { opacity: 0, scale: 0.9, y: 10 } : false}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              transition={{ ...BUBBLE_SPRING, opacity: { duration: 0.18 } }}
+            >
+              {after}
+            </motion.div>
+          )}
         </IntroBubbles>
       )}
     </div>

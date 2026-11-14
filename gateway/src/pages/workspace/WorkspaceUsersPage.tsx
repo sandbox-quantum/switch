@@ -84,6 +84,7 @@ export default function WorkspaceUsersPage() {
         <CreateInvitationDialog
           open={inviteOpen}
           tenantId={tenant.id}
+          fromOrganization={false}
           workspaceName={tenant.name}
           emailEnabled={session.invite_email_enabled}
           onClose={() => setInviteOpen(false)}

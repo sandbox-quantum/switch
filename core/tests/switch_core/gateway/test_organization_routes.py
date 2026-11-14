@@ -35,6 +35,7 @@ from switch_core.db.models import (
     Organization,
     OrganizationAuditEvent,
     OrganizationMember,
+    Room,
     Tenant,
     TenantMember,
     User,
@@ -43,6 +44,7 @@ from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.organization_store import OrganizationStore
+from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.service_connection_store import ServiceConnectionStore
 from switch_core.db.stores.tenant_store import TenantStore
 from switch_core.db.stores.user_store import UserStore
@@ -50,6 +52,9 @@ from switch_core.db.stores.workspace_service_store import WorkspaceServiceStore
 from switch_core.gateway import dependencies as gw_deps
 from switch_core.gateway import organizations, workspace_creation
 from switch_core.gateway.auth import create_jwt, decode_jwt
+from switch_core.gateway.organization_workspaces import (
+    router as organization_workspaces_router,
+)
 from switch_core.gateway.organizations import router as organizations_router
 from switch_core.gateway.tenants import router as tenants_router
 from switch_core.gateway.workos_sign_in_routes import (
@@ -93,6 +98,7 @@ def _app(
 
     app = FastAPI()
     app.include_router(organizations_router)
+    app.include_router(organization_workspaces_router)
     app.include_router(tenants_router)
     app.dependency_overrides[gw_deps.get_session] = _session_dep
     app.dependency_overrides[gw_deps.get_system_session] = _session_dep
@@ -108,6 +114,7 @@ def _app(
         _FakeClientLifecycle(session_factory)
     )
     app.dependency_overrides[gw_deps.get_agent_store] = lambda: AgentStore()
+    app.dependency_overrides[gw_deps.get_room_store] = lambda: RoomStore()
     app.dependency_overrides[gw_deps.get_api_key_store] = lambda: ApiKeyStore()
     app.dependency_overrides[gw_deps.get_protocol] = lambda: SimpleNamespace(
         api_key_cache=SimpleNamespace(invalidate=lambda key_hash: None)
@@ -289,6 +296,8 @@ class TestChangingRoles:
 
         grants = {row["user_id"]: row["can_grant_org_admin"] for row in listed.json()}
         assert grants[robot] is False and grants[bob] is True
+        services = {row["user_id"]: row["service_account"] for row in listed.json()}
+        assert services[robot] is True and services[bob] is False
         assert promoted.status_code == 409, promoted.text
         assert promoted.json()["detail"] == SERVICE_ACCOUNT_ADMIN_REFUSAL
         async with session_factory() as session:
@@ -977,6 +986,43 @@ class TestListingOrganizationsAndWorkspaces:
         }
         assert as_member.status_code == 200, as_member.text
         assert [row["id"] for row in as_member.json()] == [tenant_id]
+
+    async def test_each_workspace_comes_with_its_counts_and_admins(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Counted as each list counts them; admins by membership only, since
+        an org admin administers every workspace without being named."""
+        ada, carol, bob = _name("ada"), _name("carol"), _name("bob")
+        tenant_id = await _workspace(
+            session_factory,
+            {
+                ada: ("admin", "org_admin"),
+                carol: ("admin", "member"),
+                bob: ("member", "member"),
+            },
+        )
+        async with tenant_session(session_factory, tenant_id) as session:
+            session.add(Room(transport_room_id="!open", name="Open", description=""))
+            session.add(
+                Room(
+                    transport_room_id="!gone",
+                    name="Gone",
+                    description="",
+                    archived_at=datetime.now(UTC),
+                )
+            )
+            await session.commit()
+        app = _app(session_factory)
+
+        async with _client(app, ada, tenant_id) as client:
+            response = await client.get("/organizations/current/workspaces")
+
+        assert response.status_code == 200, response.text
+        [row] = response.json()
+        assert row["id"] == tenant_id
+        assert (row["users"], row["agents"], row["rooms"]) == (3, 0, 1)
+        assert row["admins"] == [carol]
+        assert row["created_at"]
 
     async def test_the_platform_operator_sees_every_workspace_of_it(
         self, session_factory: async_sessionmaker[AsyncSession]

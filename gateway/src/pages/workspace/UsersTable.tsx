@@ -214,7 +214,7 @@ export default function UsersTable({
 
   const remove = async (member: Member) => {
     const result = await removeMember(tenantId, member.user_id);
-    onRemoved(removalNotice(member, result, selfId), result.warning);
+    onRemoved(removalNotice(member, result, selfId, null), result.warning);
     if (member.user_id === selfId) {
       await onLeft();
       return;

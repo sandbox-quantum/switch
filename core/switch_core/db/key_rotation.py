@@ -38,6 +38,7 @@ from switch_core.db.models import (
     MachineWorkspace,
     MessagingInstall,
     OrganizationAppCredential,
+    OrganizationTrustSettings,
     ProviderConnection,
     ServerConnector,
     ServiceAppCredential,
@@ -76,6 +77,7 @@ _ENCRYPTED_TEXT_COLUMNS: tuple[tuple[type[Any], str], ...] = (
 # bound to it alone.
 _ORGANIZATION_ENCRYPTED_TEXT_COLUMNS: tuple[tuple[type[Any], str], ...] = (
     (OrganizationAppCredential, "encrypted_secrets"),
+    (OrganizationTrustSettings, "api_key_encrypted"),
 )
 # In tables no tenant holds (`db/rls_ddl.py`, GLOBAL_TABLES), one row set for
 # the whole deployment (`trust_settings`, `service_oauth_clients`,
