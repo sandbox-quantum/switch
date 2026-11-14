@@ -20,6 +20,12 @@ const api = vi.hoisted(() => ({
 vi.mock("../../data/api", () => api);
 vi.mock("../../data/AuthContext", () => ({ useAuth: () => ({ user: { id: "me" } }) }));
 
+const client = vi.hoisted(() => ({ addChatMember: vi.fn(async () => []) }));
+vi.mock("./webChatClient", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./webChatClient")>()),
+  webChatsClient: client,
+}));
+
 const web = vi.hoisted(() => ({ current: null as WebChats | null }));
 vi.mock("./WebChatHost", () => ({ useWebChats: () => web.current }));
 
@@ -272,5 +278,22 @@ describe("ChatsPage", () => {
     );
     await waitFor(() => expect(screen.getByTestId("chat-panel").textContent).toBe("team"));
     expect(screen.getByRole("button", { name: "Rooms" }).getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("lets whoever manages a room on no messaging app join its conversation", async () => {
+    api.fetchRoom.mockResolvedValue({ name: "Launch planning", can_manage: true, bridge_id: null } as never);
+    const store = storeWith([]);
+    const refresh = vi.spyOn(store, "refreshSummaries").mockResolvedValue();
+    renderAt("/chats/rooms/launch", store);
+    fireEvent.click(await screen.findByRole("button", { name: "Join the conversation" }));
+    await waitFor(() => expect(client.addChatMember).toHaveBeenCalledWith("launch", "me"));
+    expect(refresh).toHaveBeenCalled();
+  });
+
+  it("offers no join for a room on a messaging app", async () => {
+    api.fetchRoom.mockResolvedValue({ name: "Town Square", can_manage: true, bridge_id: "b1" } as never);
+    renderAt("/chats/rooms/town", storeWith([]));
+    await screen.findByText("Town Square");
+    expect(screen.queryByRole("button", { name: "Join the conversation" })).toBeNull();
   });
 });

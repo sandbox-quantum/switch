@@ -49,6 +49,7 @@ import {
 } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
 import { useWebChats } from "./WebChatHost";
+import { webChatsClient, webFailures } from "./webChatClient";
 import { WEB_SERVER_ID } from "./webServer";
 
 const serverId = WEB_SERVER_ID;
@@ -298,19 +299,50 @@ function useAgentRooms(agentId: string) {
   });
 }
 
-/** A room that is not one of the person's chats: named, and pointed at its own page. */
+/**
+ * A room that is not one of the person's chats: named, and pointed at its
+ * own page. Whoever manages a room on no messaging app may join its
+ * conversation from here, as they could from Console.
+ */
 function NotYourChat({ roomId }: { roomId: string }) {
+  const { chats } = useChatHost();
+  const userId = useAuth().user?.id ?? null;
   const room = useQuery({ queryKey: ["chat-room", roomId], queryFn: () => fetchRoom(roomId) });
+  const [joining, setJoining] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const joinable = room.data?.can_manage === true && room.data.bridge_id === null && userId !== null;
+  const join = async () => {
+    setJoining(true);
+    setError(null);
+    try {
+      await webChatsClient.addChatMember(roomId, userId!);
+      await chats.refreshSummaries();
+    } catch (caught) {
+      setError(webFailures.describe(caught, "You could not join this room's conversation.").headline);
+    } finally {
+      setJoining(false);
+    }
+  };
   return (
     <Stack sx={{ flex: 1, alignItems: "center", justifyContent: "center", gap: 1.5, p: 4 }}>
       {room.data?.name && <Typography variant="h6">{room.data.name}</Typography>}
       <Typography sx={{ fontWeight: 600 }}>This room isn't one of your chats</Typography>
       <Typography color="text.secondary" sx={{ maxWidth: 420, textAlign: "center" }}>
-        Being able to see a room doesn't let you read its conversation. Ask its owner to add you.
+        {joinable
+          ? "You manage this room, so you can join its conversation."
+          : "Being able to see a room doesn't let you read its conversation. Ask its owner to add you."}
       </Typography>
-      <Button component={RouterLink} to={`/rooms/${encodeURIComponent(roomId)}`}>
-        Open the room's page
-      </Button>
+      {error && <Typography color="error">{error}</Typography>}
+      <Stack direction="row" spacing={1}>
+        {joinable && (
+          <Button variant="contained" disabled={joining} onClick={() => void join()}>
+            Join the conversation
+          </Button>
+        )}
+        <Button component={RouterLink} to={`/rooms/${encodeURIComponent(roomId)}`}>
+          Open the room's page
+        </Button>
+      </Stack>
     </Stack>
   );
 }
