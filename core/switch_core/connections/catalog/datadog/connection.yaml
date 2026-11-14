@@ -46,6 +46,7 @@ auth:
   # The user in the organization signed in to: one person in two organizations
   # is two accounts.
   identity:
+    method: GET
     url: "https://api.{site}/api/v2/current_user"
     account_id: data.id
     label: data.attributes.email

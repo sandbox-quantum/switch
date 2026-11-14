@@ -49,6 +49,7 @@ auth:
   # GET /api/v4/user needs read_user, which both levels carry and which a
   # dynamically registered client could never be given.
   identity:
+    method: GET
     url: https://gitlab.com/api/v4/user
     account_id: id
     label: username

@@ -1088,6 +1088,20 @@ version of their own to them without also giving them a release of their own.
   bridge has a `public_url`. A new code retires the previous message's buttons. Slack needs the
   app's Messages tab, which the manifest now turns on, read only: an existing
   app keeps using the code until its manifest is re-applied.
+- **The Dropbox connection.** A person connects Dropbox from Switch Console,
+  and a granted agent searches, reads, adds, moves and deletes their files,
+  as that person, through Dropbox's MCP server. Each server's operator registers a Dropbox app and
+  saves it under Connector apps, or names it in `DROPBOX_CLIENT_CONFIG_PATH`
+  (Helm: `switchCore.dropboxClientSecret`); see `docs/old/dropbox-setup.md`.
+  Sign-ins come back to Switch Console, so a server needs no public address.
+  Disconnecting revokes the sign-in at Dropbox.
+- **An OAuth entry's account call can be a POST** (`identity.method`, with an
+  optional fixed JSON `body`); every entry names its method.
+- **An OAuth entry can ask Dropbox for a refresh token**
+  (`authorization_params: { token_access_type: offline }`).
+- **An OAuth entry can revoke by bearer** (`revocation_by_bearer`): the
+  revocation endpoint takes the access token as its bearer and no body, as
+  Dropbox's does, rather than an RFC 7009 form.
 - **The server's administrator can delete someone's account.** The Users page
   has a Delete action (`DELETE /users/{id}`) that removes the account in every
   workspace, with the same refusals as deleting your own. Administrator

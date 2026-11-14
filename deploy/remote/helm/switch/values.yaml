@@ -223,6 +223,12 @@ switchCore:
   # https://<public URL>/gateway/service-connections/gitlab/flows/callback.
   # Without it or one saved under Connectors, GitLab shows as not set up.
   gitlabClientSecret: ""
+  # Dropbox app for the Dropbox connection (Scoped access, Full Dropbox),
+  # registered in Dropbox's App Console with the redirect URIs
+  # http://127.0.0.1:<port>/switch-services/callback for ports 39231 to
+  # 39235, where Switch Console takes the sign-in back. Without it, Dropbox
+  # shows as not set up.
+  dropboxClientSecret: ""
   # Existing Secret with client.json ({"client_id", "client_secret"}): the
   # Web OAuth client of an internal Google app, for the Google Workspace
   # connection. Register <gatewayPublicUrl>/gateway/service-connections/google-workspace/flows/callback
