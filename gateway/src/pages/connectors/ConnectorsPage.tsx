@@ -30,8 +30,6 @@ import { useLeaveToSignIn } from "./signIn";
 
 type Tab = "yours" | "all";
 
-/** The usable connectors first, then the ones not built yet; each group in
- * the catalog's own order. */
 /** A badge whose reason shows on hover, and is read out with the card by a
  * screen reader. It sits inside the card's button, so it can't take focus
  * itself; the connector's page says the same in full. */
