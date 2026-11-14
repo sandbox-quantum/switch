@@ -403,7 +403,7 @@ version of their own to them without also giving them a release of their own.
 
 #### Changed
 - **The dashboard's Connectors page lists coming soon services in their own
-  section**, faded, under the ones people can use, with a count for each, and
+  section**, under the ones people can use, with a count for each, and
   the catalog lists 20 more of them. Its All tab is now Discover, where the
   page always opens, as in Switch Console. Yours ends with a card that opens
   Discover, and a search there that matches nothing connected offers to search

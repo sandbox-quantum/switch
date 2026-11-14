@@ -19,8 +19,7 @@ export interface CatalogueConnector {
  *
  * With `onOpen` the whole card opens the connector's profile; without it the
  * card is not pressable and does not look it. `trailing` sits above the
- * card's hit area, so using it does not also open the profile. A `faded`
- * card is one that can't be connected yet; it still opens its profile.
+ * card's hit area, so using it does not also open the profile.
  */
 export default function ConnectorCard({
   connector,
@@ -28,7 +27,6 @@ export default function ConnectorCard({
   meta,
   onOpen,
   trailing,
-  faded = false,
 }: {
   connector: CatalogueConnector;
   badges?: ReactNode;
@@ -36,7 +34,6 @@ export default function ConnectorCard({
   meta?: ReactNode;
   onOpen?: () => void;
   trailing?: ReactNode;
-  faded?: boolean;
 }) {
   const body = (
     <>
@@ -74,7 +71,6 @@ export default function ConnectorCard({
         border: "1px solid var(--sw-border)",
         borderRadius: "10px",
         backgroundColor: "var(--sw-card)",
-        ...(faded && { opacity: 0.6 }),
         ...(onOpen && { transition: "background-color 150ms", "&:hover": { backgroundColor: "var(--sw-muted)" } }),
       }}
     >

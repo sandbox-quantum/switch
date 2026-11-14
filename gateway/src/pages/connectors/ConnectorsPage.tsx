@@ -280,7 +280,6 @@ export default function ConnectorsPage() {
                 return (
                   <ConnectorCard
                     connector={connection}
-                    faded={!connection.enabled}
                     onOpen={() => navigate(`/connectors/${connection.slug}`)}
                     badges={
                       !connection.enabled ? (
