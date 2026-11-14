@@ -759,7 +759,8 @@ describe("connecting by pasting a token in place of a sign-in", () => {
       // Only the token's button connects: no Connect beside the name.
       expect(screen.queryByRole("button", { name: "Connect" })).toBeNull();
       fireEvent.click(within(token).getByRole("button", { name: "Use a token" }));
-      expect(await screen.findByRole("dialog", { name: "Connect GitHub with a personal access token" })).toBeTruthy();
+      const dialog = await screen.findByRole("dialog", { name: "Connect GitHub with a personal access token" });
+      expect(within(dialog).queryByText(/connect it from Switch Console/)).toBeNull();
     });
 
     it("offers the operator the way to set the App up", async () => {
