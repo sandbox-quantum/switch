@@ -7,6 +7,7 @@ export const serviceKeyFieldSchema = z.object({
   secret: z.boolean(),
   help: z.string().nullable(),
   choices: z.array(z.string()).nullable(),
+  pattern: z.string().nullable().optional(),
 });
 export type ServiceKeyField = z.infer<typeof serviceKeyFieldSchema>;
 

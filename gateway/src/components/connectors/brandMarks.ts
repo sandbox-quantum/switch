@@ -34,6 +34,7 @@ export const MARK_COLOR: Readonly<Record<string, { light: string; dark: string }
   bitbucket: { light: "#0052CC", dark: FOREGROUND },
   box: { light: "#0061D5", dark: FOREGROUND },
   datadog: { light: "#632CA6", dark: FOREGROUND },
+  snowflake: { light: "#29B5E8", dark: "#29B5E8" },
   "new-relic": { light: FOREGROUND, dark: "#1CE783" },
   airtable: { light: FOREGROUND, dark: "#18BFFF" },
 };

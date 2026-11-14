@@ -120,12 +120,22 @@ class ChoicesError(ValueError):
     """Choices that are not an entry's own; the message is for the person."""
 
 
+# A pattern may only contain plain characters and character classes of safe tokens.
+PATTERN_CLASS = re.compile(r"\[(?:a-z|A-Z|0-9|[_-])+\]")
+PATTERN_REST = re.compile(r"[A-Za-z0-9_\-(){},?*+|^$]*")
+
+
+def _pattern_is_plain(pattern: str) -> bool:
+    return PATTERN_REST.fullmatch(PATTERN_CLASS.sub("", pattern)) is not None
+
+
 class ApiKeyField(BaseModel):
     """One value a person pastes, or picks, to connect.
 
     A `secret` field is the key itself, typed freely and never shown again.
-    Any other field is a choice among `choices` (a site, a region), which
-    templates may put in a URL: never free text.
+    A non-secret field is a choice among `choices` (a site, a region) or a
+    value matching `pattern`, which templates may put in a URL: never free
+    text.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
@@ -138,18 +148,30 @@ class ApiKeyField(BaseModel):
     choices: list[Annotated[str, Field(pattern=CHOICE_PATTERN)]] | None = Field(
         default=None, min_length=1, max_length=20
     )
+    pattern: str | None = Field(default=None, min_length=1, max_length=200)
 
     @model_validator(mode="after")
-    def _secret_or_choice(self) -> "ApiKeyField":
+    def _secret_choice_or_pattern(self) -> "ApiKeyField":
         if self.name == TOKEN_PLACEHOLDER:
             raise ValueError(f"a field may not be named {TOKEN_PLACEHOLDER}")
-        if self.secret == (self.choices is not None):
+        if [self.secret, self.choices is not None, self.pattern is not None].count(
+            True
+        ) != 1:
             raise ValueError(
-                f"field {self.name} is a secret typed freely, or a choice among "
-                "choices: one of the two"
+                f"field {self.name} is a secret typed freely, a choice among "
+                "choices, or a value matching a pattern: exactly one of those"
             )
         if self.choices is not None and len(set(self.choices)) != len(self.choices):
             raise ValueError(f"field {self.name} lists a choice twice")
+        if self.pattern is not None:
+            try:
+                compiled = re.compile(self.pattern)
+            except re.error as error:
+                raise ValueError(
+                    f"field {self.name}'s pattern is not a regular expression: {error}"
+                ) from None
+            if compiled.fullmatch(""):
+                raise ValueError(f"field {self.name}'s pattern matches an empty value")
         return self
 
 
@@ -371,6 +393,7 @@ class ApiKeyIdentity(BaseModel):
     body: dict[str, object] | None = None
     account_id: str | None = Field(default=None, pattern=JSON_PATH_PATTERN)
     label: str | None = Field(default=None, pattern=JSON_PATH_PATTERN)
+    requires: str | None = Field(default=None, pattern=JSON_PATH_PATTERN)
 
     @model_validator(mode="after")
     def _body_for_post(self) -> "ApiKeyIdentity":
@@ -384,7 +407,7 @@ class ApiKeySignIn(BaseModel):
     call that checks them, and where they make the key (`help_url`)."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-    fields: list[ApiKeyField] = Field(min_length=1, max_length=4)
+    fields: list[ApiKeyField] = Field(min_length=1, max_length=5)
     identity: ApiKeyIdentity
     help_url: str | None = Field(default=None, pattern=HTTPS_URL_PATTERN)
 
@@ -398,6 +421,7 @@ class ApiKeySignIn(BaseModel):
         check_templates(
             fields=self.field_names(),
             choices=self.choice_names(),
+            patterns=self.pattern_names(),
             urls=[self.identity.url],
             values=list(self.identity.headers.values()),
             where="the identity call",
@@ -408,24 +432,67 @@ class ApiKeySignIn(BaseModel):
         return {field.name for field in self.fields}
 
     def choice_names(self) -> set[str]:
-        return {field.name for field in self.fields if not field.secret}
+        return {
+            field.name
+            for field in self.fields
+            if not field.secret and field.choices is not None
+        }
+
+    def pattern_names(self) -> set[str]:
+        return {
+            field.name
+            for field in self.fields
+            if not field.secret and field.pattern is not None
+        }
+
+
+def url_placements(url: str) -> dict[str, set[str]]:
+    """Where a URL template puts each field it names: `host` for a whole host
+    label followed only by labels the template fixes (at least a domain and
+    its suffix), `path` for a whole path segment, `other` for anywhere else."""
+    template_fields(url)
+    rest = url.removeprefix("https://")
+    host, _, tail = rest.partition("/")
+    path = re.split(r"[?#]", tail, maxsplit=1)[0]
+    placed: dict[str, set[str]] = {}
+    labels = host.split(".")
+    for index, label in enumerate(labels):
+        after = labels[index + 1 :]
+        fixed = len(after) >= 2 and not any("{" in part for part in after)
+        for name in TEMPLATE_FIELD_RE.findall(label):
+            whole = label == "{" + name + "}"
+            placed.setdefault(name, set()).add("host" if whole and fixed else "other")
+    for segment in path.split("/"):
+        for name in TEMPLATE_FIELD_RE.findall(segment):
+            whole = segment == "{" + name + "}"
+            placed.setdefault(name, set()).add("path" if whole else "other")
+    for name in TEMPLATE_FIELD_RE.findall(tail[len(path) :]):
+        placed.setdefault(name, set()).add("other")
+    return placed
 
 
 def check_templates(
     *,
     fields: set[str],
     choices: set[str],
+    patterns: set[str] = frozenset(),
     urls: list[str],
     values: list[str],
     where: str,
 ) -> None:
-    """Templates name only the entry's `fields`, and a URL only its `choices`:
-    the fields picked from a list, never a secret."""
+    """Templates name only the entry's `fields`, and a URL only its `choices`
+    or `patterns`: the fields picked from a list or matched to a pattern, never a secret."""
     for url in urls:
-        for name in template_fields(url):
-            if name not in choices:
+        for name, places in url_placements(url).items():
+            if name in patterns:
+                if "other" in places:
+                    raise ValueError(
+                        f"{where}'s URL may hold field {name!r} only as a whole "
+                        "host label of a fixed domain or a whole path segment"
+                    )
+            elif name not in choices:
                 raise ValueError(
-                    f"{where}'s URL may name only a choice field, not {name!r}"
+                    f"{where}'s URL may name only a choice or pattern field, not {name!r}"
                 )
     for value in values:
         for name in template_fields(value):
@@ -968,6 +1035,7 @@ class ConnectionDefinition(BaseModel):
                 check_templates(
                     fields=sign_in.field_names(),
                     choices=sign_in.choice_names(),
+                    patterns=sign_in.pattern_names(),
                     urls=[server.url],
                     values=list(server.headers.values()),
                     where=f"MCP server {server.name}",

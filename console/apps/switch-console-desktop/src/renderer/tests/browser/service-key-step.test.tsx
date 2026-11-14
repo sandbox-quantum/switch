@@ -304,3 +304,43 @@ it('opened to replace a key, opens on the form and ends on Done', async () => {
   await act(async () => button(/^done$/i, dialog())!.click());
   expect(onBack).toHaveBeenCalledOnce();
 });
+
+it('renders a pattern field with the pattern attribute', async () => {
+  const connection: ConnectionCatalogEntry = {
+    ...keyed('not_connected'),
+    key: {
+      fields: [
+        {
+          name: 'account',
+          label: 'Account identifier',
+          secret: false,
+          help: 'Account identifier.',
+          choices: null,
+          pattern: '^[a-z0-9-]+$',
+        },
+      ],
+      help_url: null,
+    },
+  };
+  container = document.createElement('div');
+  document.body.appendChild(container);
+  root = createRoot(container);
+  await act(async () =>
+    root!.render(
+      <Dialog open>
+        <DialogContent>
+          <ServiceKeyStep
+            calls={serverServiceCalls('server')}
+            connection={connection}
+            form={connection.key!}
+            replacing={false}
+            onBack={() => {}}
+            onConnected={() => {}}
+          />
+        </DialogContent>
+      </Dialog>
+    )
+  );
+  await vi.waitFor(() => expect(dialog().textContent).toMatch(/Connect Datadog/));
+  expect(input(dialog(), 'Account identifier').pattern).toBe('^[a-z0-9-]+$');
+});
