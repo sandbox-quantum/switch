@@ -350,7 +350,7 @@ it("lists the ones that can't be used here last in their section", async () => {
     .filter((text) => /^(Atlassian|GitHub|Example)/.test(text))
     .map((text) => text.match(/^(Atlassian|GitHub|Example)/)![1]);
   expect(names).toEqual(['Example', 'Atlassian', 'GitHub']);
-  expect(page.querySelector('#connectors-built')?.textContent).toMatch(/^Released/);
+  expect(page.querySelector('#connectors-built')?.textContent).toMatch(/^Supported/);
 });
 
 it('stays on the tab the person picks', async () => {

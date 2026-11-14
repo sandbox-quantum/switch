@@ -373,7 +373,7 @@ function ConnectorGrid({
     <div className="flex flex-col gap-8">
       {built.length > 0 && (
         <section aria-labelledby="connectors-built" className="flex flex-col gap-3">
-          <SectionTitle id="connectors-built" title="Released" count={built.length} />
+          <SectionTitle id="connectors-built" title="Supported" count={built.length} />
           <div role="group" aria-label="Connectors" className={GRID}>
             {built.map(card)}
           </div>

@@ -107,7 +107,7 @@ describe("the Connectors catalogue", () => {
     expect(screen.getByRole("button", { name: "Discover" }).getAttribute("aria-pressed")).toBe("true");
     const shown = screen.getAllByText(/^(Google Workspace|Atlassian|Datadog|Asana)$/).map((node) => node.textContent);
     expect(shown).toEqual(["Atlassian", "Datadog", "Google Workspace", "Asana"]);
-    expect(screen.getByRole("heading", { name: "Released" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Supported" })).toBeTruthy();
     const soon = screen.getByRole("region", { name: "Coming soon" });
     expect(within(soon).getByText("Asana")).toBeTruthy();
     expect(within(soon).queryByText("Datadog")).toBeNull();
@@ -125,7 +125,7 @@ describe("the Connectors catalogue", () => {
 
     expect(await screen.findByText("Google Workspace")).toBeTruthy();
     fireEvent.change(screen.getByRole("searchbox", { name: "Search connectors" }), { target: { value: "asana" } });
-    expect(screen.queryByRole("heading", { name: "Released" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Supported" })).toBeNull();
     expect(within(screen.getByRole("region", { name: "Coming soon" })).getByText("Asana")).toBeTruthy();
     expect(screen.queryByText("Datadog")).toBeNull();
   });
