@@ -423,8 +423,8 @@ class GitHubAdapter:
         if method != "oauth":
             raise ConnectionNotRevocable(
                 "Switch has forgotten the pasted GitHub token but cannot revoke "
-                "it. Delete it in GitHub, under Settings, Developer settings, "
-                "Personal access tokens, to stop it working."
+                "it. Delete it in GitHub to stop it working: "
+                "https://github.com/settings/personal-access-tokens"
             )
         token = secret.access_token
         if token is None:
