@@ -9,6 +9,10 @@ opening an issue.
 
 ## Development setup
 
+New here? [Quickstart for new contributors](docs/contributing/quickstart.md)
+walks one path from a clone to an agent replying to you in a room, with the
+versions this repository pins and the pull request checklist at the end.
+
 **Prerequisites:** [Docker](https://docs.docker.com/get-docker/),
 [uv](https://docs.astral.sh/uv/), and [just](https://github.com/casey/just)
 (`brew install just`).
