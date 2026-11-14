@@ -1,3 +1,6 @@
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
 import { StdioJsonRpcClient, noopLogger } from './stdio-json-rpc';
 let client: StdioJsonRpcClient | null = null;
@@ -72,5 +75,35 @@ it.each(['stdout', 'stderr'])(
     await client.dispose();
     expect(client.isAlive).toBe(false);
     expect(warn).not.toHaveBeenCalled();
+  }
+);
+
+it.skipIf(process.platform === 'win32')(
+  'lets a process that exits on closed input finish, where it is otherwise sent SIGTERM',
+  async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'stdio-json-rpc-'));
+    const saved = join(dir, 'saved');
+    const script = `process.stdin.on('end', () => setTimeout(() => {
+      require('node:fs').writeFileSync(${JSON.stringify(saved)}, 'ok');
+      process.exit(0);
+    }, 200));
+    process.stdin.resume();`;
+    try {
+      for (const exitsOnClosedInput of [false, true]) {
+        client = new StdioJsonRpcClient({
+          command: process.execPath,
+          args: ['-e', script],
+          cwd: dir,
+          env: {},
+          logger: noopLogger,
+          onExit: () => {},
+          exitsOnClosedInput,
+        });
+        await client.dispose();
+        expect(existsSync(saved)).toBe(exitsOnClosedInput);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   }
 );

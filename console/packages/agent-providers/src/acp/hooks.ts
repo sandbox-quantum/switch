@@ -32,6 +32,12 @@ export interface AcpLaunch {
   rejectOutputLine?: (line: string) => string | undefined;
   /** Removes what `launch` prepared for this process, once the process is gone. */
   cleanup?: () => Promise<void>;
+  /**
+   * The agent exits by itself once its input closes, saving its sessions as
+   * it goes, and a signal would cut that short: it is stopped by closing its
+   * input, and killed only if it is still running 2 s later.
+   */
+  exitsOnClosedInput?: boolean;
 }
 
 export interface AcpLaunchInput {

@@ -207,6 +207,7 @@ class TestUnavailableReplyRouting:
             "kiro": "kiro-cli login",
             "mistral-vibe": "vibe-acp --setup",
             "junie": "junie",
+            "kimi-code": "kimi login",
         }
         for agent_type, command in sign_in.items():
             agent = _agent(
