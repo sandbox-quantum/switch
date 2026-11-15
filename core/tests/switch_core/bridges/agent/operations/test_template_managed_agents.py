@@ -38,6 +38,7 @@ from switch_core.bridges.agent.protocol.agent_management import (
 from switch_core.db.models import Agent, Room, Template
 from switch_core.db.stores.template_install_store import TemplateInstallStore
 from switch_core.official_templates import current_revision
+from switch_core.providers.registry import provider_ids
 from switch_core.template_installs import fingerprint
 from switch_core.template_runs import AgentsNotCreated, RunUndone
 from tests.switch_core.bridges.agent.operations.conftest import _make_agent
@@ -161,7 +162,11 @@ async def managed(env, monkeypatch):
     monkeypatch.setattr(definitions, "LISTEN_TIMEOUT_SECONDS", 0.2)
     env["protocol"].config = SimpleNamespace(
         template_max_bytes=64 * 1024,
-        feature_flags={"agent_management": True, "switch_buddy": True},
+        feature_flags={
+            "agent_management": True,
+            "switch_buddy": True,
+            "additional_agent_providers": True,
+        },
     )
     env["protocol"].telemetry = None
     env["protocol"].service_broker = None
@@ -560,6 +565,7 @@ def _plan(template: str, **kw: Any) -> Any:
         kw.pop("inputs", {}),
         builtins={},
         machines=kw.pop("machines", MACHINES),
+        providers=kw.pop("providers", frozenset(provider_ids())),
     )
 
 
@@ -718,6 +724,52 @@ agent:
     (agent,) = _plan(template).new_agents
     # server's claude login has expired, so codex.
     assert agent.provider == "codex"
+
+
+GOOSE_AND_CLAUDE = [
+    {
+        "id": "m-laptop",
+        "name": "laptop",
+        "state": "online",
+        "providers": [
+            {"provider": "goose", "installed": True, "auth": "ok"},
+            {"provider": "claude", "installed": True, "auth": "ok"},
+        ],
+    },
+]
+WITHOUT_GOOSE = frozenset(provider_ids()) - {"goose"}
+
+
+@pytest.mark.parametrize("default", ["[goose, claude]", "[$first]"])
+def test_a_provider_chain_passes_over_a_provider_the_server_does_not_offer(default):
+    template = f"""\
+params:
+  coder: {{ type: provider, default: {default} }}
+agent:
+  name: a
+  instructions: Hi.
+  provider: "{{coder}}"
+  machine: laptop
+  directory: /x
+"""
+    (agent,) = _plan(
+        template, machines=GOOSE_AND_CLAUDE, providers=WITHOUT_GOOSE
+    ).new_agents
+    assert agent.provider == "claude"
+
+
+def test_an_agent_naming_a_provider_the_server_does_not_offer_is_refused():
+    template = """\
+agent:
+  name: a
+  instructions: Hi.
+  provider: goose
+  machine: laptop
+  directory: /x
+"""
+    assert _codes(template, machines=GOOSE_AND_CLAUDE, providers=WITHOUT_GOOSE) == {
+        "provider_not_offered"
+    }
 
 
 def test_a_repo_is_cloned_by_the_agent_and_grants_nothing():
