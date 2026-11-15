@@ -4,6 +4,7 @@ import {
   type ServerFeatureFlags,
 } from '@shared/core/feature-flags/feature-flags';
 import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
+import { SWITCH_CONSOLE_REPO_URL } from '@shared/urls';
 import { lifetimeText, pasteAgainMethod, pastedConnection } from './connect-flow';
 import type { ConnectorCardState, ConnectorFix } from './connector-card-state';
 
@@ -14,20 +15,24 @@ export function isYours(entry: ConnectionCatalogEntry): boolean {
   return entry.status !== 'not_connected' && entry.status !== 'coming_soon';
 }
 
+/** What the person narrowed the list to: the search text, and one category or none. */
+export type ConnectorFilter = { query: string; category: string | null };
+
 /**
- * The catalog cards a tab lists, narrowed by the search. Yours holds what the
- * person has connected; Discover holds the whole catalog, connected services
- * included, so a search there finds anything.
+ * The catalog cards a tab lists, narrowed by the search and the category.
+ * Yours holds what the person has connected; Discover holds the whole
+ * catalog, connected services included, so a search there finds anything.
  */
 export function connectorsInTab(
   entries: ConnectionCatalogEntry[],
   tab: ConnectorsTab,
-  query: string
+  filter: ConnectorFilter
 ): ConnectionCatalogEntry[] {
-  const needle = query.trim().toLocaleLowerCase();
+  const needle = filter.query.trim().toLocaleLowerCase();
   const inTab = entries.filter(
     (entry) =>
       (tab === 'discover' || isYours(entry)) &&
+      (filter.category === null || entry.category === filter.category) &&
       (!needle ||
         [entry.name, entry.category, entry.description].some((text) =>
           text.toLocaleLowerCase().includes(needle)
@@ -37,19 +42,50 @@ export function connectorsInTab(
 }
 
 /**
- * Whether Discover lists anything for `query` that Yours does not: the
+ * The categories the category filter offers: every one in the catalog, coming
+ * soon services included, so the choice stays the same on both tabs.
+ */
+export function connectorCategories(entries: ConnectionCatalogEntry[]): string[] {
+  return [...new Set(entries.map((entry) => entry.category))].sort((a, b) => a.localeCompare(b));
+}
+
+/**
+ * Whether Discover lists anything for the filter that Yours does not: the
  * trailing card and the empty search on Yours point there when it does. No
  * number is given, since one would have to say whether it counts services
  * that are off here, not set up or coming soon.
  */
-export function moreOnDiscover(entries: ConnectionCatalogEntry[], query: string): boolean {
-  return connectorsInTab(entries, 'discover', query).some((entry) => !isYours(entry));
+export function moreOnDiscover(
+  entries: ConnectionCatalogEntry[],
+  filter: ConnectorFilter
+): boolean {
+  return connectorsInTab(entries, 'discover', filter).some((entry) => !isYours(entry));
 }
 
-/** The way from Yours to Discover, keeping the search. */
-export function toDiscoverText(query: string): string {
-  return query.trim() ? `Search Discover for “${query.trim()}”` : 'Browse all connectors';
+/** The way from Yours to Discover, keeping the search and the category. */
+export function toDiscoverText(filter: ConnectorFilter): string {
+  const query = filter.query.trim();
+  if (query) return `Search Discover for “${query}”`;
+  return filter.category ? `Browse ${filter.category} on Discover` : 'Browse all connectors';
 }
+
+/** Why a tab shows nothing, in the words of what the person narrowed it by. */
+export function nothingMatchesText(tab: ConnectorsTab, filter: ConnectorFilter): string {
+  const query = filter.query.trim();
+  const where = filter.category ? ` in ${filter.category}` : '';
+  if (tab === 'yours') {
+    if (query) return `None of your connectors${where} match “${query}”.`;
+    if (filter.category) return `None of your connectors are in ${filter.category}.`;
+    return 'You have not connected anything yet.';
+  }
+  if (query) return `No connector${where} matches “${query}”.`;
+  return filter.category
+    ? `No connector is in ${filter.category}.`
+    : 'This server offers no connectors.';
+}
+
+/** Where to ask for a service the catalog does not list. */
+export const CONNECTOR_REQUEST_URL = `${SWITCH_CONSOLE_REPO_URL}/issues/new?template=connector_request.yml`;
 
 /**
  * The card's own control, beside the part that opens the profile: the fix

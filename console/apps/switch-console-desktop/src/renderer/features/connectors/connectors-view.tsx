@@ -1,4 +1,4 @@
-import { ArrowRight, Check, Compass, Plug, Plus } from 'lucide-react';
+import { ArrowRight, Check, Compass, MessageSquarePlus, Plug, Plus } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useState } from 'react';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
@@ -10,11 +10,13 @@ import {
   operatesServer,
 } from '@renderer/features/switch-servers/workspace-admin';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
+import { FilterSelect } from '@renderer/lib/components/filter-select';
 import { LIST_PAGE_WIDTH, ListToolbar } from '@renderer/lib/components/list-toolbar';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
+import { openExternalUrl } from '@renderer/lib/open-external';
 import { Alert, AlertAction, AlertDescription } from '@renderer/lib/ui/alert';
 import { Badge } from '@renderer/lib/ui/badge';
 import { Button } from '@renderer/lib/ui/button';
@@ -34,11 +36,15 @@ import {
 import { ConnectorProfile } from './connector-profile';
 import { ConnectorTile } from './connector-tile';
 import {
+  CONNECTOR_REQUEST_URL,
+  type ConnectorFilter,
   type ConnectorsTab,
   cardQuickAction,
+  connectorCategories,
   connectorsInTab,
   connectorsPageAccess,
   moreOnDiscover,
+  nothingMatchesText,
   toDiscoverText,
 } from './connectors-catalog';
 import {
@@ -128,6 +134,8 @@ function Connectors({
   const catalog = useConnectorCatalog(workspaceId);
   const [tab, setTab] = useState<ConnectorsTab>('discover');
   const [query, setQuery] = useState('');
+  const [category, setCategory] = useState<string | null>(null);
+  const filter: ConnectorFilter = { query, category };
   const { navigate } = useNavigate();
   const open = useParams('connectors').params.connector ?? null;
   const [justConnected, setJustConnected] = useState<{
@@ -235,6 +243,18 @@ function Connectors({
               onChange={(event) => setQuery(event.target.value)}
             />
           }
+          filters={
+            <FilterSelect
+              label="Category"
+              anyLabel="Any category"
+              value={category}
+              options={connectorCategories(catalog.data).map((name) => ({
+                value: name,
+                label: name,
+              }))}
+              onChange={setCategory}
+            />
+          }
         />
       )}
       {catalog.isError ? (
@@ -245,10 +265,10 @@ function Connectors({
         </p>
       ) : (
         <ConnectorGrid
-          entries={connectorsInTab(catalog.data, tab, query)}
-          more={tab === 'yours' && moreOnDiscover(catalog.data, query)}
+          entries={connectorsInTab(catalog.data, tab, filter)}
+          more={tab === 'yours' && moreOnDiscover(catalog.data, filter)}
           tab={tab}
-          query={query}
+          filter={filter}
           onBrowse={() => setTab('discover')}
           viewer={viewer}
           turningOn={turningOn}
@@ -264,7 +284,28 @@ function Connectors({
           }
         />
       )}
+      {catalog.data && tab === 'discover' && <RequestConnector />}
     </ServerPage>
+  );
+}
+
+/** The way to ask for a service the catalog does not list: a GitHub issue form, opened in the browser. */
+function RequestConnector() {
+  return (
+    <p className="flex flex-wrap items-center gap-2 text-sm text-foreground-muted">
+      <MessageSquarePlus className="size-4 shrink-0" />
+      Don’t see the service you need?
+      <Button
+        size="sm"
+        variant="link"
+        className="h-auto p-0 text-foreground underline underline-offset-2"
+        onClick={() =>
+          void openExternalUrl(CONNECTOR_REQUEST_URL, 'Could not open the connector request form')
+        }
+      >
+        Request a connector
+      </Button>
+    </p>
   );
 }
 
@@ -285,7 +326,7 @@ function ConnectorGrid({
   entries,
   more,
   tab,
-  query,
+  filter,
   onBrowse,
   viewer,
   turningOn,
@@ -298,8 +339,8 @@ function ConnectorGrid({
   /** On Yours, whether Discover lists anything for the search that Yours does not. */
   more: boolean;
   tab: ConnectorsTab;
-  query: string;
-  /** Switches to Discover, keeping the search. */
+  filter: ConnectorFilter;
+  /** Switches to Discover, keeping the search and the category. */
   onBrowse: () => void;
   viewer: ConnectorViewer;
   /** The services being turned on for the workspace from their card. */
@@ -312,22 +353,19 @@ function ConnectorGrid({
   if (entries.length === 0 && more)
     return (
       <p className="flex flex-wrap items-center gap-2 text-sm text-foreground-muted">
-        {query.trim()
-          ? `None of your connectors match “${query.trim()}”.`
-          : 'You have not connected anything yet.'}
+        {nothingMatchesText(tab, filter)}
         <Button size="sm" variant="outline" onClick={onBrowse}>
-          {toDiscoverText(query)}
+          {toDiscoverText(filter)}
         </Button>
       </p>
     );
+  // Nothing more on Discover either, so a filtered Yours is empty because
+  // nothing anywhere matches, and says that rather than "none of yours".
+  const narrowed = filter.query.trim() !== '' || filter.category !== null;
   if (entries.length === 0)
     return (
       <p className="text-sm text-foreground-muted">
-        {query.trim()
-          ? `No connector matches “${query.trim()}”.`
-          : tab === 'yours'
-            ? 'You have not connected anything yet. Find a service under Discover.'
-            : 'This server offers no connectors.'}
+        {nothingMatchesText(narrowed ? 'discover' : tab, filter)}
       </p>
     );
   const card = (entry: ConnectionCatalogEntry) => (
@@ -364,7 +402,7 @@ function ConnectorGrid({
             className="focus-visible:ring-ring flex cursor-pointer items-center gap-3 rounded-lg border border-dashed border-border p-4 text-left text-sm font-medium text-foreground transition-colors hover:bg-background-tertiary-2 focus-visible:ring-2 focus-visible:outline-none"
           >
             <Compass className="size-5 shrink-0 text-foreground-muted" />
-            {toDiscoverText(query)}
+            {toDiscoverText(filter)}
           </button>
         )}
       </div>

@@ -3,6 +3,7 @@ import BlockOutlined from "@mui/icons-material/BlockOutlined";
 import Check from "@mui/icons-material/Check";
 import ExploreOutlined from "@mui/icons-material/ExploreOutlined";
 import PriorityHigh from "@mui/icons-material/PriorityHigh";
+import RateReviewOutlined from "@mui/icons-material/RateReviewOutlined";
 import {
   Alert,
   Box,
@@ -11,8 +12,11 @@ import {
   Chip,
   CircularProgress,
   IconButton,
+  Link,
+  MenuItem,
   Snackbar,
   Stack,
+  TextField,
   ToggleButton,
   ToggleButtonGroup,
   Tooltip,
@@ -41,9 +45,29 @@ function usableFirst(connections: ServiceConnection[]): ServiceConnection[] {
   return [...connections.filter((c) => !blocked(c)), ...connections.filter(blocked)];
 }
 
-/** The way from Yours to Discover, keeping the search. */
-function toDiscoverText(query: string): string {
-  return query.trim() ? `Search Discover for “${query.trim()}”` : "Browse all connectors";
+/** What the person narrowed the list to: the search text, and one category or none. */
+type Filter = { query: string; category: string | null };
+
+/** Where to ask for a service the catalogue does not list. */
+const CONNECTOR_REQUEST_URL = "https://github.com/sandbox-quantum/switch/issues/new?template=connector_request.yml";
+
+/** The way from Yours to Discover, keeping the search and the category. */
+function toDiscoverText({ query, category }: Filter): string {
+  if (query.trim()) return `Search Discover for “${query.trim()}”`;
+  return category ? `Browse ${category} on Discover` : "Browse all connectors";
+}
+
+/** Why a tab shows nothing, in the words of what the person narrowed it by. */
+function nothingMatchesText(tab: Tab, { query, category }: Filter): string {
+  const needle = query.trim();
+  const where = category ? ` in ${category}` : "";
+  if (tab === "yours") {
+    if (needle) return `None of your connectors${where} match “${needle}”.`;
+    if (category) return `None of your connectors are in ${category}.`;
+    return "You haven't connected anything yet.";
+  }
+  if (needle) return `No connector${where} matches “${needle}”.`;
+  return category ? `No connector is in ${category}.` : "This server offers no connectors.";
 }
 
 /** A badge whose reason shows on hover, and is read out with the card by a
@@ -139,6 +163,8 @@ export default function ConnectorsPage() {
   const [connectError, setConnectError] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("discover");
   const [query, setQuery] = useState("");
+  const [category, setCategory] = useState<string | null>(null);
+  const filter: Filter = { query, category };
   const [keyFor, setKeyFor] = useState<ServiceConnection | null>(null);
   const [pasteFor, setPasteFor] = useState<ServiceConnection | null>(null);
   const { leaving, leave } = useLeaveToSignIn();
@@ -169,15 +195,28 @@ export default function ConnectorsPage() {
     );
   }, [admin]);
 
-  const connected = useMemo(() => (connections ?? []).filter(isConnected), [connections]);
+  const inCategory = useMemo(
+    () => (connections ?? []).filter((c) => category === null || c.category === category),
+    [connections, category],
+  );
+  // Every category in the catalogue, coming soon included, so the choice
+  // stays the same on both tabs.
+  const categories = useMemo(
+    () => [...new Set((connections ?? []).map((c) => c.category))].sort((a, b) => a.localeCompare(b)),
+    [connections],
+  );
+  const connected = useMemo(() => inCategory.filter(isConnected), [inCategory]);
   const shown = tab;
-  // From Yours, whether Discover lists anything for the search that Yours
+  // From Yours, whether Discover lists anything for the filter that Yours
   // does not. No number: one would have to say whether it counts services
   // that are off here, not set up or coming soon.
   const more = useMemo(
-    () => shown === "yours" && (connections ?? []).some((c) => !isConnected(c) && matchesQuery(c, query)),
-    [connections, shown, query],
+    () => shown === "yours" && inCategory.some((c) => !isConnected(c) && matchesQuery(c, query)),
+    [inCategory, shown, query],
   );
+  // Nothing more on Discover either, so a filtered Yours is empty because
+  // nothing anywhere matches, and says that rather than "none of yours".
+  const narrowed = query.trim() !== "" || category !== null;
 
   const connect = (connection: ServiceConnection) => {
     setConnectError(null);
@@ -227,8 +266,8 @@ export default function ConnectorsPage() {
         ) : (
           <Box>
             <CatalogueGrid
-              connectors={shown === "yours" ? connected : usableFirst(connections.filter((c) => c.enabled))}
-              comingSoon={shown === "yours" ? [] : connections.filter((c) => !c.enabled)}
+              connectors={shown === "yours" ? connected : usableFirst(inCategory.filter((c) => c.enabled))}
+              comingSoon={shown === "yours" ? [] : inCategory.filter((c) => !c.enabled)}
               query={query}
               onQueryChange={setQuery}
               controls={
@@ -245,20 +284,34 @@ export default function ConnectorsPage() {
                   <ToggleButton value="discover">Discover</ToggleButton>
                 </ToggleButtonGroup>
               }
+              filters={
+                <TextField
+                  select
+                  value={category ?? ""}
+                  onChange={(event) => setCategory(event.target.value || null)}
+                  sx={{ flex: "none", width: 210 }}
+                  slotProps={{
+                    select: { displayEmpty: true, SelectDisplayProps: { "aria-label": "Category" } },
+                  }}
+                >
+                  <MenuItem value="">Any category</MenuItem>
+                  {categories.map((name) => (
+                    <MenuItem key={name} value={name}>
+                      {name}
+                    </MenuItem>
+                  ))}
+                </TextField>
+              }
               emptyMessage={
-                shown !== "yours" ? (
-                  `No connector matches “${query.trim()}”.`
-                ) : more ? (
+                more ? (
                   <>
-                    {query.trim() ? `None of your connectors match “${query.trim()}”.` : "You haven't connected anything yet."}{" "}
+                    {nothingMatchesText(shown, filter)}{" "}
                     <Button size="small" variant="outlined" onClick={() => setTab("discover")} sx={{ ml: 1 }}>
-                      {toDiscoverText(query)}
+                      {toDiscoverText(filter)}
                     </Button>
                   </>
-                ) : query.trim() ? (
-                  `No connector matches “${query.trim()}”.`
                 ) : (
-                  "You haven't connected anything yet."
+                  nothingMatchesText(narrowed ? "discover" : shown, filter)
                 )
               }
               trailing={
@@ -279,7 +332,7 @@ export default function ConnectorsPage() {
                     }}
                   >
                     <ExploreOutlined fontSize="small" sx={{ color: "text.secondary" }} />
-                    {toDiscoverText(query)}
+                    {toDiscoverText(filter)}
                   </ButtonBase>
                 )
               }
@@ -316,6 +369,17 @@ export default function ConnectorsPage() {
                 );
               }}
             />
+            {shown === "discover" && (
+              <Stack direction="row" spacing={1} sx={{ mt: 3, alignItems: "center", color: "text.secondary" }}>
+                <RateReviewOutlined fontSize="small" />
+                <Typography variant="body2">
+                  Don&apos;t see the service you need?{" "}
+                  <Link href={CONNECTOR_REQUEST_URL} target="_blank" rel="noopener noreferrer">
+                    Request a connector
+                  </Link>
+                </Typography>
+              </Stack>
+            )}
           </Box>
         )}
       </Stack>

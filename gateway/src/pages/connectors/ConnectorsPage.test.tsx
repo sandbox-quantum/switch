@@ -371,6 +371,49 @@ describe("the Connectors catalogue", () => {
     expect(screen.queryByText("Atlassian")).toBeNull();
   });
 
+  it("narrows both tabs to one category, coming soon included, keeping it on the way to Discover", async () => {
+    signedIn();
+    const connected: ServiceConnection = { ...atlassian, status: "active", can_revoke: true };
+    answer({ "GET /service-connections": { connections: [asana, connected, datadog, google] } });
+    renderPage();
+    expect(await screen.findByText("Google Workspace")).toBeTruthy();
+
+    const pick = (name: string) => {
+      fireEvent.mouseDown(screen.getByRole("combobox", { name: "Category" }));
+      fireEvent.click(within(screen.getByRole("listbox")).getByRole("option", { name }));
+    };
+    pick("Project management");
+    expect(screen.getByText("Atlassian")).toBeTruthy();
+    expect(within(screen.getByRole("region", { name: "Coming soon" })).getByText("Asana")).toBeTruthy();
+    expect(screen.queryByText("Datadog")).toBeNull();
+    expect(screen.queryByText("Google Workspace")).toBeNull();
+
+    pick("Productivity");
+    fireEvent.click(screen.getByRole("button", { name: "Yours" }));
+    expect(screen.getByText(/None of your connectors are in Productivity\./)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Browse Productivity on Discover" }));
+    expect(screen.getByRole("button", { name: "Discover" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByText("Google Workspace")).toBeTruthy();
+    expect(screen.queryByText("Atlassian")).toBeNull();
+
+    pick("Any category");
+    expect(screen.getByText("Atlassian")).toBeTruthy();
+  });
+
+  it("offers a connector request on Discover only", async () => {
+    signedIn();
+    answer({ "GET /service-connections": { connections: [atlassian] } });
+    renderPage();
+
+    const link = await screen.findByRole("link", { name: "Request a connector" });
+    expect(link.getAttribute("href")).toBe(
+      "https://github.com/sandbox-quantum/switch/issues/new?template=connector_request.yml",
+    );
+    expect(link.getAttribute("target")).toBe("_blank");
+    fireEvent.click(screen.getByRole("button", { name: "Yours" }));
+    expect(screen.queryByRole("link", { name: "Request a connector" })).toBeNull();
+  });
+
   it("opens a connector's page from its card", async () => {
     signedIn();
     answer({ "GET /service-connections": { connections: [atlassian] } });

@@ -1,0 +1,43 @@
+name: Connector request
+description: Ask for a service your agents should be able to reach.
+title: 'Connector request: '
+labels: ['enhancement']
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Check the Connectors page first: a service listed there as **Coming soon** is already planned.
+        Upvote an existing request with a 👍 rather than opening another.
+
+  - type: input
+    id: service
+    attributes:
+      label: Service
+      description: The service's name, and its website.
+      placeholder: Example, https://example.com
+    validations:
+      required: true
+
+  - type: textarea
+    id: tasks
+    attributes:
+      label: What your agents would do with it
+      description: The tasks you have in mind, such as "triage new tickets" or "read dashboards".
+    validations:
+      required: true
+
+  - type: dropdown
+    id: access
+    attributes:
+      label: How the service can be reached
+      description: If you know. A hosted MCP server with sign-in is the quickest to add.
+      options:
+        - A hosted MCP server
+        - A command-line tool
+        - Its API only
+        - Not sure
+
+  - type: input
+    id: docs
+    attributes:
+      label: Link to its MCP server or API documentation

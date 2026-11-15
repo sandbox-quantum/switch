@@ -28,10 +28,12 @@ import {
 import {
   cardQuickAction,
   connectedAsLine,
+  connectorCategories,
   connectorsInTab,
   connectorsPageAccess,
   keyAccessText,
   moreOnDiscover,
+  nothingMatchesText,
   profileConnectAction,
   reconnectNote,
   signInLabel,
@@ -386,13 +388,18 @@ describe('the Yours and Discover tabs', () => {
     entry({ slug: 'notion', name: 'Notion', category: 'Docs', status: 'coming_soon' }),
   ];
   const names = (list: ConnectionCatalogEntry[]) => list.map((item) => item.name);
+  const q = (query: string) => ({ query, category: null });
 
   it('puts every connection the person has on Yours, working or not', () => {
-    expect(names(connectorsInTab(catalog, 'yours', ''))).toEqual(['Datadog', 'GitHub', 'Linear']);
+    expect(names(connectorsInTab(catalog, 'yours', q('')))).toEqual([
+      'Datadog',
+      'GitHub',
+      'Linear',
+    ]);
   });
 
   it('puts the whole catalog on Discover, connected services and coming soon included', () => {
-    expect(names(connectorsInTab(catalog, 'discover', ''))).toEqual([
+    expect(names(connectorsInTab(catalog, 'discover', q('')))).toEqual([
       'Atlassian',
       'Datadog',
       'GitHub',
@@ -402,24 +409,61 @@ describe('the Yours and Discover tabs', () => {
   });
 
   it('searches within the tab by name, category or description', () => {
-    expect(names(connectorsInTab(catalog, 'discover', 'project'))).toEqual(['Atlassian', 'Linear']);
-    expect(names(connectorsInTab(catalog, 'yours', 'project'))).toEqual(['Linear']);
-    expect(names(connectorsInTab(catalog, 'yours', 'atlas'))).toEqual([]);
-    expect(names(connectorsInTab(catalog, 'discover', ' NOTION '))).toEqual(['Notion']);
-    expect(names(connectorsInTab(catalog, 'discover', 'incidents'))).toEqual(['Datadog']);
+    expect(names(connectorsInTab(catalog, 'discover', q('project')))).toEqual([
+      'Atlassian',
+      'Linear',
+    ]);
+    expect(names(connectorsInTab(catalog, 'yours', q('project')))).toEqual(['Linear']);
+    expect(names(connectorsInTab(catalog, 'yours', q('atlas')))).toEqual([]);
+    expect(names(connectorsInTab(catalog, 'discover', q(' NOTION ')))).toEqual(['Notion']);
+    expect(names(connectorsInTab(catalog, 'discover', q('incidents')))).toEqual(['Datadog']);
   });
 
   it('knows whether Discover has more than Yours for a search, coming soon included', () => {
-    expect(moreOnDiscover(catalog, '')).toBe(true);
-    expect(moreOnDiscover(catalog, 'notion')).toBe(true);
-    expect(moreOnDiscover(catalog, 'datadog')).toBe(false);
-    expect(moreOnDiscover(catalog, 'zzz')).toBe(false);
-    expect(moreOnDiscover([entry({ status: 'connected' })], '')).toBe(false);
+    expect(moreOnDiscover(catalog, q(''))).toBe(true);
+    expect(moreOnDiscover(catalog, q('notion'))).toBe(true);
+    expect(moreOnDiscover(catalog, q('datadog'))).toBe(false);
+    expect(moreOnDiscover(catalog, q('zzz'))).toBe(false);
+    expect(moreOnDiscover([entry({ status: 'connected' })], q(''))).toBe(false);
   });
 
   it('words the way to Discover with and without a search', () => {
-    expect(toDiscoverText('')).toBe('Browse all connectors');
-    expect(toDiscoverText(' google ')).toBe('Search Discover for “google”');
+    expect(toDiscoverText(q(''))).toBe('Browse all connectors');
+    expect(toDiscoverText(q(' google '))).toBe('Search Discover for “google”');
+    expect(toDiscoverText({ query: '', category: 'Observability' })).toBe(
+      'Browse Observability on Discover'
+    );
+  });
+
+  it('narrows either tab to one category, with or without a search', () => {
+    const projects = { query: '', category: 'Project management' };
+    expect(names(connectorsInTab(catalog, 'discover', projects))).toEqual(['Atlassian', 'Linear']);
+    expect(names(connectorsInTab(catalog, 'yours', projects))).toEqual(['Linear']);
+    expect(names(connectorsInTab(catalog, 'discover', { ...projects, query: 'atlas' }))).toEqual([
+      'Atlassian',
+    ]);
+    expect(moreOnDiscover(catalog, projects)).toBe(true);
+    expect(moreOnDiscover(catalog, { query: '', category: 'Source control' })).toBe(false);
+  });
+
+  it('offers every category in the catalog once, in order, coming soon included', () => {
+    expect(connectorCategories(catalog)).toEqual([
+      'Docs',
+      'Observability',
+      'Project management',
+      'Source control',
+    ]);
+  });
+
+  it('says why a tab is empty in the words of the filter', () => {
+    expect(nothingMatchesText('yours', q(''))).toBe('You have not connected anything yet.');
+    expect(nothingMatchesText('yours', q('zzz'))).toBe('None of your connectors match “zzz”.');
+    expect(nothingMatchesText('yours', { query: '', category: 'Docs' })).toBe(
+      'None of your connectors are in Docs.'
+    );
+    expect(nothingMatchesText('discover', { query: 'zzz', category: 'Docs' })).toBe(
+      'No connector in Docs matches “zzz”.'
+    );
   });
 });
 
