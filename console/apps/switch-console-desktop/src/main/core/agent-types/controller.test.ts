@@ -25,7 +25,7 @@ it('offers remote agent types whose CLI is installed on the host', async () => {
   expect(statuses).toContainEqual({
     agentId: 'antigravity',
     available: false,
-    blockedReason: 'Install Antigravity ACP on example-host.',
+    blockedReason: 'Install Antigravity CLI (agy) on example-host.',
     blockedKind: 'not-installed',
   });
   expect(statuses).toContainEqual({

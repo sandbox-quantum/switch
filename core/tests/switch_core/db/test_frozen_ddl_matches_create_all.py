@@ -52,9 +52,18 @@ from sqlalchemy.ext.asyncio import create_async_engine
 import switch_core.db.models  # noqa: F401 — registers every table, and the RLS/notify DDL, on Base.metadata
 from switch_core.db.base import Base
 from switch_core.db.notify_ddl import NOTIFY_FUNCTION_NAME, NOTIFY_TRIGGER_NAME
-from switch_core.db.rls_ddl import POLICY_NAME, REQUIRE_TENANT_FUNCTION_NAME
+from switch_core.db.rls_ddl import (
+    ORGANIZATION_POLICY_NAME,
+    POLICY_NAME,
+    REQUIRE_ORGANIZATION_FUNCTION_NAME,
+    REQUIRE_TENANT_FUNCTION_NAME,
+)
 from switch_core.db.session_activity_notify_ddl import (
     SESSION_ACTIVITY_NOTIFY_FUNCTION,
+)
+from switch_core.db.session_version_ddl import (
+    SESSION_VERSION_FUNCTION_NAME,
+    SESSION_VERSION_TRIGGER_NAME,
 )
 from switch_core.db.tenant_lookup import TENANT_LOOKUPS
 
@@ -92,13 +101,15 @@ def _create_all(connection: Connection) -> None:
     Base.metadata.create_all(connection)
 
 
-def _policies(connection: Connection) -> dict[str, tuple[str | None, str | None]]:
+def _policies(
+    connection: Connection, name: str = POLICY_NAME
+) -> dict[str, tuple[str | None, str | None]]:
     rows = connection.execute(
         text(
             "SELECT tablename, qual, with_check FROM pg_policies "
             "WHERE schemaname = 'public' AND policyname = :name"
         ),
-        {"name": POLICY_NAME},
+        {"name": name},
     )
     return {row.tablename: (row.qual, row.with_check) for row in rows}
 
@@ -231,21 +242,29 @@ _SESSION_ACTIVITY_TRIGGERS = (
 @dataclass(frozen=True)
 class _DDLSnapshot:
     policies: dict[str, tuple[str | None, str | None]]
+    organization_policies: dict[str, tuple[str | None, str | None]]
     rls_enabled: dict[str, bool]
     require_tenant_id_body: str
+    require_organization_id_body: str
     tenant_lookups: dict[str, tuple[Any, ...]]
     security_definer_functions: set[str]
     notify_function_body: str
     notify_trigger_def: str
     session_activity_function_body: str
     session_activity_trigger_defs: dict[str, str]
+    session_version_function_body: str
+    session_version_trigger_def: str
 
 
 def _snapshot(connection: Connection) -> _DDLSnapshot:
     return _DDLSnapshot(
         policies=_policies(connection),
+        organization_policies=_policies(connection, ORGANIZATION_POLICY_NAME),
         rls_enabled=_rls_enabled(connection),
         require_tenant_id_body=_function_body(connection, REQUIRE_TENANT_FUNCTION_NAME),
+        require_organization_id_body=_function_body(
+            connection, REQUIRE_ORGANIZATION_FUNCTION_NAME
+        ),
         tenant_lookups=_tenant_lookups(connection),
         security_definer_functions=_security_definer_functions(connection),
         notify_function_body=_function_body(connection, NOTIFY_FUNCTION_NAME),
@@ -257,6 +276,12 @@ def _snapshot(connection: Connection) -> _DDLSnapshot:
             name: _trigger_def(connection, table, name)
             for table, name in _SESSION_ACTIVITY_TRIGGERS
         },
+        session_version_function_body=_function_body(
+            connection, SESSION_VERSION_FUNCTION_NAME
+        ),
+        session_version_trigger_def=_trigger_def(
+            connection, "users", SESSION_VERSION_TRIGGER_NAME
+        ),
     )
 
 
@@ -312,6 +337,14 @@ async def test_migration_ddl_matches_the_live_copy(ddl_parity_urls: Any) -> None
     # A sanity floor on the live side: if this were ever empty, every
     # assertion below would pass vacuously against a schema with no policies
     # at all, which is exactly the failure this test exists to catch.
+    assert _without_comments(
+        migrated.session_version_function_body
+    ) == _without_comments(live.session_version_function_body), (
+        "the migration's frozen switch_bump_session_version() body no longer "
+        "matches db/session_version_ddl.py's live copy"
+    )
+    assert migrated.session_version_trigger_def == live.session_version_trigger_def
+
     assert len(live.policies) >= 30, (
         "create_all did not attach any tenant_isolation policies — "
         "db/rls_ddl.py is not wired into Base.metadata"
@@ -326,6 +359,20 @@ async def test_migration_ddl_matches_the_live_copy(ddl_parity_urls: Any) -> None
         "the migration's frozen tenant_isolation policies (USING / WITH CHECK) "
         "no longer match db/rls_ddl.py's live copy:\n"
         + _diff(migrated.policies, live.policies)
+    )
+    assert live.organization_policies, (
+        "create_all did not attach any organization_isolation policies"
+    )
+    assert migrated.organization_policies == live.organization_policies, (
+        "the migration's frozen organization_isolation policies no longer "
+        "match db/rls_ddl.py's live copy:\n"
+        + _diff(migrated.organization_policies, live.organization_policies)
+    )
+    assert _without_comments(
+        migrated.require_organization_id_body
+    ) == _without_comments(live.require_organization_id_body), (
+        "the migration's frozen require_organization_id() body no longer "
+        "matches db/rls_ddl.py's live copy"
     )
     assert migrated.rls_enabled == live.rls_enabled, (
         "row-level security is enabled on a different set of tables in the "

@@ -5,6 +5,7 @@ import { agentPlacements } from '@main/core/sdk-host/connection-health';
 import { localWatcherControl } from '@main/core/sdk-host/local-host';
 import { withSidecar } from '@main/core/sdk-host/sidecar-control';
 import { deleteRoom, fetchMe } from '@main/core/switch-servers/gateway-client';
+import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import { withServerWorkspaceSession } from '@main/core/workspaces/workspace-session';
 import { requireWorkspaceForServer } from '@main/core/workspaces/workspaces-store';
 import { log } from '@main/lib/logger';
@@ -16,13 +17,17 @@ import type {
   RoomActivity,
 } from '@shared/core/chats/activity';
 import type {
+  ChatCommand,
+  ChatMember,
   ChatMessage,
   ChatMessagesPage,
   ChatSendInput,
   ChatSummary,
   ChatUpload,
   ChatUploadInput,
+  WorkspaceMember,
 } from '@shared/core/chats/chats';
+import type { RoomAccess, SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import { createRPCController } from '@shared/lib/ipc/rpc';
 import { type ActivityDeps, resolveChatActivity } from './activity';
 import {
@@ -31,18 +36,31 @@ import {
   resetChatStream,
   resyncChatStream,
 } from './chat-streams';
+import { type ChatCallEmit, chatMentions, reportingChatCall } from './chat-telemetry';
 import { generateChatTitle } from './chat-title';
 import {
+  addChatAgent,
+  addChatMember,
   answerChatApproval,
   archiveChat,
   createChat,
   fetchChatMedia,
   fetchChatMessages,
   fetchRoomActivity,
+  fetchThreadMessages,
+  listChatCommands,
+  listChatMembers,
+  listArchivedChats,
   listChats,
+  listWorkspaceMembers,
+  listAgentCandidates,
+  removeChatAgent,
+  removeChatMember,
+  markChatRead,
   renameChat,
   sendChatControl,
   sendChatMessage,
+  unarchiveChat,
   uploadChatAttachment,
   warmChatAgent,
 } from './gateway';
@@ -118,6 +136,21 @@ async function warmChat(
 }
 
 /**
+ * A chat call on the server that is reported to telemetry once it settles.
+ * `requestId` is the call's idempotency key, or null for a call without one.
+ */
+function reported<T>(
+  serverId: string,
+  requestId: string | null,
+  run: (server: SwitchServer) => Promise<T>,
+  emit: ChatCallEmit<T>
+): Promise<T> {
+  return onServer(serverId, (server) =>
+    reportingChatCall(server, requestId, () => run(server), emit)
+  );
+}
+
+/**
  * The signed-in person's chats on a server: rooms they are a member of, read
  * and written through the gateway's `/chats` routes, kept live by one feed
  * per server and tenant. Sending only ever posts to the room — routing,
@@ -144,22 +177,108 @@ export const chatsController = createRPCController({
     return { userId: me.id, tenantId: workspace.tenantId };
   },
   list: (serverId: string): Promise<ChatSummary[]> => onServer(serverId, listChats),
+  listArchived: (serverId: string): Promise<ChatSummary[]> => onServer(serverId, listArchivedChats),
   /** `greeting`: what the chat's one agent, the caller's own, says as it joins, in place of its usual line. */
   create: async (params: {
     serverId: string;
-    agentIds: string[];
+    agentIds?: string[];
+    memberUserIds?: string[];
     name: string | null;
     requestId: string;
     greeting: string | null;
+    /** Open the chat in this messaging app connection instead of in Switch. */
+    bridgeId?: string | null;
+    kind?: 'group';
+    resumeOnly?: boolean;
+    /** The room's own settings, as the New room dialog offers them. */
+    description?: string;
+    instructions?: string;
+    groupId?: string | null;
+    access?: RoomAccess | null;
   }): Promise<ChatSummary> => {
-    const chat = await onServer(params.serverId, (server) => createChat(server, params));
-    if (params.agentIds.length === 1)
+    const agentIds = params.agentIds ?? [];
+    const asked = {
+      agent_count: agentIds.length,
+      person_count: params.memberUserIds?.length ?? 0,
+      on_messaging_app: Boolean(params.bridgeId),
+    };
+    const chat = await (params.resumeOnly
+      ? onServer(params.serverId, (server) => createChat(server, params))
+      : reported(
+          params.serverId,
+          params.requestId,
+          (server) => createChat(server, params),
+          (outcome, made) =>
+            trackEvent('chat_created', {
+              ...outcome,
+              ...asked,
+              kind: made === null ? 'unknown' : made.channelType === 'direct' ? 'direct' : 'group',
+            })
+        ));
+    // A group's agent answers only when mentioned, so there is no first turn to get ready for.
+    if (agentIds.length === 1 && params.kind !== 'group')
       void warmChat(
-        { serverId: params.serverId, agentId: params.agentIds[0], roomId: chat.roomId },
+        { serverId: params.serverId, agentId: agentIds[0], roomId: chat.roomId },
         false
       );
     return chat;
   },
+  addAgent: (params: { serverId: string; roomId: string; agentId: string }): Promise<ChatSummary> =>
+    reported(
+      params.serverId,
+      null,
+      (server) => addChatAgent(server, params.roomId, params.agentId),
+      (outcome) =>
+        trackEvent('chat_member_changed', { ...outcome, change: 'added', member_kind: 'agent' })
+    ),
+  removeAgent: (params: { serverId: string; roomId: string; agentId: string }): Promise<void> =>
+    reported(
+      params.serverId,
+      null,
+      (server) => removeChatAgent(server, params.roomId, params.agentId),
+      (outcome) =>
+        trackEvent('chat_member_changed', { ...outcome, change: 'removed', member_kind: 'agent' })
+    ),
+  members: (serverId: string, roomId: string): Promise<ChatMember[]> =>
+    onServer(serverId, (server) => listChatMembers(server, roomId)),
+  /** The room commands a member can type here, for the composer's `!` list. */
+  commands: (serverId: string, roomId: string): Promise<ChatCommand[]> =>
+    onServer(serverId, (server) => listChatCommands(server, roomId)),
+  addMember: (params: {
+    serverId: string;
+    roomId: string;
+    userId: string;
+  }): Promise<ChatMember[]> =>
+    reported(
+      params.serverId,
+      null,
+      (server) => addChatMember(server, params.roomId, params.userId),
+      (outcome) =>
+        trackEvent('chat_member_changed', { ...outcome, change: 'added', member_kind: 'person' })
+    ),
+  removeMember: (params: { serverId: string; roomId: string; userId: string }): Promise<void> =>
+    reported(
+      params.serverId,
+      null,
+      (server) => removeChatMember(server, params.roomId, params.userId),
+      (outcome) =>
+        trackEvent('chat_member_changed', { ...outcome, change: 'removed', member_kind: 'person' })
+    ),
+  /** The people of a workspace on the server, who a chat can be opened to. */
+  workspaceMembers: (params: { serverId: string; tenantId: string }): Promise<WorkspaceMember[]> =>
+    onServer(params.serverId, (server) => listWorkspaceMembers(server, params.tenantId)),
+  /** The agents the viewer may add to a new chat (`roomId` null) or to that chat. */
+  agentCandidates: (params: {
+    serverId: string;
+    roomId: string | null;
+    /** For a new chat, the group it will be filed in. */
+    groupId?: string | null;
+  }): Promise<string[]> =>
+    onServer(params.serverId, (server) =>
+      listAgentCandidates(server, params.roomId, params.groupId ?? null)
+    ),
+  markRead: (params: { serverId: string; roomId: string; seq: number }): Promise<void> =>
+    onServer(params.serverId, (server) => markChatRead(server, params.roomId, params.seq)),
   messages: (params: {
     serverId: string;
     roomId: string;
@@ -172,15 +291,43 @@ export const chatsController = createRPCController({
         limit: Math.min(200, Math.max(1, params.limit)),
       })
     ),
-  send: (input: ChatSendInput): Promise<ChatMessage[]> =>
-    onServer(input.serverId, (server) =>
-      sendChatMessage(server, input.roomId, {
-        requestId: input.requestId,
-        body: input.body,
-        threadRootId: input.threadRootId,
-        uploadIds: input.uploadIds,
-      })
-    ),
+  send: (input: ChatSendInput): Promise<ChatMessage[]> => {
+    // The input crosses IPC unvalidated, so absent fields must not throw here.
+    const shape = {
+      has_attachment: (input.uploadIds?.length ?? 0) > 0,
+      in_thread: input.threadRootId != null,
+      mentions: chatMentions(input),
+    };
+    return reported(
+      input.serverId,
+      input.requestId,
+      (server) =>
+        sendChatMessage(server, input.roomId, {
+          requestId: input.requestId,
+          body: input.body,
+          threadRootId: input.threadRootId,
+          uploadIds: input.uploadIds,
+          mentionAgentIds: input.mentionAgentIds,
+          mentionUserIds: input.mentionUserIds,
+          mentionSpans: input.mentionSpans,
+        }),
+      (outcome) => trackEvent('chat_message_sent', { ...outcome, ...shape })
+    );
+  },
+  threadMessages: (params: {
+    serverId: string;
+    roomId: string;
+    rootId: string;
+    beforeSeq: number | null;
+    limit: number;
+  }): Promise<ChatMessage[]> =>
+    onServer(params.serverId, async (server) => {
+      const page = await fetchThreadMessages(server, params.roomId, params.rootId, {
+        beforeSeq: params.beforeSeq,
+        limit: Math.min(200, Math.max(1, params.limit)),
+      });
+      return page.messages;
+    }),
   upload: (input: ChatUploadInput): Promise<ChatUpload> =>
     onServer(input.serverId, (server) =>
       uploadChatAttachment(server, input.roomId, {
@@ -203,6 +350,8 @@ export const chatsController = createRPCController({
   },
   archive: (serverId: string, roomId: string): Promise<void> =>
     onServer(serverId, (server) => archiveChat(server, roomId)),
+  unarchive: (serverId: string, roomId: string): Promise<void> =>
+    onServer(serverId, (server) => unarchiveChat(server, roomId)),
   delete: (serverId: string, roomId: string): Promise<void> =>
     onServer(serverId, async (server) => {
       await deleteRoom(server, roomId);
@@ -233,13 +382,19 @@ export const chatsController = createRPCController({
     requestId: string;
     agentId: string;
     command: ChatControlCommand;
+    messageId: string | null;
   }): Promise<string> =>
-    onServer(params.serverId, (server) =>
-      sendChatControl(server, params.roomId, {
-        requestId: params.requestId,
-        agentId: params.agentId,
-        command: params.command,
-      })
+    reported(
+      params.serverId,
+      params.requestId,
+      (server) =>
+        sendChatControl(server, params.roomId, {
+          requestId: params.requestId,
+          agentId: params.agentId,
+          command: params.command,
+          messageId: params.messageId,
+        }),
+      (outcome) => trackEvent('chat_control_sent', { ...outcome, command: params.command })
     ),
   answerApproval: (params: {
     serverId: string;
@@ -248,5 +403,10 @@ export const chatsController = createRPCController({
     requestId: string;
     answer: ChatApprovalAnswer;
   }): Promise<ChatApproval> =>
-    onServer(params.serverId, (server) => answerChatApproval(server, params, params.answer)),
+    reported(
+      params.serverId,
+      `${params.agentId}:${params.sessionId}:${params.requestId}`,
+      (server) => answerChatApproval(server, params, params.answer),
+      (outcome) => trackEvent('chat_approval_answered', outcome)
+    ),
 });

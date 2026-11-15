@@ -17,6 +17,7 @@ The HTTP tests drive the real auth router against real Postgres, as
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import httpx
@@ -58,6 +59,7 @@ def _app(session_factory: async_sessionmaker[AsyncSession]) -> FastAPI:
         gateway_cookie_secure=False,
         gateway_password_login_enabled=True,
         gateway_tenant_choice_enabled=False,
+        gateway_admin_email="admin@example.invalid",
     )
     return app
 
@@ -74,7 +76,15 @@ async def _admin_client(
         )
         await _USER_STORE.create(session, admin)
         await session.commit()
-    token = create_jwt(admin.id, admin.email, "admin", _KEYRING, None)
+    token = create_jwt(
+        admin.id,
+        admin.email,
+        "admin",
+        _KEYRING,
+        None,
+        session_version=0,
+        auth_time=datetime.now(UTC),
+    )
     return httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app),
         base_url="http://test",
@@ -208,7 +218,7 @@ class TestCreateUserOverHttp:
         assert await _emails_like(session_factory, "ed@example.invalid") == []
 
     @pytest.mark.parametrize(
-        ("role", "membership_role"), [("user", "member"), ("admin", "owner")]
+        ("role", "membership_role"), [("user", "member"), ("admin", "admin")]
     )
     async def test_a_known_role_is_stored_with_its_membership(
         self,
@@ -363,3 +373,34 @@ class TestCreateUserSchemaValidation:
     def test_bad_email_rejected(self) -> None:
         with pytest.raises(ValidationError):
             CreateUserRequest(name="Ada", email="not-an-email", password="good-pass-1")
+
+
+class TestWhichAccountsTheOperatorMayDelete:
+    async def test_each_user_says_whether_the_operator_may_delete_them(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Not their own account, nor the server's administrator account,
+        which the server recreates; the same refusals `DELETE /users/{id}`
+        makes before anything else."""
+        async with session_factory() as session:
+            for name, email, role in (
+                ("Ada", "ada@example.invalid", "user"),
+                ("Root", "root@example.invalid", "admin"),
+                ("Configured", "admin@example.invalid", "user"),
+            ):
+                await _USER_STORE.create(
+                    session,
+                    User(name=name, email=email, role=role, password_hash=None),
+                )
+            await session.commit()
+        app = _app(session_factory)
+        async with await _admin_client(session_factory, app) as client:
+            response = await client.get("/users")
+
+        assert response.status_code == 200, response.text
+        assert {u["name"]: u["can_delete"] for u in response.json()} == {
+            "Operator": False,
+            "Ada": True,
+            "Root": False,
+            "Configured": False,
+        }

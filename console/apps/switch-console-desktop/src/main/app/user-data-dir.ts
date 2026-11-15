@@ -18,9 +18,19 @@ export const USER_DATA_DIR_ENV = 'SWITCH_CONSOLE_USER_DATA_DIR';
  * than resolved somewhere outside the app-data directory.
  */
 export function userDataDirName(): string {
-  const named = import.meta.env.DEV || IS_CANARY ? process.env[USER_DATA_DIR_ENV] : undefined;
+  const named = readsUserDataDirEnv() ? process.env[USER_DATA_DIR_ENV] : undefined;
   if (!named) return USER_DATA_DIR_NAME;
   return checkedFolderName(named);
+}
+
+/** Whether this build honours SWITCH_CONSOLE_USER_DATA_DIR: dev and Canary only. */
+export function readsUserDataDirEnv(): boolean {
+  return import.meta.env.DEV || IS_CANARY;
+}
+
+/** A new, empty data folder name for a fresh-install replay, kept off nested `-replay-` suffixes. */
+export function freshReplayDirName(current: string, now: number): string {
+  return `${current.replace(/-replay-\d+$/, '')}-replay-${now}`;
 }
 
 /** `name` when it is one plain folder name; throws, naming the variable, otherwise. */

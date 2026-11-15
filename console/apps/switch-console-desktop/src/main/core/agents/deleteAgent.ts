@@ -1,8 +1,10 @@
 import { eq } from 'drizzle-orm';
 import { forgetManagedAgent } from '@main/core/agent-migration/managed-agents-store';
+import { deleteLocationIfUnused } from '@main/core/locations/store';
 import { getPlugin } from '@main/core/providers/plugin-registry';
+import { releaseHostIfUnused } from '@main/core/remote-hosts/production-host-reachability';
 import { discardControllerState } from '@main/core/sdk-host/agent-host';
-import { sessionHooks } from '@main/core/sessions/session-hooks';
+import { type SessionRemovedBy, sessionHooks } from '@main/core/sessions/session-hooks';
 import { setControllerStopped } from '@main/core/switch-rooms/auto-session-store';
 import { autoSessionWatcher } from '@main/core/switch-rooms/auto-session-watcher';
 import {
@@ -11,6 +13,7 @@ import {
 } from '@main/core/switch-servers/gateway-client';
 import { agentTypeOf } from '@main/core/telemetry/agent-type';
 import type {
+  TelemetryAgentPruneCause,
   TelemetryAgentRemoveFailure,
   TelemetryAgentRemoveTrigger,
   TelemetryLocationKind,
@@ -107,7 +110,21 @@ async function deleteAgentInSwitch(agent: Agent): Promise<void> {
     );
   }
 
-  await withWorkspaceSession(workspaceId, (server) => gatewayDeleteAgent(server, switchAgentId));
+  await withWorkspaceSession(workspaceId, async (server) => {
+    try {
+      await gatewayDeleteAgent(server, switchAgentId);
+    } catch (error) {
+      // Already gone on the server (an old identity, or a server since reset): the
+      // local delete still has to happen, or the agent can never be removed.
+      if (!(error instanceof GatewayError && error.kind === 'http' && error.status === 404)) {
+        throw error;
+      }
+      log.warn('deleteAgent: the Switch identity was already gone', {
+        agentId: agent.id,
+        switchAgentId,
+      });
+    }
+  });
 }
 
 /**
@@ -186,39 +203,74 @@ async function removeProvisionedFiles(agent: Agent, location: Location): Promise
  *    processes untouched — on a shared host they may belong to another install
  *    (CHOO-2560). Sibling agents' files are never touched either way.
  *
- * The agent's location row is intentionally kept — locations are reusable
- * and other agents may still live there.
+ * The agent's location row goes with its last agent (its directory never
+ * does); a location other agents still use is kept. A remote host nothing
+ * uses any more stops being probed.
  */
 export async function deleteAgent(agentId: string, options: DeleteAgentOptions): Promise<void> {
-  const agent = await getAgentById(agentId);
-  const location = agent ? await getAgentLocation(agent).catch(() => null) : null;
-  // Captured before the row goes: after the delete below there is nothing left
-  // to describe what was removed.
-  const shape = {
-    agent_type: agent ? agentTypeOf(agent.providerId) : ('unknown' as const),
-    location: locationKindOfRow(location),
+  const { agent, location, shape } = await describeRemoval(agentId);
+  const reported = {
+    ...shape,
     delete_in_switch: options.deleteInSwitch,
     trigger: agentRemoveTriggerOf(options.trigger),
   };
 
   try {
-    await removeAgent(agentId, agent, location, options);
+    await removeAgent(agentId, agent, location, options, 'person');
   } catch (error) {
     trackEvent('agent_removed', {
-      ...shape,
+      ...reported,
       outcome: 'failure',
       failure_reason: removeFailureReason(error),
     });
     throw error;
   }
-  trackEvent('agent_removed', { ...shape, outcome: 'success', failure_reason: 'none' });
+  trackEvent('agent_removed', { ...reported, outcome: 'success', failure_reason: 'none' });
+}
+
+/**
+ * Remove an agent its Switch server no longer has, as a plain remove does: the
+ * Console's row only, with the working directory and the host left as they
+ * are. Reported as `agent_pruned`, with why, rather than as a person removing
+ * an agent.
+ */
+export async function pruneAgent(agentId: string, cause: TelemetryAgentPruneCause): Promise<void> {
+  const { agent, location, shape } = await describeRemoval(agentId);
+  try {
+    await removeAgent(
+      agentId,
+      agent,
+      location,
+      { deleteInSwitch: false, removeProvisionedFiles: false },
+      'app'
+    );
+  } catch (error) {
+    trackEvent('agent_pruned', { ...shape, cause, outcome: 'failure' });
+    throw error;
+  }
+  trackEvent('agent_pruned', { ...shape, cause, outcome: 'success' });
+}
+
+/**
+ * The agent about to be removed, read before the row goes: after the delete
+ * there is nothing left to describe what was removed.
+ */
+async function describeRemoval(agentId: string) {
+  const agent = await getAgentById(agentId);
+  const location = agent ? await getAgentLocation(agent).catch(() => null) : null;
+  const shape = {
+    agent_type: agent ? agentTypeOf(agent.providerId) : ('unknown' as const),
+    location: locationKindOfRow(location),
+  };
+  return { agent, location, shape };
 }
 
 async function removeAgent(
   agentId: string,
   agent: Agent | undefined,
   location: Location | null,
-  options: DeleteAgentOptions
+  options: Pick<DeleteAgentOptions, 'deleteInSwitch' | 'removeProvisionedFiles'>,
+  sessionsRemovedBy: SessionRemovedBy
 ): Promise<void> {
   // A remote agent deleted in Switch has nothing left to run, so it is removed
   // from its host too.
@@ -227,15 +279,15 @@ async function removeAgent(
   const terminate = removeFiles || options.deleteInSwitch;
   const stopController = () =>
     location?.sshHost ? stopRemoteWatcher(agentId) : autoSessionWatcher.stopForAgent(agentId);
+  // Gateway cascade first: fail loud before touching local state (the controller
+  // included) so a failure leaves the agent exactly as it was.
+  if (options.deleteInSwitch && agent) {
+    await deleteAgentInSwitch(agent);
+  }
   const stoppedUpFront = terminate && agent !== undefined;
   if (stoppedUpFront) {
     await stopController();
     await stopSharedAgentSessions(agent);
-  }
-  // Gateway cascade first: fail loud before touching local state so a failure
-  // never leaves the row deleted but the Switch identity orphaned.
-  if (options.deleteInSwitch && agent) {
-    await deleteAgentInSwitch(agent);
   }
 
   const sessionRows = await db
@@ -294,6 +346,21 @@ async function removeAgent(
   // so nothing else announces their end. Without this every session an agent
   // owned reports a start and no finish — the row is gone and no later pass can
   // notice it left.
-  for (const row of sessionRows) sessionHooks._emit('session:deleted', row.id);
+  for (const row of sessionRows) sessionHooks._emit('session:deleted', row.id, sessionsRemovedBy);
   agentEvents._emit('agent:deleted', agentId);
+
+  if (location) await releaseLocationIfUnused(location);
+}
+
+/** Housekeeping after the agent is gone: a failure here must not report the delete as failed. */
+async function releaseLocationIfUnused(location: Location): Promise<void> {
+  try {
+    await deleteLocationIfUnused(location.id);
+    if (location.sshHost) await releaseHostIfUnused(location.sshHost);
+  } catch (error) {
+    log.warn('deleteAgent: failed to release the unused location', {
+      locationId: location.id,
+      error: String(error),
+    });
+  }
 }

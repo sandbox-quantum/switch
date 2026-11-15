@@ -18,6 +18,8 @@ describe('parseConsoleLink', () => {
       id: 'a-1',
       tab: 'settings',
       server: 'https://switch.example.com',
+      workspace: null,
+      use: false,
     });
     expect(ok('switchdash://open/agents/new')).toMatchObject({ page: 'agents/new', id: null });
     expect(ok('switchdash://open/messaging-apps/connect')).toMatchObject({
@@ -29,7 +31,23 @@ describe('parseConsoleLink', () => {
       id: null,
       tab: null,
       server: 'http://127.0.0.1:3000',
+      workspace: null,
+      use: false,
     });
+  });
+
+  it("reads the workspace a link means, and a template link's ask for its Use form", () => {
+    expect(
+      ok('switchdash://open/template/official:switch-expert?workspace=t-2&use=1')
+    ).toMatchObject({
+      page: 'template',
+      id: 'official:switch-expert',
+      workspace: 't-2',
+      use: true,
+    });
+    // Only a template has a Use form.
+    expect(ok('switchdash://open/room/r-1?use=1')).toMatchObject({ use: false });
+    expect(ok('switchdash://open/template/t-1?use=yes')).toMatchObject({ use: false });
   });
 
   it('says why a link cannot be followed', () => {
@@ -53,25 +71,35 @@ describe('parseConsoleLink', () => {
         id: spec.id ? 'x-1' : undefined,
         tab: spec.tabs?.[0],
         server: 'http://127.0.0.1:3000',
+        workspace: 't-1',
+        use: page === 'template',
       });
       expect(ok(link)).toEqual({
         page,
         id: spec.id ? 'x-1' : null,
         tab: spec.tabs?.[0] ?? null,
         server: 'http://127.0.0.1:3000',
+        workspace: 't-1',
+        use: page === 'template',
       });
     }
   });
 });
 
 describe("switch-buddy's instructions", () => {
-  const instructions = readFileSync(
-    join(
-      __dirname,
-      '../../../../../../../core/switch_core/official_templates/switch-buddy/AGENT.md'
-    ),
-    'utf8'
-  );
+  // AGENT.md, plus the playbook it points at for the rarer pages.
+  const instructions = ['AGENT.md', 'PLAYBOOK.md']
+    .map((name) =>
+      readFileSync(
+        join(
+          __dirname,
+          '../../../../../../../core/switch_core/official_templates/switch-buddy',
+          name
+        ),
+        'utf8'
+      )
+    )
+    .join('\n');
   const links = [...instructions.matchAll(/switchdash:\/\/open\/[^\s`)|]+/g)].map((match) =>
     match[0].replace(/<[a-z-]+>/g, 'sample-id')
   );

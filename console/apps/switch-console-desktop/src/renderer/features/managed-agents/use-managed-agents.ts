@@ -1,5 +1,6 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect } from 'react';
+import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { serverAvailability } from '@renderer/features/switch-servers/server-availability';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
@@ -7,6 +8,7 @@ import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { events, rpc } from '@renderer/lib/ipc';
 import { chatActivityChannel, chatMessageChannel } from '@shared/core/chats/chatEvents';
 import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
+import { workspacesChangedChannel } from '@shared/core/workspaces/workspaceEvents';
 import { agentMigrationChannel } from '@shared/events/agentMigrationEvents';
 import { MANAGED_AGENTS_KEY } from './use-managed-agents-key';
 import { useUserChangesLive } from './use-user-changes';
@@ -69,6 +71,15 @@ export function useManagedAgents(serverId: string | null) {
   const workspaceId = workspacesStore.idOnServerInScope(serverId);
   const pushed = useUserChangesLive(signedIn ? serverId : null);
   const managementOn = useFeatureFlags(serverId).agent_management;
+  // The startup workspace pass can change which workspace main reads the list
+  // for without changing the key here: read it again once it settles.
+  useEffect(
+    () =>
+      events.on(workspacesChangedChannel, () => {
+        void queryClient.invalidateQueries({ queryKey: [MANAGED_AGENTS_KEY, serverId] });
+      }),
+    [queryClient, serverId]
+  );
   useEffect(
     () =>
       events.on(agentMigrationChannel, (event) => {
@@ -194,11 +205,13 @@ export function useAdvancedConfigSchema(serverId: string | null) {
  * the way every managed agent is, from the server, rather than twice or as a
  * Console agent with a room watcher that no longer runs here.
  */
-export function withoutManaged<T extends { switchAgentId: string | null }>(
+export function withoutManaged<T extends { id: string; switchAgentId: string | null }>(
   agents: T[],
   managed: ManagedAgentView[] | null | undefined
 ): T[] {
-  if (!managed) return agents;
+  // A moved agent's old row never shows as a Console agent, listed by the server or not.
+  const own = agents.filter((agent) => !agentsStore.isMoved(agent.id));
+  if (!managed) return own;
   const ids = new Set(managed.map((agent) => agent.agentId));
-  return agents.filter((agent) => agent.switchAgentId === null || !ids.has(agent.switchAgentId));
+  return own.filter((agent) => agent.switchAgentId === null || !ids.has(agent.switchAgentId));
 }

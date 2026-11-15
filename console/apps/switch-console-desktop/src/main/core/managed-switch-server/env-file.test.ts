@@ -8,6 +8,7 @@ import {
   MANAGED_SERVER_FEATURE_FLAGS,
   managedServerFeatureFlags,
   readStackEnv,
+  STABLE_MANAGED_SERVER_FLAGS,
   telemetryRequested,
 } from './env-file';
 import type { LocalServerSecrets } from './secret-values';
@@ -88,14 +89,26 @@ describe('buildEnvFile', () => {
   });
 
   it('turns on what switch-buddy needs only in a build with the new first run', () => {
-    expect(managedServerFeatureFlags(true)).toEqual([
+    expect(managedServerFeatureFlags(true, false)).toEqual([
       'agent_management',
       'agent_chats',
       'switch_buddy',
       'follow_the_conversation',
       'service_connections',
     ]);
-    expect(managedServerFeatureFlags(false)).toEqual([]);
+    expect(managedServerFeatureFlags(false, false)).toEqual([]);
+    expect(managedServerFeatureFlags(false, true)).toEqual([]);
+  });
+
+  it('adds group chats and the chat-app hand-off on the canary switch-core only', () => {
+    expect(managedServerFeatureFlags(true, true)).toEqual([
+      ...STABLE_MANAGED_SERVER_FLAGS,
+      'group_chats',
+      'buddy_slack_handoff',
+      'gateway_v2',
+    ]);
+    expect(managedServerFeatureFlags(true, false)).not.toContain('group_chats');
+    expect(managedServerFeatureFlags(true, false)).not.toContain('buddy_slack_handoff');
   });
 
   it('runs switch-core as the restricted runtime role, not the schema owner', () => {

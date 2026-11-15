@@ -299,6 +299,8 @@ class TestBridgeLevelWorkBindsTheBridgesTenant:
             await original()
 
         bridge._create_agent_identities = _watched  # type: ignore[method-assign]
+        # Every agent is to be read, as `start` asks.
+        bridge._identities_stale = True
 
         with tenant_scope("tenant-whoever-started-the-bridge"):
             await bridge._run_agent_identities()

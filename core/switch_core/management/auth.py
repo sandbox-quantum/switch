@@ -23,9 +23,13 @@ import re
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.archived_workspace import is_archived
 from switch_core.bridges.agent.auth import ControllerAuthError, ControllerPrincipal
 from switch_core.bridges.agent.controller_auth_cache import ControllerAuthCache
-from switch_core.bridges.agent.protocol.controller_presence import ControllerPresence
+from switch_core.bridges.agent.protocol.controller_presence import (
+    Binding,
+    ControllerPresence,
+)
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_controller_store import AgentControllerStore
 from switch_core.db.tenant_lookup import tenant_of_api_key
@@ -53,7 +57,7 @@ class ManagementAuthenticator:
     ) -> None:
         self._session_factory = session_factory
         self._controllers = controllers
-        self._token_secret = token_secret
+        self._verified = tokens.VerifiedTokens(secret=token_secret)
         self._presence = presence
         self._auth_cache = auth_cache
 
@@ -76,7 +80,7 @@ class ManagementAuthenticator:
 
     async def authenticate(self, token: str) -> ControllerPrincipal:
         try:
-            claims = tokens.verify_access_token(token, secret=self._token_secret)
+            claims = self._verified.verify(token)
         except tokens.AccessTokenExpired as exc:
             raise ControllerAuthError(
                 reason_codes.TOKEN_EXPIRED,
@@ -87,17 +91,33 @@ class ManagementAuthenticator:
                 reason_codes.INVALID_CREDENTIAL,
                 "The access token is not a valid controller token.",
             ) from exc
+        return await self.current(
+            ControllerPrincipal(
+                controller_id=claims.controller_id,
+                owner_id=claims.owner_id,
+                tenant_id=claims.tenant_id,
+            )
+        )
 
-        cached = self._auth_cache.controller(claims.tenant_id, claims.controller_id)
-        if cached is not None and cached.owner_id == claims.owner_id:
+    async def current(self, principal: ControllerPrincipal) -> ControllerPrincipal:
+        """The controller `principal` names, while it keeps the authority its
+        token gave it: not revoked, and owned by the same person. Every request
+        made with a controller access token is checked here, and every call on
+        a controller's socket, which authenticated once when it opened."""
+        cached = self._auth_cache.controller(
+            principal.tenant_id, principal.controller_id
+        )
+        if cached is not None and cached.owner_id == principal.owner_id:
             return cached
 
-        generation = self._auth_cache.generation
-        async with tenant_session(self._session_factory, claims.tenant_id) as session:
+        ticket = self._auth_cache.ticket()
+        async with tenant_session(
+            self._session_factory, principal.tenant_id
+        ) as session:
             controller = await self._controllers.get(
-                session, claims.tenant_id, claims.controller_id
+                session, principal.tenant_id, principal.controller_id
             )
-        if controller is None or controller.owner_id != claims.owner_id:
+        if controller is None or controller.owner_id != principal.owner_id:
             raise ControllerAuthError(
                 reason_codes.INVALID_CREDENTIAL,
                 "The access token names no controller.",
@@ -106,13 +126,24 @@ class ManagementAuthenticator:
             raise ControllerAuthError(
                 reason_codes.CONTROLLER_REVOKED, "The controller has been revoked."
             )
-        principal = ControllerPrincipal(
+        current = ControllerPrincipal(
             controller_id=controller.id,
             owner_id=controller.owner_id,
-            tenant_id=claims.tenant_id,
+            tenant_id=principal.tenant_id,
         )
-        self._auth_cache.put_controller(principal, generation)
-        return principal
+        self._auth_cache.put_controller(current, ticket)
+        return current
+
+    async def stopped_by_archive(self, binding: Binding) -> bool:
+        """Whether `binding` is stopped because its workspace is archived: its
+        controller may then not act for the agent, on an agent route or its
+        socket, as the agent's own key may not (`bridges/agent/auth.py`).
+        Read only for a binding not running, so acting for a running agent
+        costs nothing more."""
+        if binding.running:
+            return False
+        async with tenant_session(self._session_factory, binding.tenant_id) as session:
+            return await is_archived(session, binding.tenant_id)
 
     async def tenant_of_secret(self, secret: str) -> str | None:
         """The tenant an enrollment code or controller credential belongs to,

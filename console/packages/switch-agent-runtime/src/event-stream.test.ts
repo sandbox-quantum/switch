@@ -510,6 +510,64 @@ describe('a server restart', () => {
   });
 });
 
+describe('a busy server', () => {
+  it('opens again when the server says, not on its own backoff', async () => {
+    vi.useFakeTimers();
+    serve((socket, index) => {
+      if (index === 0) {
+        socket.refuse(503, { code: 'busy', message: 'opening at capacity', retry_after_s: 12 });
+        return;
+      }
+      attach(socket, 0);
+    });
+    const { abort } = makeStream({ rooms: [] });
+
+    // The backoff alone would have opened again after 1 s.
+    await vi.advanceTimersByTimeAsync(11_900);
+    expect(server.sockets).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(server.sockets).toHaveLength(2);
+    abort.abort();
+  });
+
+  it('stops at once when stopped while waiting its turn', async () => {
+    vi.useFakeTimers();
+    serve((socket) => {
+      socket.refuse(503, { code: 'busy', message: 'opening at capacity', retry_after_s: 300 });
+    });
+    const { abort } = makeStream({ rooms: [] });
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(server.sockets).toHaveLength(1);
+
+    abort.abort();
+    await vi.advanceTimersByTimeAsync(0);
+    // Nothing is left waiting out the 300 s, to keep the process alive.
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('waits its turn even right after a restart', async () => {
+    vi.useFakeTimers();
+    serve((socket, index) => {
+      if (index === 0) {
+        attach(socket, 0);
+        queueMicrotask(() => socket.drop(1012, 'service restart'));
+      } else if (index === 1) {
+        socket.refuse(503, { code: 'busy', message: 'opening at capacity', retry_after_s: 30 });
+      } else {
+        attach(socket, 0);
+      }
+    });
+    const { abort } = makeStream({ rooms: [] });
+
+    // A restart alone retries within a second; the queue's time wins.
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(server.sockets).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(12_000);
+    expect(server.sockets).toHaveLength(3);
+    abort.abort();
+  });
+});
+
 describe('reopening while an open is still in flight', () => {
   /**
    * A server that keeps the incarnation the way the real one does: every open
@@ -1337,6 +1395,28 @@ describe('placements', () => {
     }
   });
 
+  it('names back the rooms Switch left out of the placements, and none from a server that does not say', async () => {
+    serve((socket) => {
+      socket.open();
+      socket.announce(4);
+    });
+    let body =
+      '{"ok":true,"refused":[{"session_id":"old","room_id":"room-deleted","reason":"gone"}]}';
+    const fetchMock = vi.fn(async (url: string) =>
+      url.includes('connection/placements') ? answer(200, body) : answer()
+    );
+    const { stream, abort } = makeStream({ rooms: [], scope: 'all' }, fetchMock);
+    try {
+      await expect(stream.replacePlacements({ old: 'room-deleted', s: 'room' })).resolves.toEqual({
+        refusedRooms: ['room-deleted'],
+      });
+      body = '{"ok":true}';
+      await expect(stream.replacePlacements({ s: 'room' })).resolves.toEqual({ refusedRooms: [] });
+    } finally {
+      abort.abort();
+    }
+  });
+
   it('does not give its connection up to itself over a request answered across its own reopen', async () => {
     // Seen on a real host: placements stated under incarnation 4, the stream
     // reopened (to 5) before the answer came, and the answer, "taken over:
@@ -1404,6 +1484,56 @@ describe('placements', () => {
     try {
       await expect(stream.replacePlacements({ session: 'room' })).rejects.toThrow('409');
       expect(evicted.map((eviction) => eviction.code)).toEqual([EVICTION_TAKEN_OVER]);
+    } finally {
+      abort.abort();
+    }
+  });
+});
+
+describe('what connection_state says', () => {
+  it('tells a session start to the room itself only where the server says it leaves that to it', async () => {
+    for (const [said, expected] of [
+      [{ announce_session_starts: true }, true],
+      [{}, false],
+    ] as const) {
+      server.sockets = [];
+      serve((socket) => {
+        socket.open();
+        socket.frame('connection_state', { connection_id: 'conn-1', generation: 0, ...said });
+      });
+      let connected = false;
+      const { stream, abort } = makeStream({
+        rooms: [],
+        onConnected: () => {
+          connected = true;
+        },
+      });
+      expect(stream.announcesSessionStarts).toBe(false);
+      await vi.waitFor(() => expect(connected).toBe(true));
+      expect(stream.announcesSessionStarts).toBe(expected);
+      abort.abort();
+    }
+  });
+
+  it('reports a restart gap resuming above the cursor as no cursor reset', async () => {
+    serve((socket) => {
+      attach(socket, 0);
+      socket.frame('message', { type: 'message', room_id: 'r' }, 7);
+      socket.frame('gap', {
+        from_sequence: 7,
+        resumed_at: 2 ** 32 - 1,
+        reason: 'server restarted',
+        rooms: [],
+      });
+    });
+    const gaps: { cursorReset?: boolean; resumedAt?: number }[] = [];
+    const { stream, abort } = makeStream({ rooms: [], onGap: (g) => void gaps.push(g) });
+    try {
+      await vi.waitFor(() => expect(gaps).toHaveLength(1));
+      expect(gaps).toEqual([
+        expect.objectContaining({ resumedAt: 2 ** 32 - 1, cursorReset: false }),
+      ]);
+      expect(stream.position).toEqual({ s: 2 ** 32 - 1 });
     } finally {
       abort.abort();
     }

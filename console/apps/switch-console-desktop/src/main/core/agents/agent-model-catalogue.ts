@@ -1,9 +1,13 @@
+import { stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { providerReadinessSchema } from '@switch-console/agent-providers';
 import type { LaunchProfileModel } from '@switch-console/core/agents/plugins';
 import { resolveCommandPath } from '@switch-console/core/deps/runtime';
 import { isTransportFailure } from '@switch-console/core/exec';
-import { resolveAgentExecutable } from '@main/core/agent-runtime/impl/resolve-agent-executable';
+import {
+  resolveAgentExecutable,
+  resolveAgentExecutableWithReason,
+} from '@main/core/agent-runtime/impl/resolve-agent-executable';
 import { localDependencyManager } from '@main/core/dependencies/dependency-managers';
 import { hostDependencyStore } from '@main/core/dependencies/host-dependency-store';
 import { LocalExecutionContext } from '@main/core/execution-context/local-execution-context';
@@ -14,7 +18,7 @@ import { getPlugin } from '@main/core/providers/plugin-registry';
 import { locateSharedHost } from '@main/core/sdk-host/shared-host-deployment';
 import { ensureSshConnected } from '@main/core/ssh/connect/connect-agent-ssh';
 import { log } from '@main/lib/logger';
-import { ensureUserBinDirsInPath } from '@main/utils/userEnv';
+import { ensureUserBinDirsInPath, ensureWindowsUserBinDirsInPath } from '@main/utils/userEnv';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 
 /**
@@ -67,7 +71,8 @@ export async function getAgentModelCatalogue(params: {
 
   let ctx: IExecutionContext | null = null;
   try {
-    const host = await resolveHost(params.sshHost, params.dir);
+    const dir = params.sshHost || (await isDirectory(params.dir)) ? params.dir : homedir();
+    const host = await resolveHost(params.sshHost, dir);
     ctx = host.ctx;
 
     const cli = await resolveAgentExecutable({
@@ -144,15 +149,21 @@ export async function getProviderReadiness(
   models: boolean
 ) {
   params = { ...params, dir: params.dir.trim() || (params.sshHost ? '.' : homedir()) };
+  // The CLI and its sign-in do not depend on the directory, and one not made yet
+  // (a managed agent's workspace before its first session) read as the CLI missing.
+  if (!params.sshHost && !(await isDirectory(params.dir))) params = { ...params, dir: homedir() };
   let installed: boolean | null = null;
   let ctx: IExecutionContext | undefined;
-  if (!params.sshHost) ensureUserBinDirsInPath();
+  if (!params.sshHost) {
+    ensureUserBinDirsInPath();
+    if (process.platform === 'win32') ensureWindowsUserBinDirsInPath();
+  }
   try {
     const transport = locationTransport(params);
     const host = await resolveHost(params.sshHost, params.dir);
     ctx = host.ctx;
     const plugin = getPlugin(params.providerId);
-    const cli = await resolveAgentExecutable({
+    const { path: cli, selectionProblem } = await resolveAgentExecutableWithReason({
       providerId: params.providerId,
       binaryName: plugin.capabilities.hostDependency.binaryNames[0] ?? params.providerId,
       ctx,
@@ -164,7 +175,9 @@ export async function getProviderReadiness(
       return {
         installed: false,
         status: 'unknown' as const,
-        message: `${plugin.metadata.name} is not installed or its selected executable cannot be found.`,
+        message: selectionProblem
+          ? `${selectionProblem} No other ${plugin.metadata.name} was found on PATH either. Choose its executable again in Settings → Agent providers.`
+          : `${plugin.metadata.name} is not installed or its selected executable cannot be found.`,
         models: [],
       };
     const deployed = await locateSharedHost(transport, params.dir);
@@ -194,5 +207,13 @@ export async function getProviderReadiness(
     };
   } finally {
     ctx?.dispose();
+  }
+}
+
+async function isDirectory(path: string): Promise<boolean> {
+  try {
+    return (await stat(path)).isDirectory();
+  } catch {
+    return false;
   }
 }

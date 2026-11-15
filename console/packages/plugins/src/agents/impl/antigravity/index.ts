@@ -1,15 +1,26 @@
 import { definePlugin, registerPluginBehavior } from '@switch-console/core/agents/plugins';
 import { icon } from './icon';
-import { ANTIGRAVITY_INSTALL_COMMAND } from './install';
+
+/** Google's installers for the Antigravity CLI, `agy`, which serves ACP as `agy acp`. */
+export const AGY_INSTALL_UNIX = 'curl -fsSL https://antigravity.google/cli/install.sh | bash';
+/**
+ * Written without `$` or `%`: the install runner's shell may be PowerShell or
+ * cmd.exe, and each would expand one of them before `powershell -c` ran. It
+ * installs `agy.exe` into `%LOCALAPPDATA%\agy\bin`.
+ */
+export const AGY_INSTALL_WINDOWS =
+  'powershell -ExecutionPolicy ByPass -c "irm https://antigravity.google/cli/install.ps1 | iex"';
+export const AGY_INSTALL_WINDOWS_CMD =
+  'curl -fsSL https://antigravity.google/cli/install.cmd -o install.cmd && install.cmd && del install.cmd';
 
 export const plugin = definePlugin(
   {
     id: 'antigravity',
     name: 'Antigravity',
     description:
-      'Google Antigravity ACP with native authentication, approvals and persistent conversations.',
-    websiteUrl: 'https://github.com/agentclientprotocol/registry/tree/main/antigravity-acp',
-    cliLabel: 'Antigravity ACP',
+      'Google Antigravity CLI over ACP, with its own sign-in, approvals and persistent conversations.',
+    websiteUrl: 'https://antigravity.google/docs/ide/extensions/acp/',
+    cliLabel: 'Antigravity CLI (agy)',
     sessionStartMaySignIn: true,
   },
   {
@@ -21,19 +32,20 @@ export const plugin = definePlugin(
     },
     hostDependency: {
       id: 'antigravity',
-      binaryNames: ['antigravity-acp'],
+      // `agy` first; `antigravity-acp` is the runtime Switch Console installed
+      // before Google's CLI served ACP, still run where it is all there is.
+      binaryNames: ['agy', 'antigravity-acp'],
+      installDocs: 'https://antigravity.google/docs/install?tab=cli',
       installCommands: {
-        macos: [
+        macos: [{ method: 'curl', command: AGY_INSTALL_UNIX, recommended: true }],
+        linux: [{ method: 'curl', command: AGY_INSTALL_UNIX, recommended: true }],
+        windows: [
           {
-            method: 'curl',
-            command: ANTIGRAVITY_INSTALL_COMMAND,
+            method: 'powershell',
+            command: AGY_INSTALL_WINDOWS,
+            recommended: true,
           },
-        ],
-        linux: [
-          {
-            method: 'curl',
-            command: ANTIGRAVITY_INSTALL_COMMAND,
-          },
+          { method: 'curl', label: 'Command Prompt', command: AGY_INSTALL_WINDOWS_CMD },
         ],
       },
       updates: {
@@ -42,7 +54,8 @@ export const plugin = definePlugin(
           kind: 'none',
         },
         update: {
-          kind: 'package-manager',
+          kind: 'cli',
+          args: ['update'],
         },
       },
     },
@@ -66,7 +79,21 @@ export const plugin = definePlugin(
   { icon }
 );
 
+/**
+ * How the Antigravity CLI at `binaryPath` updates. agy updates itself; the
+ * legacy `antigravity-acp` launcher takes no update command, so updating it
+ * installs agy with Google's installer, which then takes over. That launcher
+ * was only ever installed on macOS and Linux.
+ */
+export function antigravityUpdateCommand(binaryPath: string): { command: string; args: string[] } {
+  const name = binaryPath.replaceAll('\\', '/').split('/').at(-1)!.toLowerCase();
+  return name.startsWith('antigravity-acp')
+    ? { command: 'bash', args: ['-c', AGY_INSTALL_UNIX] }
+    : { command: binaryPath, args: ['update'] };
+}
+
 export const provider = registerPluginBehavior(plugin, {
+  hostDependency: { buildUpdateCommand: antigravityUpdateCommand },
   prompt: {
     buildCommand: () => {
       throw new Error('Antigravity runs through the ACP session host.');

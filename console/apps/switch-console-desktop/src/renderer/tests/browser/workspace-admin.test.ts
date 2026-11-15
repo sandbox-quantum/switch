@@ -16,7 +16,7 @@ function signedInAs(role: 'admin' | 'user') {
   statusFor.mockReturnValue({ user: { id: 'u-1', role } });
 }
 
-function inWorkspaceAs(role: 'owner' | 'admin' | 'member' | null) {
+function inWorkspaceAs(role: 'admin' | 'member' | null) {
   onServerInScope.mockReturnValue({ id: 'ws-1', tenantId: 't-1', role });
 }
 
@@ -26,10 +26,8 @@ describe('administersWorkspaceInScope', () => {
     statusFor.mockReset().mockReturnValue(undefined);
   });
 
-  it('lets an owner or admin of the workspace manage it', () => {
+  it('lets an admin of the workspace manage it', () => {
     signedInAs('user');
-    inWorkspaceAs('owner');
-    expect(administersWorkspaceInScope('srv-1')).toBe(true);
     inWorkspaceAs('admin');
     expect(administersWorkspaceInScope('srv-1')).toBe(true);
   });

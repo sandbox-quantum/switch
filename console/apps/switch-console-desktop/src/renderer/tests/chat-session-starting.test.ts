@@ -92,6 +92,15 @@ describe('turn-end notices', () => {
       reason: null,
     });
     expect(read('I finished without replying.')).toEqual({ outcome: 'completed', reason: null });
+    expect(
+      read(
+        'I finished without replying. The turn failed: Use !reset to start a fresh session, then send your message again. exceeds 30.000MB limit.'
+      )
+    ).toEqual({
+      outcome: 'failed',
+      reason:
+        'Use !reset to start a fresh session, then send your message again. exceeds 30.000MB limit.',
+    });
   });
 
   it('leaves other messages alone', () => {
@@ -114,6 +123,6 @@ describe('turn-end notices', () => {
     // The host posts only a failed turn now; the others are still read, for
     // the notices older hosts left in a chat's history.
     expect(source).toContain(`\`${UNPOSTED_REPLY_MESSAGE} ${TURN_FAILED_PHRASE}\${reason}\``);
-    expect(source).toContain("? `: ${cap(detail.trim(), 1000)}` : '.'");
+    expect(source).toContain("? `: ${hint}${cap(detail.trim(), 1000)}` : '.'");
   });
 });

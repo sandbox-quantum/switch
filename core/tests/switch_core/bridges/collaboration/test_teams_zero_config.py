@@ -19,6 +19,7 @@ from switch_core.bridges.collaboration.lifecycle_service import (
 from switch_core.bridges.collaboration.models import (
     BridgeConnectionConfig,
     BridgeCredentialError,
+    CreatedChannel,
 )
 from switch_core.bridges.collaboration.teams.adapter import (
     TeamsAdapter,
@@ -282,8 +283,8 @@ class _RecordingAdapter(PlatformAdapter):
     async def send_message(self, *args: Any, **kwargs: Any) -> str | None:
         return None
 
-    async def create_channel(self, *args: Any, **kwargs: Any) -> str:
-        return "c"
+    async def create_channel(self, *args: Any, **kwargs: Any) -> CreatedChannel:
+        return CreatedChannel(id="c", name="c")
 
     async def get_channel_type(self, *args: Any, **kwargs: Any) -> Any:
         return None
@@ -425,6 +426,8 @@ def _service_with_existing(
     session = MagicMock()
     session.__aenter__ = AsyncMock(return_value=session)
     session.__aexit__ = AsyncMock(return_value=None)
+    # Asked whether the bridge's workspace is archived: it is not.
+    session.scalar = AsyncMock(return_value=None)
     store = MagicMock()
     store.get_all = AsyncMock(return_value=existing)
     service = CollaborationBridgeLifecycleService(
@@ -598,6 +601,8 @@ async def test_concurrent_registration_cannot_take_the_same_port_twice(
     session = MagicMock()
     session.__aenter__ = AsyncMock(return_value=session)
     session.__aexit__ = AsyncMock(return_value=None)
+    # Asked whether the bridge's workspace is archived: it is not.
+    session.scalar = AsyncMock(return_value=None)
     session.commit = AsyncMock(return_value=None)
     store = MagicMock()
     store.get_all = AsyncMock(side_effect=lambda _s: list(stored))
@@ -685,6 +690,8 @@ async def test_start_refuses_a_second_bridge_already_holding_the_port(
     session = MagicMock()
     session.__aenter__ = AsyncMock(return_value=session)
     session.__aexit__ = AsyncMock(return_value=None)
+    # Asked whether the bridge's workspace is archived: it is not.
+    session.scalar = AsyncMock(return_value=None)
 
     stored = await _stored_bridge(id="second-id")
     store = MagicMock()

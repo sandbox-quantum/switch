@@ -3,7 +3,7 @@ import type { LinkedIdentity, RemoteBridge } from '@shared/core/switch-servers/s
 import {
   hasUnlinkedMessagingApp,
   identityLinkOrderingNote,
-  messagingAppsToLink,
+  linkedIdentityOn,
   shouldOfferIdentityLinkOnConnect,
   unrecognisedMessagingApps,
   unrecognisedMessagingAppsMessage,
@@ -16,6 +16,7 @@ function bridge(id: string, displayName: string): RemoteBridge {
     displayName,
     status: 'active',
     isDefault: false,
+    preconfigured: null,
     homeUrl: null,
     channelCreationSupported: true,
     canCreateChannels: true,
@@ -23,12 +24,15 @@ function bridge(id: string, displayName: string): RemoteBridge {
     attention: null,
     teamPlacementSupported: false,
     channelIdsRefused: null,
+    privateChannels: null,
+    privateChannelNeedsLinkedAccount: false,
+    publicChannelAddsCreator: false,
     receivesWebhooks: false,
     webhookUrl: null,
   };
 }
 
-function identity(bridgeId: string): LinkedIdentity {
+function identity(bridgeId: string, verified = true): LinkedIdentity {
   return {
     id: `identity-${bridgeId}`,
     bridgeId,
@@ -36,6 +40,7 @@ function identity(bridgeId: string): LinkedIdentity {
     bridgeType: 'slack',
     externalUserId: 'U1',
     externalUsername: 'me',
+    verified,
   };
 }
 
@@ -128,6 +133,10 @@ describe('hasUnlinkedMessagingApp', () => {
   it('is true when one app is unlinked', () => {
     expect(hasUnlinkedMessagingApp([slack, mattermost], [identity('b-slack')])).toBe(true);
   });
+
+  it('counts a link made before links had to be confirmed, which still works', () => {
+    expect(hasUnlinkedMessagingApp([slack], [identity('b-slack', false)])).toBe(false);
+  });
 });
 
 describe('unrecognisedMessagingAppsMessage', () => {
@@ -196,23 +205,21 @@ describe('what is said instead, where the link step is withheld', () => {
   });
 });
 
-describe('messagingAppsToLink', () => {
-  const slack = bridge('b-slack', 'Slack');
-  const discord = bridge('b-discord', 'Discord');
+describe('linkedIdentityOn', () => {
+  const unconfirmed = { ...identity('b-slack', false), id: 'old', externalUsername: 'old' };
+  const confirmed = { ...identity('b-slack'), id: 'new', externalUsername: 'new' };
 
-  it('names every active app with no linked account', () => {
-    expect(messagingAppsToLink([slack, discord], [identity('b-discord')])).toEqual([slack]);
+  it('shows a confirmed account over an unconfirmed one, in either order', () => {
+    // Otherwise the row would say "Not confirmed" while a confirmed link exists.
+    expect(linkedIdentityOn('b-slack', [unconfirmed, confirmed])).toBe(confirmed);
+    expect(linkedIdentityOn('b-slack', [confirmed, unconfirmed])).toBe(confirmed);
   });
 
-  it('names nothing once every app is linked', () => {
-    expect(messagingAppsToLink([slack], [identity('b-slack')])).toEqual([]);
+  it('falls back to an unconfirmed account, which still counts', () => {
+    expect(linkedIdentityOn('b-slack', [unconfirmed])).toBe(unconfirmed);
   });
 
-  it('names nothing while the linked accounts are unknown', () => {
-    expect(messagingAppsToLink([slack], null)).toEqual([]);
-  });
-
-  it('leaves out a connection that is down', () => {
-    expect(messagingAppsToLink([{ ...slack, status: 'error' }], [])).toEqual([]);
+  it('is null for an app with nothing linked', () => {
+    expect(linkedIdentityOn('b-mm', [confirmed])).toBeNull();
   });
 });

@@ -58,7 +58,7 @@ async def set_agent_service(
     (`get_my_context` lists both).
     Some services need a choice only a person can make, such as which GitHub
     repositories: when the refusal says so, link your owner to the agent's
-    Connections tab (`switchdash://open/agent/<agent-id>?tab=connections`), where
+    Connectors tab (`switchdash://open/agent/<agent-id>?tab=connections`), where
     Switch Console asks for it.
 
     Args:
@@ -104,7 +104,9 @@ async def set_agent_service(
             "agent": agent.name,
             "service": grant.service,
             "access": grant.access,
-            "summary": broker.summary(agent.display_name or agent.name, grant),
+            "summary": await broker.summary(
+                session, agent.display_name or agent.name, grant
+            ),
             "warning": warning,
         }
 

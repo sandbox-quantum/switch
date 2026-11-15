@@ -2,11 +2,7 @@ import { observer } from 'mobx-react-lite';
 import { Fragment, useEffect, useState } from 'react';
 import { BuddyStep } from '@renderer/features/switch-buddy/buddy-step';
 import { openBuddyAfterOnboarding } from '@renderer/features/switch-buddy/open-buddy';
-import {
-  ExternalServerStep,
-  LocalSetupStep,
-  SignInStep,
-} from '@renderer/features/switch-servers/AddServerModal';
+import { ExternalServerStep, SignInStep } from '@renderer/features/switch-servers/AddServerModal';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { useSwitchCloud } from '@renderer/features/switch-servers/use-switch-cloud';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
@@ -23,6 +19,7 @@ import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import type { RendererTelemetryEvents } from '@shared/core/telemetry/renderer-events';
 import { CreateWorkspacePage } from './create-workspace-page';
 import { type CloudChoiceState, HowToRunPage } from './how-to-run-page';
+import { LocalSetupProgress } from './local-setup-progress';
 import { OnboardingIntro } from './onboarding-intro';
 import { onboardingStore, type OnboardingPage } from './onboarding-store';
 import { PickWorkspacePage } from './pick-workspace-page';
@@ -263,7 +260,7 @@ function currentPage(
       );
     case 'local':
       return (
-        <LocalSetupStep
+        <LocalSetupProgress
           onBack={back}
           onDone={(serverId) => {
             // Console signed in to the stack it runs as its admin: the
@@ -272,7 +269,6 @@ function currentPage(
             if (started) onboardingStore.startedLocally(started);
             else finish(serverId);
           }}
-          onClose={null}
           onRegistered={(serverId) => onboardingStore.registered('local', serverId)}
         />
       );

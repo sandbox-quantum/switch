@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { and, desc, eq, isNull, ne, or, sql } from 'drizzle-orm';
 import { encryptedAppSecretsStore } from '@main/core/secrets/encrypted-app-secrets-store';
-import type { TelemetryEventMap } from '@main/core/telemetry/events';
+import type { TelemetryServerKind } from '@main/core/telemetry/events';
 import { forgetSessionAccount, recordSessionAccount } from '@main/core/telemetry/internal-account';
 import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import { forgetServerSession } from '@main/core/workspaces/workspace-session';
@@ -19,6 +19,7 @@ import { type SwitchServerRow, switchServers } from '@main/db/schema';
 import { log } from '@main/lib/logger';
 import {
   normaliseServerUrl,
+  sameApiEndpoint,
   urlOrigin,
   type AddServerParams,
   type ManagedServerParams,
@@ -29,6 +30,7 @@ import {
 } from '@shared/core/switch-servers/switch-servers';
 import { workspaceUnavailability } from '@shared/core/workspaces/workspaces';
 import { deleteManagedClaudeCredential } from './managed-claude-credential';
+import { switchCloudEndpoint } from './switch-cloud';
 
 // Keyed to the server, not the workspace: one gateway session cookie covers
 // every workspace on a server.
@@ -259,6 +261,7 @@ export async function ensureManagedServer(
     trackEvent('server_added', {
       server_kind: ref.kind === 'remote' ? 'remote_managed' : 'local',
       outcome: 'success',
+      failure_reason: 'none',
     });
   }
   return server;
@@ -434,12 +437,39 @@ export async function removeServer(id: string): Promise<void> {
   if (server) trackEvent('server_removed', { server_kind: serverKindOf(server) });
 }
 
-/** The reported kind of a server, in the same terms `server_added` uses. */
+/**
+ * The reported kind of a server, in the same terms `server_added` uses. Takes
+ * the three fields it reads, so an address that failed to register can be
+ * described the same way as a row.
+ */
 export function serverKindOf(
-  server: SwitchServer
-): TelemetryEventMap['server_added']['server_kind'] {
-  if (!server.managed) return 'external';
-  return server.managementKind === 'remote' ? 'remote_managed' : 'local';
+  server: Pick<SwitchServer, 'managed' | 'managementKind' | 'url'>
+): TelemetryServerKind {
+  if (server.managed) return server.managementKind === 'remote' ? 'remote_managed' : 'local';
+  return addressedServerKind(server.url);
+}
+
+/**
+ * Switch Cloud when `url` is the Cloud this build or run names, matched by
+ * origin as the interface matches it (`sameApiEndpoint`), and any other server
+ * otherwise. A Cloud named by an address that cannot be read leaves no way to
+ * tell the two apart, so the server is `unknown`: the misconfiguration is
+ * logged here, and surfaces to the user where the Cloud is offered, rather than
+ * failing whatever is being reported on.
+ */
+function addressedServerKind(url: string): TelemetryServerKind {
+  let cloud: ReturnType<typeof switchCloudEndpoint>;
+  try {
+    cloud = switchCloudEndpoint();
+  } catch (error) {
+    log.warn('telemetry: Switch Cloud is misconfigured, so a server kind is reported unknown', {
+      event: 'telemetry_server_kind_unknown',
+      error: String(error),
+    });
+    return 'unknown';
+  }
+  if (cloud === null) return 'external';
+  return sameApiEndpoint(cloud.url, url) ? 'cloud' : 'external';
 }
 
 /**

@@ -19,9 +19,12 @@ async def catalog(
     session: Annotated[AsyncSession, Depends(get_session)],
     config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> dict:
-    """The catalog as a Console from before service connections reads it, and
-    as any Console does on a server with them switched off: GitHub alone can
-    be connected, and every other service is coming."""
+    """The catalog as a Console from before service connections reads it.
+    With them switched on, every enabled service is listed as enabled; off,
+    GitHub alone, whose own connect routes stay, and every other service is
+    coming. Today's Console reads it only where `/service-connections` is
+    missing, and offers connectors only with the flag on, so nothing it
+    offers comes from here."""
     services_on = config.service_connections_enabled
     connected = set(
         await session.scalars(
@@ -51,6 +54,9 @@ async def catalog(
                     if definition.slug in connected
                     else "not_connected"
                 ),
+                # The caller's own connection, while they have one and the
+                # route that ends it is on.
+                "can_revoke": enabled and definition.slug in connected,
             }
         )
     return {"connections": entries}

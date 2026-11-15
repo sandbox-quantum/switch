@@ -10,6 +10,7 @@ vi.mock('@renderer/features/switch-rooms/switch-rooms-store', () => ({
 vi.mock('@renderer/features/switch-servers/switch-rooms-store', () => ({
   switchRoomsStore: { roomNameById: (id: string) => id },
 }));
+vi.mock('@renderer/features/chats/stores/chats', () => ({ chatsStore: { chat: () => undefined } }));
 
 const { groupByRoom } = await import('./sidebar-room-grouping');
 

@@ -27,7 +27,7 @@
     "db:fixtures": "vitest run --project fixtures",
     "test:migrations": "vitest run --project migrations",
     "db:reset": "rm -f \"$HOME/Library/Application Support/switchdash-dev/switchdash.db\" \"$HOME/Library/Application Support/switchdash-dev/switchdash.db-wal\" \"$HOME/Library/Application Support/switchdash-dev/switchdash.db-shm\" \"$HOME/.config/switchdash-dev/switchdash.db\" \"$HOME/.config/switchdash-dev/switchdash.db-wal\" \"$HOME/.config/switchdash-dev/switchdash.db-shm\"",
-    "test": "vitest run --project node --project main-db --project migrations --project browser",
+    "test": "vitest run --project node --project main-db --project migrations && vitest run --project browser",
     "build": "electron-vite build && pnpm run build:sidecar && pnpm run build:local-server",
     "build:main": "electron-vite build --filter main",
     "build:sidecar": "node scripts/build-sidecar.mjs",
@@ -76,7 +76,7 @@
     "smol-toml": "^1.8.0",
     "ssh2": "^1.17.0",
     "tldts": "^7.4.2",
-    "zod": "^4.3.6"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@base-ui/react": "^1.3.0",

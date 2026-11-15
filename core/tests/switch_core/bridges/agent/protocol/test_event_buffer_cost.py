@@ -16,6 +16,7 @@ from collections.abc import Iterator
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.bridges.agent.protocol import event_buffer
 from switch_core.bridges.agent.protocol.event_buffer import (
     CursorExpiredError,
     EventBuffer,
@@ -138,6 +139,34 @@ async def test_a_read_records_how_many_events_it_returned(
     scanned = _histograms(registry, "switch.agent.buffer.scanned")["read"]
     assert scanned.count == 2
     assert scanned.total == 13.0
+
+
+async def test_a_read_builds_no_statement_once_its_shape_has_been_read(
+    db_buffer: EventBuffer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stream reads an agent's events for every event it delivers, and
+    building the statement each time cost more than running it, so each shape
+    of read is built once and run with bind parameters."""
+    buffer = db_buffer
+    for index in range(3):
+        await _keep(buffer, "agent-1", _event(index))
+    first = await buffer.read_from(
+        TENANT_ZERO_ID, "agent-1", 0, limit=200, through_seq=10**9
+    )
+
+    def built(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("the read's statement was built again")
+
+    monkeypatch.setattr(event_buffer, "select", built)
+    again = await buffer.read_from(
+        TENANT_ZERO_ID, "agent-2", 0, limit=200, through_seq=10**9
+    )
+    later = await buffer.read_from(
+        TENANT_ZERO_ID, "agent-1", first[0].seq, limit=200, through_seq=10**9
+    )
+
+    assert [e.seq for e in first][1:] == [e.seq for e in later]
+    assert again == []
 
 
 async def test_a_read_and_an_unread_count_record_their_duration(

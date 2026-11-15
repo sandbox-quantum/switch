@@ -31,7 +31,8 @@ export const roomGroupPaths: FastScenario = {
     requires: [],
   },
   async run({ fixtures, names, switchClient, log }) {
-    const agent = await fixtures.agent('grp');
+    // Only a workspace admin's agent may create room groups.
+    const agent = await fixtures.agent('grp', { ownedByAdmin: true });
     const call = <T>(operation: string, args: Record<string, unknown>): Promise<T> =>
       switchClient.callOperation<T>(agent, operation, args);
     const group = async (name: string, parent: string | null): Promise<RoomGroup> => {

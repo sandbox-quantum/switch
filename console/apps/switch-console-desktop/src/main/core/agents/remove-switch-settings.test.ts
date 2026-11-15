@@ -19,6 +19,7 @@ function fakeFs(initial: Record<string, string>): PluginFs & { files: Map<string
       files.delete(p);
       return Promise.resolve();
     },
+    protectSecret: (p: string) => Promise.resolve(files.has(p)),
     exists: (p: string) => Promise.resolve(files.has(p)),
     list: () => Promise.resolve([]),
   };

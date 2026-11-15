@@ -16,7 +16,11 @@ import {
   fetchMediaToFile,
   SESSION_SELECTOR_HEADERS,
 } from '@sandboxaq/switch-agent-runtime/hosted';
-import { type AgentEventStream, openHubStream } from '@switch-console/agent-providers';
+import {
+  type AgentEventStream,
+  type AgentStreamDeps,
+  openHubStream,
+} from '@switch-console/agent-providers';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import WebSocket from 'ws';
 import { AgentHub } from './agent-hub';
@@ -26,6 +30,7 @@ import { silentLogger } from './log';
 import { LocalRelay } from './relay';
 import { UpstreamForwarder } from './relay-forward';
 import type { AgentAssignment } from './schemas';
+import { SocketCalls } from './socket-calls';
 import { FakeCore } from './testing/fake-core';
 
 const AGENT = 'agent-1';
@@ -85,6 +90,7 @@ async function waitFor(condition: () => boolean, what: string, timeoutMs = 15_00
 let core: FakeCore;
 let hub: AgentHub;
 let relay: LocalRelay;
+let calls: SocketCalls;
 let token: string;
 let revokedCalls: number;
 let cursorsSaved: [string, number][];
@@ -111,6 +117,7 @@ function newRelay(): LocalRelay {
         revoked: () => revokedCalls++,
       },
       log: silentLogger,
+      calls,
     }),
   });
 }
@@ -121,6 +128,7 @@ beforeEach(async () => {
   core.setAssignment({ revision: 1, agents: [assigned(AGENT), assigned('agent-2')] });
   revokedCalls = 0;
   cursorsSaved = [];
+  calls = new SocketCalls();
   hub = new AgentHub({
     log: silentLogger,
     bufferLimit: 100,
@@ -144,7 +152,7 @@ afterEach(async () => {
 type Host = ReturnType<typeof host>;
 
 /** An agent host in a process of its own, as the shared daemon opens its stream: on the hub. */
-function host(overrides: Partial<SwitchEventStreamDeps> = {}, as = token) {
+function host(overrides: Partial<AgentStreamDeps> = {}, as = token) {
   const seen = {
     events: [] as AgentBridgeEvent[],
     gaps: [] as Parameters<SwitchEventStreamDeps['onGap']>[0][],
@@ -314,9 +322,33 @@ describe('the hub, over the relay’s WebSocket, read by openHubStream', () => {
       body: { type: 'session.reset' },
     });
 
+    // Across the hub's socket, a room the agent is not in is named back, not refused whole.
     await expect(
-      agentHost.stream.replacePlacements({ 'session-1': 'room-elsewhere' })
-    ).rejects.toThrow(/not a member of room room-elsewhere/);
+      agentHost.stream.replacePlacements({ 'session-1': 'room-elsewhere', 'session-2': 'room-a' })
+    ).resolves.toEqual({ refusedRooms: ['room-elsewhere'] });
+    expect(hub.roomFor(AGENT, 'session-2')).toBe('room-a');
+  });
+
+  it('lets a session post after its agent left a chat another session was placed in, repeatedly', async () => {
+    const gone: { roomId: string; sessionId: string }[] = [];
+    const agentHost = host({ onRoomGone: (info) => void gone.push(info) });
+    await connected(agentHost);
+    // The agent's earlier chat, room-b, is deleted while a session is still placed there.
+    hub.setRooms(AGENT, ['room-a']);
+    for (let i = 0; i < 2; i++) {
+      await expect(
+        agentHost.stream.replacePlacements({ 'session-old': 'room-b', 'session-1': 'room-a' })
+      ).resolves.toEqual({ refusedRooms: ['room-b'] });
+      const posted = await callOperation(caller(), 'post_message', { body: 'QA-DIRECT-OK' });
+      expect(posted.isError).toBeFalsy();
+      expect(posted.structuredContent).toMatchObject({ room_id: 'room-a' });
+    }
+
+    // A room the agent leaves while a session is placed in it is said to that agent host.
+    await agentHost.stream.replacePlacements({ 'session-1': 'room-a' });
+    hub.setRooms(AGENT, []);
+    await waitFor(() => gone.length === 1, 'the room gone');
+    expect(gone).toEqual([{ roomId: 'room-a', sessionId: 'session-1' }]);
   });
 
   it('passes approval outcomes to the agent host', async () => {
@@ -509,6 +541,18 @@ describe('forwarding to Switch', () => {
     expect(forwarded.body).toEqual({ row: 1 });
   });
 
+  it('refuses placements while the hub is not connected, rather than reporting them taken', async () => {
+    const agentHost = host();
+    await connected(agentHost);
+    await relay.close();
+    await waitFor(() => agentHost.seen.disconnected.length > 0, 'the hub to drop');
+    await expect(agentHost.stream.replacePlacements({ 'session-1': 'room-a' })).rejects.toThrow(
+      /hub is not connected/
+    );
+    relay = newRelay();
+    await relay.start(null);
+  });
+
   it('names the room of a call from its session’s placement on the hub', async () => {
     // An agent host in the controller's own process states its placements to the hub directly.
     hub.attach('agent-2', 0, ['room-shared']);
@@ -572,6 +616,76 @@ describe('forwarding to Switch', () => {
     await core.stop();
     const unreachable = await post(`/agents/${AGENT}/ops/post_message`, {});
     expect(unreachable.status).toBe(502);
+  });
+
+  it('sends an operation as a call on a socket that takes them, and passes its answer back', async () => {
+    const sent: Record<string, unknown>[] = [];
+    calls.open((text) => {
+      const frame = JSON.parse(text) as Record<string, unknown>;
+      sent.push(frame);
+      setImmediate(() =>
+        calls.answer({ id: frame.id as number, status: 403, body: { detail: 'not a member' } })
+      );
+    }, 4);
+    const response = await fetch(`${relay.endpoint}/agents/${AGENT}/ops/post_message`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        'X-Request-Id': 'request-9',
+      },
+      body: JSON.stringify({ body: 'hi' }),
+    });
+
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ detail: 'not a member' });
+    expect(sent).toEqual([
+      {
+        type: 'call',
+        id: 1,
+        agent_id: AGENT,
+        operation: 'post_message',
+        arguments: { body: 'hi' },
+        room_id: null,
+        request_id: 'request-9',
+      },
+    ]);
+    expect(core.requests.filter((r) => r.path.includes('/ops/'))).toEqual([]);
+  });
+
+  it('sends an operation over HTTP when the socket takes no calls, or no more of them', async () => {
+    await post(`/agents/${AGENT}/ops/post_message`, { body: 'no socket' });
+    calls.open((text) => {
+      const frame = JSON.parse(text) as Record<string, unknown>;
+      setImmediate(() =>
+        calls.answer({
+          id: frame.id as number,
+          status: 429,
+          body: { error: { code: 'capacity_exceeded', message: 'busy', retryable: true } },
+        })
+      );
+    }, 4);
+    const response = await post(`/agents/${AGENT}/ops/post_message`, { body: 'over capacity' });
+
+    expect(response.status).toBe(200);
+    expect(
+      core.requests.filter((r) => r.path === `/agents/${AGENT}/ops/post_message`)
+    ).toHaveLength(2);
+  });
+
+  it('sends what is not an operation over HTTP, socket or not', async () => {
+    const sent: unknown[] = [];
+    calls.open((text) => void sent.push(text), 4);
+    const response = await post('/agent-sessions/session-1/activity', { row: 1 });
+    expect(response.status).toBe(200);
+    expect(sent).toEqual([]);
+  });
+
+  it('answers 502 when the socket closes before Switch answers the call', async () => {
+    calls.open(() => setImmediate(() => calls.close('The controller socket closed.')), 4);
+    const response = await post(`/agents/${AGENT}/ops/post_message`, { body: 'lost' });
+    expect(response.status).toBe(502);
+    expect(((await response.json()) as { detail: string }).detail).toMatch(/may have run/);
   });
 
   it('streams an upload through without holding it', async () => {

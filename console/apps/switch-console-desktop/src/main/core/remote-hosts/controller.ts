@@ -5,8 +5,7 @@ import { hostBlockedReason, type HostReachability } from '@shared/core/remote-ho
 import type { HostSetupPlan } from '@shared/core/remote-hosts/setup';
 import { createRPCController } from '@shared/lib/ipc/rpc';
 import { listSshConfigHosts } from './list-ssh-config-hosts';
-import { hostReachabilityService } from './production-host-reachability';
-import { deletePersistedReachability } from './reachability-store';
+import { hostReachabilityService, releaseHostIfUnused } from './production-host-reachability';
 import {
   discardSetupPlan,
   ensureSetupPlan,
@@ -94,7 +93,8 @@ export const remoteHostsController = createRPCController({
       await hostControllerService.forgetHost(sshHost);
       await removeRemoteHost(sshHost);
       await discardSetupPlan(sshHost);
-      await deletePersistedReachability(sshHost);
+      await hostReachabilityService.reset(sshHost);
+      await releaseHostIfUnused(sshHost);
       evictRemoteDependencyManager(sshHost);
     } catch (error) {
       trackEvent('host_removed', { outcome: 'failure' });

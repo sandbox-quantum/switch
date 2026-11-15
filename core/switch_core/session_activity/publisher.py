@@ -5,6 +5,12 @@ bridge's tenant to `_on_change`, which only queues a key. A task of this
 bridge's own drains the queue and does the platform work, so a slow or rate
 limited platform never holds up the listener's other subscribers.
 
+The queue has three lanes, drained most urgent first. A change just announced
+is somebody waiting: a new turn's card and its 👀, a step. Retries, a resync's
+catch-up and an agent going offline or coming back are owed but older. A
+running turn's clock is cosmetic, so it waits behind both, and one the
+platform refuses is dropped rather than retried: the next minute draws it.
+
 A key queued while the same key is still waiting is dropped, and each key is
 handled by reading the rows as they are now. So a burst of steps in one turn
 costs one redraw rather than one per step, and a request answered before its
@@ -23,9 +29,10 @@ platform that removes answered cards.
 **Turns.** Each turn is drawn in one message, from its rows, with the adapter's
 own activity rendering: every step, the stop control while it runs, and how
 long it took. The asking message carries a queued or working marker while the
-turn waits or runs, and a platform that says a turn is stuck in a message of
-its own gets one, cleared again once it no longer applies. All of it sits in
-`turn_status_posts`.
+turn waits or runs — put on before the message is posted, so a platform short
+of room for the message does not hold it back — and a platform that says a
+turn is stuck in a message of its own gets one, cleared again once it no
+longer applies. All of it sits in `turn_status_posts`.
 
 Failures of a key are retried on a widening interval; a platform that asks for
 a wait gets exactly that wait.
@@ -36,7 +43,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import secrets
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
@@ -49,14 +56,17 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.bridges.collaboration.adapter import (
     ActivityMarkRefused,
     ActivitySnapshot,
+    MessagePartlySent,
     PlatformAdapter,
     RemovalFailed,
     RichContentFailed,
+    RichContentFailedAfterPost,
     RichContentThrottled,
     RichContentWedged,
     ThreadUnavailable,
     TurnActivity,
 )
+from switch_core.bridges.collaboration.session.renderers import RUNNING_CLOCK_SECONDS
 from switch_core.db.models import (
     Agent,
     AgentSessionActivityItem,
@@ -65,6 +75,7 @@ from switch_core.db.models import (
     BridgeMessageMap,
     Message,
     Room,
+    SteeredMessageMark,
     TurnStatusPost,
 )
 from switch_core.db.session_scope import tenant_session
@@ -75,6 +86,7 @@ from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.session_activity_post_store import (
     ApprovalRequestPostStore,
+    SteeredMessageMarkStore,
     TurnStatusPostStore,
 )
 from switch_core.db.stores.session_activity_store import (
@@ -116,11 +128,19 @@ _THREAD_WAIT_ATTEMPTS = 5
 # corrected by a later resync already, and redrawing everything on each start
 # would spend a platform's rate budget on messages nobody is looking at.
 _RESYNC_WINDOW = timedelta(minutes=15)
-# How often running turns are looked at again: for the clock, where the
-# platform redraws for it, and for their agent going offline or coming back.
+# How often running turns are looked at again: for their agent going offline
+# or coming back, and, where the platform redraws for it, for a clock that has
+# moved on a minute.
 _TICK_SECONDS = 5.0
+# How long after a platform closes a turn's message on its own the redraw that
+# repairs it is due, so that the redraw finds it closed.
+_AFTER_PLATFORM_CLOSE = timedelta(seconds=2)
 _RETRY_MIN_SECONDS = 5.0
 _RETRY_MAX_SECONDS = 600.0
+# How many refusals in a row a publication gets when the platform says such a
+# refusal can clear on its own (a bot not yet in the channel, a post not yet
+# visible). With the backoff above, five attempts span a little over a minute.
+_MAX_REFUSALS = 5
 # How many turns' drawn state one bridge remembers. Forgetting one costs a
 # redraw nobody needed if that turn changes again, not a wrong one.
 _MAX_REMEMBERED_TURNS = 4096
@@ -136,6 +156,11 @@ _WEDGE_NOTICE = (
 _HOST_OFFLINE = "Host offline. Answers are unavailable until the session reconnects."
 
 Mark = Literal["queued", "working"]
+
+# The queue's lanes, most urgent first; see the module docstring.
+_NOW = 0
+_SOON = 1
+_CLOCK = 2
 
 
 @dataclass(frozen=True)
@@ -170,21 +195,34 @@ class _TurnDrawn:
     status: str | None = None
     final: bool = False
     wedged: bool = False
+    # When a running turn's message is next due a redraw without a change of
+    # its own: its clock showing another minute, or the platform closing it.
+    clock_due: datetime | None = None
+    # When the platform closes the turn's message on its own, if it does.
+    platform_closes_at: datetime | None = None
 
 
 @dataclass
 class _Backoff:
-    """A key's waits between failed attempts: doubling, capped, cleared on success."""
+    """A key's waits between failed attempts: doubling, capped, cleared on
+    success, and how many refusals in a row it has had."""
 
     waits: dict[tuple[str, ...], float] = field(default_factory=dict)
+    refusals: dict[tuple[str, ...], int] = field(default_factory=dict)
 
     def next(self, key: tuple[str, ...]) -> float:
         wait = self.waits.get(key, _RETRY_MIN_SECONDS)
         self.waits[key] = min(wait * 2, _RETRY_MAX_SECONDS)
         return wait
 
+    def refused(self, key: tuple[str, ...]) -> int:
+        """Count one more refusal for `key`, and say how many it has had."""
+        self.refusals[key] = self.refusals.get(key, 0) + 1
+        return self.refusals[key]
+
     def clear(self, key: tuple[str, ...]) -> None:
         self.waits.pop(key, None)
+        self.refusals.pop(key, None)
 
 
 class _ThreadNotMappedYet(Exception):
@@ -228,12 +266,19 @@ class AgentSessionActivityPublisher:
         self._activity = AgentSessionActivityStore()
         self._card_posts = ApprovalRequestPostStore()
         self._turn_posts = TurnStatusPostStore()
-        self._queue: asyncio.Queue[_Key] = asyncio.Queue()
-        self._pending: set[_Key] = set()
+        self._steered_marks_store = SteeredMessageMarkStore()
+        self._lanes: tuple[deque[_Key], ...] = (deque(), deque(), deque())
+        self._pending: dict[_Key, int] = {}
+        self._wake = asyncio.Event()
         self._thread_waits: dict[_Key, int] = {}
         self._retries = _Backoff()
         self._drawn: OrderedDict[_Key, _TurnDrawn] = OrderedDict()
         self._live_turns: dict[_Key, str] = {}
+        # A turn's row before its message is posted, holding the marker
+        # already on the asking message until the row can be stored. Only in
+        # memory: a restart in that window forgets the marker, and the turn
+        # takes it off only if it is still running when the publisher is back.
+        self._unposted: dict[_Key, TurnStatusPost] = {}
         self._open_cards: dict[_Key, str] = {}
         self._online_seen: dict[str, bool] = {}
         self._unsure_marks: set[_Key] = set()
@@ -260,8 +305,9 @@ class AgentSessionActivityPublisher:
             ),
         ]
         # The listener resyncs its subscribers when it connects, which may have
-        # happened before this bridge started.
-        self._enqueue(_RESYNC)
+        # happened before this bridge started. The resync itself only reads and
+        # queues, so it goes first and what it finds owed waits its turn.
+        self._enqueue(_RESYNC, _NOW)
 
     async def stop(self) -> None:
         if self._unsubscribe is not None:
@@ -286,47 +332,118 @@ class AgentSessionActivityPublisher:
 
     async def _on_change(self, change: Change) -> None:
         if change.kind.startswith("approval."):
-            self._enqueue(("approval", change.agent_id, change.session_id, change.key))
+            self._enqueue(
+                ("approval", change.agent_id, change.session_id, change.key), _NOW
+            )
         elif change.kind == "activity":
-            self._enqueue(("turn", change.agent_id, change.session_id, change.key))
+            self._enqueue(
+                ("turn", change.agent_id, change.session_id, change.key), _NOW
+            )
 
     async def _on_resync(self) -> None:
-        self._enqueue(_RESYNC)
+        self._enqueue(_RESYNC, _NOW)
 
-    def _enqueue(self, key: _Key) -> None:
-        if key in self._pending:
+    def _enqueue(self, key: _Key, lane: int) -> None:
+        """Queue a key in a lane, or move it up to one if it waits in a lower one."""
+        queued = self._pending.get(key)
+        if queued is not None and queued <= lane:
             return
-        self._pending.add(key)
-        self._queue.put_nowait(key)
+        self._pending[key] = lane
+        self._lanes[lane].append(key)
+        self._wake.set()
 
-    def _enqueue_later(self, key: _Key, delay: float) -> None:
-        asyncio.get_running_loop().call_later(delay, self._enqueue, key)
+    def _enqueue_later(self, key: _Key, delay: float, lane: int) -> None:
+        asyncio.get_running_loop().call_later(delay, self._enqueue, key, lane)
 
     def _retry_later(self, key: _Key) -> None:
-        self._enqueue_later(key, self._retries.next(key))
+        self._enqueue_later(key, self._retries.next(key), _SOON)
+
+    def _give_up_on(self, key: _Key, error: Exception) -> str | None:
+        """Why a failed publication is not worth another attempt, or None to
+        try it again.
+
+        A refusal the platform calls permanent is given up on at once, and a
+        bounded one after `_MAX_REFUSALS` of them in a row; a transient
+        failure is always tried again.
+        """
+        kind = self._adapter.classify_refusal(error)
+        if kind == "transient":
+            return None
+        if kind == "bounded":
+            refusals = self._retries.refused(key)
+            if refusals < _MAX_REFUSALS:
+                return None
+            reason = f"refused it {refusals} times in a row"
+        else:
+            reason = "refused it, and sending it again would be refused again"
+        self._retries.clear(key)
+        return f"{self._adapter.platform_name} {reason}"
+
+    def _retry_ended_turn(
+        self, key: _Key, error: RichContentFailed, ended: bool
+    ) -> str:
+        """Try an ended turn's refused message again after a wait, unless it is
+        not worth another attempt. Says which, for the log line reporting the
+        refusal."""
+        if not ended:
+            return "The next change to the turn tries again."
+        reason = self._give_up_on(key, error)
+        if reason is not None:
+            return f"The turn has ended and {reason}; dropping it."
+        self._retry_later(key)
+        return "The turn has ended; trying again after a wait."
+
+    async def _next(self) -> tuple[_Key, int]:
+        """The first key in the most urgent lane holding one, and that lane.
+
+        A key moved up a lane leaves its old entry behind, which is passed over
+        here because the key is no longer pending in that lane.
+        """
+        while True:
+            for lane, queue in enumerate(self._lanes):
+                while queue:
+                    key = queue.popleft()
+                    if self._pending.get(key) == lane:
+                        del self._pending[key]
+                        return key, lane
+            self._wake.clear()
+            await self._wake.wait()
 
     # ── The bridge's own tasks ────────────────────────────────────────────────
 
     async def _run(self) -> None:
         while True:
-            key = await self._queue.get()
-            self._pending.discard(key)
+            key, lane = await self._next()
             try:
                 await self._handle(key)
             except asyncio.CancelledError:
                 raise
             except RichContentThrottled as throttled:
-                logger.warning(
+                if lane == _CLOCK:
+                    continue
+                # Routine under load: the cooldown logs the workspace-wide hold.
+                logger.debug(
                     "%s asked bridge %s to wait %.1fs; retrying %s then.",
                     self._adapter.platform_name,
                     self._bridge_id,
                     throttled.retry_after,
                     key,
                 )
-                self._enqueue_later(key, throttled.retry_after)
+                self._enqueue_later(key, throttled.retry_after, _SOON)
             except _ThreadNotMappedYet:
-                self._enqueue_later(key, _THREAD_WAIT_SECONDS)
-            except Exception:
+                self._enqueue_later(key, _THREAD_WAIT_SECONDS, lane)
+            except Exception as error:
+                reason = self._give_up_on(key, error)
+                if reason is not None:
+                    logger.error(
+                        "Could not publish %s on bridge %s, and %s; dropping it: %s",
+                        key,
+                        self._bridge_id,
+                        reason,
+                        error,
+                        exc_info=error,
+                    )
+                    continue
                 # The delivery loop: one key failing must not stop the rest.
                 delay = self._retries.next(key)
                 logger.exception(
@@ -335,18 +452,41 @@ class AgentSessionActivityPublisher:
                     self._bridge_id,
                     delay,
                 )
-                self._enqueue_later(key, delay)
+                self._enqueue_later(key, delay, _SOON)
 
     async def _tick_forever(self) -> None:
         while True:
             await asyncio.sleep(_TICK_SECONDS)
-            clock = self._adapter.redraws_for_elapsed_time
-            for keys in (self._live_turns, self._open_cards):
-                for key, agent_id in list(keys.items()):
-                    online = self._agent_online(agent_id)
-                    moved = self._online_seen.get(agent_id) != online
-                    if moved or (clock and online and keys is self._live_turns):
-                        self._enqueue(key)
+            self._tick(datetime.now(UTC))
+
+    def _tick(self, now: datetime) -> None:
+        """Queue what moved without a change of its own: an agent going offline
+        or coming back, and a running turn's clock once it shows another minute.
+
+        No clock while the platform is holding edits back. Each redraw would
+        only be refused, and the first tick after the wait draws whichever
+        clocks are due by then.
+        """
+        clock = (
+            self._adapter.redraws_for_elapsed_time
+            and self._adapter.rich_updates_held_for() <= 0
+        )
+        for keys in (self._live_turns, self._open_cards):
+            for key, agent_id in list(keys.items()):
+                online = self._agent_online(agent_id)
+                if self._online_seen.get(agent_id) != online:
+                    self._enqueue(key, _SOON)
+                elif (
+                    clock
+                    and online
+                    and keys is self._live_turns
+                    and self._clock_due(key, now)
+                ):
+                    self._enqueue(key, _CLOCK)
+
+    def _clock_due(self, key: _Key, now: datetime) -> bool:
+        drawn = self._drawn.get(key)
+        return drawn is None or drawn.clock_due is None or drawn.clock_due <= now
 
     async def _handle(self, key: _Key) -> None:
         kind = key[0]
@@ -424,15 +564,18 @@ class AgentSessionActivityPublisher:
                 )
             ).all()
             marked = await self._turn_posts.marked(db, self._bridge_id)
+            steered = await self._steered_marks_store.marked(db, self._bridge_id)
         for agent_id, session_id, request_id in requests:
-            self._enqueue(("approval", agent_id, session_id, request_id))
+            self._enqueue(("approval", agent_id, session_id, request_id), _SOON)
         for agent_id, session_id, turn_id, changed, running, drawn_at in turns:
             # An ended turn whose message was last drawn after its last change
             # already shows how it ended.
             if running or drawn_at is None or drawn_at < changed:
-                self._enqueue(("turn", agent_id, session_id, turn_id))
+                self._enqueue(("turn", agent_id, session_id, turn_id), _SOON)
         for post in marked:
-            self._enqueue(("turn", post.agent_id, post.session_id, post.turn_id))
+            self._enqueue(("turn", post.agent_id, post.session_id, post.turn_id), _SOON)
+        for mark in steered:
+            self._enqueue(("turn", mark.agent_id, mark.session_id, mark.turn_id), _SOON)
 
     # ── Where a room's publications go ────────────────────────────────────────
 
@@ -606,6 +749,16 @@ class AgentSessionActivityPublisher:
                 return
             decided_by, responder = await answerer_of(db, row, self._bridge_id)
             turn_row = await self._turn_row(db, agent_id, session_id, row.turn_id)
+            if (
+                post is None
+                and _known_root_turn(turn_row)
+                and not self._adapter.broadcasts_thread_replies
+            ):
+                # Asked in the channel, and this platform cannot show a
+                # threaded card there as well: the card belongs where the
+                # question was, not in a thread whose answers are the only
+                # ones it would hear.
+                target = replace(target, thread_ref=None)
             online = self._agent_online(agent_id)
             asking = post is None and row.state == "open"
             recipient = (
@@ -627,6 +780,7 @@ class AgentSessionActivityPublisher:
                 row,
                 target,
                 asked_at_root=_asked_at_root(turn_row),
+                broadcast=_known_root_turn(turn_row),
                 unavailable_reason=unavailable,
                 notify_external_id=recipient,
                 notify_unreachable=recipient is None
@@ -660,6 +814,7 @@ class AgentSessionActivityPublisher:
         target: _Target,
         *,
         asked_at_root: bool,
+        broadcast: bool,
         unavailable_reason: str | None,
         notify_external_id: str | None,
         notify_unreachable: bool,
@@ -676,6 +831,7 @@ class AgentSessionActivityPublisher:
             notify_external_id=notify_external_id,
             notify_unreachable=notify_unreachable,
         )
+        card = replace(card, asked_at_root=broadcast)
         thread_ref = target.thread_ref
         try:
             try:
@@ -774,16 +930,27 @@ class AgentSessionActivityPublisher:
             )
             state = (row.state, unavailable_reason)
             if self._card_edit_failures.get(post.token) != state:
-                await self._adapter.admin_message(
-                    post.external_channel_id,
-                    f"The card for request {post.handle} above could not be "
-                    "updated, so it may still be offering buttons that no "
-                    "longer work.",
-                    self._adapter.notice_address(
-                        post.external_post_id, post.thread_ref
-                    ),
-                    drawn=error.text,
-                )
+                try:
+                    await self._adapter.admin_message(
+                        post.external_channel_id,
+                        f"The card for request {post.handle} above could not be "
+                        "updated, so it may still be offering buttons that no "
+                        "longer work.",
+                        self._adapter.notice_address(
+                            post.external_post_id, post.thread_ref
+                        ),
+                        drawn=error.text,
+                    )
+                except MessagePartlySent as partial:
+                    # Part of it is in the channel, with a line saying the rest
+                    # is missing; posting it again would repeat that part.
+                    logger.error(
+                        "The notice that the card for request %s could not be "
+                        "updated reached channel %s only in part: %s",
+                        post.request_id,
+                        post.external_channel_id,
+                        partial,
+                    )
                 self._card_edit_failures[post.token] = state
             raise
         self._card_edit_failures.pop(post.token, None)
@@ -816,7 +983,7 @@ class AgentSessionActivityPublisher:
                 post.external_channel_id,
                 delay,
             )
-            self._enqueue_later(key, delay)
+            self._enqueue_later(key, delay, _SOON)
             return False
         async with tenant_session(self._sessions, self._tenant_id) as db, db.begin():
             stored = await self._card_posts.get(
@@ -933,7 +1100,7 @@ class AgentSessionActivityPublisher:
                 self._adapter.platform_name,
                 delay,
             )
-            self._enqueue_later(key, delay)
+            self._enqueue_later(key, delay, _SOON)
             return None
         async with tenant_session(self._sessions, self._tenant_id) as db, db.begin():
             stored = await self._card_posts.get(
@@ -995,15 +1162,23 @@ class AgentSessionActivityPublisher:
                 await self._activity.turn(db, agent_id, session_id, turn_id)
             )
             if view is None or view.row.room_id is None:
+                self._forget_turn(key)
                 return
             room_id = view.row.room_id
             target = await self._target(db, key, agent_id, room_id, view.row.thread_id)
             if target is None:
-                self._live_turns.pop(key, None)
+                self._forget_turn(key)
                 return
             asked_on = (
                 await self._platform_ref(db, target.channel_id, view.row.message_id)
                 or target.thread_ref
+            )
+            steered_refs = {
+                message_id: await self._platform_ref(db, target.channel_id, message_id)
+                for message_id in view.steered_messages
+            }
+            steered_marks = await self._steered_marks_store.of_turn(
+                db, self._bridge_id, agent_id, session_id, turn_id
             )
             post = await self._turn_posts.get(
                 db, self._bridge_id, agent_id, session_id, turn_id, for_update=False
@@ -1043,19 +1218,33 @@ class AgentSessionActivityPublisher:
             elapsed_seconds=elapsed,
             interrupt_turn_id=interrupt_turn_id,
             clock_redraws=self._adapter.redraws_for_elapsed_time,
+            closed_by_platform=drawn.platform_closes_at is not None
+            and drawn.platform_closes_at <= datetime.now(UTC),
         )
         if post is None:
-            post = await self._begin_turn(key, view, target, asked_on, content)
-            if post is not None:
-                drawn.status_state = state
-                drawn.final = view.ended
+            unposted = self._unposted.get(key)
+            # Rebuilt until it holds a marker, so the marker goes where the
+            # asking message is known to be now: its post can be mapped
+            # between one attempt and the next.
+            if unposted is None or unposted.mark is None:
+                unposted = self._unposted[key] = self._unposted_turn(
+                    view, target, asked_on
+                )
+            await self._marks(key, unposted, view, target, waiting_behind=bool(unended))
+            post = await self._begin_turn(
+                key, view, target, unposted, content, state, drawn
+            )
+            if post is not None or (view.ended and unposted.mark is None):
+                self._unposted.pop(key, None)
         else:
             await self._redraw_turn(key, post, view, target, content, state, drawn)
-        if post is not None:
             await self._marks(key, post, view, target, waiting_behind=bool(unended))
+        await self._steered_marks(key, view, target, steered_refs, steered_marks)
+        if post is not None:
             await self._attention(post, view, target, error_summary, recipient, drawn)
         if post is not None and not view.ended:
             self._live_turns[key] = agent_id
+            drawn.clock_due = self._redraw_due(drawn, elapsed)
         else:
             self._live_turns.pop(key, None)
         if post is not None and drawn.final and not was_final:
@@ -1065,7 +1254,39 @@ class AgentSessionActivityPublisher:
             # The other waiting turns' stop controls name this session's
             # running turn, which may just have changed.
             for other in unended:
-                self._enqueue(("turn", agent_id, session_id, other))
+                self._enqueue(("turn", agent_id, session_id, other), _SOON)
+
+    def _redraw_due(self, drawn: _TurnDrawn, elapsed: float | None) -> datetime:
+        """When a running turn is next due a redraw with no change of its own."""
+        now = datetime.now(UTC)
+        due = now + timedelta(seconds=_until_the_clock_moves(elapsed))
+        closes_at = drawn.platform_closes_at
+        if closes_at is not None and now < closes_at + _AFTER_PLATFORM_CLOSE < due:
+            due = closes_at + _AFTER_PLATFORM_CLOSE
+        return due
+
+    def _forget_turn(self, key: _Key) -> None:
+        """Stop watching a turn that is gone, or no longer published here."""
+        self._live_turns.pop(key, None)
+        self._drop_unposted(key)
+
+    def _drop_unposted(self, key: _Key) -> None:
+        """Forget a turn's unposted row, saying so if it leaves a marker behind.
+
+        Nothing is asked of the platform: a turn that stops being published
+        here keeps its marker whether or not its message was posted.
+        """
+        unposted = self._unposted.pop(key, None)
+        if unposted is not None and unposted.mark is not None:
+            logger.warning(
+                "No longer publishing turn %s of session %s, whose message was "
+                "never posted; the %s marker on %s in channel %s stays there.",
+                unposted.turn_id,
+                unposted.session_id,
+                unposted.mark,
+                unposted.reaction_message_ref,
+                unposted.external_channel_id,
+            )
 
     async def _stamp_drawn(self, post: TurnStatusPost) -> None:
         """Record that the turn's message shows how it ended, for the next resync."""
@@ -1101,15 +1322,39 @@ class AgentSessionActivityPublisher:
         ]
         return running[-1] if running else None
 
+    def _unposted_turn(
+        self, view: TurnView, target: _Target, asked_on: str | None
+    ) -> TurnStatusPost:
+        """The turn's row before its message exists, to carry its marker until then."""
+        return TurnStatusPost(
+            tenant_id=self._tenant_id,
+            bridge_id=self._bridge_id,
+            agent_id=view.row.agent_id,
+            session_id=view.row.session_id,
+            turn_id=view.turn.turn_id,
+            external_channel_id=target.channel_id,
+            thread_ref=target.thread_ref,
+            reaction_message_ref=asked_on,
+            mark=None,
+            attention_post_id=None,
+        )
+
     async def _begin_turn(
         self,
         key: _Key,
         view: TurnView,
         target: _Target,
-        asked_on: str | None,
+        post: TurnStatusPost,
         content: TurnActivity,
+        state: str,
+        drawn: _TurnDrawn,
     ) -> TurnStatusPost | None:
         """Post the turn in its thread, or at the channel root with none to thread under.
+
+        `post` is the turn's row as it stood before the message, marker and
+        all, and is stored once the platform has the message. One the platform
+        made but could not draw into is kept and drawn into later, rather than
+        posted a second time: after the wait, where it asked for one.
 
         Once per turn, which is why the "agent has started" nudge belongs here.
         A refusal is logged; the next change to the turn tries again, and an
@@ -1121,44 +1366,68 @@ class AgentSessionActivityPublisher:
                 target.agent_name,
                 # Asked at the channel root, the turn threads under what was
                 # said, and whoever is waiting is watching the root.
-                None if asked_on == target.thread_ref else target.thread_ref,
+                None
+                if post.reaction_message_ref == target.thread_ref
+                else target.thread_ref,
             )
+        drew = True
         try:
             ref = await self._adapter.post_rich(
                 target.channel_id, target.agent_name, content, target.thread_ref
             )
+        except RichContentFailedAfterPost as failed:
+            ref = failed.ref
+            drew = False
+            if isinstance(failed, RichContentThrottled):
+                logger.warning(
+                    "%s made the message for turn %s in channel %s but asked for "
+                    "a %.1fs wait before drawing the turn into it; drawing it then.",
+                    self._adapter.platform_name,
+                    view.turn.turn_id,
+                    target.channel_id,
+                    failed.retry_after,
+                )
+                self._enqueue_later(key, failed.retry_after, _SOON)
+            else:
+                what_next = self._retry_ended_turn(key, failed, view.ended)
+                logger.error(
+                    "%s made the message for turn %s in channel %s but could not "
+                    "draw the turn into it: %s. %s",
+                    self._adapter.platform_name,
+                    view.turn.turn_id,
+                    target.channel_id,
+                    failed,
+                    what_next,
+                )
         except RichContentThrottled:
             raise
         except RichContentFailed as error:
+            what_next = self._retry_ended_turn(key, error, view.ended)
             logger.error(
                 "Could not post the activity for turn %s of session %s in "
                 "channel %s: %s. The channel shows what the agent asked without "
-                "what it did.",
+                "what it did. %s",
                 view.turn.turn_id,
                 view.row.session_id,
                 target.channel_id,
                 error,
+                what_next,
             )
-            if view.ended:
-                self._retry_later(key)
             return None
-        post = TurnStatusPost(
-            tenant_id=self._tenant_id,
-            bridge_id=self._bridge_id,
-            agent_id=view.row.agent_id,
-            session_id=view.row.session_id,
-            turn_id=view.turn.turn_id,
-            external_channel_id=target.channel_id,
-            external_post_id=ref,
-            thread_ref=target.thread_ref,
-            reaction_message_ref=asked_on,
-            mark=None,
-            attention_post_id=None,
+        closes_in = self._adapter.activity_closes_in(ref)
+        drawn.platform_closes_at = (
+            None
+            if closes_in is None
+            else datetime.now(UTC) + timedelta(seconds=closes_in)
         )
+        post.external_post_id = ref
         async with tenant_session(self._sessions, self._tenant_id) as db, db.begin():
             await self._turn_posts.create(db, post)
             db.expunge(post)
-        self._retries.clear(key)
+        if drew:
+            self._retries.clear(key)
+            drawn.status_state = state
+            drawn.final = view.ended
         return post
 
     async def _redraw_turn(
@@ -1192,6 +1461,7 @@ class AgentSessionActivityPublisher:
             await self._say_wedged(post, view, target)
             return
         except RichContentFailed as error:
+            what_next = self._retry_ended_turn(key, error, view.ended)
             logger.error(
                 "Could not update the activity for turn %s of session %s in "
                 "channel %s: %s. %s",
@@ -1199,12 +1469,8 @@ class AgentSessionActivityPublisher:
                 view.row.session_id,
                 post.external_channel_id,
                 error,
-                "The turn has ended; trying again after a wait."
-                if view.ended
-                else "The next change to the turn will try the same message.",
+                what_next,
             )
-            if view.ended:
-                self._retry_later(key)
             return
         drawn.status_state = state
         drawn.final = view.ended
@@ -1317,6 +1583,130 @@ class AgentSessionActivityPublisher:
         else:
             self._unsure_marks.discard(key)
 
+    async def _steered_marks(
+        self,
+        key: _Key,
+        view: TurnView,
+        target: _Target,
+        refs: dict[str, str | None],
+        stored: list[SteeredMessageMark],
+    ) -> None:
+        """Put the working marker on each message steered into the turn while
+        it runs, and take it off when the turn ends.
+
+        A steered message has no turn of its own to carry a marker, so without
+        this a person who corrected the agent mid-turn would see nothing on
+        their message. Recorded before the platform is asked, as `_marks` does.
+        """
+        if not self._adapter.supports_activity_reactions:
+            return
+        held = {mark.message_id: mark for mark in stored}
+        if view.ended:
+            for mark in held.values():
+                if mark.marked and not await self._release_steered_mark(
+                    mark, target.agent_name
+                ):
+                    self._retry_later(key)
+            return
+        for message_id, ref in refs.items():
+            existing = held.get(message_id)
+            # Not on the platform yet: the next change to the turn tries again.
+            if ref is None or (existing is not None and existing.marked):
+                continue
+            mark = SteeredMessageMark(
+                tenant_id=self._tenant_id,
+                bridge_id=self._bridge_id,
+                agent_id=view.row.agent_id,
+                session_id=view.row.session_id,
+                turn_id=view.turn.turn_id,
+                message_id=message_id,
+                external_channel_id=target.channel_id,
+                reaction_message_ref=ref,
+                marked=True,
+            )
+            await self._record_steered_mark(mark)
+            try:
+                await self._adapter.mark_activity(
+                    target.channel_id,
+                    ref,
+                    agent_name=target.agent_name,
+                    mark="working",
+                    on=True,
+                    force=True,
+                )
+            except ActivityMarkRefused as refusal:
+                logger.warning("%s The steered message goes without the mark.", refusal)
+                mark.marked = False
+                await self._record_steered_mark(mark)
+            except Exception:
+                logger.warning(
+                    "Could not add the working reaction on steered message %s in %s; "
+                    "it is taken off with the turn either way.",
+                    ref,
+                    target.channel_id,
+                    exc_info=True,
+                )
+
+    async def _release_steered_mark(
+        self, mark: SteeredMessageMark, agent_name: str
+    ) -> bool:
+        """Take a steered message's marker off, unless another turn still holds it.
+
+        False when the platform could not be asked, so it is tried again.
+        """
+        async with tenant_session(self._sessions, self._tenant_id) as db:
+            probe = TurnStatusPost(
+                bridge_id=mark.bridge_id,
+                agent_id=mark.agent_id,
+                session_id=mark.session_id,
+                turn_id=mark.turn_id,
+                external_channel_id=mark.external_channel_id,
+                reaction_message_ref=mark.reaction_message_ref,
+            )
+            per_agent = self._adapter.activity_reactions_per_agent
+            turns = await self._turn_posts.other_holders(
+                db, probe, "working", same_agent=per_agent
+            )
+            others = [
+                other
+                for other in await self._steered_marks_store.holders(
+                    db,
+                    mark.bridge_id,
+                    mark.external_channel_id,
+                    mark.reaction_message_ref,
+                )
+                if (other.agent_id, other.session_id, other.turn_id)
+                != (mark.agent_id, mark.session_id, mark.turn_id)
+                and (not per_agent or other.agent_id == mark.agent_id)
+            ]
+        if not turns and not others:
+            try:
+                await self._adapter.mark_activity(
+                    mark.external_channel_id,
+                    mark.reaction_message_ref,
+                    agent_name=agent_name,
+                    mark="working",
+                    on=False,
+                    force=True,
+                )
+            except ActivityMarkRefused as refusal:
+                logger.error("%s The working marker may stay on the message.", refusal)
+            except Exception:
+                logger.warning(
+                    "Could not remove the working reaction on steered message %s in %s.",
+                    mark.reaction_message_ref,
+                    mark.external_channel_id,
+                    exc_info=True,
+                )
+                return False
+        mark.marked = False
+        await self._record_steered_mark(mark)
+        return True
+
+    async def _record_steered_mark(self, mark: SteeredMessageMark) -> None:
+        async with tenant_session(self._sessions, self._tenant_id) as db, db.begin():
+            await self._steered_marks_store.record(db, mark)
+
     async def _release_mark(self, post: TurnStatusPost, agent_name: str) -> bool:
         """Take this turn's marker off, unless another turn still holds the same one.
 
@@ -1334,6 +1724,7 @@ class AgentSessionActivityPublisher:
                 mark,
                 same_agent=self._adapter.activity_reactions_per_agent,
             )
+        holders += self._unposted_holders(post, mark)
         if not holders:
             try:
                 await self._adapter.mark_activity(
@@ -1357,6 +1748,21 @@ class AgentSessionActivityPublisher:
                 return False
         await self._record_mark(post, None)
         return True
+
+    def _unposted_holders(self, post: TurnStatusPost, mark: str) -> int:
+        """Other turns holding `mark` on the same asking message whose own
+        message is not posted yet. Their rows are not stored, so the database
+        cannot count them."""
+        per_agent = self._adapter.activity_reactions_per_agent
+        return sum(
+            1
+            for other in self._unposted.values()
+            if other is not post
+            and other.mark == mark
+            and other.external_channel_id == post.external_channel_id
+            and other.reaction_message_ref == post.reaction_message_ref
+            and (not per_agent or other.agent_id == post.agent_id)
+        )
 
     async def _record_mark(self, post: TurnStatusPost, mark: Mark | None) -> None:
         async with tenant_session(self._sessions, self._tenant_id) as db, db.begin():
@@ -1507,6 +1913,27 @@ class AgentSessionActivityPublisher:
         ):
             return None
         return view, await self._running_turn(db, post.agent_id, post.session_id)
+
+
+def _until_the_clock_moves(elapsed: float | None) -> float:
+    """Seconds until a running turn's clock shows another minute.
+
+    A queued turn shows no clock, and is looked at again after the same while.
+    """
+    if elapsed is None:
+        return RUNNING_CLOCK_SECONDS
+    return RUNNING_CLOCK_SECONDS - elapsed % RUNNING_CLOCK_SECONDS
+
+
+def _known_root_turn(turn_row: AgentSessionActivityItem | None) -> bool:
+    """Whether the turn is recorded and was asked at the channel root. Only
+    then is its card also shown in the channel: an unrecorded turn may have
+    been a thread conversation the channel was never part of."""
+    return (
+        turn_row is not None
+        and turn_row.message_id is not None
+        and turn_row.thread_id in (None, turn_row.message_id)
+    )
 
 
 def _asked_at_root(turn_row: AgentSessionActivityItem | None) -> bool:

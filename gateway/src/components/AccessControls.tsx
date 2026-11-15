@@ -23,24 +23,35 @@ export function AccessChip({
 }
 
 interface AccessSelectProps {
-  value: AccessLevel;
+  /** Empty when nothing is chosen yet; `emptyHelper` then says what happens. */
+  value: AccessLevel | "";
   onChange: (level: AccessLevel) => void;
+  /** The levels offered, where not all three apply (a room is public or
+   * private). */
+  levels?: AccessLevel[];
+  emptyHelper?: string;
   disabled?: boolean;
   label?: string;
   /** Helper text per level, where the shared wording does not fit the
    * resource (a template is used, not attached). */
   helpers?: Partial<Record<AccessLevel, string>>;
+  /** Option labels per level, where the shared ones do not fit (a private
+   * room is seen by those taking part in it, not "only me"). */
+  optionLabels?: Partial<Record<AccessLevel, string>>;
   sx?: SxProps<Theme>;
 }
 
-/** A single 3-option select for the access level, with per-level helper text.
- * Replaces the old public/private visibility dropdown. */
+/** A single select for the access level (all three, or the `levels` given),
+ * with per-level helper text. */
 export function AccessSelect({
   value,
   onChange,
   disabled,
   label = "Access",
+  levels = ACCESS_LEVELS,
+  emptyHelper,
   helpers,
+  optionLabels,
   sx,
 }: AccessSelectProps) {
   return (
@@ -50,12 +61,12 @@ export function AccessSelect({
       value={value}
       onChange={(e) => onChange(e.target.value as AccessLevel)}
       disabled={disabled}
-      helperText={helpers?.[value] ?? ACCESS_META[value].helper}
+      helperText={value === "" ? emptyHelper : (helpers?.[value] ?? ACCESS_META[value].helper)}
       sx={sx}
     >
-      {ACCESS_LEVELS.map((lvl) => (
+      {levels.map((lvl) => (
         <MenuItem key={lvl} value={lvl}>
-          {ACCESS_META[lvl].optionLabel}
+          {optionLabels?.[lvl] ?? ACCESS_META[lvl].optionLabel}
         </MenuItem>
       ))}
     </TextField>

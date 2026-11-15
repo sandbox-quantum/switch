@@ -9,28 +9,51 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from switch_core import room_admins, room_policy
+from switch_core.accounts.transfer import kind_refusal
 from switch_core.agent_templates import plan_template
-from switch_core.authz import Action, Principal, can, require, require_manage
+from switch_core.authz import Principal, owns
 from switch_core.bridges.agent.operations.agent_management import management_port
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.collaboration.models import (
     BridgeOperationError,
+    ChannelInUse,
     ChannelRetirement,
     ChannelType,
     RetireOutcome,
 )
+from switch_core.chats import is_console_chat, people_are_members
 from switch_core.config import SwitchConfig
-from switch_core.db.models import Room, RoomGroup, User, require_tenant_id
+from switch_core.content_disposition import UNTRUSTED_FILE_CSP, content_disposition
+from switch_core.db.models import Agent, Room, RoomGroup, User, require_tenant_id
+from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
-from switch_core.db.stores.room_store import RoomStore
+from switch_core.db.stores.room_store import LINKED_CHANNEL_NAME_KEY, RoomStore
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.user_store import UserStore
+from switch_core.decision.room import (
+    AutoRouteRefused,
+    AutoRouteState,
+    auto_route_state,
+    room_agent,
+    set_auto_route_fallback,
+    set_auto_route_on,
+)
+from switch_core.decision.settings import DecisionAvailability
 from switch_core.feature_flags import AGENT_MANAGEMENT, SWITCH_BUDDY
-from switch_core.gateway.auth import get_current_user, get_tenant_is_admin
+from switch_core.gateway.auth import (
+    authorize_room,
+    decide_room_action,
+    ensure_room_action,
+    get_current_user,
+    get_tenant_is_admin,
+    require_group_filing_or_403,
+)
 from switch_core.gateway.dependencies import (
     current_telemetry,
+    get_agent_store,
     get_bridge_store,
     get_collab_lifecycle,
     get_config,
@@ -49,12 +72,16 @@ from switch_core.gateway.schemas import (
     BulkArchiveResponse,
     BulkDeleteRequest,
     BulkDeleteResponse,
+    RoomAdminEntry,
     RoomAgentsRequest,
     RoomAgentUpdateRequest,
+    RoomAutoRoute,
+    RoomAutoRouteRequest,
     RoomCreateRequest,
     RoomDeleteResponse,
     RoomDetail,
     RoomObserveRequest,
+    RoomPerson,
     RoomProtectionRequest,
     RoomRoleCreateRequest,
     RoomRoleDetail,
@@ -62,10 +89,32 @@ from switch_core.gateway.schemas import (
     RoomSetGroupRequest,
     RoomSummary,
     RoomUpdateRequest,
+    RoomUsersRemoved,
     RoomUsersRequest,
 )
 from switch_core.gateway.templates import readable_template
-from switch_core.room_service import RoleSpec, RoomCreateConfig, RoomService
+from switch_core.providers.registry import offered_provider_ids
+from switch_core.room_invites import (
+    InviteRefused,
+    invitable_agent_ids,
+    require_user_may_add_to_new_room,
+    require_user_may_invite,
+    with_subagents,
+)
+from switch_core.room_policy import (
+    FIXED_MEMBERSHIP,
+    RoomAction,
+    RoomCaller,
+    is_room_owner,
+)
+from switch_core.room_service import (
+    MembershipFixed,
+    RoleSpec,
+    RoomCreateConfig,
+    RoomService,
+    names_the_owner,
+    require_membership_changeable_from_outside,
+)
 from switch_core.rooms_yaml import (
     GroupProvisionResult,
     GroupSpec,
@@ -74,7 +123,7 @@ from switch_core.rooms_yaml import (
     RoomYamlService,
     template_json_schema,
 )
-from switch_core.telemetry import emit_safely
+from switch_core.telemetry import emit_after_commit
 from switch_core.template_installs import record_install, vouched_source
 from switch_core.template_runs import (
     LISTEN_TIMEOUT_SECONDS,
@@ -83,6 +132,7 @@ from switch_core.template_runs import (
     NewAgentPlan,
     RunUndone,
     TemplateAgents,
+    opening_rooms_as_made,
     room_ids_of,
 )
 from switch_core.template_v2 import is_v2_text
@@ -92,39 +142,23 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-async def _require_room(
-    session: AsyncSession,
-    room_store: RoomStore,
-    room_id: str,
-    user: User,
-    action: Action,
-    is_admin: bool,
-) -> Room:
-    """Load a room (404 if missing) and authorize `action` for `user`,
-    raising HTTP 403 if denied."""
-    room = await room_store.get(session, room_id)
-    if room is None:
-        raise HTTPException(status_code=404, detail="Room not found")
+def _refuse_fixed_membership(room: Room) -> None:
+    """409 for a direct or group conversation, whose agents and people these
+    routes don't change (`require_membership_changeable_from_outside`)."""
     try:
-        require(
-            Principal(user.id, is_admin),
-            action,
-            room,
-        )
-    except PermissionError as e:
-        raise HTTPException(status_code=403, detail=str(e)) from e
-    return room
+        require_membership_changeable_from_outside(room)
+    except MembershipFixed as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
 
 
 async def _require_room_released(
     session: AsyncSession,
     room_store: RoomStore,
     room_id: str,
-    user: User,
-    action: Action,
-    is_admin: bool,
+    principal: Principal,
+    action: RoomAction,
 ) -> Room:
-    """`_require_room`, then end the read's transaction.
+    """`authorize_room`, then end the read's transaction.
 
     For a route that goes on to call `RoomService` or `RoomYamlService`, which
     open sessions of their own and may call Matrix or a messaging platform.
@@ -133,7 +167,28 @@ async def _require_room_released(
     request that is waiting for one more. The room stays readable after the
     commit (`expire_on_commit=False`).
     """
-    room = await _require_room(session, room_store, room_id, user, action, is_admin)
+    room = await authorize_room(session, room_store, room_id, principal, action)
+    await session.commit()
+    return room
+
+
+async def _require_member_change(
+    session: AsyncSession,
+    room_store: RoomStore,
+    room_id: str,
+    principal: Principal,
+    action: RoomAction,
+    *,
+    owns_target: bool,
+) -> Room:
+    """`_require_room_released` for adding or removing a room's agents and
+    people: 409 for a direct or group conversation before the policy is
+    asked, so its refusal says that rather than who may change members."""
+    room = await authorize_room(session, room_store, room_id, principal, "read")
+    _refuse_fixed_membership(room)
+    await ensure_room_action(
+        session, room_store, room, principal, action, owns_target=owns_target
+    )
     await session.commit()
     return room
 
@@ -177,6 +232,8 @@ async def _build_room_detail(
     bridge_store: CollaborationBridgeStore,
     external_user_store: ExternalUserStore,
     protocol: AgentCore,
+    principal: Principal,
+    decisions: DecisionAvailability,
 ) -> RoomDetail:
     agent_ids = await room_store.get_agent_ids(session, room.id)
     client_ids = await room_store.get_client_ids(session, room.id)
@@ -197,6 +254,10 @@ async def _build_room_detail(
         connected_names = sorted(
             ext_client_to_name[cid] for cid in client_ids if cid in ext_client_to_name
         )
+    if people_are_members(room):
+        # A Console chat's people are its members, not accounts on an app.
+        members = await room_store.member_users_by_room(session, [room.id])
+        connected_names = [name for _, name in members.get(room.id, [])]
 
     name = room.name
     if bridge_display_name and name.startswith(f"{bridge_display_name}: "):
@@ -210,6 +271,23 @@ async def _build_room_detail(
 
     roles = await _list_room_role_details(session, room.id, protocol)
     join_event_listeners = await room_store.get_join_event_listeners(session, room.id)
+    owner = await session.get(User, room.owner_id) if room.owner_id else None
+    where = await room_admins.standing(session, room_store, room.id, principal.id)
+    takes_part = where.in_room
+    admins = await room_admins.list_admins(session, room_store, room.id)
+    admin_names = await UserStore().names_by_id(session, {a.user_id for a in admins})
+    flags = _room_flags(
+        principal, room, in_room=takes_part, room_admin=where.room_admin
+    )
+    candidates: list[RoomPerson] = []
+    if flags["can_manage_admins"]:
+        taken = {a.user_id for a in admins} | {room.owner_id}
+        candidates = [
+            RoomPerson(user_id=uid, name=name)
+            for uid, name in await room_store.people_in_room(session, room.id)
+            if uid not in taken
+        ]
+    auto_route = await auto_route_state(session, decisions, room)
     # Not held across the deeplink, which can ask the platform on a cache miss.
     await session.commit()
     external_channel_url = await _external_channel_url(room)
@@ -229,10 +307,25 @@ async def _build_room_detail(
         external_channel_url=external_channel_url,
         group_id=room.group_id,
         group_name=group_name,
+        owner_id=room.owner_id,
+        owner_name=owner.name if owner else None,
         read_visibility=room.read_visibility,
         write_visibility=room.write_visibility,
         created_at=str(room.created_at),
         archived=room.archived_at is not None,
+        viewer_is_member=takes_part,
+        viewer_is_room_admin=where.room_admin,
+        room_admins=[
+            RoomAdminEntry(
+                user_id=a.user_id,
+                name=admin_names.get(a.user_id),
+                granted_by=a.granted_by,
+                granted_at=str(a.granted_at),
+            )
+            for a in admins
+        ],
+        is_console_chat=is_console_chat(room),
+        people_are_members=people_are_members(room),
         transport_room_id=room.transport_room_id,
         matrix_room_id=room.transport_room_id,
         external_channel_id=room.external_channel_id,
@@ -247,7 +340,65 @@ async def _build_room_detail(
         join_event_listeners=join_event_listeners,
         archived_at=str(room.archived_at) if room.archived_at else None,
         channel_on_delete=_channel_on_delete(room, bridge_type),
+        linked_channel_name=(
+            (room.metadata_ or {}).get(LINKED_CHANNEL_NAME_KEY)
+            if room.external_channel_id
+            else None
+        ),
+        room_admin_candidates=candidates,
+        **flags,
+        auto_route=_auto_route_detail(auto_route),
     )
+
+
+def _room_flags(
+    principal: Principal, room: Room, *, in_room: bool, room_admin: bool
+) -> dict[str, bool]:
+    """The `RoomSummary` permission flags: the room policy's answers for
+    `principal`, who is or is not in the room, and is or is not one of its
+    room admins."""
+    caller = RoomCaller(principal, in_room=in_room, room_admin=room_admin)
+
+    def may(action: RoomAction) -> bool:
+        return room_policy.allows(caller, room, action)
+
+    return {
+        "can_write": may("configure"),
+        "can_manage": may("delete"),
+        "can_archive": may("archive"),
+        "can_manage_admins": may("manage_admins"),
+        "can_attach": may("attach"),
+        "can_invite_agents": may("add_agent"),
+        "can_add_people": may("add_person"),
+        "can_remove_members": may("remove_member"),
+        "can_change_members": may("remove_member"),
+        "can_unlink": may("unlink"),
+        "can_transfer": _can_transfer(principal, room),
+    }
+
+
+def _can_transfer(principal: Principal, room: Room) -> bool:
+    """Whether `principal` may hand `room` to another member, as
+    `POST /ownership/transfer` decides it."""
+    return is_room_owner(principal, room) and kind_refusal(room) is None
+
+
+def _auto_route_detail(state: AutoRouteState) -> RoomAutoRoute:
+    return RoomAutoRoute(
+        on=state.on,
+        available=state.available,
+        reason=state.reason,
+        fallback_agent=state.fallback_agent,
+        fallback_agent_name=state.fallback_agent_name,
+    )
+
+
+def get_decision_availability(
+    config: Annotated[SwitchConfig, Depends(get_config)],
+) -> DecisionAvailability:
+    """Whether auto-route can act in a room: the server's flag and default,
+    and the room's workspace's choice (`decision/settings.py`)."""
+    return DecisionAvailability.from_config(config)
 
 
 async def _list_room_role_details(
@@ -348,16 +499,27 @@ async def list_rooms(
     room_ids = [room.id for room in rooms]
     agent_ids_by_room = await room_store.agent_ids_by_room(session, room_ids)
     client_ids_by_room = await room_store.client_ids_by_room(session, room_ids)
+    involved = await room_store.involved_room_ids(session, user.id, room_ids)
+    administered = await room_store.admin_room_ids(session, user.id, list(involved))
+    chat_members = await room_store.member_users_by_room(
+        session, [room.id for room in rooms if people_are_members(room)]
+    )
+    last_message_at = await room_store.last_message_at(session, room_ids)
     # Not held across the deeplinks, which can ask the platform on a cache miss.
     await session.commit()
 
+    principal = Principal(user.id, is_admin)
     summaries = []
     for room in rooms:
-        connected_names = sorted(
-            ext_client_to_name[cid]
-            for cid in client_ids_by_room.get(room.id, [])
-            if cid in ext_client_to_name
-        )
+        if people_are_members(room):
+            # A Console chat's people are its members, not accounts on an app.
+            connected_names = [name for _, name in chat_members.get(room.id, [])]
+        else:
+            connected_names = sorted(
+                ext_client_to_name[cid]
+                for cid in client_ids_by_room.get(room.id, [])
+                if cid in ext_client_to_name
+            )
         bridge = bridges.get(room.bridge_id) if room.bridge_id else None
         bridge_display_name = bridge.display_name if bridge else None
         name = room.name
@@ -384,7 +546,22 @@ async def list_rooms(
                 read_visibility=room.read_visibility,
                 write_visibility=room.write_visibility,
                 created_at=str(room.created_at),
+                last_message_at=(
+                    last_message_at[room.id].isoformat()
+                    if room.id in last_message_at
+                    else None
+                ),
                 archived=room.archived_at is not None,
+                viewer_is_member=room.id in involved,
+                viewer_is_room_admin=room.id in administered,
+                is_console_chat=is_console_chat(room),
+                people_are_members=people_are_members(room),
+                **_room_flags(
+                    principal,
+                    room,
+                    in_room=room.id in involved,
+                    room_admin=room.id in administered,
+                ),
             )
         )
 
@@ -400,9 +577,33 @@ async def create_room(
     bridge_store: Annotated[CollaborationBridgeStore, Depends(get_bridge_store)],
     external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
     protocol: Annotated[AgentCore, Depends(get_protocol)],
+    decisions: Annotated[DecisionAvailability, Depends(get_decision_availability)],
     user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
+    agent_store: Annotated[AgentStore, Depends(get_agent_store)],
 ) -> RoomDetail:
     _validate_create(req)
+    if req.group_id is not None:
+        require_group_filing_or_403(is_admin)
+    # The creator owns the new room, so is in it; the invite rule still asks
+    # whether they may address each agent they put in (`room_invites`).
+    named = await agent_store.get_many(session, req.agent_ids or [])
+    if req.agent_names:
+        named += await agent_store.get_by_names(session, req.agent_names)
+    targets = await with_subagents(
+        session, agent_store, named, req.include_subagents_for
+    )
+    try:
+        await require_user_may_add_to_new_room(
+            session,
+            external_user_store,
+            targets=targets,
+            user_id=user.id,
+            group_id=req.group_id,
+        )
+    except InviteRefused as refused:
+        raise HTTPException(status_code=403, detail=str(refused)) from refused
+    await session.commit()
     config = RoomCreateConfig(
         name=req.name,
         description=req.description,
@@ -419,12 +620,17 @@ async def create_room(
         group_id=req.group_id,
         created_by=user.id,
         owner_id=user.id,
+        acting_user_id=user.id,
+        acting_is_admin=is_admin,
         read_visibility=req.read_visibility,
-        write_visibility=req.write_visibility,
         roles=([RoleSpec(**r.model_dump()) for r in req.roles] if req.roles else None),
     )
     try:
         result = await room_service.create_room(config)
+    except ChannelInUse as e:
+        # The channel is someone else's room's: not a malformed request, a
+        # conflict with what exists.
+        raise HTTPException(status_code=409, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except BridgeOperationError as e:
@@ -437,7 +643,14 @@ async def create_room(
     if fresh is None:
         raise HTTPException(status_code=500, detail="Room missing after create")
     return await _build_room_detail(
-        session, fresh, room_store, bridge_store, external_user_store, protocol
+        session,
+        fresh,
+        room_store,
+        bridge_store,
+        external_user_store,
+        protocol,
+        Principal(user.id, is_admin),
+        decisions,
     )
 
 
@@ -505,6 +718,8 @@ async def create_room_from_yaml(
             creator_name=builtins["$creator"],
             template_name=template_name or parsed.spec.name,
         )
+    except ChannelInUse as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except PermissionError as e:
@@ -700,10 +915,17 @@ async def run_template_document(
             else None
         )
         plan = plan_template(
-            body.template, body.filled, inputs, builtins=builtins, machines=machines
+            body.template,
+            body.filled,
+            inputs,
+            builtins=builtins,
+            machines=machines,
+            providers=offered_provider_ids(config.feature_flags),
         )
     except AgentsNotCreated as error:
         return _refused_run(error)
+    except ChannelInUse as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     result = await _run_as_person(
@@ -770,10 +992,11 @@ async def _run_as_person(
                 document, inputs=inputs, builtins=builtins
             )
             await rooms_yaml.check_entity_params(parsed, reader=reader)
-            await rooms_yaml.check_bridges(parsed)
+            await rooms_yaml.check_bridges(parsed, creator=builtins["$creator"])
         checked = await creator.check(tenant_id, user.id, plans)
         created = await creator.create(tenant_id, user.id, checked)
         room: ProvisionResult | GroupProvisionResult | None = None
+        room_made = opening_rooms_as_made(creator, tenant_id, created, room_addressing)
         if parsed is not None:
             try:
                 if isinstance(parsed.spec, GroupSpec):
@@ -783,6 +1006,7 @@ async def _run_as_person(
                         is_admin=is_admin,
                         creator_name=builtins["$creator"],
                         template_name=template_name,
+                        on_room_made=room_made,
                     )
                 else:
                     room = await rooms_yaml.provision(
@@ -792,6 +1016,7 @@ async def _run_as_person(
                         is_admin=is_admin,
                         creator_name=builtins["$creator"],
                         template_name=template_name,
+                        on_room_made=room_made,
                     )
                 if room_addressing:
                     await creator.open_to_rooms(
@@ -808,6 +1033,8 @@ async def _run_as_person(
                 ) from error
     except (AgentsNotCreated, RunUndone) as error:
         return _refused_run(error)
+    except ChannelInUse as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except PermissionError as e:
@@ -827,6 +1054,46 @@ async def _run_as_person(
         ],
         "room": None if room is None else room.model_dump(),
     }
+
+
+class RoomAgentCandidates(BaseModel):
+    agent_ids: list[str]
+
+
+@router.get("/agent-candidates")
+async def room_agent_candidates(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    room_store: Annotated[RoomStore, Depends(get_room_store)],
+    agent_store: Annotated[AgentStore, Depends(get_agent_store)],
+    external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
+    user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
+    room_id: str | None = None,
+) -> RoomAgentCandidates:
+    """The agents the caller may bring in: into `room_id`, less those already
+    in it, or into a new room when it is absent. The invite rule decides
+    (`room_invites`), so a picker built from this never offers an agent the
+    invite would refuse. A room the caller cannot see is 404; one they are not
+    in, or a direct or group conversation, offers none."""
+    room = None
+    if room_id is not None:
+        room = await authorize_room(
+            session, room_store, room_id, Principal(user.id, is_admin), "read"
+        )
+        if room.channel_type in FIXED_MEMBERSHIP:
+            return RoomAgentCandidates(agent_ids=[])
+    agents = await agent_store.get_in_tenant(session, require_tenant_id())
+    return RoomAgentCandidates(
+        agent_ids=await invitable_agent_ids(
+            session,
+            room_store,
+            external_user_store,
+            agents=agents,
+            user_id=user.id,
+            is_admin=is_admin,
+            room=room,
+        )
+    )
 
 
 @router.get("/template-schema")
@@ -855,7 +1122,8 @@ async def export_room_yaml(
 ) -> Response:
     """Export a room to YAML in the same surface ``/rooms/from-yaml`` accepts.
     Each section can be dropped via its boolean toggle (default included)."""
-    await _require_room_released(session, room_store, room_id, user, "read", is_admin)
+    principal = Principal(user.id, is_admin)
+    room = await _require_room_released(session, room_store, room_id, principal, "read")
     yaml_text = await rooms_yaml.export(
         room_id,
         agents=agents,
@@ -865,7 +1133,19 @@ async def export_room_yaml(
         docs=docs,
         roles=roles,
     )
-    return Response(content=yaml_text, media_type="application/x-yaml")
+    return Response(
+        content=yaml_text,
+        media_type="application/x-yaml",
+        headers={
+            "Content-Disposition": content_disposition(
+                "attachment", f"{room.name}.yaml", "room"
+            ),
+            # The YAML carries names and instructions people typed, so a
+            # browser must not be talked into rendering it as something else.
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": UNTRUSTED_FILE_CSP,
+        },
+    )
 
 
 @router.get("/{room_id}")
@@ -876,12 +1156,21 @@ async def get_room(
     bridge_store: Annotated[CollaborationBridgeStore, Depends(get_bridge_store)],
     external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
     protocol: Annotated[AgentCore, Depends(get_protocol)],
+    decisions: Annotated[DecisionAvailability, Depends(get_decision_availability)],
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
-    room = await _require_room(session, room_store, room_id, user, "read", is_admin)
+    principal = Principal(user.id, is_admin)
+    room = await authorize_room(session, room_store, room_id, principal, "read")
     return await _build_room_detail(
-        session, room, room_store, bridge_store, external_user_store, protocol
+        session,
+        room,
+        room_store,
+        bridge_store,
+        external_user_store,
+        protocol,
+        principal,
+        decisions,
     )
 
 
@@ -895,21 +1184,20 @@ async def patch_room(
     bridge_store: Annotated[CollaborationBridgeStore, Depends(get_bridge_store)],
     external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
     protocol: Annotated[AgentCore, Depends(get_protocol)],
+    decisions: Annotated[DecisionAvailability, Depends(get_decision_availability)],
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
-    target = await _require_room_released(
-        session, room_store, room_id, user, "write", is_admin
+    principal = Principal(user.id, is_admin)
+    # A write visibility from an older client is ignored: it grants nothing.
+    changes_access = req.read_visibility is not None
+    await _require_room_released(
+        session,
+        room_store,
+        room_id,
+        principal,
+        "change_access" if changes_access else "configure",
     )
-    # Changing a room's access permission (read/write visibility) is reserved
-    # for the room's owner and tenant admins — plain write access (which a
-    # publicly-writable room grants to everyone) is not enough. Otherwise any
-    # user could re-permission any room and lock out its owner.
-    if req.read_visibility is not None or req.write_visibility is not None:
-        try:
-            require_manage(Principal(user.id, is_admin), target.owner_id)
-        except PermissionError as e:
-            raise HTTPException(status_code=403, detail=str(e)) from e
     try:
         await room_service.update_room(
             room_id,
@@ -918,7 +1206,6 @@ async def patch_room(
             instructions=req.instructions,
             admin_mode=req.admin_mode,
             read_visibility=req.read_visibility,
-            write_visibility=req.write_visibility,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -926,8 +1213,18 @@ async def patch_room(
     room = await room_store.get(session, room_id)
     if room is None:
         raise HTTPException(status_code=404, detail="Room not found")
+    # The update was written on another session; this one still holds the row
+    # as it was read for the access check.
+    await session.refresh(room)
     return await _build_room_detail(
-        session, room, room_store, bridge_store, external_user_store, protocol
+        session,
+        room,
+        room_store,
+        bridge_store,
+        external_user_store,
+        protocol,
+        principal,
+        decisions,
     )
 
 
@@ -940,7 +1237,8 @@ async def list_room_roles(
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> list[RoomRoleDetail]:
-    await _require_room(session, room_store, room_id, user, "read", is_admin)
+    principal = Principal(user.id, is_admin)
+    await authorize_room(session, room_store, room_id, principal, "read")
     return await _list_room_role_details(session, room_id, protocol)
 
 
@@ -954,17 +1252,17 @@ async def create_room_role(
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> list[RoomRoleDetail]:
-    await _require_room(session, room_store, room_id, user, "write", is_admin)
+    principal = Principal(user.id, is_admin)
+    await authorize_room(session, room_store, room_id, principal, "configure")
     try:
         await protocol.room_role_store.define_role(
             session, room_id, req.name, req.instructions, req.exclusive
         )
-        # After the write succeeds but before the outer commit — the same
-        # convention as room_role_deleted below, chosen so a request that
-        # fails validation (e.g. a duplicate name) never reports an event for
-        # a role that was never defined.
-        emit_safely(
-            current_telemetry(), "room_role_defined", {"exclusive": req.exclusive}
+        emit_after_commit(
+            session,
+            current_telemetry(),
+            "room_role_defined",
+            {"exclusive": req.exclusive},
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -983,7 +1281,8 @@ async def patch_room_role(
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> list[RoomRoleDetail]:
-    await _require_room(session, room_store, room_id, user, "write", is_admin)
+    principal = Principal(user.id, is_admin)
+    await authorize_room(session, room_store, room_id, principal, "configure")
     try:
         await protocol.room_role_store.edit_role(
             session, room_id, name, req.instructions, req.exclusive
@@ -1004,10 +1303,11 @@ async def delete_room_role(
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> list[RoomRoleDetail]:
-    await _require_room(session, room_store, room_id, user, "write", is_admin)
+    principal = Principal(user.id, is_admin)
+    await authorize_room(session, room_store, room_id, principal, "configure")
     try:
         await protocol.room_role_store.delete_role(session, room_id, name)
-        emit_safely(current_telemetry(), "room_role_deleted", {})
+        emit_after_commit(session, current_telemetry(), "room_role_deleted", {})
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     await session.commit()
@@ -1023,13 +1323,22 @@ async def put_room_group(
     bridge_store: Annotated[CollaborationBridgeStore, Depends(get_bridge_store)],
     external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
     protocol: Annotated[AgentCore, Depends(get_protocol)],
+    decisions: Annotated[DecisionAvailability, Depends(get_decision_availability)],
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
-    """Assign the room to a group, or make it standalone (`group_id=null`)."""
-    await _require_room(session, room_store, room_id, user, "write", is_admin)
+    """Assign the room to a group, or make it standalone (`group_id=null`).
+
+    Taking a room out of its group, or leaving it where it is, needs write
+    access to it; putting it in another one also needs a workspace admin."""
+    principal = Principal(user.id, is_admin)
+    await authorize_room(session, room_store, room_id, principal, "configure")
     try:
-        await room_store.set_group(session, room_id, req.group_id)
+        await room_store.set_group(
+            session, room_id, req.group_id, acting_is_admin=is_admin
+        )
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e)) from e
     except ValueError as e:
         # Missing room → 404; missing group → 400.
         detail = str(e)
@@ -1040,7 +1349,14 @@ async def put_room_group(
     if room is None:
         raise HTTPException(status_code=404, detail="Room not found")
     return await _build_room_detail(
-        session, room, room_store, bridge_store, external_user_store, protocol
+        session,
+        room,
+        room_store,
+        bridge_store,
+        external_user_store,
+        protocol,
+        principal,
+        decisions,
     )
 
 
@@ -1054,10 +1370,12 @@ async def put_protection(
     bridge_store: Annotated[CollaborationBridgeStore, Depends(get_bridge_store)],
     external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
     protocol: Annotated[AgentCore, Depends(get_protocol)],
+    decisions: Annotated[DecisionAvailability, Depends(get_decision_availability)],
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
-    await _require_room_released(session, room_store, room_id, user, "write", is_admin)
+    principal = Principal(user.id, is_admin)
+    await _require_room_released(session, room_store, room_id, principal, "configure")
     try:
         await room_service.update_protection_config(room_id, req.protection_config)
     except ValueError:
@@ -1067,7 +1385,14 @@ async def put_protection(
     if room is None:
         raise HTTPException(status_code=404, detail="Room not found")
     return await _build_room_detail(
-        session, room, room_store, bridge_store, external_user_store, protocol
+        session,
+        room,
+        room_store,
+        bridge_store,
+        external_user_store,
+        protocol,
+        principal,
+        decisions,
     )
 
 
@@ -1081,10 +1406,12 @@ async def put_observe(
     bridge_store: Annotated[CollaborationBridgeStore, Depends(get_bridge_store)],
     external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
     protocol: Annotated[AgentCore, Depends(get_protocol)],
+    decisions: Annotated[DecisionAvailability, Depends(get_decision_availability)],
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
-    await _require_room_released(session, room_store, room_id, user, "write", is_admin)
+    principal = Principal(user.id, is_admin)
+    await _require_room_released(session, room_store, room_id, principal, "configure")
     try:
         await room_service.update_observe_config(room_id, req.observe_config)
     except ValueError:
@@ -1094,8 +1421,54 @@ async def put_observe(
     if room is None:
         raise HTTPException(status_code=404, detail="Room not found")
     return await _build_room_detail(
-        session, room, room_store, bridge_store, external_user_store, protocol
+        session,
+        room,
+        room_store,
+        bridge_store,
+        external_user_store,
+        protocol,
+        principal,
+        decisions,
     )
+
+
+@router.put("/{room_id}/auto-route")
+async def put_auto_route(
+    room_id: str,
+    req: RoomAutoRouteRequest,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    room_store: Annotated[RoomStore, Depends(get_room_store)],
+    decisions: Annotated[DecisionAvailability, Depends(get_decision_availability)],
+    user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
+) -> RoomAutoRoute:
+    """Turn the room's auto-route on or off, and name or clear its triage
+    agent: the same settings as `!auto-route` and `!auto-route fallback`.
+    Both are room settings, for the room's owner or a workspace admin.
+    Turning it on where it cannot act (`available` false) is refused with
+    409 and the reason."""
+    principal = Principal(user.id, is_admin)
+    room = await authorize_room(session, room_store, room_id, principal, "configure")
+    try:
+        if "fallback_agent" in req.model_fields_set:
+            agent = None
+            if req.fallback_agent is not None:
+                agent = await room_agent(session, room.id, req.fallback_agent)
+                if agent is None:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=f"No agent {req.fallback_agent!r} in this room.",
+                    )
+            await set_auto_route_fallback(session, room_store, room, agent)
+        if req.on is not None:
+            await set_auto_route_on(session, decisions, room_store, room, req.on)
+    except AutoRouteRefused as refused:
+        raise HTTPException(
+            status_code=409 if req.on else 422, detail=str(refused)
+        ) from refused
+    await session.commit()
+    await session.refresh(room)
+    return _auto_route_detail(await auto_route_state(session, decisions, room))
 
 
 @router.post("/{room_id}/agents")
@@ -1107,11 +1480,35 @@ async def post_room_agents(
     room_store: Annotated[RoomStore, Depends(get_room_store)],
     bridge_store: Annotated[CollaborationBridgeStore, Depends(get_bridge_store)],
     external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
+    agent_store: Annotated[AgentStore, Depends(get_agent_store)],
     protocol: Annotated[AgentCore, Depends(get_protocol)],
+    decisions: Annotated[DecisionAvailability, Depends(get_decision_availability)],
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
-    await _require_room_released(session, room_store, room_id, user, "write", is_admin)
+    principal = Principal(user.id, is_admin)
+    # Seeing the room is enough to ask; who may actually bring an agent in is
+    # the one invite rule every path shares (`room_invites`).
+    target_room = await authorize_room(session, room_store, room_id, principal, "read")
+    _refuse_fixed_membership(target_room)
+    try:
+        await require_user_may_invite(
+            session,
+            room_store,
+            external_user_store,
+            room=target_room,
+            targets=await with_subagents(
+                session,
+                agent_store,
+                await agent_store.get_many(session, req.agent_ids),
+                req.include_subagents_for,
+            ),
+            user_id=user.id,
+            is_admin=is_admin,
+        )
+    except InviteRefused as refused:
+        raise HTTPException(status_code=403, detail=str(refused)) from refused
+    await session.commit()
     try:
         await room_service.add_agents_to_room(
             room_id,
@@ -1126,7 +1523,14 @@ async def post_room_agents(
     if room is None:
         raise HTTPException(status_code=404, detail="Room not found")
     return await _build_room_detail(
-        session, room, room_store, bridge_store, external_user_store, protocol
+        session,
+        room,
+        room_store,
+        bridge_store,
+        external_user_store,
+        protocol,
+        principal,
+        decisions,
     )
 
 
@@ -1141,10 +1545,24 @@ async def patch_room_agent(
     bridge_store: Annotated[CollaborationBridgeStore, Depends(get_bridge_store)],
     external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
     protocol: Annotated[AgentCore, Depends(get_protocol)],
+    decisions: Annotated[DecisionAvailability, Depends(get_decision_availability)],
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
-    await _require_room_released(session, room_store, room_id, user, "write", is_admin)
+    principal = Principal(user.id, is_admin)
+    # An agent's own owner may change its settings here, as they may remove
+    # it; otherwise it takes the room's owner or an admin.
+    agent = await session.get(Agent, agent_id)
+    readable = await authorize_room(session, room_store, room_id, principal, "read")
+    await ensure_room_action(
+        session,
+        room_store,
+        readable,
+        principal,
+        "agent_settings",
+        owns_target=agent is not None and owns(principal, agent.owner_id),
+    )
+    await session.commit()
     try:
         await room_service.set_join_event_listeners(
             room_id, {agent_id: req.receives_join_events}
@@ -1155,7 +1573,14 @@ async def patch_room_agent(
     if room is None:
         raise HTTPException(status_code=404, detail="Room not found")
     return await _build_room_detail(
-        session, room, room_store, bridge_store, external_user_store, protocol
+        session,
+        room,
+        room_store,
+        bridge_store,
+        external_user_store,
+        protocol,
+        principal,
+        decisions,
     )
 
 
@@ -1169,12 +1594,24 @@ async def delete_room_agent(
     bridge_store: Annotated[CollaborationBridgeStore, Depends(get_bridge_store)],
     external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
     protocol: Annotated[AgentCore, Depends(get_protocol)],
+    decisions: Annotated[DecisionAvailability, Depends(get_decision_availability)],
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
-    await _require_room_released(session, room_store, room_id, user, "write", is_admin)
+    principal = Principal(user.id, is_admin)
+    agent = await session.get(Agent, agent_id)
+    await _require_member_change(
+        session,
+        room_store,
+        room_id,
+        principal,
+        "remove_member",
+        owns_target=agent is not None and owns(principal, agent.owner_id),
+    )
     try:
-        await room_service.remove_agents_from_room(room_id, [agent_id])
+        await room_service.remove_agents_from_room(
+            room_id, [agent_id], removed_by=user.name
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     await session.commit()
@@ -1182,7 +1619,14 @@ async def delete_room_agent(
     if room is None:
         raise HTTPException(status_code=404, detail="Room not found")
     return await _build_room_detail(
-        session, room, room_store, bridge_store, external_user_store, protocol
+        session,
+        room,
+        room_store,
+        bridge_store,
+        external_user_store,
+        protocol,
+        principal,
+        decisions,
     )
 
 
@@ -1196,10 +1640,14 @@ async def post_room_users(
     bridge_store: Annotated[CollaborationBridgeStore, Depends(get_bridge_store)],
     external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
     protocol: Annotated[AgentCore, Depends(get_protocol)],
+    decisions: Annotated[DecisionAvailability, Depends(get_decision_availability)],
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
-    await _require_room_released(session, room_store, room_id, user, "write", is_admin)
+    principal = Principal(user.id, is_admin)
+    await _require_member_change(
+        session, room_store, room_id, principal, "add_person", owns_target=False
+    )
     try:
         await room_service.add_users_to_room(room_id, req.user_names)
     except ValueError as e:
@@ -1209,7 +1657,70 @@ async def post_room_users(
     if room is None:
         raise HTTPException(status_code=404, detail="Room not found")
     return await _build_room_detail(
-        session, room, room_store, bridge_store, external_user_store, protocol
+        session,
+        room,
+        room_store,
+        bridge_store,
+        external_user_store,
+        protocol,
+        principal,
+        decisions,
+    )
+
+
+@router.post("/{room_id}/users/remove")
+async def post_room_users_remove(
+    room_id: str,
+    req: RoomUsersRequest,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    room_service: Annotated[RoomService, Depends(get_room_service)],
+    room_store: Annotated[RoomStore, Depends(get_room_store)],
+    bridge_store: Annotated[CollaborationBridgeStore, Depends(get_bridge_store)],
+    external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
+    decisions: Annotated[DecisionAvailability, Depends(get_decision_availability)],
+    user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
+) -> RoomUsersRemoved:
+    """Take people out of a bridged room and its channel, by their names on
+    its platform: the room's owner, a room admin or a workspace admin
+    (`remove_member`). Only the owner tier may take out the owner
+    (`remove_owner`)."""
+    principal = Principal(user.id, is_admin)
+    to_check = await authorize_room(session, room_store, room_id, principal, "read")
+    names_owner = await names_the_owner(session, to_check, req.user_names)
+    await _require_member_change(
+        session,
+        room_store,
+        room_id,
+        principal,
+        "remove_owner" if names_owner else "remove_member",
+        owns_target=False,
+    )
+    try:
+        misses = await room_service.remove_users_from_room(
+            room_id, req.user_names, removed_by=user.name
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    await session.commit()
+    room = await room_store.get(session, room_id)
+    if room is None:
+        raise HTTPException(status_code=404, detail="Room not found")
+    detail = await _build_room_detail(
+        session,
+        room,
+        room_store,
+        bridge_store,
+        external_user_store,
+        protocol,
+        principal,
+        decisions,
+    )
+    return RoomUsersRemoved(
+        room=detail,
+        not_in_room=[m.name for m in misses if m.reason == "not_in_room"],
+        platform_refused=[m.name for m in misses if m.reason == "platform_refused"],
     )
 
 
@@ -1222,10 +1733,12 @@ async def _set_archived(
     bridge_store: CollaborationBridgeStore,
     external_user_store: ExternalUserStore,
     protocol: AgentCore,
+    decisions: DecisionAvailability,
     user: User,
     is_admin: bool,
 ) -> RoomDetail:
-    await _require_room_released(session, room_store, room_id, user, "write", is_admin)
+    principal = Principal(user.id, is_admin)
+    await _require_room_released(session, room_store, room_id, principal, "archive")
     try:
         await room_service.set_room_archived(room_id, archived)
     except ValueError:
@@ -1234,7 +1747,182 @@ async def _set_archived(
     if room is None:
         raise HTTPException(status_code=404, detail="Room not found")
     return await _build_room_detail(
-        session, room, room_store, bridge_store, external_user_store, protocol
+        session,
+        room,
+        room_store,
+        bridge_store,
+        external_user_store,
+        protocol,
+        principal,
+        decisions,
+    )
+
+
+@router.get("/{room_id}/admins")
+async def list_room_admins(
+    room_id: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    room_store: Annotated[RoomStore, Depends(get_room_store)],
+    user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
+) -> list[RoomAdminEntry]:
+    """The room's room admins, longest-standing first: anyone who can see
+    the room."""
+    principal = Principal(user.id, is_admin)
+    await authorize_room(session, room_store, room_id, principal, "read")
+    admins = await room_admins.list_admins(session, room_store, room_id)
+    names = await UserStore().names_by_id(session, {a.user_id for a in admins})
+    return [
+        RoomAdminEntry(
+            user_id=a.user_id,
+            name=names.get(a.user_id),
+            granted_by=a.granted_by,
+            granted_at=str(a.granted_at),
+        )
+        for a in admins
+    ]
+
+
+async def _change_room_admin(
+    room_id: str,
+    target_user_id: str,
+    *,
+    add: bool,
+    session: AsyncSession,
+    room_store: RoomStore,
+    bridge_store: CollaborationBridgeStore,
+    external_user_store: ExternalUserStore,
+    protocol: AgentCore,
+    decisions: DecisionAvailability,
+    user: User,
+    is_admin: bool,
+) -> RoomDetail:
+    principal = Principal(user.id, is_admin)
+    room = await authorize_room(session, room_store, room_id, principal, "read")
+    where = await room_admins.standing(session, room_store, room.id, principal.id)
+    caller = RoomCaller(principal, in_room=where.in_room, room_admin=where.room_admin)
+    change = room_admins.grant if add else room_admins.revoke
+    try:
+        await change(session, room_store, room, caller=caller, user_id=target_user_id)
+    except room_admins.RoomAdminRefused as refused:
+        await session.rollback()
+        raise HTTPException(status_code=refused.status, detail=str(refused)) from None
+    await session.commit()
+    await session.refresh(room)
+    return await _build_room_detail(
+        session,
+        room,
+        room_store,
+        bridge_store,
+        external_user_store,
+        protocol,
+        principal,
+        decisions,
+    )
+
+
+@router.put("/{room_id}/admins/{target_user_id}")
+async def add_room_admin(
+    room_id: str,
+    target_user_id: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    room_store: Annotated[RoomStore, Depends(get_room_store)],
+    bridge_store: Annotated[CollaborationBridgeStore, Depends(get_bridge_store)],
+    external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
+    decisions: Annotated[DecisionAvailability, Depends(get_decision_availability)],
+    user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
+) -> RoomDetail:
+    """Make a person in the room one of its room admins: the room's owner or a
+    workspace admin (`manage_admins`). Making someone who already is one
+    changes nothing."""
+    return await _change_room_admin(
+        room_id,
+        target_user_id,
+        add=True,
+        session=session,
+        room_store=room_store,
+        bridge_store=bridge_store,
+        external_user_store=external_user_store,
+        protocol=protocol,
+        decisions=decisions,
+        user=user,
+        is_admin=is_admin,
+    )
+
+
+@router.delete("/{room_id}/admins/{target_user_id}")
+async def remove_room_admin(
+    room_id: str,
+    target_user_id: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    room_store: Annotated[RoomStore, Depends(get_room_store)],
+    bridge_store: Annotated[CollaborationBridgeStore, Depends(get_bridge_store)],
+    external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
+    decisions: Annotated[DecisionAvailability, Depends(get_decision_availability)],
+    user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
+) -> RoomDetail:
+    """Take someone off the room's room admins: the room's owner or a
+    workspace admin, or the room admin themselves stepping down. Taking off
+    someone who isn't one changes nothing."""
+    return await _change_room_admin(
+        room_id,
+        target_user_id,
+        add=False,
+        session=session,
+        room_store=room_store,
+        bridge_store=bridge_store,
+        external_user_store=external_user_store,
+        protocol=protocol,
+        decisions=decisions,
+        user=user,
+        is_admin=is_admin,
+    )
+
+
+@router.post("/{room_id}/sync-name")
+async def sync_room_name(
+    room_id: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    room_service: Annotated[RoomService, Depends(get_room_service)],
+    room_store: Annotated[RoomStore, Depends(get_room_store)],
+    bridge_store: Annotated[CollaborationBridgeStore, Depends(get_bridge_store)],
+    external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
+    decisions: Annotated[DecisionAvailability, Depends(get_decision_availability)],
+    user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
+) -> RoomDetail:
+    """Name the room after its linked channel (`linked_channel_name`), as the
+    bridge names its own rooms, so it follows the channel's renames from now
+    on. The room's owner or an admin only."""
+    principal = Principal(user.id, is_admin)
+    room = await authorize_room(session, room_store, room_id, principal, "configure")
+    channel_name = (room.metadata_ or {}).get(LINKED_CHANNEL_NAME_KEY)
+    bridge = await bridge_store.get(session, room.bridge_id) if room.bridge_id else None
+    if not room.external_channel_id or bridge is None or not channel_name:
+        raise HTTPException(
+            status_code=409,
+            detail="Switch has not seen the name of a channel linked to this room.",
+        )
+    # `take_platform_name` opens a session of its own (`_require_room_released`).
+    await session.commit()
+    await room_service.take_platform_name(
+        room.id, f"{bridge.display_name}: {channel_name}", channel_name
+    )
+    await session.refresh(room)
+    return await _build_room_detail(
+        session,
+        room,
+        room_store,
+        bridge_store,
+        external_user_store,
+        protocol,
+        principal,
+        decisions,
     )
 
 
@@ -1247,6 +1935,7 @@ async def archive_room(
     bridge_store: Annotated[CollaborationBridgeStore, Depends(get_bridge_store)],
     external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
     protocol: Annotated[AgentCore, Depends(get_protocol)],
+    decisions: Annotated[DecisionAvailability, Depends(get_decision_availability)],
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
@@ -1261,6 +1950,7 @@ async def archive_room(
         bridge_store,
         external_user_store,
         protocol,
+        decisions,
         user,
         is_admin,
     )
@@ -1275,6 +1965,7 @@ async def unarchive_room(
     bridge_store: Annotated[CollaborationBridgeStore, Depends(get_bridge_store)],
     external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
     protocol: Annotated[AgentCore, Depends(get_protocol)],
+    decisions: Annotated[DecisionAvailability, Depends(get_decision_availability)],
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> RoomDetail:
@@ -1288,6 +1979,7 @@ async def unarchive_room(
         bridge_store,
         external_user_store,
         protocol,
+        decisions,
         user,
         is_admin,
     )
@@ -1306,7 +1998,8 @@ async def delete_room(
     # they keep using.
     retire_channel: Annotated[bool, Query()] = False,
 ) -> RoomDeleteResponse:
-    await _require_room_released(session, room_store, room_id, user, "delete", is_admin)
+    principal = Principal(user.id, is_admin)
+    await _require_room_released(session, room_store, room_id, principal, "delete")
     try:
         channel = await room_service.delete_room(room_id, retire_channel=retire_channel)
     except ValueError:
@@ -1331,7 +2024,10 @@ async def bulk_delete_rooms(
         if room is None:
             logger.warning("Skipping unknown room %s during bulk delete", room_id)
             continue
-        if not can(principal, "delete", room):
+        decision = await decide_room_action(
+            session, room_store, room, principal, "delete"
+        )
+        if not decision.allowed:
             logger.warning(
                 "Skipping room %s during bulk delete: not authorized", room_id
             )
@@ -1357,8 +2053,8 @@ async def bulk_archive_rooms(
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> BulkArchiveResponse:
     """Archive or unarchive many rooms at once. Each room is authorized
-    individually with the same `write` check as the single archive endpoint;
-    rooms the caller cannot write (or that no longer exist) are skipped."""
+    individually with the same check as the single archive endpoint; rooms
+    the caller may not archive (or that no longer exist) are skipped."""
     principal = Principal(user.id, is_admin)
     updated = 0
     for room_id in req.room_ids:
@@ -1366,7 +2062,10 @@ async def bulk_archive_rooms(
         if room is None:
             logger.warning("Skipping unknown room %s during bulk archive", room_id)
             continue
-        if not can(principal, "write", room):
+        decision = await decide_room_action(
+            session, room_store, room, principal, "archive"
+        )
+        if not decision.allowed:
             logger.warning(
                 "Skipping room %s during bulk archive: not authorized", room_id
             )

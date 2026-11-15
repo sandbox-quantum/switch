@@ -15,7 +15,7 @@ from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.resource.service import ResourceService
-from switch_core.db.models import Reference, Room, User
+from switch_core.db.models import Reference, Room, User, room_agents
 from switch_core.db.stores.document_store import DocumentStore
 from switch_core.db.stores.package_store import PackageStore
 from switch_core.db.stores.reference_store import ReferenceStore
@@ -26,6 +26,7 @@ from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.references import attach_reference_to_room
 from switch_core.gateway.room_links import create_linked_room, delete_linked_room
 from switch_core.gateway.schemas import LinkedRoomCreateRequest
+from tests.switch_core.gateway.agent_route_harness import add_agent
 
 _ROOM_STORE = RoomStore()
 _USER_STORE = UserStore()
@@ -173,11 +174,11 @@ class TestAttachReferenceRoomWriteAuthz:
 
             assert detail.id == ref.id
 
-    async def test_public_write_room_allows_non_owner(
+    async def test_public_write_no_longer_lets_a_bystander_attach(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
-        # The fix must not over-block: a room whose write_visibility is public
-        # is still attachable by a non-owner.
+        # Attaching is for those in the room (`room_policy`); a room's write
+        # visibility grants nothing.
         async with session_factory() as session:
             owner = await _add_user(session, name="owner")
             other = await _add_user(session, name="other")
@@ -187,6 +188,39 @@ class TestAttachReferenceRoomWriteAuthz:
                 owner_id=owner.id,
                 read_visibility="public",
                 write_visibility="public",
+            )
+            ref = await _add_reference(session, owner_id=other.id)
+            svc = _resource_service(session_factory)
+
+            with pytest.raises(HTTPException) as exc:
+                await attach_reference_to_room(
+                    room.id,
+                    ref.id,
+                    session,
+                    svc,
+                    _ROOM_STORE,
+                    _USER_STORE,
+                    other,
+                    await _is_admin(session, other),
+                )
+            assert exc.value.status_code == 403
+
+    async def test_someone_in_the_room_attaches(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            owner = await _add_user(session, name="owner")
+            other = await _add_user(session, name="other")
+            room = await _add_room(
+                session,
+                name="r1",
+                owner_id=owner.id,
+                read_visibility="private",
+                write_visibility="private",
+            )
+            theirs = await add_agent(session, name="theirs", owner_id=other.id)
+            await session.execute(
+                room_agents.insert().values(room_id=room.id, agent_id=theirs.id)
             )
             ref = await _add_reference(session, owner_id=other.id)
             svc = _resource_service(session_factory)
@@ -276,6 +310,31 @@ class TestCreateLinkedRoomWriteAuthz:
             assert detail.target_room_id == target.id
             links = await svc.list_linked_rooms_for_room(session, source.id)
             assert [link["target_room_id"] for link in links] == [target.id]
+
+    async def test_cannot_link_to_a_private_room_one_cannot_read(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            owner = await _add_user(session, name="owner")
+            other = await _add_user(session, name="other")
+            source = await _add_room(session, name="src", owner_id=other.id)
+            target = await _add_room(session, name="tgt", owner_id=owner.id)
+            svc = _resource_service(session_factory)
+            req = LinkedRoomCreateRequest(target_room_id=target.id, label="rel")
+
+            with pytest.raises(HTTPException) as exc:
+                await create_linked_room(
+                    source.id,
+                    req,
+                    session,
+                    svc,
+                    _ROOM_STORE,
+                    other,
+                    await _is_admin(session, other),
+                )
+
+            assert exc.value.status_code == 403
+            assert await svc.list_linked_rooms_for_room(session, source.id) == []
 
 
 class TestDeleteLinkedRoomWriteAuthz:

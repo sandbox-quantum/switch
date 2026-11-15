@@ -1,6 +1,7 @@
 import './app/configure-app-identity';
 // Installs the agent provider catalogue before any module that reads it loads.
 import './core/providers/plugin-registry';
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { config as dotenvConfig } from 'dotenv';
@@ -9,6 +10,11 @@ import dockIcon from '@/assets/images/switch-console/icon-dock.png?asset';
 import { PRODUCT_NAME } from '@shared/app-identity';
 import { registerRPCRouter } from '@shared/lib/ipc/rpc';
 import { deeplinkFromArgv, flushPendingDeeplink, setupDeeplinks } from './app/deeplinks';
+import {
+  dbusSend,
+  linuxPasswordStoreFallback,
+  probeSecretService,
+} from './app/linux-password-store';
 import { setupApplicationMenu } from './app/menu';
 import { APP_ORIGIN, registerAppScheme, setupAppProtocol } from './app/protocol';
 import { LaunchesWhileQuitting } from './app/relaunch-on-quit';
@@ -25,6 +31,7 @@ import { embeddedControllerService } from './core/embedded-controller/embedded-c
 import { featureFlagsService } from './core/feature-flags/feature-flags';
 import { locationManager } from './core/locations/location-manager';
 import { locationSettingsService } from './core/locations/settings/location-settings-service';
+import { deleteUnusedLocations } from './core/locations/store';
 import { localServerService } from './core/managed-switch-server/local-server-service';
 import { remoteServerService } from './core/managed-switch-server/remote-server-service';
 import { serverVersionChoice } from './core/managed-switch-server/server-version';
@@ -40,6 +47,7 @@ import { appSettingsService } from './core/settings/settings-service';
 import { sshConnectionManager } from './core/ssh/lifecycle/production-ssh-connection-manager';
 import { autoSessionWatcher } from './core/switch-rooms/auto-session-watcher';
 import { retireDashboardFallbacks } from './core/switch-servers/server-address';
+import { bridgeSessionEndedToRenderer } from './core/switch-servers/session-ended-bridge';
 import { currentInternalFlag } from './core/telemetry/internal-account';
 import { readThisLaunch, reportLaunch } from './core/telemetry/launch-history';
 import { registerTelemetryListeners } from './core/telemetry/telemetry-listeners';
@@ -48,6 +56,7 @@ import { updateService } from './core/updates/update-service';
 import { viewStateService } from './core/view-state/view-state-service';
 import { reconcileAllWorkspaces } from './core/workspaces/reconcile-workspaces';
 import { initializeDatabase } from './db/initialize';
+import { databaseOpenFailureDialog } from './db/open-failure-dialog';
 import { logAppExit, logAppStart, registerAppDiagnostics } from './lib/app-diagnostics';
 import {
   getLogFilePath,
@@ -70,9 +79,18 @@ if (import.meta.env.DEV) {
 serverVersionChoice();
 
 const LOCAL_HOST_SHUTDOWN_MS = 5000;
+/** Long enough for switch-core's own stop grace, PostgreSQL and Mattermost's
+ * containers; the window is gone by then, so nobody watches it. */
+const LOCAL_SERVER_SHUTDOWN_MS = 30_000;
 
 if (process.platform === 'linux') {
   app.commandLine.appendSwitch('ozone-platform-hint', 'auto');
+  const passwordStore = linuxPasswordStoreFallback(
+    process.env,
+    app.commandLine.hasSwitch('password-store'),
+    () => probeSecretService(process.env, existsSync, dbusSend)
+  );
+  if (passwordStore) app.commandLine.appendSwitch('password-store', passwordStore);
 }
 
 registerAppScheme();
@@ -133,29 +151,24 @@ void app.whenReady().then(async () => {
     await initializeDatabase();
     searchService.initialize();
     try {
+      await deleteUnusedLocations();
+    } catch (e: unknown) {
+      log.warn('locations: failed to delete locations no agent uses', { error: e });
+    }
+    try {
       viewStateService.pruneOrphans();
     } catch (e: unknown) {
       log.warn('view-state: failed to prune orphaned entries', { error: e });
     }
   } catch (error) {
     log.error('Failed to initialize database:', error);
-    // The one failure with no UI to fall back on: the app is about to quit, so
-    // whatever the user needs to act has to be in this box. Name the likely
-    // causes and where the log is, then the raw error under its own heading.
-    const logPath = getLogFilePath();
-    dialog.showErrorBox(
-      `${PRODUCT_NAME} could not open its database`,
-      [
-        `${PRODUCT_NAME} cannot start without it, so it is closing.`,
-        '',
-        'The usual causes are another copy of the app already running, a full disk, or the database file having been moved or made read-only. Closing the other copy and reopening is worth trying first.',
-        logPath ? `\nFull details are in the log: ${logPath}` : '',
-        '',
-        `Error: ${error instanceof Error ? error.message : String(error)}`,
-      ]
-        .filter((line) => line !== '')
-        .join('\n')
+    const { title, body } = databaseOpenFailureDialog(
+      error,
+      PRODUCT_NAME,
+      app.getPath('userData'),
+      getLogFilePath()
     );
+    dialog.showErrorBox(title, body);
     app.quit();
     return;
   }
@@ -200,8 +213,8 @@ void app.whenReady().then(async () => {
 
   void reconcileResourceSampler();
 
-  // Reflect a managed local Switch stack that survived the last quit, so the UI
-  // shows it running without the user restarting it.
+  // Reflect a managed local Switch stack that is still running (a Console that
+  // crashed leaves it up), and start one that the last quit stopped.
   const localServerReady = localServerService.initialize();
   // Re-establish desktop-side forwards for remote-managed stacks that survived
   // the last quit, restoring their reachability from this machine.
@@ -226,6 +239,10 @@ void app.whenReady().then(async () => {
   void retireDashboardFallbacks().catch((error: unknown) => {
     log.error('Could not check which servers still need a separate dashboard address:', error);
   });
+
+  // A signed-in call refused with 401 tells the window to re-check that server's
+  // sign-in, so a revoked session reads as signed out rather than offline.
+  bridgeSessionEndedToRenderer();
 
   // Each server's feature flags, read on a schedule so a redeploy that changes
   // them reaches the window without a restart. Started once the managed stacks
@@ -327,6 +344,10 @@ app.on('before-quit', (event) => {
   // while it is being replaced.
   const updaterRestarts = updateService.getState().status === 'installing';
   logAppExit('before-quit');
+  // Stopping the server on this computer can take a while; the app reads as
+  // gone the moment it is asked to quit.
+  const mainWindow = getMainWindow();
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.hide();
   controlService.dispose();
   stopAutoMigration();
   stopResourceSampler();
@@ -351,6 +372,16 @@ app.on('before-quit', (event) => {
         log.error('Failed to stop the embedded agent controllers:', e);
       }),
     ]);
+    // The server on this computer lives as long as the app does. Stopped after
+    // the sessions and controllers that talk to it, and bounded like them.
+    await Promise.race([
+      localServerService.stopForQuit(),
+      delay(LOCAL_SERVER_SHUTDOWN_MS).then(() =>
+        log.warn('The local Switch server did not stop in time; it may outlive Console.')
+      ),
+    ]).catch((e) => {
+      log.error('Failed to stop the local Switch server:', e);
+    });
     await locationManager.dispose().catch((e) => {
       log.error('Failed to shutdown location manager:', e);
     });

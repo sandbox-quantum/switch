@@ -9,6 +9,8 @@
  * in the encrypted secrets store, never in plain settings.
  */
 
+import { WORKSPACE_PARAM } from './dashboard-pages';
+
 /**
  * Origin (protocol + host + port, lowercased) of a URL, or null if unparseable.
  * Agents are matched to servers by origin rather than full URL: an agent's
@@ -59,6 +61,22 @@ export function normaliseServerUrl(url: string): string {
  * keeps the dashboard elsewhere. */
 export function dashboardOrigin(server: Pick<SwitchServer, 'url' | 'dashboardUrl'>): string {
   return server.dashboardUrl ?? server.url;
+}
+
+/**
+ * The address of one of a server's dashboard pages, in the workspace
+ * `tenantId` names when it names one. The dashboard switches to it on arrival
+ * (`?workspace=`), so the page is that workspace's rather than whichever one
+ * the browser, or the session Console last used, had selected. A dashboard
+ * from before ignores it.
+ */
+export function dashboardPageUrl(
+  server: Pick<SwitchServer, 'url' | 'dashboardUrl'>,
+  path: string,
+  tenantId: string | null
+): string {
+  const page = `${dashboardOrigin(server).replace(/\/+$/, '')}/${path}`;
+  return tenantId === null ? page : `${page}?${WORKSPACE_PARAM}=${encodeURIComponent(tenantId)}`;
 }
 
 /** A registered Switch server. Non-secret connection metadata only. */
@@ -198,12 +216,47 @@ export type SwitchServerDeclaration = {
   contracts: Record<string, { speaks: number; accepts: number }>;
 };
 
+/**
+ * One of the signed-in person's API keys (mirrors the gateway `ApiKeyDetail`).
+ * `type` is `registration` for a key they made to register agents with,
+ * `agent` for one of their agents' own keys, or `bootstrap` for the
+ * deployment's seeded registration key. `keyPrefix` is the start of the key's
+ * hash, which identifies it without revealing it. `expiresAt` is when the key
+ * stops working, or null when it never does (agents' own keys and the
+ * bootstrap key, and every key on a server older than key expiry).
+ */
+export type SwitchApiKey = {
+  id: string;
+  label: string;
+  type: string;
+  keyPrefix: string;
+  createdAt: string;
+  expiresAt: string | null;
+};
+
+/** How long a new registration key works: a number of days (1–365), or never. */
+export type ApiKeyLifetime = number | 'never';
+
+/** A registration key just made, with its full value. */
+export type CreatedRegistrationKey = {
+  id: string;
+  label: string;
+  key: string;
+  createdAt: string;
+  expiresAt: string | null;
+};
+
 /** The authenticated user, as returned by `GET /gateway/auth/me`. */
 export type SwitchUser = {
   id: string;
   name: string;
   email: string;
   role: string;
+  /**
+   * Whether the account has a password of its own to change: false for one
+   * made through single sign-on. Absent from a server that does not say.
+   */
+  hasPassword?: boolean;
   /**
    * What the server declared on this session response.
    *
@@ -268,6 +321,7 @@ export type RemoteAgentSummary = {
    * owner" is one list read rather than a read per agent. Null also for a
    * server older than the field, which reads the same as open. */
   addressingPolicy: AddressingPolicy | null;
+  midTurnDelivery?: 'steer' | 'queue';
   /** Absolute URL of the agent's own icon, or null when it has none. Null is
    * the ordinary state rather than an error: the display layer draws a
    * name-derived avatar instead, so the fallback can change without every
@@ -331,8 +385,60 @@ export type RemoteRoomSummary = {
    * Rooms the signed-in user owns stay listed in the sidebar even with no live
    * session, so a room you just made never vanishes on you. */
   ownerId: string | null;
+  /** The signed-in user is a member of the room. False from a server that does not say. */
+  viewerIsMember: boolean;
+  /** The signed-in user is one of the room's room admins. False from a server that does not say. */
+  viewerIsRoomAdmin: boolean;
+  /** A Switch Console chat: only its members can open it. False from a server that does not say. */
+  isConsoleChat: boolean;
+  /**
+   * The server counts its people as its Switch members (a Console chat on no
+   * app), so its count is right even when 0. Absent from a server too old to
+   * count a chat's members, whose count for a chat always reads 0.
+   */
+  peopleAreMembers?: boolean;
   archived: boolean;
   createdAt: string;
+  /**
+   * When the room last had a message, from any platform, as ISO 8601: what
+   * room lists order by. Null when it has had none; absent from an older
+   * server.
+   */
+  lastMessageAt?: string | null;
+  /** Who may write to the room, when the server says (see `RoomDetail`); absent from an older server. */
+  writeVisibility?: RoomVisibility;
+  /**
+   * What the signed-in person may do with the room, as the server decides it
+   * by the rules its routes enforce. Absent from a server that does not say,
+   * where Console works it out the same way (`roomPermissionsFor`).
+   */
+  serverPermissions?: {
+    canWrite: boolean;
+    canChangeMembers: boolean;
+    /** Bringing agents in: being in the room, or a workspace admin. */
+    canInviteAgents: boolean;
+    /** Adding people and attaching resources: being in the room, or a workspace admin. */
+    canAddPeople: boolean;
+    canAttach: boolean;
+    /** Taking agents out: the room's owner, a room admin or a workspace admin. */
+    canRemoveMembers: boolean;
+    canManage: boolean;
+    /** Archiving and unarchiving: the room's owner, a room admin or a workspace admin. */
+    canArchive: boolean;
+    /** Choosing the room's room admins: the room's owner or a workspace admin. */
+    canManageAdmins: boolean;
+    canUnlink: boolean;
+  };
+  /** The messaging app connection it is on, when the server says (the list does). Unlike
+   * the display name, it tells two connections to the same platform apart. */
+  bridgeId?: string | null;
+  /** The group the room is filed under, when the server says (the list does). */
+  groupId?: string | null;
+  groupName?: string | null;
+  ownerName?: string | null;
+  readVisibility?: RoomVisibility;
+  /** How many people Switch knows are in the room, when the server says. */
+  connectedUserCount?: number;
 };
 
 /**
@@ -356,13 +462,140 @@ export type RemoteRoomDetail = RemoteRoomSummary & {
    * Undefined from a server that predates the field, which says nothing about
    * the channel either way. */
   channelOnDelete?: ChannelRetirement | null;
+  /** The name of the platform channel the room is linked to, as Switch last saw it; null when it has not. */
+  linkedChannelName: string | null;
+  /** Who may see the room (see `roomAccessOf`). */
+  readVisibility: RoomVisibility;
+  /** Grants nothing on a server with room permission tiers, which stores it private. */
+  writeVisibility: RoomVisibility;
+  /** The group the room is filed under, or null for a standalone room. */
+  groupId: string | null;
+  groupName: string | null;
+  /** The owner's display name, or null when the room has no owner. */
+  ownerName: string | null;
+  /** The bridge the room is linked through; null for a room with no messaging app. */
+  bridgeId: string | null;
+  /** The room's room admins, longest-standing first. Empty from a server that predates them. */
+  roomAdmins: RemoteRoomAdmin[];
+  /** Who the viewer could make a room admin: the Switch users taking part in the
+   * room, less its owner and its room admins. Empty unless `canManageAdmins`. */
+  roomAdminCandidates: { userId: string; name: string }[];
+  /** Each member agent's presence in this room, by agent id: `live`,
+   * `awaiting_manual_poll`, `disconnected` or `no_session`. An agent the server
+   * says nothing about is missing rather than guessed at. */
+  agentStatuses: Record<string, string>;
+  /** The room's assumable roles, with who holds each. */
+  roles: RemoteRoomRole[];
+  /** Ids of the member agents told when someone joins the room. */
+  joinEventListeners: string[];
+  /** The platform's own id for the linked channel; null when unbridged. */
+  externalChannelId: string | null;
+  /** The room's id on Switch's internal message bus. */
+  transportRoomId: string | null;
+  /** When the room was archived, or null while it is in use. */
+  archivedAt: string | null;
+  /** Whether untagged messages here are routed by the workspace's decision
+   * service. Undefined from a server that predates decision routing. */
+  autoRoute?: RoomAutoRoute;
 };
+
+/**
+ * One of a room's room admins (mirrors the gateway `RoomAdminEntry`): a person
+ * in the room its owner, or a workspace admin, let change it as the owner does.
+ */
+export type RemoteRoomAdmin = {
+  userId: string;
+  /** Null when the server does not know their name. */
+  name: string | null;
+  /** Who made them one; null once that account is gone. */
+  grantedBy: string | null;
+  grantedAt: string;
+};
+
+/**
+ * A room's auto-route setting (`!auto-route`) and whether it can take effect:
+ * `available` is false when the server has the feature off or the room's
+ * workspace has no decision backend, and `reason` then says what is missing
+ * and who can fix it.
+ */
+export type RoomAutoRoute = {
+  on: boolean;
+  available: boolean;
+  reason: string | null;
+  /** The id of the agent that gets undecided messages while the decision
+   * service is failing; null when nobody does. */
+  fallbackAgent: string | null;
+  /** That agent's name, for display; null when there is none, or from a
+   * server that predates it. */
+  fallbackAgentName: string | null;
+};
+
+/** A change to a room's auto-route setting (`PUT /rooms/{id}/auto-route`);
+ * a field left out is left alone. */
+export type SetRoomAutoRouteParams = {
+  workspaceId: string;
+  roomId: string;
+  on?: boolean;
+  fallbackAgent?: string | null;
+};
+
+/** `public` lets every member of the workspace in; `private` only the owner and admins. */
+export type RoomVisibility = 'public' | 'private';
+
+/**
+ * A room's access: who may see it. Changing a room is its owner's and the
+ * admins' either way, so its write visibility is not read here, and a room
+ * once "read & write" or "read only" is public like the rest.
+ */
+export type RoomAccess = 'public' | 'private';
+
+export function roomAccessOf(read: RoomVisibility): RoomAccess {
+  return read === 'private' ? 'private' : 'public';
+}
+
+/** What a new channel of this kind makes a room when nobody picks: the server
+ * gives a room its channel's visibility. */
+export function roomAccessForChannel(channel: NewRoomChannel): RoomAccess | null {
+  if (channel.kind === 'existing') return null; // the platform says, through the server
+  return channel.private ? 'private' : 'public';
+}
 
 /** What deleting a room does to its platform channel when asked to retire it
  * and all goes to plan (mirrors the gateway's `ChannelRetirement`): archived on Slack and
  * Mattermost, deleted on Discord, left by the bot on Telegram, and kept on
  * Teams, where Switch may not remove it. */
 export type ChannelRetirement = 'archived' | 'deleted' | 'left' | 'kept';
+
+/** A message Switch posts to some of a room's agents on a timer (mirrors the
+ * gateway's `RoomScheduleDetail`), on behalf of `authorId`: whoever last set
+ * what it says or to whom. */
+export type RemoteRoomSchedule = {
+  id: string;
+  authorId: string;
+  /** The agent that set it up through its Switch tools, which it is posted as;
+   * null for a person, and from a server that predates it. */
+  authorAgentId: string | null;
+  agentIds: string[];
+  text: string;
+  /** A five-field cron rule read in `timezone`; null for a one-off. */
+  cron: string | null;
+  /** The one-off's moment, ISO 8601; null for a recurring schedule. */
+  runAt: string | null;
+  timezone: string;
+  paused: boolean;
+  /** Null once a one-off has been sent. */
+  nextRunAt: string | null;
+  lastRunAt: string | null;
+};
+
+/** What a schedule says, to whom and when. Exactly one of `cron` and `runAt`. */
+export type RoomScheduleDraft = {
+  agentIds: string[];
+  text: string;
+  cron: string | null;
+  runAt: string | null;
+  timezone: string;
+};
 
 /** What deleting a room did to its platform channel when asked to retire it
  * (mirrors the gateway's `RetireOutcome`). `failed` means the channel is still there and someone has
@@ -374,12 +607,21 @@ export type RetireOutcome = {
 
 /** The room fields Switch Console can change. Anything omitted is left alone;
  * an empty string clears the field rather than leaving it. */
+/** Name a room after the channel it is linked to. */
+export type SyncRoomNameParams = { workspaceId: string; roomId: string };
+
 export type UpdateRoomParams = {
   workspaceId: string;
   roomId: string;
+  name?: string;
   description?: string;
   instructions?: string;
+  /** Changing it is for the room's owner or an admin; the server refuses anyone else. */
+  readVisibility?: RoomVisibility;
 };
+
+/** A role's own fields, as a room defines it. The name is fixed once made. */
+export type RoomRoleInput = { name: string; instructions: string; exclusive: boolean };
 
 /**
  * A room a specific agent belongs to, with that agent's presence there (mirrors
@@ -417,6 +659,13 @@ export type RemoteBridge = {
   status: string;
   /** The bridge used when a room is created without naming one. */
   isDefault: boolean;
+  /**
+   * Whether the deployment registered this bridge itself rather than a person
+   * connecting it — on a local server, what marks its bundled Mattermost. Null
+   * on a server predating the field, where nothing says either way; read it
+   * through `bundledMattermostBridge`, not directly.
+   */
+  preconfigured: boolean | null;
   /**
    * Link that opens this bridge's workspace in its messaging app, from the
    * gateway's live adapter. Null when the bridge is not running, the platform
@@ -473,6 +722,24 @@ export type RemoteBridge = {
    * Null on a server predating the field.
    */
   channelIdsRefused: string | null;
+  /**
+   * Whether a new room here can have a private channel, as the server says.
+   * Null on a server predating the field, where Console falls back to what
+   * such servers could do: a private channel on every platform but Teams.
+   */
+  privateChannels: boolean | null;
+  /**
+   * Whether a private channel here needs the person asking to have linked
+   * their account on the platform, which the server names as its owner
+   * (Teams). False on a server predating the field.
+   */
+  privateChannelNeedsLinkedAccount: boolean;
+  /**
+   * Whether a new public channel here has the person asking put in it, when
+   * they have a confirmed linked account on the platform; it is made without
+   * them otherwise. False on Teams, and on a server predating the field.
+   */
+  publicChannelAddsCreator: boolean;
   /** Whether this connection receives its platform's events on an address of
    * its own, which the operator has to give the platform. */
   receivesWebhooks: boolean;
@@ -718,6 +985,9 @@ export type TrustSettings = {
  * non-operator gets `forbidden` rather than an empty form. */
 export type FetchTrustSettingsResult =
   | { kind: 'loaded'; settings: TrustSettings }
+  /** A server that has each organization set its own policy, which no longer
+   * has one for the whole server; `message` is its word on where it went. */
+  | { kind: 'moved'; message: string }
   | { kind: 'unauthenticated' }
   | { kind: 'forbidden' }
   | { kind: 'error'; message: string };
@@ -752,6 +1022,129 @@ export type ClearTrustSettingsResult =
   | { kind: 'forbidden' }
   | { kind: 'error'; message: string };
 
+/**
+ * Who decides an untagged message in a workspace's auto-route rooms: nobody
+ * (`none`), a self-hosted decision endpoint, or Haiku run inside the server's
+ * decision service, through the Anthropic API or Amazon Bedrock.
+ */
+export type DecisionBackend = 'none' | 'endpoint' | 'haiku_anthropic' | 'haiku_bedrock';
+
+/**
+ * A workspace's decision routing settings (`GET /decision-settings`), read for
+ * the workspace the session selects. A workspace with no saved choice uses the
+ * server's default, from its environment; `source` says which applies and
+ * `effective` what that comes to.
+ *
+ * The key is never returned: `hasApiKey`/`apiKeyLast4` only confirm one is
+ * stored, and `apiKeyUnreadable` says the server can no longer decrypt it.
+ */
+export type DecisionSettings = {
+  source: 'workspace' | 'server_default';
+  effective: {
+    backend: DecisionBackend;
+    endpoint: string | null;
+    threshold: number | null;
+    available: boolean;
+    /** Why auto-route is unavailable, in the server's words; null when it is available. */
+    reason: string | null;
+  };
+  /** Null while the workspace uses the server default. */
+  workspace: {
+    backend: DecisionBackend;
+    endpoint: string | null;
+    threshold: number | null;
+    hasApiKey: boolean;
+    apiKeyLast4: string | null;
+    apiKeyUnreadable: boolean;
+    updatedAt: string;
+  } | null;
+  serverDefault: { configured: boolean; endpoint: string | null; hasApiKey: boolean };
+  /** Which Haiku backends the server can run: both need its decision service,
+   * and Bedrock also its operator's say-so. */
+  options: { haikuAnthropic: boolean; haikuBedrock: boolean };
+};
+
+/**
+ * The values a workspace admin saves or tests (`PUT /decision-settings`,
+ * `POST /decision-settings/test`). `apiKey` left unset keeps whatever key is
+ * stored, so re-saving the endpoint or threshold doesn't force re-entering
+ * the secret; `clearApiKey` removes it.
+ */
+export type DecisionSettingsInput = {
+  backend: DecisionBackend;
+  endpoint?: string | null;
+  apiKey?: string;
+  clearApiKey?: boolean;
+  threshold?: number | null;
+};
+
+/** Outcome of loading a workspace's decision settings. Its admins only, so a
+ * member who isn't one gets `forbidden` rather than an empty form. */
+export type FetchDecisionSettingsResult =
+  | { kind: 'loaded'; settings: DecisionSettings }
+  /** The server predates per-workspace decision settings. */
+  | { kind: 'unsupported' }
+  | { kind: 'unauthenticated' }
+  | { kind: 'forbidden' }
+  | { kind: 'error'; message: string };
+
+export type UpdateDecisionSettingsParams = { workspaceId: string } & DecisionSettingsInput;
+
+/** What a test runs against: unsaved values, or `default` for the server's
+ * own default, tested with its own endpoint and key and never the
+ * workspace's stored key. */
+export type DecisionTestInput = DecisionSettingsInput | { backend: 'default' };
+
+export type TestDecisionSettingsParams = { workspaceId: string } & DecisionTestInput;
+
+/** Outcome of saving a workspace's decision settings; `invalid` carries the
+ * server's own sentence (a threshold out of range, a bad URL, Bedrock not allowed). */
+export type UpdateDecisionSettingsResult =
+  | { kind: 'saved'; settings: DecisionSettings }
+  | { kind: 'unauthenticated' }
+  | { kind: 'forbidden' }
+  | { kind: 'invalid'; message: string }
+  | { kind: 'error'; message: string };
+
+/** Outcome of returning a workspace to the server default (`DELETE /decision-settings`),
+ * with the settings as they now stand. */
+export type ClearDecisionSettingsResult =
+  | { kind: 'cleared'; settings: DecisionSettings }
+  | { kind: 'unauthenticated' }
+  | { kind: 'forbidden' }
+  | { kind: 'error'; message: string };
+
+export type DecisionTestErrorCode =
+  | 'unreachable'
+  | 'timeout'
+  | 'unauthorized'
+  | 'key_refused'
+  | 'bad_answer'
+  | 'backend_unavailable'
+  | 'not_configured';
+
+/** One sample decision run against unsaved values: the pick (null for none),
+ * its confidence and latency, or why it failed. */
+export type DecisionTestOutcome = {
+  ok: boolean;
+  agent: string | null;
+  modelChoice: string | null;
+  confidence: number | null;
+  latencyMs: number | null;
+  backend: string | null;
+  error: { code: DecisionTestErrorCode | string; message: string } | null;
+};
+
+/** Outcome of asking the server to test decision settings. A failed test is
+ * still `tested`, with the failure in the outcome; the other kinds are about
+ * the request itself. */
+export type TestDecisionSettingsResult =
+  | { kind: 'tested'; outcome: DecisionTestOutcome }
+  | { kind: 'unauthenticated' }
+  | { kind: 'forbidden' }
+  | { kind: 'invalid'; message: string }
+  | { kind: 'error'; message: string };
+
 /** A bridged (external) human identity on a server. The `users` dimension of an
  * addressing policy keys off these ids. */
 export type RemoteExternalUser = {
@@ -766,6 +1159,10 @@ export type RemoteExternalUser = {
 export type IdentityClaimant = {
   userId: string;
   userName: string;
+  /** False for a link made before links had to be confirmed. It still counts;
+   * its owner is asked to confirm it. True from a server that predates
+   * confirming, where every link counts the same. */
+  verified: boolean;
 };
 
 /**
@@ -829,16 +1226,25 @@ export type ClaimIdentityParams = {
  * Outcome of claiming an identity. `bridge-unavailable` is the one failure a
  * user can act on: an account Switch has never seen has to be provisioned on
  * the platform's side, which a stopped bridge cannot do.
+ *
+ * `pending` is a link waiting for the code to be posted from the account
+ * (CHOO-3881). `code` is null only if the server issued none, in which case
+ * asking for one is the way on. `alreadyLinked` is set when the caller already
+ * held an unconfirmed link to the account, which keeps working meanwhile —
+ * otherwise the link counts for nothing until confirmed. A server that predates
+ * confirming links answers `claimed` straight away.
  */
 export type ClaimIdentityResult =
   | { kind: 'claimed'; identity: LinkedIdentity }
+  | { kind: 'pending'; pending: PendingIdentity; code: LinkCode | null; alreadyLinked: boolean }
   | { kind: 'bridge-unavailable'; message: string }
   | { kind: 'unauthenticated' }
   | { kind: 'error'; message: string };
 
 /**
- * One messaging account the signed-in user has claimed (mirrors the gateway
- * `LinkedIdentity`).
+ * One messaging account linked to the signed-in user (mirrors the gateway
+ * `LinkedIdentity`). Only links that count are listed; one still waiting for
+ * its code is a {@link PendingIdentity}.
  *
  * An agent whose addressing policy names its owner is only reachable by that
  * owner over a bridge that appears in this list — which is why the app reads it
@@ -852,7 +1258,111 @@ export type LinkedIdentity = {
   bridgeType: string;
   externalUserId: string;
   externalUsername: string;
+  /** False for a link made before links had to be confirmed: it works, and its
+   * owner is asked to confirm it with a code. */
+  verified: boolean;
 };
+
+/**
+ * A messaging account waiting to confirm a link to the signed-in user (mirrors
+ * the gateway `PendingIdentity`). It counts for nothing until a code is posted
+ * from the account.
+ */
+export type PendingIdentity = {
+  /** The `ExternalUser` row id; what asking for a code and cancelling address. */
+  id: string;
+  bridgeId: string;
+  bridgeDisplayName: string;
+  bridgeType: string;
+  externalUserId: string;
+  externalUsername: string;
+  /** Who started the link, when it was someone else (an admin). */
+  requestedByName: string | null;
+  /** When the last code issued stops working; null when none has been. */
+  codeExpiresAt: string | null;
+};
+
+/**
+ * A one-time code that confirms a link when posted from the account (mirrors
+ * the gateway `LinkCode`). The server keeps no copy, so a lost one is replaced
+ * rather than shown again.
+ */
+export type LinkCode = {
+  code: string;
+  /** ISO timestamp, on the server's clock. */
+  expiresAt: string;
+  /** How long the code lasts, measured when it was issued. Counting from when
+   * it arrived is what keeps a wrong clock on this machine from showing a fresh
+   * code as expired. Null from a server that does not send it. */
+  expiresInSeconds: number | null;
+  /** How to post it on this platform, in Markdown — it differs per platform. */
+  instructions: string;
+  /** The message to the account issued with this code, which confirms the link
+   * with a tap — or why it could not be sent. Null from a server that sends
+   * none. */
+  prompt: LinkPrompt | null;
+};
+
+/**
+ * A direct message Switch sends the account when it issues a code (CHOO-4121):
+ * three numbers and a "Not me" button. Tapping `number` there confirms the link
+ * as posting the code would; tapping another, or "Not me", cancels it. Each new
+ * code sends a new message and retires the buttons on the last one.
+ */
+export type LinkPrompt = {
+  /** The one to tap, of the three in the message. */
+  number: number;
+  /** False when no message went out, leaving the code as the only way. */
+  sent: boolean;
+  /** Why no message went out, as a sentence to show; null when one did. */
+  unavailableReason: string | null;
+  /** A web link that opens the message on the platform, so nobody has to go
+   * looking for it. Null when none went out, the platform cannot link to it,
+   * or the server predates it. */
+  link: string | null;
+};
+
+/**
+ * Why a request about confirming links did nothing. `refused` is the server
+ * declining in its own words: there is nothing to act on — the link was
+ * confirmed or cancelled meanwhile — or the caller may not do it.
+ */
+export type LinkRequestFailure =
+  | { kind: 'refused'; message: string }
+  | { kind: 'unauthenticated' }
+  | { kind: 'error'; message: string };
+
+/** Outcome of asking for a fresh link code. */
+export type IssueLinkCodeResult = { kind: 'issued'; code: LinkCode } | LinkRequestFailure;
+
+/**
+ * Outcome of withdrawing a confirmation that is waiting for its code. Only the
+ * request goes: a link that already works stays.
+ */
+export type CancelLinkRequestResult = { kind: 'cancelled' } | LinkRequestFailure;
+
+/**
+ * A link made before links had to be confirmed, as a workspace admin sees it
+ * (mirrors the gateway `UnconfirmedLink`). It counts until its owner confirms
+ * it, or until an admin requires that they do.
+ */
+export type UnconfirmedLink = {
+  /** The `ExternalUser` row id. */
+  id: string;
+  externalUserId: string;
+  externalUsername: string;
+  /** The Switch user who holds the link. */
+  userId: string;
+  userName: string;
+};
+
+/**
+ * Outcome of requiring confirmation of a messaging app's older links. `moved`
+ * is how many became links waiting for their code; a second run moves none.
+ */
+export type RequireLinkConfirmationResult =
+  | { kind: 'required'; moved: number }
+  | LinkRequestFailure;
 
 /**
  * Scoped agent-addressing permissions (CHOO-1585). Each dimension is "*" (any)
@@ -1009,7 +1519,36 @@ export type CreateRoomParams = {
   /** Switch agent ids to add as members. May be empty — a room is valid with
    * no agents, and members can be invited later. */
   agentIds: string[];
+  /** People to add to the bridged room's channel, by their username on its
+   * messaging app. Absent or empty adds nobody; a new private channel gets its
+   * creator from the server either way. */
+  userNames?: string[];
+  /** The bridged room's channel: a new one, or an existing one by its id. Null for a new public one. */
+  channel: NewRoomChannel | null;
+  /** The group to file the room under, or null for none. */
+  groupId: string | null;
+  /** Who may see the room, or null to take it from the channel. */
+  access: RoomAccess | null;
 };
+
+/**
+ * Someone Switch knows on a messaging app, who a room there can be given
+ * (`GET /collaborations/{id}/users`).
+ */
+export type BridgePerson = {
+  /** Their username on the app: what a room on it is given them by. */
+  username: string;
+  externalUserId: string;
+  /** The Switch users who linked this account and confirmed it from it. */
+  linkedUserIds: string[];
+  /** The first of those users' names, to show beside the username; null when nobody has. */
+  linkedName: string | null;
+};
+
+/** A bridged room's channel, as the New room dialog asks for it. */
+export type NewRoomChannel =
+  | { kind: 'new'; private: boolean }
+  | { kind: 'existing'; externalChannelId: string };
 
 /**
  * Outcome of creating a room. `created` carries the new room; every other
@@ -1143,3 +1682,47 @@ export type MessagingAppInstall = {
   /** Null while the install is still active. */
   endedAt: string | null;
 };
+
+/** The kinds of library item a room can have attached. */
+export type RoomResourceKind = 'references' | 'documents' | 'packages';
+
+/** A library item as a room lists it, or as the library offers it for attaching. */
+export type RoomResource = {
+  id: string;
+  kind: RoomResourceKind;
+  name: string;
+  description: string;
+  /** A reference's type as people read it ("GitHub"); null for anything else. */
+  typeLabel: string | null;
+  /** A reference's links; empty for anything else. */
+  urls: string[];
+  /** A document written in the room by one of its agents, rather than one from the library. */
+  roomScoped: boolean;
+  /** The agent that wrote a room-scoped document, when the server says. */
+  createdByAgentName: string | null;
+  /** The packages this came in with, by id: attached through them rather than on its own. */
+  packageIds: string[];
+  /** Whether the viewer may delete this room-scoped document, when the server says. */
+  canRemove?: boolean;
+  /** A document's content, when the listing carried it (a room's documents do). */
+  content?: string;
+  /** Who owns it, and whether everyone may read it, for working out if the viewer may open its own page. */
+  ownerId: string | null;
+  readVisibility: 'public' | 'private';
+  /**
+   * Whether the viewer may open it, when the server says (a room's packages:
+   * one its owner attached privately is still listed to every reader).
+   */
+  canRead?: boolean;
+};
+
+/** A document read in full, through the room it is attached to. */
+export type RoomDocumentContent = {
+  id: string;
+  name: string;
+  description: string;
+  content: string;
+};
+
+/** Another room this room points at, and why. */
+export type LinkedRoom = { roomId: string; name: string; description: string; label: string };

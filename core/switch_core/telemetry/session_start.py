@@ -19,7 +19,11 @@ from typing import Literal
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.db.models import Agent
-from switch_core.telemetry.deployment import claim_milestone, prune_claims
+from switch_core.telemetry.deployment import (
+    SESSION_START_CLAIM_PREFIX,
+    claim_milestone,
+    prune_claims,
+)
 from switch_core.telemetry.service import TelemetryService, emit_safely
 from switch_core.telemetry.snapshot import normalise_known_agent_type
 
@@ -30,7 +34,7 @@ StartSource = Literal["user", "room", "automation", "unknown"]
 # The claims share `telemetry_milestones` with the once-ever milestones and the
 # per-connector claims, which are never pruned; the prefix is what tells them
 # apart.
-CLAIM_PREFIX = "session_started:"
+CLAIM_PREFIX = SESSION_START_CLAIM_PREFIX
 
 # How long a claim is kept. It exists only so a retried report counts once, and
 # a host retries within seconds while Switch answers, or the next time a
@@ -110,28 +114,35 @@ async def report_session_started(
     The claim is what makes a retried or repeated report count once, across
     restarts too: the host retries until the server answers, and an answer
     lost on the way back is a second report of the same start. Keyed by agent
-    as well as session, so one agent's host cannot spend another's.
+    as well as session, so one agent's host cannot spend another's. Taken
+    only while telemetry is on, since it exists only to stop a report going
+    twice.
 
-    Nothing is claimed while telemetry is off, for the reason
-    `TelemetryService.emit_milestone` gives. Returns whether it was sent.
+    `first_agent_session` is claimed whether telemetry is on or not, as every
+    milestone is (`TelemetryService.emit_milestone`). Returns whether
+    `session_started` was sent.
     """
-    if telemetry is None or not telemetry.enabled:
+    if telemetry is None:
         return False
-    if not limiter.admit(agent.id):
-        return False
-    if not await claim_milestone(
-        session_factory, f"{CLAIM_PREFIX}{agent.id}:{session_id}"
-    ):
-        return False
-    emit_safely(
-        telemetry,
-        "session_started",
-        {
-            "start_source": start_source,
-            "known_agent_type": normalise_known_agent_type(agent.metadata_),
-        },
+    known_agent_type = normalise_known_agent_type(agent.metadata_)
+    if telemetry.enabled:
+        if not limiter.admit(agent.id):
+            return False
+        if not await claim_milestone(
+            session_factory, f"{CLAIM_PREFIX}{agent.id}:{session_id}"
+        ):
+            return False
+        emit_safely(
+            telemetry,
+            "session_started",
+            {"start_source": start_source, "known_agent_type": known_agent_type},
+        )
+    await telemetry.emit_milestone(
+        "first_agent_session",
+        known_agent_type=known_agent_type,
+        start_source=start_source,
     )
-    return True
+    return telemetry.enabled
 
 
 async def prune_session_start_claims(

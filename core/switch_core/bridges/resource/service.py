@@ -11,8 +11,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.authz import (
     Principal,
     can,
-    can_manage,
     require,
+    require_visibility_change,
     validate_visibility_pair,
 )
 from switch_core.bridges.resource.events import ResourceLoadEntry
@@ -35,7 +35,8 @@ from switch_core.db.stores.package_store import PackageStore
 from switch_core.db.stores.reference_store import ReferenceStore
 from switch_core.db.stores.reference_type_store import ReferenceTypeStore
 from switch_core.db.stores.room_link_store import RoomLinkStore
-from switch_core.telemetry import TelemetryService, emit_safely
+from switch_core.db.stores.room_store import AttachedRooms
+from switch_core.telemetry import TelemetryService, emit_after_commit
 from switch_core.telemetry.ages import age_days
 
 logger = logging.getLogger(__name__)
@@ -49,6 +50,33 @@ def _reference_type(type_: str) -> str:
     reportable is that it was not one of ours.
     """
     return type_ if is_builtin_type(type_) else "other"
+
+
+def _require_room_document_writer(
+    doc: Document, agent_id: str, *, owner_writes_room: bool
+) -> None:
+    """Refuse an agent changing a room-scoped document it may not maintain.
+
+    The agent that wrote a document may change it. One a room template made
+    may be changed by an agent in the room whose owner may write the room
+    (`owner_writes_room`), as for the room's roles: its instructions reach
+    every agent in the room, whoever owns them. The caller checks that the
+    agent is in the room. Anything else is refused, including a document whose
+    writer has since been deleted.
+    """
+    if doc.created_by_agent_id == agent_id:
+        return
+    if doc.from_template:
+        if owner_writes_room:
+            return
+        raise PermissionError(
+            f"Document {doc.id} came from the room's template; only an agent "
+            "whose owner can edit the room can change or delete it"
+        )
+    raise PermissionError(
+        f"Document {doc.id} was not created by this agent or by the room's "
+        "template; only its creating agent can change or delete it"
+    )
 
 
 def _visibility(value: str) -> str:
@@ -92,7 +120,7 @@ class ReferenceTypeRow:
 
 class ResourceService:
     # Class-level default: several tests build this without `__init__`, and
-    # `emit_safely` treats None as "report nothing".
+    # `emit_after_commit` treats None as "report nothing".
     _telemetry: TelemetryService | None = None
 
     """Business logic for References, Documents, and Packages.
@@ -231,20 +259,21 @@ class ResourceService:
     ) -> list[ReferenceTypeRow]:
         """The management list: database rows only, never built-ins.
 
-        A principal manages the rows it owns; an admin manages every row, per
-        ``can_manage``. A row shadowed by a built-in stays here, and stays
-        editable and deletable, flagged rather than hidden.
+        Every row the principal may read: its own and the public ones, or
+        every row for an admin. What it may do to each is the caller's to
+        report, row by row, so a public type someone else owns is listed even
+        where it may only be read, and can be edited where it is publicly
+        writable. A row shadowed by a built-in stays here, and stays editable
+        and deletable, flagged rather than hidden.
         """
         rows = (
             await self._reference_types.list_all(session)
             if is_admin
             else await self._reference_types.list_for_user(session, user_id)
         )
-        principal = Principal(user_id, is_admin)
         return [
             ReferenceTypeRow(row=row, shadowed_by_builtin=is_builtin_type(row.type))
             for row in sorted(rows, key=lambda r: r.type)
-            if can_manage(principal, row.owner_id)
         ]
 
     async def resolve_display_names(
@@ -344,7 +373,7 @@ class ResourceService:
         # No slug: the type's name is free text whoever registered it chose,
         # and that is exactly what a user-defined type is — the fact that one
         # was registered is the whole reportable content.
-        emit_safely(self._telemetry, "reference_type_created", {})
+        emit_after_commit(session, self._telemetry, "reference_type_created", {})
         return created
 
     async def update_reference_type(
@@ -360,10 +389,17 @@ class ResourceService:
         read_visibility: str | None = None,
         write_visibility: str | None = None,
     ) -> ReferenceType:
-        reference_type = await self._reference_types.get(session, type_)
+        reference_type = await self._reference_types.get_for_update(session, type_)
         if reference_type is None:
             raise ValueError(f"Reference type not found: {type_}")
         require(Principal(user_id, is_admin), "write", reference_type)
+        require_visibility_change(
+            Principal(user_id, is_admin),
+            reference_type,
+            read_visibility,
+            write_visibility,
+            "reference type",
+        )
         validate_visibility_pair(
             read_visibility
             if read_visibility is not None
@@ -407,7 +443,9 @@ class ResourceService:
                 )
         age = age_days(reference_type.created_at)
         await self._reference_types.delete(session, type_)
-        emit_safely(self._telemetry, "reference_type_deleted", {"age_days": age})
+        emit_after_commit(
+            session, self._telemetry, "reference_type_deleted", {"age_days": age}
+        )
 
     async def log_builtin_shadowing(self, session: AsyncSession) -> None:
         """Report every stored type a built-in shadows.
@@ -523,6 +561,7 @@ class ResourceService:
         description: str,
         instructions: str,
         value: dict[str, Any],
+        created_by_kind: Literal["user", "agent", "system"],
     ) -> Reference:
         await self.resolve_type_for_principal(
             session, type, user_id=owner_id, is_admin=is_admin
@@ -540,19 +579,17 @@ class ResourceService:
             value=normalised_value,
         )
         created = await self._references.create(session, ref)
-        # Deliberate trade: `create` above flushes, so a validation failure
-        # (a bad visibility pair, an unknown type) has already raised before
-        # this line runs — what remains uncommitted is the gateway route's
-        # own `session.commit()`, called on the same session right after this
-        # returns. This service does not own that transaction boundary, so
-        # the residual risk is a bare commit failure, not a business-rule one.
-        emit_safely(
+        # Every event here is sent once the caller's transaction commits:
+        # this service does not own that boundary, and a change rolled back
+        # after it returns must not be counted.
+        emit_after_commit(
+            session,
             self._telemetry,
             "reference_created",
             {
                 "reference_type": _reference_type(type),
                 "read_visibility": _visibility(read_visibility),
-                "created_by_kind": "user",
+                "created_by_kind": created_by_kind,
             },
         )
         return created
@@ -616,10 +653,17 @@ class ResourceService:
         write_visibility: str | None = None,
         value: dict[str, Any] | None = None,
     ) -> Reference:
-        ref = await self._references.get(session, reference_id)
+        ref = await self._references.get_for_update(session, reference_id)
         if ref is None:
             raise ValueError(f"Reference not found: {reference_id}")
         require(Principal(user_id, is_admin), "write", ref)
+        require_visibility_change(
+            Principal(user_id, is_admin),
+            ref,
+            read_visibility,
+            write_visibility,
+            "reference",
+        )
         # Validate the *resulting* visibility pair (partial updates must not
         # leave a writable-but-unreadable resource).
         validate_visibility_pair(
@@ -654,7 +698,8 @@ class ResourceService:
         require(Principal(user_id, is_admin), "delete", ref)
         kind, age = _reference_type(ref.type), age_days(ref.created_at)
         detached = await self._references.delete(session, reference_id)
-        emit_safely(
+        emit_after_commit(
+            session,
             self._telemetry,
             "reference_deleted",
             {"reference_type": kind, "age_days": age},
@@ -674,19 +719,22 @@ class ResourceService:
         if ref is None:
             raise ValueError(f"Reference not found: {reference_id}")
         require(Principal(user_id, is_admin), "read", ref)
-        await self._references.attach_to_room(session, room_id, reference_id)
-        emit_safely(
-            self._telemetry,
-            "reference_attached_to_room",
-            {"reference_type": _reference_type(ref.type)},
-        )
+        if await self._references.attach_to_room(session, room_id, reference_id):
+            emit_after_commit(
+                session,
+                self._telemetry,
+                "reference_attached_to_room",
+                {"reference_type": _reference_type(ref.type)},
+            )
 
     async def detach_reference_from_room(
         self, session: AsyncSession, room_id: str, reference_id: str
     ) -> None:
         ref = await self._references.get(session, reference_id)
-        await self._references.detach_from_room(session, room_id, reference_id)
-        emit_safely(
+        if not await self._references.detach_from_room(session, room_id, reference_id):
+            return
+        emit_after_commit(
+            session,
             self._telemetry,
             "reference_detached_from_room",
             {"reference_type": _reference_type(ref.type) if ref else "other"},
@@ -703,14 +751,28 @@ class ResourceService:
         return await self._references.list_ids_for_room(session, room_id)
 
     async def get_reference_attached_counts(
-        self, session: AsyncSession, reference_ids: list[str]
-    ) -> dict[str, int]:
-        return await self._references.get_attached_counts(session, reference_ids)
+        self,
+        session: AsyncSession,
+        reference_ids: list[str],
+        *,
+        reader_id: str | None,
+        reader_is_admin: bool,
+    ) -> dict[str, AttachedRooms]:
+        return await self._references.get_attached_counts(
+            session, reference_ids, reader_id=reader_id, reader_is_admin=reader_is_admin
+        )
 
     async def list_rooms_for_reference(
-        self, session: AsyncSession, reference_id: str
+        self,
+        session: AsyncSession,
+        reference_id: str,
+        *,
+        reader_id: str | None,
+        reader_is_admin: bool,
     ) -> list[tuple[str, str]]:
-        return await self._references.list_rooms_for_reference(session, reference_id)
+        return await self._references.list_rooms_for_reference(
+            session, reference_id, reader_id=reader_id, reader_is_admin=reader_is_admin
+        )
 
     # ── Room links (gateway) ──────────────────────────────────────────────
 
@@ -728,25 +790,33 @@ class ResourceService:
             for rid, name, desc, label in rows
         ]
 
-    async def get_room_link_graph(self, session: AsyncSession) -> dict[str, Any]:
-        """Return every room + every directed link in a single payload, for
-        the full-graph view in the frontend.
+    async def get_room_link_graph(
+        self, session: AsyncSession, readable_rooms: list[Room]
+    ) -> dict[str, Any]:
+        """Return `readable_rooms` and the directed links between them in a
+        single payload, for the full-graph view in the frontend. A link with
+        either end outside `readable_rooms` is left out, so the graph says
+        nothing about rooms the caller cannot read.
 
         Each room carries its `group_id`, and the flattened group tree is
         returned under `groups` so the frontend can colour rooms by their
         top-level ancestor group.
         """
-        result = await session.execute(
-            select(Room.id, Room.name, Room.description, Room.group_id)
-        )
         rooms = [
-            {"id": rid, "name": name, "description": desc, "group_id": gid}
-            for rid, name, desc, gid in result.all()
+            {
+                "id": r.id,
+                "name": r.name,
+                "description": r.description,
+                "group_id": r.group_id,
+            }
+            for r in readable_rooms
         ]
+        readable_ids = {r.id for r in readable_rooms}
         link_rows = await self._room_links.list_all(session)
         links = [
             {"source_room_id": s, "target_room_id": t, "label": lbl}
             for s, t, lbl in link_rows
+            if s in readable_ids and t in readable_ids
         ]
         group_result = await session.execute(
             select(
@@ -801,7 +871,7 @@ class ResourceService:
         await self._room_links.attach(session, source_room_id, target_room_id, label)
         # No label: it is free text describing why two rooms relate, which is
         # exactly the kind of thing that names a customer's work.
-        emit_safely(self._telemetry, "room_link_created", {})
+        emit_after_commit(session, self._telemetry, "room_link_created", {})
         return {
             "target_room_id": target.id,
             "target_room_name": target.name,
@@ -819,7 +889,8 @@ class ResourceService:
         detached = await self._room_links.detach(
             session, source_room_id, target_room_id
         )
-        emit_safely(self._telemetry, "room_link_removed", {})
+        if detached:
+            emit_after_commit(session, self._telemetry, "room_link_removed", {})
         return detached
 
     # ── Document CRUD (gateway) ───────────────────────────────────────────
@@ -847,9 +918,8 @@ class ResourceService:
             content=content,
         )
         created = await self._documents.create(session, doc)
-        # Same trade as `reference_created` above: flushed, not yet committed,
-        # and the commit is the gateway route's to call.
-        emit_safely(
+        emit_after_commit(
+            session,
             self._telemetry,
             "document_created",
             {
@@ -893,10 +963,17 @@ class ResourceService:
         write_visibility: str | None = None,
         content: str | None = None,
     ) -> Document:
-        doc = await self._documents.get(session, document_id)
+        doc = await self._documents.get_for_update(session, document_id)
         if doc is None:
             raise ValueError(f"Document not found: {document_id}")
         require(Principal(user_id, is_admin), "write", doc)
+        require_visibility_change(
+            Principal(user_id, is_admin),
+            doc,
+            read_visibility,
+            write_visibility,
+            "document",
+        )
         validate_visibility_pair(
             read_visibility if read_visibility is not None else doc.read_visibility,
             write_visibility if write_visibility is not None else doc.write_visibility,
@@ -926,7 +1003,8 @@ class ResourceService:
         require(Principal(user_id, is_admin), "delete", doc)
         age = age_days(doc.created_at)
         detached = await self._documents.delete(session, document_id)
-        emit_safely(
+        emit_after_commit(
+            session,
             self._telemetry,
             "document_deleted",
             {"scope": "library", "age_days": age},
@@ -945,20 +1023,23 @@ class ResourceService:
         doc = await self._documents.get(session, document_id)
         if doc is None:
             raise ValueError(f"Document not found: {document_id}")
+        # First, so whoever may not read it is not told what it is.
+        require(Principal(user_id, is_admin), "read", doc)
         if doc.room_id is not None:
             raise ValueError(
                 f"Document {document_id} is room-scoped and cannot be attached "
                 "to another room"
             )
-        require(Principal(user_id, is_admin), "read", doc)
-        await self._documents.attach_to_room(session, room_id, document_id)
-        emit_safely(self._telemetry, "document_attached_to_room", {})
+        if await self._documents.attach_to_room(session, room_id, document_id):
+            emit_after_commit(session, self._telemetry, "document_attached_to_room", {})
 
     async def detach_document_from_room(
         self, session: AsyncSession, room_id: str, document_id: str
     ) -> None:
-        await self._documents.detach_from_room(session, room_id, document_id)
-        emit_safely(self._telemetry, "document_detached_from_room", {})
+        if await self._documents.detach_from_room(session, room_id, document_id):
+            emit_after_commit(
+                session, self._telemetry, "document_detached_from_room", {}
+            )
 
     async def list_room_documents(
         self, session: AsyncSession, room_id: str
@@ -966,14 +1047,28 @@ class ResourceService:
         return await self._documents.list_for_room(session, room_id)
 
     async def get_document_attached_counts(
-        self, session: AsyncSession, document_ids: list[str]
-    ) -> dict[str, int]:
-        return await self._documents.get_attached_counts(session, document_ids)
+        self,
+        session: AsyncSession,
+        document_ids: list[str],
+        *,
+        reader_id: str | None,
+        reader_is_admin: bool,
+    ) -> dict[str, AttachedRooms]:
+        return await self._documents.get_attached_counts(
+            session, document_ids, reader_id=reader_id, reader_is_admin=reader_is_admin
+        )
 
     async def list_rooms_for_document(
-        self, session: AsyncSession, document_id: str
+        self,
+        session: AsyncSession,
+        document_id: str,
+        *,
+        reader_id: str | None,
+        reader_is_admin: bool,
     ) -> list[tuple[str, str]]:
-        return await self._documents.list_rooms_for_document(session, document_id)
+        return await self._documents.list_rooms_for_document(
+            session, document_id, reader_id=reader_id, reader_is_admin=reader_is_admin
+        )
 
     # ── Room-scoped documents (agent-created via MCP) ─────────────────────
 
@@ -1012,9 +1107,8 @@ class ResourceService:
             content=content,
         )
         created = await self._documents.create(session, doc)
-        # Same trade as `reference_created` above: flushed, not yet committed,
-        # and the commit is the MCP handler's to call.
-        emit_safely(
+        emit_after_commit(
+            session,
             self._telemetry,
             "document_created",
             {
@@ -1025,7 +1119,7 @@ class ResourceService:
         )
         return created
 
-    async def create_room_document_for_user(
+    async def create_template_room_document(
         self,
         session: AsyncSession,
         *,
@@ -1035,11 +1129,12 @@ class ResourceService:
         description: str,
         instructions: str,
         content: str,
+        created_by_kind: Literal["agent", "system"],
     ) -> Document:
-        """Create a room-scoped document on behalf of a user (no creating
-        agent). Mirrors ``create_room_document`` but sets
-        ``created_by_agent_id=None``; used by user-facing flows like
-        YAML provisioning where there is no acting agent."""
+        """Create a room-scoped document from a room template's ``docs:``,
+        on behalf of the user running the template. No agent created it, and
+        any agent in the room may change or delete it (``from_template``).
+        `created_by_kind` is who ran the template, as for their references."""
         if not name.strip():
             raise ValueError("name must not be empty")
         if len(content.encode("utf-8")) > ROOM_DOCUMENT_MAX_CONTENT_BYTES:
@@ -1052,6 +1147,7 @@ class ResourceService:
             owner_id=owner_id,
             room_id=room_id,
             created_by_agent_id=None,
+            from_template=True,
             read_visibility="private",
             write_visibility="private",
             name=name,
@@ -1060,14 +1156,13 @@ class ResourceService:
             content=content,
         )
         created = await self._documents.create(session, doc)
-        # Same trade as `reference_created` above: flushed, not yet committed,
-        # and the commit is the caller's to call.
-        emit_safely(
+        emit_after_commit(
+            session,
             self._telemetry,
             "document_created",
             {
                 "scope": "room",
-                "created_by_kind": "user",
+                "created_by_kind": created_by_kind,
                 "has_instructions": bool(instructions),
             },
         )
@@ -1079,6 +1174,7 @@ class ResourceService:
         *,
         room_id: str,
         agent_id: str,
+        owner_writes_room: bool,
         document_id: str,
         name: str | None = None,
         description: str | None = None,
@@ -1090,10 +1186,9 @@ class ResourceService:
             raise ValueError(
                 f"Room-scoped document {document_id} not found in room {room_id}"
             )
-        if doc.created_by_agent_id != agent_id:
-            raise PermissionError(
-                f"Agent {agent_id} did not create document {document_id}"
-            )
+        _require_room_document_writer(
+            doc, agent_id, owner_writes_room=owner_writes_room
+        )
         if name is not None:
             if not name.strip():
                 raise ValueError("name must not be empty")
@@ -1123,6 +1218,7 @@ class ResourceService:
         *,
         room_id: str,
         agent_id: str,
+        owner_writes_room: bool,
         document_id: str,
     ) -> None:
         doc = await self._documents.get_room_scoped(session, room_id, document_id)
@@ -1130,14 +1226,16 @@ class ResourceService:
             raise ValueError(
                 f"Room-scoped document {document_id} not found in room {room_id}"
             )
-        if doc.created_by_agent_id != agent_id:
-            raise PermissionError(
-                f"Agent {agent_id} did not create document {document_id}"
-            )
+        _require_room_document_writer(
+            doc, agent_id, owner_writes_room=owner_writes_room
+        )
         age = age_days(doc.created_at)
         await self._documents.delete(session, document_id)
-        emit_safely(
-            self._telemetry, "document_deleted", {"scope": "room", "age_days": age}
+        emit_after_commit(
+            session,
+            self._telemetry,
+            "document_deleted",
+            {"scope": "room", "age_days": age},
         )
 
     async def delete_room_document_by_user(
@@ -1147,8 +1245,8 @@ class ResourceService:
         room_id: str,
         document_id: str,
     ) -> None:
-        """Gateway escape hatch: a user with access to the room can delete a
-        room-scoped document regardless of which agent created it."""
+        """Delete a room-scoped document for a person, whichever agent made
+        it. The gateway decides who may (`authz.can_delete_room_document`)."""
         doc = await self._documents.get_room_scoped(session, room_id, document_id)
         if doc is None:
             raise ValueError(
@@ -1156,8 +1254,11 @@ class ResourceService:
             )
         age = age_days(doc.created_at)
         await self._documents.delete(session, document_id)
-        emit_safely(
-            self._telemetry, "document_deleted", {"scope": "room", "age_days": age}
+        emit_after_commit(
+            session,
+            self._telemetry,
+            "document_deleted",
+            {"scope": "room", "age_days": age},
         )
 
     async def get_room_scoped_document(
@@ -1220,9 +1321,7 @@ class ResourceService:
             instructions=instructions,
         )
         created = await self._packages.create(session, pkg)
-        # Same trade as `reference_created` above: flushed, not yet committed,
-        # and the commit is the gateway route's to call.
-        emit_safely(self._telemetry, "package_created", {"created_by_kind": "user"})
+        emit_after_commit(session, self._telemetry, "package_created", {})
         return created
 
     async def get_package_for_user(
@@ -1257,10 +1356,17 @@ class ResourceService:
         read_visibility: str | None = None,
         write_visibility: str | None = None,
     ) -> Package:
-        pkg = await self._packages.get(session, package_id)
+        pkg = await self._packages.get_for_update(session, package_id)
         if pkg is None:
             raise ValueError(f"Package not found: {package_id}")
         require(Principal(user_id, is_admin), "write", pkg)
+        require_visibility_change(
+            Principal(user_id, is_admin),
+            pkg,
+            read_visibility,
+            write_visibility,
+            "package",
+        )
         validate_visibility_pair(
             read_visibility if read_visibility is not None else pkg.read_visibility,
             write_visibility if write_visibility is not None else pkg.write_visibility,
@@ -1289,7 +1395,9 @@ class ResourceService:
         require(Principal(user_id, is_admin), "delete", pkg)
         age = age_days(pkg.created_at)
         detached = await self._packages.delete(session, package_id)
-        emit_safely(self._telemetry, "package_deleted", {"age_days": age})
+        emit_after_commit(
+            session, self._telemetry, "package_deleted", {"age_days": age}
+        )
         return detached
 
     async def attach_package_to_room(
@@ -1305,10 +1413,12 @@ class ResourceService:
         if pkg is None:
             raise ValueError(f"Package not found: {package_id}")
         require(Principal(user_id, is_admin), "read", pkg)
-        await self._packages.attach_to_room(session, room_id, package_id)
+        if not await self._packages.attach_to_room(session, room_id, package_id):
+            return
         # What the package brought with it, which is the whole point of
         # attaching one rather than its parts.
-        emit_safely(
+        emit_after_commit(
+            session,
             self._telemetry,
             "package_attached_to_room",
             {
@@ -1324,8 +1434,10 @@ class ResourceService:
     async def detach_package_from_room(
         self, session: AsyncSession, room_id: str, package_id: str
     ) -> None:
-        await self._packages.detach_from_room(session, room_id, package_id)
-        emit_safely(self._telemetry, "package_detached_from_room", {})
+        if await self._packages.detach_from_room(session, room_id, package_id):
+            emit_after_commit(
+                session, self._telemetry, "package_detached_from_room", {}
+            )
 
     async def list_room_packages(
         self, session: AsyncSession, room_id: str
@@ -1333,9 +1445,16 @@ class ResourceService:
         return await self._packages.list_for_room(session, room_id)
 
     async def get_package_attached_counts(
-        self, session: AsyncSession, package_ids: list[str]
-    ) -> dict[str, int]:
-        return await self._packages.get_attached_counts(session, package_ids)
+        self,
+        session: AsyncSession,
+        package_ids: list[str],
+        *,
+        reader_id: str | None,
+        reader_is_admin: bool,
+    ) -> dict[str, AttachedRooms]:
+        return await self._packages.get_attached_counts(
+            session, package_ids, reader_id=reader_id, reader_is_admin=reader_is_admin
+        )
 
     async def get_package_reference_counts(
         self, session: AsyncSession, package_ids: list[str]
@@ -1348,9 +1467,16 @@ class ResourceService:
         return await self._packages.get_document_counts(session, package_ids)
 
     async def list_rooms_for_package(
-        self, session: AsyncSession, package_id: str
+        self,
+        session: AsyncSession,
+        package_id: str,
+        *,
+        reader_id: str | None,
+        reader_is_admin: bool,
     ) -> list[tuple[str, str]]:
-        return await self._packages.list_rooms_for_package(session, package_id)
+        return await self._packages.list_rooms_for_package(
+            session, package_id, reader_id=reader_id, reader_is_admin=reader_is_admin
+        )
 
     # ── Package membership ────────────────────────────────────────────────
 
@@ -1387,6 +1513,9 @@ class ResourceService:
         ref = await self._references.get(session, reference_id)
         if ref is None:
             raise ValueError(f"Reference not found: {reference_id}")
+        # So did whoever adds it: a package lists its references to everyone
+        # who may read it, so adding one is showing it to them.
+        require(Principal(user_id, is_admin), "read", ref)
         # The package owner must be able to read the reference being added.
         if not can(Principal(pkg.owner_id, False), "read", ref):
             raise PermissionError(
@@ -1430,6 +1559,9 @@ class ResourceService:
         doc = await self._documents.get(session, document_id)
         if doc is None:
             raise ValueError(f"Document not found: {document_id}")
+        # As for a reference: adding it shows it to every reader of the package.
+        # First, so whoever may not read it is not told what it is.
+        require(Principal(user_id, is_admin), "read", doc)
         if doc.room_id is not None:
             raise ValueError(
                 f"Document {document_id} is room-scoped and cannot be added to a package"

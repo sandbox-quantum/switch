@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SessionPlacements } from './placements';
 import { Redactions } from './redaction';
 import type { Caller } from './session-channel';
@@ -48,6 +48,7 @@ it('moves rooms one at a time, so a refused move puts back only what it replaced
     connectionId: 'connection',
     placements,
     publish: async () => {},
+    placementsNameCallRooms: () => false,
     redactions: new Redactions(),
   });
   let refuseFirst!: () => void;
@@ -87,6 +88,7 @@ it('scrubs every service token handed out from what it sends to Switch', async (
     connectionId: 'connection',
     placements: await SessionPlacements.open(base, () => []),
     publish: async () => {},
+    placementsNameCallRooms: () => false,
     redactions,
   });
   calls.connect.mockResolvedValue({ content: [{ type: 'text', text: 'posted' }] });
@@ -122,6 +124,7 @@ it('answers a service token ask from Switch, as the agent, and scrubs the token 
       connectionId: 'connection',
       placements: await SessionPlacements.open(base, () => []),
       publish: async () => {},
+      placementsNameCallRooms: () => false,
       redactions,
     });
     const answered = await answer(await caller(base, 'session'), {
@@ -193,6 +196,7 @@ it('posts a session’s room reply only into the room it still attends', async (
     connectionId: 'connection',
     placements,
     publish: async () => {},
+    placementsNameCallRooms: () => false,
     redactions: new Redactions(),
   });
   calls.connect.mockResolvedValue({ content: [{ type: 'text', text: '{"event_id":"e"}' }] });
@@ -229,6 +233,7 @@ it('reads the instructions of the room a session attends, without moving it', as
     connectionId: 'connection',
     placements,
     publish: async () => {},
+    placementsNameCallRooms: () => false,
     redactions: new Redactions(),
   });
   const session = await caller(base, 'session');
@@ -267,4 +272,115 @@ it('reads the instructions of the room a session attends, without moving it', as
   );
   expect(calls.connect).toHaveBeenCalledTimes(3);
   expect(placements.roomOf('session')).toBe('elsewhere');
+});
+
+describe('a move behind an agent controller, whose relay names each call’s room', () => {
+  async function setUp(publish: (placements: SessionPlacements) => Promise<void>) {
+    const base = await mkdtemp(join(tmpdir(), 'watcher-tools-'));
+    roots.push(base);
+    const placements = await SessionPlacements.open(base, () => []);
+    await placements.place('session', 'room-before');
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const answer = sessionToolAnswerer({
+      identity: { agentId: 'agent', endpoint: 'https://switch.test', token: 't' },
+      connectionId: 'connection',
+      placements,
+      publish: () => publish(placements),
+      placementsNameCallRooms: () => true,
+      redactions: new Redactions(),
+    });
+    calls.connect.mockResolvedValue({
+      content: [{ type: 'text', text: 'connected' }],
+      structuredContent: { room_id: 'room-after' },
+    });
+    const connect = async () =>
+      (await answer(await caller(base, 'session'), {
+        type: 'tool',
+        name: 'connect_to_room',
+        arguments: { room_id: 'room-after' },
+      })) as {
+        isError?: boolean;
+        content: { text: string }[];
+        structuredContent?: Record<string, unknown>;
+      };
+    return { placements, connect };
+  }
+
+  it('is refused, and put back, when the controller does not take it', async () => {
+    const stated: string[] = [];
+    let refuse = true;
+    const { placements, connect } = await setUp(async (held) => {
+      stated.push(held.roomOf('session') ?? 'none');
+      if (refuse) {
+        refuse = false;
+        throw new Error('the agent controller hub is not connected');
+      }
+    });
+    const result = await connect();
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toMatch(/did not take effect/);
+    expect(result.content[0]!.text).toMatch(/the agent controller hub is not connected/);
+    expect(placements.roomOf('session')).toBe('room-before');
+    // The move, then the map put back, so the next reconnect states that.
+    expect(stated).toEqual(['room-after', 'room-before']);
+  });
+
+  it('is refused when the controller leaves the room out and names it back', async () => {
+    // The controller places only rooms it counts the agent as in; the publish
+    // then takes the session out of the room it named back. Told it had
+    // connected, the session would call from no room.
+    let leaveOut = true;
+    const { placements, connect } = await setUp(async (held) => {
+      if (leaveOut) {
+        leaveOut = false;
+        await held.roomLost('room-after');
+      }
+    });
+    const result = await connect();
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.text).toMatch(
+      /does not count room room-after among this agent's rooms yet/
+    );
+    expect(placements.roomOf('session')).toBe('room-before');
+  });
+
+  it('is answered as Switch answered it once the controller takes it', async () => {
+    const { placements, connect } = await setUp(async () => {});
+    const result = await connect();
+
+    expect(result.isError).toBeFalsy();
+    expect(result.structuredContent).toEqual({ room_id: 'room-after' });
+    expect(placements.roomOf('session')).toBe('room-after');
+  });
+});
+
+it('keeps a move Switch recorded itself when the stream does not take the placements', async () => {
+  // Over the agent's own connection Switch placed the session on connect, so
+  // the placements going astray costs nothing a later statement will not fix.
+  const base = await mkdtemp(join(tmpdir(), 'watcher-tools-'));
+  roots.push(base);
+  const placements = await SessionPlacements.open(base, () => []);
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const answer = sessionToolAnswerer({
+    identity: { agentId: 'agent', endpoint: 'https://switch.test', token: 't' },
+    connectionId: 'connection',
+    placements,
+    publish: async () => {
+      throw new Error('timed out');
+    },
+    placementsNameCallRooms: () => false,
+    redactions: new Redactions(),
+  });
+  calls.connect.mockResolvedValue({ content: [{ type: 'text', text: 'connected' }] });
+  const result = (await answer(await caller(base, 'session'), {
+    type: 'tool',
+    name: 'connect_to_room',
+    arguments: { room_id: 'room' },
+  })) as { isError?: boolean };
+
+  expect(result.isError).toBeFalsy();
+  expect(placements.roomOf('session')).toBe('room');
+  expect(warn).toHaveBeenCalledWith(expect.stringMatching(/stated again on the next change/));
 });

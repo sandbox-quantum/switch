@@ -1,30 +1,54 @@
+import semver from 'semver';
 import { resolveAppVersion } from '@main/core/app/utils';
+import { pendingInstall } from '@main/core/updates/pending-install';
 import { KV } from '@main/db/kv';
 import { log } from '@main/lib/logger';
 import { IS_CANARY } from '@shared/app-identity';
-import type { TelemetryInstallKind } from './events';
+import { appVersionOf } from './app-version';
+import type { TelemetryEventMap, TelemetryInstallKind } from './events';
 import { trackEvent } from './telemetry-service';
 
 /**
- * Which kind of launch this is, from what the last launch recorded.
+ * Which kind of launch this is, from what the last launch on this channel
+ * recorded.
  *
  * `new` is the first launch an installation ever makes, so counting it counts
- * new installs; `updated` is the first launch on a different version than the
- * last one, an upgrade; `same` is everything else. An installation with a
- * database but no record predates this tracking, and its first launch with it
- * is on a version it was not installed at, so it reads as `updated`.
+ * new installs; `updated` is the first launch on a newer version than the last
+ * one, an upgrade; `same` is everything else. An installation with a database
+ * but no record on either channel predates this tracking, and its first launch
+ * with it is on a version it was not installed at, so it reads as `updated`.
+ *
+ * Two launches are not upgrades although the version differs. The first on a
+ * channel the installation has not run before, when the other one has a record,
+ * is a switch between canary and stable. A launch on an older version than the
+ * last is a downgrade, a person reinstalling an earlier build.
  */
 export function installKindFor({
   lastVersion,
   version,
   databaseExisted,
+  otherChannelLaunched,
 }: {
   lastVersion: string | null;
   version: string;
   databaseExisted: boolean;
+  otherChannelLaunched: boolean;
 }): TelemetryInstallKind {
-  if (lastVersion === null) return databaseExisted ? 'updated' : 'new';
-  return lastVersion === version ? 'same' : 'updated';
+  if (lastVersion === null) {
+    if (!databaseExisted) return 'new';
+    return otherChannelLaunched ? 'same' : 'updated';
+  }
+  if (lastVersion === version) return 'same';
+  return isDowngrade(lastVersion, version) ? 'same' : 'updated';
+}
+
+/** Whether `version` is an older release than `lastVersion`, prerelease included. */
+function isDowngrade(lastVersion: string, version: string): boolean {
+  return (
+    semver.valid(lastVersion) !== null &&
+    semver.valid(version) !== null &&
+    semver.lt(version, lastVersion)
+  );
 }
 
 /**
@@ -47,6 +71,11 @@ type LaunchInputs = {
   databaseExisted: boolean;
 };
 
+/** Which kind this launch is, and the version the previous launch ran. */
+export type LaunchRecord = { kind: TelemetryInstallKind; lastVersion: string | null };
+
+const channelKey = (channel: LaunchInputs['channel']) => `lastLaunchedVersion.${channel}`;
+
 /**
  * Record this launch and say which kind it is. Recorded on every launch,
  * whether or not usage is shared: it is local, and the next launch has to know
@@ -56,12 +85,13 @@ export async function recordLaunch({
   version,
   channel,
   databaseExisted,
-}: LaunchInputs): Promise<TelemetryInstallKind> {
-  const key = `lastLaunchedVersion.${channel}`;
-  const lastVersion = (await store.get(key)) ?? null;
-  const kind = installKindFor({ lastVersion, version, databaseExisted });
-  await store.set(key, version);
-  return kind;
+}: LaunchInputs): Promise<LaunchRecord> {
+  const lastVersion = (await store.get(channelKey(channel))) ?? null;
+  const otherChannelLaunched =
+    (await store.get(channelKey(channel === 'canary' ? 'stable' : 'canary'))) !== null;
+  const kind = installKindFor({ lastVersion, version, databaseExisted, otherChannelLaunched });
+  await store.set(channelKey(channel), version);
+  return { kind, lastVersion };
 }
 
 /** What recording this launch needs, read when boot starts it. */
@@ -74,20 +104,45 @@ export async function readThisLaunch(): Promise<LaunchInputs> {
   };
 }
 
+type LaunchUpdate = Pick<TelemetryEventMap['app_launched'], 'from_version' | 'update_trigger'>;
+
 /**
- * Record this launch and report it as `app_launched`. Never rejects, so boot
- * can start it without waiting on it: nothing telemetry does may stop the app
- * opening. A launch that cannot be recorded is logged and goes unreported,
- * rather than reported with a kind nobody worked out.
+ * What `app_launched` says about the update an upgrade's launch is the end of:
+ * the version it came from, and whether Restart to update installed it.
+ */
+async function updateOf(record: LaunchRecord): Promise<LaunchUpdate> {
+  if (record.kind !== 'updated') return { from_version: 'none', update_trigger: 'none' };
+  const from_version = record.lastVersion === null ? 'unknown' : appVersionOf(record.lastVersion);
+  try {
+    const handedOver = await pendingInstall.take();
+    return { from_version, update_trigger: handedOver ? 'restart_button' : 'other' };
+  } catch (error) {
+    log.warn('telemetry: could not read how this update was installed', { error });
+    return { from_version, update_trigger: 'unknown' };
+  }
+}
+
+/**
+ * Record this launch and report it as `app_launched`, with the update it ends
+ * when it is an upgrade's. Never rejects, so boot can start it without waiting
+ * on it: nothing telemetry does may stop the app opening. A launch that cannot
+ * be recorded is logged and goes unreported, rather than reported with a kind
+ * nobody worked out.
  */
 export async function reportLaunch(read: () => Promise<LaunchInputs>): Promise<void> {
   const recorded = (async () => recordLaunch(await read()))();
-  recording = recorded.catch(() => null);
+  recording = recorded.then(
+    (record) => record.kind,
+    () => null
+  );
+  let record: LaunchRecord;
   try {
-    trackEvent('app_launched', { install_kind: await recorded });
+    record = await recorded;
   } catch (error) {
     log.warn('telemetry: could not record this launch, so app_launched is not sent', { error });
+    return;
   }
+  trackEvent('app_launched', { install_kind: record.kind, ...(await updateOf(record)) });
 }
 
 /**

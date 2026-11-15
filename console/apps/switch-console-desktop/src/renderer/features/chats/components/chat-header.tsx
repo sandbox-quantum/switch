@@ -13,6 +13,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@renderer/lib/ui/dropdown-menu';
+import { log } from '@renderer/utils/logger';
 import { type ChatSummary, chatAgentLabel } from '@shared/core/chats/chats';
 import type { AgentActivity } from '../stores/chat-activity-store';
 import { chatsStore } from '../stores/chats';
@@ -85,7 +86,17 @@ export const ChatHeaderControls = observer(function ChatHeaderControls({
         >
           {stream}
           {chatsStore.streamState === 'offline' && (
-            <Button size="sm" variant="ghost" onClick={() => void rpc.chats.connect(serverId)}>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() =>
+                void rpc.chats.connect(serverId).catch((error: unknown) => {
+                  const title = failureText(error, 'Could not reconnect the live chat feed.');
+                  log.warn('Chat feed reconnect failed', { serverId, error: title });
+                  toast({ title, variant: 'destructive' });
+                })
+              }
+            >
               Reconnect
             </Button>
           )}

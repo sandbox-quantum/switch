@@ -4,6 +4,14 @@ import { beforeEach, expect, it, vi } from 'vitest';
 
 const readiness = vi.hoisted(() => ({ data: undefined as unknown, enabled: [] as boolean[] }));
 vi.mock('@renderer/lib/ipc', () => ({ rpc: {} }));
+// Rendered in place, so the tooltip's text is in the markup.
+vi.mock('@renderer/lib/ui/tooltip', () => ({
+  Tooltip: ({ children }: { children: React.ReactNode }) =>
+    React.createElement(React.Fragment, null, children),
+  TooltipTrigger: ({ render }: { render: React.ReactNode }) => render,
+  TooltipContent: ({ children }: { children: React.ReactNode }) =>
+    React.createElement('span', null, children),
+}));
 vi.mock('./provider-connection-status', async (importOriginal) => ({
   ...(await importOriginal<object>()),
   useProviderReadiness: (_p: string, _h: string | null, _d: string, enabled: boolean) => {
@@ -35,6 +43,15 @@ it('warns when the provider is not signed in or not installed', () => {
   expect(render()).toContain('Not signed in on box');
   readiness.data = { installed: false, status: 'unknown', message: null };
   expect(render()).toContain('CLI not installed on box');
+});
+
+it("gives the check's own reason a provider is not signed in", () => {
+  readiness.data = {
+    installed: true,
+    status: 'unauthenticated',
+    message: 'The login is in the OS keyring, which sessions cannot use.',
+  };
+  expect(render()).toContain('The login is in the OS keyring, which sessions cannot use.');
 });
 
 it('shows nothing when the provider is ready or the check could not tell', () => {

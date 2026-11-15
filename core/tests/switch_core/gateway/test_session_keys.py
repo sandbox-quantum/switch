@@ -23,7 +23,15 @@ def _keyring(value: str, legacy: str | None = None) -> Keyring:
 
 
 def _session(keyring: Keyring) -> str:
-    return create_jwt("user-1", "a@example.test", "user", keyring, "tenant-1")
+    return create_jwt(
+        "user-1",
+        "a@example.test",
+        "user",
+        keyring,
+        "tenant-1",
+        session_version=0,
+        auth_time=datetime.datetime.now(datetime.UTC),
+    )
 
 
 def _legacy_session() -> str:

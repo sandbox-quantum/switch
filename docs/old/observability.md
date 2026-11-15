@@ -274,6 +274,34 @@ handled in a way that leaves no trace.
 If you add another place that catches an exception to keep something alive,
 this is the list it belongs on.
 
+## Decision routing
+
+Auto-route (`docs/old/decision-routing.md`) has a group of its own,
+`switch.decision.*`. Each decision asked of a backend is counted by `backend`
+and `outcome`, failures by `reason`, and what the backend said went wrong
+behind it by `kind` (`backend_errors`). Its latency is timed around the whole
+request (`duration`) beside the model time the backend reports
+(`model_time`), so the gap — network and the backend's queue — can be read.
+Confidence is a histogram for setting the threshold. Every undecided message's
+end is counted once in `settled` by `outcome`, with `wait`, the time from the
+person's message to that end.
+
+The latency histograms use bounds of their own, from 25 ms to two minutes,
+dense around the one-second target; `wait` reaches 120 s because that is when a
+waiting message expires.
+
+**The waiting queue** is `switch.decision.pending` and
+`switch.decision.pending.oldest_age`. A gauge cannot query the database, so the
+decision sweep samples it every five seconds: it already lists the workspaces
+with a message waiting, and reads each one's count and oldest age under that
+workspace's row-level security. Every replica samples the same rows, so every
+replica reports the same server-wide number: **read these with max, not sum**.
+A sample nobody has refreshed for four sweeps reports nothing rather than a
+stale number.
+
+Each message's decision record — one log line, with its fields as `decision.*`
+— is described in `docs/old/decision-routing.md`.
+
 ## Health: two routes, on purpose
 
 | Route | Answers | Used by |
@@ -294,6 +322,14 @@ without it every request is an error anyway.
 Everything else is reported and alertable but never fatal. A crashed Slack
 adapter is a real fault; taking Switch off the air over it would turn one
 broken bridge into every broken bridge.
+
+The **`decision`** check is one of those. It is there only when the server has
+a default decision service (`DECISION_ENDPOINT_URL`, with the
+`decision_routing` flag on), and asks that service's `/health` with a three
+second timeout. A decision service that is down costs untagged messages in
+auto-route rooms their answer, not the room, so it never gates. A workspace's
+own endpoint is not probed: it is that workspace's, possibly one of many, and
+its failures already show in `switch.decision.failures`.
 
 The checks run on a timer rather than per request, and the kubelet and the
 metrics exporter read the same cached answer. The cache carries its own age,

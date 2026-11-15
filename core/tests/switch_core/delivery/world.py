@@ -123,6 +123,7 @@ class World:
         *,
         settings: ConversationSettings | None = None,
         channel_type: str = "channel_public",
+        auto_route_on: bool = False,
     ) -> ConversationDecision:
         settings = settings or _settings()
         async with self.session_factory() as session:
@@ -149,6 +150,7 @@ class World:
                 channel_type=channel_type,
                 follow_ups_enabled=follow_ups_enabled_in(room.metadata_),
                 main_agent_id=main_agent_in(room.metadata_),
+                auto_route_on=auto_route_on,
                 message=message,
             )
             return await conversation.decide(

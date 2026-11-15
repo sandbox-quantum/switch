@@ -24,6 +24,7 @@ def _fake_self(
     is_direct: bool = False,
     agent_greetings_enabled: bool = True,
     agent_greeting: dict[str, str] | None = None,
+    console_chat: bool = False,
 ) -> SimpleNamespace:
     """The agent arriving in a room, as the router hands it its arrival."""
     return SimpleNamespace(
@@ -35,6 +36,7 @@ def _fake_self(
             agent_greetings_enabled=agent_greetings_enabled,
             channel_type="direct" if is_direct else "channel_private",
             agent_greeting=agent_greeting,
+            console_chat=console_chat,
         ),
         _room=_ROOM,
         actor=SimpleNamespace(send_message=send_message),
@@ -110,6 +112,30 @@ async def test_a_greeting_written_for_another_agent_is_not_said() -> None:
         )
     )
     assert send_message.calls[0]["body"].startswith("Hi! I'm cc-bug-fixing")
+
+
+@pytest.mark.asyncio
+async def test_a_console_chat_gets_no_join_line() -> None:
+    for is_direct in (True, False):
+        send_message = _Recorder()
+        await AgentRecipient.greet(
+            _fake_self(send_message, is_direct=is_direct, console_chat=True)  # type: ignore[arg-type]
+        )
+        assert send_message.calls == []
+
+
+@pytest.mark.asyncio
+async def test_a_console_chat_still_opens_with_its_written_greeting() -> None:
+    send_message = _Recorder()
+    await AgentRecipient.greet(
+        _fake_self(  # type: ignore[arg-type]
+            send_message,
+            is_direct=True,
+            console_chat=True,
+            agent_greeting={"agent_id": "agent-1", "body": "Welcome!"},
+        )
+    )
+    assert [call["body"] for call in send_message.calls] == ["Welcome!"]
 
 
 def test_the_opening_message_is_told_only_to_the_agent_it_was_written_for() -> None:

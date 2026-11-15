@@ -72,7 +72,12 @@ export type { AgentIconAsset, AgentIconVariant } from './assets/icon';
 
 // Convenience re-exports for impl packages
 export type { AgentCommand, CommandContext } from './capabilities/prompt';
-export type { PluginFs } from '../runtime/fs';
+export type {
+  PluginFs,
+  PluginFsListOptions,
+  PluginFsProtectOptions,
+  PluginFsWriteOptions,
+} from '../runtime/fs';
 // Capability behavior interfaces — needed for dts portability
 export type { IHostDependencyBehavior } from '../../host-dependencies/capability';
 export type {

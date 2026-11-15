@@ -57,17 +57,71 @@ describe('createRemotePluginFs', () => {
     await expect(fs.write('a', 'b')).rejects.toThrow(/disk full/);
   });
 
+  it('a secret write goes through writeSecret, never the ordinary write', async () => {
+    const write = vi.fn(async () => ({ success: true, bytesWritten: 5 }));
+    const writeSecret = vi.fn(async () => {});
+    const fs = adapter({ write, writeSecret });
+    await fs.write('.switch/agents/a.json', 'token', { secret: true });
+    expect(writeSecret).toHaveBeenCalledWith('.switch/agents/a.json', 'token');
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it('a secret write that fails propagates rather than falling back to an ordinary one', async () => {
+    const write = vi.fn(async () => ({ success: true, bytesWritten: 5 }));
+    const fs = adapter({
+      write,
+      writeSecret: vi.fn(async () => {
+        throw new Error('Server does not support this extended request');
+      }),
+    });
+    await expect(fs.write('.switch/agents/a.json', 'token', { secret: true })).rejects.toThrow(
+      /does not support/
+    );
+    expect(write).not.toHaveBeenCalled();
+  });
+
   it('delete removes the path and ignores a missing file', async () => {
     // The literal SshFileSystem.remove produces when its stat finds nothing.
     const remove = vi.fn(async () => ({ success: false, error: 'File not found: gone' }));
-    const fs = adapter({ remove });
+    const fs = adapter({ remove, removeSecretTemps: vi.fn(async () => {}) });
     await expect(fs.delete('gone')).resolves.toBeUndefined();
     expect(remove).toHaveBeenCalledWith('gone');
   });
 
   it('delete resolves when the remove succeeds', async () => {
-    const fs = adapter({ remove: vi.fn(async () => ({ success: true })) });
+    const fs = adapter({
+      remove: vi.fn(async () => ({ success: true })),
+      removeSecretTemps: vi.fn(async () => {}),
+    });
     await expect(fs.delete('x')).resolves.toBeUndefined();
+  });
+
+  it('delete also removes what an interrupted secret write of the file left', async () => {
+    const removeSecretTemps = vi.fn(async () => {});
+    const fs = adapter({ remove: vi.fn(async () => ({ success: true })), removeSecretTemps });
+    await fs.delete('.switch/agents/a.json');
+    expect(removeSecretTemps).toHaveBeenCalledWith('.switch/agents/a.json');
+  });
+
+  it('delete throws when those copies cannot be removed', async () => {
+    const fs = adapter({
+      remove: vi.fn(async () => ({ success: true })),
+      removeSecretTemps: vi.fn(async () => {
+        throw new Error('Permission denied');
+      }),
+    });
+    await expect(fs.delete('.switch/agents/a.json')).rejects.toThrow(/Permission denied/);
+  });
+
+  it('protectSecret goes to the remote filesystem, options and all, and returns what it found', async () => {
+    const protectSecret = vi.fn(async () => false);
+    const fs = adapter({ protectSecret });
+    expect(await fs.protectSecret('.switch/agents/a.json')).toBe(false);
+    await fs.protectSecret('.claude/settings.local.json', { fileOnly: true });
+    expect(protectSecret.mock.calls).toEqual([
+      ['.switch/agents/a.json', undefined],
+      ['.claude/settings.local.json', { fileOnly: true }],
+    ]);
   });
 
   it('delete throws (fails loud) when the file is there but cannot be removed', async () => {
@@ -99,6 +153,23 @@ describe('createRemotePluginFs', () => {
       'b.settings.json',
     ]);
     expect(list).toHaveBeenCalledWith('.claude/switch-subagents', { includeHidden: true });
+  });
+
+  it('a strict list answers [] for a missing directory and throws on anything else', async () => {
+    const missing = adapter({
+      list: vi.fn(async () => {
+        throw new FileSystemError('No such file', FileSystemErrorCodes.NOT_FOUND);
+      }),
+    });
+    expect(await missing.list('gone', { strict: true })).toEqual([]);
+
+    const broken = adapter({
+      list: vi.fn(async () => {
+        throw new FileSystemError('channel open failure', FileSystemErrorCodes.CONNECTION_ERROR);
+      }),
+    });
+    expect(await broken.list('x')).toEqual([]);
+    await expect(broken.list('x', { strict: true })).rejects.toThrow(/channel open failure/);
   });
 
   it('list returns [] when the directory is missing', async () => {

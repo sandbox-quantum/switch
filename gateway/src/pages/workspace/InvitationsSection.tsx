@@ -9,10 +9,16 @@ import {
 } from "@mui/material";
 import type { GridColDef } from "@mui/x-data-grid";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import DataTable from "../../components/DataTable";
-import { type Invitation, fetchInvitations, revokeInvitation } from "../../data/api";
-import { formatDate, titleCase } from "../../theme/hootFormat";
+import DataTable, { TableEmptyState } from "../../components/DataTable";
+import {
+  type Invitation,
+  fetchCurrentOrganization,
+  fetchInvitations,
+  revokeInvitation,
+} from "../../data/api";
+import { formatDate, sentenceCase } from "../../theme/format";
 import CreateInvitationDialog from "./CreateInvitationDialog";
+import { useInvitationCreated } from "./invitationEvents";
 import { useLoad } from "./useLoad";
 
 function invitationStatus(inv: Invitation, now: number): string {
@@ -24,15 +30,25 @@ function invitationStatus(inv: Invitation, now: number): string {
 
 export default function InvitationsSection({
   tenantId,
-  isOwner,
+  workspaceName,
+  inOrganization,
   emailEnabled,
 }: {
   tenantId: string;
-  isOwner: boolean;
+  workspaceName: string;
+  inOrganization: boolean;
   emailEnabled: boolean;
 }) {
   const load = useCallback(() => fetchInvitations(tenantId), [tenantId]);
   const { data: invitations, error, loading, refetch } = useLoad(load);
+  useInvitationCreated(refetch);
+  // Whether only people already in the organization can accept: where its
+  // members come from its account settings, Switch can't add anyone new.
+  const loadOrganization = useCallback(
+    () => (inOrganization ? fetchCurrentOrganization() : Promise.resolve(null)),
+    [inOrganization],
+  );
+  const { data: organization, error: organizationError } = useLoad(loadOrganization);
   const [createOpen, setCreateOpen] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   // Re-evaluated on a timer so an invitation that expires while the page is
@@ -69,7 +85,7 @@ export default function InvitationsSection({
         field: "role",
         headerName: "Role",
         width: 110,
-        valueFormatter: (value) => titleCase(String(value)),
+        valueFormatter: (value) => sentenceCase(String(value)),
       },
       {
         field: "status",
@@ -114,6 +130,18 @@ export default function InvitationsSection({
           Invite
         </Button>
       </Stack>
+      {organization?.members_from_directory && (
+        <Alert severity="info">
+          This organization's users come from your organization's account settings, so only
+          people already in the organization can accept an invitation. Add anyone new there
+          first.
+        </Alert>
+      )}
+      {organizationError && (
+        <Alert severity="warning">
+          Could not check who can accept an invitation here: {organizationError}
+        </Alert>
+      )}
       {error && <Alert severity="error">{error}</Alert>}
       {actionError && (
         <Alert severity="error" onClose={() => setActionError(null)}>
@@ -126,6 +154,11 @@ export default function InvitationsSection({
         <DataTable
           rows={invitations ?? []}
           columns={columns}
+          emptyState={
+            <TableEmptyState title="No invitations">
+              Invite someone to give them a link to join with.
+            </TableEmptyState>
+          }
           height={Math.min(520, 108 + Math.max(1, invitations?.length ?? 0) * 52)}
           pageSize={25}
         />
@@ -133,10 +166,10 @@ export default function InvitationsSection({
       <CreateInvitationDialog
         open={createOpen}
         tenantId={tenantId}
-        isOwner={isOwner}
+        fromOrganization={false}
+        workspaceName={workspaceName}
         emailEnabled={emailEnabled}
         onClose={() => setCreateOpen(false)}
-        onCreated={refetch}
       />
     </Stack>
   );

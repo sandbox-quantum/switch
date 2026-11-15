@@ -5,6 +5,10 @@
 #   just e2e-follow-ups --video    the same, plus a captioned demo video (needs ffmpeg)
 #   just e2e-follow-ups --keep     leave the stack and a playground room running afterwards
 #
+# Automatic routing (!auto-route) asks a stub decision service on :8091 that
+# picks an agent by keyword. Set E2E_DECISION_URL to a real one's /decide
+# endpoint to play the same journeys against it instead.
+#
 # It starts its own Postgres and Mattermost (Docker Compose project
 # "switch-e2e") and its own switch-core on :8000, so stop your local stack
 # first (`just down`, and any `just run`). Everything it writes goes to
@@ -27,7 +31,10 @@ done
 
 cd "$REPO"
 [ -f .env ] || { echo "No .env: run 'just init-env' first." >&2; exit 1; }
-for port in 5432 8000 8065 8081; do
+DECISION_URL="${E2E_DECISION_URL:-}"
+PORTS=(5432 8000 8065 8081)
+[ -z "$DECISION_URL" ] && PORTS+=(8091)
+for port in "${PORTS[@]}"; do
   if lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
     echo "Port $port is in use. Stop your local stack first ('just down', and any 'just run')." >&2
     exit 1
@@ -42,18 +49,21 @@ set -a; source .env; set +a
 COMPOSE=(docker compose -p switch-e2e -f deploy/local/docker-compose.yml --project-directory .)
 SERVER_PID=""
 AGENTS_PID=""
+DECIDER_PID=""
 stop_server() { [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null && wait "$SERVER_PID" 2>/dev/null; SERVER_PID=""; return 0; }
 stop_agents() { [ -n "$AGENTS_PID" ] && kill "$AGENTS_PID" 2>/dev/null; AGENTS_PID=""; return 0; }
+stop_decider() { [ -n "$DECIDER_PID" ] && kill "$DECIDER_PID" 2>/dev/null; DECIDER_PID=""; return 0; }
 cleanup() {
   if [ "$KEEP" = 0 ]; then
-    stop_agents; stop_server
+    stop_agents; stop_server; stop_decider
     "${COMPOSE[@]}" down -v >/dev/null 2>&1 || true
   fi
 }
 trap cleanup EXIT
 
 start_server() {  # $1 = follow-up window in seconds
-  FEATURE_FLAGS_ENABLED=follow_the_conversation \
+  FEATURE_FLAGS_ENABLED=follow_the_conversation,decision_routing \
+  DECISION_ENDPOINT_URL="${DECISION_URL:-http://127.0.0.1:8091/decide}" \
   FOLLOW_THE_CONVERSATION_WINDOW_SECONDS="$1" \
   GATEWAY_COOKIE_SECURE=false \
     uv run --project core python -m switch_core.main >> "$OUT/switch-core.log" 2>&1 &
@@ -69,6 +79,10 @@ start_agents() {
 }
 
 rm -rf "$OUT"; mkdir -p "$OUT"
+if [ -z "$DECISION_URL" ]; then
+  uv run --project core python "$HERE/harness.py" decider > "$OUT/decider.log" 2>&1 &
+  DECIDER_PID=$!
+fi
 echo "Starting a fresh stack (Postgres, Mattermost)…"
 "${COMPOSE[@]}" down -v >/dev/null 2>&1 || true
 "${COMPOSE[@]}" up -d --build >/dev/null

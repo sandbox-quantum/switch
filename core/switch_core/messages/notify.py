@@ -37,7 +37,7 @@ import contextlib
 import json
 import logging
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
 from switch_core.db.notify_ddl import MESSAGE_CHANNEL
@@ -81,6 +81,8 @@ class Announcement:
     room_id: str
     seq: int
     message_id: str
+    # The row's type, or None from a database announcing without it.
+    type: str | None = None
 
     @staticmethod
     def parse(payload: str) -> Announcement | None:
@@ -93,11 +95,15 @@ class Announcement:
         """
         try:
             data = json.loads(payload)
-            return Announcement(
+            announcement = Announcement(
                 room_id=str(data["room_id"]),
                 seq=int(data["seq"]),
                 message_id=str(data["id"]),
             )
+            row_type = data.get("type")
+            if row_type is None:
+                return announcement
+            return replace(announcement, type=str(row_type))
         except (ValueError, TypeError, KeyError):
             logger.warning(
                 "Ignoring an unreadable message announcement: %r", payload[:200]
@@ -112,10 +118,14 @@ class MessageListener:
         # A factory rather than an engine: reconnecting builds a fresh one, so
         # a connection that failed leaves nothing of itself behind.
         self._engine_factory = engine_factory
-        self._subscribers: dict[str, set[RoomWaker]] = {}
+        # Room → each waker, with the row types it is woken for (None: all).
+        self._subscribers: dict[str, dict[RoomWaker, frozenset[str] | None]] = {}
         # Room → the highest position announced but not yet handed on. This is
         # the coalescing buffer; see the module docstring.
         self._pending: dict[str, int] = {}
+        # Room → the types of the rows behind that position, or None where one
+        # of them is unknown (a wake-up of every subscriber).
+        self._pending_types: dict[str, set[str] | None] = {}
         self._has_pending = asyncio.Event()
         self._tasks: list[asyncio.Task[None]] = []
         self._running = False
@@ -125,7 +135,13 @@ class MessageListener:
 
     # ── Subscription ──────────────────────────────────────────────────────────
 
-    def subscribe(self, room_id: str, waker: RoomWaker) -> None:
+    def subscribe(
+        self,
+        room_id: str,
+        waker: RoomWaker,
+        *,
+        types: frozenset[str] | None = None,
+    ) -> None:
         """Ask to be woken when `room_id` advances.
 
         The waker is called with the room id and nothing else, because what it
@@ -133,15 +149,20 @@ class MessageListener:
         once on subscribing too: a subscriber that starts mid-stream is behind
         by definition, and making it read immediately is cheaper than making
         every caller remember to.
+
+        With `types`, it is woken only for rows of those types: a reader that
+        acts on one kind of row is not made to read every row of a busy room
+        to find it. A row whose type the announcement does not give wakes it
+        as well, as does the wake-up on subscribing and on reconnecting.
         """
-        self._subscribers.setdefault(room_id, set()).add(waker)
-        self._mark(room_id, 0)
+        self._subscribers.setdefault(room_id, {})[waker] = types
+        self._mark(room_id, 0, None)
 
     def unsubscribe(self, room_id: str, waker: RoomWaker) -> None:
         wakers = self._subscribers.get(room_id)
         if wakers is None:
             return
-        wakers.discard(waker)
+        wakers.pop(waker, None)
         if not wakers:
             del self._subscribers[room_id]
 
@@ -230,17 +251,23 @@ class MessageListener:
         """
         announcement = Announcement.parse(payload)
         if announcement is not None:
-            self._mark(announcement.room_id, announcement.seq)
+            self._mark(announcement.room_id, announcement.seq, announcement.type)
 
     # ── Fan-out ───────────────────────────────────────────────────────────────
 
-    def _mark(self, room_id: str, seq: int) -> None:
+    def _mark(self, room_id: str, seq: int, row_type: str | None = None) -> None:
         self._pending[room_id] = max(self._pending.get(room_id, 0), seq)
+        types = self._pending_types.get(room_id, set())
+        if types is None or row_type is None:
+            self._pending_types[room_id] = None
+        else:
+            types.add(row_type)
+            self._pending_types[room_id] = types
         self._has_pending.set()
 
     def _wake_everything(self) -> None:
         for room_id in self._subscribers:
-            self._mark(room_id, 0)
+            self._mark(room_id, 0, None)
 
     async def _fan_out_forever(self) -> None:
         while self._running:
@@ -248,11 +275,14 @@ class MessageListener:
             self._has_pending.clear()
             rooms = list(self._pending)
             self._pending.clear()
+            pending_types, self._pending_types = self._pending_types, {}
             for room_id in rooms:
-                await self._wake_room(room_id)
+                await self._wake_room(room_id, pending_types.get(room_id))
 
-    async def _wake_room(self, room_id: str) -> None:
-        for waker in list(self._subscribers.get(room_id, ())):
+    async def _wake_room(self, room_id: str, row_types: set[str] | None) -> None:
+        for waker, types in list(self._subscribers.get(room_id, {}).items()):
+            if types is not None and row_types is not None and not types & row_types:
+                continue
             try:
                 await waker(room_id)
             except asyncio.CancelledError:

@@ -1,4 +1,5 @@
 import { observer } from 'mobx-react-lite';
+import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { useManagedAgents } from '@renderer/features/managed-agents/use-managed-agents';
 import type { SessionStore } from '@renderer/features/sessions/stores/session-store';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
@@ -100,7 +101,9 @@ export const AgentTree = observer(function AgentTree() {
   const managed = useManagedAgents(switchServersStore.activeServerId);
   const managedIds = new Set((managed.data ?? []).map((agent) => agent.agentId));
   const entries = scopedAgents().filter(
-    (entry) => entry.agent.switchAgentId === null || !managedIds.has(entry.agent.switchAgentId)
+    (entry) =>
+      !agentsStore.isMoved(entry.agent.id) &&
+      (entry.agent.switchAgentId === null || !managedIds.has(entry.agent.switchAgentId))
   );
   return (
     <SortableList

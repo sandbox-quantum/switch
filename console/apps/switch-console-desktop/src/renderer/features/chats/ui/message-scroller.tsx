@@ -79,7 +79,8 @@ function MessageScroller({ className, ...props }: React.ComponentProps<'div'>) {
 }
 
 function MessageScrollerViewport({ className, onScroll, ...props }: React.ComponentProps<'div'>) {
-  const { viewportRef, setViewport, followingRef, setAtBottom } = useMessageScrollerContext();
+  const { viewportRef, setViewport, followingRef, atBottom, setAtBottom } =
+    useMessageScrollerContext();
   const attach = React.useCallback(
     (node: HTMLDivElement | null) => {
       viewportRef.current = node;
@@ -104,14 +105,16 @@ function MessageScrollerViewport({ className, onScroll, ...props }: React.Compon
     onScroll?.(event);
   };
 
-  // No scroll anchoring: when content above the end grows, the browser would
-  // shift scrollTop to hold its anchor, and that scroll reads as the reader
-  // leaving the bottom, so following stops.
+  // No scroll anchoring while following: when content above the end grows, the
+  // browser would shift scrollTop to hold its anchor, and that scroll reads as
+  // the reader leaving the bottom, so following stops. Scrolled up, anchoring
+  // keeps the reader's place when earlier messages are prepended.
   return (
     <div
       data-slot="message-scroller-viewport"
       className={cn(
-        'size-full min-h-0 min-w-0 overflow-y-auto overscroll-contain [overflow-anchor:none] [scrollbar-gutter:stable]',
+        'size-full min-h-0 min-w-0 overflow-y-auto overscroll-contain [scrollbar-gutter:stable]',
+        atBottom && '[overflow-anchor:none]',
         className
       )}
       {...props}

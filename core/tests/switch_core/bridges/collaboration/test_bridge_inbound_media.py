@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
 from switch_core.bridges.collaboration.models import (
@@ -39,6 +40,7 @@ class _FakeHumanActor:
         caption=None,
         thread_root_id=None,
         group=None,
+        extra_content=None,
     ):  # noqa: ANN001, ANN201
         self.media.append(
             {
@@ -51,6 +53,7 @@ class _FakeHumanActor:
                 "caption": caption,
                 "thread_root_id": thread_root_id,
                 "group": group,
+                "extra_content": extra_content,
             }
         )
         return f"$evt-{len(self.media) - 1}"
@@ -112,6 +115,7 @@ def _fake_bridge() -> SimpleNamespace:
         _ensure_human_in_room=_ensure_human_in_room,
         _record_message_map=_record_message_map,
         _trust_client=NullTrustClient(),
+        _room_tenant=AsyncMock(return_value="tenant-1"),
         human_actor=human_actor,
         recorded=recorded,
     )
@@ -299,3 +303,36 @@ async def test_a_post_from_a_person_carries_no_app_marker() -> None:
     await CollaborationCore._handle_inbound_message(bridge, _msg(content="hello"))
 
     assert bridge.human_actor.messages[0]["extra_content"] is None
+
+
+async def test_files_an_app_posts_are_marked_too() -> None:
+    # An alerting app that attaches a screenshot is still an app: every file of
+    # its post carries the marker, not only a text message would.
+    bridge = _fake_bridge()
+
+    await CollaborationCore._handle_inbound_message(
+        bridge,
+        _msg(
+            content="dashboard snapshot",
+            attachments=[
+                _attachment("graph.png", "image/png"),
+                _attachment("alert.json", "application/json"),
+            ],
+            sender_is_app=True,
+        ),
+    )
+
+    assert [m["extra_content"] for m in bridge.human_actor.media] == [
+        {SENDER_IS_APP_MARKER: True},
+        {SENDER_IS_APP_MARKER: True},
+    ]
+
+
+async def test_files_a_person_posts_carry_no_app_marker() -> None:
+    bridge = _fake_bridge()
+
+    await CollaborationCore._handle_inbound_message(
+        bridge, _msg(attachments=[_attachment("cat.png", "image/png")])
+    )
+
+    assert [m["extra_content"] for m in bridge.human_actor.media] == [None]

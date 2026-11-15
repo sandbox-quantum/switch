@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { codexHomeNotAbsolute } from '../codex/home';
 import {
   executionEnvironment,
   prepareSharedConfig,
@@ -206,6 +207,19 @@ it('gives Codex the Switch skill as instructions, like the other providers', asy
       NO_REDACTIONS
     );
     expect(prepared.input.systemContext).toBe('Switch skill text');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+it('refuses to start a Codex session whose CODEX_HOME is relative', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-config-test-'));
+  try {
+    const config = await codexHostConfig(root);
+    config.start.input.env.CODEX_HOME = 'codex-source';
+    await expect(
+      prepareSharedConfig(root, config, CODEX_RUNTIME, NO_SERVICES, null, {}, NO_REDACTIONS)
+    ).rejects.toThrow(codexHomeNotAbsolute('codex-source'));
   } finally {
     await rm(root, { recursive: true, force: true });
   }

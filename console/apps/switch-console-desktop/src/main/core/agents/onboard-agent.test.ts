@@ -116,7 +116,7 @@ describe('where an onboarded agent is said to have come from', () => {
     const result = await onboardAgent(params());
 
     expect(result.success).toBe(true);
-    expect(h.emit).toHaveBeenCalledWith('agent:created', expect.anything(), 'sidebar');
+    expect(h.emit).toHaveBeenCalledWith('agent:created', expect.anything(), 'sidebar', 'created');
   });
 
   it('names it on a failure too', async () => {

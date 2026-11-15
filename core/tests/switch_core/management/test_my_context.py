@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import secrets
 from collections.abc import AsyncIterator, Iterator
+from datetime import timedelta
 from types import SimpleNamespace
 from typing import Any
 
@@ -20,6 +21,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.operations import context as op_context
 from switch_core.bridges.agent.protocol.agent_detail import addressing_policy_for
+from switch_core.connections.broker import ServiceBroker
+from switch_core.connections.loader import CATALOG
 from switch_core.db.models import (
     TENANT_ZERO_ID,
     Agent,
@@ -27,13 +30,19 @@ from switch_core.db.models import (
     Client,
     CollaborationBridge,
     ExternalUser,
+    ExternalUserClaim,
     MessagingInstall,
+    ServiceConnection,
     ServiceGrant,
+    Tenant,
     TenantMember,
     User,
 )
+from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
+from switch_core.db.stores.service_connection_store import ServiceConnectionStore
+from switch_core.db.stores.workspace_service_store import WorkspaceServiceStore
 from switch_core.feature_flags import KNOWN_FEATURE_FLAGS, SWITCH_CLOUD
 from tests.switch_core.connections.github_seed import (
     INSTALLATION_ID,
@@ -52,6 +61,15 @@ from tests.switch_core.management.harness import (
 class _Lifecycle:
     def get_registered_types(self) -> list[str]:
         return ["discord", "slack"]
+
+    def supports_channel_creation(self, _platform: str) -> bool:
+        return True
+
+    def supports_private_channels(self, _platform: str) -> bool:
+        return False
+
+    def channel_creation_blocker(self, _platform: str, _config: object) -> None:
+        return None
 
 
 class _Installer:
@@ -78,6 +96,13 @@ def _config(
             key: key == SWITCH_CLOUD and cloud for key in KNOWN_FEATURE_FLAGS
         },
         managed_by_console=managed_by_console,
+        deployment_kind=(
+            "switch_cloud"
+            if cloud
+            else "managed_by_console"
+            if managed_by_console
+            else "self_hosted"
+        ),
     )
 
 
@@ -154,8 +179,10 @@ async def _context(
 
 async def _setup(harness: Harness) -> tuple[str, str, str]:
     """Ada, a member, with her buddy and a reviewer; a Slack workspace added
-    with the Switch app, her account on it linked; a Discord server someone
-    pasted tokens for. Returns the buddy's id and key, and Ada's id."""
+    with the Switch app, her account on it linked and confirmed; a Discord
+    server someone pasted tokens for, where she has started linking her
+    account but not confirmed it. Returns the buddy's id and key, and Ada's
+    id."""
     ada = await add_member(harness.session_factory, "ada")
     async with harness.session_factory() as session:
         buddy, key = await _agent(
@@ -211,8 +238,29 @@ async def _setup(harness: Harness) -> tuple[str, str, str]:
             client_id=account.id,
         )
         session.add(identity)
+        discord_account = Client(
+            type="external_user",
+            transport_user_id="@discord-ada:test",
+            display_name="ada",
+        )
+        session.add(discord_account)
         await session.flush()
-        await ExternalUserStore().claim(session, identity, ada.id)
+        discord_identity = ExternalUser(
+            bridge_id=discord.id,
+            external_user_id="D1",
+            external_username="ada-on-discord",
+            client_id=discord_account.id,
+        )
+        session.add(discord_identity)
+        await session.flush()
+        store = ExternalUserStore()
+        request = await store.request_link(
+            session, identity, ada.id, requested_by_user_id=ada.id
+        )
+        await store.confirm_link_request(session, request)
+        await store.request_link(
+            session, discord_identity, ada.id, requested_by_user_id=ada.id
+        )
         await session.commit()
         return buddy.id, key, ada.id
 
@@ -258,6 +306,7 @@ async def test_it_says_how_messaging_apps_are_and_would_be_set_up(
             "is_default": False,
             "installed_with": "own_app",
             "your_account_linked": False,
+            "your_account_link": "pending",
             "your_usernames": [],
         },
         {
@@ -268,6 +317,7 @@ async def test_it_says_how_messaging_apps_are_and_would_be_set_up(
             "is_default": True,
             "installed_with": "official_app",
             "your_account_linked": True,
+            "your_account_link": "verified",
             "your_usernames": ["ada"],
         },
     ]
@@ -277,6 +327,88 @@ async def test_it_says_how_messaging_apps_are_and_would_be_set_up(
         ("discord", "own_app", "admins"),
         ("slack", "official_app", "admins"),
     ]
+
+
+async def _another_workspace_with_a_bridge(harness: Harness) -> str:
+    """A second workspace with a Slack bridge of its own; returns its id.
+
+    The suite connects as the owner, which row-level security exempts, so
+    only the store's own tenant filter keeps this bridge out of Ada's
+    workspace's answers."""
+    async with harness.session_factory() as session:
+        session.add(Tenant(id="tenant-other", slug="other", name="Other"))
+        await session.commit()
+    async with tenant_session(harness.session_factory, "tenant-other") as session:
+        client = Client(
+            type="bridge",
+            transport_user_id="@other-slack-bridge:test",
+            display_name="other slack",
+        )
+        session.add(client)
+        await session.flush()
+        bridge = CollaborationBridge(
+            type="slack",
+            display_name="Other Workspace Slack",
+            status="active",
+            is_default=True,
+            client_id=client.id,
+        )
+        session.add(bridge)
+        await session.commit()
+        return bridge.id
+
+
+async def test_it_lists_only_its_own_workspaces_messaging_apps(
+    harness: Harness, client: httpx.AsyncClient
+) -> None:
+    buddy_id, key, _ = await _setup(harness)
+    other_bridge_id = await _another_workspace_with_a_bridge(harness)
+
+    apps = (await _context(client, buddy_id, key))["messaging_apps"]
+
+    assert sorted(app["name"] for app in apps["connected"]) == [
+        "Acme Discord",
+        "Acme Slack",
+    ]
+    assert other_bridge_id not in {app["id"] for app in apps["connected"]}
+
+
+async def test_list_bridges_lists_only_its_own_workspaces_bridges(
+    harness: Harness, client: httpx.AsyncClient
+) -> None:
+    buddy_id, key, _ = await _setup(harness)
+    other_bridge_id = await _another_workspace_with_a_bridge(harness)
+
+    response = await client.post(
+        f"/agents/{buddy_id}/ops/list_bridges", json={}, headers=bearer(key)
+    )
+
+    assert response.status_code == 200, response.text
+    bridges = response.json()["result"]
+    assert sorted(b["display_name"] for b in bridges) == [
+        "Acme Discord",
+        "Acme Slack",
+    ]
+    assert other_bridge_id not in {b["id"] for b in bridges}
+
+
+async def test_a_link_from_before_confirmation_reads_as_unverified(
+    harness: Harness, client: httpx.AsyncClient
+) -> None:
+    buddy_id, key, ada_id = await _setup(harness)
+    async with harness.session_factory() as session:
+        await session.execute(
+            update(ExternalUserClaim)
+            .where(ExternalUserClaim.user_id == ada_id)
+            .values(verified_at=None)
+        )
+        await session.commit()
+
+    apps = (await _context(client, buddy_id, key))["messaging_apps"]["connected"]
+
+    slack = next(app for app in apps if app["platform"] == "slack")
+    assert slack["your_account_linked"] is True
+    assert slack["your_account_link"] == "unverified"
 
 
 async def test_it_lists_only_the_persons_own_agents(
@@ -301,12 +433,12 @@ async def test_an_admin_is_told_so(harness: Harness, client: httpx.AsyncClient) 
     async with harness.session_factory() as session:
         membership = await session.get(TenantMember, (TENANT_ZERO_ID, ada_id))
         assert membership is not None
-        membership.role = "owner"
+        membership.role = "admin"
         await session.commit()
 
     person = (await _context(client, buddy_id, key))["person"]
 
-    assert person["workspace_role"] == "owner"
+    assert person["workspace_role"] == "admin"
     assert person["workspace_admin"] is True
 
 
@@ -348,6 +480,69 @@ async def _grants(harness: Harness, agent_name: str) -> list[tuple[str, str]]:
         return [(grant.service, grant.access) for grant in rows]
 
 
+def _service(context: dict[str, Any], slug: str) -> dict[str, Any]:
+    return next(entry for entry in context["services"] if entry["slug"] == slug)
+
+
+async def test_a_service_off_in_the_workspace_is_not_available(
+    harness: Harness, client: httpx.AsyncClient
+) -> None:
+    harness.protocol.service_broker = ServiceBroker(
+        session_factory=harness.session_factory,
+        keyring=TEST_KEYRING,
+        catalog=CATALOG,
+        adapters={"github": harness.vendor},
+        organization_apps=None,
+        disabled={},
+        store=ServiceConnectionStore(),
+        token_retention=timedelta(days=30),
+        workspace_services=WorkspaceServiceStore(),
+        workspace_gate=True,
+        public_url=None,
+        allow_non_expiring_keys=False,
+    )
+    buddy_id, key, ada_id = await _setup(harness)
+
+    async def switch(enabled: bool) -> dict[str, Any]:
+        async with harness.session_factory() as session:
+            await WorkspaceServiceStore().set_enabled(
+                session, "github", enabled, ada_id
+            )
+            await session.commit()
+        return _service(await _context(client, buddy_id, key), "github")
+
+    on = await switch(True)
+    assert (on["available"], on["workspace_enabled"]) == (True, True)
+
+    off = await switch(False)
+    assert (off["available"], off["workspace_enabled"]) == (False, False)
+    # The server itself has GitHub set up: only the workspace's switch is off.
+    assert (off["unavailable_reason"], off["unavailable_code"]) == (None, None)
+
+
+async def test_a_connection_through_a_replaced_app_needs_reconnecting(
+    harness: Harness, client: httpx.AsyncClient
+) -> None:
+    """As the person's own Connectors page shows it, though the row is
+    active until something asks for a token: an agent told "active" would
+    offer to give it to an agent, and fail."""
+    harness.protocol.service_broker = harness.broker
+    buddy_id, key, ada_id = await _setup(harness)
+    async with harness.session_factory() as session:
+        await connect_github(session, ada_id, TEST_KEYRING)
+        await session.execute(
+            update(ServiceConnection)
+            .where(ServiceConnection.user_id == ada_id)
+            .values(oauth_client_id="old-client")
+        )
+        await session.commit()
+    harness.vendor.client_id = "new-client"
+
+    github = _service(await _context(client, buddy_id, key), "github")
+
+    assert github["connection"] == "needs_reauthorization"
+
+
 class TestGivingAgentsServices:
     async def test_gives_and_takes_away_an_agents_github(
         self, harness: Harness, client: httpx.AsyncClient
@@ -387,7 +582,7 @@ class TestGivingAgentsServices:
         datadog = next(
             entry for entry in context["services"] if entry["slug"] == "datadog"
         )
-        assert datadog["unavailable_code"] == "key_never_expires"
+        assert datadog["unavailable_code"] == "not_set_up"
         assert datadog["available"] is False
 
         taken = await _op(

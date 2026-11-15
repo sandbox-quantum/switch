@@ -19,7 +19,7 @@ function machine(overrides: Partial<OwnedMachine>): OwnedMachine {
     name: 'laptop',
     kind: 'console',
     state: 'online',
-    providers: [{ provider: 'claude', ready: true, problem: null, detail: null }],
+    providers: [{ provider: 'claude', ready: true, problem: null, detail: null, loginHelps: true }],
     acceptsLogins: true,
     cloud: false,
     workspacesDir: '/home/me/.switch/agents',
@@ -75,7 +75,9 @@ describe('machineFor', () => {
     const coder = machine({
       id: 'm4',
       name: 'cluster',
-      providers: [{ provider: 'codex', ready: true, problem: null, detail: null }],
+      providers: [
+        { provider: 'codex', ready: true, problem: null, detail: null, loginHelps: true },
+      ],
     });
     // "local" or an SSH host is this Console's idea: the server's $first stands in.
     expect(machineFor([BOX, coder, LAPTOP], 'local', 'claude', true)).toBe(LAPTOP);
@@ -96,12 +98,37 @@ describe('machineProblem', () => {
     expect(
       machineProblem(
         machine({
-          providers: [{ provider: 'claude', ready: false, problem: 'not logged in', detail: null }],
+          providers: [
+            {
+              provider: 'claude',
+              ready: false,
+              problem: 'not logged in',
+              detail: null,
+              loginHelps: true,
+            },
+          ],
         }),
         'claude',
         'a'
       )
     ).toBe('claude on laptop is not ready: not logged in.');
+    expect(
+      machineProblem(
+        machine({
+          providers: [
+            {
+              provider: 'claude',
+              ready: false,
+              problem: 'not logged in',
+              detail: 'Its login is in the OS keyring.',
+              loginHelps: true,
+            },
+          ],
+        }),
+        'claude',
+        'a'
+      )
+    ).toBe('claude on laptop is not ready: not logged in. Its login is in the OS keyring.');
     expect(machineProblem(LAPTOP, 'claude', 'a')).toBeNull();
   });
 });
@@ -188,6 +215,20 @@ describe('runAgent', () => {
       connections: [],
     });
     expect(agent.instructions).toContain('clone https://github.com/acme/widgets into it');
+  });
+
+  it('fills the params in its instructions, as run_template does', () => {
+    const agent = runAgent({
+      slot: 'red-a',
+      name: 'red-a',
+      entry: entry({ instructions: 'Work in {workdir} as {agent}. Leave {unknown} alone.' }),
+      values: { workdir: '/srv/widgets' },
+      displayName: null,
+      provider: 'claude',
+      machine: LAPTOP,
+      directoryText: '',
+    });
+    expect(agent.instructions).toBe('Work in /srv/widgets as red-a. Leave {unknown} alone.');
   });
 
   it('sends the default addressing for an agent whose entry names none', () => {

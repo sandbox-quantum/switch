@@ -21,6 +21,11 @@ from typing import Any
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.bridges.agent.protocol.agent_connections import (
+    PROTOCOL_VERSION,
+    ClientDeclaration,
+)
+from switch_core.bridges.agent.protocol.positions import OWN_EVENTS
 from switch_core.db.models import Agent, Client, Room
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.delivery.recipient import AgentRecipient
@@ -207,3 +212,124 @@ class TestWritingAMessage:
 
         assert (scope.taken, scope.peak) == (1, 1)
         assert len(await own_events(session_factory, agents["a3"][0].id)) == 1
+
+
+class TestTheWritersOwnProcess:
+    async def test_an_addressed_agent_is_told_its_new_head_here(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """The process that stores an agent's own event knows its number, so
+        a stream of the agent's in this process takes it as the agent's head
+        rather than reading it (`EventBuffer.ring`)."""
+        process, room, louisa, agents = await _seed(session_factory, names=["member"])
+        agent = agents["member"][0]
+        process.buffer.listening(True)
+        process.buffer.doorbell(agent.id)
+
+        await process.say(room, "@member can you look at this", sender=louisa)
+        await process.idle()
+
+        [event] = await own_events(session_factory, agent.id)
+        assert process.buffer._told_heads == {agent.id: event.seq}
+
+
+class TestAfterTheWrite:
+    async def test_a_message_for_a_connected_agent_asks_nothing_more(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        session_factory: async_sessionmaker[AsyncSession],
+    ) -> None:
+        """A connected agent has nothing to say about a message addressed to
+        it, so nothing asks whether it is still in the room once the message
+        has committed: that is asked only before an agent says or wakes
+        something (`Delivery.checks_membership`)."""
+        process = process_on(session_factory)
+        room = await make_room(session_factory)
+        louisa = await make_person(session_factory, "louisa")
+        await add_member(session_factory, room, louisa)
+        agent, client = await make_agent(session_factory, "member")
+        await add_member(session_factory, room, client, agent=agent)
+        process.connections.open(
+            agent_id=agent.id,
+            connection_id="c1",
+            scope="single",
+            delivery_filter="all",
+            spawn_capable=False,
+            position={OWN_EVENTS: 0},
+            declaration=ClientDeclaration(speaks=PROTOCOL_VERSION),
+            expected_generation=None,
+        )
+        asked: list[str] = []
+        still_member = AgentRecipient.still_member
+
+        async def recording(self: AgentRecipient) -> bool:
+            asked.append(self.agent.id)
+            return await still_member(self)
+
+        monkeypatch.setattr(AgentRecipient, "still_member", recording)
+
+        await process.say(room, "@member can you look at this", sender=louisa)
+        await process.idle()
+
+        assert len(await own_events(session_factory, agent.id)) == 1
+        assert asked == []
+        assert [r["agent_live"] for r in process.telemetry.addressed] == [True]
+
+
+class TestFindingTheRoom:
+    async def test_a_room_one_client_found_costs_the_next_no_read(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        pool_checkouts: PoolCheckouts,
+    ) -> None:
+        """Every client looks a room up before its first write there. The
+        answers are shared by the process's clients, so a room another client
+        already wrote to costs the write alone (`RoomIds`)."""
+        process, room, _, _ = await _seed(session_factory, names=["member"])
+        rita = await make_person(session_factory, "rita")
+        await add_member(session_factory, room, rita)
+
+        with pool_checkouts.scope("say") as scope:
+            await process.say(room, "first time here", sender=rita)
+
+        assert (scope.taken, scope.peak) == (1, 1)
+
+    async def test_the_first_room_found_finds_every_open_room_of_the_tenant(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        pool_checkouts: PoolCheckouts,
+    ) -> None:
+        """The first miss in a process reads every open room of the tenant,
+        so a room nobody in the process has written to yet costs no read of
+        its own either; a room archived by then is left to be read on its own."""
+        process = process_on(session_factory)
+        louisa = await make_person(session_factory, "louisa")
+        rooms = [await make_room(session_factory, f"room-{n}") for n in range(3)]
+        for room in rooms:
+            await add_member(session_factory, room, louisa)
+        await process.say(rooms[0], "hello", sender=louisa)
+        rita = await make_person(session_factory, "rita")
+        await add_member(session_factory, rooms[2], rita)
+
+        with pool_checkouts.scope("say") as scope:
+            await process.say(rooms[2], "first time anyone writes here", sender=rita)
+
+        assert (scope.taken, scope.peak) == (1, 1)
+
+    async def test_a_room_created_after_the_first_read_is_read_on_its_own(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        pool_checkouts: PoolCheckouts,
+    ) -> None:
+        process = process_on(session_factory)
+        louisa = await make_person(session_factory, "louisa")
+        first = await make_room(session_factory, "first")
+        await add_member(session_factory, first, louisa)
+        await process.say(first, "hello", sender=louisa)
+        later = await make_room(session_factory, "later")
+        await add_member(session_factory, later, louisa)
+
+        with pool_checkouts.scope("say") as scope:
+            await process.say(later, "a room made since", sender=louisa)
+
+        assert (scope.taken, scope.peak) == (2, 1)

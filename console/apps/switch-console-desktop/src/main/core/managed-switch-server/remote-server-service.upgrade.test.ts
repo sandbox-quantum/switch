@@ -318,7 +318,11 @@ it('upgrades a host that was unreachable at boot once it comes back, holding ses
 
 it('surfaces a failed upgrade with its error and retries when the host is reconciled again', async () => {
   m.start.mockImplementationOnce(
-    upgradingStart({ kind: 'error', message: 'The server did not become healthy in time.' })
+    upgradingStart({
+      kind: 'error',
+      message: 'The server did not become healthy in time.',
+      failure: 'health_timeout',
+    })
   );
   const service = new RemoteServerService();
   const upgraded = vi.fn();

@@ -2,6 +2,7 @@ import {
   gatewaySocketTarget,
   type GatewaySocketTarget,
 } from '@main/core/switch-servers/gateway-client';
+import { noteSessionEnded } from '@main/core/switch-servers/session-ended';
 import {
   withReachableServerWorkspaceSession,
   withReachableWorkspaceSession,
@@ -38,6 +39,8 @@ const RESTART_WINDOW_MS = 2 * 60_000;
 const RESTART_RETRY_MS = 5_000;
 /** Pings missed before the socket is taken for dead and opened again. */
 const MISSED_PINGS = 3;
+/** The gateway's close code for a session that expired or was ended (`gateway/changes.py`). */
+const SESSION_ENDED_CLOSE = 4401;
 
 type Hello = { kinds: string[]; ping_interval_s: number };
 
@@ -129,6 +132,9 @@ class ServerSocket {
       // A socket the watchdog already gave up on has been replaced or is
       // waiting for its retry: its late close changes nothing.
       if (this.socket !== socket) return;
+      // The gateway closes a socket whose session has expired or been ended
+      // with 4401: let the window check whether it is still signed in.
+      if (event.code === SESSION_ENDED_CLOSE) noteSessionEnded(this.serverId);
       // A handshake that never opened, on a server that has never said hello,
       // is most likely a server without the socket. One that has said hello
       // is restarting or unreachable for now: keep trying at the usual pace.

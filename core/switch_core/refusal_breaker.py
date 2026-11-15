@@ -79,7 +79,7 @@ class RefusalBreaker:
             await self.app(scope, receive, send)
             return
         method = scope.get("method", "GET")
-        caller = _bearer(scope)
+        caller = bearer_caller(scope)
         if caller is None and method == "POST" and _TOKEN_EXCHANGE.match(path):
             body = await _read_body(receive)
             caller = hashlib.sha256(body).hexdigest()
@@ -144,10 +144,14 @@ class RefusalBreaker:
         )
 
 
-def _bearer(scope: Scope) -> str | None:
+_BEARER = b"bearer "
+
+
+def bearer_caller(scope: Scope) -> str | None:
+    """The caller a request names: its bearer token, hashed, never kept."""
     for name, value in scope.get("headers", []):
-        if name == b"authorization" and value.lower().startswith(b"bearer "):
-            return hashlib.sha256(value[7:].strip()).hexdigest()
+        if name == b"authorization" and value.lower().startswith(_BEARER):
+            return hashlib.sha256(value[len(_BEARER) :].strip()).hexdigest()
     return None
 
 

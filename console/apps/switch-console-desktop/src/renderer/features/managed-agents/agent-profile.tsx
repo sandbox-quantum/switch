@@ -1,4 +1,5 @@
 import { Cloud, Laptop, type LucideIcon, Plug, ServerOff, Settings } from 'lucide-react';
+import type { ReactNode } from 'react';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
 import { cn } from '@renderer/utils/utils';
@@ -17,7 +18,10 @@ export const agentSectionLabel = (section: AgentSection): string =>
 /** Where an agent runs, as the one line under its name says it. */
 export type AgentMachineLine = {
   icon: LucideIcon;
+  /** The machine, as the line names it. */
   text: string;
+  /** How the agent is doing there when that needs saying; null when it runs fine. */
+  status: string | null;
   /** Hover text, saying more than fits on the line. */
   title: string;
 };
@@ -32,7 +36,12 @@ export function managedAgentMachineLine(
 ): AgentMachineLine {
   const machine = agent.machine;
   if (!machine)
-    return { icon: ServerOff, text: 'No machine', title: 'It has no machine to run on.' };
+    return {
+      icon: ServerOff,
+      text: 'No machine',
+      status: null,
+      title: 'It has no machine to run on.',
+    };
   const cloud = isCloudMachine(machine);
   const name = machine.name;
   const shown = thisComputer && !cloud ? 'This computer' : name;
@@ -40,7 +49,8 @@ export function managedAgentMachineLine(
   const directory = agent.definition.directory;
   return {
     icon: cloud ? Cloud : Laptop,
-    text: state.tone === 'ok' ? shown : `${shown} · ${state.label}`,
+    text: shown,
+    status: state.tone === 'ok' ? null : state.label,
     title: `Runs on ${shown === name ? name : `this computer (${name})`}${directory ? ` · ${directory}` : ''}${state.detail ? `\n${state.label}: ${state.detail}` : ''}`,
   };
 }
@@ -48,7 +58,8 @@ export function managedAgentMachineLine(
 /**
  * The top of an agent's page: its picture, its name and where it runs, and a
  * button for each of the agent's own sections. `onSelect` is null while the
- * agent does not exist yet, so the buttons show but do nothing.
+ * agent does not exist yet, so the buttons show but do nothing. With
+ * `onOpenMachine` the line saying where it runs opens that machine's page.
  */
 export function AgentProfile({
   name,
@@ -58,6 +69,8 @@ export function AgentProfile({
   sections,
   selected,
   onSelect,
+  onOpenMachine,
+  actions,
 }: {
   name: string;
   iconUrl: string | null;
@@ -66,6 +79,9 @@ export function AgentProfile({
   sections: readonly AgentSection[];
   selected: AgentSection | null;
   onSelect: ((section: AgentSection) => void) | null;
+  onOpenMachine: (() => void) | null;
+  /** The agent's own actions (turning it off, moving it), after its sections. */
+  actions?: ReactNode;
 }) {
   const MachineIcon = machine.icon;
   return (
@@ -78,36 +94,81 @@ export function AgentProfile({
         className="mt-0.5 flex max-w-full items-center gap-1.5 text-sm text-foreground-muted"
         title={machine.title}
       >
-        <MachineIcon className="size-3.5 shrink-0" aria-hidden />
-        <span className="truncate">{machine.text}</span>
+        {onOpenMachine ? (
+          // A quiet link, as the app's others are: muted until hovered, so the
+          // line reads as a fact first and a way to the machine second. Only
+          // the machine is the link, not how the agent is doing on it.
+          <button
+            type="button"
+            onClick={onOpenMachine}
+            className="flex min-w-0 cursor-pointer items-center gap-1.5 underline-offset-2 transition-colors hover:text-foreground hover:underline focus-visible:underline focus-visible:outline-none"
+          >
+            <MachineIcon className="size-3.5 shrink-0" aria-hidden />
+            <span className="truncate">{machine.text}</span>
+          </button>
+        ) : (
+          <>
+            <MachineIcon className="size-3.5 shrink-0" aria-hidden />
+            <span className="truncate">{machine.text}</span>
+          </>
+        )}
+        {machine.status && <span className="shrink-0">· {machine.status}</span>}
       </p>
       <div role="toolbar" aria-label="Agent" className="mt-5 flex items-center gap-2">
         {SECTION_BUTTONS.filter((item) => sections.includes(item.section)).map((item) => {
           const active = selected === item.section;
           return (
-            <Tooltip key={item.section}>
-              <TooltipTrigger
-                render={
-                  <button
-                    type="button"
-                    aria-label={item.label}
-                    aria-pressed={active}
-                    disabled={onSelect === null}
-                    onClick={() => onSelect?.(item.section)}
-                    className={cn(
-                      'flex size-9 items-center justify-center rounded-lg bg-background-2 text-foreground-muted transition-colors hover:bg-background-3 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50',
-                      active && 'bg-background-3 text-foreground ring-1 ring-border-1 ring-inset'
-                    )}
-                  >
-                    <item.icon className="size-4" />
-                  </button>
-                }
-              />
-              <TooltipContent>{item.label}</TooltipContent>
-            </Tooltip>
+            <ProfileButton
+              key={item.section}
+              label={item.label}
+              icon={item.icon}
+              pressed={active}
+              disabled={onSelect === null}
+              onClick={() => onSelect?.(item.section)}
+            />
           );
         })}
+        {actions}
       </div>
     </div>
+  );
+}
+
+/** One of the square buttons under an agent's name, its label in a tooltip. */
+export function ProfileButton({
+  label,
+  icon: Icon,
+  onClick,
+  pressed,
+  disabled = false,
+}: {
+  label: string;
+  icon: LucideIcon;
+  onClick: () => void;
+  /** For a section: whether it is the one open. Absent for an action. */
+  pressed?: boolean;
+  disabled?: boolean;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <button
+            type="button"
+            aria-label={label}
+            aria-pressed={pressed}
+            disabled={disabled}
+            onClick={onClick}
+            className={cn(
+              'flex size-9 items-center justify-center rounded-lg bg-background-2 text-foreground-muted transition-colors hover:bg-background-3 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:pointer-events-none disabled:opacity-50',
+              pressed && 'bg-background-3 text-foreground ring-1 ring-border-1 ring-inset'
+            )}
+          >
+            <Icon className="size-4" />
+          </button>
+        }
+      />
+      <TooltipContent>{label}</TooltipContent>
+    </Tooltip>
   );
 }

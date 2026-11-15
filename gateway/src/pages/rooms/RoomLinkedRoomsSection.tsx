@@ -25,9 +25,10 @@ import { useLinkedRooms, useRooms } from "../../data/hooks";
 
 interface Props {
   roomId: string;
+  canWrite: boolean;
 }
 
-export default function RoomLinkedRoomsSection({ roomId }: Props) {
+export default function RoomLinkedRoomsSection({ roomId, canWrite }: Props) {
   const { data: linked, loading, refetch } = useLinkedRooms(roomId);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -92,51 +93,58 @@ export default function RoomLinkedRoomsSection({ roomId }: Props) {
                   </Typography>
                 )}
               </Stack>
-              <IconButton
-                size="small"
-                disabled={busy}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handleDetach(link.target_room_id);
-                }}
-              >
-                <DeleteOutline fontSize="small" />
-              </IconButton>
+              {canWrite && (
+                <IconButton
+                  size="small"
+                  disabled={busy}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleDetach(link.target_room_id);
+                  }}
+                  aria-label={`Remove link to ${link.target_room_name}`}
+                >
+                  <DeleteOutline fontSize="small" />
+                </IconButton>
+              )}
             </Stack>
           ))}
         </Stack>
       )}
-      <Button
-        size="small"
-        variant="outlined"
-        startIcon={<AddIcon />}
-        onClick={() => setDialogOpen(true)}
-        sx={{ alignSelf: "flex-start" }}
-      >
-        Add linked room
-      </Button>
-      <AddLinkedRoomDialog
-        open={dialogOpen}
-        sourceRoomId={roomId}
-        existingTargetIds={existingTargetIds}
-        onClose={() => setDialogOpen(false)}
-        onCreated={() => {
-          setDialogOpen(false);
-          refetch();
-        }}
-      />
+      {canWrite && (
+        <>
+          <Button
+            size="small"
+            variant="outlined"
+            startIcon={<AddIcon />}
+            onClick={() => setDialogOpen(true)}
+            sx={{ alignSelf: "flex-start" }}
+          >
+            Add linked room
+          </Button>
+          {dialogOpen && (
+            <AddLinkedRoomDialog
+              sourceRoomId={roomId}
+              existingTargetIds={existingTargetIds}
+              onClose={() => setDialogOpen(false)}
+              onCreated={() => {
+                setDialogOpen(false);
+                refetch();
+              }}
+            />
+          )}
+        </>
+      )}
     </Stack>
   );
 }
 
+// Mounted only while open, so the room list loads only when someone links.
 function AddLinkedRoomDialog({
-  open,
   sourceRoomId,
   existingTargetIds,
   onClose,
   onCreated,
 }: {
-  open: boolean;
   sourceRoomId: string;
   existingTargetIds: Set<string>;
   onClose: () => void;
@@ -167,9 +175,6 @@ function AddLinkedRoomDialog({
     setError(null);
     try {
       await attachLinkedRoom(sourceRoomId, selectedId, label.trim());
-      setSearch("");
-      setSelectedId(null);
-      setLabel("");
       onCreated();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to add link");
@@ -178,16 +183,8 @@ function AddLinkedRoomDialog({
     }
   };
 
-  const handleClose = () => {
-    setSearch("");
-    setSelectedId(null);
-    setLabel("");
-    setError(null);
-    onClose();
-  };
-
   return (
-    <Dialog open={open} onClose={handleClose} fullWidth maxWidth="sm">
+    <Dialog open onClose={busy ? undefined : onClose} fullWidth maxWidth="sm">
       <DialogTitle>Add linked room</DialogTitle>
       <DialogContent>
         <Stack spacing={2} sx={{ pt: 1 }}>
@@ -240,7 +237,7 @@ function AddLinkedRoomDialog({
         </Stack>
       </DialogContent>
       <DialogActions>
-        <Button onClick={handleClose} disabled={busy}>
+        <Button onClick={onClose} disabled={busy}>
           Cancel
         </Button>
         <Button

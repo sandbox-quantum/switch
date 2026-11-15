@@ -8,6 +8,7 @@ import logging
 import re
 import time
 from contextlib import AbstractContextManager, nullcontext
+from datetime import UTC, datetime
 from typing import Annotated, Any
 from urllib.parse import urlencode, urlsplit, urlunsplit
 
@@ -15,6 +16,7 @@ import httpx
 from authlib.integrations.starlette_client import OAuth, OAuthError
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from starlette.responses import JSONResponse, RedirectResponse
 
@@ -23,18 +25,34 @@ from switch_core.db.models import TENANT_ZERO_ID, User
 from switch_core.db.stores.user_store import (
     OidcIdentityConflictError,
     OidcIdentityRaceError,
+    SignupRefusedError,
     UserStore,
 )
-from switch_core.gateway.auth import initial_tenant_claim, set_session_cookie
+from switch_core.gateway.auth import (
+    SIGNUP_REFUSED_DETAIL,
+    initial_tenant_claim,
+    set_session_cookie,
+    signup_refused_by_edge,
+)
 from switch_core.gateway.dependencies import (
+    current_telemetry,
     get_config,
+    get_organization_directory,
     get_session_factory,
     get_system_session,
     get_user_store,
 )
+from switch_core.organization_directory import (
+    DirectoryUnavailable,
+    OrganizationDirectory,
+)
+from switch_core.organization_mirror import bring_in_memberships
+from switch_core.telemetry import emit_safely
 from switch_core.tenant_context import tenant_scope
 
 logger = logging.getLogger(__name__)
+
+_warned_unverified_claim = False
 
 router = APIRouter()
 
@@ -219,6 +237,40 @@ async def oidc_login(
     return await client.authorize_redirect(request, redirect_uri, **params)
 
 
+async def _bring_in_organizations(
+    session_factory: async_sessionmaker[AsyncSession],
+    organization_directory: OrganizationDirectory,
+    user: User,
+    subject: str,
+) -> None:
+    """Bring the person's organization memberships up to date with a directory
+    kept outside Switch (`organization_mirror.py`). Neither a directory that
+    can't be read nor a failure writing Switch's rows stops the sign-in:
+    authorization reads Switch's rows, each organization's change commits on
+    its own, and an organization left behind is caught up at the next
+    sign-in. Both are logged."""
+    try:
+        memberships = await organization_directory.memberships_at_sign_in(subject)
+    except DirectoryUnavailable as error:
+        logger.warning(
+            "Could not read user %s's organizations at sign-in; Switch's are "
+            "left as they were: %s",
+            user.id,
+            error.message,
+        )
+        return
+    if memberships is None:
+        return
+    try:
+        await bring_in_memberships(session_factory, user.id, memberships)
+    except SQLAlchemyError:
+        logger.exception(
+            "Could not bring user %s's organizations up to date at sign-in; "
+            "some of Switch's may be behind the directory",
+            user.id,
+        )
+
+
 @router.get("/auth/oidc/callback", name="oidc_callback")
 async def oidc_callback(
     request: Request,
@@ -228,6 +280,9 @@ async def oidc_callback(
         async_sessionmaker[AsyncSession], Depends(get_session_factory)
     ],
     user_store: Annotated[UserStore, Depends(get_user_store)],
+    organization_directory: Annotated[
+        OrganizationDirectory, Depends(get_organization_directory)
+    ],
 ) -> RedirectResponse:
     # `get_system_session`: nobody is signed in yet, so there is no principal
     # to take a tenant from — the tenant this route writes into is chosen
@@ -302,12 +357,17 @@ async def oidc_callback(
                 sub,
             )
             raise HTTPException(status_code=401, detail="OIDC email is not verified")
-        logger.warning(
+        # A setting, not an event: said once per process as a warning, then
+        # at debug for each sign-in it applies to.
+        global _warned_unverified_claim
+        logger.log(
+            logging.DEBUG if _warned_unverified_claim else logging.WARNING,
             "OIDC email_verified=%r accepted (sub %s): the email claim is trusted "
             "because GATEWAY_OIDC_REQUIRE_EMAIL_VERIFIED is false.",
             email_verified,
             sub,
         )
+        _warned_unverified_claim = True
     name = claims.get("name") or email.split("@")[0]
 
     # A returning identity is looked up on the immutable issuer+subject, never
@@ -316,6 +376,29 @@ async def oidc_callback(
     iss = claims.get("iss") or config.gateway_oidc_issuer_url
     if not iss:
         raise HTTPException(status_code=401, detail="OIDC token missing issuer")
+    # Under the WorkOS directory every other reader of these identities (the
+    # mirror, the organization sign-in, `switch-link-workos`) looks them up
+    # under the issuer as configured. An identity stored under another
+    # spelling of it would match none of them, so a mismatch is a
+    # configuration mistake to name, not a sign-in to let through.
+    if (
+        config.organization_directory == "workos"
+        and iss != config.gateway_oidc_issuer_url
+    ):
+        logger.error(
+            "OIDC sign-in refused: the token's issuer %r is not "
+            "GATEWAY_OIDC_ISSUER_URL %r exactly, which the WorkOS directory "
+            "looks identities up under; set it to the token's issuer",
+            iss,
+            config.gateway_oidc_issuer_url,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Sign-in is misconfigured: the identity provider's issuer "
+                "does not match Switch's configuration"
+            ),
+        )
     # A first sign-in provisions the account just in time. Where it lands is
     # `gateway_signup_mode`'s decision. Under "default_tenant" it joins tenant
     # zero, named here rather than left to `TenantScoped`'s fallback, which
@@ -329,7 +412,7 @@ async def oidc_callback(
     )
     with scope:
         try:
-            user = await user_store.get_or_create_oidc_user(
+            user, created = await user_store.get_or_create_oidc_user(
                 session,
                 iss=iss,
                 email=email,
@@ -337,7 +420,18 @@ async def oidc_callback(
                 sub=sub,
                 email_verified=verified,
                 join_tenant=join_tenant,
+                link_by_email=config.organization_directory == "local",
+                create_allowed=not signup_refused_by_edge(request, config),
             )
+        except SignupRefusedError as exc:
+            await session.rollback()
+            logger.warning(
+                "OIDC first sign-in refused (sub %s): the request is marked as "
+                "from a country without sign-up",
+                sub,
+            )
+            emit_safely(current_telemetry(), "signup_refused", {"reason": "country"})
+            raise HTTPException(status_code=403, detail=SIGNUP_REFUSED_DETAIL) from exc
         except OidcIdentityConflictError as exc:
             logger.warning("OIDC identity conflict: %s", exc)
             raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -353,6 +447,9 @@ async def oidc_callback(
                 headers={"Retry-After": "1"},
             ) from exc
         await session.commit()
+    if created:
+        emit_safely(current_telemetry(), "account_created", {"method": "oidc"})
+    await _bring_in_organizations(session_factory, organization_directory, user, sub)
 
     # Verify-at-login only: we don't persist the IdP tokens.
     handoff = request.session.pop(_HANDOFF_SESSION_KEY, None)
@@ -382,6 +479,7 @@ async def oidc_callback(
         config.keyring,
         config.gateway_cookie_secure,
         await initial_tenant_claim(session_factory, user_store, user),
+        datetime.now(UTC),
     )
     return response
 
@@ -426,5 +524,6 @@ async def oidc_exchange(
         config.keyring,
         config.gateway_cookie_secure,
         await initial_tenant_claim(session_factory, user_store, user),
+        datetime.now(UTC),
     )
     return response

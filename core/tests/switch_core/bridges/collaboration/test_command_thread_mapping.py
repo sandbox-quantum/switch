@@ -274,3 +274,28 @@ class TestCommandResultThreadingRace:
         assert bridge._pending_message_maps == {}
         # ...after which resolution falls through to the DB (empty here).
         assert await bridge._external_post_for_event("$cmd-event") is None
+
+
+async def test_link_account_in_an_unbridged_channel_does_not_make_it_a_room() -> None:
+    """Linking is about the person, so the bridge answers it without a room
+    (`test_bridge_account_commands` covers what the answer does)."""
+    created: list[object] = []
+    handled: list[InboundCommand] = []
+
+    async def _create_room_for_channel(**kwargs: object) -> None:
+        created.append(kwargs)
+
+    async def _handle_account_command(cmd: InboundCommand) -> None:
+        handled.append(cmd)
+
+    bridge = SimpleNamespace(
+        _channel_to_room={},
+        _create_room_for_channel=_create_room_for_channel,
+        _handle_account_command=_handle_account_command,
+    )
+    command = _cmd(message_ref="chan-1:5.0", command="link-account", args="7KQ2-M9XD")
+
+    await CollaborationCore._handle_inbound_command(bridge, command)
+
+    assert created == []
+    assert handled == [command]

@@ -20,6 +20,7 @@ const mocks = vi.hoisted(() => ({
   behavior: {} as Record<string, unknown>,
   ready: vi.fn(),
   sidecarEnsure: vi.fn(),
+  watchers: vi.fn(),
 }));
 
 // Console runs every agent here; none was moved to a managed machine.
@@ -66,6 +67,11 @@ vi.mock('./shared-host-deployment', () => ({
     entrypoint: 'run.mjs',
   })),
   runSharedHostCommand: vi.fn(),
+  sharedHostBundle: async () => ({ identity: 'this-build', file: 'shared-host-this-build.mjs' }),
+}));
+vi.mock('./host-watchers', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  listHostWatchers: mocks.watchers,
 }));
 vi.mock('./local-host', () => ({
   startLocalSession: mocks.runHost,
@@ -102,6 +108,7 @@ vi.mock('@main/core/providers/plugin-registry', () => ({
 vi.mock('@main/lib/logger', () => ({ log: { warn: vi.fn(), error: vi.fn() } }));
 
 const { SharedAgentRuntime, buildSharedHostConfig } = await import('./shared-agent-runtime');
+const { trackCliConversationFork } = await import('@main/core/sessions/cli-conversation-forks');
 
 const session = {
   id: 'session-1',
@@ -167,6 +174,163 @@ it('delivers the initial prompt on a relaunch that did not create the host', asy
     body: { type: 'message.send', text: 'Say hello', delivery: 'queue' },
   });
   expect(mocks.persist.mock.calls.map((call) => call[1].state)).toEqual(['pending', 'submitted']);
+});
+
+it('delivers the initial prompt of a session whose transcript holds only a continued conversation’s history', async () => {
+  mocks.snapshot.mockResolvedValue({
+    session: { epoch: 'epoch-2', connectivity: 'online', status: 'ready' },
+    turns: [{ type: 'turn.upsert', turnId: 'imported:u1', status: 'completed', commandId: null }],
+    items: [{ itemId: 'imported:u1', turnId: 'imported:u1', kind: 'user-message' }],
+  });
+
+  await runtime().start(session, false, 'Say hello');
+
+  expect(mocks.submit).toHaveBeenCalledTimes(1);
+  expect(mocks.submit.mock.calls[0][1]).toMatchObject({
+    body: { type: 'message.send', text: 'Say hello' },
+  });
+});
+
+it('refuses to start a continued session whose copy was never made', async () => {
+  await expect(
+    buildSharedHostConfig(
+      { ...session, cliConversation: { nativeSessionId: 'cli-1', title: 'Fix the build' } },
+      { sessionPath: '/work', sessionEnvVars: {} },
+      { kind: 'local' } as LocationTransport
+    )
+  ).rejects.toThrow('its copy was never made');
+});
+
+it('starts a continued session with the copy its row recorded after the session was read', async () => {
+  mocks.loadSession.mockResolvedValue({
+    row: { config: { providerSessionId: 'copy-1' } },
+    providerId: 'claude',
+    name: 'scout',
+  });
+  await expect(
+    buildSharedHostConfig(
+      { ...session, cliConversation: { nativeSessionId: 'cli-1', title: 'Fix the build' } },
+      { sessionPath: '/work', sessionEnvVars: {} },
+      { kind: 'local' } as LocationTransport
+    )
+  ).resolves.toMatchObject({
+    start: { input: { resume: { nativeSessionId: 'copy-1' } } },
+    importHistory: true,
+  });
+  expect(mocks.loadSession).toHaveBeenCalledWith('session-1');
+});
+
+it('starts a session whose copy is still being made with that copy, once it is made', async () => {
+  let made!: (id: string) => void;
+  void trackCliConversationFork(
+    'session-1',
+    new Promise<string>((resolve) => {
+      made = resolve;
+    })
+  );
+  const config = buildSharedHostConfig(
+    { ...session, cliConversation: { nativeSessionId: 'cli-1', title: 'Fix the build' } },
+    { sessionPath: '/work', sessionEnvVars: {} },
+    { kind: 'local' } as LocationTransport
+  );
+  made('copy-1');
+  await expect(config).resolves.toMatchObject({
+    start: { input: { resume: { nativeSessionId: 'copy-1' } } },
+    importHistory: true,
+  });
+});
+
+/** A watcher on the host, with what its process says it runs, in a record of its own or not. */
+function watcherRunning(bundle: string | undefined, recordedBy = 41) {
+  return new Map([
+    [
+      'remote-agent',
+      {
+        agentId: 'remote-agent',
+        root: '/state/watcher',
+        running: true,
+        build: `/state/sdk-host/shared-host-${bundle ?? 'unknown'}.mjs`,
+        enabled: true,
+        spawn: true,
+        stoodDown: false,
+        supervisorPid: 40,
+        workerPid: 41,
+        workerAlive: true,
+        health: {
+          state: 'connected',
+          detail: null,
+          since: '2026-11-01T00:00:00.000Z',
+          placements: {},
+          pid: recordedBy,
+          updatedAt: '2026-11-01T00:00:00.000Z',
+          ...(bundle ? { bundle } : {}),
+        },
+        failure: null,
+        takenOver: null,
+      },
+    ],
+  ]);
+}
+
+const continued = {
+  ...session,
+  providerSessionId: 'copy-1',
+  cliConversation: { nativeSessionId: 'cli-1', title: 'Fix the build' },
+};
+
+it.each([
+  ['an older build', 'older-build'],
+  ['a build too old to say', undefined],
+])(
+  'refuses a continued session before handing it to a Room watcher on %s',
+  async (_label, bundle) => {
+    const agent = new SharedAgentRuntime(
+      { kind: 'ssh', connectionId: 'host-1', host: 'build-box' } as LocationTransport,
+      { sessionId: session.id, sessionPath: '/work', sessionEnvVars: {} }
+    );
+    mocks.watchers.mockResolvedValue(watcherRunning(bundle));
+
+    await expect(agent.start(continued, false, undefined, 'user')).rejects.toThrow(
+      "The Room watcher on build-box does not run this version of Switch Console's host"
+    );
+    expect(mocks.sidecarEnsure).not.toHaveBeenCalled();
+  }
+);
+
+it.each([
+  ['this build', watcherRunning('this-build')],
+  ['a build it cannot tell yet', watcherRunning('older-build', 40)],
+  ['no watcher', new Map()],
+])('hands a continued session to a host with a Room watcher on %s', async (_label, watchers) => {
+  const agent = new SharedAgentRuntime(
+    { kind: 'ssh', connectionId: 'host-1', host: 'build-box' } as LocationTransport,
+    { sessionId: session.id, sessionPath: '/work', sessionEnvVars: {} }
+  );
+  mocks.watchers.mockResolvedValue(watchers);
+
+  await agent.start(continued, false, undefined, 'user');
+
+  expect(mocks.sidecarEnsure).toHaveBeenCalledWith(
+    expect.objectContaining({ config: expect.objectContaining({ importHistory: true }) })
+  );
+});
+
+it('relaunches a continued session without asking which build its Room watcher runs', async () => {
+  const agent = new SharedAgentRuntime(
+    { kind: 'ssh', connectionId: 'host-1', host: 'build-box' } as LocationTransport,
+    { sessionId: session.id, sessionPath: '/work', sessionEnvVars: {} }
+  );
+  mocks.watchers.mockResolvedValue(watcherRunning('older-build'));
+
+  await agent.start(continued, true);
+
+  expect(mocks.watchers).not.toHaveBeenCalled();
+  expect(mocks.sidecarEnsure).toHaveBeenCalledWith(
+    expect.objectContaining({
+      resuming: true,
+      config: expect.objectContaining({ importHistory: true }),
+    })
+  );
 });
 
 it('hands the host how a new session started, so it can tell Switch', async () => {
@@ -309,6 +473,26 @@ it('reads updated model, effort and instructions for each launch', async () => {
   expect(second.start.input.model).toEqual({ id: 'second-model', options: { effort: 'high' } });
   expect(second.execution?.context).toContain('Updated instructions');
   expect(second.execution?.context).not.toContain('First instructions');
+});
+
+it('resumes the copy a CLI conversation was continued from, starting its transcript with it', async () => {
+  const config = await buildSharedHostConfig(
+    {
+      ...session,
+      providerSessionId: 'copy-1',
+      cliConversation: { nativeSessionId: 'cli-1', title: 'Fix the build' },
+    },
+    { sessionPath: '/work', sessionEnvVars: {} },
+    { kind: 'local' } as LocationTransport
+  );
+  expect(config.start.input.resume).toEqual({ nativeSessionId: 'copy-1' });
+  expect(config.importHistory).toBe(true);
+  const ordinary = await buildSharedHostConfig(
+    session,
+    { sessionPath: '/work', sessionEnvVars: {} },
+    { kind: 'local' } as LocationTransport
+  );
+  expect(ordinary.importHistory).toBeUndefined();
 });
 
 it('runs a session as the agent definition built from its config file', async () => {

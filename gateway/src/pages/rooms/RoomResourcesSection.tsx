@@ -9,12 +9,14 @@ import {
   Stack,
   Typography,
 } from "@mui/material";
-import { useMemo, useState } from "react";
+import { type ReactNode, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
+import ConfirmDialog from "../../components/ConfirmDialog";
 import SearchablePickerDialog, {
   type PickerOption,
 } from "../../components/SearchablePickerDialog";
 import {
+  type RoomDocumentSummary,
   attachDocumentToRoom,
   attachPackageToRoom,
   attachReferenceToRoom,
@@ -30,12 +32,25 @@ import {
   useRoomPackages,
   useRoomReferences,
 } from "../../data/hooks";
+import { LockedMark, OpensMark } from "../../components/RowAccess";
 
 interface Props {
   roomId: string;
+  // Attaching is for anyone in the room; unlinking for its owner or an
+  // admin, or a resource's own owner while they are in the room.
+  canAttach: boolean;
+  canUnlink: boolean;
+  inRoom: boolean;
+  viewerId: string | null;
 }
 
-export default function RoomResourcesSection({ roomId }: Props) {
+export default function RoomResourcesSection({
+  roomId,
+  canAttach,
+  canUnlink,
+  inRoom,
+  viewerId,
+}: Props) {
   const { data: roomPackages, refetch: refetchPackages } = useRoomPackages(roomId);
   const attachedPackageIds = useMemo(
     () => new Set((roomPackages ?? []).map((p) => p.id)),
@@ -46,6 +61,12 @@ export default function RoomResourcesSection({ roomId }: Props) {
     for (const p of roomPackages ?? []) m[p.id] = p.name || p.description;
     return m;
   }, [roomPackages]);
+  // A private package attached by its owner is listed to every reader of the
+  // room, but only those the server says may read it get a link to it.
+  const readablePackageIds = useMemo(
+    () => new Set((roomPackages ?? []).filter((p) => p.can_read).map((p) => p.id)),
+    [roomPackages],
+  );
 
   return (
     <Stack spacing={3}>
@@ -54,16 +75,27 @@ export default function RoomResourcesSection({ roomId }: Props) {
       </Typography>
       <RoomReferences
         roomId={roomId}
+        canAttach={canAttach}
+        canUnlink={canUnlink}
+        inRoom={inRoom}
+        viewerId={viewerId}
         attachedPackageIds={attachedPackageIds}
+        readablePackageIds={readablePackageIds}
         packageDescriptions={packageDescriptions}
       />
       <RoomDocuments
         roomId={roomId}
+        canAttach={canAttach}
         attachedPackageIds={attachedPackageIds}
+        readablePackageIds={readablePackageIds}
         packageDescriptions={packageDescriptions}
       />
       <RoomPackages
         roomId={roomId}
+        canAttach={canAttach}
+        canUnlink={canUnlink}
+        inRoom={inRoom}
+        viewerId={viewerId}
         packages={roomPackages ?? []}
         refetch={refetchPackages}
       />
@@ -74,10 +106,12 @@ export default function RoomResourcesSection({ roomId }: Props) {
 function PackageChips({
   packageIds,
   attachedPackageIds,
+  readablePackageIds,
   packageDescriptions,
 }: {
   packageIds: string[];
   attachedPackageIds: Set<string>;
+  readablePackageIds: Set<string>;
   packageDescriptions: Record<string, string>;
 }) {
   const navigate = useNavigate();
@@ -91,10 +125,14 @@ function PackageChips({
           label={`via ${packageDescriptions[pid] ?? "package"}`}
           size="small"
           variant="outlined"
-          onClick={(e) => {
-            e.stopPropagation();
-            navigate(`/resources/packages/${pid}`);
-          }}
+          onClick={
+            readablePackageIds.has(pid)
+              ? (e) => {
+                  e.stopPropagation();
+                  navigate(`/resources/packages/${pid}`);
+                }
+              : undefined
+          }
         />
       ))}
     </Stack>
@@ -103,11 +141,21 @@ function PackageChips({
 
 function RoomReferences({
   roomId,
+  canAttach,
+  canUnlink,
+  inRoom,
+  viewerId,
   attachedPackageIds,
+  readablePackageIds,
   packageDescriptions,
 }: {
   roomId: string;
+  canAttach: boolean;
+  canUnlink: boolean;
+  inRoom: boolean;
+  viewerId: string | null;
   attachedPackageIds: Set<string>;
+  readablePackageIds: Set<string>;
   packageDescriptions: Record<string, string>;
 }) {
   const {
@@ -116,34 +164,12 @@ function RoomReferences({
     error,
     refetch,
   } = useRoomReferences(roomId);
-  const { data: allRefs, loading: allLoading } = useReferences();
-  const [pickerOpen, setPickerOpen] = useState(false);
   const [error_, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   const attachedIds = useMemo(
     () => new Set((attached ?? []).map((r) => r.id)),
     [attached],
-  );
-
-  const options = useMemo<PickerOption[]>(
-    () =>
-      (allRefs ?? [])
-        .filter((r) => !attachedIds.has(r.id))
-        .map((r) => ({
-          id: r.id,
-          primary: (
-            <Stack direction="row" alignItems="center" spacing={1}>
-              <Chip
-                label={r.type_display_name ?? `${r.type} (unknown type)`}
-                size="small"
-              />
-              <span>{r.name || r.description}</span>
-            </Stack>
-          ),
-          search: `${r.name} ${r.description} ${r.type} ${r.type_display_name ?? ""}`.toLowerCase(),
-        })),
-    [allRefs, attachedIds],
   );
 
   const handleAttach = async (ids: string[]) => {
@@ -211,49 +237,47 @@ function RoomReferences({
               <PackageChips
                 packageIds={ref.packages ?? []}
                 attachedPackageIds={attachedPackageIds}
+                readablePackageIds={readablePackageIds}
                 packageDescriptions={packageDescriptions}
               />
-              <IconButton
-                size="small"
-                onClick={() => handleDetach(ref.id)}
-                disabled={busy}
-              >
-                <DeleteOutline fontSize="small" />
-              </IconButton>
+              {(canUnlink || (inRoom && viewerId !== null && ref.owner_id === viewerId)) && (
+                <Button
+                  size="small"
+                  onClick={() => handleDetach(ref.id)}
+                  disabled={busy}
+                  aria-label={`Unlink ${ref.name || ref.description}`}
+                >
+                  Unlink
+                </Button>
+              )}
             </Stack>
           ))}
         </Stack>
       )}
-      <Button
-        size="small"
-        variant="outlined"
-        startIcon={<AddIcon />}
-        onClick={() => setPickerOpen(true)}
-        sx={{ alignSelf: "flex-start" }}
-      >
-        Attach reference
-      </Button>
-      <SearchablePickerDialog
-        open={pickerOpen}
-        title="Attach references"
-        searchPlaceholder="Search references…"
-        submitLabel="Attach"
-        options={options}
-        loading={allLoading}
-        onClose={() => setPickerOpen(false)}
-        onSubmit={handleAttach}
-      />
+      <AttachControl canAttach={canAttach} label="Attach reference">
+        {(close) => (
+          <ReferencePicker
+            attachedIds={attachedIds}
+            onClose={close}
+            onSubmit={handleAttach}
+          />
+        )}
+      </AttachControl>
     </Stack>
   );
 }
 
 function RoomDocuments({
   roomId,
+  canAttach,
   attachedPackageIds,
+  readablePackageIds,
   packageDescriptions,
 }: {
   roomId: string;
+  canAttach: boolean;
   attachedPackageIds: Set<string>;
+  readablePackageIds: Set<string>;
   packageDescriptions: Record<string, string>;
 }) {
   const {
@@ -262,26 +286,17 @@ function RoomDocuments({
     error,
     refetch,
   } = useRoomDocuments(roomId);
-  const { data: allDocs, loading: allLoading } = useDocuments();
-  const [pickerOpen, setPickerOpen] = useState(false);
   const [error_, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // A room document lives only here, so deleting it is asked about first.
+  // The document outlives the dialog's closing, so its title holds while it
+  // fades.
+  const [deleting, setDeleting] = useState<RoomDocumentSummary | null>(null);
+  const [deleteOpen, setDeleteOpen] = useState(false);
 
   const attachedIds = useMemo(
     () => new Set((attached ?? []).map((d) => d.id)),
     [attached],
-  );
-
-  const options = useMemo<PickerOption[]>(
-    () =>
-      (allDocs ?? [])
-        .filter((d) => !attachedIds.has(d.id))
-        .map((d) => ({
-          id: d.id,
-          primary: d.name || d.description,
-          search: `${d.name} ${d.description}`.toLowerCase(),
-        })),
-    [allDocs, attachedIds],
   );
 
   const handleAttach = async (ids: string[]) => {
@@ -351,15 +366,19 @@ function RoomDocuments({
                   <PackageChips
                     packageIds={doc.packages ?? []}
                     attachedPackageIds={attachedPackageIds}
+                    readablePackageIds={readablePackageIds}
                     packageDescriptions={packageDescriptions}
                   />
-                  <IconButton
-                    size="small"
-                    onClick={() => handleDetach(doc.id)}
-                    disabled={busy}
-                  >
-                    <DeleteOutline fontSize="small" />
-                  </IconButton>
+                  {doc.can_remove && (
+                    <Button
+                      size="small"
+                      onClick={() => handleDetach(doc.id)}
+                      disabled={busy}
+                      aria-label={`Unlink ${doc.name || doc.description}`}
+                    >
+                      Unlink
+                    </Button>
+                  )}
                 </Stack>
               ))}
             </Stack>
@@ -400,40 +419,47 @@ function RoomDocuments({
                       variant="outlined"
                     />
                   )}
-                  <IconButton
-                    size="small"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleDetach(doc.id);
-                    }}
-                    disabled={busy}
-                  >
-                    <DeleteOutline fontSize="small" />
-                  </IconButton>
+                  {doc.can_remove && (
+                    <IconButton
+                      size="small"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setDeleting(doc);
+                        setDeleteOpen(true);
+                      }}
+                      disabled={busy}
+                      aria-label={`Delete ${doc.name || doc.description}`}
+                    >
+                      <DeleteOutline fontSize="small" />
+                    </IconButton>
+                  )}
                 </Stack>
               ))}
             </Stack>
           )}
         </Stack>
       )}
-      <Button
-        size="small"
-        variant="outlined"
-        startIcon={<AddIcon />}
-        onClick={() => setPickerOpen(true)}
-        sx={{ alignSelf: "flex-start" }}
-      >
-        Attach document
-      </Button>
-      <SearchablePickerDialog
-        open={pickerOpen}
-        title="Attach documents"
-        searchPlaceholder="Search documents…"
-        submitLabel="Attach"
-        options={options}
-        loading={allLoading}
-        onClose={() => setPickerOpen(false)}
-        onSubmit={handleAttach}
+      <AttachControl canAttach={canAttach} label="Attach document">
+        {(close) => (
+          <DocumentPicker
+            attachedIds={attachedIds}
+            onClose={close}
+            onSubmit={handleAttach}
+          />
+        )}
+      </AttachControl>
+      <ConfirmDialog
+        open={deleteOpen}
+        title={`Delete ${deleting?.name || deleting?.description || "room document"}?`}
+        description="It lives only in this room, so deleting it removes it for good. This cannot be undone."
+        confirmLabel="Delete document"
+        tone="destructive"
+        onConfirm={async () => {
+          if (!deleting) return;
+          await detachDocumentFromRoom(roomId, deleting.id);
+          refetch();
+        }}
+        onClose={() => setDeleteOpen(false)}
       />
     </Stack>
   );
@@ -441,33 +467,32 @@ function RoomDocuments({
 
 function RoomPackages({
   roomId,
+  canAttach,
+  canUnlink,
+  inRoom,
+  viewerId,
   packages,
   refetch,
 }: {
   roomId: string;
-  packages: Array<{ id: string; name: string; description: string }>;
+  canAttach: boolean;
+  canUnlink: boolean;
+  inRoom: boolean;
+  viewerId: string | null;
+  packages: Array<{
+    id: string;
+    name: string;
+    description: string;
+    can_read?: boolean;
+    owner_id?: string;
+  }>;
   refetch: () => void;
 }) {
   const navigate = useNavigate();
-  const { data: allPackages, loading: allLoading } = usePackages();
-  const [pickerOpen, setPickerOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   const attachedIds = useMemo(() => new Set(packages.map((p) => p.id)), [packages]);
-
-  const options = useMemo<PickerOption[]>(
-    () =>
-      (allPackages ?? [])
-        .filter((p) => !attachedIds.has(p.id))
-        .map((p) => ({
-          id: p.id,
-          primary: p.name || p.description,
-          secondary: p.description || undefined,
-          search: `${p.name} ${p.description}`.toLowerCase(),
-        })),
-    [allPackages, attachedIds],
-  );
 
   const handleAttach = async (ids: string[]) => {
     setBusy(true);
@@ -518,47 +543,175 @@ function RoomPackages({
                 px: 1,
                 py: 0.5,
                 borderRadius: 1,
-                cursor: "pointer",
-                "&:hover": { backgroundColor: "action.hover" },
+                ...(p.can_read && {
+                  cursor: "pointer",
+                  "&:hover": { backgroundColor: "action.hover" },
+                }),
               }}
-              onClick={() => navigate(`/resources/packages/${p.id}`)}
+              onClick={p.can_read ? () => navigate(`/resources/packages/${p.id}`) : undefined}
+              data-testid={`room-package-${p.id}`}
             >
-              <Typography variant="body2" sx={{ flexGrow: 1 }}>
+              <Typography
+                variant="body2"
+                color={p.can_read ? undefined : "text.secondary"}
+              >
                 {p.name || p.description}
               </Typography>
-              <IconButton
-                size="small"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handleDetach(p.id);
-                }}
-                disabled={busy}
-              >
-                <DeleteOutline fontSize="small" />
-              </IconButton>
+              {!p.can_read && <LockedMark />}
+              <span style={{ flexGrow: 1 }} />
+              {p.can_read && <OpensMark />}
+              {(canUnlink || (inRoom && viewerId !== null && p.owner_id === viewerId)) && (
+                <Button
+                  size="small"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleDetach(p.id);
+                  }}
+                  disabled={busy}
+                  aria-label={`Unlink ${p.name || p.description}`}
+                >
+                  Unlink
+                </Button>
+              )}
             </Stack>
           ))}
         </Stack>
       )}
+      <AttachControl canAttach={canAttach} label="Attach package">
+        {(close) => (
+          <PackagePicker
+            attachedIds={attachedIds}
+            onClose={close}
+            onSubmit={handleAttach}
+          />
+        )}
+      </AttachControl>
+    </Stack>
+  );
+}
+
+// The Attach button and its picker, for those who may write to the room. The
+// picker is mounted only while open, so the list it offers loads only when
+// someone attaches.
+function AttachControl({
+  canAttach,
+  label,
+  children,
+}: {
+  canAttach: boolean;
+  label: string;
+  children: (close: () => void) => ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  if (!canAttach) return null;
+  return (
+    <>
       <Button
         size="small"
         variant="outlined"
         startIcon={<AddIcon />}
-        onClick={() => setPickerOpen(true)}
+        onClick={() => setOpen(true)}
         sx={{ alignSelf: "flex-start" }}
       >
-        Attach package
+        {label}
       </Button>
-      <SearchablePickerDialog
-        open={pickerOpen}
-        title="Attach packages"
-        searchPlaceholder="Search packages…"
-        submitLabel="Attach"
-        options={options}
-        loading={allLoading}
-        onClose={() => setPickerOpen(false)}
-        onSubmit={handleAttach}
-      />
-    </Stack>
+      {open && children(() => setOpen(false))}
+    </>
+  );
+}
+
+interface PickerProps {
+  attachedIds: Set<string>;
+  onClose: () => void;
+  onSubmit: (ids: string[]) => Promise<void>;
+}
+
+function ReferencePicker({ attachedIds, onClose, onSubmit }: PickerProps) {
+  const { data, loading } = useReferences();
+  const options = useMemo<PickerOption[]>(
+    () =>
+      (data ?? [])
+        .filter((r) => !attachedIds.has(r.id))
+        .map((r) => ({
+          id: r.id,
+          primary: (
+            <Stack direction="row" alignItems="center" spacing={1}>
+              <Chip
+                label={r.type_display_name ?? `${r.type} (unknown type)`}
+                size="small"
+              />
+              <span>{r.name || r.description}</span>
+            </Stack>
+          ),
+          search: `${r.name} ${r.description} ${r.type} ${r.type_display_name ?? ""}`.toLowerCase(),
+        })),
+    [data, attachedIds],
+  );
+  return (
+    <SearchablePickerDialog
+      open
+      title="Attach references"
+      searchPlaceholder="Search references…"
+      submitLabel="Attach"
+      options={options}
+      loading={loading}
+      onClose={onClose}
+      onSubmit={onSubmit}
+    />
+  );
+}
+
+function DocumentPicker({ attachedIds, onClose, onSubmit }: PickerProps) {
+  const { data, loading } = useDocuments();
+  const options = useMemo<PickerOption[]>(
+    () =>
+      (data ?? [])
+        .filter((d) => !attachedIds.has(d.id))
+        .map((d) => ({
+          id: d.id,
+          primary: d.name || d.description,
+          search: `${d.name} ${d.description}`.toLowerCase(),
+        })),
+    [data, attachedIds],
+  );
+  return (
+    <SearchablePickerDialog
+      open
+      title="Attach documents"
+      searchPlaceholder="Search documents…"
+      submitLabel="Attach"
+      options={options}
+      loading={loading}
+      onClose={onClose}
+      onSubmit={onSubmit}
+    />
+  );
+}
+
+function PackagePicker({ attachedIds, onClose, onSubmit }: PickerProps) {
+  const { data, loading } = usePackages();
+  const options = useMemo<PickerOption[]>(
+    () =>
+      (data ?? [])
+        .filter((p) => !attachedIds.has(p.id))
+        .map((p) => ({
+          id: p.id,
+          primary: p.name || p.description,
+          secondary: p.description || undefined,
+          search: `${p.name} ${p.description}`.toLowerCase(),
+        })),
+    [data, attachedIds],
+  );
+  return (
+    <SearchablePickerDialog
+      open
+      title="Attach packages"
+      searchPlaceholder="Search packages…"
+      submitLabel="Attach"
+      options={options}
+      loading={loading}
+      onClose={onClose}
+      onSubmit={onSubmit}
+    />
   );
 }

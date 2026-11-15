@@ -1,6 +1,6 @@
-# The Switch cloud machine image
+# The Switch Cloud machine image
 
-A Switch cloud machine runs `switch-agent-controller`, the program any machine
+A Switch Cloud machine runs `switch-agent-controller`, the program any machine
 runs agents with: one controller per workspace that uses the machine, up to 8.
 Each workspace's managed agents placed on it run under that workspace's
 controller, each as a Linux user of its own, and they use the provider logins
@@ -71,7 +71,7 @@ the workspace gives the machine.
      controllers, which are ordered after it. That workspace then shows the
      machine in error in Switch Console, and a stop and start of the machine
      tries again.
-5. Core links each controller to the machine as a Switch cloud controller
+5. Core links each controller to the machine as a Switch Cloud controller
    (kind `ec2`). The controllers' status reports are the machine's heartbeat:
    the first one after the instance was seen running makes the machine
    `ready`.

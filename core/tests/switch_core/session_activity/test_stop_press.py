@@ -88,6 +88,7 @@ def _press(turn_id: str = "turn-1", message_ref: str = STATUS_POST):
         channel_id="C1",
         sender_id="U1",
         sender_name="person",
+        sender_display_name="person",
         action_id=INTERRUPT_ACTION,
         value=turn_id,
         message_ref=message_ref,

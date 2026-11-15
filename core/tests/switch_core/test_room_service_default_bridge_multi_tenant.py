@@ -25,11 +25,13 @@ that resolved the *wrong* tenant's default would fail loudly here too.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Callable
 from typing import Any
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.bridges.collaboration.models import CreatedChannel
 from switch_core.db.models import Client, CollaborationBridge, Tenant
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
@@ -52,15 +54,22 @@ class _FakeProvisioning:
         self._n += 1
         return f"!room-{self._n}:switch.local"
 
+    async def record_join(
+        self, session: object, room_id: str, user_id: str
+    ) -> Callable[[], None]:
+        raise NotImplementedError
+
     async def invite_to_room(self, room_id: str, user_id: str) -> None:
         self.invited.append((room_id, user_id))
 
 
 class _FakeAdapter:
+    adds_creator_to_public_channel = False
+
     async def create_channel(
         self, name: str, topic: str, *, channel_type: str = "channel_public"
-    ) -> str:
-        return f"chan-{uuid.uuid4().hex[:8]}"
+    ) -> CreatedChannel:
+        return CreatedChannel(id=f"chan-{uuid.uuid4().hex[:8]}", name=name)
 
     async def add_agents_to_channel(
         self, channel_id: str, agent_names: list[str]
@@ -111,6 +120,11 @@ class _FakeLifecycle:
 
     def rooms_changed(self, bridge_id: str) -> None:
         self.rooms_changed_for.append(bridge_id)
+
+    def channel_creation_blocker(
+        self, bridge_type: str, connection_config: object
+    ) -> str | None:
+        return None
 
 
 class _NoRunningClients:

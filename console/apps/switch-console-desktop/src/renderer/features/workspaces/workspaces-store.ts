@@ -1,8 +1,27 @@
 import { makeAutoObservable, runInAction } from 'mobx';
 import { events, rpc } from '@renderer/lib/ipc';
+import { queryClient } from '@renderer/lib/query-client';
 import type { JoinableWorkspace, PendingInvitation } from '@shared/core/workspaces/invitations';
 import { workspacesChangedChannel } from '@shared/core/workspaces/workspaceEvents';
 import type { Workspace } from '@shared/core/workspaces/workspaces';
+
+/**
+ * The query key for what a server lets the account create, answered for
+ * `workspaceId`, the workspace a call about the server is scoped to: adding a
+ * workspace is a question about that workspace's organization.
+ */
+export function workspaceCreationKey(serverId: string, workspaceId: string | null) {
+  return ['workspace-creation', serverId, workspaceId] as const;
+}
+
+/**
+ * Ask the server again once something has been created there: it may have
+ * spent the account's allowance, and offering Create for another minute would
+ * end in a refusal after a name had been typed.
+ */
+function forgetWorkspaceCreation(serverId: string): Promise<void> {
+  return queryClient.invalidateQueries({ queryKey: ['workspace-creation', serverId] });
+}
 
 /**
  * Renderer view of the workspaces this install knows about, and which one the
@@ -79,7 +98,9 @@ export class WorkspacesStore {
   }
 
   /**
-   * Create a workspace on a server and return it.
+   * Create an organization on a server, with a first workspace of the same
+   * name, and return that workspace. A server from before organizations
+   * creates the workspace alone.
    *
    * Refreshes before returning, so a caller that scopes the window to the new
    * workspace is not doing it against a list that does not contain it yet.
@@ -88,7 +109,17 @@ export class WorkspacesStore {
    */
   async create(serverId: string, name: string): Promise<Workspace> {
     const workspace = await rpc.switchServers.createWorkspace({ serverId, name });
-    await this.refresh();
+    await Promise.all([this.refresh(), forgetWorkspaceCreation(serverId)]);
+    return workspace;
+  }
+
+  /**
+   * Add a workspace to the organization `workspaceId` belongs to, and return
+   * it. Refreshes before returning, for the same reason as {@link create}.
+   */
+  async addToOrganization(workspaceId: string, name: string): Promise<Workspace> {
+    const workspace = await rpc.switchServers.addOrganizationWorkspace({ workspaceId, name });
+    await Promise.all([this.refresh(), forgetWorkspaceCreation(workspace.serverId)]);
     return workspace;
   }
 

@@ -202,12 +202,12 @@ export default function ManagedAgentDialog({
           )}
           <TextField
             select
-            label="Machine"
+            label="Device"
             value={form.controllerId}
             onChange={(e) => set("controllerId", e.target.value)}
             helperText={
               placeable.length === 0
-                ? "No machine yet: add one first, or save the agent unplaced."
+                ? "No device yet: add one first, or save the agent unplaced."
                 : "Where the agent runs."
             }
           >
@@ -225,7 +225,7 @@ export default function ManagedAgentDialog({
             label="Provider"
             value={form.provider}
             onChange={(e) => set("provider", e.target.value as Provider)}
-            helperText={providers.length === 0 ? "Loading the providers this server runs…" : undefined}
+            helperText={providers.length === 0 ? "Loading providers…" : undefined}
           >
             {providerChoices.map((p) => (
               <MenuItem key={p.id} value={p.id}>
@@ -250,16 +250,16 @@ export default function ManagedAgentDialog({
             label="Working directory"
             value={form.directory}
             onChange={(e) => set("directory", e.target.value)}
-            helperText="An absolute path that exists on the machine. Empty uses a workspace the controller creates."
+            helperText="An absolute path that exists on the device. Empty uses a workspace the controller creates."
           />
           <TextField
             select
             label="Isolation"
             value={form.isolation}
             onChange={(e) => set("isolation", e.target.value as Isolation)}
-            helperText="Cloud machines run every agent isolated."
+            helperText="Cloud devices run every agent isolated."
           >
-            <MenuItem value="shared">Shared: runs inside the machine's controller</MenuItem>
+            <MenuItem value="shared">Shared: runs inside the device's controller</MenuItem>
             <MenuItem value="isolated">Isolated: runs as a process of its own</MenuItem>
           </TextField>
           <FormControlLabel

@@ -21,9 +21,10 @@ from switch_core.db.models import (
     ServiceConnection,
     ServiceGrant,
     ServiceTokenIssuance,
-    TenantMember,
     require_tenant_id,
+    service_grant_revision_sequence,
 )
+from switch_core.db.standing import stands_in_tenant
 
 
 class ServiceConnectionBusy(Exception):
@@ -56,7 +57,7 @@ class ServiceConnectionStore:
         except DBAPIError as error:
             if getattr(error.orig, "sqlstate", None) == "55P03":
                 raise ServiceConnectionBusy(
-                    "The connection is busy. Please retry."
+                    "The connector is busy. Please retry."
                 ) from None
             raise
 
@@ -102,6 +103,8 @@ class ServiceConnectionStore:
         external_identity: str,
         encrypted_secret: str,
         oauth_client_id: str | None,
+        method: str,
+        choices: dict[str, str],
     ) -> None:
         """Connect, or re-link in place: the grants on it are kept.
 
@@ -116,6 +119,8 @@ class ServiceConnectionStore:
             "external_identity": external_identity,
             "encrypted_secret": encrypted_secret,
             "oauth_client_id": oauth_client_id,
+            "method": method,
+            "choices": choices,
             "error_code": None,
         }
         await session.execute(
@@ -164,7 +169,7 @@ class ServiceConnectionStore:
         )
         if updated is None:
             raise ServiceConnectionChanged(
-                f"The {service} connection changed while its secret was refreshed."
+                f"The {service} connector changed while its secret was refreshed."
             )
         return updated
 
@@ -246,7 +251,27 @@ class ServiceConnectionStore:
                 ServiceGrant.agent_id == agent_id,
                 ServiceGrant.service == service,
             )
-            .values(revision=ServiceGrant.revision + 1, updated_at=func.now())
+            .values(
+                revision=service_grant_revision_sequence.next_value(),
+                updated_at=func.now(),
+            )
+        )
+
+    async def bump_grants(
+        self, session: AsyncSession, owner_id: str, service: str
+    ) -> None:
+        """Move every grant on the owner's connection to `service` on."""
+        await session.execute(
+            update(ServiceGrant)
+            .where(
+                ServiceGrant.tenant_id == require_tenant_id(),
+                ServiceGrant.owner_id == owner_id,
+                ServiceGrant.service == service,
+            )
+            .values(
+                revision=service_grant_revision_sequence.next_value(),
+                updated_at=func.now(),
+            )
         )
 
     async def list_grants(
@@ -299,7 +324,7 @@ class ServiceConnectionStore:
                 index_elements=["tenant_id", "agent_id", "service"],
                 set_={
                     **values,
-                    "revision": ServiceGrant.revision + 1,
+                    "revision": service_grant_revision_sequence.next_value(),
                     "updated_at": func.now(),
                 },
             )
@@ -392,12 +417,7 @@ class ServiceConnectionStore:
                 ServiceGrant.id == ServiceTokenIssuance.grant_id,
             )
         )
-        member = exists(
-            select(TenantMember.user_id).where(
-                TenantMember.tenant_id == tenant_id,
-                TenantMember.user_id == ServiceTokenIssuance.owner_id,
-            )
-        )
+        member = stands_in_tenant(tenant_id, ServiceTokenIssuance.owner_id)
         controller_live = exists(
             select(AgentController.id).where(
                 AgentController.tenant_id == tenant_id,

@@ -30,6 +30,7 @@ from switch_core.telemetry.session_start import (
     default_session_start_limiter,
 )
 from switch_core.telemetry.sink import TelemetryRecord
+from tests.telemetry_records import declared
 
 # What every launcher mints: a random v4 from Console, or a v5-shaped hash from
 # the room watcher.
@@ -55,6 +56,7 @@ def _telemetry(sink: _RecordingSink, *, enabled: bool) -> TelemetryService:
         version=None,
         telemetry_environment="prod",
         telemetry_internal=False,
+        deployment_kind="self_hosted",
     )
 
 
@@ -88,9 +90,7 @@ async def _post(app: FastAPI, session_id: str, body: object) -> httpx.Response:
 
 
 def _started(sink: _RecordingSink) -> list[dict[str, object]]:
-    return [
-        dict(r.properties) for r in sink.sent if r.name == "switch_core.session_started"
-    ]
+    return [declared(r) for r in sink.sent if r.name == "switch_core.session_started"]
 
 
 async def test_a_new_session_is_reported_with_how_it_started(session_factory) -> None:

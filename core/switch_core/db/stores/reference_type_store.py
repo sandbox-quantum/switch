@@ -53,6 +53,22 @@ class ReferenceTypeStore:
     async def get(self, session: AsyncSession, type_: str) -> ReferenceType | None:
         return await session.get(ReferenceType, (require_tenant_id(), type_))
 
+    async def get_for_update(
+        self, session: AsyncSession, type_: str
+    ) -> ReferenceType | None:
+        """Load the row locked until the transaction ends, for a caller that
+        checks it and then writes it.
+
+        ``populate_existing`` refreshes a copy already in the session, so the
+        check sees the committed row rather than an earlier read of it.
+        """
+        return await session.get(
+            ReferenceType,
+            (require_tenant_id(), type_),
+            with_for_update=True,
+            populate_existing=True,
+        )
+
     async def get_many(
         self, session: AsyncSession, types: list[str]
     ) -> list[ReferenceType]:

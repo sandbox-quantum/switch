@@ -43,7 +43,11 @@ function startFeed(queryClient: QueryClient, serverId: string, workspaceId: stri
     }
   });
   void rpc.userChanges.watch(serverId, workspaceId).then((isLive) => {
-    if (!stopped && isLive) setLive(true);
+    if (stopped || !isLive) return;
+    setLive(true);
+    // Live from here on, the lists are polled only rarely: read them once now, as
+    // the `live` notice does, so one read before the feed was up does not stay.
+    refresh();
   });
   feed.stop = () => {
     stopped = true;

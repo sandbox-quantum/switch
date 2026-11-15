@@ -7,6 +7,7 @@ import type { TelemetryEventMap, TelemetryEventName } from './events';
 import { getInstallId } from './install-id';
 import type { TelemetryInternal } from './internal-account';
 import { buildOtlpPayload, postTelemetryEvent, TelemetrySendError } from './relay-client';
+import { TelemetrySession } from './session';
 
 /** OpenTelemetry's names for what `process.platform` calls darwin/win32/linux. */
 const OS_TYPES: Record<string, string> = {
@@ -18,6 +19,8 @@ const OS_TYPES: Record<string, string> = {
 class TelemetryService {
   private reportedDisabled = new Set<TelemetryDisabledReason>();
   private appVersion: Promise<string> | null = null;
+  /** Only events that are sent shape a session, so it is read after the gate. */
+  private session = new TelemetrySession();
   /**
    * Whether the person is staff. Registered at boot rather than imported,
    * because it reads the servers store, which reports through this service.
@@ -42,14 +45,20 @@ class TelemetryService {
   ): Promise<void> {
     // Before the gate, which reads the database: the event happened now, not
     // whenever the reads that describe it finish.
-    return this.trackAt(name, properties, Date.now());
+    return this.trackAt(name, properties, Date.now(), false);
   }
 
-  /** {@link track}, for something that happened at `timeMs`. */
+  /**
+   * {@link track}, for something that happened at `timeMs`. `background` says
+   * nobody caused this occurrence, though events of its name are usually
+   * someone's doing: it is then in no session, as a `BACKGROUND_EVENTS` event
+   * always is (`./session`).
+   */
   async trackAt<K extends TelemetryEventName>(
     name: K,
     properties: TelemetryEventMap[K],
-    timeMs: number
+    timeMs: number,
+    background: boolean
   ): Promise<void> {
     const resolution = resolveTelemetryConfig();
     if (!resolution.enabled) {
@@ -58,6 +67,7 @@ class TelemetryService {
     }
 
     if (!(await isTelemetryAllowed())) return;
+    const sessionId = this.session.idFor(name, timeMs, background);
 
     const payload = buildOtlpPayload(name, properties, {
       clientId: await getInstallId(),
@@ -65,9 +75,10 @@ class TelemetryService {
       osType: OS_TYPES[process.platform] ?? 'other',
       osVersion: release(),
       build: resolution.config.build,
-      flintEnv: resolution.config.flintEnv,
+      telemetryEnv: resolution.config.telemetryEnv,
       internal: await this.resolveInternal(),
       timeMs,
+      sessionId,
     });
 
     await postTelemetryEvent(payload, resolution.config);
@@ -76,14 +87,12 @@ class TelemetryService {
   /**
    * Whether an event sent right now would actually go anywhere.
    *
-   * The same two refusals `track` applies, asked in advance. Only the
-   * once-per-install events need this: they spend a record that is never given
-   * back, so spending it on a send that consent then discards would retire the
-   * event for the life of the install. A report that must ask a server for what
-   * it describes uses it too, to skip asking when nothing could be sent. Nothing
-   * else should call it — everywhere else, asking first and sending second is
-   * two reads of a gate that can change in between, and `track` already reads
-   * it at the only moment that matters.
+   * The same two refusals `track` applies, asked in advance. A report that must
+   * ask a server for what it describes uses it, to skip asking when nothing
+   * could be sent; so would anything that spends a record of having reported
+   * that is never given back. Nothing else should call it — everywhere else,
+   * asking first and sending second is two reads of a gate that can change in
+   * between, and `track` already reads it at the only moment that matters.
    */
   async canSend(): Promise<boolean> {
     return resolveTelemetryConfig().enabled && (await isTelemetryAllowed());
@@ -131,7 +140,7 @@ export function trackEvent<K extends TelemetryEventName>(
   name: K,
   properties: TelemetryEventMap[K]
 ): void {
-  trackEventAt(name, properties, Date.now());
+  send(name, properties, Date.now(), false);
 }
 
 /** {@link trackEvent} for something that happened at `timeMs`, reported later. */
@@ -140,7 +149,29 @@ export function trackEventAt<K extends TelemetryEventName>(
   properties: TelemetryEventMap[K],
   timeMs: number
 ): void {
-  void telemetryService.trackAt(name, properties, timeMs).catch((error: unknown) => {
+  send(name, properties, timeMs, false);
+}
+
+/**
+ * {@link trackEvent} for an occurrence nobody caused, of an event that is
+ * otherwise someone's doing — a session ended because a pass removed its
+ * agent, where a person deleting it is someone using the app. It is in no
+ * session, and neither starts nor prolongs one.
+ */
+export function trackBackgroundEvent<K extends TelemetryEventName>(
+  name: K,
+  properties: TelemetryEventMap[K]
+): void {
+  send(name, properties, Date.now(), true);
+}
+
+function send<K extends TelemetryEventName>(
+  name: K,
+  properties: TelemetryEventMap[K],
+  timeMs: number,
+  background: boolean
+): void {
+  void telemetryService.trackAt(name, properties, timeMs, background).catch((error: unknown) => {
     log.warn('telemetry: event not sent', {
       event: 'telemetry_send_failed',
       telemetryEvent: name,

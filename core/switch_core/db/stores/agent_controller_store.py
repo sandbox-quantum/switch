@@ -1,17 +1,72 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import and_, delete, func, or_, select, update
+from sqlalchemy import (
+    ColumnElement,
+    Text,
+    and_,
+    cast,
+    delete,
+    func,
+    or_,
+    select,
+    update,
+)
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from switch_core.db.fingerprint import Fingerprint, row_hash
 from switch_core.db.models import (
     AgentController,
     AgentControllerEnrollmentCode,
     SealedProviderLogin,
 )
+
+
+@dataclass(frozen=True)
+class ControllerConnection:
+    """What a process acts on of a controller's row to know who holds its
+    socket (`AgentControllerStore.connections`)."""
+
+    id: str
+    tenant_id: str
+    connection_id: str | None
+    connection_process_id: str | None
+    disconnected_at: datetime | None
+    open_connection_id: str | None
+    open_process_id: str | None
+
+
+_CONNECTION_COLUMNS = (
+    AgentController.id,
+    AgentController.tenant_id,
+    AgentController.connection_id,
+    AgentController.connection_process_id,
+    AgentController.disconnected_at,
+    AgentController.open_connection_id,
+    AgentController.open_process_id,
+)
+
+_HAS_CONNECTION = or_(
+    AgentController.connection_id.is_not(None),
+    AgentController.open_connection_id.is_not(None),
+)
+
+
+def _connection_hash() -> ColumnElement[int]:
+    """A controller's connection columns, the ones `ControllerConnection`
+    holds. NULL hashes as the empty string, which no id or time is."""
+    return row_hash(
+        AgentController.id,
+        func.coalesce(AgentController.connection_id, ""),
+        func.coalesce(AgentController.connection_process_id, ""),
+        func.coalesce(cast(AgentController.disconnected_at, Text), ""),
+        func.coalesce(AgentController.open_connection_id, ""),
+        func.coalesce(AgentController.open_process_id, ""),
+    )
 
 
 class AgentControllerStore:
@@ -61,6 +116,23 @@ class AgentControllerStore:
         )
         return result.scalar_one_or_none()
 
+    async def locked(
+        self, session: AsyncSession, tenant_id: str, controller_id: str
+    ) -> AgentController | None:
+        """The controller, its row locked until the caller's transaction ends,
+        and read afresh: two changes to it take turns, and the second sees
+        what the first left."""
+        result = await session.execute(
+            select(AgentController)
+            .where(
+                AgentController.tenant_id == tenant_id,
+                AgentController.id == controller_id,
+            )
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        return result.scalar_one_or_none()
+
     async def get_by_api_key(
         self, session: AsyncSession, tenant_id: str, api_key_id: str
     ) -> AgentController | None:
@@ -81,6 +153,17 @@ class AgentControllerStore:
                 AgentController.tenant_id == tenant_id,
                 AgentController.owner_id == owner_id,
             )
+            .order_by(AgentController.created_at, AgentController.id)
+        )
+        return list(result.scalars().all())
+
+    async def list_for_tenant(
+        self, session: AsyncSession, tenant_id: str
+    ) -> list[AgentController]:
+        """Every controller in the workspace, whoever owns it."""
+        result = await session.execute(
+            select(AgentController)
+            .where(AgentController.tenant_id == tenant_id)
             .order_by(AgentController.created_at, AgentController.id)
         )
         return list(result.scalars().all())
@@ -420,20 +503,40 @@ class AgentControllerStore:
         )
         return result.scalar_one_or_none() is not None
 
-    async def list_with_connections(
+    async def connections(
         self, session: AsyncSession, tenant_id: str
-    ) -> list[AgentController]:
-        """Every controller of the tenant that has opened a connection."""
+    ) -> tuple[list[ControllerConnection], Fingerprint]:
+        """The connection columns of every controller of the tenant that has
+        opened a connection, and the fingerprint of those rows, from one
+        statement and so one snapshot. The rest of each row, its status and
+        platform among them, is not read: a process reading who holds each
+        socket acts on none of it."""
         result = await session.execute(
-            select(AgentController).where(
-                AgentController.tenant_id == tenant_id,
-                or_(
-                    AgentController.connection_id.is_not(None),
-                    AgentController.open_connection_id.is_not(None),
-                ),
+            select(
+                *_CONNECTION_COLUMNS,
+                func.count().over(),
+                func.sum(_connection_hash()).over(),
+            ).where(AgentController.tenant_id == tenant_id, _HAS_CONNECTION)
+        )
+        rows = result.all()
+        if not rows:
+            return [], (0, 0)
+        return (
+            [ControllerConnection(*row[: len(_CONNECTION_COLUMNS)]) for row in rows],
+            (int(rows[0][-2]), int(rows[0][-1])),
+        )
+
+    async def connections_fingerprint(
+        self, session: AsyncSession, tenant_id: str
+    ) -> Fingerprint:
+        """The fingerprint `connections` returns, without the rows."""
+        result = await session.execute(
+            select(func.count(), func.coalesce(func.sum(_connection_hash()), 0)).where(
+                AgentController.tenant_id == tenant_id, _HAS_CONNECTION
             )
         )
-        return list(result.scalars().all())
+        count, total = result.one()
+        return int(count), int(total)
 
     async def set_credential(
         self,

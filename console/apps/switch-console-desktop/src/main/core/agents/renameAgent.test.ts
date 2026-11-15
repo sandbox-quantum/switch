@@ -9,6 +9,7 @@ function fakeFs(seed: Record<string, string> = {}): PluginFs & { files: Map<stri
     read: async (p) => files.get(p) ?? null,
     write: async (p, c) => void files.set(p, c),
     delete: async (p) => void files.delete(p),
+    protectSecret: async (p) => files.has(p),
     exists: async (p) => files.has(p),
     list: async () => [...files.keys()],
   };
@@ -90,11 +91,15 @@ describe('renameLocalAgent', () => {
       [agentConfigRelativePath('notes-taker')]: '{"instructions":"Take notes"}',
     });
     h.state.fs = fs;
+    const write = vi.spyOn(fs, 'write');
 
     const renamed = await renameLocalAgent({ agentId: 'agent-1', newName: 'meeting-scribe' });
 
     expect(renamed.name).toBe('meeting-scribe');
     expect(fs.files.get(agentSettingsRelativePath('meeting-scribe'))).toBe(OURS);
+    expect(write).toHaveBeenCalledWith(agentSettingsRelativePath('meeting-scribe'), OURS, {
+      secret: true,
+    });
     expect(fs.files.get(agentConfigRelativePath('meeting-scribe'))).toBe(
       '{"instructions":"Take notes"}'
     );

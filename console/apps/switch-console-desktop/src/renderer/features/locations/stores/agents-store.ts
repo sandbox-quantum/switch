@@ -27,13 +27,26 @@ export class AgentsStore {
   readonly optimisticWorkspaceByLocation = new Map<string, string>();
   loaded = false;
 
+  /**
+   * Console agents moved to agent management. Their rows stay (Console can
+   * bring one back), but they are never listed as Console agents: whether or
+   * not the server still lists the managed agent, it shows only through the
+   * managed list.
+   */
+  moved: ReadonlySet<string> = new Set();
+
   constructor() {
     makeAutoObservable(this);
   }
 
+  isMoved(agentId: string): boolean {
+    return this.moved.has(agentId);
+  }
+
   async load(): Promise<void> {
-    const agents = await rpc.agents.getAgents();
+    const [agents, moved] = await Promise.all([rpc.agents.getAgents(), rpc.agents.movedAgentIds()]);
     runInAction(() => {
+      this.moved = new Set(moved);
       this.byLocation.clear();
       for (const agent of agents) {
         const list = this.byLocation.get(agent.locationId);

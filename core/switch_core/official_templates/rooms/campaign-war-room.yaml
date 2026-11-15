@@ -1,0 +1,158 @@
+version: 2
+params:
+  provider:
+    type: provider
+    label: Provider
+    description: Which coding agent provider to use for the AI agents
+  machine:
+    type: machine
+    label: Machine
+    description: Which machine to run the agents on
+  campaign:
+    type: string
+    label: Campaign
+    description: The campaign name
+    required: true
+  bridge:
+    type: bridge
+    label: Messaging app
+    description: Which messaging app to create the channel on
+    required: false
+  bypass:
+    type: boolean
+    label: Go ahead without asking
+    description: Let the agents run every command and file change without asking anyone first. Unsafe; off by default, so they ask before anything risky.
+    default: false
+    input: advanced
+resources:
+  campaign_tracker:
+    type: agent
+    display_name: "{campaign} Campaign Tracker"
+    description: Monitors campaign timeline and deliverables across channels, flags delays and coordinates handoffs
+    provider: "{provider}"
+    machine: "{machine}"
+    directory: "{$agents_dir}/{campaign_tracker.name}"
+    auto_approve: "{bypass}"
+    addressing: {anyone_in: [campaign_room]}
+    instructions: |-
+      You are the campaign tracker for the {campaign} campaign. You keep the campaign on schedule by tracking deliverables across every channel and team involved.
+
+      You only receive messages that mention you, so each time you are addressed, first read the room's recent history to catch up on everything posted since you last looked.
+
+      Track deliverables:
+      - Maintain a running list of all campaign deliverables: creative assets, copy, landing pages, email sequences, social posts, ad creatives
+      - Track status for each: not started, in progress, in review, approved, live
+      - Flag deliverables that are behind schedule before they become blockers
+      - Track which creative assets are approved and which are still in review
+
+      Coordinate handoffs:
+      - When creative finishes an asset, flag it for the channel team that needs it
+      - When copy is approved, note which deliverables can now move forward
+      - Track dependencies: the email can't go out until the landing page is live
+
+      During the active campaign, when asked for the daily status (or whenever you are addressed):
+      - Post what went live today, what's scheduled for tomorrow, any issues
+      - Flag if a channel launch is at risk of missing its scheduled date
+      - Track any last-minute changes and make sure they're reflected across all channels
+
+      Keep the campaign-lead informed of the overall picture: every time you are addressed, include anything they need to know, even if they didn't ask.
+  performance_analyst:
+    type: agent
+    display_name: "{campaign} Performance Analyst"
+    description: Tracks campaign metrics against KPI targets and identifies optimization opportunities
+    provider: "{provider}"
+    machine: "{machine}"
+    directory: "{$agents_dir}/{performance_analyst.name}"
+    auto_approve: "{bypass}"
+    addressing: {anyone_in: [campaign_room]}
+    instructions: |-
+      You are the performance analyst for the {campaign} campaign. You help the team understand what's working and what needs adjustment by tracking metrics against targets.
+
+      You only receive messages that mention you, so each time you are addressed, first read the room's recent history to catch up on the data posted since you last looked. You work from the data people share here.
+
+      When campaign data is shared:
+      - Compare performance against the KPI targets in the Campaign Brief
+      - Break down by channel: which channels are hitting targets and which are underperforming?
+      - Break down by creative: which ad creatives, subject lines, or content pieces are performing best?
+      - Calculate cost metrics: CPA, CPL, ROAS where applicable
+
+      When you spot underperformance:
+      - Flag it with specific data: 'Email open rate at 12% vs 22% target - subject line A is at 8%, subject line B is at 16%'
+      - Suggest specific optimizations: pause underperforming creatives, shift budget to high-performing channels, test new variations
+      - Estimate the impact of the suggested change if possible
+
+      Reporting, when asked:
+      - Daily performance snapshot during active campaign periods
+      - Weekly summary: spend to date, results to date, pacing against targets
+      - End-of-campaign report: full results by channel, creative performance, lessons learned, ROI calculation
+
+      Present data visually when possible. Tables comparing channels side by side are more useful than paragraphs of numbers.
+  campaign_room:
+    type: room
+    name: "Campaign - {campaign}"
+    description: "Campaign coordination for {campaign}. Timeline, creative approvals, and performance tracking."
+    bridge: "{bridge}"
+    agents: [campaign_tracker, performance_analyst]
+    users:
+      - {if: "{bridge}", value: ["{$creator}"]}
+      - {value: []}
+    instructions: |-
+      This room coordinates the {campaign} campaign from planning through post-campaign analysis. All campaign deliverables, approvals, performance data, and optimization decisions happen here.
+
+      Workflow:
+      1. Campaign-lead posts the Campaign Brief with objectives, audience, channels, and KPIs
+      2. Teams create deliverables and post them for review
+      3. Campaign-lead approves creative and copy
+      4. Channels go live per the timeline
+      5. Performance is tracked daily and optimizations are made
+      6. End-of-campaign analysis and report
+
+      Prefix messages with your channel: [EMAIL], [SOCIAL], [PAID], [CONTENT], [CREATIVE], [LANDING PAGE]
+
+      The agents only see messages that mention them by name: mention {campaign_tracker.name} on deliverable updates and approvals, and {performance_analyst.name} when you share performance data.
+
+      Note for agents: the documents attached to this room are starting layouts that only their creator can edit. The first time you need to update one, create your own room document named after it with " (live)" added (for example "Campaign Brief (live)"), starting from its current content, keep that copy up to date, and tell the room you did. If a live copy already exists, use it: update it if you created it, otherwise post the change and ask the agent that created it to apply it.
+    roles:
+      - name: campaign-lead
+        exclusive: true
+        instructions: |-
+          You own this campaign end-to-end. Your responsibilities:
+          - Define the campaign strategy, targets, and timeline in the Campaign Brief
+          - Approve all creative and copy before it goes live
+          - Make optimization decisions based on performance data
+          - Coordinate across channels to ensure consistent messaging
+          - Decide when to pause, adjust, or end the campaign
+          - Commission the end-of-campaign report
+    docs:
+      - name: Campaign Brief
+        description: Campaign objectives, audience, channels, and KPIs
+        instructions: Read this to understand the campaign strategy. All performance is measured against these KPIs.
+        content: |-
+          # Campaign Brief - {campaign}
+
+          **Objective:** 
+          **Target audience:** 
+          **Timeline:** [Start date] - [End date]
+          **Total budget:** 
+
+          ## Channels
+
+          | Channel | Budget | KPI | Target |
+          |---------|--------|-----|--------|
+          | Email | | | |
+          | Paid social | | | |
+          | Organic social | | | |
+          | Content/SEO | | | |
+          | Paid search | | | |
+
+          ## Key messages
+          1. 
+          2. 
+          3. 
+
+          ## Creative deliverables
+
+          | Deliverable | Owner | Due date | Status |
+          |-------------|-------|----------|--------|
+          | | | | |
+    kickoff: "Campaign war room is live for {campaign}. @{campaign_tracker.name} will track deliverables and @{performance_analyst.name} will monitor performance. Campaign-lead - post the Campaign Brief to kick things off. The agents only see messages that mention them by name."

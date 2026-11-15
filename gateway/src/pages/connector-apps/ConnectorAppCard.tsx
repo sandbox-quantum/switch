@@ -26,7 +26,7 @@ import {
   checkConnectorApp,
   importConnectorApp,
 } from "../../data/api";
-import { formatDate } from "../../theme/hootFormat";
+import { formatDate } from "../../theme/format";
 import {
   actionLabel,
   attention,
@@ -41,11 +41,14 @@ import {
   moveChecklist,
   notSetUpSentence,
   primaryAction,
+  readOnlySentence,
   secretSummary,
+  setUpLine,
   stateLabel,
   usedBy,
 } from "./connectorApps";
 import RemoveDialog from "./RemoveDialog";
+import { useConnectorAppScope } from "./scope";
 import SetupDialog, { type SetupMode } from "./SetupDialog";
 import UpdateSecretDialog from "./UpdateSecretDialog";
 
@@ -151,6 +154,7 @@ export default function ConnectorAppCard({
   publicUrl,
   checkFailure,
   onCheckFailure,
+  onChecked,
   onChanged,
 }: {
   app: ConnectorApp;
@@ -158,8 +162,11 @@ export default function ConnectorAppCard({
   publicUrl: string | null;
   checkFailure: string | null;
   onCheckFailure: (message: string | null) => void;
+  /** After a check: the server keeps what the vendor said of the app, so the apps are read again. */
+  onChecked: () => void;
   onChanged: (message: string) => void;
 }) {
+  const scope = useConnectorAppScope();
   const [menu, setMenu] = useState<HTMLElement | null>(null);
   const [setup, setSetup] = useState<SetupMode | null>(null);
   const [updating, setUpdating] = useState(false);
@@ -175,14 +182,17 @@ export default function ConnectorAppCard({
   const actions = menuActions(app);
   const summary = secretSummary(app);
   const blocked = changeBlocked(app, publicUrl);
+  const setUp = setUpLine(app, formatDate);
+  const readOnly = readOnlySentence(app);
 
   const check = async () => {
     setChecking(true);
     setError(null);
     try {
-      const result = await checkConnectorApp(app.slug);
+      const result = await checkConnectorApp(scope, app.slug);
       setChecks(result.checks);
       onCheckFailure(result.ok ? null : (result.checks.find((c) => !c.ok)?.message ?? null));
+      onChecked();
     } catch (err) {
       setError(errorText(err));
     } finally {
@@ -235,19 +245,18 @@ export default function ConnectorAppCard({
           </Typography>
         )}
         {needs && <Alert severity={needs.cause === "stale" ? "info" : "warning"}>{needs.sentence}</Alert>}
+        {readOnly && <Alert severity="warning">{readOnly}</Alert>}
         {needs?.cause === "saved_ignored" && app.saved_client_id && (
           <Row label="Saved here">{app.saved_client_id}</Row>
         )}
 
         {app.client_id && <Row label="Client ID">{app.client_id}</Row>}
         {app.fields.slug && <Row label="App">{app.fields.slug}</Row>}
-        {summary && (
-          <Row label="Secret">
-            {summary}
-            {app.updated_by_name && app.updated_at
-              ? ` · updated by ${app.updated_by_name}, ${formatDate(app.updated_at)}`
-              : ""}
-          </Row>
+        {summary && <Row label="Secret">{summary}</Row>}
+        {setUp && (
+          <Typography variant="body2" color="text.secondary">
+            {setUp}
+          </Typography>
         )}
         {app.source !== "none" && (
           <Typography variant="body2" color="text.secondary">

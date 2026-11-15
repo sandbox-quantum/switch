@@ -1,19 +1,24 @@
+import { useQuery } from '@tanstack/react-query';
 import { observer } from 'mobx-react-lite';
-import { type ComponentProps, type ReactNode, useState } from 'react';
+import { type ComponentProps, type ReactNode, useEffect, useState } from 'react';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
+import { Button } from '@renderer/lib/ui/button';
 import { cn } from '@renderer/utils/utils';
 import type { ChatActivityItem, ChatApproval } from '@shared/core/chats/activity';
 import { reasoningLabel } from '@shared/core/sessions/reasoning';
-import { isThinking, toolState, type TurnActivity, turnTools } from '../activity-join';
+import {
+  isThinking,
+  subagentStatus,
+  toolState,
+  type TurnActivity,
+  turnSubagents,
+  turnTools,
+} from '../activity-join';
 import type { AgentActivity } from '../stores/chat-activity-store';
-import { presentTool, summarizeTools } from '../tool-presentation';
 import { Reasoning } from '../ui/reasoning';
 import { FailedIcon, ThinkingIcon, ToolKindIcon, WorkLogDetails, WorkLogRow } from '../ui/work-log';
 import { ChatApprovalCard } from './chat-approval-card';
 import { ToolRow } from './tool-row';
-
-/** A settled turn with at least this many tool calls folds them behind one summary line. */
-const GROUP_AT = 2;
 
 function ToolRows({
   items,
@@ -39,9 +44,9 @@ function ToolRows({
 }
 
 /**
- * A finished turn's tool calls as one line ("Ran 2 commands and read 3
- * files"), opening to the calls themselves. A failure is named on the line so
- * it is not hidden by the fold.
+ * The turn's earlier tool calls as one line ("12 tool calls"), opening to the
+ * calls themselves. A failure is named on the line so it is not hidden by the
+ * fold.
  */
 function ToolGroup({
   items,
@@ -53,17 +58,14 @@ function ToolGroup({
   activity: AgentActivity;
 }) {
   const [open, setOpen] = useState(false);
-  const summary = summarizeTools(
-    items.map((item) => presentTool(item, activity.toolDetails.get(item.itemId) ?? null).kind)
-  );
   const failed = items.filter((item) => toolState(item, turn.status) === 'failed').length;
   return (
     <WorkLogRow
-      icon={<ToolKindIcon kind={summary.kind} />}
-      label={summary.label}
+      icon={<ToolKindIcon kind="other" />}
+      label={`${items.length} ${items.length === 1 ? 'tool call' : 'tool calls'}`}
       trailing={
         failed > 0 ? (
-          <span className="shrink-0 text-xs text-foreground-destructive">{failed} failed</span>
+          <span className="shrink-0 text-xs text-foreground-destructive">· {failed} failed</span>
         ) : null
       }
       open={open}
@@ -127,6 +129,23 @@ export function AgentRow({
   );
 }
 
+/** The host's warnings during a turn (a model it could not use, say), which the work log shows. */
+export function turnWarnings(turn: TurnActivity): ChatActivityItem[] {
+  return turn.items.filter((item) => item.kind === 'notice' && item.status === 'warning');
+}
+
+/** Messages a person sent into this turn while it ran (steered), in the order they arrived. */
+export function turnDeliveries(turn: TurnActivity): ChatActivityItem[] {
+  return turn.items.filter((item) => item.kind === 'user-message' && item.delivery === 'steered');
+}
+
+/** What a turn says while it has not started: behind another turn, or about to start. */
+export function queuedLabel(turn: TurnActivity): string {
+  return turn.items.some((item) => item.kind === 'user-message' && item.delivery === 'queued')
+    ? 'Queued behind the running turn…'
+    : 'Queued…';
+}
+
 /** Whether a turn has anything to show in its work log. */
 export function turnShown(activity: AgentActivity, turn: TurnActivity): boolean {
   const running = turn.status === 'queued' || turn.status === 'running';
@@ -135,10 +154,13 @@ export function turnShown(activity: AgentActivity, turn: TurnActivity): boolean 
   return (
     reasoningLabel(reasoning, running && reasoning !== null) !== null ||
     work.length > 0 ||
+    turnSubagents(turn).length > 0 ||
     isThinking(turn) ||
     turn.status === 'interrupted' ||
     turn.status === 'error' ||
-    turn.requests.length > 0
+    turn.requests.length > 0 ||
+    turnWarnings(turn).length > 0 ||
+    turnDeliveries(turn).length > 0
   );
 }
 
@@ -173,6 +195,7 @@ export const ChatActivityBlock = observer(function ChatActivityBlock({
   const label = reasoningLabel(reasoning, running && reasoning !== null);
   const work = turnTools(turn);
   const thinking = isThinking(turn) && !(label && !reasoning?.completedAt);
+  const children = turnSubagents(turn);
   const ended = turn.status === 'interrupted' || turn.status === 'error';
   const requests = turn.requests;
   if (!turnShown(activity, turn)) return null;
@@ -191,15 +214,46 @@ export const ChatActivityBlock = observer(function ChatActivityBlock({
           text={reasoning?.text ?? ''}
         />
       )}
-      {!running && work.length >= GROUP_AT ? (
-        <ToolGroup items={work} turn={turn} activity={activity} />
-      ) : (
-        <ToolRows items={work} turn={turn} activity={activity} />
+      {/* Only the latest call gets a full line; the ones before it fold into one. */}
+      {work.length > 1 && <ToolGroup items={work.slice(0, -1)} turn={turn} activity={activity} />}
+      <ToolRows items={work.slice(-1)} turn={turn} activity={activity} />
+      {children.slice(0, 5).map((child) => (
+        <WorkLogRow
+          key={child.itemId}
+          icon={<ToolKindIcon kind="agent" />}
+          label={`Subagent: ${child.title}`}
+          trailing={<span className="shrink-0 text-xs">{subagentStatus(child)}</span>}
+          active={subagentStatus(child) === 'running'}
+          tone={child.status === 'failed' ? 'failed' : 'default'}
+        />
+      ))}
+      {children.length > 5 && (
+        <div className="text-xs text-foreground-muted">
+          …{children.length - 5} more subagents not shown.
+        </div>
       )}
+      {turnDeliveries(turn).map((item) => (
+        <WorkLogRow
+          key={item.itemId}
+          icon={<ToolKindIcon kind="switch" />}
+          label={`Steered into this turn${item.text ? `: ${item.text}` : ''}`}
+          title={item.text}
+          tone="passive"
+        />
+      ))}
+      {turnWarnings(turn).map((notice) => (
+        <WorkLogRow
+          key={notice.itemId}
+          icon={<FailedIcon />}
+          label={notice.title}
+          title={notice.text}
+          tone="passive"
+        />
+      ))}
       {thinking && (
         <WorkLogRow
           icon={<ThinkingIcon />}
-          label={turn.status === 'queued' ? 'Queued…' : 'Thinking…'}
+          label={turn.status === 'queued' ? queuedLabel(turn) : 'Thinking…'}
           active
         />
       )}
@@ -214,6 +268,9 @@ export const ChatActivityBlock = observer(function ChatActivityBlock({
             title={endReason ?? undefined}
             tone="failed"
           />
+          {turn.status === 'error' && turn.messageId && (
+            <RetryTurn activity={activity} turn={turn} />
+          )}
         </div>
       )}
       {requests.length > 0 && <ChatRequests activity={activity} requests={requests} />}
@@ -239,5 +296,81 @@ export const ChatRequests = observer(function ChatRequests({
         />
       ))}
     </WorkLogDetails>
+  );
+});
+
+/** How long a posted retry waits for its new turn before it is said to have gone unanswered. */
+export const RETRY_UNANSWERED_MS = 20_000;
+
+/** The text shown in place of Retry when the agent's session cannot run a turn again. */
+export const RETRY_UNSUPPORTED_TEXT =
+  "This agent's Switch Console is too old to retry; ask its owner to update.";
+
+/**
+ * Run again the turn a message started, which failed: the same message goes to
+ * the agent again, and nothing is posted in its name. Offered only when the
+ * session here says it can; for one this Console does not host it is offered,
+ * and a retry no new turn follows says so.
+ */
+const RetryTurn = observer(function RetryTurn({
+  activity,
+  turn,
+}: {
+  activity: AgentActivity;
+  turn: TurnActivity;
+}) {
+  const target = activity.target;
+  const support = useQuery({
+    queryKey: [
+      'chat-retry-support',
+      target?.kind === 'session' ? target.hostAgentKey : null,
+      target?.kind === 'session' ? target.sessionId : null,
+    ],
+    queryFn: () => activity.retrySupport(),
+    // A lookup that failed leaves no session to ask: offered, and the fallback says if it went unheard.
+    enabled: target !== null || activity.resolveError !== null,
+  });
+  const request = activity.retries.get(turn.turnId) ?? null;
+  const [now, setNow] = useState(() => Date.now());
+  const waitingSince = request?.state === 'requested' ? request.requestedAt : null;
+  useEffect(() => {
+    if (waitingSince === null) return;
+    const left = waitingSince + RETRY_UNANSWERED_MS - Date.now();
+    const timer = setTimeout(() => setNow(Date.now()), Math.max(left, 0));
+    return () => clearTimeout(timer);
+  }, [waitingSince]);
+
+  if (support.data === 'no')
+    return <p className="mt-1 text-xs text-foreground-muted">{RETRY_UNSUPPORTED_TEXT}</p>;
+  const unanswered = waitingSince !== null && now - waitingSince >= RETRY_UNANSWERED_MS;
+  return (
+    <div className="mt-1 flex flex-wrap items-center gap-2">
+      <Button
+        size="xs"
+        variant="outline"
+        disabled={
+          !support.isSuccess ||
+          request?.state === 'sending' ||
+          (waitingSince !== null && !unanswered)
+        }
+        onClick={() => void activity.retry(turn)}
+      >
+        {request?.state === 'sending'
+          ? 'Retrying…'
+          : waitingSince !== null && !unanswered
+            ? 'Retry asked'
+            : 'Retry'}
+      </Button>
+      {(request?.state === 'failed' || request?.state === 'unknown') && request.error && (
+        <span role="alert" className="text-xs text-destructive">
+          {request.error}
+        </span>
+      )}
+      {unanswered && (
+        <span role="status" className="text-xs text-foreground-muted">
+          The agent did not pick up the retry. Its machine may need a newer Switch Console.
+        </span>
+      )}
+    </div>
   );
 });

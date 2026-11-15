@@ -10,7 +10,7 @@ import { useParams } from '@renderer/lib/layout/navigation-provider';
 const SettingsTabContext = createContext<{
   tab: SettingsPageTab;
   onTabChange: (tab: SettingsPageTab) => void;
-}>({ tab: 'general', onTabChange: () => {} });
+}>({ tab: 'preferences', onTabChange: () => {} });
 
 /** Minimal passthrough — exists so the registry can infer WrapParams<'settings'>. */
 export function SettingsViewWrapper({

@@ -10,6 +10,7 @@ import {
   FileSecretStore,
   KeychainSecretStore,
   MemorySecretStore,
+  SEALING_KEY,
   SecretServiceStore,
 } from './secrets';
 
@@ -109,6 +110,33 @@ describe('OS keychain stores', () => {
     expect(calls[0].input).toContain(`-a "${CONTROLLER_CREDENTIAL}@/data"`);
     expect(calls.flatMap((call) => call.args).join(' ')).not.toContain('swcc_secret-value');
     expect(await store.get(CONTROLLER_CREDENTIAL)).toBeNull();
+  });
+
+  it('stores a value security -i cannot quote, such as the JSON sealing key, and reads it back', async () => {
+    let stored: string | null = null;
+    const { calls, run } = runner((call) => {
+      if (call.args[0] === 'find-generic-password')
+        return stored === null
+          ? new CommandFailure(call.file, call.args, 44, 'not found', 'exit 44')
+          : { stdout: `${stored}\n` };
+      stored = /-w "([^"]*)"/.exec(call.input ?? '')?.[1] ?? null;
+      return { stdout: '' };
+    });
+    const store = new KeychainSecretStore('/data', run);
+    const keys = JSON.stringify({ publicKey: 'pub', privateKey: 'pri\\vate' });
+    await store.set(SEALING_KEY, keys);
+    expect(calls[0].input).not.toContain('{');
+    expect(await store.get(SEALING_KEY)).toBe(keys);
+
+    await store.set(SEALING_KEY, 'b64:not-encoded-by-hand');
+    expect(await store.get(SEALING_KEY)).toBe('b64:not-encoded-by-hand');
+  });
+
+  it('reads an entry stored as plain text before values were encoded', async () => {
+    const { run } = runner(() => ({ stdout: 'swcc_secret-value\n' }));
+    expect(await new KeychainSecretStore('/data', run).get(CONTROLLER_CREDENTIAL)).toBe(
+      'swcc_secret-value'
+    );
   });
 
   it('fails loud on a keychain error that is not "not found"', async () => {

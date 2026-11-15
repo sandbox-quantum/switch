@@ -211,9 +211,23 @@ class InvitationStore:
         return int(result.scalar_one())
 
     async def revoke(self, session: AsyncSession, invitation_id: str) -> Invitation:
-        invitation = await session.get(Invitation, invitation_id)
+        """Revoke an invitation that could still be accepted.
+
+        Raises `ValueError` when there is none, and `InvitationNotUsableError`
+        when it has already ended — revoked, expired or used up: revoking it
+        again would rewrite when, and by whom, it ended.
+        """
+        invitation = await session.get(
+            Invitation, invitation_id, with_for_update=True, populate_existing=True
+        )
         if invitation is None:
             raise ValueError(f"Invitation not found: {invitation_id}")
+        if not await session.scalar(
+            select(_usable()).where(Invitation.id == invitation_id)
+        ):
+            raise InvitationNotUsableError(
+                "This invitation has already ended: revoked, expired or used up."
+            )
         invitation.revoked_at = datetime.now(UTC)
         await session.flush()
         return invitation

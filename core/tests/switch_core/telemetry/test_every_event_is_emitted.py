@@ -19,6 +19,7 @@ from pathlib import Path
 
 import switch_core
 from switch_core.telemetry.catalogue import CATALOGUE
+from switch_core.telemetry.periods import EVENT_NAMES
 
 _PACKAGE_ROOT = Path(switch_core.__file__).resolve().parent
 _CATALOGUE = _PACKAGE_ROOT / "telemetry" / "catalogue.py"
@@ -29,11 +30,19 @@ def _emitted_names() -> set[str]:
 
     Matched on the call rather than on the bare string, so a name that appears
     only in a comment, a docstring or a reason map does not count as an
-    emitter. The three shapes in the tree are `telemetry.emit("x", ...)`,
-    `await telemetry.emit_milestone("x", ...)` and
-    `emit_safely(target, "x", {...})`.
+    emitter. The shapes in the tree are `telemetry.emit("x", ...)`,
+    `telemetry.emit_at("x", at, ...)`, `await telemetry.emit_milestone("x",
+    ...)`, `emit_safely(target, "x", {...})`, `emit_safely_at(target, "x",
+    at, {...})` and `emit_after_commit(session, target, "x", {...})`.
     """
-    emitters = {"emit", "emit_milestone", "emit_safely"}
+    emitters = {
+        "emit",
+        "emit_at",
+        "emit_milestone",
+        "emit_safely",
+        "emit_safely_at",
+        "emit_after_commit",
+    }
     found: set[str] = set()
     for path in _PACKAGE_ROOT.rglob("*.py"):
         if path == _CATALOGUE:
@@ -52,17 +61,24 @@ def _emitted_names() -> set[str]:
             )
             if name not in emitters:
                 continue
-            # `emit_safely` takes the service first, so scan the leading
-            # arguments rather than assuming a position.
-            for arg in node.args[:2]:
+            # `emit_safely` takes the service first, and `emit_after_commit`
+            # the session before it, so scan the leading arguments rather than
+            # assuming a position.
+            for arg in node.args[:3]:
                 if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
                     found.add(arg.value)
     return found
 
 
+def _dispatched_names() -> set[str]:
+    """Events emitted under a name looked up rather than written at the call:
+    the reporter sends each finished period as `Period.event`, one of these."""
+    return set(EVENT_NAMES.values())
+
+
 def test_no_declared_event_is_left_unemitted() -> None:
     declared = set(CATALOGUE)
-    unemitted = sorted(declared - _emitted_names())
+    unemitted = sorted(declared - _emitted_names() - _dispatched_names())
     assert not unemitted, (
         f"{unemitted} are declared in the telemetry catalogue and emitted "
         "nowhere. An event nobody sends is a metric the product believes it "
@@ -92,4 +108,6 @@ def test_the_detector_would_notice_a_new_unemitted_entry() -> None:
     """The test above only proves today's tree is clean; this proves it can
     fail. Without it, a broken detector reads as a clean catalogue."""
     pretend = set(CATALOGUE) | {"room_abandoned"}
-    assert sorted(pretend - _emitted_names()) == ["room_abandoned"]
+    assert sorted(pretend - _emitted_names() - _dispatched_names()) == [
+        "room_abandoned"
+    ]

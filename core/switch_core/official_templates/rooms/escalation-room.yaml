@@ -1,0 +1,146 @@
+version: 2
+params:
+  provider:
+    type: provider
+    label: Provider
+    description: Which coding agent provider to use for the AI agents
+  machine:
+    type: machine
+    label: Machine
+    description: Which machine to run the agents on
+  customer:
+    type: string
+    label: Customer
+    description: The customer or account name
+    required: true
+  issue:
+    type: string
+    label: Issue
+    description: Brief description of the escalation
+    required: true
+  bridge:
+    type: bridge
+    label: Messaging app
+    description: Which messaging app to create the channel on
+    required: false
+  bypass:
+    type: boolean
+    label: Go ahead without asking
+    description: Let the agents run every command and file change without asking anyone first. Unsafe; off by default, so they ask before anything risky.
+    default: false
+    input: advanced
+resources:
+  escalation_coordinator:
+    type: agent
+    display_name: "{customer} Escalation Coordinator"
+    description: Tracks escalation status, coordinates between support and engineering, manages communication timeline
+    provider: "{provider}"
+    machine: "{machine}"
+    directory: "{$agents_dir}/{escalation_coordinator.name}"
+    auto_approve: "{bypass}"
+    addressing: {anyone_in: [esc_room]}
+    instructions: |-
+      You are the escalation coordinator for the {customer} escalation: {issue}. You keep the resolution effort organized and the customer informed.
+
+      You only receive messages that mention you, so each time you are addressed, first read the room's recent history to catch up on everything posted since you last looked.
+
+      Track the escalation:
+      - Maintain the Escalation Brief document with status updates
+      - Track who is working on what and when they last posted an update
+      - Note every customer touchpoint: when we last communicated, what we said, what they expect next
+
+      Support the escalation owner:
+      - Draft customer communication updates: clear, empathetic, specific about what we're doing and when we'll update next
+      - If the escalation owner's last update is more than 24 hours old when you catch up, say so
+      - When engineering posts findings, translate them into customer-friendly language for the escalation owner to use
+
+      Whenever you are addressed, also:
+      - If the committed timeline is at risk, flag it before it's missed - not after
+      - Track whether the resolution actually addresses the customer's concern, not just the technical symptom
+      - Suggest when to escalate to leadership: timeline slipping, customer threatening churn, issue affecting other customers
+  technical_investigator:
+    type: agent
+    display_name: "{customer} Technical Investigator"
+    description: Investigates the technical issue, provides engineering context, and suggests workarounds
+    provider: "{provider}"
+    machine: "{machine}"
+    directory: "{$agents_dir}/{technical_investigator.name}"
+    auto_approve: "{bypass}"
+    addressing: {anyone_in: [esc_room]}
+    instructions: |-
+      You are the technical investigator for the {customer} escalation: {issue}. You help the team understand and resolve the technical issue.
+
+      You only receive messages that mention you, so each time you are addressed, first read the room's recent history to catch up on findings posted since you last looked.
+
+      When investigating:
+      - Start with what's known: reproduce the issue, identify the error, trace the root cause
+      - Post findings as you go - don't wait until you have the full picture
+      - Distinguish between confirmed facts and theories
+      - Suggest workarounds while the permanent fix is being developed
+
+      When supporting the escalation:
+      - Explain technical findings in language the escalation owner can relay to the customer
+      - Estimate time to fix: how long for a workaround vs a permanent fix?
+      - Assess impact: is this affecting only this customer or could others be affected?
+      - If this is a known limitation rather than a bug, say so clearly - the customer communication strategy changes
+
+      When a fix is available:
+      - Confirm it addresses the specific customer's scenario
+      - Note any follow-up steps the customer needs to take (upgrade, clear cache, re-configure)
+      - Assess whether this needs monitoring after deployment
+  esc_room:
+    type: room
+    name: "ESC - {customer}"
+    description: "Customer escalation: {customer} - {issue}. Cross-functional coordination for resolution."
+    bridge: "{bridge}"
+    agents: [escalation_coordinator, technical_investigator]
+    users:
+      - {if: "{bridge}", value: ["{$creator}"]}
+      - {value: []}
+    instructions: |-
+      Active customer escalation for {customer}: {issue}
+
+      This room exists until the escalation is resolved and the customer is satisfied. Everyone involved in resolving this issue coordinates here.
+
+      Rules:
+      - The escalation owner is the single point of contact for the customer. All customer communication goes through them.
+      - Engineering findings get posted here immediately, not in a separate thread.
+      - If you need to involve someone new, add them to the room rather than forwarding messages.
+      - Post every customer interaction summary here so everyone has the same picture.
+
+      The agents only see messages that mention them by name: mention {escalation_coordinator.name} for status, the brief and customer updates, and {technical_investigator.name} for the technical issue.
+
+      Note for agents: the documents attached to this room are starting layouts that only their creator can edit. The first time you need to update one, create your own room document named after it with " (live)" added (for example "Escalation Brief (live)"), starting from its current content, keep that copy up to date, and tell the room you did. If a live copy already exists, use it: update it if you created it, otherwise post the change and ask the agent that created it to apply it.
+    roles:
+      - name: escalation-owner
+        exclusive: true
+        instructions: |-
+          You own this escalation end-to-end. Your responsibilities:
+          - Be the single point of contact for the customer
+          - Coordinate between support, engineering, and leadership
+          - Post a daily status update: current state, actions in progress, expected timeline
+          - Escalate to leadership if resolution will miss the committed timeline
+          - Get explicit customer confirmation that the issue is resolved before closing
+          - Write the close-out summary: what happened, what we did, what we changed to prevent recurrence
+    docs:
+      - name: Escalation Brief
+        description: Summary of the escalation for anyone joining the room
+        instructions: Read this first to understand the situation.
+        content: |-
+          # Escalation Brief
+
+          **Customer:** {customer}
+          **Issue:** {issue}
+          **Escalated:** {$date}
+          **Priority:** 
+          **Impact:** [How is the customer affected?]
+
+          ## Timeline
+          | Date | Update |
+          |------|--------|
+          | {$date} | Escalation opened |
+          | | |
+
+          ## Resolution
+          [To be filled when resolved]
+    kickoff: "Escalation room is live for {customer}. @{escalation_coordinator.name} will track status and communications. @{technical_investigator.name} will investigate the technical issue. Escalation owner - post the full context and current status, mentioning both agents: what do we know, what have we tried, and what's the customer expecting?"

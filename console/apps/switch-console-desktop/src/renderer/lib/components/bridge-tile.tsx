@@ -56,9 +56,55 @@ export function BridgeTile({
   onSelect: () => void;
 }) {
   return (
+    <ChoiceTile
+      icon={
+        hasBridgeIcon(bridge.type) ? (
+          <BridgeIcon bridgeType={bridge.type} size={20} />
+        ) : (
+          <MessageSquare className="size-5 text-foreground-muted" />
+        )
+      }
+      title={bridge.displayName}
+      disabled={unusable !== null}
+      selected={selected}
+      onSelect={onSelect}
+    >
+      {/* Three different things, never conflated: why this app cannot be
+          used, which account on it is you, or that Switch cannot tell. */}
+      {unusable !== null ? (
+        <span className="truncate text-xs text-foreground-muted">{unusable}</span>
+      ) : !identitiesKnown ? null : identity === null ? (
+        <span className="truncate text-xs text-amber-600 dark:text-amber-500">
+          No account linked
+        </span>
+      ) : (
+        <span className="truncate text-xs text-foreground-muted">{handleOf(identity)}</span>
+      )}
+    </ChoiceTile>
+  );
+}
+
+/** A selectable tile in a grid of choices: an icon, a title and a line under it. */
+export function ChoiceTile({
+  icon,
+  title,
+  disabled,
+  selected,
+  onSelect,
+  children,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  disabled: boolean;
+  selected: boolean;
+  onSelect: () => void;
+  /** The line under the title. */
+  children: React.ReactNode;
+}) {
+  return (
     <button
       type="button"
-      disabled={unusable !== null}
+      disabled={disabled}
       aria-pressed={selected}
       onClick={onSelect}
       className={cn(
@@ -67,29 +113,13 @@ export function BridgeTile({
         // exactly the dialog's own surface: the hover was being drawn, in the
         // colour of the thing behind it.
         selected ? 'border-foreground bg-[var(--sel)]' : 'border-border hover:bg-[var(--sel-soft)]',
-        unusable !== null && 'cursor-not-allowed opacity-50 hover:bg-transparent'
+        disabled && 'cursor-not-allowed opacity-50 hover:bg-transparent'
       )}
     >
-      <span className="flex size-6 shrink-0 items-center justify-center">
-        {hasBridgeIcon(bridge.type) ? (
-          <BridgeIcon bridgeType={bridge.type} size={20} />
-        ) : (
-          <MessageSquare className="size-5 text-foreground-muted" />
-        )}
-      </span>
+      <span className="flex size-6 shrink-0 items-center justify-center">{icon}</span>
       <span className="flex min-w-0 flex-col">
-        <span className="truncate text-sm text-foreground">{bridge.displayName}</span>
-        {/* Three different things, never conflated: why this app cannot be
-            used, which account on it is you, or that Switch cannot tell. */}
-        {unusable !== null ? (
-          <span className="truncate text-xs text-foreground-muted">{unusable}</span>
-        ) : !identitiesKnown ? null : identity === null ? (
-          <span className="truncate text-xs text-amber-600 dark:text-amber-500">
-            No account linked
-          </span>
-        ) : (
-          <span className="truncate text-xs text-foreground-muted">{handleOf(identity)}</span>
-        )}
+        <span className="truncate text-sm text-foreground">{title}</span>
+        {children}
       </span>
     </button>
   );

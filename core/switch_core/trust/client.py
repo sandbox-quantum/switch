@@ -11,6 +11,7 @@ call site has to ask whether the feature is on — the same shape as
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
@@ -18,7 +19,10 @@ from typing import Any, Literal, Protocol
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.db.stores.trust_settings_store import TrustSettingsStore
+from switch_core.db.session_scope import tenant_session
+from switch_core.db.stores.organization_trust_settings_store import (
+    OrganizationTrustSettingsStore,
+)
 from switch_core.keys import Keyring
 
 logger = logging.getLogger(__name__)
@@ -62,6 +66,14 @@ class GuardrailsCheckError(RuntimeError):
     settings read/decrypt failure before the request was even made."""
 
 
+class GuardrailsRefusedError(GuardrailsCheckError):
+    """Switch Trust answered, with an error status: `status_code`."""
+
+    def __init__(self, message: str, status_code: int) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
 class GuardrailBlockedError(Exception):
     """A message was refused by the guardrails policy.
 
@@ -69,12 +81,15 @@ class GuardrailBlockedError(Exception):
     without re-deriving it.
     """
 
-    def __init__(self, result: TrustCheckResult) -> None:
+    def __init__(self, result: TrustCheckResult, detail: str | None = None) -> None:
         self.result = result
         categories = (
             ", ".join(f.category for f in result.findings) or "policy violation"
         )
-        super().__init__(f"blocked by Switch Trust ({categories})")
+        message = f"blocked by Switch Trust ({categories})"
+        if detail is not None:
+            message = f"{message}: {detail}"
+        super().__init__(message)
 
 
 @dataclass(frozen=True)
@@ -110,75 +125,192 @@ class TrustCheckResult:
 
 
 class TrustClient(Protocol):
+    """Checks a message sent in workspace `tenant_id` against the policy its
+    organization connected, if it connected one."""
+
     async def check(
-        self, *, role: Role, content: str, room_id: str
+        self, *, tenant_id: str, role: Role, content: str, room_id: str
     ) -> TrustCheckResult: ...
+
+    async def is_active(self, tenant_id: str) -> bool:
+        """Whether a check in `tenant_id` would reach Switch Trust at all.
+        Lets a caller skip work that only matters when it does, such as
+        reading text out of attached files. Raises `GuardrailsCheckError` when
+        that cannot be told; `trust_is_active` below is the fail-open
+        wrapper."""
+        ...
 
 
 class NullTrustClient:
     """Off: every message is allowed, and no request is made."""
 
+    async def is_active(self, tenant_id: str) -> bool:
+        return False
+
     async def check(
-        self, *, role: Role, content: str, room_id: str
+        self, *, tenant_id: str, role: Role, content: str, room_id: str
     ) -> TrustCheckResult:
         return TrustCheckResult(outcome="ok", policy_id=None, policy_name=None)
 
 
-class DynamicTrustClient:
-    """Reads the one server-global ``trust_settings`` row on every call.
+# How long settings read for a check are kept at most. A change made through
+# the gateway reaches every process at once (`trust/signals.py`); this is for
+# one whose signal was lost.
+SETTINGS_MAX_AGE_SECONDS = 30.0
 
-    Unlike `HttpTrustClient`, built once at boot from fixed arguments, this
-    resolves its settings fresh each check — so a change made through the
-    gateway's settings endpoint (`gateway/trust_settings.py`) takes effect on
-    the next message, with no restart. Behaves exactly like `NullTrustClient`
-    when no row exists yet, or one is missing `policy_id`/`api_key_encrypted`.
+
+@dataclass(frozen=True)
+class _Kept:
+    # The client the organization's settings make, None for no check.
+    checker: HttpTrustClient | None
+    read_at: float
+
+
+class DynamicTrustClient:
+    """Checks each message against the policy its workspace's organization
+    connected (`OrganizationTrustSettings`), read once per organization and
+    kept until it changes.
+
+    Unlike `HttpTrustClient`, built from fixed arguments, this follows each
+    organization's settings as they change: a change made through the
+    gateway (`gateway/organization_guardrails.py`) makes every process read
+    that organization's settings again before its next check there (`forget`,
+    `trust/signals.py`), with no restart. Settings older than
+    `max_age_seconds` are read again too. A workspace in an organization with
+    no policy, or in no organization at all, is not checked: `check` answers
+    "ok" without a request, as `NullTrustClient` does.
+
+    Every message an agent sends is checked, and reading the settings for each
+    one was a transaction per message for a row that hardly ever changes.
+    Which organization a workspace is in is kept for good: a workspace never
+    moves to another. That it is in none is read again as settings are, since
+    the revision that gives every workspace an organization may run while
+    this process does.
     """
 
     def __init__(
         self,
         *,
         session_factory: async_sessionmaker[AsyncSession],
-        store: TrustSettingsStore,
+        store: OrganizationTrustSettingsStore,
         keyring: Keyring,
         client: httpx.AsyncClient,
         timeout_seconds: float,
+        max_age_seconds: float = SETTINGS_MAX_AGE_SECONDS,
     ) -> None:
         self._session_factory = session_factory
         self._store = store
         self._keyring = keyring
         self._client = client
         self._timeout_seconds = timeout_seconds
+        self._max_age_seconds = max_age_seconds
+        # Each workspace's organization, kept for good.
+        self._organization_of: dict[str, str] = {}
+        # When each workspace found in no organization was read so, and those
+        # already logged as unchecked.
+        self._no_organization: dict[str, float] = {}
+        self._said_unchecked: set[str] = set()
+        self._kept: dict[str, _Kept] = {}
+        # Bumped for an organization by each `forget`, and the epoch by each
+        # `forget_all`, so a read begun before either does not keep what it
+        # read.
+        self._generation: dict[str, int] = {}
+        self._epoch = 0
+
+    def forget(self, organization_id: str) -> None:
+        """Read the organization's settings again before its next check: they
+        changed."""
+        self._kept.pop(organization_id, None)
+        self._generation[organization_id] = self._generation.get(organization_id, 0) + 1
+
+    def forget_all(self) -> None:
+        """Read every organization's settings again: this process may have
+        missed a change, as on reconnecting to the database."""
+        self._kept.clear()
+        self._no_organization.clear()
+        self._epoch += 1
+
+    async def is_active(self, tenant_id: str) -> bool:
+        """True when `tenant_id`'s organization holds a policy `check` would
+        call Switch Trust with."""
+        return await self._current(tenant_id) is not None
 
     async def check(
-        self, *, role: Role, content: str, room_id: str
+        self, *, tenant_id: str, role: Role, content: str, room_id: str
     ) -> TrustCheckResult:
-        # The DB read and the decrypt below are not network calls to Switch
+        checker = await self._current(tenant_id)
+        if checker is None:
+            return TrustCheckResult(outcome="ok", policy_id=None, policy_name=None)
+        return await checker.check(role=role, content=content, room_id=room_id)
+
+    async def _current(self, tenant_id: str) -> HttpTrustClient | None:
+        organization_id = self._organization_of.get(tenant_id)
+        if organization_id is not None:
+            kept = self._kept.get(organization_id)
+            if (
+                kept is not None
+                and time.monotonic() - kept.read_at < self._max_age_seconds
+            ):
+                return kept.checker
+        else:
+            read_at = self._no_organization.get(tenant_id)
+            if (
+                read_at is not None
+                and time.monotonic() - read_at < self._max_age_seconds
+            ):
+                return None
+        # The reads and the decrypt below are not network calls to Switch
         # Trust, so neither raises `GuardrailsCheckError` on its own — but a
         # stuck pool or an `UndecryptableError` from a key rotated out too
         # soon is exactly the kind of failure `check_message` exists to fail
         # open on, so anything either raises is folded into the same error.
+        # Nothing is kept then, so the next check reads again.
         try:
-            async with self._session_factory() as session:
-                settings = await self._store.get(session)
-            if (
-                settings is None
-                or not settings.policy_id
-                or not settings.api_key_encrypted
-            ):
-                return TrustCheckResult(outcome="ok", policy_id=None, policy_name=None)
-            api_key = self._keyring.decrypt(settings.api_key_encrypted)
+            async with tenant_session(self._session_factory, tenant_id) as session:
+                if organization_id is None:
+                    epoch = self._epoch
+                    read_at = time.monotonic()
+                    organization_id = await self._store.organization_of(
+                        session, tenant_id
+                    )
+                    if organization_id is None:
+                        if self._epoch == epoch:
+                            self._no_organization[tenant_id] = read_at
+                        if tenant_id not in self._said_unchecked:
+                            self._said_unchecked.add(tenant_id)
+                            logger.warning(
+                                "Workspace %s belongs to no organization, so no "
+                                "Switch Trust policy checks its messages",
+                                tenant_id,
+                            )
+                        return None
+                    self._organization_of[tenant_id] = organization_id
+                    self._no_organization.pop(tenant_id, None)
+                generation = self._generation.get(organization_id, 0)
+                epoch = self._epoch
+                read_at = time.monotonic()
+                settings = await self._store.get(session, organization_id)
+            checker = (
+                None
+                if settings is None
+                else HttpTrustClient(
+                    base_url=settings.endpoint,
+                    api_key=self._keyring.decrypt(settings.api_key_encrypted),
+                    policy_id=settings.policy_id,
+                    timeout_seconds=self._timeout_seconds,
+                    client=self._client,
+                )
+            )
         except Exception as error:
             raise GuardrailsCheckError(
                 f"Could not read Switch Trust settings: {error}"
             ) from error
-        http_client = HttpTrustClient(
-            base_url=settings.endpoint,
-            api_key=api_key,
-            policy_id=settings.policy_id,
-            timeout_seconds=self._timeout_seconds,
-            client=self._client,
-        )
-        return await http_client.check(role=role, content=content, room_id=room_id)
+        if (
+            self._generation.get(organization_id, 0) == generation
+            and self._epoch == epoch
+        ):
+            self._kept[organization_id] = _Kept(checker, read_at)
+        return checker
 
 
 class HttpTrustClient:
@@ -232,9 +364,10 @@ class HttpTrustClient:
         except httpx.HTTPError as error:
             raise GuardrailsCheckError(f"POST {self._url} failed: {error}") from error
         if response.status_code >= 400:
-            raise GuardrailsCheckError(
+            raise GuardrailsRefusedError(
                 f"POST {self._url} answered {response.status_code}: "
-                f"{response.text[:200]}"
+                f"{response.text[:200]}",
+                response.status_code,
             )
         try:
             body: dict[str, Any] = response.json()
@@ -316,7 +449,7 @@ def trust_redaction_notice(result: TrustCheckResult) -> str | None:
 
 
 async def check_message(
-    client: TrustClient, *, role: Role, content: str, room_id: str
+    client: TrustClient, *, tenant_id: str, role: Role, content: str, room_id: str
 ) -> TrustCheckResult:
     """`client.check`, failing open: a Switch Trust outage degrades to
     unchecked messages rather than to no messaging at all. Logged loudly
@@ -324,10 +457,27 @@ async def check_message(
     `outcome="errored"` rather than `"ok"`, so callers give it the same
     quiet in-chat annotation as an engine-side error."""
     try:
-        return await client.check(role=role, content=content, room_id=room_id)
+        return await client.check(
+            tenant_id=tenant_id, role=role, content=content, room_id=room_id
+        )
     except GuardrailsCheckError:
         logger.warning(
             "Switch Trust check failed; message allowed through unchecked",
             exc_info=True,
         )
         return TrustCheckResult(outcome="errored", policy_id=None, policy_name=None)
+
+
+async def trust_is_active(client: TrustClient, tenant_id: str) -> bool:
+    """`client.is_active`, failing towards checking: when the settings cannot
+    be read, the caller goes on to check, and each check then fails open with
+    the usual visible "could not check" annotation rather than the message
+    quietly skipping Switch Trust."""
+    try:
+        return await client.is_active(tenant_id)
+    except GuardrailsCheckError:
+        logger.warning(
+            "Could not tell whether Switch Trust is on; checking anyway",
+            exc_info=True,
+        )
+        return True

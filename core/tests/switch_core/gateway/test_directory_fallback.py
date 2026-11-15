@@ -68,9 +68,9 @@ class _StubExternalUserStore:
     ) -> list[SimpleNamespace]:
         return self._rows
 
-    async def claimant_ids_for(
+    async def claims_for(
         self, _session: object, _row_ids: list[str]
-    ) -> dict[str, list[str]]:
+    ) -> dict[str, list[object]]:
         return {}
 
 
@@ -107,6 +107,7 @@ async def _search(
         _StubUserStore(),  # type: ignore[arg-type]
         _StubLifecycle(adapter_result),  # type: ignore[arg-type]
         SimpleNamespace(id="u1", role="user", name="u1"),  # type: ignore[arg-type]
+        False,
     )
 
 

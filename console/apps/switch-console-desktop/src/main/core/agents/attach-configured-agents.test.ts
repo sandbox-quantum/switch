@@ -20,6 +20,8 @@ function readOnlyFs(seed: Record<string, string>): PluginFs & { files: Map<strin
       return Promise.resolve();
     },
     delete: (p) => Promise.reject(new Error(`attach deleted from the workdir: ${p}`)),
+    protectSecret: (p) =>
+      Promise.reject(new Error(`attach changed permissions in the workdir: ${p}`)),
     exists: (p) => Promise.resolve(files.has(p)),
     list: (dir) => {
       const prefix = `${dir}/`;
@@ -150,6 +152,17 @@ describe('attachConfiguredAgents', () => {
         apiEndpoint: 'https://switch.example.com',
         locationId: 'loc-1',
       })
+    );
+  });
+
+  it('announces the agent as attached rather than created, since it already existed', async () => {
+    await attachConfiguredAgents(params([{ name: 'theirs', providerId: 'codex' }]));
+
+    expect(h.emit).toHaveBeenCalledWith(
+      'agent:created',
+      expect.objectContaining({ name: 'theirs' }),
+      'unknown',
+      'attached'
     );
   });
 

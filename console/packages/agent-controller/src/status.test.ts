@@ -1,7 +1,12 @@
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
-import { generateSealingKeyPair, sealProviderLogin } from '@switch-console/agent-providers';
+import {
+  generateSealingKeyPair,
+  providerRuntimeIds,
+  providerUnsupportedReason,
+  sealProviderLogin,
+} from '@switch-console/agent-providers';
 import type { ProviderReadiness } from '@switch-console/agent-providers';
 import { vertexCredentialFixture, writeNodeCli } from '@switch-console/agent-providers/testing';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -230,6 +235,26 @@ describe('providerStatusFrom', () => {
     models: [],
   });
 
+  it('says when signing in would not fix the login, and only then', () => {
+    const pinned = {
+      status: 'unauthenticated' as const,
+      message: 'An administrator pins where Codex keeps logins.',
+      models: [],
+      loginHelps: false,
+    };
+    expect(providerStatusFrom('codex', located, pinned, at)).toMatchObject({
+      auth: 'missing',
+      auth_problem: 'An administrator pins where Codex keeps logins.',
+      login_helps: false,
+    });
+    expect(
+      providerStatusFrom('codex', located, readiness('unauthenticated'), at)
+    ).not.toHaveProperty('login_helps');
+    expect(
+      providerStatusFrom('codex', located, { ...pinned, status: 'unknown' as const }, at)
+    ).toMatchObject({ auth: 'unknown', login_helps: false });
+  });
+
   it('maps a missing CLI and each readiness answer', () => {
     expect(providerStatusFrom('claude', null, null, at)).toMatchObject({
       installed: false,
@@ -270,6 +295,9 @@ describe('providerStatusFrom', () => {
   });
 });
 
+// Every provider the controller runs is checked, whatever their number.
+const PROVIDERS = providerRuntimeIds().length;
+
 describe('ProviderStatuses', () => {
   it('checks each provider at most once per TTL, and reports changes', async () => {
     let clock = NOW;
@@ -288,19 +316,19 @@ describe('ProviderStatuses', () => {
     });
     expect(statuses.snapshot()).toEqual([]);
     await statuses.refreshStale();
-    expect(runtime.probes).toBe(4);
-    expect(changes).toBe(5);
+    expect(runtime.probes).toBe(PROVIDERS - 1);
+    expect(changes).toBe(PROVIDERS);
     expect(statuses.snapshot().find((s) => s.provider === 'cursor')?.installed).toBe(false);
     clock += PROVIDER_TTL_MS - 1;
     await statuses.refreshStale();
-    expect(runtime.probes).toBe(4);
+    expect(runtime.probes).toBe(PROVIDERS - 1);
     clock += 1;
     await statuses.refreshStale();
-    expect(runtime.probes).toBe(8);
-    expect(changes).toBe(5);
+    expect(runtime.probes).toBe(2 * (PROVIDERS - 1));
+    expect(changes).toBe(PROVIDERS);
     runtime.readiness = { status: 'unauthenticated', message: '', models: [] };
     await statuses.check('claude');
-    expect(changes).toBe(6);
+    expect(changes).toBe(PROVIDERS + 1);
     expect(statuses.snapshot().find((s) => s.provider === 'claude')?.auth).toBe('missing');
   });
 });
@@ -405,7 +433,7 @@ describe('ProviderStatuses taking checks made before it started', () => {
     ]);
     await providers.refreshStale();
     // Every provider but the two seeded is checked here.
-    expect(runtime.probes).toBe(3);
+    expect(runtime.probes).toBe(PROVIDERS - 2);
     expect(await providers.binaryPath('claude')).toBe('/bin/claude');
   });
 
@@ -531,6 +559,42 @@ describe('ProviderStatuses with logins given to the machine', () => {
     expect(runtime.loginProbes).toEqual([]);
   });
 
+  it('keeps "signing in would not help" only beside the message it was said of', async () => {
+    const pinned = {
+      status: 'unauthenticated' as const,
+      message: 'An administrator pins where Codex keeps logins.',
+      models: [],
+      loginHelps: false,
+    };
+    const signsIn = new FakeRuntime();
+    signsIn.readiness = pinned;
+    answer = sealedAnswer('sk-given', 1, 'setup-token', 'codex');
+    const given = await build(signsIn).check('codex');
+    expect(given).toMatchObject({ auth: 'ok', auth_source: 'sealed' });
+    expect(given).not.toHaveProperty('login_helps');
+    // The machine's own login is not the one agents use now.
+    expect(given).not.toHaveProperty('auth_problem');
+
+    const refused = new FakeRuntime();
+    refused.readiness = pinned;
+    refused.loginReadiness = { status: 'unauthenticated', message: 'Expired.', models: [] };
+    expect(await build(refused).check('codex')).not.toHaveProperty('login_helps');
+
+    // The machine's own login is still the one in use, and signing in still would not fix it.
+    const unopened = new FakeRuntime();
+    unopened.readiness = pinned;
+    answer = sealedAnswer(vertexCredentialFixture(), 1, 'vertex', 'codex');
+    const status = await build(unopened).check('codex');
+    expect(status.auth_problem).toContain('Only Claude signs in through Vertex AI.');
+    expect(status).toMatchObject({ auth: 'missing', login_helps: false });
+
+    const none = new FakeRuntime();
+    none.readiness = pinned;
+    answer = null;
+    reachable = false;
+    expect(await build(none).check('codex')).toMatchObject({ login_helps: false });
+  });
+
   it('says why a given login is not used', async () => {
     const runtime = new FakeRuntime();
     runtime.readiness = { status: 'unauthenticated', message: '', models: [] };
@@ -601,6 +665,23 @@ describe('PathProviderLocator', () => {
     });
     expect(await locator.locate('claude')).toBeNull();
     expect(await locator.locate('codex')).toBeNull();
+  });
+
+  it('finds Google’s agy for Antigravity ahead of a legacy antigravity-acp, on every OS', async () => {
+    expect(providerUnsupportedReason('antigravity', 'win32')).toBeNull();
+    const legacy = await writeNodeCli(dir, 'antigravity-acp', 'console.log("1.1.1")');
+    const locator = new PathProviderLocator(() => dir, join(dir, 'probe-home'));
+    expect(await locator.locate('antigravity')).toEqual({
+      path: expect.stringMatching(new RegExp(`^${escape(legacy)}$`, 'i')),
+      version: '1.1.1',
+      versionProblem: null,
+    });
+    const agy = await writeNodeCli(dir, 'agy', 'console.log("1.5.1")');
+    expect(await locator.locate('antigravity')).toEqual({
+      path: expect.stringMatching(new RegExp(`^${escape(agy)}$`, 'i')),
+      version: '1.5.1',
+      versionProblem: null,
+    });
   });
 
   it('reads the version of a CLI that writes in its home first, with a home of its own', async () => {
@@ -758,6 +839,7 @@ describe('StatusCollector', () => {
       protocol: 2,
       assignment_revision: 7,
       updated_by: 'self',
+      started_at: '2026-01-01T12:00:00.000Z',
     });
     expect(first.providers.map((p) => p.provider)).toEqual(['claude']);
     expect(first.tools).toEqual([
@@ -783,6 +865,8 @@ describe('StatusCollector', () => {
       observed({ alive: true, health: { ...health('connecting')!, since: 'later' } })
     );
     const second = await collector.collect(assignment);
+    // The process start, not the report's time: it only changes on a restart.
+    expect(second.controller.started_at).toBe('2026-01-01T12:00:00.000Z');
     expect(second.agents[0]!.since).toBe('2026-01-01T11:30:00Z');
     expect(statusFingerprint(second)).toBe(statusFingerprint(first));
 

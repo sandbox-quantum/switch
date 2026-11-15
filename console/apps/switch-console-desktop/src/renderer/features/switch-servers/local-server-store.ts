@@ -11,6 +11,7 @@ import type {
   StartLocalServerResult,
   SwitchVersionDrift,
 } from '@shared/core/managed-switch-server/managed-switch-server';
+import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import {
   localServerLogChannel,
   localServerStatusChannel,
@@ -112,6 +113,22 @@ export class LocalServerStore {
   /** Whether this machine's server runs without Docker. */
   get isNative(): boolean {
     return this.runtime === 'native';
+  }
+
+  /** A running native server's admin pages, when known; null otherwise. */
+  get adminPages(): LocalServerStatus['adminPages'] {
+    return this.status?.adminPages ?? null;
+  }
+
+  /**
+   * Whether `server` is this machine's native server and does not serve the
+   * gateway's admin pages, so links into them would open nothing: one started
+   * without them, or one not (yet) seen running. Every other server serves
+   * them — a Docker one runs them beside switch-core.
+   */
+  lacksAdminPages(server: Pick<SwitchServer, 'managed' | 'managementKind'>): boolean {
+    if (!server.managed || server.managementKind !== 'local' || !this.isNative) return false;
+    return this.adminPages !== 'served';
   }
 
   /**

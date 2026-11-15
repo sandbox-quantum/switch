@@ -10,13 +10,13 @@ Add server → Connect to Switch Cloud reuses server registration, password/SSO
 sign-in (or creating an account, where the server allows sign-up) and encrypted
 session storage. A matching server entry is reused, and an account already
 signed in goes straight on to the connections step, then to a new agent whose
-run location is Switch cloud.
+run location is Switch Cloud.
 
-## Switch cloud agents
+## Switch Cloud agents
 
 Signing in to Switch Cloud claims and starts the user's cloud machine
 (`/gateway/hosted-machines/ensure`). The machine runs the agent controller, so
-a Switch cloud agent is a managed agent placed on that machine's controller
+a Switch Cloud agent is a managed agent placed on that machine's controller
 once it has enrolled and is online, created like an agent on any other machine.
 Provider logins reach the machine sealed to its controller ("Give login"); the
 server stores no provider credentials of its own. Your Agents shows the machine

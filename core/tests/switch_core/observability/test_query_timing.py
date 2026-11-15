@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from switch_core.observability.catalogue import DB_QUERY_DURATION
 from switch_core.observability.metrics import MetricsRegistry, install, uninstall
-from switch_core.observability.query import _operation, instrument_queries
+from switch_core.observability.query import instrument_queries, query_operation
 
 
 @pytest.fixture
@@ -66,7 +66,7 @@ class TestTheOperationLabel:
     def test_it_is_the_leading_keyword_or_other(
         self, statement: str, expected: str
     ) -> None:
-        assert _operation(statement) == expected
+        assert query_operation(statement) == expected
 
     def test_a_statement_never_becomes_the_label(self) -> None:
         """The whole point. A room id or an email in a literal would otherwise
@@ -74,12 +74,12 @@ class TestTheOperationLabel:
         not entitled to that tenant's rows."""
         statement = "SELECT * FROM users WHERE email = 'someone@example.test'"
 
-        assert _operation(statement) == "select"
-        assert "example.test" not in _operation(statement)
+        assert query_operation(statement) == "select"
+        assert "example.test" not in query_operation(statement)
 
     def test_every_label_it_can_produce_is_a_small_fixed_set(self) -> None:
         produced = {
-            _operation(s)
+            query_operation(s)
             for s in [
                 "SELECT",
                 "INSERT",

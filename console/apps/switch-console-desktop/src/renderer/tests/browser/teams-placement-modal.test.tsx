@@ -228,7 +228,7 @@ describe('non-listed results', () => {
   it('names the admin requirement for a non-admin', async () => {
     listBridgeTeams.mockResolvedValue({ kind: 'forbidden' });
     const el = await render();
-    expect(el.textContent).toContain('requires an owner or admin of this workspace');
+    expect(el.textContent).toContain('requires an admin of this workspace');
   });
 
   it('shows a generic error’s own message', async () => {
@@ -359,7 +359,7 @@ describe('adding Switch to a team', () => {
     await act(async () => button(el, 'Add').click());
     await settle();
 
-    expect(el.textContent).toContain('requires an owner or admin of this workspace');
+    expect(el.textContent).toContain('requires an admin of this workspace');
   });
 
   it('shows a generic error’s own message', async () => {
@@ -447,7 +447,7 @@ describe('removing Switch from a team', () => {
     await act(async () => button(el, 'Remove').click());
     await settle();
 
-    expect(el.textContent).toContain('requires an owner or admin of this workspace');
+    expect(el.textContent).toContain('requires an admin of this workspace');
   });
 
   it('shows a generic error’s own message', async () => {
@@ -562,7 +562,7 @@ describe('making a team the default', () => {
     await act(async () => button(el, 'Make default').click());
     await settle();
 
-    expect(el.textContent).toContain('requires an owner or admin of this workspace');
+    expect(el.textContent).toContain('requires an admin of this workspace');
   });
 
   it('shows the server’s own sentence for a rejected choice (422 → invalid)', async () => {

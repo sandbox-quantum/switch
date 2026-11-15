@@ -16,10 +16,13 @@ import type {
   BridgeDirectorySearchResult,
   BridgeDirectoryUser,
   ClaimIdentityResult,
+  LinkCode,
   LinkedIdentity,
+  PendingIdentity,
 } from '@shared/core/switch-servers/switch-servers';
+import type { AccountLinkTarget } from './account-link-confirmation';
 import { switchServersStore } from './switch-servers-store';
-import { useMyIdentities } from './use-my-identities';
+import { useMyIdentities, useMyPendingIdentities } from './use-my-identities';
 
 /** How long to wait after the last keystroke before asking the platform. Every
  * search is a live call out to Slack or Mattermost, so this is a courtesy to
@@ -46,6 +49,7 @@ export const BridgeIdentitySearch = observer(function BridgeIdentitySearch({
   directorySearchSupported,
   autoFocus,
   onClaimed,
+  onConfirmationNeeded,
 }: {
   workspaceId: string;
   bridgeId: string;
@@ -57,6 +61,10 @@ export const BridgeIdentitySearch = observer(function BridgeIdentitySearch({
   directorySearchSupported: boolean;
   autoFocus: boolean;
   onClaimed: (identity: LinkedIdentity) => void;
+  /** A link that waits on a code posted from the account: one just made, one
+   * already waiting, or one made before links had to be confirmed. `code` is
+   * the one a claim came back with, else null. */
+  onConfirmationNeeded: (target: AccountLinkTarget, code: LinkCode | null) => void;
 }) {
   const { setCloseGuard } = useModalContext();
   const queryClient = useQueryClient();
@@ -71,6 +79,7 @@ export const BridgeIdentitySearch = observer(function BridgeIdentitySearch({
   const [error, setError] = useState<string | null>(null);
 
   const { refresh: refreshIdentities } = useMyIdentities(workspaceId || null);
+  const { pending } = useMyPendingIdentities(workspaceId || null);
 
   const debouncedQuery = useDebounce(search.trim(), SEARCH_DEBOUNCE_MS);
   const searchable = !!workspaceId && debouncedQuery.length >= MIN_QUERY_LENGTH;
@@ -92,6 +101,18 @@ export const BridgeIdentitySearch = observer(function BridgeIdentitySearch({
         externalUserId: person.externalUserId,
         username: person.username,
       });
+      if (result.kind === 'pending') {
+        refreshIdentities();
+        onConfirmationNeeded(
+          {
+            identityId: result.pending.id,
+            externalUsername: result.pending.externalUsername,
+            kind: result.alreadyLinked ? 'unverified' : 'pending',
+          },
+          result.code
+        );
+        return;
+      }
       if (result.kind !== 'claimed') {
         setError(claimFailureText(result));
         return;
@@ -158,10 +179,12 @@ export const BridgeIdentitySearch = observer(function BridgeIdentitySearch({
         result={directoryQuery.data ?? null}
         fetchError={directoryQuery.error}
         currentUserId={currentUserId}
+        pending={(pending ?? []).filter((p) => p.bridgeId === bridgeId)}
         claimingId={claiming}
         releasingId={releasing}
         onClaim={(person) => void handleClaim(person)}
         onRelease={(person) => void handleRelease(person)}
+        onConfirm={onConfirmationNeeded}
       />
 
       {error && <p className="text-xs text-destructive">{error}</p>}
@@ -178,10 +201,12 @@ function DirectoryResults({
   result,
   fetchError,
   currentUserId,
+  pending,
   claimingId,
   releasingId,
   onClaim,
   onRelease,
+  onConfirm,
 }: {
   query: string;
   searchable: boolean;
@@ -197,12 +222,16 @@ function DirectoryResults({
   result: BridgeDirectorySearchResult | null;
   fetchError: unknown;
   currentUserId: string | null;
+  /** The signed-in user's links on this app still waiting for a code. The
+   * directory knows nothing of them — it lists only links that count. */
+  pending: PendingIdentity[];
   /** The platform id of the account being linked, or null when none is. */
   claimingId: string | null;
   /** The platform id of the account being unlinked, or null when none is. */
   releasingId: string | null;
   onClaim: (person: BridgeDirectoryUser) => void;
   onRelease: (person: BridgeDirectoryUser) => void;
+  onConfirm: (target: AccountLinkTarget, code: LinkCode | null) => void;
 }) {
   if (!searchable) {
     return (
@@ -277,14 +306,19 @@ function DirectoryResults({
   // Nothing here is disabled because someone else holds the account: several
   // people can be recognised on the same one, and the other claimants are shown
   // so a shared or misidentified account is visible rather than silent.
-  const pending = claimingId !== null || releasingId !== null;
+  const busy = claimingId !== null || releasingId !== null;
   return (
     <div className="flex flex-col gap-2">
       {narrowed}
       <ul className="flex max-h-64 flex-col gap-1 overflow-y-auto">
         {result.users.map((person) => {
-          const linkedToMe = person.claimedBy.some((c) => c.userId === currentUserId);
+          const rowId = person.knownExternalUserId;
+          const mine = person.claimedBy.find((c) => c.userId === currentUserId) ?? null;
           const others = person.claimedBy.filter((c) => c.userId !== currentUserId);
+          const waiting =
+            mine === null
+              ? (pending.find((p) => p.externalUserId === person.externalUserId) ?? null)
+              : null;
           return (
             <li
               key={person.externalUserId}
@@ -302,20 +336,60 @@ function DirectoryResults({
                   </span>
                 )}
               </div>
-              {linkedToMe ? (
+              {mine !== null ? (
                 <span className="flex shrink-0 items-center gap-2">
-                  <Badge variant="secondary">Linked to you</Badge>
+                  <Badge variant="secondary">
+                    {mine.verified ? 'Linked to you' : 'Linked, not confirmed'}
+                  </Badge>
+                  {!mine.verified && rowId !== null && (
+                    <Button
+                      size="sm"
+                      disabled={busy}
+                      onClick={() =>
+                        onConfirm(
+                          {
+                            identityId: rowId,
+                            externalUsername: person.username,
+                            kind: 'unverified',
+                          },
+                          null
+                        )
+                      }
+                    >
+                      Confirm
+                    </Button>
+                  )}
                   <Button
                     variant="outline"
                     size="sm"
-                    disabled={pending || person.knownExternalUserId === null}
+                    disabled={busy || rowId === null}
                     onClick={() => onRelease(person)}
                   >
                     {releasingId === person.externalUserId ? 'Unlinking…' : 'Unlink'}
                   </Button>
                 </span>
+              ) : waiting !== null ? (
+                <span className="flex shrink-0 items-center gap-2">
+                  <Badge variant="secondary">Waiting for confirmation</Badge>
+                  <Button
+                    size="sm"
+                    disabled={busy}
+                    onClick={() =>
+                      onConfirm(
+                        {
+                          identityId: waiting.id,
+                          externalUsername: waiting.externalUsername,
+                          kind: 'pending',
+                        },
+                        null
+                      )
+                    }
+                  >
+                    Show code
+                  </Button>
+                </span>
               ) : (
-                <Button size="sm" disabled={pending} onClick={() => onClaim(person)}>
+                <Button size="sm" disabled={busy} onClick={() => onClaim(person)}>
                   {claimingId === person.externalUserId ? 'Linking…' : 'This is me'}
                 </Button>
               )}
@@ -328,7 +402,9 @@ function DirectoryResults({
 }
 
 /** Turn a failed claim into something the user can act on. */
-function claimFailureText(result: Exclude<ClaimIdentityResult, { kind: 'claimed' }>): string {
+function claimFailureText(
+  result: Exclude<ClaimIdentityResult, { kind: 'claimed' | 'pending' }>
+): string {
   switch (result.kind) {
     case 'unauthenticated':
       return 'Your session for this server expired. Sign in again, then retry.';

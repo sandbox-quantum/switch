@@ -76,10 +76,15 @@ class MessageTransport(Protocol):
         """Bind inbound callbacks. Call before `receive_forever`."""
         ...
 
-    async def receive_forever(self, progress: DeliveryProgress) -> None:
+    async def receive_forever(
+        self,
+        progress: DeliveryProgress,
+        *,
+        row_types: frozenset[str] | None = None,
+    ) -> None:
         """Deliver inbound events to the registered handlers until closed,
         starting each room where `progress` says and recording through it how
-        far the client got."""
+        far the client got. With `row_types`, only events of those types."""
         ...
 
     def held_back_released(self, room_id: str) -> None:
@@ -139,12 +144,14 @@ class MessageTransport(Protocol):
         caption: str | None = None,
         thread_root_id: str | None = None,
         group: dict[str, object] | None = None,
+        extra_content: dict[str, object] | None = None,
     ) -> SendResult:
         """Post an event pointing at an already-uploaded `uri`.
 
         `group` marks this as one part of a multi-attachment message —
         `{"id": ..., "index": i, "total": n}` — for transports that cannot
-        carry several files on one event. `metered` is as for `send_message`.
+        carry several files on one event. `metered` and `extra_content` are as
+        for `send_message`.
         """
         ...
 

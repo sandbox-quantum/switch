@@ -133,10 +133,15 @@ export interface ProviderSendTurnInput {
   sessionId: string;
   /** Caller-chosen id; the adapter echoes it in turn events for this turn. */
   turnId: string;
+  /** A steer must not be delivered into any other turn. */
+  expectedTurnId?: string;
   text: string;
   attachments?: TurnAttachment[];
   model?: ModelSelection;
 }
+
+/** The provider confirms no message was sent, so the host may safely queue it. */
+export class SteerNotSentError extends Error {}
 
 export interface ProviderTurnStartResult {
   turnId: string;
@@ -145,6 +150,33 @@ export interface ProviderTurnStartResult {
    * is that turn's id, not the requested one.
    */
   steeredInto?: string;
+}
+
+/** One turn of a saved native conversation, as a transcript that starts with it shows it. */
+export interface ConversationHistoryTurn {
+  /** The same every time the same conversation is read, so reading it twice adds nothing. */
+  turnId: string;
+  items: ConversationHistoryItem[];
+}
+
+export interface ConversationHistoryItem {
+  itemId: string;
+  kind: 'user-message' | 'assistant-message' | 'tool-activity';
+  status: 'completed' | 'failed';
+  title: string;
+  text: string;
+}
+
+/**
+ * What a session advertises for a message sent mid-turn: `steer` when its
+ * provider can take one into the running turn, `queue` otherwise. Whether a
+ * given message may steer is decided per message, so this follows the
+ * provider alone.
+ */
+export function sessionInput(
+  capabilities: Pick<ProviderCapabilities, 'steering'>
+): 'steer' | 'queue' {
+  return capabilities.steering ? 'steer' : 'queue';
 }
 
 export interface ProviderCapabilities {
@@ -195,6 +227,17 @@ export interface ProviderAdapter {
    * has no such channel; a caller says it in the next user message instead.
    */
   addDeveloperMessage?(sessionId: string, text: string): Promise<void>;
+  /**
+   * The turns of a saved native conversation, oldest first: what a session
+   * that continues a conversation started outside Switch shows before its own.
+   * Read without starting the session, from where a session with `env` would
+   * find it. Absent means the provider cannot read its saved conversations.
+   */
+  conversationHistory?(
+    nativeSessionId: string,
+    cwd: string,
+    env: Record<string, string>
+  ): Promise<ConversationHistoryTurn[]>;
   stopSession(sessionId: string): Promise<void>;
   stopAll(): Promise<void>;
   hasSession(sessionId: string): boolean;

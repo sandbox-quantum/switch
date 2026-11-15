@@ -1,3 +1,5 @@
+import type { LinkCode, LinkRequestFailure } from '@shared/core/switch-servers/switch-servers';
+
 /**
  * What linking is for, said where someone is deciding whether to bother.
  *
@@ -18,4 +20,35 @@ export function spellCount(n: number): string {
 export function connectedAppsSummary(serverName: string, count: number): string {
   if (count === 0) return `${serverName} has no messaging apps connected yet.`;
   return `${serverName} has ${spellCount(count)} messaging app${count === 1 ? '' : 's'} connected.`;
+}
+
+/** A platform username as a handle. Platforms differ on whether the username
+ * they report already carries the sigil, so add one only when it is missing. */
+export function accountHandle(username: string): string {
+  return username.startsWith('@') ? username : `@${username}`;
+}
+
+/** A request about a waiting confirmation that did nothing, said so the user
+ * can act on it. */
+export function linkRequestFailureText(failure: LinkRequestFailure): string {
+  switch (failure.kind) {
+    case 'unauthenticated':
+      return 'Your session for this server expired. Sign in again, then retry.';
+    case 'refused':
+    case 'error':
+      return failure.message;
+  }
+}
+
+/**
+ * What Copy puts on the clipboard: the whole command the instructions say to
+ * post (`!link-account CODE`, or the platform's own form), so pasting it is all
+ * that is left to do. The command is the inline-code span that carries the
+ * code; instructions without one copy the code alone.
+ */
+export function commandToPost(code: LinkCode): string {
+  const spans = code.instructions.split('`');
+  if (spans.length % 2 === 0) return code.code;
+  const command = spans.find((span, i) => i % 2 === 1 && span.includes(code.code));
+  return command?.trim() || code.code;
 }

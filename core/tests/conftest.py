@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import uuid
+import warnings
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
 
@@ -10,6 +11,7 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import insert, text
 from sqlalchemy.engine import make_url
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import (
     AsyncConnection,
     AsyncEngine,
@@ -29,7 +31,7 @@ from switch_core.bridges.collaboration.platforms import PLATFORMS
 from switch_core.db import encrypted_json
 from switch_core.db.base import Base
 from switch_core.db.engine import create_session_factory
-from switch_core.db.models import TENANT_ZERO_ID, Tenant
+from switch_core.db.models import TENANT_ZERO_ID, Organization, Tenant
 from switch_core.db.runtime_role import grant_runtime_role
 from switch_core.keys import Keyring
 from switch_core.messages.notify import MessageListener
@@ -66,11 +68,21 @@ async def _seed_tenant_zero(conn: AsyncConnection) -> None:
     """Insert the one tenant every scoped row's `tenant_id` default points at.
 
     Every scoped table's `tenant_id` FK requires a matching `tenants` row, so
-    this must run right after the schema exists.
+    this must run right after the schema exists. It belongs to an
+    organization of its own, as the migration gives every existing workspace
+    one; the organization reuses the tenant's id.
     """
     await conn.execute(
-        insert(Tenant.__table__).values(
+        insert(Organization.__table__).values(
             id=TENANT_ZERO_ID, slug="default", name="Default"
+        )
+    )
+    await conn.execute(
+        insert(Tenant.__table__).values(
+            id=TENANT_ZERO_ID,
+            slug="default",
+            name="Default",
+            organization_id=TENANT_ZERO_ID,
         )
     )
 
@@ -86,6 +98,43 @@ _TRUNCATE_ALL = (
 )
 
 
+# How long the reset waits for its locks before ending what an earlier test
+# left holding them, and then how long it waits before giving up.
+_TRUNCATE_LOCK_TIMEOUT = "10s"
+_TRUNCATE_LOCK_TIMEOUT_AFTER_CLEARING = "60s"
+
+_LOCK_NOT_AVAILABLE = "55P03"
+
+# Every other session on this database, for a reset that could not take its
+# locks: the ones it ends, or the ones that kept it waiting.
+_OTHER_SESSIONS = (
+    "SELECT pid, state, now() - xact_start AS in_transaction_for, "
+    "left(query, 300) AS last_query "
+    "FROM pg_stat_activity "
+    "WHERE datname = current_database() AND pid <> pg_backend_pid()"
+)
+
+_END_LEFT_IN_TRANSACTION = text(
+    f"SELECT *, pg_terminate_backend(pid) FROM ({_OTHER_SESSIONS}) AS other "
+    "WHERE state LIKE 'idle in transaction%'"
+)
+
+
+async def _truncate(engine: AsyncEngine, lock_timeout: str) -> bool:
+    """Empty the database, waiting at most `lock_timeout` for the locks.
+    Returns whether it got them."""
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text(f"SET LOCAL lock_timeout = '{lock_timeout}'"))
+            await conn.execute(text(_TRUNCATE_ALL))
+            await _seed_tenant_zero(conn)
+    except DBAPIError as exc:
+        if getattr(exc.orig, "sqlstate", None) != _LOCK_NOT_AVAILABLE:
+            raise
+        return False
+    return True
+
+
 async def empty_the_database(engine: AsyncEngine) -> None:
     """Leave the schema in place and take every row out of it, tenant zero apart.
 
@@ -93,10 +142,35 @@ async def empty_the_database(engine: AsyncEngine) -> None:
     building the schema from nothing is only one way to reach. Emptying it
     instead is the same starting point for a fraction of the DDL, and it is
     what every per-test fixture here uses.
+
+    TRUNCATE takes every table's exclusive lock, so a connection left in a
+    transaction would make it wait forever. One is left when a test's client
+    loop (a `TestClient`'s thread, say) stops while a query of its stream is
+    in flight: the task is abandoned rather than cancelled, and its
+    transaction never ends. Each test worker has a database of its own and
+    runs one test at a time, so a session idle in a transaction while a test
+    is still being set up belongs to a test that has finished. The reset ends
+    those, with a warning naming them, and carries on; and fails, naming every
+    session still connected, if it then still cannot take its locks.
     """
-    async with engine.begin() as conn:
-        await conn.execute(text(_TRUNCATE_ALL))
-        await _seed_tenant_zero(conn)
+    if await _truncate(engine, _TRUNCATE_LOCK_TIMEOUT):
+        return
+    async with engine.connect() as conn:
+        ended = (await conn.execute(_END_LEFT_IN_TRANSACTION)).mappings().all()
+    if ended:
+        warnings.warn(
+            "emptying the database ended sessions an earlier test left in a "
+            "transaction:\n" + "\n".join(str(dict(session)) for session in ended),
+            stacklevel=2,
+        )
+    if await _truncate(engine, _TRUNCATE_LOCK_TIMEOUT_AFTER_CLEARING):
+        return
+    async with engine.connect() as conn:
+        sessions = (await conn.execute(text(_OTHER_SESSIONS))).mappings().all()
+    raise AssertionError(
+        "emptying the database could not take its locks. Still connected:\n"
+        + "\n".join(str(dict(session)) for session in sessions)
+    )
 
 
 @pytest.fixture(scope="session")

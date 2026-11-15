@@ -42,8 +42,11 @@ export function loginKindsFor(provider: AgentProviderId): { value: LoginKind; la
       ];
     case 'cursor':
       return [{ value: 'api-key', label: 'API key' }];
-    default:
+    case 'opencode':
+    case 'antigravity':
       return [{ value: 'this-computer', label: "This computer's sign-in" }];
+    default:
+      return [];
   }
 }
 

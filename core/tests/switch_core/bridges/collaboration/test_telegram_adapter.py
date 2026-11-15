@@ -2,15 +2,18 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
 import pytest
 from telegram.error import BadRequest, Conflict, TelegramError, TimedOut
 
+from switch_core.bridges.collaboration.adapter import MessagePartlySent
 from switch_core.bridges.collaboration.models import (
     InboundCommand,
     InboundMessage,
+    InboundUserLeave,
     OutboundAttachment,
 )
 from switch_core.bridges.collaboration.telegram import adapter as adapter_module
@@ -979,11 +982,67 @@ def test_a_forum_target_deleted_mid_run_truncates_rather_than_scatters() -> None
     bot.send_message = gone_after_the_first  # type: ignore[method-assign]
     body = "\n".join(["x" * 200] * 60)
 
-    _run(adapter.send_message(str(CHAT_ID), "scout", body, f"{CHAT_ID}:88"))
+    with pytest.raises(MessagePartlySent):
+        _run(adapter.send_message(str(CHAT_ID), "scout", body, f"{CHAT_ID}:88"))
 
     sent = bot.messages
     assert len(sent) == 1
     assert all("reply_parameters" in m for m in sent)
+
+
+def _refuse_after(bot: _FakeBot, accepted: int) -> None:
+    """Make `bot` refuse every message after the first `accepted`, except a
+    notice that the message was cut short."""
+    original = bot.send_message
+
+    async def refusing(**kwargs: Any) -> Any:
+        if len(bot.messages) >= accepted and not kwargs["text"].startswith("⚠️ Only"):
+            raise TelegramError("refused")
+        return await original(**kwargs)
+
+    bot.send_message = refusing  # type: ignore[method-assign]
+
+
+def test_a_part_refused_mid_message_is_disclosed_and_raised() -> None:
+    adapter = _adapter()
+    bot = _bot(adapter)
+    _refuse_after(bot, 1)
+    body = "\n".join(["x" * 200] * 60)
+
+    with pytest.raises(MessagePartlySent) as raised:
+        _run(adapter.send_message(str(CHAT_ID), "scout", body, "88"))
+
+    assert raised.value.first_ref == f"{CHAT_ID}:501"
+    assert raised.value.delivered == 1
+    assert len(bot.messages) == 2
+    assert bot.messages[1]["text"].startswith("⚠️ Only 1 of")
+
+
+def test_a_refused_first_part_is_no_message() -> None:
+    adapter = _adapter()
+    bot = _bot(adapter)
+    _refuse_after(bot, 0)
+    body = "\n".join(["x" * 200] * 60)
+
+    assert _run(adapter.send_message(str(CHAT_ID), "scout", body)) is None
+    assert bot.messages == []
+
+
+def test_a_caption_sent_only_in_part_still_sends_the_file() -> None:
+    adapter = _adapter()
+    bot = _bot(adapter)
+    _refuse_after(bot, 1)
+    caption = "\n".join(["y" * 200] * 60)
+
+    ref = _run(
+        adapter.send_attachment(
+            str(CHAT_ID), "scout", "note.txt", "text/plain", b"hello", caption=caption
+        )
+    )
+
+    assert ref == f"{CHAT_ID}:501"
+    assert bot.messages[-1]["text"].startswith("⚠️ Only 1 of")
+    assert len(bot.documents) == 1
 
 
 def test_a_forum_attachment_carries_the_same_mandatory_anchor() -> None:
@@ -1545,8 +1604,28 @@ class _FakeApplication:
 class _FakeBuilder:
     def __init__(self, app: _FakeApplication) -> None:
         self._app = app
+        self.connect_timeout_val: float | None = None
+        self.read_timeout_val: float | None = None
+        self.get_updates_connect_timeout_val: float | None = None
+        self.get_updates_read_timeout_val: float | None = None
 
     def token(self, _token: str) -> _FakeBuilder:
+        return self
+
+    def connect_timeout(self, timeout: float) -> _FakeBuilder:
+        self.connect_timeout_val = timeout
+        return self
+
+    def read_timeout(self, timeout: float) -> _FakeBuilder:
+        self.read_timeout_val = timeout
+        return self
+
+    def get_updates_connect_timeout(self, timeout: float) -> _FakeBuilder:
+        self.get_updates_connect_timeout_val = timeout
+        return self
+
+    def get_updates_read_timeout(self, timeout: float) -> _FakeBuilder:
+        self.get_updates_read_timeout_val = timeout
         return self
 
     def build(self) -> _FakeApplication:
@@ -1575,6 +1654,22 @@ def test_starting_begins_polling_and_learns_the_bot_id() -> None:
         "my_chat_member",
         "callback_query",
     ]
+
+
+def test_starting_configures_network_timeouts_on_application_builder() -> None:
+    adapter = TelegramAdapter(
+        config=TelegramConnectionConfig(bot_token="token", bot_username=BOT_USERNAME)
+    )
+    app = _FakeApplication()
+    builder = _FakeBuilder(app)
+
+    with patch.object(adapter_module, "ApplicationBuilder", lambda: builder):
+        _run(adapter.start(_noop, _noop, _noop, _noop, _noop))
+
+    assert builder.connect_timeout_val == 30.0
+    assert builder.read_timeout_val == 30.0
+    assert builder.get_updates_connect_timeout_val == 30.0
+    assert builder.get_updates_read_timeout_val == 30.0
 
 
 def test_a_quiet_copy_calls_the_bot_api_without_polling() -> None:
@@ -1768,9 +1863,123 @@ def test_service_messages_are_not_bridged_as_empty_messages(field: str) -> None:
     seen: list[InboundMessage] = []
     adapter._on_message = lambda m: _collect(seen, m)
 
-    _run(adapter._handle_message(_FakeInbound(text=None, **{field: object()})))
+    value: Any = _FakeUser(user_id=9) if field == "left_chat_member" else object()
+    _run(adapter._handle_message(_FakeInbound(text=None, **{field: value})))
 
     assert seen == []
+
+
+def _titles(adapter: TelegramAdapter) -> list[tuple[str, str, str]]:
+    reported: list[tuple[str, str, str]] = []
+
+    async def named(chat_id: str, old: str, new: str) -> None:
+        reported.append((chat_id, old, new))
+
+    adapter.set_channel_rename_handler(named)
+    return reported
+
+
+def test_a_retitled_group_is_reported_from_its_service_message() -> None:
+    adapter = _adapter()
+    reported = _titles(adapter)
+    seen: list[InboundMessage] = []
+    adapter._on_message = lambda m: _collect(seen, m)
+
+    _run(adapter._handle_message(_FakeInbound(message_id=1, text="hi")))
+    _run(
+        adapter._handle_message(
+            _FakeInbound(
+                message_id=2,
+                text=None,
+                chat=_FakeChat(title="general 2026"),
+                new_chat_title="general 2026",
+            )
+        )
+    )
+
+    # Seen first without an old title; the bridge compares with its record.
+    assert reported == [
+        (str(CHAT_ID), "", "general"),
+        (str(CHAT_ID), "general", "general 2026"),
+    ]
+    assert [m.content for m in seen] == ["hi"]
+
+
+def test_an_unchanged_title_is_reported_once() -> None:
+    adapter = _adapter()
+    reported = _titles(adapter)
+    adapter._on_message = lambda m: _collect([], m)
+
+    for message_id in (1, 2, 3):
+        _run(adapter._handle_message(_FakeInbound(message_id=message_id)))
+
+    assert reported == [(str(CHAT_ID), "", "general")]
+
+
+def test_a_private_chat_has_no_title_to_report() -> None:
+    adapter = _adapter()
+    reported = _titles(adapter)
+    adapter._on_message = lambda m: _collect([], m)
+
+    _run(
+        adapter._handle_message(
+            _FakeInbound(chat=_FakeChat(chat_id=7, chat_type="private", title=None))
+        )
+    )
+
+    assert reported == []
+
+
+def test_someone_leaving_is_reported_as_a_departure() -> None:
+    adapter = _adapter()
+    left: list[InboundUserLeave] = []
+    adapter.set_user_left_handler(lambda leave: _collect(left, leave))
+    bob = _FakeUser(user_id=9, username="bob")
+
+    _run(
+        adapter._handle_message(
+            _FakeInbound(text=None, from_user=bob, left_chat_member=bob)
+        )
+    )
+
+    assert len(left) == 1
+    assert left[0].external_user_id == "9"
+    assert left[0].channel_id == str(CHAT_ID)
+    assert left[0].removed_by_name is None
+
+
+def test_someone_removed_names_who_removed_them() -> None:
+    adapter = _adapter()
+    left: list[InboundUserLeave] = []
+    adapter.set_user_left_handler(lambda leave: _collect(left, leave))
+
+    _run(
+        adapter._handle_message(
+            _FakeInbound(
+                text=None,
+                from_user=_FakeUser(user_id=7, username="alice"),
+                left_chat_member=_FakeUser(user_id=9, username="bob"),
+            )
+        )
+    )
+
+    assert [leave.external_user_id for leave in left] == ["9"]
+    assert left[0].removed_by_name is not None
+    assert "alice" in left[0].removed_by_name
+
+
+def test_the_bot_leaving_is_not_a_person_leaving() -> None:
+    adapter = _adapter()
+    left: list[InboundUserLeave] = []
+    adapter.set_user_left_handler(lambda leave: _collect(left, leave))
+
+    _run(
+        adapter._handle_message(
+            _FakeInbound(text=None, left_chat_member=_FakeUser(user_id=BOT_USER_ID))
+        )
+    )
+
+    assert left == []
 
 
 def test_a_photo_with_no_caption_is_still_bridged() -> None:
@@ -2627,3 +2836,39 @@ def test_a_command_given_its_argument_is_not_interrupted() -> None:
 
     assert [(c.command, c.args) for c in commands] == [("invite-agent", "@scout")]
     assert _bot(adapter).messages == []
+
+
+def test_members_gone_names_those_who_left_and_trusts_no_refusal() -> None:
+    """Telegram cannot list a group, but says whether one person is in it,
+    which is how a restart finds people who left while Switch was down."""
+    adapter = _adapter()
+    adapter._MEMBER_CHECK_PAUSE = 0  # type: ignore[misc]
+
+    class _Bot:
+        async def get_chat_member(self, *, chat_id: int, user_id: int) -> Any:
+            if user_id == 3:
+                raise RuntimeError("not allowed")
+            return _FakeMember({1: "member", 2: "left", 4: "kicked"}[user_id])
+
+    adapter._bot = _Bot()  # type: ignore[assignment]
+
+    gone = _run(adapter.members_gone(str(CHAT_ID), ["1", "2", "3", "4"]))
+
+    assert gone == {"2", "4"}
+
+
+def test_a_restricted_person_who_left_is_gone_and_one_still_in_stays() -> None:
+    """A restricted person keeps the status `restricted` after leaving; only
+    `is_member` says they went."""
+    adapter = _adapter()
+    adapter._MEMBER_CHECK_PAUSE = 0  # type: ignore[misc]
+
+    class _Bot:
+        async def get_chat_member(self, *, chat_id: int, user_id: int) -> Any:
+            return SimpleNamespace(status="restricted", is_member=user_id == 1)
+
+    adapter._bot = _Bot()  # type: ignore[assignment]
+
+    gone = _run(adapter.members_gone(str(CHAT_ID), ["1", "2"]))
+
+    assert gone == {"2"}

@@ -1,0 +1,137 @@
+version: 2
+params:
+  provider:
+    type: provider
+    label: Provider
+    description: Which coding agent provider to use for the AI agents
+  machine:
+    type: machine
+    label: Machine
+    description: Which machine to run the agents on
+  org:
+    type: string
+    label: Organization
+    description: The organization, department, or company name
+    required: true
+  cadence:
+    type: enum
+    label: Cadence
+    description: How often briefings happen
+    enum: ["Weekly", "Biweekly", "Monthly"]
+    default: Weekly
+  bridge:
+    type: bridge
+    label: Messaging app
+    description: Which messaging app to create the channel on
+    required: false
+  bypass:
+    type: boolean
+    label: Go ahead without asking
+    description: Let the agents run every command and file change without asking anyone first. Unsafe; off by default, so they ask before anything risky.
+    default: false
+    input: advanced
+resources:
+  briefing_compiler:
+    type: agent
+    display_name: "{org} Briefing Compiler"
+    description: Aggregates updates from across the org into a structured executive summary
+    provider: "{provider}"
+    machine: "{machine}"
+    directory: "{$agents_dir}/{briefing_compiler.name}"
+    auto_approve: "{bypass}"
+    addressing: {anyone_in: [exec_room]}
+    instructions: |-
+      You are the briefing compiler for the {org} executive briefing room. You help compile {cadence} executive updates into a clear, consistent format.
+
+      You only receive messages that mention you, so each time you are addressed, first read the room's recent history to catch up on updates posted since you last looked.
+
+      When team leads post their updates:
+      - Acknowledge receipt
+      - Flag if any required section is missing (highlights, lowlights, metrics, decisions needed, risks)
+      - Note connections between teams: if engineering mentions a delay that affects a marketing launch, link them
+
+      When the exec lead asks you to compile the briefing:
+      - Organize updates by team in the standard format: highlights, lowlights, metrics, decisions needed, risks
+      - Lead with items that need executive attention or decision
+      - Summarize, don't just concatenate. The exec team should be able to read the briefing in 5 minutes.
+      - Flag cross-team conflicts or dependencies that individual teams might not see
+
+      Each time you compile, also:
+      - Track recurring themes across briefing cycles: is the same risk showing up every week?
+      - Note decisions that were made but not followed up on
+      - Suggest when a topic needs a deeper discussion outside the briefing format
+
+      After the briefing session:
+      - Record decisions and action items in the Decision Log document
+      - Note follow-up deadlines
+  decision_tracker:
+    type: agent
+    display_name: "{org} Decision Tracker"
+    description: Tracks decisions made, action items assigned, and follow-up deadlines
+    provider: "{provider}"
+    machine: "{machine}"
+    directory: "{$agents_dir}/{decision_tracker.name}"
+    auto_approve: "{bypass}"
+    addressing: {anyone_in: [exec_room]}
+    instructions: |-
+      You are the decision tracker for the {org} executive briefing room. You make sure executive decisions are captured and followed up on.
+
+      You only receive messages that mention you, so each time you are addressed, first read the room's recent history to catch up on the discussion since you last looked.
+
+      In the discussion you catch up on:
+      - Look for decisions: any statement like 'let's go with...' or 'approved' or 'we'll do...'
+      - Capture each decision with: what was decided, context/rationale, who owns follow-up, when follow-up is due
+      - Update the Decision Log document
+
+      When asked before a briefing:
+      - Post a list of outstanding follow-ups from previous sessions, with overdue items first
+      - Note when the same topic comes up for decision repeatedly without resolution - it may need a different approach
+      - Flag when decisions conflict with previous decisions in the log
+
+      Over time:
+      - Track decision outcomes: did the decision achieve what was expected?
+  exec_room:
+    type: room
+    name: "{org} - Exec Briefing"
+    description: "{cadence} executive briefing room for {org}. Status updates, decisions, and strategic alignment."
+    bridge: "{bridge}"
+    agents: [briefing_compiler, decision_tracker]
+    users:
+      - {if: "{bridge}", value: ["{$creator}"]}
+      - {value: []}
+    instructions: |-
+      This room is for {cadence} executive briefings for {org}. Each briefing follows a consistent format so leadership can quickly scan status and focus discussion time on decisions.
+
+      Briefing format:
+      1. Highlights: 2-3 things that went well
+      2. Lowlights: 2-3 things that didn't go well or need attention
+      3. Metrics: key numbers vs targets
+      4. Decisions needed: anything that requires exec input this cycle
+      5. Risks: emerging risks leadership should be aware of
+
+      Keep updates concise. If something needs deep discussion, flag it as a 'Decisions needed' item with a one-paragraph brief and options.
+
+      The agents only see messages that mention them by name: mention {briefing_compiler.name} in team updates and to compile the briefing, and {decision_tracker.name} after decisions are made and before each briefing.
+
+      Note for agents: the documents attached to this room are starting layouts that only their creator can edit. The first time you need to update one, create your own room document named after it with " (live)" added (for example "Decision Log (live)"), starting from its current content, keep that copy up to date, and tell the room you did. If a live copy already exists, use it: update it if you created it, otherwise post the change and ask the agent that created it to apply it.
+    roles:
+      - name: exec-lead
+        exclusive: true
+        instructions: |-
+          You own the briefing process. Your responsibilities:
+          - Set the agenda for each briefing cycle
+          - Collect updates from team leads and compile the briefing
+          - Highlight items that need executive decision or input
+          - Track decisions made and follow up on action items
+          - Ensure briefings stay concise and decision-focused, not status-reporting-for-its-own-sake
+    docs:
+      - name: Decision Log
+        description: Decisions made in exec briefings with context and follow-up
+        instructions: Record every executive decision. This is how we track what was decided and why.
+        content: |-
+          # Executive Decision Log - {org}
+
+          | Date | Decision | Context | Owner | Follow-up due |
+          |------|----------|---------|-------|---------------|
+          | | | | | |
+    kickoff: "Executive briefing room is live for {org} on a {cadence} cadence. @{briefing_compiler.name} will compile updates and @{decision_tracker.name} will track decisions. Exec lead - set the agenda for the first briefing. The agents only see messages that mention them by name."

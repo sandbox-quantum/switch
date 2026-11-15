@@ -1,3 +1,4 @@
+import { IS_PROCESS_ALIVE, watcherHealthFileSchema } from '@switch-console/agent-providers';
 import { z } from 'zod';
 import type { IExecutionContext } from '@main/core/execution-context/types';
 import { READ_JSON } from './remote-json';
@@ -24,15 +25,12 @@ import { IS_STATE_ROOT } from './state-roots';
  * `watcherIsCurrent` for that, so the decision lives in one place and can be
  * read without the script.
  */
-export const WATCHER_STATUS_SCRIPT = String.raw`${READ_JSON}${IS_STATE_ROOT}
+export const WATCHER_STATUS_SCRIPT = String.raw`${READ_JSON}${IS_STATE_ROOT}${IS_PROCESS_ALIVE}
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const [baseArg] = process.argv.slice(1);
 const base = baseArg || path.join(os.homedir(), '.local', 'state', 'switch', 'sdk-watchers');
-const alive = (pid) => {
-  try { process.kill(pid, 0); return true; } catch { return false; }
-};
 let names = [];
 try { names = fs.readdirSync(base).filter(isStateRoot); } catch {}
 const found = [];
@@ -59,14 +57,14 @@ for (const name of names) {
   found.push({
     agentId: config.session.agentId,
     root,
-    running: !!(owner && Number.isSafeInteger(owner.pid) && owner.pid > 0 && alive(owner.pid)),
+    running: !!(owner && Number.isSafeInteger(owner.pid) && owner.pid > 0 && isProcessAlive(owner.pid, 'recorded')),
     build: owner && typeof owner.build === 'string' ? owner.build : null,
     enabled: watch ? watch.enabled === true : null,
     spawn: watch ? watch.spawn === true : null,
     stoodDown,
     supervisorPid: owner && Number.isSafeInteger(owner.pid) && owner.pid > 0 ? owner.pid : null,
     workerPid,
-    workerAlive: workerPid !== null && alive(workerPid),
+    workerAlive: workerPid !== null && isProcessAlive(workerPid, 'recorded'),
     health,
     failure: failure && typeof failure.message === 'string' ? failure.message : null,
     takenOver: takenOver && typeof takenOver.reason === 'string'
@@ -137,4 +135,32 @@ export function watcherIsCurrent(
   if (!status.running) return false;
   if (!status.build || status.build.split('/').pop() !== want.bundleFile) return false;
   return status.enabled === want.enabled && status.spawn === want.spawn;
+}
+
+/**
+ * Whether a watcher runs the shared-host bundle `bundle` names, so the session
+ * configurations it is handed are read by that build. Its own process says
+ * which bundle it loaded, in its health file, taken only from the process
+ * alive now; a record from that process that names none comes from a build
+ * too old to say, which is some other build. While that process is down, its
+ * supervisor, which starts it again from the same file, says which file that
+ * is.
+ *
+ * Null when no watcher is running, and when which bundle it runs cannot be
+ * told: its process has written no record of its own yet (one just started,
+ * or the file is its predecessor's), or its supervisor did not say which file
+ * it starts. Only a watcher that says it runs another build is false.
+ */
+export function watcherRunsBundle(
+  status: HostWatcherStatus | undefined,
+  bundle: { identity: string; file: string }
+): boolean | null {
+  if (!status || (!status.workerAlive && !status.running)) return null;
+  if (status.workerAlive) {
+    const written = watcherHealthFileSchema.safeParse(status.health);
+    if (!written.success || written.data.pid !== status.workerPid) return null;
+    return written.data.bundle === bundle.identity;
+  }
+  const file = status.build?.split('/').pop();
+  return file ? file === bundle.file : null;
 }

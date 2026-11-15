@@ -1,3 +1,4 @@
+import { homedir } from 'node:os';
 import { beforeEach, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
@@ -5,6 +6,8 @@ const mocks = vi.hoisted(() => ({
   deploy: vi.fn(),
   exec: vi.fn(),
   dispose: vi.fn(),
+  resolved: { path: '/usr/bin/claude', selectionProblem: null as string | null },
+  found: '/usr/bin/claude' as string | null,
   plugin: {
     metadata: { name: 'Claude Code' } as { name: string; sessionStartMaySignIn?: boolean },
     capabilities: { hostDependency: { binaryNames: ['claude'] } },
@@ -17,10 +20,11 @@ vi.mock('@main/core/sdk-host/shared-host-deployment', () => ({
   deploySharedHost: mocks.deploy,
 }));
 vi.mock('@main/core/agent-runtime/impl/resolve-agent-executable', () => ({
-  resolveAgentExecutable: async () => '/usr/bin/claude',
+  resolveAgentExecutable: async () => mocks.resolved.path,
+  resolveAgentExecutableWithReason: async () => mocks.resolved,
 }));
 vi.mock('@switch-console/core/deps/runtime', () => ({
-  resolveCommandPath: async () => '/usr/bin/claude',
+  resolveCommandPath: async () => mocks.found,
 }));
 vi.mock('@main/core/providers/plugin-registry', () => ({
   getPlugin: () => mocks.plugin,
@@ -44,6 +48,8 @@ const remote = { providerId: 'claude' as const, sshHost: 'builder', dir: '/work'
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.plugin.metadata = { name: 'Claude Code' };
+  mocks.resolved = { path: '/usr/bin/claude', selectionProblem: null };
+  mocks.found = '/usr/bin/claude';
   mocks.exec.mockResolvedValue({
     stdout: JSON.stringify({ status: 'authenticated', message: 'Signed in', models: [] }),
   });
@@ -113,4 +119,46 @@ it('asks the sign-in check first for a provider whose session start may sign in'
 
   expect(catalogue).toEqual({ kind: 'unavailable', reason: 'Sign in first.' });
   expect(hostModes()).toEqual(['--probe']);
+});
+
+it('checks this computer from home when the directory asked about does not exist yet', async () => {
+  mocks.locate.mockResolvedValue({
+    ctx: { exec: mocks.exec, dispose: mocks.dispose },
+    entrypoint: '/home/me/.local/state/switch/sdk-host/shared-host-a.mjs',
+  });
+
+  const readiness = await getProviderReadiness(
+    { providerId: 'claude', sshHost: null, dir: '/nowhere/agents/not-made-yet' },
+    false
+  );
+
+  expect(readiness).toMatchObject({ installed: true, status: 'authenticated' });
+  expect(mocks.locate.mock.calls[0]?.[1]).toBe(homedir());
+});
+
+it('names the chosen executable that could not be used, rather than a bare not installed', async () => {
+  const chosen = 'C:\\Users\\USER\\.local\\bin\\codex.exe';
+  mocks.plugin.metadata = { name: 'Codex' };
+  mocks.resolved = {
+    path: 'codex',
+    selectionProblem: `The executable chosen in Settings, ${chosen}, was not found on this machine.`,
+  };
+  mocks.found = null;
+
+  const readiness = await getProviderReadiness({ ...remote, providerId: 'codex' }, false);
+
+  expect(readiness).toMatchObject({ installed: false, status: 'unknown' });
+  expect(readiness.message).toContain(chosen);
+  expect(readiness.message).toContain('Choose its executable again');
+  expect(mocks.locate).not.toHaveBeenCalled();
+});
+
+it('keeps the plain not-installed message when nothing was chosen', async () => {
+  mocks.found = null;
+
+  const readiness = await getProviderReadiness(remote, false);
+
+  expect(readiness.message).toBe(
+    'Claude Code is not installed or its selected executable cannot be found.'
+  );
 });

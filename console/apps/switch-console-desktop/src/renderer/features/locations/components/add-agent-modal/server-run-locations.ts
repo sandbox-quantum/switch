@@ -2,8 +2,11 @@ import type { OwnedMachine } from '@shared/core/managed-agents/managed-agents';
 
 const MACHINE_PREFIX = 'machine:';
 
+/** A run location naming one of the server's machines. */
+export type MachineRunLocation = `machine:${string}`;
+
 /** The run location value for one of the server's machines. */
-export function machineRunLocation(machineId: string): string {
+export function machineRunLocation(machineId: string): MachineRunLocation {
   return `${MACHINE_PREFIX}${machineId}`;
 }
 
@@ -24,8 +27,8 @@ export type RunLocationOption = {
 
 /**
  * The server's machines as Run location entries. Offline machines are listed,
- * but cannot be picked; but the owner's Switch cloud machine, which the Switch
- * cloud entry starts, is listed only while it is online.
+ * but cannot be picked; but the owner's Switch Cloud machine, which the Switch
+ * Cloud entry starts, is listed only while it is online.
  */
 export function machineRunLocations(machines: OwnedMachine[]): RunLocationOption[] {
   return machines

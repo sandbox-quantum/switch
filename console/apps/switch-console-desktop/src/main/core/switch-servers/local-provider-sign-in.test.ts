@@ -60,6 +60,11 @@ describe('local Codex subscription detection', () => {
     await writeFile(localProviderAuthPath('codex'), JSON.stringify(value));
     await expect(localSignIn('codex')).rejects.toThrow('Sign in to Codex with ChatGPT');
   });
+  it('refuses a relative CODEX_HOME, as sessions and the sign-in check do', () => {
+    vi.stubEnv('CODEX_HOME', '.codex-work');
+    expect(() => localProviderAuthPath('codex')).toThrow('Set CODEX_HOME to an absolute path.');
+  });
+
   it('rejects oversized files before reading their contents', async () => {
     await writeFile(localProviderAuthPath('codex'), 'x'.repeat(16385));
     await expect(localSignIn('codex')).rejects.toThrow('smaller than 16 KiB');

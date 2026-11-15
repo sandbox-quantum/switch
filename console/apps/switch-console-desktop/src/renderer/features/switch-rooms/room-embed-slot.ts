@@ -1,7 +1,13 @@
 import { makeAutoObservable, observable } from 'mobx';
+import type { RoomTab } from './room-tab-store';
 
-/** A box on a page other than the room view where a room's conversation is drawn. */
-export type RoomEmbedSlot = { roomId: string; element: HTMLElement };
+/**
+ * A box where a room's conversation is drawn: on a page other than the room
+ * view, or the part of the room view beside its side panel. `fallback` is the
+ * tab the box's page opens on until one is picked; without it, the box opens on
+ * the conversation only when its platform can be drawn inline.
+ */
+export type RoomEmbedSlot = { roomId: string; element: HTMLElement; fallback?: RoomTab };
 
 /**
  * Where `RoomEmbedLayer` draws a room when a page shows one inside itself, as

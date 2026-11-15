@@ -28,6 +28,7 @@ vi.mock('@renderer/lib/ipc', () => ({
     agents: {
       onboardAgent: mocks.onboardAgent,
       getAgents: mocks.getAgents,
+      movedAgentIds: async () => [],
       deleteAgent: mocks.deleteAgent,
     },
     locations: {

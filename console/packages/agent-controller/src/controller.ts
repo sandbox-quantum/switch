@@ -32,6 +32,7 @@ import {
 import { type GivenLogin, registerSealingKey, SealedLogins, sealingKeys } from './sealed-logins';
 import { CONTROLLER_CREDENTIAL, type SecretStore } from './secrets';
 import type { SelfUpdater } from './self-update';
+import { SocketCalls } from './socket-calls';
 import {
   noSessionMidTurn,
   type ProviderLocator,
@@ -308,6 +309,8 @@ export async function runController(
     (agentId) => (streamDeps) => hub.open(agentId, streamDeps),
     workspaces
   );
+  // The agents' operations go to Switch on the controller's socket while it takes them.
+  const calls = new SocketCalls();
   const relay = new LocalRelay({
     log,
     roomFor: (agentId, sessionId) => hub.roomFor(agentId, sessionId),
@@ -320,6 +323,7 @@ export async function runController(
         revoked: () => void revoke(),
       },
       log,
+      calls,
     }),
   });
   /** The agents whose saved cursor the hub has been given. */
@@ -758,6 +762,7 @@ export async function runController(
       initialBackoffMs: timing.streamInitialBackoffMs,
       maxBackoffMs: timing.streamMaxBackoffMs,
       random: deps.random,
+      calls,
     });
     if (ending === 'revoked') await revoke();
     if (ending === 'taken_over')

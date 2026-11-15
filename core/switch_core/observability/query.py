@@ -49,7 +49,7 @@ _TENANT_BIND = "tenant_bind"
 _TIMER_KEY = "_switch_query_started"
 
 
-def _operation(statement: str) -> str:
+def query_operation(statement: str) -> str:
     """The leading keyword, or `other`.
 
     Deliberately crude. A statement whose first word is not one of the four is
@@ -104,7 +104,7 @@ def _after(
         return
     elapsed_ms = (time.perf_counter() - started) * 1000.0
     metrics().observe(
-        DB_QUERY_DURATION, {"operation": _operation(statement)}, elapsed_ms
+        DB_QUERY_DURATION, {"operation": query_operation(statement)}, elapsed_ms
     )
 
 

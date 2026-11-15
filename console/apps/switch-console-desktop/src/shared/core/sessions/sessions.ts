@@ -2,7 +2,7 @@ import z from 'zod';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import type { AgentStatus } from '@shared/core/providers/agentEvents';
 import type { SessionStartSource, UiEntryPoint } from '@shared/core/telemetry/reporting';
-import type { InitialPromptDelivery } from './session-config';
+import type { ContinuedCliConversation, InitialPromptDelivery } from './session-config';
 
 export const MAX_SESSION_TITLE_LENGTH = 100;
 
@@ -34,6 +34,8 @@ export type Session = {
   statusChangedAt: string;
   /** Native conversation imported from an earlier session, when available. */
   providerSessionId?: string;
+  /** The conversation started in Claude Code's CLI that this session continues. */
+  cliConversation?: ContinuedCliConversation;
   initialPromptDelivery?: InitialPromptDelivery;
   agentStatus?: AgentStatus | null;
   agentStatusSeen?: boolean;
@@ -70,6 +72,13 @@ export type CreateSessionParams = {
   agentName?: string;
   /** Attach to an existing SDK session without starting a fresh conversation. */
   attach?: boolean;
+  /**
+   * Continue this conversation, started in Claude Code's own CLI in the agent's
+   * folder. The session runs a copy of it, so the CLI's own is left alone.
+   * `confirmedClosed`: the person said it is closed, which a copy needs where
+   * Claude Code cannot say which conversations are open.
+   */
+  cliConversation?: ContinuedCliConversation & { confirmedClosed: boolean };
   /**
    * Which control the user started the session from, for reporting. Omitted by
    * callers with no user behind them, which report as `unknown`.

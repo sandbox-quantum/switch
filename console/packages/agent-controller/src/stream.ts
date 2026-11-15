@@ -29,6 +29,7 @@ import {
   type AgentWarmFrame,
   agentWarmFrameSchema,
   assignmentChangedSchema,
+  callResultSchema,
   type ConnectionState,
   connectionStateSchema,
   type ControllerConnection,
@@ -38,8 +39,9 @@ import {
   type OperationPending,
   operationPendingSchema,
 } from './schemas';
+import type { SocketCalls } from './socket-calls';
 
-/** The schema for each frame the controller's socket carries, by its `event`. */
+/** The schema for each frame of the stream, by its `event`; each is handed to `onFrame`. */
 export const STREAM_FRAME_SCHEMAS = {
   connection_state: connectionStateSchema,
   evicted: evictedSchema,
@@ -54,6 +56,12 @@ export const STREAM_FRAME_SCHEMAS = {
   'assignment.changed': assignmentChangedSchema,
   'operation.pending': operationPendingSchema,
   'credential.revoked': credentialRevokedSchema,
+} as const satisfies Record<string, z.ZodType>;
+
+/** Every frame the controller's socket carries down: the stream's, and the answers to calls. */
+export const SOCKET_FRAME_SCHEMAS = {
+  ...STREAM_FRAME_SCHEMAS,
+  'call.result': callResultSchema,
 } as const satisfies Record<string, z.ZodType>;
 
 export type ControllerFrame =
@@ -103,6 +111,8 @@ export type ControllerStreamOptions = {
   maxBackoffMs: number;
   /** Jitter source in [0, 1); injectable for tests. */
   random: () => number;
+  /** Takes the agents' operations as calls while a socket that takes them is open. */
+  calls?: SocketCalls;
 };
 
 /**
@@ -111,6 +121,8 @@ export type ControllerStreamOptions = {
  * are short and do not grow.
  */
 const SERVICE_RESTART = 1012;
+/** The refusal of a server opening as many connections as it can take at once. */
+const BUSY = 'busy';
 const RESTART_RETRY_MS = 250;
 const RESTART_RETRY_JITTER_MS = 500;
 
@@ -192,9 +204,18 @@ class ControllerStream {
       const stop = () => attempt.abort.abort();
       signal.addEventListener('abort', stop, { once: true });
       let failure: string | null = null;
+      // When a busy server said to come back (core's `open_gate.py`): that is
+      // this controller's place in its queue, so it outranks the backoff.
+      let toldMs: number | null = null;
       try {
         await this.attach(attempt);
       } catch (error) {
+        if (
+          error instanceof ControllerApiError &&
+          error.code === BUSY &&
+          error.retryAfterS !== null
+        )
+          toldMs = Math.round(error.retryAfterS * 1000);
         if (!attempt.ending && !signal.aborted) {
           if (isRevoked(error)) attempt.ending = 'revoked';
           else if (isTakenOver(error)) attempt.ending = 'taken_over';
@@ -217,16 +238,20 @@ class ControllerStream {
         // so a socket that attached at all starts the waits over.
         this.backoff = this.options.initialBackoffMs;
       }
-      const wait = attempt.restarting
-        ? RESTART_RETRY_MS + Math.round(this.options.random() * RESTART_RETRY_JITTER_MS)
-        : Math.round(this.backoff * (0.5 + this.options.random() * 0.5));
+      const wait =
+        toldMs !== null
+          ? toldMs
+          : attempt.restarting
+            ? RESTART_RETRY_MS + Math.round(this.options.random() * RESTART_RETRY_JITTER_MS)
+            : Math.round(this.backoff * (0.5 + this.options.random() * 0.5));
       if (failure !== null)
         log.warn('The controller socket is down; reconnecting.', {
           error: failure,
           retryInMs: wait,
         });
       await delay(wait, undefined, { signal }).catch(() => {});
-      if (!attempt.restarting) this.backoff = Math.min(this.backoff * 2, this.options.maxBackoffMs);
+      if (!attempt.restarting && toldMs === null)
+        this.backoff = Math.min(this.backoff * 2, this.options.maxBackoffMs);
     }
     return 'stopped';
   }
@@ -264,7 +289,7 @@ class ControllerStream {
     const { socket } = opened;
     const abort = attempt.abort;
     const pending: Message[] = [];
-    let refused: { status: number; code: string; message: string } | null = null;
+    let refused: Refusal | null = null;
     let closedWith: number | null = null;
     let wake: (() => void) | null = null;
     const notify = () => {
@@ -273,21 +298,44 @@ class ControllerStream {
       resolve?.();
     };
     let idle: ReturnType<typeof setTimeout> | null = null;
+    // Raised to three of the server's beats once it says how often it pings:
+    // a timeout no longer than its interval drops a healthy socket every beat.
+    let idleMs = this.options.idleTimeoutMs;
     const touch = () => {
       if (idle) clearTimeout(idle);
-      idle = setTimeout(
-        () => abort.abort(new IdleTimeout(this.options.idleTimeoutMs)),
-        this.options.idleTimeoutMs
-      );
+      const ms = idleMs;
+      idle = setTimeout(() => abort.abort(new IdleTimeout(ms)), ms);
     };
     const onMessage = (message: MessageEvent) => {
-      touch();
       let parsed: { event?: unknown; data?: unknown };
       try {
         parsed = JSON.parse(String(message.data)) as typeof parsed;
       } catch {
+        touch();
         this.options.log.error('Dropped a controller socket message that is not JSON');
         return;
+      }
+      const beat = (parsed.data as { heartbeat_interval_s?: unknown } | null | undefined)
+        ?.heartbeat_interval_s;
+      if (parsed.event === 'connection_state' && typeof beat === 'number' && beat > 0)
+        idleMs = Math.max(this.options.idleTimeoutMs, beat * 3000);
+      touch();
+      // Calls are answered as their answers arrive, not behind the stream's frames.
+      if (parsed.event === 'call.result') {
+        const result = callResultSchema.safeParse(parsed.data);
+        if (result.success) this.options.calls?.answer(result.data);
+        else
+          this.options.log.error('Dropped a call answer that does not match the protocol', {
+            error: result.error.message,
+          });
+        return;
+      }
+      if (parsed.event === 'connection_state') {
+        const offered = connectionStateSchema.shape.calls.safeParse(
+          (parsed.data as { calls?: unknown } | null | undefined)?.calls
+        );
+        if (offered.success && offered.data)
+          this.options.calls?.open((text) => socket.send(text), offered.data.max_in_flight);
       }
       if (parsed.event === 'ping') {
         socket.send(JSON.stringify({ type: 'pong', cursors: this.options.confirmed() }));
@@ -330,10 +378,16 @@ class ControllerStream {
           wake = resolve;
         });
       }
-      const refusal = refused as { status: number; code: string; message: string } | null;
+      const refusal = refused as Refusal | null;
       if (refusal !== null) {
         if (refusal.status === 401 && refusal.code !== 'controller_revoked') opened.tokenRefused();
-        throw new ControllerApiError(refusal.status, refusal.code, refusal.message, false, null);
+        throw new ControllerApiError(
+          refusal.status,
+          refusal.code,
+          refusal.message,
+          refusal.retryAfterS !== null,
+          refusal.retryAfterS
+        );
       }
       if (abort.signal.aborted && abort.signal.reason instanceof IdleTimeout)
         throw abort.signal.reason;
@@ -342,6 +396,7 @@ class ControllerStream {
       if (!this.options.signal.aborted)
         this.options.log.warn('The controller socket closed; reconnecting.', { code: closedWith });
     } finally {
+      this.options.calls?.close('The controller socket closed before Switch answered the call.');
       if (idle) clearTimeout(idle);
       socket.removeEventListener('message', onMessage);
       socket.removeEventListener('close', onClose);
@@ -374,14 +429,22 @@ class ControllerStream {
   }
 }
 
-function refusalOf(data: unknown): { status: number; code: string; message: string } {
+type Refusal = { status: number; code: string; message: string; retryAfterS: number | null };
+
+function refusalOf(data: unknown): Refusal {
   const body = (data ?? {}) as { status?: unknown; detail?: unknown };
-  const detail = (body.detail ?? {}) as { code?: unknown; message?: unknown };
+  const detail = (body.detail ?? {}) as {
+    code?: unknown;
+    message?: unknown;
+    retry_after_s?: unknown;
+  };
+  const after = detail.retry_after_s;
   return {
     status: typeof body.status === 'number' ? body.status : 0,
     code: typeof detail.code === 'string' ? detail.code : 'refused',
     message:
       typeof detail.message === 'string' ? detail.message : 'Switch refused the controller socket.',
+    retryAfterS: typeof after === 'number' && Number.isFinite(after) && after >= 0 ? after : null,
   };
 }
 

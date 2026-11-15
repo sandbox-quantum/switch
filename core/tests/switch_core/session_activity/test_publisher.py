@@ -3,24 +3,32 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
-from switch_core.bridges.collaboration.adapter import RequestCard, TurnActivity
+from switch_core.bridges.collaboration.adapter import (
+    ActivityMarkRefused,
+    RequestCard,
+    RichContentFailed,
+    RichContentThrottled,
+    TurnActivity,
+)
 from switch_core.db.models import (
     Agent,
+    AgentSessionActivityItem,
     ApprovalRequestPost,
     BridgeMessageMap,
     Client,
     ClientRoom,
     ExternalUser,
     ExternalUserClaim,
+    SteeredMessageMark,
     TurnStatusPost,
 )
 from switch_core.delivery.addressing import AddressingDecision
@@ -38,7 +46,13 @@ from switch_core.session_activity.service import (
 from switch_core.sessions.contract import Answer, QuestionsResult
 from switch_core.tenant_context import current_tenant_id
 
-from .bridge_fixtures import BridgedRoom, RecordingPlatform, make_bridged_room
+from .bridge_fixtures import (
+    BridgedRoom,
+    RecordingPlatform,
+    RefusedForGood,
+    RefusedForNow,
+    make_bridged_room,
+)
 from .conftest import AGENT, make_room, pick
 
 SESSION = "session-demo"
@@ -170,6 +184,9 @@ async def _step(
     turn_id="turn-1",
     title="",
     text="",
+    message_id=ASKED,
+    subagent=False,
+    delivery=None,
 ):
     await service.report_item(
         AGENT,
@@ -184,9 +201,11 @@ async def _step(
         command_id="command-1" if kind == "turn" else None,
         room_id=room_id,
         thread_id=ASKED,
-        message_id=ASKED,
+        message_id=message_id,
         occurred_at=datetime.now(UTC),
         usage=[],
+        subagent=subagent,
+        delivery=delivery,
     )
 
 
@@ -313,6 +332,94 @@ async def test_a_card_goes_into_the_thread_it_answers(
     assert (await _card_post(session_factory)).thread_ref == ASKED_POST
 
 
+@pytest.mark.parametrize(
+    ("message_id", "at_root"), [(ASKED, True), ("sw_reply", False)]
+)
+async def test_a_card_says_whether_its_turn_was_asked_at_the_channel_root(
+    service, publisher, platform, bridged, message_id, at_root
+):
+    """An adapter that can also show a thread reply in the channel keeps the
+    card in the thread and asks for that, for a question threaded under a
+    channel-root message only."""
+    platform.broadcasts_thread_replies = True
+    await _step(
+        service,
+        bridged.room_id,
+        item_id="turn",
+        kind="turn",
+        status="running",
+        revision=1,
+        message_id=message_id,
+    )
+    await _open(service, bridged.room_id, thread_id=ASKED)
+    await platform.wait_until(
+        lambda: any(isinstance(d.content, RequestCard) for d in platform.drawn)
+    )
+    [card] = [d for d in platform.drawn if isinstance(d.content, RequestCard)]
+    assert card.thread_ref == ASKED_POST
+    assert card.content.asked_at_root is at_root
+
+
+async def test_a_root_asked_card_goes_to_the_channel_when_a_thread_is_not_shown(
+    service, publisher, platform, bridged, session_factory
+):
+    """Where the platform cannot mirror a thread reply into its channel, a
+    card in that thread is a question nobody opening the channel sees, and
+    only that thread could answer it. It is asked at the root instead."""
+    await _step(
+        service,
+        bridged.room_id,
+        item_id="turn",
+        kind="turn",
+        status="running",
+        revision=1,
+        message_id=ASKED,
+    )
+    await _open(service, bridged.room_id, thread_id=ASKED)
+    await platform.wait_until(
+        lambda: any(isinstance(d.content, RequestCard) for d in platform.drawn)
+    )
+    [card] = [d for d in platform.drawn if isinstance(d.content, RequestCard)]
+    assert card.thread_ref is None
+    assert (await _card_post(session_factory)).thread_ref is None
+
+
+async def test_a_card_asked_inside_a_thread_stays_there_without_broadcast(
+    service, publisher, platform, bridged, session_factory
+):
+    """Moving that one to the root would put it in front of a channel that
+    was never part of the conversation."""
+    await _step(
+        service,
+        bridged.room_id,
+        item_id="turn",
+        kind="turn",
+        status="running",
+        revision=1,
+        message_id="sw_reply",
+    )
+    await _open(service, bridged.room_id, thread_id=ASKED)
+    await platform.wait_until(
+        lambda: any(isinstance(d.content, RequestCard) for d in platform.drawn)
+    )
+    [card] = [d for d in platform.drawn if isinstance(d.content, RequestCard)]
+    assert card.thread_ref == ASKED_POST
+    assert (await _card_post(session_factory)).thread_ref == ASKED_POST
+
+
+async def test_a_card_whose_turn_is_not_recorded_stays_in_its_thread(
+    service, publisher, platform, bridged
+):
+    """An unrecorded turn may have been a thread conversation the channel was
+    never part of, so its card is not also shown in the channel."""
+    await _open(service, bridged.room_id, thread_id=ASKED)
+    await platform.wait_until(
+        lambda: any(isinstance(d.content, RequestCard) for d in platform.drawn)
+    )
+    [card] = [d for d in platform.drawn if isinstance(d.content, RequestCard)]
+    assert card.content.asked_at_root is False
+
+
 async def test_a_card_in_a_thread_names_the_owner_who_may_answer_it(
     service, publisher, platform, bridged, session_factory
 ):
@@ -405,6 +512,70 @@ async def test_a_refused_post_releases_its_handle(
     await asyncio.sleep(0.5)
     async with session_factory() as db:
         assert (await db.execute(select(ApprovalRequestPost))).first() is None
+
+
+async def test_a_card_refused_for_good_is_posted_once_and_dropped(
+    service, publisher, platform, bridged, monkeypatch
+):
+    """A post too large for the platform used to be retried for as long as
+    the process ran."""
+    monkeypatch.setattr(publisher_module, "_RETRY_MIN_SECONDS", 0.05)
+    platform.post_error = RefusedForGood("Content too large", text="")
+    await _open(service, bridged.room_id)
+    await platform.wait_until(lambda: platform.post_attempts >= 1)
+    await asyncio.sleep(0.5)
+
+    assert platform.post_attempts == 1
+    assert publisher._retries.waits == {}
+
+
+async def test_a_card_refused_a_bounded_number_of_times_is_then_dropped(
+    service, publisher, platform, bridged, monkeypatch, caplog
+):
+    """A 403 for a bot not yet in the channel can clear, so it gets a few
+    attempts; one that never clears stops being sent."""
+    monkeypatch.setattr(publisher_module, "_RETRY_MIN_SECONDS", 0.05)
+    platform.post_error = RefusedForNow("forbidden", text="")
+    await _open(service, bridged.room_id)
+    await platform.wait_until(
+        lambda: platform.post_attempts >= publisher_module._MAX_REFUSALS
+    )
+    await asyncio.sleep(1.0)
+
+    assert platform.post_attempts == publisher_module._MAX_REFUSALS
+    assert publisher._retries.waits == {}
+    assert publisher._retries.refusals == {}
+    assert "refused it 5 times in a row; dropping it: forbidden" in caplog.text
+
+
+async def test_a_card_whose_bounded_refusal_clears_is_posted(
+    service, publisher, platform, bridged, monkeypatch
+):
+    monkeypatch.setattr(publisher_module, "_RETRY_MIN_SECONDS", 0.05)
+    platform.post_error = RefusedForNow("forbidden", text="")
+    await _open(service, bridged.room_id)
+    await platform.wait_until(lambda: platform.post_attempts >= 2)
+
+    platform.post_error = None
+    [posted] = await platform.wait_for(1)
+    assert posted.call == "post_rich"
+    assert publisher._retries.refusals == {}
+
+
+async def test_a_card_failing_transiently_is_tried_past_the_refusal_cap(
+    service, publisher, platform, bridged, monkeypatch
+):
+    monkeypatch.setattr(publisher_module, "_RETRY_MIN_SECONDS", 0.05)
+    monkeypatch.setattr(publisher_module, "_RETRY_MAX_SECONDS", 0.1)
+    platform.post_error = RichContentFailed("refused", text="")
+    await _open(service, bridged.room_id)
+    await platform.wait_until(
+        lambda: platform.post_attempts > publisher_module._MAX_REFUSALS + 1
+    )
+
+    platform.post_error = None
+    [posted] = await platform.wait_for(1)
+    assert posted.call == "post_rich"
 
 
 async def test_open_requests_are_posted_on_start(
@@ -569,6 +740,105 @@ async def test_the_asking_message_is_marked_working_while_the_turn_runs(
     assert (await _turn_post(session_factory)).mark is None
 
 
+STEERED = "sw_correction"
+STEERED_POST = "1700000000.0002"
+
+
+async def _steer(service, session_factory, bridged, *, mapped: bool = True) -> None:
+    """A correction steered into turn-1 while it runs, posted on the platform."""
+    if mapped:
+        async with session_factory() as db, db.begin():
+            db.add(
+                BridgeMessageMap(
+                    bridge_id=bridged.bridge_id,
+                    external_channel_id=bridged.channel_id,
+                    transport_event_id=STEERED,
+                    external_post_id=STEERED_POST,
+                )
+            )
+    await _step(
+        service,
+        bridged.room_id,
+        item_id=f"user-{STEERED}",
+        kind="user-message",
+        status="completed",
+        revision=1,
+        text="No, use the other file",
+        message_id=STEERED,
+        delivery="steered",
+    )
+
+
+async def test_a_steered_message_is_marked_working_until_its_turn_ends(
+    service, publisher, platform, bridged, session_factory
+):
+    await _turn(service, bridged.room_id, "running", 1)
+    await platform.wait_until(lambda: platform.marks == [(ASKED_POST, "working", True)])
+
+    await _steer(service, session_factory, bridged)
+    await platform.wait_until(lambda: (STEERED_POST, "working", True) in platform.marks)
+
+    await _turn(service, bridged.room_id, "completed", 3)
+    await platform.wait_until(
+        lambda: (
+            (STEERED_POST, "working", False) in platform.marks
+            and (ASKED_POST, "working", False) in platform.marks
+        )
+    )
+    assert platform.marks.count((STEERED_POST, "working", True)) == 1
+    async with session_factory() as db:
+        marks = list(await db.scalars(select(SteeredMessageMark)))
+    assert [(mark.message_id, mark.marked) for mark in marks] == [(STEERED, False)]
+
+
+async def test_a_steered_message_not_yet_on_the_platform_is_marked_once_it_is(
+    service, publisher, platform, bridged, session_factory
+):
+    await _turn(service, bridged.room_id, "running", 1)
+    await _steer(service, session_factory, bridged, mapped=False)
+    await platform.wait_until(lambda: len(platform.marks) == 1)
+    await asyncio.sleep(0.3)
+    assert all(ref != STEERED_POST for ref, _, _ in platform.marks)
+
+    async with session_factory() as db, db.begin():
+        db.add(
+            BridgeMessageMap(
+                bridge_id=bridged.bridge_id,
+                external_channel_id=bridged.channel_id,
+                transport_event_id=STEERED,
+                external_post_id=STEERED_POST,
+            )
+        )
+    # The turn's next change tries again.
+    await _turn(service, bridged.room_id, "running", 2)
+    await platform.wait_until(lambda: (STEERED_POST, "working", True) in platform.marks)
+
+
+async def test_a_steered_marker_is_taken_off_again_after_a_failed_try(
+    service, publisher, platform, bridged, session_factory, monkeypatch
+):
+    monkeypatch.setattr(publisher_module, "_RETRY_MIN_SECONDS", 0.05)
+    await _turn(service, bridged.room_id, "running", 1)
+    await _steer(service, session_factory, bridged)
+    await platform.wait_until(lambda: (STEERED_POST, "working", True) in platform.marks)
+    real = platform.mark_activity
+    failed = False
+
+    async def flaky(channel, ref, *, agent_name, mark, on, force):
+        nonlocal failed
+        if ref == STEERED_POST and not on and not failed:
+            failed = True
+            raise RuntimeError("platform timed out")
+        await real(channel, ref, agent_name=agent_name, mark=mark, on=on, force=force)
+
+    platform.mark_activity = flaky  # type: ignore[method-assign]
+    await _turn(service, bridged.room_id, "completed", 3)
+    await platform.wait_until(
+        lambda: (STEERED_POST, "working", False) in platform.marks
+    )
+    assert failed
+
+
 async def test_a_marker_two_turns_share_comes_off_with_the_last(
     service, publisher, platform, bridged
 ):
@@ -612,6 +882,67 @@ async def test_a_stuck_turn_gets_a_message_of_its_own_until_it_clears(
         )
     )
     assert platform.drawn[-1].content.error_summary is None
+
+
+@pytest.mark.parametrize("restart", [False, True])
+async def test_a_subagent_that_outlives_its_turn_redraws_the_turn_when_it_ends(
+    service, session_factory, bridged, listener, platform, online, restart
+):
+    """A background subagent goes on after the turn that started it, and its
+    host closes its call only when the subagent itself ends. The turn's message
+    has to move then too, or it says "running" over a subagent long finished;
+    and it has to even when Switch restarted in between, so a publisher that
+    never drew the turn still edits the message it has.
+
+    Adapted from atharvgaur1845's test in #1714, with the restart run from
+    himanshu748's in #1546."""
+    publisher = _publisher(session_factory, bridged, listener, platform, online)
+    publisher.start()
+    try:
+        await _turn(service, bridged.room_id, "running", 1)
+        await platform.wait_for(1)
+        await _step(
+            service,
+            bridged.room_id,
+            item_id="agent-1",
+            kind="tool-activity",
+            status="in-progress",
+            revision=1,
+            title="Find the retry setting",
+            subagent=True,
+        )
+        await _turn(service, bridged.room_id, "completed", 3)
+        await platform.wait_until(
+            lambda: _turns(platform)[-1].content.turn.status == "completed"
+        )
+        ended = len(_turns(platform))
+        assert [(i.subagent, i.status) for i in _turns(platform)[-1].content.items] == [
+            (True, "in-progress")
+        ]
+        if restart:
+            await publisher.stop()
+            publisher = _publisher(session_factory, bridged, listener, platform, online)
+            publisher.start()
+
+        await _step(
+            service,
+            bridged.room_id,
+            item_id="agent-1",
+            kind="tool-activity",
+            status="completed",
+            revision=4,
+            title="Find the retry setting",
+            subagent=True,
+        )
+        await platform.wait_until(lambda: len(_turns(platform)) > ended)
+        last = _turns(platform)[-1]
+        assert last.call == "update_rich"
+        assert [(i.subagent, i.status) for i in last.content.items] == [
+            (True, "completed")
+        ]
+        assert (await _turn_post(session_factory)).external_post_id == last.ref
+    finally:
+        await publisher.stop()
 
 
 async def test_a_turn_that_failed_says_so(service, publisher, platform, bridged):
@@ -699,6 +1030,301 @@ async def test_a_restart_redraws_running_turns_but_not_ones_already_shown_ended(
         ]
     finally:
         await publisher.stop()
+
+
+# ── Under a rate limit ───────────────────────────────────────────────────────
+
+
+def _key(turn_id: str) -> tuple[str, ...]:
+    return ("turn", AGENT, SESSION, turn_id)
+
+
+async def test_the_asking_message_is_marked_before_its_card_can_be_posted(
+    service, publisher, platform, bridged, session_factory
+):
+    """The 👀 says the agent has the message, so it goes on as the turn starts
+    rather than once the platform has room for the card."""
+    platform.turn_post_errors["turn-1"] = RichContentThrottled(retry_after=0.2, text="")
+    await _turn(service, bridged.room_id, "running", 1)
+    await platform.wait_until(lambda: platform.marks == [(ASKED_POST, "working", True)])
+    assert _turns(platform) == []
+
+    del platform.turn_post_errors["turn-1"]
+    await platform.wait_until(lambda: len(_turns(platform)) == 1)
+    assert platform.marks == [(ASKED_POST, "working", True)]
+    assert (await _turn_post(session_factory)).mark == "working"
+
+
+async def test_a_turn_that_ends_before_its_card_posts_takes_its_mark_off(
+    service, publisher, platform, bridged
+):
+    platform.turn_post_errors["turn-1"] = RichContentFailed("refused", text="")
+    await _turn(service, bridged.room_id, "running", 1)
+    await platform.wait_until(lambda: platform.marks == [(ASKED_POST, "working", True)])
+
+    await _turn(service, bridged.room_id, "completed", 2)
+    await platform.wait_until(lambda: len(platform.marks) == 2)
+    assert platform.marks[-1] == (ASKED_POST, "working", False)
+
+
+async def test_a_mark_put_on_before_its_card_is_not_taken_off_by_another_turn(
+    service, publisher, platform, bridged
+):
+    """Every agent shares one 👀 here, and a turn whose card has not posted yet
+    still holds it."""
+    await _turn(service, bridged.room_id, "running", 1, turn_id="turn-1")
+    await platform.wait_until(lambda: len(platform.marks) == 1)
+    platform.turn_post_errors["turn-2"] = RichContentThrottled(retry_after=0.2, text="")
+    await _turn(service, bridged.room_id, "running", 1, turn_id="turn-2")
+    await platform.wait_until(lambda: len(platform.marks) == 2)
+
+    await _turn(service, bridged.room_id, "completed", 2, turn_id="turn-1")
+    await asyncio.sleep(0.5)
+    assert all(on for _, _, on in platform.marks)
+
+
+async def test_a_card_opened_but_not_yet_drawn_is_drawn_into_rather_than_posted_again(
+    service, publisher, platform, bridged, session_factory
+):
+    platform.open_undrawn.add("turn-1")
+    await _turn(service, bridged.room_id, "running", 1)
+    await platform.wait_until(lambda: len(_turns(platform)) == 1)
+
+    [opened] = platform.of("opened")
+    [drawn] = _turns(platform)
+    assert (drawn.call, drawn.ref) == ("update_rich", opened.ref)
+    assert platform.of("post_rich") == []
+    assert (await _turn_post(session_factory)).external_post_id == opened.ref
+
+
+async def test_a_card_opened_but_not_drawn_into_is_kept_for_the_next_change(
+    service, publisher, platform, bridged, session_factory
+):
+    """Any failure once the message exists, not only a rate limit: posting
+    again would leave the empty one above the new one."""
+    platform.open_unfilled.add("turn-1")
+    await _turn(service, bridged.room_id, "running", 1)
+    await platform.wait_until(lambda: len(platform.of("opened")) == 1)
+    [opened] = platform.of("opened")
+    assert (await _turn_post(session_factory)).external_post_id == opened.ref
+
+    await _step(
+        service,
+        bridged.room_id,
+        item_id="tool-1",
+        kind="tool-activity",
+        status="in-progress",
+        revision=1,
+        title="Ran `pytest`",
+    )
+    await platform.wait_until(lambda: len(_turns(platform)) == 1)
+    [drawn] = _turns(platform)
+    assert (drawn.call, drawn.ref) == ("update_rich", opened.ref)
+    assert platform.of("post_rich") == []
+
+
+async def test_an_ended_turn_whose_card_could_not_be_drawn_backs_off_as_usual(
+    service, publisher, platform, bridged
+):
+    """Keeping the message is not the draw succeeding: the retry still widens."""
+    platform.open_unfilled.add("turn-1")
+    await _turn(service, bridged.room_id, "completed", 1)
+    await platform.wait_until(lambda: len(platform.of("opened")) == 1)
+
+    assert publisher._retries.waits[_key("turn-1")] == 10.0
+
+
+async def test_an_ended_turn_refused_for_good_is_not_tried_again(
+    service, publisher, platform, bridged, monkeypatch
+):
+    monkeypatch.setattr(publisher_module, "_RETRY_MIN_SECONDS", 0.05)
+    platform.turn_post_errors["turn-1"] = RefusedForGood("Content too large", text="")
+    await _turn(service, bridged.room_id, "completed", 1)
+    await platform.wait_until(lambda: platform.post_attempts >= 1)
+    await asyncio.sleep(0.5)
+
+    assert platform.post_attempts == 1
+    assert _key("turn-1") not in publisher._retries.waits
+
+
+async def test_an_ended_turn_refused_for_now_is_tried_again(
+    service, publisher, platform, bridged, monkeypatch
+):
+    monkeypatch.setattr(publisher_module, "_RETRY_MIN_SECONDS", 0.05)
+    platform.turn_post_errors["turn-1"] = RichContentFailed("refused", text="")
+    await _turn(service, bridged.room_id, "completed", 1)
+    await platform.wait_until(lambda: platform.post_attempts >= 3)
+
+    del platform.turn_post_errors["turn-1"]
+    await platform.wait_until(lambda: len(_turns(platform)) == 1)
+
+
+async def test_an_ended_turn_refused_a_bounded_number_of_times_is_then_dropped(
+    service, publisher, platform, bridged, monkeypatch, caplog
+):
+    monkeypatch.setattr(publisher_module, "_RETRY_MIN_SECONDS", 0.05)
+    platform.turn_post_errors["turn-1"] = RefusedForNow("not found", text="")
+    await _turn(service, bridged.room_id, "completed", 1)
+    await platform.wait_until(
+        lambda: platform.post_attempts >= publisher_module._MAX_REFUSALS
+    )
+    await asyncio.sleep(1.0)
+
+    assert platform.post_attempts == publisher_module._MAX_REFUSALS
+    assert _key("turn-1") not in publisher._retries.refusals
+    assert "refused it 5 times in a row; dropping it." in caplog.text
+
+
+async def test_the_asking_message_is_marked_once_on_a_turns_first_draw(
+    service, publisher, platform, bridged
+):
+    """A platform that refuses the mark is asked once per pass, not twice."""
+    asked = 0
+    refuse = platform.mark_activity
+
+    async def refused(*args, **kwargs):
+        nonlocal asked
+        asked += 1
+        await refuse(*args, **kwargs)
+        raise ActivityMarkRefused("No permission to react here.")
+
+    platform.mark_activity = refused  # type: ignore[method-assign]
+    await _turn(service, bridged.room_id, "running", 1)
+    await platform.wait_until(lambda: len(_turns(platform)) == 1)
+
+    assert asked == 1
+
+
+async def test_a_running_turn_is_not_redrawn_every_few_seconds_for_its_clock(
+    service, session_factory, bridged, listener, online, monkeypatch
+):
+    """Slack takes about fifty edits a minute for a whole workspace. A clock
+    redrawn every five seconds spends that on cards where nothing happened, so
+    it moves once a minute and every real change still goes out at once."""
+    monkeypatch.setattr(publisher_module, "_TICK_SECONDS", 0.05)
+    platform = RecordingPlatform(redraws_for_elapsed_time=True)
+    publisher = _publisher(session_factory, bridged, listener, platform, online)
+    publisher.start()
+    try:
+        await _turn(service, bridged.room_id, "running", 1)
+        await platform.wait_until(lambda: len(_turns(platform)) == 1)
+        await asyncio.sleep(2.5)
+        assert len(_turns(platform)) == 1
+
+        await _step(
+            service,
+            bridged.room_id,
+            item_id="tool-1",
+            kind="tool-activity",
+            status="in-progress",
+            revision=1,
+            title="Ran `pytest`",
+        )
+        await platform.wait_until(lambda: len(_turns(platform)) == 2)
+    finally:
+        await publisher.stop()
+
+
+async def test_a_message_the_platform_closes_on_its_own_is_redrawn_just_after(
+    service, session_factory, bridged, listener, online, monkeypatch
+):
+    """Slack closes a stream ten minutes after it opens and marks the steps
+    still running as failed. Left to the clock, that could show for a minute."""
+    monkeypatch.setattr(publisher_module, "_TICK_SECONDS", 0.05)
+    monkeypatch.setattr(
+        publisher_module, "_AFTER_PLATFORM_CLOSE", timedelta(seconds=0.1)
+    )
+    platform = RecordingPlatform(redraws_for_elapsed_time=True, closes_in=0.5)
+    publisher = _publisher(session_factory, bridged, listener, platform, online)
+    publisher.start()
+    try:
+        await _turn(service, bridged.room_id, "running", 1)
+        await platform.wait_until(lambda: len(_turns(platform)) == 1)
+        await platform.wait_until(lambda: len(_turns(platform)) == 2)
+        assert _turns(platform)[1].call == "update_rich"
+
+        await asyncio.sleep(1.0)
+        assert len(_turns(platform)) == 2, "once, and then the clock again"
+    finally:
+        await publisher.stop()
+
+
+async def test_the_clock_asks_for_a_redraw_when_its_minute_turns_and_edits_are_taken():
+    publisher = _bare_publisher()
+    platform = publisher._adapter
+    platform.redraws_for_elapsed_time = True  # type: ignore[misc]
+    now = datetime.now(UTC)
+    for turn_id in ("due", "later"):
+        publisher._live_turns[_key(turn_id)] = AGENT
+    publisher._online_seen[AGENT] = True
+    publisher._remembered(_key("due")).clock_due = now - timedelta(seconds=1)
+    publisher._remembered(_key("later")).clock_due = now + timedelta(seconds=30)
+
+    platform.held_for = 4.0  # type: ignore[attr-defined]
+    publisher._tick(now)
+    assert publisher._pending == {}
+
+    platform.held_for = 0.0  # type: ignore[attr-defined]
+    publisher._tick(now)
+    assert publisher._pending == {_key("due"): publisher_module._CLOCK}
+
+
+async def test_new_work_goes_ahead_of_retries_and_retries_ahead_of_the_clock():
+    """A new turn's card and 👀 must not wait behind every running card's clock,
+    nor behind every card a rate limit sent back at the same moment."""
+    publisher = _bare_publisher()
+    for turn_id in ("old-1", "old-2", "old-3"):
+        publisher._enqueue(_key(turn_id), publisher_module._CLOCK)
+    publisher._enqueue(_key("retry"), publisher_module._SOON)
+    publisher._enqueue(_key("new"), publisher_module._NOW)
+    # Something happened on a turn that was only waiting for its clock.
+    publisher._enqueue(_key("old-3"), publisher_module._NOW)
+
+    order = [(await publisher._next())[0][3] for _ in range(5)]
+
+    assert order == ["new", "old-3", "retry", "old-1", "old-2"]
+    assert publisher._pending == {}
+
+
+async def test_a_clock_redraw_the_platform_refuses_is_dropped_but_a_change_is_retried(
+    monkeypatch,
+):
+    """The next minute redraws the clock anyway; a real change is still owed."""
+    publisher = _bare_publisher()
+    handled: list[tuple[str, ...]] = []
+
+    async def handle(key: tuple[str, ...]) -> None:
+        handled.append(key)
+        raise RichContentThrottled(retry_after=0.05, text="")
+
+    monkeypatch.setattr(publisher, "_handle", handle)
+    publisher._enqueue(_key("clock"), publisher_module._CLOCK)
+    publisher._enqueue(_key("change"), publisher_module._NOW)
+    running = asyncio.create_task(publisher._run())
+    await asyncio.sleep(0.4)
+    running.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await running
+
+    assert handled.count(_key("clock")) == 1
+    assert handled.count(_key("change")) > 1
+
+
+async def test_a_turn_whose_rows_were_pruned_is_no_longer_watched(
+    service, publisher, platform, bridged, session_factory
+):
+    await _turn(service, bridged.room_id, "running", 1)
+    await platform.wait_until(lambda: len(_turns(platform)) == 1)
+    assert _key("turn-1") in publisher._live_turns
+
+    async with session_factory() as db, db.begin():
+        await db.execute(
+            delete(AgentSessionActivityItem).where(
+                AgentSessionActivityItem.turn_id == "turn-1"
+            )
+        )
+    publisher._enqueue(_key("turn-1"), publisher_module._NOW)
+    await platform.wait_until(lambda: _key("turn-1") not in publisher._live_turns)
 
 
 # ── Stopping ─────────────────────────────────────────────────────────────────

@@ -53,6 +53,7 @@ export const chatActivityItemSchema = z.object({
   turnId: z.string(),
   itemId: z.string(),
   kind: z.enum(['turn', 'user-message', 'assistant-message', 'tool-activity', 'notice']),
+  subagent: z.boolean().optional(),
   revision: z.number().int(),
   status: z.string(),
   title: z.string(),
@@ -61,6 +62,11 @@ export const chatActivityItemSchema = z.object({
   roomId: z.string().nullable(),
   threadId: z.string().nullable(),
   messageId: z.string().nullable(),
+  /**
+   * On a user message sent while another turn ran: `steered` into that turn,
+   * or `queued` behind it. Absent from a server that predates it.
+   */
+  delivery: z.enum(['steered', 'queued']).nullish(),
   occurredAt: z.string(),
   createdAt: z.string(),
   updatedAt: z.string(),
@@ -124,6 +130,7 @@ export const SERVER_TOO_OLD_FOR_ACTIVITY =
   'This Switch server is too old for live chat activity — update the server.';
 
 /** What the chat's Stop, Reset and Compact post to the room for an agent. */
-export type ChatControlCommand = 'interrupt' | 'reset' | 'compact';
+/** Stop, Reset and Compact, and `retry`: run again the turn a message started, which failed. */
+export type ChatControlCommand = 'interrupt' | 'reset' | 'compact' | 'retry';
 
 export const chatControlAcceptedSchema = z.object({ commandId: z.string() });

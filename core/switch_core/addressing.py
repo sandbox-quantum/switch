@@ -150,6 +150,28 @@ class AddressingRule(BaseModel):
         return sender_owner_user_id == owner_user_id
 
 
+def never_allows(rule: AddressingRule) -> str | None:
+    """Why `rule` can never allow anyone, or None when it can.
+
+    With rules present a policy denies whatever no rule allows, so a rule like
+    this allows nothing while looking as if it did, and a policy of nothing
+    but such rules shuts the agent off, its owner included. Checked when a
+    policy is saved (`gateway/agents.py`), not when one is read: one stored
+    before still parses.
+    """
+    if rule.rooms == []:
+        return "it names no rooms"
+    if rule.room_groups == []:
+        return "it names no room groups"
+    if (
+        rule.users == []
+        and rule.agents == []
+        and not (rule.owner or rule.owner_agents or rule.platform)
+    ):
+        return "it lets in no people, no agents, not the owner and not the platform"
+    return None
+
+
 class AddressingPolicy(BaseModel):
     """An agent's addressing allow-list. Empty ``rules`` → allow-all."""
 

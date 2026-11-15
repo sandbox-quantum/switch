@@ -37,8 +37,26 @@ export interface MessagePayload {
   attachments?: AttachmentRef[];
   /** The words the chat opened with, posted in the agent's name as it joined; absent elsewhere. */
   opening_message?: string | null;
-  /** The sending person's role in the workspace when the message arrived. */
-  sender_role?: 'owner' | 'admin' | 'member' | null;
+  /** The sending person's role in the workspace when the message arrived. A
+   * server from before `owner` merged into `admin` may still send `owner`,
+   * which means `admin`. */
+  sender_role?: 'admin' | 'member' | 'owner' | null;
+  /** True when nobody was tagged and Switch's decision service picked this agent to answer. */
+  routed?: boolean;
+  /**
+   * Why a routed message reached this agent: `decided` when the decision
+   * service picked it, `fallback` when auto-route was unavailable and it is
+   * the room's triage agent. Absent from servers that predate it.
+   */
+  routed_reason?: 'decided' | 'fallback' | null;
+  /**
+   * Which follow-the-conversation rule delivered a message that named nobody:
+   * a reply in a thread the agent spoke or was tagged in last, the sender's
+   * next message in an exchange with the agent, or the agent being the room's
+   * assigned agent. Absent when the message named the agent, was routed, or
+   * came from a server that predates it.
+   */
+  follow_up?: 'thread_follow_up' | 'channel_follow_up' | 'main_agent' | null;
 }
 
 export interface CommandPayload {

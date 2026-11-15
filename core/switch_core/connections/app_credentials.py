@@ -6,8 +6,9 @@ every OAuth client with `registration: static`. Each comes from one of two
 places:
 
 - **configuration**: the files named by `GITHUB_APP_CONFIG_PATH` and
-  `GITHUB_APP_PRIVATE_KEY_PATH` (or, for one more release, the deprecated
-  `HOSTED_GITHUB_CONFIG_PATH`), or by `<PREFIX>_CLIENT_CONFIG_PATH`;
+  `GITHUB_APP_PRIVATE_KEY_PATH` (or the deprecated
+  `HOSTED_GITHUB_CONFIG_PATH`, which names no signing key), or by
+  `<PREFIX>_CLIENT_CONFIG_PATH`;
 - **saved**: a `service_app_credentials` row the operator saved from the
   dashboard.
 
@@ -18,7 +19,13 @@ leaves the service not set up, with the reason on the operator's page, so a
 bad row cannot lock the operator out of the page that fixes it.
 
 A GitHub App saved here is called back at `GATEWAY_PUBLIC_URL`, which must
-then be https; a configured one keeps the `origin` its file names.
+then be https, or http on this computer (`switch_core.loopback`); a
+configured one keeps the `origin` its file names, under the same rule. A
+saved GitHub App keeps the permissions GitHub answered when it was saved or
+last checked (`settings["permissions"]`), and one short of the write
+level's lets agents read only (`GitHubApp.lacks_write`); a configured one is
+never checked, so it is taken to have them, as is a saved one copied in from
+configuration until it is checked.
 
 A change takes effect without a restart (`ConnectorApps.apply`): the
 service's adapter is rebuilt and swapped into the broker, and for GitHub the
@@ -33,20 +40,29 @@ changed on its next re-check.
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
-from urllib.parse import urlsplit
+from typing import TYPE_CHECKING, Any, Literal
 
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from starlette.datastructures import State
 
 from switch_core.config import SwitchConfig
-from switch_core.connections.adapters.github import GitHubApp, load_github_app
+from switch_core.connections.adapters import ServiceAdapter
+from switch_core.connections.adapters.github import (
+    GitHubApp,
+    level_permissions,
+    load_github_app,
+    permissions_short,
+)
 from switch_core.connections.adapters.oauth import OAuthClientCredentials
-from switch_core.connections.loader import Connection, ConnectionDefinition
+from switch_core.connections.loader import (
+    Connection,
+    ConnectionDefinition,
+    RedirectMode,
+)
 from switch_core.connections.registry import (
     ClientRegistration,
     build_adapter,
@@ -58,6 +74,7 @@ from switch_core.db.stores.service_app_credential_store import (
     ServiceAppCredentialStore,
 )
 from switch_core.keys import UndecryptableError
+from switch_core.loopback import https_or_loopback
 from switch_core.providers.github import GitHubConnections
 from switch_core.providers.github_installation import GitHubInstallationCredentials
 
@@ -83,8 +100,8 @@ SECRET_NAMES: dict[AppKind, frozenset[str]] = {
 UNREADABLE = "Switch can't read the saved secret any more."
 
 GITHUB_NEEDS_HTTPS = (
-    "GitHub needs GATEWAY_PUBLIC_URL to be an https address, to send people "
-    "back to Switch."
+    "GitHub needs GATEWAY_PUBLIC_URL to be an https address, or a loopback http "
+    "one (localhost, 127.0.0.1 or ::1), to send people back to Switch."
 )
 
 
@@ -108,29 +125,48 @@ def needs_operator_app(definition: ConnectionDefinition) -> bool:
 
 def github_needs_https(kind: AppKind | None, public_url: str | None) -> bool:
     """Whether a GitHub App can't be set up on a server at `public_url`:
-    GitHub sends people back only to an https address. An unset public URL
-    is not this: setting it is the operator's first step for every app."""
+    GitHub sends people back only to an https address, or to plain http on
+    the loopback address. An unset public URL is not this: setting it is the
+    operator's first step for every app."""
     return (
         kind == "github_app"
         and public_url is not None
-        and urlsplit(public_url).scheme != "https"
+        and not https_or_loopback(public_url)
     )
 
 
 def not_set_up(name: str) -> str:
     """What members are told about a service whose app is not set up here."""
     return (
-        f"{name} is not set up on this server. Whoever runs your Switch server "
-        "can set it up in Switch Console, under Admin → Connector apps."
+        f"{name}'s connector app isn't set up on this server yet. "
+        "Whoever runs Switch can set it up."
     )
 
 
 def cannot_work_here(name: str) -> str:
     """What members are told about a service whose app this server can't
-    have: GitHub's, on a server without an https address."""
+    have: GitHub's, on a server whose address is plain http and not
+    loopback."""
     return (
-        f"{name} can't be used on this server: it needs the server to have an "
-        "https address."
+        f"{name} can't be used here: it needs Switch to have an https address, "
+        "or an http one on your own computer (localhost or 127.0.0.1)."
+    )
+
+
+def reads_only(name: str, *, organization: bool) -> str:
+    """What people are told of a write grant on a service whose app lets
+    agents read only: a GitHub App short of the write permissions, this
+    server's or, with `organization`, the workspace's organization's."""
+    if organization:
+        return (
+            f"Your organization's {name} App lets agents read only, so {name} "
+            "can't be granted for writing. An organization admin can change "
+            "that under Organization, Connectors."
+        )
+    return (
+        f"Switch's {name} App lets agents read only, so {name} can't be "
+        "granted for writing. Whoever runs Switch can change that in Switch "
+        "Console, under Admin → Connector apps."
     )
 
 
@@ -138,8 +174,8 @@ def needs_public_url(name: str) -> str:
     """What members are told about a service whose sign-ins return only to
     the server, on a server without a public address."""
     return (
-        f"{name} can't be connected on this server: it needs the server's "
-        "public address (GATEWAY_PUBLIC_URL)."
+        f"{name} can't be connected here: it needs Switch's public address "
+        "(GATEWAY_PUBLIC_URL)."
     )
 
 
@@ -181,10 +217,11 @@ def app_specs(catalog: Mapping[str, Connection]) -> dict[str, AppSpec]:
 
 @dataclass(frozen=True)
 class AppValues:
-    """An app's values: its client id, non-secret settings and secrets."""
+    """An app's values: its client id, non-secret settings (a GitHub App's
+    slug, and its permissions as GitHub last answered them) and secrets."""
 
     client_id: str
-    settings: dict[str, str]
+    settings: dict[str, Any]
     secrets: dict[str, str] = field(repr=False)
 
 
@@ -222,13 +259,37 @@ class _Configured:
 
 
 class AppLoadError(Exception):
-    """A saved app that cannot be used; the message is for the operator."""
+    """A saved app that cannot be used; the message is for whoever saved it."""
 
 
-def github_app_from_values(values: AppValues, public_url: str | None) -> GitHubApp:
-    """A GitHub App from saved values, called back at `public_url`."""
-    if public_url is None or urlsplit(public_url).scheme != "https":
-        raise AppLoadError(GITHUB_NEEDS_HTTPS)
+class UnreadableAppError(AppLoadError):
+    """No current key opens the saved secrets; saving the app again fixes it."""
+
+
+class ServerCannotUseAppError(AppLoadError):
+    """Nothing is wrong with the saved app, but this server cannot use any
+    such app (GitHub's needs an https address), which only its operator can
+    change."""
+
+
+def github_app_from_values(
+    values: AppValues, public_url: str | None, definition: ConnectionDefinition
+) -> GitHubApp:
+    """A GitHub App from saved values, called back at `public_url`, short of
+    whatever `definition`'s write level asks for that it was last found
+    without."""
+    if public_url is None or not https_or_loopback(public_url):
+        raise ServerCannotUseAppError(GITHUB_NEEDS_HTTPS)
+    permissions = values.settings.get("permissions")
+    if permissions is not None and not isinstance(permissions, dict):
+        raise AppLoadError("The saved GitHub App's permissions are malformed.")
+    lacks_write = (
+        ()
+        if permissions is None
+        else tuple(
+            permissions_short(level_permissions(definition, "write"), permissions)
+        )
+    )
     try:
         connections = GitHubConnections(
             client_id=values.client_id,
@@ -243,7 +304,49 @@ def github_app_from_values(values: AppValues, public_url: str | None) -> GitHubA
         raise AppLoadError(f"The saved GitHub App has no {missing.args[0]}.") from None
     except ValueError as error:
         raise AppLoadError(str(error)) from None
-    return GitHubApp(connections, signer)
+    return GitHubApp(connections, signer, lacks_write=lacks_write)
+
+
+@dataclass(frozen=True)
+class LoadedApp:
+    """A saved app, opened: its values, and the GitHub App or OAuth client
+    its adapter takes, the other None."""
+
+    values: AppValues
+    github_app: GitHubApp | None
+    oauth_client: OAuthClientCredentials | None
+
+
+def load_saved_app(
+    spec: AppSpec,
+    *,
+    definition: ConnectionDefinition,
+    client_id: str,
+    settings: Mapping[str, Any],
+    secrets: Callable[[], dict[str, str]],
+    public_url: str | None,
+) -> LoadedApp:
+    """A saved row's app, the server's or an organization's, for the catalog
+    entry `definition`. `secrets` decrypts the row's. Raises `AppLoadError`
+    when it cannot be used."""
+    try:
+        opened = secrets()
+    except (UndecryptableError, ValueError):
+        # No key opens it, or what it opens is not a payload of secrets:
+        # either way, only entering the secrets again mends it.
+        raise UnreadableAppError(UNREADABLE) from None
+    values = AppValues(client_id, dict(settings), opened)
+    if spec.kind == "github_app":
+        return LoadedApp(
+            values, github_app_from_values(values, public_url, definition), None
+        )
+    if "client_secret" not in opened:
+        raise AppLoadError("The saved client has no client secret.")
+    return LoadedApp(
+        values,
+        None,
+        OAuthClientCredentials(client_id, opened["client_secret"], authentication=None),
+    )
 
 
 def install_github_app(state: State, app: GitHubApp | None) -> None:
@@ -295,10 +398,19 @@ class ConnectorApps:
     def public_url(self) -> str | None:
         return self._config.gateway_public_url
 
+    def named_redirect(self, service: str) -> RedirectMode | None:
+        """The way back the server names for `service`'s sign-ins
+        (`SERVICE_SIGN_IN_REDIRECT`), if it names one."""
+        return self._config.service_sign_in_redirect.get(service)
+
     @property
     def http(self) -> httpx.AsyncClient:
         """How this server reaches vendors, held to its outbound policy."""
         return self._http
+
+    @property
+    def catalog(self) -> dict[str, Connection]:
+        return self._catalog
 
     def definition(self, service: str) -> ConnectionDefinition:
         return self._catalog[service].definition
@@ -363,18 +475,32 @@ class ConnectorApps:
         effective = await self.reload(service)
         broker.replace_adapter(
             service,
-            build_adapter(
+            self.build(
                 service,
-                self._catalog[service].definition,
                 github_app=effective.github_app,
                 oauth_client=effective.oauth_client,
-                http=self._http,
-                registration=self._registration,
             ),
         )
         if effective.spec.kind == "github_app":
             install_github_app(state, effective.github_app)
         return effective
+
+    def build(
+        self,
+        service: str,
+        *,
+        github_app: GitHubApp | None,
+        oauth_client: OAuthClientCredentials | None,
+    ) -> ServiceAdapter | None:
+        """`service`'s adapter over the given app, or None without one."""
+        return build_adapter(
+            service,
+            self._catalog[service].definition,
+            github_app=github_app,
+            oauth_client=oauth_client,
+            http=self._http,
+            registration=self._registration,
+        )
 
     def effective(self, service: str) -> EffectiveCredentials:
         effective = self._effective.get(service)
@@ -452,8 +578,15 @@ class ConnectorApps:
         if row is None:
             return self._none(spec, load_error=None, unreadable=False)
         try:
-            secrets = self._store.secrets(row)
-        except UndecryptableError:
+            loaded = load_saved_app(
+                spec,
+                definition=self.definition(spec.service),
+                client_id=row.client_id,
+                settings=row.settings,
+                secrets=lambda: self._store.secrets(row),
+                public_url=self.public_url,
+            )
+        except UnreadableAppError:
             logger.error(
                 "The app saved for %s cannot be decrypted with any current key; "
                 "%s is not set up until it is saved again.",
@@ -461,18 +594,6 @@ class ConnectorApps:
                 spec.name,
             )
             return self._none(spec, load_error=UNREADABLE, unreadable=True)
-        values = AppValues(row.client_id, dict(row.settings), secrets)
-        try:
-            if spec.kind == "github_app":
-                github_app = github_app_from_values(values, self.public_url)
-                oauth_client = None
-            else:
-                if "client_secret" not in secrets:
-                    raise AppLoadError("The saved client has no client secret.")
-                github_app = None
-                oauth_client = OAuthClientCredentials(
-                    row.client_id, secrets["client_secret"], authentication=None
-                )
         except AppLoadError as error:
             logger.error(
                 "The app saved for %s cannot be used, so it is not set up: %s",
@@ -483,9 +604,9 @@ class ConnectorApps:
         return EffectiveCredentials(
             spec=spec,
             source="saved",
-            values=values,
-            github_app=github_app,
-            oauth_client=oauth_client,
+            values=loaded.values,
+            github_app=loaded.github_app,
+            oauth_client=loaded.oauth_client,
             configuration_variables=(),
             deprecated=False,
             saved_ignored=False,

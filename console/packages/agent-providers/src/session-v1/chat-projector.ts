@@ -3,6 +3,27 @@ import type { ProviderRuntimeEvent } from '../events';
 import type { Redactions } from '../host/redaction';
 
 type TurnContext = { commandId: string | null; origin: Origin | null };
+
+/** As much text as one published item carries; longer text goes in `:part:` items after it. */
+export const ITEM_PART_CHARACTERS = 4096;
+
+/**
+ * `item` with `text`, as the items it is published as: the first under the
+ * item's own id, and each further {@link ITEM_PART_CHARACTERS} of text under
+ * `<id>:part:<n>`. At least `minimum` of them, so an item whose text has grown
+ * shorter still updates every part it was published in before.
+ */
+export function itemParts(item: Item, text: string, minimum: number): Item[] {
+  const characters = Array.from(text);
+  const count = Math.max(1, Math.ceil(characters.length / ITEM_PART_CHARACTERS), minimum);
+  return Array.from({ length: count }, (_, index) => ({
+    ...structuredClone(item),
+    itemId: index === 0 ? item.itemId : `${item.itemId}:part:${index}`,
+    text: characters
+      .slice(index * ITEM_PART_CHARACTERS, (index + 1) * ITEM_PART_CHARACTERS)
+      .join(''),
+  }));
+}
 type BufferedItem = { item: Item; emittedAt: number; dirty: boolean; parts: number };
 
 /** Projects chat and tool summaries only. The host owns sequencing and durable publication. */
@@ -10,6 +31,7 @@ export class ChatProjector {
   private readonly turns = new Map<string, TurnContext>();
   private readonly items = new Map<string, BufferedItem>();
   private readonly hidden = new Set<string>();
+  private readonly childEvents = new Map<string, number>();
 
   /**
    * `redactions`, the service tokens the session was handed, are scrubbed
@@ -21,6 +43,18 @@ export class ChatProjector {
     private readonly session: Session,
     private readonly redactions: Redactions | null
   ) {}
+
+  restore(items: Item[]): void {
+    for (const item of items) {
+      if (item.kind !== 'tool-activity' || !item.subagent) continue;
+      this.items.set(item.itemId, {
+        item: structuredClone(item),
+        emittedAt: -Infinity,
+        dirty: false,
+        parts: 1,
+      });
+    }
+  }
 
   bindTurn(turnId: string, context: TurnContext): void {
     if (this.turns.has(turnId)) throw new Error('Turn is already bound.');
@@ -62,13 +96,30 @@ export class ChatProjector {
       case 'item.started':
       case 'item.updated':
       case 'item.completed': {
-        const key = JSON.stringify([event.turnId, event.item.id]);
+        const child = event.item.type === 'subagent';
+        const key =
+          child && event.item.nativeChildId
+            ? JSON.stringify([event.turnId, 'subagent', event.item.nativeChildId])
+            : JSON.stringify([event.turnId, event.item.id]);
         if (event.item.type === 'reasoning') {
           this.hidden.add(key);
           return [];
         }
         const context = this.context(event.turnId);
         const previous = this.items.get(key);
+        if (child) {
+          const at = Date.parse(event.createdAt);
+          const prior = this.childEvents.get(key);
+          if (prior !== undefined && at < prior) return [];
+          // A repeated start cannot reopen a child that already finished.
+          if (
+            previous &&
+            previous.item.status !== 'in-progress' &&
+            event.item.status === 'in_progress'
+          )
+            return [];
+          this.childEvents.set(key, at);
+        }
         const kind =
           event.item.type === 'assistant_message'
             ? 'assistant-message'
@@ -81,12 +132,27 @@ export class ChatProjector {
           turnId: event.turnId,
           revision: previous?.item.revision ?? 0,
           kind,
+          ...(child ? { subagent: true } : {}),
           status: event.item.status === 'in_progress' ? 'in-progress' : event.item.status,
-          title: event.item.title.slice(0, 4096),
+          title: this.visible(
+            child && event.item.toolName && event.item.toolName !== event.item.title
+              ? `${event.item.toolName}: ${event.item.title}`
+              : child && !event.item.title
+                ? (previous?.item.title ?? 'Subagent')
+                : event.item.title,
+            true
+          ).slice(0, ITEM_PART_CHARACTERS),
           text: kind === 'tool-activity' ? '' : (event.item.text ?? previous?.item.text ?? ''),
           attachments: [],
           origin: kind === 'user-message' ? context.origin : null,
         };
+        if (
+          child &&
+          previous &&
+          previous.item.status === item.status &&
+          previous.item.title === item.title
+        )
+          return [];
         const buffered = {
           item,
           emittedAt: previous?.emittedAt ?? -Infinity,
@@ -123,17 +189,9 @@ export class ChatProjector {
     buffer.item.revision += 1;
     buffer.emittedAt = now;
     buffer.dirty = false;
-    const characters = Array.from(this.visible(buffer.item.text, final));
-    const count = Math.max(1, Math.ceil(characters.length / 4096), buffer.parts);
-    buffer.parts = count;
-    return Array.from({ length: count }, (_, index) => ({
-      type: 'item.upsert' as const,
-      item: {
-        ...structuredClone(buffer.item),
-        itemId: index === 0 ? buffer.item.itemId : `${buffer.item.itemId}:part:${index}`,
-        text: characters.slice(index * 4096, (index + 1) * 4096).join(''),
-      },
-    }));
+    const parts = itemParts(buffer.item, this.visible(buffer.item.text, final), buffer.parts);
+    buffer.parts = parts.length;
+    return parts.map((item) => ({ type: 'item.upsert' as const, item }));
   }
 
   private visible(text: string, final: boolean): string {

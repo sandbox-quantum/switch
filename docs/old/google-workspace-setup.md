@@ -9,8 +9,8 @@ offered. How it works is in
 under Google Workspace.
 
 Without the app, Google Workspace is listed on the server as "Google
-Workspace is not set up on this server. Ask whoever runs your Switch server to
-add it under Connectors in the Switch dashboard."
+Workspace is not set up here. Whoever runs Switch can set it up in Switch
+Console, under Admin → Connector apps."
 
 ## What you need
 
@@ -66,6 +66,55 @@ the app first. Switch cannot tell which a client is, and works with either.
   renewed every year. Until the app is verified it stays in Testing: only the
   test users you list can connect, and their sign-ins lapse after seven days,
   so they reconnect every week.
+
+### An External app without the security assessment
+
+Of the scopes Switch asks for, only `drive` and `drive.readonly` are
+restricted; the Docs, Sheets, Slides and Calendar ones are sensitive, which
+Google reviews without a security assessment. To verify an External app
+against those alone, set
+
+```bash
+SERVICE_ACCESS_PROFILES='{"google-workspace": "drive-file"}'
+```
+
+and restart switch-core. Sign-ins then ask for `drive.file`, which is not
+sensitive, in place of `drive` and `drive.readonly`, so declare these scopes on
+the app's Data Access page:
+
+- `openid` and `userinfo.email`
+- `documents`, `spreadsheets`, `presentations` and their `.readonly` forms
+- `calendar.readonly` and `calendar.events`
+- `drive.file`
+
+What agents can do changes, and they are told so:
+
+- Docs, Sheets and Slides: every file the person can open, by its link, as
+  before.
+- Drive: only the files and folders agents created through the connection.
+  Agents cannot search or list the person's other files, or read PDFs,
+  uploaded Office files, images and other files they did not create; they ask
+  for a link instead.
+- Calendar: as before.
+
+The setting covers every Google sign-in on the server, through the server's
+client and through [an organization's own](#an-organizations-own-google-client).
+An organization whose own client is Internal, which Google does not review,
+also loses Drive search.
+
+Changing the setting, in either direction, makes everyone connected before the
+change reconnect. Their connection to Google Workspace shows as needing
+reconnection, and Switch refuses to give their agents a Google Workspace token
+or a new grant until they reconnect. Tell people before you change it. If you
+change it back, the connections nobody has remade yet work again.
+
+With the Helm chart, set `switchCore.serviceAccessProfiles`:
+
+```yaml
+switchCore:
+  serviceAccessProfiles:
+    google-workspace: drive-file
+```
 
 ## Give Switch the client
 
@@ -128,11 +177,13 @@ same client, so nobody reconnects.
 
 ## What people do
 
-1. In Switch Console: Settings, Connections, Google Workspace, Connect. The
-   browser opens Google's consent page, then comes back through the server to
-   Switch Console, which asks the person to confirm the account.
+1. In Switch Console: Connectors, Google Workspace, Connect. The browser opens
+   Google's consent page, then comes back through the server to Switch
+   Console, which shows the account connected. There is nothing to confirm:
+   the account is the one chosen at Google, and Disconnect undoes a wrong one.
 2. Google lists what Switch asks for: reading and changing Drive files, Docs,
-   Sheets, Slides and calendar events, and the account's address. Unticking the
+   Sheets, Slides and calendar events, and the account's address (with
+   `drive-file`, only the Drive files Switch creates). Unticking the
    change permissions connects read-only, and Google then refuses every change
    an agent tries.
 3. On an agent's page (in Switch Console or the dashboard), the agent's owner
@@ -141,7 +192,8 @@ same client, so nobody reconnects.
 
 To connect read-only after connecting for read and write, disconnect first:
 while Switch holds access, Google's consent page has nothing to untick.
-Disconnecting revokes Switch's access at Google.
+Disconnecting revokes Switch's access at Google, which ends every token of the
+sign-in, those already handed to agents included.
 
 Sessions run Google's `gws` command-line tool, which Switch downloads on first
 use to `~/.local/state/switch/tools/` on the machine running the session (from
@@ -167,7 +219,26 @@ its app has passed Google's review.
 
 - Google keeps at most 100 refresh tokens per account per client, dropping the
   oldest silently, and an admin's session-length policy can end them sooner.
-  A lapsed connection shows as needing reconnection under Connections.
+  A lapsed connection shows as needing reconnection under Connectors.
 - A granted agent's token is its owner's own, shared by every agent they
-  grant; it cannot be narrowed or revoked per agent. Turning an agent off stops
-  its sessions within an hour; disconnecting stops every agent at once.
+  grant; it cannot be narrowed or revoked per agent. Turning Google Workspace
+  off for an agent stops its sessions using it within a minute: the machine
+  running them reads the agent's grants again about every 30 seconds. A token
+  already handed to it stays valid at Google until it expires, at most an
+  hour. Disconnecting revokes the sign-in at Google, which ends every agent's
+  at once; when Google can't be reached, the disconnect's warning says so.
+
+## An organization's own Google client
+
+With the `organization_connector_apps` flag on (with `service_connections`),
+an organization's admins can save its own under **Organization**,
+**Connectors** in the dashboard, with the same callback, checks and
+encryption as above. Every workspace in that organization then signs in
+through the organization's client instead of the server's; the others keep
+using the server's. If the organization's client stops working, its
+workspaces see Google Workspace as unavailable, with the reason, rather than falling
+back to the server's. Removing it sends them back to the server's client, and
+people connected through it reconnect once. The flag is off by default.
+`SERVICE_ACCESS_PROFILES` applies to an organization's client as it does to
+the server's (see
+[An External app without the security assessment](#an-external-app-without-the-security-assessment)).

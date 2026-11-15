@@ -1,3 +1,4 @@
+import { IS_PROCESS_ALIVE } from '@switch-console/agent-providers';
 import { z } from 'zod';
 
 /**
@@ -12,10 +13,8 @@ import { z } from 'zod';
 /** The controller stores its state with `node:sqlite`, which Node has from 22.13. */
 export const MIN_NODE = [22, 13] as const;
 
-const EXPAND = String.raw`
-const os = require('node:os'), path = require('node:path'), fs = require('node:fs'), cp = require('node:child_process'), crypto = require('node:crypto');
+const EXPAND = String.raw`${IS_PROCESS_ALIVE}const os = require('node:os'), path = require('node:path'), fs = require('node:fs'), cp = require('node:child_process'), crypto = require('node:crypto');
 const expand = (p) => p === '~' ? os.homedir() : p.startsWith('~/') ? path.join(os.homedir(), p.slice(2)) : p;
-const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
 const readJson = (file) => { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch (e) { if (e.code === 'ENOENT') return null; throw e; } };
 const put = (file, text, mode) => {
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
@@ -168,7 +167,7 @@ if (o.supervision === 'systemd') {
   console.log(JSON.stringify({ pid: null }));
 } else {
   const existing = readJson(path.join(dataDir, 'console-supervisor.json'));
-  if (existing && existing.pid && alive(existing.pid) && ['running', 'restarting'].includes(existing.state))
+  if (existing && existing.pid && isProcessAlive(existing.pid, 'recorded') && ['running', 'restarting'].includes(existing.state))
     throw new Error('The controller is already running on this host (pid ' + existing.pid + ').');
   const log = fs.openSync(path.join(dataDir, 'console-controller.log'), 'a', 0o600);
   const child = cp.spawn(process.execPath, ['-e', o.supervisor, JSON.stringify(o.args)], { detached: true, stdio: ['ignore', log, log] });
@@ -206,7 +205,7 @@ if (o.supervision === 'systemd') {
 } else {
   const saved = readJson(path.join(dataDir, 'console-supervisor.json'));
   const claimsUp = !!(saved && ['running', 'restarting'].includes(saved.state));
-  const up = claimsUp && !!saved.pid && alive(saved.pid);
+  const up = claimsUp && !!saved.pid && isProcessAlive(saved.pid, 'recorded');
   const state = !saved ? 'never-started' : claimsUp && !up ? 'gone' : saved.state;
   console.log(JSON.stringify({ running: up, state: state, code: saved && saved.code !== undefined ? saved.code : null, log: up ? '' : tail() }));
 }
@@ -239,7 +238,7 @@ if (o.supervision === 'systemd') {
   try { cp.execFileSync('systemctl', ['--user', 'daemon-reload'], { stdio: 'ignore' }); } catch (e) {}
 } else {
   const saved = readJson(path.join(dataDir, 'console-supervisor.json'));
-  if (saved && saved.pid && alive(saved.pid)) {
+  if (saved && saved.pid && isProcessAlive(saved.pid, 'recorded')) {
     let owned = true;
     // The supervisor names its data directory as it was given, which may be the ~/ form.
     try {
@@ -249,8 +248,8 @@ if (o.supervision === 'systemd') {
     if (owned) {
       process.kill(saved.pid, 'SIGTERM');
       let i = 0;
-      for (; i < 75 && alive(saved.pid); i++) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200);
-      if (alive(saved.pid)) throw new Error('The controller on this host did not stop within 15 s of being asked (pid ' + saved.pid + ').');
+      for (; i < 75 && isProcessAlive(saved.pid, 'recorded'); i++) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200);
+      if (isProcessAlive(saved.pid, 'recorded')) throw new Error('The controller on this host did not stop within 15 s of being asked (pid ' + saved.pid + ').');
     }
   }
 }

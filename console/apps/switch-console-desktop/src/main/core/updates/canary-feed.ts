@@ -18,8 +18,7 @@ interface GitHubRelease {
 }
 
 /**
- * The download URL of the newest published canary release, for electron-updater's
- * generic provider to read `canary*.yml` and the installers from.
+ * The tag of the newest published canary release.
  *
  * electron-updater's own GitHub provider finds a prerelease through the releases
  * Atom feed, which lists only the ten newest releases of the repo. The agents
@@ -29,7 +28,7 @@ interface GitHubRelease {
  *
  * GitHub lists releases newest first, so the first canary found is the latest.
  */
-export async function resolveCanaryFeedUrl(): Promise<string> {
+export async function findLatestCanaryTag(): Promise<string> {
   for (let page = 1; page <= MAX_PAGES; page++) {
     const response = await fetch(`${RELEASES_API_URL}?per_page=${PAGE_SIZE}&page=${page}`, {
       headers: { Accept: 'application/vnd.github+json', 'Cache-Control': 'no-cache' },
@@ -39,10 +38,18 @@ export async function resolveCanaryFeedUrl(): Promise<string> {
     }
     const releases = (await response.json()) as GitHubRelease[];
     const canary = releases.find((r) => !r.draft && CANARY_TAG.test(r.tag_name));
-    if (canary) return `${RELEASES_DOWNLOAD_URL}/${canary.tag_name}`;
+    if (canary) return canary.tag_name;
     if (releases.length < PAGE_SIZE) break;
   }
   throw new Error(
     `No published canary release among the newest ${MAX_PAGES * PAGE_SIZE} releases of the repo`
   );
+}
+
+/**
+ * The download URL of the newest published canary release, for electron-updater's
+ * generic provider to read `canary*.yml` and the installers from.
+ */
+export async function resolveCanaryFeedUrl(): Promise<string> {
+  return `${RELEASES_DOWNLOAD_URL}/${await findLatestCanaryTag()}`;
 }

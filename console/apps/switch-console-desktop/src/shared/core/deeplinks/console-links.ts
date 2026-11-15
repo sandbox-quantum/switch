@@ -10,7 +10,11 @@
  * `server` names the Switch server the link means, by its address.
  * Without it the link opens on the server the person is looking at, which is
  * what an agent wants: it talks to them on that server and does not know the
- * address Console reaches it by.
+ * address Console reaches it by. `workspace` names the workspace there, by its
+ * id on the server, for a link from the web dashboard: what it points at may
+ * only exist in the workspace the dashboard was showing. `use`, on a link to a
+ * template, opens its Use form rather than its page. An older Console ignores
+ * both and opens the page in the workspace it is on.
  *
  * `CONSOLE_PAGES` is the whole catalogue. switch-buddy's instructions list the
  * same pages, and a test holds the two together.
@@ -26,10 +30,15 @@ type PageSpec = {
   id?: 'agent' | 'room' | 'template';
   /** The values `tab` may take, when the page has tabs. */
   tabs?: readonly string[];
+  /**
+   * Tabs the page had before, still accepted: an older server's switch-buddy
+   * may write them, and the page sends each where it went.
+   */
+  formerTabs?: readonly string[];
 };
 
 export const CONSOLE_PAGES = {
-  home: { description: "The server's home: messaging apps, guardrails and who you are." },
+  home: { description: "The server's home: the workspace at a glance." },
   server: {
     description:
       "This server's own settings, where this Switch Console runs it: start, stop, update, the Mattermost beside it.",
@@ -54,12 +63,23 @@ export const CONSOLE_PAGES = {
   invite: { description: 'Invite people to the workspace.' },
   admin: {
     description:
-      "Admin, for the workspace's admins: which connectors the workspace offers, and the apps they sign in through.",
-    tabs: ['connectors', 'apps'],
+      "Admin, for the workspace's admins and the server's operator: what the web gateway does not have yet.",
+    tabs: ['messaging-apps', 'connectors', 'switch-trust', 'apps'],
   },
   settings: {
     description: "Switch Console's settings.",
-    tabs: ['general', 'clis-models', 'remote-hosts', 'managed-agents', 'interface'],
+    tabs: [
+      'preferences',
+      'messaging-apps',
+      'clis-models',
+      'api-keys',
+      'devices',
+      'remote-hosts',
+      'managed-agents',
+      'status',
+      'account',
+    ],
+    formerTabs: ['general', 'interface'],
   },
 } as const satisfies Record<string, PageSpec>;
 
@@ -72,6 +92,10 @@ export type ConsoleLink = {
   tab: string | null;
   /** The address of the server the link means, or null for the current one. */
   server: string | null;
+  /** The workspace the link means, by its tenant id on the server, or null for the current one. */
+  workspace: string | null;
+  /** On a link to a template: open its Use form rather than its page. */
+  use: boolean;
 };
 
 export type ConsoleLinkResult = { ok: true; link: ConsoleLink } | { ok: false; reason: string };
@@ -109,21 +133,33 @@ export function parseConsoleLink(raw: string): ConsoleLinkResult {
     return { ok: false, reason: `This link to a ${spec.id} does not say which one.` };
   }
   const tab = url.searchParams.get('tab');
-  if (tab !== null && !(spec.tabs ?? []).includes(tab)) {
+  if (tab !== null && ![...(spec.tabs ?? []), ...(spec.formerTabs ?? [])].includes(tab)) {
     return { ok: false, reason: `That page has no "${tab}" tab.` };
   }
-  return { ok: true, link: { page, id, tab, server: url.searchParams.get('server') } };
+  return {
+    ok: true,
+    link: {
+      page,
+      id,
+      tab,
+      server: url.searchParams.get('server'),
+      workspace: url.searchParams.get('workspace'),
+      use: page === 'template' && url.searchParams.get('use') === '1',
+    },
+  };
 }
 
 /** The link to `page`, as switch-buddy or a test writes it. */
 export function consoleLink(
   page: ConsolePage,
-  options: { id?: string; tab?: string; server?: string }
+  options: { id?: string; tab?: string; server?: string; workspace?: string; use?: boolean }
 ): string {
   const path = options.id ? `${page}/${encodeURIComponent(options.id)}` : page;
   const query = new URLSearchParams();
   if (options.tab) query.set('tab', options.tab);
   if (options.server) query.set('server', options.server);
+  if (options.workspace) query.set('workspace', options.workspace);
+  if (options.use) query.set('use', '1');
   const search = query.toString();
   return `${CONSOLE_LINK_PREFIX}${path}${search ? `?${search}` : ''}`;
 }

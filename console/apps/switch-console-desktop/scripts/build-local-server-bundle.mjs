@@ -7,6 +7,9 @@
  *   uv/         the pinned uv
  *   python/     a relocatable CPython 3.12, fetched by that uv
  *   switch/src  the pinned switch-core release's `core/` and its setup script
+ *   switch/gateway-ui
+ *               the same release's gateway pages (the admin dashboard), built,
+ *               for switch-core to serve on its own address
  *   switch/wheels, switch/requirements.txt
  *               every package switch-core needs, as wheels, with the hashes of
  *               the release's own lockfile — installed offline at first start
@@ -39,6 +42,7 @@ import path from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { build } from 'esbuild';
+import { buildGatewayUi } from './build-gateway-ui.mjs';
 
 const OUT = path.resolve('dist-local-server');
 
@@ -87,6 +91,9 @@ const wanted = {
   postgresVersion: pins.postgresArchive(platform) ? pins.POSTGRES_VERSION : null,
   opensslVersion: buildsOpenssl ? pins.OPENSSL_VERSION : null,
   python: pins.SWITCH_CORE_PYTHON,
+  // Bumped when what the bundle holds of the gateway changes, so a bundle
+  // already on disk from before is rebuilt (1: its built pages).
+  gatewayUi: 1,
 };
 
 try {
@@ -260,6 +267,11 @@ await cp(
   path.join(source, 'deploy', 'shared_resources', 'setup.py'),
   path.join(switchDir, 'src', 'deploy', 'shared_resources', 'setup.py')
 );
+
+// The release's gateway pages, built from the same source, as the published
+// image builds them: switch-core serves them when GATEWAY_UI_DIR names them.
+console.log(`local-server bundle: gateway pages for switch-core ${switchVersion}`);
+await buildGatewayUi(path.join(source, 'gateway'), path.join(switchDir, 'gateway-ui'));
 const requirements = execFileSync(
   uv,
   ['export', '--frozen', '--no-dev', '--no-emit-project', '--format', 'requirements-txt', '-q'],

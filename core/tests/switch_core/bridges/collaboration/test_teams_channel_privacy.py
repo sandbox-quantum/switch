@@ -131,7 +131,12 @@ async def test_activity_from_a_private_channel_does_not_open_it_to_the_team() ->
     # The create-with-people sequence: the bot's join and a message arrive from
     # the new private channel before anyone is added.
     adapter, graph = _adapter("private")
-    await adapter.create_channel("Room", "topic", channel_type="channel_private")
+    await adapter.create_channel(
+        "Room",
+        "topic",
+        channel_type="channel_private",
+        owner_external_id="0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0",
+    )
     await adapter._dispatch_activity(_bot_added())
     await adapter._dispatch_activity(_message("m1"))
 

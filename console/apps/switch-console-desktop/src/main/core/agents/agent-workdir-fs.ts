@@ -28,6 +28,7 @@ export type WorkdirFs = {
 const EMPTY_PLUGIN_FS: PluginFs = {
   read: () => Promise.resolve(null),
   write: () => Promise.reject(new Error('home scope is read-only for remote agents')),
+  protectSecret: () => Promise.resolve(false),
   delete: () => Promise.resolve(),
   exists: () => Promise.resolve(false),
   list: () => Promise.resolve([]),

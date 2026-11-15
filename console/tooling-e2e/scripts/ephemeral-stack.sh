@@ -6,7 +6,9 @@
 #   just e2e-fast                 the fast lane (no provider, no Console)
 #   just e2e-provider             the provider lane, on a headless agent controller
 #   just e2e-browser              the browser lane: the gateway UI in headless Chromium
+#   just e2e-browser-v2           the browser lane with the dashboard's new layout (gateway_v2)
 #   just e2e-agentic              the agentic lane: scenario files, a driver and a judge model
+#   just e2e-explore              the explore lane: Bombadil drives the gateway UI at random
 #   just e2e-fast --keep          leave the stack running afterwards
 #   just e2e-fast -- <vitest args> pass arguments through to vitest
 #
@@ -20,9 +22,12 @@
 # own .env is never read or written, so this cannot rotate a developer's live
 # secrets or pick up a stale value from them.
 #
-# The browser lane also builds the gateway UI from gateway/ and serves it with
-# `vite preview` on :4173, whose proxy sends its /gateway requests to :8000 as
-# nginx does in a deployment, and installs Playwright's Chromium.
+# The browser and explore lanes also build the gateway UI from gateway/ and
+# serve it with `vite preview` on :4173, whose proxy sends its /gateway requests
+# to :8000 as nginx does in a deployment, and install Playwright's Chromium.
+# SWITCH_E2E_EXPLORE_TIME_LIMIT sets how long the explore lane explores (5m).
+# The browser lane's server has every flag the role matrix's pages need, and
+# SWITCH_E2E_GATEWAY_LAYOUT=v2 adds gateway_v2, the dashboard's new layout.
 #
 # Ports 4173, 5432, 8000, 8065 and 8081 must be free: stop a local stack first.
 # Logs and the JUnit report go to build/e2e/ephemeral/ (or $E2E_OUT); the env
@@ -42,6 +47,13 @@ LANE="${SWITCH_E2E_LANE:-fast}"
 NEEDS_CONTROLLER=0
 FOLLOW_WINDOW_SECONDS=20
 case "$LANE" in provider|agentic) NEEDS_CONTROLLER=1 ;; esac
+GATEWAY_LAYOUT="${SWITCH_E2E_GATEWAY_LAYOUT:-current}"
+case "$GATEWAY_LAYOUT" in
+  current) ;;
+  v2) [ "$LANE" = browser ] \
+        || { echo "SWITCH_E2E_GATEWAY_LAYOUT=v2 is for the browser lane, not '$LANE'." >&2; exit 2; } ;;
+  *) echo "SWITCH_E2E_GATEWAY_LAYOUT is current or v2, not '$GATEWAY_LAYOUT'." >&2; exit 2 ;;
+esac
 KEEP=0
 VITEST_ARGS=()
 while [ $# -gt 0 ]; do
@@ -110,6 +122,17 @@ if [ "$NEEDS_CONTROLLER" = 1 ]; then
   sed -i.bak -e "s|^FEATURE_FLAGS_ENABLED=.*|FEATURE_FLAGS_ENABLED=agent_management|" \
              -e "s|^CONTROLLER_TOKEN_SECRET=.*|CONTROLLER_TOKEN_SECRET=$(openssl rand -hex 32)|" "$ENV_FILE"
   rm -f "$ENV_FILE.bak"
+elif [ "$LANE" = browser ]; then
+  # Every flag a page of the role matrix (gateway/src/routes/roleMatrix.ts)
+  # needs, so every page is there to open: agent management (and the key it
+  # requires), connectors, the organization's connector apps, and the new
+  # layout when it is the one under test. Not follow-ups, nor their short
+  # window: only the fast lane's follow-ups scenario uses them.
+  FLAGS=agent_management,service_connections,organization_connector_apps
+  [ "$GATEWAY_LAYOUT" = v2 ] && FLAGS="$FLAGS,gateway_v2"
+  sed -i.bak -e "s|^FEATURE_FLAGS_ENABLED=.*|FEATURE_FLAGS_ENABLED=$FLAGS|" \
+             -e "s|^CONTROLLER_TOKEN_SECRET=.*|CONTROLLER_TOKEN_SECRET=$(openssl rand -hex 32)|" "$ENV_FILE"
+  rm -f "$ENV_FILE.bak"
 else
   # Follow-ups, with a window short enough for a scenario to wait out. Not on
   # the controller lanes: there an untagged answer to a request card, or an
@@ -159,7 +182,11 @@ echo "Starting switch-core from this checkout…"
 # JSON, so the harness can read back what the server logged during each
 # scenario (SWITCH_E2E_SERVER_LOG): one record per line, timed to the
 # millisecond. `jq -r '"\(.timestamp) \(.status) \(.message)"'` reads it.
-GATEWAY_COOKIE_SECURE=false LOG_FORMAT=json uv run --project core python -m switch_core.main \
+# The browser lanes serve the UI with `vite preview` on :4173, but the env
+# file's FRONTEND_BASE_URL names the dev server (:5173), so the preview's
+# origin is added for the origin check on cookie requests and sign-in.
+GATEWAY_EXTRA_ORIGINS='["http://127.0.0.1:4173"]' \
+  GATEWAY_COOKIE_SECURE=false LOG_FORMAT=json uv run --project core python -m switch_core.main \
   >"$OUT/switch-core.log" 2>&1 &
 SERVER_PID=$!
 for _ in $(seq 120); do curl -sf localhost:8000/health >/dev/null && break; sleep 1; done
@@ -236,7 +263,7 @@ if [ "$NEEDS_CONTROLLER" = 1 ]; then
 fi
 
 BROWSER_ENV=()
-if [ "$LANE" = browser ]; then
+if [ "$LANE" = browser ] || [ "$LANE" = explore ]; then
   echo "Building the gateway UI…"
   (cd "$REPO/gateway" && npm ci --no-audit --no-fund && npm run build) >"$OUT/gateway-build.log" 2>&1 \
     || { echo "gateway UI build failed; see $OUT/gateway-build.log" >&2; exit 1; }
@@ -264,7 +291,7 @@ status=0
   # Screenshots of failed pages, and agentic transcripts and verdicts.
   export SWITCH_E2E_OUTPUT_DIR="$OUT"
   # The follow-up window the server was started with, for the scenario that waits it out.
-  [ "$NEEDS_CONTROLLER" = 0 ] && export SWITCH_E2E_FOLLOW_WINDOW_SECONDS="$FOLLOW_WINDOW_SECONDS"
+  [ "$NEEDS_CONTROLLER" = 0 ] && [ "$LANE" != browser ] && export SWITCH_E2E_FOLLOW_WINDOW_SECONDS="$FOLLOW_WINDOW_SECONDS"
   SWITCH_E2E_LANE="$LANE" \
   SWITCH_E2E_ENVIRONMENT=ephemeral \
   SWITCH_E2E_STRICT=1 \
@@ -283,5 +310,6 @@ if [ "$status" != 0 ]; then
   echo "The $LANE lane failed. switch-core log: $OUT/switch-core.log" >&2
   [ "$NEEDS_CONTROLLER" = 1 ] && echo "Agent controller log: $OUT/controller.log" >&2
   [ "$LANE" = browser ] && echo "Screenshots of failed pages: $OUT/screenshots" >&2
+  [ "$LANE" = explore ] && echo "The explorer's trace: pnpm --dir $HARNESS exec bombadil browser inspect $OUT/explore" >&2
 fi
 exit "$status"

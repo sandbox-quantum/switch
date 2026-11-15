@@ -53,6 +53,8 @@ async def connect_github(session: AsyncSession, owner: str, keyring: Keyring) ->
             )
         ),
         oauth_client_id=None,
+        method="oauth",
+        choices={},
     )
 
 
@@ -84,10 +86,12 @@ def github_broker(
         keyring=keyring,
         catalog=CATALOG,
         adapters={"github": vendor},
+        organization_apps=None,
         disabled={},
         store=STORE,
         token_retention=timedelta(days=30),
         workspace_services=WorkspaceServiceStore(),
         workspace_gate=False,
         public_url=None,
+        allow_non_expiring_keys=False,
     )

@@ -17,6 +17,8 @@ export type BuddyProvider = {
   state: BuddyProviderState;
   /** What the machine said about its login, when it is not ready; null when nothing. */
   detail: string | null;
+  /** False when signing in would not make it ready: `detail` says what would. */
+  loginHelps: boolean;
 };
 
 export function buddyProviders(
@@ -34,7 +36,13 @@ export function buddyProviders(
           : reported.problem === 'login not checked yet'
             ? 'checking'
             : 'sign-in';
-    return { id: provider.id, name: provider.name, state, detail: reported?.detail ?? null };
+    return {
+      id: provider.id,
+      name: provider.name,
+      state,
+      detail: reported?.detail ?? null,
+      loginHelps: reported?.loginHelps ?? true,
+    };
   });
 }
 

@@ -23,6 +23,7 @@ from switch_core.db.models import (
     UsageMetric,
     User,
 )
+from switch_core.db.stores import budget_store
 from switch_core.db.stores.budget_store import BudgetNotFound, BudgetStore
 
 
@@ -199,6 +200,31 @@ class TestSpend:
             covering = await _standings(session, mine.id)
 
         assert [s.agent_id for s in covering] == [None, mine.id]
+
+    async def test_reading_standings_builds_no_statement(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Every message an agent posts reads the standings, and building
+        their statement cost more than running it, so it is built once."""
+        async with session_factory() as session:
+            mine = await _agent(session, "mine")
+            await _budget(session, agent_id=mine.id)
+            await session.commit()
+
+        def built(*_args: object, **_kwargs: object) -> None:
+            raise AssertionError("the standings statement was built again")
+
+        monkeypatch.setattr(budget_store, "select", built)
+        monkeypatch.setattr(budget_store, "_period_start", built)
+        async with session_factory() as session:
+            every = await _standings(session, None)
+            covering = await _standings(session, mine.id)
+
+        assert (
+            [s.agent_id for s in every] == [s.agent_id for s in covering] == [mine.id]
+        )
 
 
 class TestChanges:

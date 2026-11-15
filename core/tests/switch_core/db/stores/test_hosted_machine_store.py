@@ -13,12 +13,15 @@ from switch_core.db.stores.hosted_machine_store import (
     MACHINE_BEING_REMOVED,
     MACHINE_NEEDS_ADMIN,
     MACHINE_NEEDS_ATTENTION,
+    MACHINE_STOPPED_BY_ADMIN,
     MACHINE_WORKSPACES_FULL,
     MACHINES_FULL,
     MAX_MACHINE_WORKSPACES,
     CloudMachineConflict,
     CloudMachineStore,
     WorkspaceOnMachine,
+    admin_stopped,
+    claim_conflict,
     ever_hosted,
     idle_sleeping,
     lock_claims,
@@ -75,12 +78,28 @@ async def claim_both(factory, owner_id, capacity=2):
             now=datetime.now(UTC),
         )
         await session.commit()
-        return found
+        return found.machine, found.workspace
 
 
 async def claim(factory, owner_id, capacity=2):
     machine, _workspace = await claim_both(factory, owner_id, capacity)
     return machine
+
+
+async def claimed_change(factory, owner_id, tenant_id=TENANT_ZERO_ID):
+    """What a claim of the owner's machine, in `tenant_id`, says it changed."""
+    with tenant_scope(tenant_id):
+        async with factory() as session:
+            await lock_claims(session)
+            found = await CloudMachineStore().claim(
+                session,
+                factory,
+                owner_id=owner_id,
+                capacity=2,
+                now=datetime.now(UTC),
+            )
+            await session.commit()
+            return found.change
 
 
 async def claim_in(factory, tenant_id, owner_id, capacity=2):
@@ -100,6 +119,26 @@ async def reload(factory, machine_id):
         machine = await CloudMachineStore().get(session, machine_id)
         assert machine is not None
         return machine
+
+
+async def test_a_claim_says_what_it_changed(factory):
+    """The first of these that applies, which `cloud_machine_requested`
+    reports; nothing for a machine already running here."""
+    assert await claimed_change(factory, "owner-a") == "new"
+    assert await claimed_change(factory, "owner-a") is None
+    machine, _ = await claim_both(factory, "owner-a")
+    async with factory() as session:
+        row = await CloudMachineStore().get(session, machine.id)
+        row.desired_state = "stopped"
+        row.stop_reason = "owner"
+        await session.commit()
+    assert await claimed_change(factory, "owner-a") == "restarted"
+    async with factory() as session:
+        row = await CloudMachineStore().get(session, machine.id)
+        row.desired_state = "retained"
+        await session.commit()
+    assert await claimed_change(factory, "owner-a", TENANT_B) == "joined_workspace"
+    assert await claimed_change(factory, "owner-a", TENANT_B) is None
 
 
 async def test_claim_creates_a_queued_machine(factory):
@@ -760,3 +799,165 @@ async def test_a_machine_is_empty_only_once_no_workspace_has_an_agent(factory):
         "retained",
         now + timedelta(days=7),
     )
+
+
+@pytest.mark.parametrize(
+    ("desired_state", "stop_reason", "held_desired", "bumped"),
+    [
+        ("running", None, "stopped", True),
+        ("stopped", "idle", "stopped", True),
+        ("stopped", "owner", "stopped", True),
+        ("retained", None, "retained", False),
+    ],
+)
+async def test_an_administrator_holds_a_machine_stopped(
+    factory, desired_state, stop_reason, held_desired, bumped
+):
+    machine = await seed(
+        factory,
+        owner_id="owner-a",
+        state="ready",
+        desired_state=desired_state,
+        stop_reason=stop_reason,
+        revision=3,
+    )
+    CloudMachineStore().admin_stop(machine, datetime.now(UTC))
+    assert admin_stopped(machine)
+    assert not owner_stopped(machine) and not idle_sleeping(machine)
+    assert (machine.desired_state, machine.stop_reason) == (held_desired, "admin")
+    assert machine.revision == (4 if bumped else 3)
+
+
+@pytest.mark.parametrize("desired_state", ["stopped", "retained"])
+async def test_holding_a_held_machine_again_is_refused(factory, desired_state):
+    machine = await seed(
+        factory,
+        owner_id="owner-a",
+        state="stopped",
+        desired_state=desired_state,
+        stop_reason="admin",
+        revision=3,
+    )
+    with pytest.raises(
+        CloudMachineConflict, match="already stopped by an administrator"
+    ):
+        CloudMachineStore().admin_stop(machine, datetime.now(UTC))
+    assert machine.revision == 3
+
+
+@pytest.mark.parametrize(
+    ("state", "desired_state"),
+    [("deleting", "deleted"), ("retained", "deleted"), ("deleted", "deleted")],
+)
+async def test_a_machine_being_deleted_cannot_be_held(factory, state, desired_state):
+    machine = await seed(
+        factory,
+        owner_id="owner-a",
+        state=state,
+        desired_state=desired_state,
+        stop_reason=None,
+        revision=3,
+    )
+    with pytest.raises(CloudMachineConflict, match="being deleted"):
+        CloudMachineStore().admin_stop(machine, datetime.now(UTC))
+    assert machine.stop_reason is None
+
+
+@pytest.mark.parametrize("desired_state", ["stopped", "retained"])
+async def test_a_held_machine_cannot_be_claimed(factory, desired_state):
+    """Neither from a workspace it serves nor from one joining it."""
+    seeded = await seed(
+        factory,
+        owner_id="owner-a",
+        state=desired_state,
+        desired_state=desired_state,
+        stop_reason="admin",
+        revision=3,
+    )
+    assert claim_conflict(seeded, datetime.now(UTC)) == MACHINE_STOPPED_BY_ADMIN
+    for attempt in (claim(factory, "owner-a"), claim_in(factory, TENANT_B, "owner-a")):
+        with pytest.raises(CloudMachineConflict) as raised:
+            await attempt
+        assert str(raised.value) == MACHINE_STOPPED_BY_ADMIN
+    after = await reload(factory, seeded.id)
+    assert (after.desired_state, after.stop_reason, after.revision) == (
+        desired_state,
+        "admin",
+        3,
+    )
+
+
+async def test_the_hold_comes_before_the_machine_s_error(factory):
+    seeded = await seed(
+        factory,
+        owner_id="owner-a",
+        state="error",
+        desired_state="stopped",
+        stop_reason="admin",
+        revision=3,
+    )
+    seeded.error_code = "machine_needs_attention"
+    assert claim_conflict(seeded, datetime.now(UTC)) == MACHINE_STOPPED_BY_ADMIN
+
+
+async def test_releasing_leaves_the_machine_stopped_for_its_owner(factory):
+    machine = await seed(
+        factory,
+        owner_id="owner-a",
+        state="stopped",
+        desired_state="stopped",
+        stop_reason="admin",
+        revision=3,
+    )
+    CloudMachineStore().admin_release(machine, datetime.now(UTC))
+    assert owner_stopped(machine)
+    assert (machine.state, machine.revision) == ("stopped", 3)
+
+
+async def test_releasing_an_isolated_machine_retries_it(factory):
+    """Its error was the isolation the operator undid: the owner is left a
+    stopped machine to start, not an error only an administrator can clear."""
+    machine = await seed(
+        factory,
+        owner_id="owner-a",
+        state="error",
+        desired_state="stopped",
+        stop_reason="admin",
+        revision=3,
+    )
+    machine.error = "The cloud machine needs repair."
+    machine.error_code = "machine_needs_attention"
+    CloudMachineStore().admin_release(machine, datetime.now(UTC))
+    assert owner_stopped(machine)
+    assert (machine.state, machine.error, machine.error_code, machine.revision) == (
+        "queued",
+        None,
+        None,
+        4,
+    )
+
+
+async def test_releasing_a_retained_machine_leaves_it_retained(factory):
+    machine = await seed(
+        factory,
+        owner_id="owner-a",
+        state="retained",
+        desired_state="retained",
+        stop_reason="admin",
+        revision=3,
+    )
+    CloudMachineStore().admin_release(machine, datetime.now(UTC))
+    assert (machine.desired_state, machine.stop_reason) == ("retained", None)
+
+
+async def test_only_a_held_machine_can_be_released(factory):
+    machine = await seed(
+        factory,
+        owner_id="owner-a",
+        state="stopped",
+        desired_state="stopped",
+        stop_reason="owner",
+        revision=3,
+    )
+    with pytest.raises(CloudMachineConflict, match="not stopped by an administrator"):
+        CloudMachineStore().admin_release(machine, datetime.now(UTC))

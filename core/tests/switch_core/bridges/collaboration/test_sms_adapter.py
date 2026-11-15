@@ -10,6 +10,7 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
+import switch_core.bridges.collaboration.sms.adapter as sms_adapter_module
 from switch_core.bridges.collaboration.install import (
     WebhookAuthenticityError,
     WebhookPayloadError,
@@ -26,6 +27,7 @@ from switch_core.bridges.collaboration.sms.adapter import (
 )
 from switch_core.bridges.collaboration.sms.chunking import chunk_sms
 from switch_core.bridges.collaboration.sms.client import TwilioApiError, TwilioClient
+from switch_core.outbound import OutboundPolicy
 
 ACCOUNT = "AC" + ("a" * 32)
 WEBHOOK = "https://switch.example.com/messaging/bridges/bridge-1/events"
@@ -101,6 +103,43 @@ def test_config_validates_account_and_phone_numbers() -> None:
             phone_number="+14155550100",
             allowed_numbers=["+14155550101", "+14155550101"],
         )
+
+
+@pytest.mark.asyncio
+async def test_quiet_copy_does_not_configure_twilio_webhook(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    async def handler(http_request: httpx.Request) -> httpx.Response:
+        requests.append(http_request)
+        return httpx.Response(500)
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    monkeypatch.setattr(
+        sms_adapter_module,
+        "guarded_async_client",
+        lambda *_args, **_kwargs: http,
+    )
+    value = SmsAdapter(
+        config=SmsConnectionConfig(
+            account_sid=ACCOUNT,
+            auth_token="secret",
+            phone_number="+14155550100",
+            allowed_numbers=["+14155550101"],
+        )
+    )
+    value.set_webhook_url(WEBHOOK)
+    value.set_listening(False)
+    value.set_outbound_policy(OutboundPolicy.parse(""))
+
+    async def callback(*_args: Any) -> None:
+        pass
+
+    await value.start(callback, callback, callback, callback, callback)
+    assert SmsAdapter.keeps_quiet_unless_listening
+    assert requests == []
+    await value.stop()
 
 
 @pytest.mark.parametrize(

@@ -116,6 +116,36 @@ child process it spawns — including `gh` itself, which prefers `GH_TOKEN` over
 keyring — so a token parked there outlives the login it came from and shadows the next
 one until the app restarts.
 
+## When an install does not happen
+
+On macOS, Squirrel.Mac replaces the running bundle after the app hands over, and a
+failure there can be silent: the app relaunches on the old version. So
+`update-service.ts` treats an install as unconfirmed until the next launch:
+
+- `pending-install.ts` records the **target version** and the version that hands
+  over. The handover waits for this write. The next launch shows "didn't install"
+  only when the app comes back on the version that handed over. Any other version
+  means an install happened, by the updater or by hand.
+- An updater error while installing, a handover that throws, and the two-minute
+  restart guard all end in the same `install-failed` state. None of them goes back
+  to "ready to install", because restarting again fails the same way. A failed
+  check does not replace this state, and the failed version is not downloaded
+  again.
+- Before the download, `install-preflight.ts` checks that the bundle is not
+  translocated. It does not check ownership or write access: Squirrel.Mac asks for
+  an admin password when it cannot write the bundle, and the next launch reports
+  an install that still failed.
+- After an install fails, the updater no longer installs on quit, so the quit
+  from "Download manually" does not start a second, silent install. On macOS,
+  Squirrel.Mac can already hold a staged update, so this is not complete there.
+- `install-failed` offers "Download manually" (`manual-download.ts`), which opens the
+  newest release on the build's channel and quits. The link is read from GitHub,
+  never built from a version: stable opens `/releases/latest`, and canary looks up
+  the newest canary tag. A version can name a release that is gone, because the
+  workflow prunes old canaries and the dev harness invents versions. A check that
+  finds the same version again keeps showing the failure; a newer version is
+  offered as usual.
+
 ## Current Notes
 
 - macOS and Linux release builds rebuild native modules for the target Electron version,

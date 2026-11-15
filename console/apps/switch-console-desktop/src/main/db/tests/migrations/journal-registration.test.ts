@@ -76,16 +76,15 @@ describe('migration journal registration', () => {
   });
 
   /**
-   * The runner skips with `entry.when <= lastTimestamp`, where `lastTimestamp`
-   * is the highest `created_at` in the ledger — not a record of which
-   * migrations ran. So an entry whose `when` is below a preceding entry's can
-   * never be applied on any machine: it is skipped on every boot, silently,
-   * while migration reports success and the table it creates is simply absent.
+   * The ledger records a migration by its `when` and nothing else, so `when` is
+   * a migration's identity: two entries sharing one would make the runner treat
+   * the second as applied the moment the first is. Order matters too — drizzle
+   * stamps `created_at` from `when`, and every build already released has
+   * assumed a journal whose timestamps rise with its index.
    *
-   * Two branches landing migrations out of order is enough to cause it, which
-   * is the same class of merge accident that produced the 0045/0046 renumber.
-   * Keying the ledger per migration would remove the dependency entirely; until
-   * then the precondition is at least asserted rather than assumed.
+   * Two branches landing migrations out of order is enough to break either,
+   * which is the same class of merge accident that produced the 0045/0046
+   * renumber.
    */
   it('orders journal entries by strictly increasing timestamp', () => {
     const whens = journal.entries.map((entry) => entry.when);

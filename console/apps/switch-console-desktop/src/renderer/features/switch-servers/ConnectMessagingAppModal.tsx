@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { ExternalLink } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon';
 import { bridgePlatformLabel, bridgeSetupDocsUrl } from '@renderer/lib/components/bridge-platform';
@@ -37,6 +37,7 @@ import { ConnectChatPanel } from './ConnectChatPanel';
 import { InstallMessagingAppPanel } from './InstallMessagingAppPanel';
 import { offerAccountLinkAfterConnect } from './offer-account-link';
 import {
+  GUIDE_ASKED_FIELDS,
   GUIDE_FILLED_FIELDS,
   GUIDE_REQUIRED_FIELDS,
   isGuidedPlatform,
@@ -50,6 +51,8 @@ import { administersWorkspaceInScope } from './workspace-admin';
 type ConnectMessagingAppModalArgs = {
   /** Attach to this server instead of the active one. */
   serverId?: string;
+  /** Only this platform (`slack`), chosen already: the person picked it before opening the dialog. */
+  platform?: string;
   /** Run however the dialog goes away. A chat connected from it after the
    *  first lands on no signal Switch Console receives, so this is when to
    *  look for it. */
@@ -70,6 +73,7 @@ type Props = BaseModalProps<ConnectedApp> & ConnectMessagingAppModalArgs;
 
 export const ConnectMessagingAppModal = observer(function ConnectMessagingAppModal({
   serverId: overrideServerId,
+  platform,
   onClosed,
   onSuccess,
   onClose,
@@ -133,8 +137,12 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
     queryFn: () => rpc.workspaces.listMessagingApps(workspaceId as string),
     enabled: workspaceId !== null && isAdmin,
   });
-  const installable = installableQuery.data?.installable ?? [];
-  const claimable = (installableQuery.data?.claimable ?? []).filter((c) => c.canAddChat);
+  const installable = (installableQuery.data?.installable ?? []).filter(
+    (p) => platform === undefined || p === platform
+  );
+  const claimable = (installableQuery.data?.claimable ?? []).filter(
+    (c) => c.canAddChat && (platform === undefined || c.platform === platform)
+  );
   const [useOwnApp, setUseOwnApp] = useState(false);
   // The platform whose link and code are on screen. From then on the dialog is
   // about that one chat: the other apps are a different errand, and for a
@@ -154,11 +162,12 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
     selectedType?.fields ?? [],
     isGuidedPlatform(selectedType?.key) ? GUIDE_REQUIRED_FIELDS[selectedType.key] : []
   );
-  const visibleFields = formFields.filter(
-    (field) =>
-      !isGuidedPlatform(selectedType?.key) ||
-      !GUIDE_FILLED_FIELDS[selectedType.key].includes(field.key)
-  );
+  // What the guide asks for itself (the tokens, each in its own step) is not
+  // asked for again below it.
+  const guideFields = isGuidedPlatform(selectedType?.key)
+    ? [...GUIDE_FILLED_FIELDS[selectedType.key], ...GUIDE_ASKED_FIELDS[selectedType.key]]
+    : [];
+  const visibleFields = formFields.filter((field) => !guideFields.includes(field.key));
   const setGuideField = useCallback((key: string, value: string | null) => {
     setConfig((prev) => {
       if ((prev[key] ?? null) === value) return prev;
@@ -168,6 +177,15 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
       return next;
     });
   }, []);
+  // A token typed into the guide is the person editing the form, as in any
+  // other field: the last error no longer applies.
+  const setGuideInput = useCallback(
+    (key: string, value: string | null) => {
+      setGuideField(key, value);
+      setError(null);
+    },
+    [setGuideField]
+  );
   // Unknown until the type list has loaded; assume supported so the checkbox
   // isn't forced off while that request is in flight.
   const channelCreationSupported = selectedType?.channelCreationSupported ?? true;
@@ -192,11 +210,23 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
     [types]
   );
 
+  useEffect(() => {
+    if (platform !== undefined && typeKey === null && types.some((t) => t.key === platform))
+      handleTypeChange(platform);
+  }, [platform, typeKey, types, handleTypeChange]);
+
   const trimmedName = displayName.trim();
   const missingRequired = formFields.some((field) => isMissingRequired(field, config));
-  // Only what the person can type is named: a field the guide fills in itself
-  // is reported by the guide.
-  const missingMessage = missingFieldsMessage(visibleFields, config);
+  // Only what the person can type is named, the tokens the guide asks for
+  // included: a field the guide fills in itself is reported by the guide.
+  const missingMessage = missingFieldsMessage(
+    formFields.filter(
+      (field) =>
+        !isGuidedPlatform(selectedType?.key) ||
+        !GUIDE_FILLED_FIELDS[selectedType.key].includes(field.key)
+    ),
+    config
+  );
   const canSubmit =
     showForm &&
     workspaceId !== null &&
@@ -322,8 +352,8 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
 
               {server && !isAdmin && (
                 <p className="text-xs text-destructive">
-                  Connecting a messaging app requires an owner or admin of this workspace. You are a
-                  member without admin rights, so the server would reject this.
+                  Connecting a messaging app requires an admin of this workspace. You are a member
+                  without admin rights, so the server would reject this.
                 </p>
               )}
 
@@ -436,26 +466,31 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
                       platform={selectedType.key}
                       workspaceId={workspaceId}
                       config={config}
+                      fields={formFields}
                       setField={setGuideField}
+                      setInput={setGuideInput}
                     />
                   )}
 
                   {/* The fields below are asked for without explanation — what a
                   "bot token" is, and where to get one, lives in the platform's
-                  setup guide. Link to it at the point the question arises. */}
-                  <button
-                    type="button"
-                    className="flex w-fit items-center gap-1 text-xs text-foreground-muted underline underline-offset-2 hover:text-foreground"
-                    onClick={() =>
-                      void openExternalUrl(
-                        bridgeSetupDocsUrl(selectedType.key),
-                        'Could not open the setup guide'
-                      )
-                    }
-                  >
-                    How to set up {bridgePlatformLabel(selectedType.key)}
-                    <ExternalLink className="size-3" />
-                  </button>
+                  setup guide. Link to it at the point the question arises. The
+                  guided setup carries its own link. */}
+                  {!(isGuidedPlatform(selectedType.key) && workspaceId !== null) && (
+                    <button
+                      type="button"
+                      className="flex w-fit items-center gap-1 text-xs text-foreground-muted underline underline-offset-2 hover:text-foreground"
+                      onClick={() =>
+                        void openExternalUrl(
+                          bridgeSetupDocsUrl(selectedType.key),
+                          'Could not open the setup guide'
+                        )
+                      }
+                    >
+                      How to set up {bridgePlatformLabel(selectedType.key)}
+                      <ExternalLink className="size-3" />
+                    </button>
+                  )}
 
                   {visibleFields
                     .filter((field) => field.kind !== 'boolean')
@@ -597,7 +632,7 @@ function messageFor(result: Exclude<CreateBridgeResult, { kind: 'created' }>): s
     case 'unauthenticated':
       return 'Your session for this server expired. Sign in again, then retry.';
     case 'forbidden':
-      return 'Connecting a messaging app requires an owner or admin of this workspace.';
+      return 'Connecting a messaging app requires an admin of this workspace.';
     case 'invalid':
       // The gateway validated the credentials against the platform's own config
       // model, so its wording is more specific than anything we could invent.

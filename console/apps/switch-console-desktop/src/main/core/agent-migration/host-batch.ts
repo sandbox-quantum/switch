@@ -1,4 +1,6 @@
+import { IS_PROCESS_ALIVE } from '@switch-console/agent-providers';
 import { z } from 'zod';
+import { SECRET_TEMP_SUFFIX } from '@main/core/fs/secret-temp';
 import { WATCHER_ROOT } from '@main/core/sdk-host/state-roots';
 import type { MachineScript } from './session-handoff';
 
@@ -16,7 +18,7 @@ import type { MachineScript } from './session-handoff';
  * Takes the JSON of `{ identities, waitMs, killWaitMs }` and prints, per
  * identity, null when its watcher is down or the reason it is not.
  */
-export const STOP_WATCHERS_SCRIPT = String.raw`${WATCHER_ROOT}
+export const STOP_WATCHERS_SCRIPT = String.raw`${WATCHER_ROOT}${IS_PROCESS_ALIVE}
 const fs = require('node:fs'), path = require('node:path'), crypto = require('node:crypto');
 const cp = require('node:child_process');
 const o = JSON.parse(process.argv[1]);
@@ -34,9 +36,6 @@ const pidIn = (root, file) => {
     if (e.code === 'ENOENT') return null;
     throw e;
   }
-};
-const alive = (pid) => {
-  try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; }
 };
 const commandOf = (pid) => {
   try { return fs.readFileSync('/proc/' + pid + '/cmdline', 'utf8').split('\0').join(' '); }
@@ -61,7 +60,7 @@ for (const identity of o.identities) {
 const live = (identity) =>
   ['shared-owner.lock', 'supervisor/owner.json']
     .map((file) => pidIn(roots[identity], file))
-    .filter((pid) => pid !== null && alive(pid));
+    .filter((pid) => pid !== null && isProcessAlive(pid, 'recorded'));
 const signal = (identities, sig) => {
   for (const identity of identities)
     for (const pid of live(identity))
@@ -100,10 +99,32 @@ for (const file of JSON.parse(process.argv[1])) {
 console.log(JSON.stringify(out));
 `;
 
-/** Removes several files on a host in one command. Takes a JSON array of absolute paths. */
+/**
+ * Removes several credentials files on a host in one command, with any
+ * temporary copy an interrupted secret write of one left beside it. Takes a
+ * JSON array of absolute paths.
+ */
 export const DELETE_FILES_SCRIPT = String.raw`
 const fs = require('node:fs');
-for (const file of JSON.parse(process.argv[1])) fs.rmSync(file, { force: true });
+const path = require('node:path');
+const temporary = new RegExp(${JSON.stringify(SECRET_TEMP_SUFFIX)});
+const byDir = new Map();
+for (const file of JSON.parse(process.argv[1])) {
+  fs.rmSync(file, { force: true });
+  const dir = path.dirname(file);
+  byDir.set(dir, [...(byDir.get(dir) ?? []), path.basename(file)]);
+}
+for (const [dir, names] of byDir) {
+  let entries = [];
+  try {
+    entries = fs.readdirSync(dir);
+  } catch (error) {
+    if (error.code !== 'ENOENT' && error.code !== 'ENOTDIR') throw error;
+  }
+  for (const entry of entries)
+    if (names.some((name) => entry.startsWith(name) && temporary.test(entry.slice(name.length))))
+      fs.rmSync(path.join(dir, entry), { force: true });
+}
 console.log('{}');
 `;
 

@@ -19,7 +19,7 @@ from switch_core.transport import MessageTransport
 from switch_core.transport.ephemeral import EphemeralBus
 from switch_core.transport.invites import InviteBus
 from switch_core.transport.observer import ParticipantMessageObserver
-from switch_core.transport.postgres import PostgresTransport
+from switch_core.transport.postgres import PostgresTransport, RoomIds
 from switch_core.transport.room_cache import RoomDeliveryCache
 
 if TYPE_CHECKING:
@@ -62,6 +62,8 @@ class ClientFactory:
         # Every transport writes through it, and it posts agents' replies
         # through transports built here, so it is handed how to build one.
         self._router = router
+        # Shared by every transport this factory builds (`RoomIds`).
+        self._room_ids = RoomIds()
         router.use_transports(self.transport_for)
         self._registry: dict[
             str,
@@ -157,4 +159,5 @@ class ClientFactory:
             room_cache=self._room_cache,
             message_observer=self._message_observer,
             router=self._router,
+            room_ids=self._room_ids,
         )

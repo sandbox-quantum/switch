@@ -12,12 +12,16 @@ import pytest
 from fastapi import FastAPI
 from pydantic import ValidationError
 
+from switch_core.chats.views import _provider
+from switch_core.feature_flags import ADDITIONAL_AGENT_PROVIDERS
 from switch_core.gateway.auth import get_current_user
+from switch_core.gateway.dependencies import get_config
 from switch_core.gateway.known_agents import (
     ClaudeCodeKnownAgent,
     GenericKnownAgent,
     known_agent_for,
     known_agents,
+    offered_known_agents,
     provider_known_agent,
 )
 from switch_core.gateway.providers import router as providers_router
@@ -30,10 +34,13 @@ from switch_core.management.service import _known_agent_registration
 from switch_core.providers import registry
 from switch_core.providers.registry import (
     AgentProvider,
+    ProviderNotOffered,
     UnknownProvider,
     agent_provider,
     agent_providers,
+    offered_provider_ids,
     provider_ids,
+    require_offered_provider,
 )
 from switch_core.providers.schema import advanced_config_schema
 
@@ -71,6 +78,16 @@ def test_the_stored_identifiers_of_existing_providers_are_unchanged() -> None:
         "opencode": ("opencode", "OpenCode CLI"),
         "antigravity": ("antigravity", "Antigravity CLI"),
         "cursor": ("cursor", "Cursor CLI"),
+        "deepseek-harness": ("deepseek-harness", "DeepSeek Harness"),
+        "pi": ("pi", "Pi"),
+        "copilot": ("copilot", "GitHub Copilot CLI"),
+        "kiro": ("kiro", "Kiro CLI"),
+        "mistral-vibe": ("mistral-vibe", "Mistral Vibe"),
+        "goose": ("goose", "Goose CLI"),
+        "qwen": ("qwen", "Qwen Code"),
+        "droid": ("droid", "Droid CLI"),
+        "cline": ("cline", "Cline CLI"),
+        "junie": ("junie", "Junie CLI"),
     }
 
 
@@ -83,8 +100,24 @@ _CONSOLE_SIGN_IN = {
     "claude": ("claude/sign-in.ts", r"CLAUDE_LOGIN = '([^']+)'"),
     "codex": ("codex/sign-in.ts", r"CODEX_LOGIN = '([^']+)'"),
     "opencode": ("opencode/sign-in.ts", r"OPENCODE_LOGIN = '([^']+)'"),
-    "antigravity": ("antigravity/antigravity-adapter.ts", r"loginCommand: '([^']+)'"),
+    "antigravity": ("antigravity/runtime.ts", r"AGY_LOGIN = '([^']+)'"),
     "cursor": ("cursor/cursor-adapter.ts", r"CURSOR_LOGIN = '([^']+)'"),
+    "deepseek-harness": (
+        "deepseek-harness/deepseek-harness-acp.ts",
+        r"DSH_LOGIN = '([^']+)'",
+    ),
+    "pi": ("pi/sign-in.ts", r"PI_LOGIN = '([^']+)'"),
+    "copilot": ("copilot/copilot-acp.ts", r"COPILOT_LOGIN = '([^']+)'"),
+    "kiro": ("kiro/kiro-acp.ts", r"KIRO_LOGIN = '([^']+)'"),
+    "mistral-vibe": (
+        "mistral-vibe/mistral-vibe-acp.ts",
+        r"MISTRAL_VIBE_LOGIN = '([^']+)'",
+    ),
+    "goose": ("goose/goose-adapter.ts", r"GOOSE_LOGIN = '([^']+)'"),
+    "qwen": ("qwen/qwen-acp.ts", r"QWEN_LOGIN = '([^']+)'"),
+    "droid": ("droid/droid-adapter.ts", r"DROID_LOGIN = '([^']+)'"),
+    "cline": ("cline/cline-adapter.ts", r"CLINE_LOGIN = '([^']+)'"),
+    "junie": ("junie/junie-adapter.ts", r"JUNIE_LOGIN = '([^']+)'"),
 }
 
 
@@ -103,7 +136,8 @@ def test_an_unknown_provider_is_refused_with_the_ones_there_are() -> None:
     with pytest.raises(UnknownProvider) as raised:
         agent_provider("gemini")
     assert str(raised.value) == (
-        "unknown provider 'gemini'; one of claude, codex, opencode, antigravity, cursor"
+        "unknown provider 'gemini'; one of claude, codex, opencode, antigravity, cursor, "
+        "deepseek-harness, pi, copilot, kiro, mistral-vibe, goose, qwen, droid, cline, junie"
     )
 
 
@@ -118,7 +152,9 @@ def test_only_claude_has_a_known_agent_of_its_own() -> None:
     )
 
 
-NEW = AgentProvider(id="newcli", label="New CLI", sign_in_command="newcli login")
+NEW = AgentProvider(
+    id="newcli", label="New CLI", sign_in_command="newcli login", flag=None
+)
 
 
 @pytest.fixture
@@ -128,7 +164,8 @@ def new_provider(monkeypatch: pytest.MonkeyPatch) -> AgentProvider:
 
 
 class TestANewProvider:
-    """A provider added with nothing but an id and a label."""
+    """A provider added with nothing but an id, a label, a sign-in command and
+    no flag."""
 
     def test_its_defaults(self, new_provider: AgentProvider) -> None:
         assert new_provider.known_agent_type == "newcli"
@@ -143,6 +180,9 @@ class TestANewProvider:
         app = FastAPI()
         app.include_router(providers_router, prefix="/gateway")
         app.dependency_overrides[get_current_user] = lambda: SimpleNamespace(id="u")
+        app.dependency_overrides[get_config] = lambda: SimpleNamespace(
+            feature_flags={ADDITIONAL_AGENT_PROVIDERS: False}
+        )
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -198,3 +238,81 @@ class TestANewProvider:
             "known_agent_type": "newcli",
             "known_agent_options": {"auto_session": True, "repo_dir": "/w"},
         }
+
+    def test_a_registered_agent_of_it_shows_it_as_its_provider(
+        self, new_provider: AgentProvider
+    ) -> None:
+        agent = SimpleNamespace(metadata_={"known_agent_type": "newcli"})
+        assert _provider(agent, None) == "newcli"  # type: ignore[arg-type]
+        claude = SimpleNamespace(metadata_={"known_agent_type": "claude-code"})
+        assert _provider(claude, None) == "claude"  # type: ignore[arg-type]
+        unknown = SimpleNamespace(metadata_={"known_agent_type": "gemini"})
+        assert _provider(unknown, None) is None  # type: ignore[arg-type]
+
+
+ADDITIONAL = {
+    "deepseek-harness",
+    "pi",
+    "copilot",
+    "kiro",
+    "mistral-vibe",
+    "goose",
+    "qwen",
+    "droid",
+    "cline",
+    "junie",
+}
+
+
+class TestTheAdditionalProvidersFlag:
+    def test_it_gates_exactly_the_additional_providers(self) -> None:
+        gated = {
+            p.id for p in agent_providers() if p.flag == ADDITIONAL_AGENT_PROVIDERS
+        }
+        assert gated == ADDITIONAL
+        assert all(
+            p.flag in (None, ADDITIONAL_AGENT_PROVIDERS) for p in agent_providers()
+        )
+
+    def test_off_they_are_not_offered(self) -> None:
+        off = {ADDITIONAL_AGENT_PROVIDERS: False}
+        assert offered_provider_ids(off) == {
+            "claude",
+            "codex",
+            "opencode",
+            "antigravity",
+            "cursor",
+        }
+        assert set(offered_known_agents(off)) == {
+            "claude-code",
+            "codex",
+            "opencode",
+            "antigravity",
+            "cursor",
+        }
+        with pytest.raises(ProviderNotOffered, match="additional_agent_providers"):
+            require_offered_provider("goose", off)
+        require_offered_provider("claude", off)
+
+    def test_on_every_provider_is_offered(self) -> None:
+        on = {ADDITIONAL_AGENT_PROVIDERS: True}
+        assert offered_provider_ids(on) == set(provider_ids())
+        require_offered_provider("goose", on)
+
+    def test_an_agent_already_on_one_still_resolves(self) -> None:
+        assert provider_known_agent("goose").connector_type == "Goose CLI"
+        assert known_agents()["goose"].connector_type == "Goose CLI"
+
+
+_CONSOLE_PROVIDER_REGISTRY = (
+    Path(__file__).resolve().parents[4]
+    / "console/apps/switch-console-desktop/src/shared/core/providers/agent-provider-registry.ts"
+)
+
+
+def test_switch_console_gates_the_same_providers_behind_the_same_flags() -> None:
+    text = _CONSOLE_PROVIDER_REGISTRY.read_text()
+    block = re.search(r"PROVIDER_FLAGS[^=]*= \{(.*?)\};", text, re.DOTALL)
+    assert block is not None
+    console = dict(re.findall(r"'?([a-z-]+)'?: '([a-z_.]+)'", block.group(1)))
+    assert console == {p.id: p.flag for p in agent_providers() if p.flag is not None}

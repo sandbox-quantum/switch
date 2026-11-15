@@ -11,6 +11,17 @@ import {
 import {
   addBridgeTeam,
   addRoomAgents,
+  fetchRoomAgentCandidates,
+  addRoomUsers,
+  createRoomRole,
+  deleteRoomRole,
+  fetchArchivedRooms,
+  fetchBridgePeople,
+  setRoomAdmin,
+  setRoomAgentJoinEvents,
+  setRoomArchived,
+  setRoomGroup,
+  updateRoomRole,
   agentExistsOnServer,
   checkSlackTokens,
   fetchSlackOwnAppSetup,
@@ -39,10 +50,13 @@ import {
   fetchManagedAgent,
   fetchMessagingApps,
   fetchMyIdentities,
+  fetchMyPendingIdentities,
+  fetchUnconfirmedLinks,
   fetchRoomAgentIds,
   fetchRoomDetail,
   fetchRoomGroups,
   fetchRoomRoles,
+  fetchRoomSchedules,
   fetchRooms,
   fetchTemplateDetail,
   fetchTemplateRuns,
@@ -50,6 +64,7 @@ import {
   fetchTemplateSchema,
   GatewayError,
   ownsOwnerAddressedAgent,
+  recordTemplateRun,
   releaseBridgeIdentity,
   removeBridgeTeam,
   removeRoomAgent,
@@ -65,23 +80,57 @@ import {
   getConnectionCatalog,
   getGitHubConnection,
   connectServiceWithKey,
+  connectServiceWithPaste,
   disconnectGitHub,
   disconnectService,
+  setRoomAutoRoute,
   setServiceGrant,
   setWorkspaceService,
   removeServiceGrant,
   updateCanManageAgents,
   updateAgentDescription,
+  updateMidTurnDelivery,
   updateAgentDisplayName,
   renameAgent,
   updateAgentIcon,
+  syncRoomName,
   updateRoom,
   updateTemplate,
+  addLinkedRoom,
+  fetchLibrary,
+  fetchLinkedRooms,
+  fetchRoomDocument,
+  fetchRoomResources,
+  removeLinkedRoom,
+  setRoomResourceAttached,
+  createRoomSchedule,
+  deleteRoomSchedule,
+  setRoomSchedulePaused,
+  updateRoomSchedule,
 } from '@main/core/switch-servers/gateway-client';
 import {
+  cancelLinkRequestOnServer,
   claimIdentityOnServer,
+  issueLinkCodeOnServer,
+  requireLinkConfirmationOnServer,
   searchDirectoryOnServer,
 } from '@main/core/switch-servers/identities';
+import {
+  createLibraryItem,
+  deleteLibraryItem,
+  fetchLibraryItem,
+  fetchLibraryItemRooms,
+  fetchLibraryItems,
+  fetchReferenceTypes,
+  updateLibraryItem,
+  addPackageMember,
+  fetchPackageMembers,
+  removePackageMember,
+  createReferenceType,
+  deleteReferenceType,
+  fetchManagedReferenceTypes,
+  updateReferenceType,
+} from '@main/core/switch-servers/library-client';
 import { hostUnreachable } from '@main/core/switch-servers/require-server';
 import { serverKindOf } from '@main/core/switch-servers/servers-store';
 import {
@@ -96,19 +145,42 @@ import { bridgePlatformOfType } from '@main/core/telemetry/bridge-platform';
 import type {
   TelemetryBridgeFailure,
   TelemetryBridgePlatform,
+  TelemetryIdentityClaimOutcome,
   TelemetryOutcome,
+  TelemetryRoomAgentsAddFailure,
   TelemetryRoomAgentsDirection,
   TelemetryRoomCreateFailure,
   TelemetryRoomCreateSource,
   TelemetryServerKind,
 } from '@main/core/telemetry/events';
-import { entryPointOf, roomAgentsDirectionOf } from '@main/core/telemetry/narrow';
+import {
+  entryPointOf,
+  identityLinkKindOf,
+  roomAgentsDirectionOf,
+} from '@main/core/telemetry/narrow';
 import { telemetryService, trackEvent, trackEventAt } from '@main/core/telemetry/telemetry-service';
 import { log } from '@main/lib/logger';
+import { HostUnreachableError } from '@shared/core/remote-hosts/reachability';
+import type {
+  LibraryDeleteResult,
+  LibraryDocument,
+  LibraryItem,
+  LibraryItemChanges,
+  LibraryItemInput,
+  LibraryItemRoom,
+  LibraryKind,
+  PackageMemberKind,
+  ManagedReferenceType,
+  PackageMemberRemoval,
+  ReferenceTypeChanges,
+  ReferenceTypeInput,
+  ReferenceTypeOption,
+} from '@shared/core/switch-servers/library';
 import type {
   SlackOwnAppSetup,
   SlackTokensChecked,
 } from '@shared/core/switch-servers/own-app-setup';
+import type { ServicePaste } from '@shared/core/switch-servers/service-connection';
 import type { ServiceGrants } from '@shared/core/switch-servers/service-grants';
 import type {
   BridgeInstallState,
@@ -118,7 +190,9 @@ import type {
   AgentIconBackfill,
   AgentVerifyResult,
   BridgeDirectorySearchResult,
+  CancelLinkRequestResult,
   ChatClaim,
+  BridgePerson,
   ClaimIdentityParams,
   ConnectedChat,
   ClaimIdentityResult,
@@ -128,24 +202,38 @@ import type {
   CreateRoomResult,
   DeleteBridgeParams,
   DeleteBridgeResult,
+  IssueLinkCodeResult,
   LinkedIdentity,
   MessagingApps,
+  PendingIdentity,
+  RequireLinkConfirmationResult,
+  UnconfirmedLink,
   RemoteAgentRoom,
   RemoteAgentSummary,
   RemoteBridge,
   RemoteBridgeType,
   RemoteExternalUser,
   RemoteRoomDetail,
+  RoomAutoRoute,
+  SetRoomAutoRouteParams,
   RemoteRoomGroup,
   RemoteRoomRole,
+  RemoteRoomSchedule,
+  RoomScheduleDraft,
   RemoteRoomSummary,
   RemoveTeamsTeamResult,
   RetireOutcome,
+  RoomRoleInput,
   SwitchServer,
   TeamsTeamsResult,
   UpdateBridgeParams,
   UpdateBridgeResult,
+  SyncRoomNameParams,
   UpdateRoomParams,
+  LinkedRoom,
+  RoomDocumentContent,
+  RoomResource,
+  RoomResourceKind,
 } from '@shared/core/switch-servers/switch-servers';
 import type { UiEntryPoint } from '@shared/core/telemetry/reporting';
 import type { Workspace } from '@shared/core/workspaces/workspaces';
@@ -194,9 +282,37 @@ function roomCreateFailureReason(result: CreateRoomResult): TelemetryRoomCreateF
       return 'bridge_unavailable';
     case 'invalid':
       return 'invalid';
-    default:
-      return 'error';
+    case 'error':
+      // The one generic result: the request never reached the server.
+      return 'network';
   }
+}
+
+/**
+ * A room create that threw, by the server's answer: the failures with no
+ * result of their own. `error` is one with no answer to read.
+ */
+function roomCreateErrorReason(error: unknown): TelemetryRoomCreateFailure {
+  if (!(error instanceof GatewayError) || error.kind !== 'http') return 'error';
+  if (error.status === 403) return 'forbidden';
+  if (error.status === 404) return 'not_found';
+  if (error.status === 409) return 'conflict';
+  if (error.status !== undefined && error.status >= 500) return 'server_error';
+  return 'error';
+}
+
+/** Adding agents to a room that threw, by the error's own type or the server's answer. */
+function roomAgentsAddFailureReason(error: unknown): TelemetryRoomAgentsAddFailure {
+  if (error instanceof HostUnreachableError) return 'unreachable';
+  if (!(error instanceof GatewayError)) return 'error';
+  if (error.kind === 'unauthorized') return 'unauthenticated';
+  if (error.kind === 'network') return 'network';
+  if (error.status === 403) return 'forbidden';
+  if (error.status === 404) return 'not_found';
+  if (error.status === 409) return 'conflict';
+  if (error.status === 400 || error.status === 422) return 'invalid';
+  if (error.status !== undefined && error.status >= 500) return 'server_error';
+  return 'error';
 }
 
 /**
@@ -451,7 +567,7 @@ export const workspacesController = createRPCController({
   listRooms: (workspaceId: string): Promise<RemoteRoomSummary[]> =>
     withWorkspaceSession(workspaceId, fetchRooms),
 
-  /** Admins and owners only; the gateway refuses anyone else with a 403. */
+  /** Admins only; the gateway refuses anyone else with a 403. */
   listInvitations: listWorkspaceInvitations,
 
   createInvitation: createWorkspaceInvitation,
@@ -459,8 +575,8 @@ export const workspacesController = createRPCController({
   revokeInvitation: revokeWorkspaceInvitation,
 
   /**
-   * The e-mail domains anyone may join the workspace from. Admins and owners
-   * only, and an admin may add only the domain of their own address.
+   * The e-mail domains anyone may join the workspace from. Admins only, and an
+   * admin may add only the domain of their own address.
    */
   listJoinDomains: listWorkspaceJoinDomains,
 
@@ -726,10 +842,14 @@ export const workspacesController = createRPCController({
           instructions: params.instructions,
           bridgeId: params.bridgeId,
           agentIds: params.agentIds,
+          userNames: params.userNames,
+          channel: params.channel,
+          groupId: params.groupId,
+          access: params.access,
         })
       );
     } catch (error) {
-      report('error');
+      report(roomCreateErrorReason(error));
       throw error;
     }
 
@@ -835,6 +955,34 @@ export const workspacesController = createRPCController({
       fetchTemplateDetail(server, params.templateId)
     ),
 
+  /**
+   * Count a stored or official template's run, once the whole run has
+   * succeeded. Never fails: the run is done either way, so a server that does
+   * not count runs, or one that cannot be reached, is logged and the run goes
+   * uncounted.
+   */
+  recordTemplateRun: async (params: { workspaceId: string; templateId: string }): Promise<void> => {
+    try {
+      const counted = await withWorkspaceSession(params.workspaceId, (server) =>
+        recordTemplateRun(server, params.templateId)
+      );
+      if (!counted) {
+        log.warn('A template run was not counted: the server does not count it', {
+          event: 'template_run_count',
+          errorCode: 'not_counted',
+          templateId: params.templateId,
+        });
+      }
+    } catch (error) {
+      log.warn('A template run was not counted', {
+        event: 'template_run_count',
+        errorCode: error instanceof GatewayError ? error.kind : 'error',
+        templateId: params.templateId,
+        error: String(error),
+      });
+    }
+  },
+
   deleteTemplate: (params: { workspaceId: string; templateId: string }): Promise<void> =>
     withWorkspaceSession(params.workspaceId, (server) => deleteTemplate(server, params.templateId)),
 
@@ -888,20 +1036,386 @@ export const workspacesController = createRPCController({
    * write access to the room needs the gateway's refusal, not a saved-looking
    * field holding a value the server never took.
    */
+  /** Name a room after its linked channel. Refusals propagate in the gateway's own words. */
+  syncRoomName: (params: SyncRoomNameParams): Promise<RemoteRoomDetail> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      syncRoomName(server, params.roomId)
+    ),
+
   updateRoom: (params: UpdateRoomParams): Promise<RemoteRoomDetail> =>
     withReachableWorkspaceSession(params.workspaceId, (server) =>
       updateRoom(server, params.roomId, {
+        name: params.name,
         description: params.description,
         instructions: params.instructions,
+        readVisibility: params.readVisibility,
       })
+    ),
+
+  /** File a room under a group, or take it out of one (null). */
+  setRoomGroup: (params: {
+    workspaceId: string;
+    roomId: string;
+    groupId: string | null;
+  }): Promise<RemoteRoomDetail> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      setRoomGroup(server, params.roomId, params.groupId)
+    ),
+
+  /** Define a role in a room; resolves to the room's roles as they now stand. */
+  createRoomRole: (params: {
+    workspaceId: string;
+    roomId: string;
+    role: RoomRoleInput;
+  }): Promise<RemoteRoomRole[]> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      createRoomRole(server, params.roomId, params.role)
+    ),
+
+  /** Change a role's instructions or exclusivity; its name is fixed. */
+  updateRoomRole: (params: {
+    workspaceId: string;
+    roomId: string;
+    name: string;
+    instructions?: string;
+    exclusive?: boolean;
+  }): Promise<RemoteRoomRole[]> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      updateRoomRole(server, params.roomId, params.name, {
+        instructions: params.instructions,
+        exclusive: params.exclusive,
+      })
+    ),
+
+  deleteRoomRole: (params: {
+    workspaceId: string;
+    roomId: string;
+    name: string;
+  }): Promise<RemoteRoomRole[]> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      deleteRoomRole(server, params.roomId, params.name)
+    ),
+
+  /** Whether one member agent is told when someone joins the room. */
+  setRoomAgentJoinEvents: (params: {
+    workspaceId: string;
+    roomId: string;
+    agentId: string;
+    receivesJoinEvents: boolean;
+  }): Promise<RemoteRoomDetail> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      setRoomAgentJoinEvents(server, params.roomId, params.agentId, params.receivesJoinEvents)
+    ),
+
+  /** Invite people to a bridged room by their messaging-app usernames. */
+  addRoomUsers: (params: {
+    workspaceId: string;
+    roomId: string;
+    userNames: string[];
+  }): Promise<RemoteRoomDetail> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      addRoomUsers(server, params.roomId, params.userNames)
+    ),
+
+  /** Archive a room, or bring it back. */
+  setRoomArchived: (params: {
+    workspaceId: string;
+    roomId: string;
+    archived: boolean;
+  }): Promise<RemoteRoomDetail> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      setRoomArchived(server, params.roomId, params.archived)
+    ),
+
+  /** Make a person in the room a room admin, or take them off (`admin: false`).
+   * Refusals propagate in the gateway's own words. */
+  setRoomAdmin: (params: {
+    workspaceId: string;
+    roomId: string;
+    userId: string;
+    admin: boolean;
+  }): Promise<RemoteRoomDetail> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      setRoomAdmin(server, params.roomId, params.userId, params.admin)
+    ),
+
+  /** The archived rooms the signed-in user can see. */
+  listArchivedRooms: (params: { workspaceId: string }): Promise<RemoteRoomSummary[]> =>
+    withWorkspaceSession(params.workspaceId, (server) => fetchArchivedRooms(server)),
+
+  /** What is attached to a room, of one kind. */
+  listRoomResources: (params: {
+    workspaceId: string;
+    roomId: string;
+    kind: RoomResourceKind;
+  }): Promise<RoomResource[]> =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      fetchRoomResources(server, params.roomId, params.kind)
+    ),
+
+  /** The library items of one kind the signed-in person may attach. */
+  listLibrary: (params: { workspaceId: string; kind: RoomResourceKind }): Promise<RoomResource[]> =>
+    withWorkspaceSession(params.workspaceId, (server) => fetchLibrary(server, params.kind)),
+
+  /** Attach a library item to a room or detach it. Refusals propagate in the gateway's words. */
+  setRoomResourceAttached: (params: {
+    workspaceId: string;
+    roomId: string;
+    kind: RoomResourceKind;
+    resourceId: string;
+    attached: boolean;
+  }): Promise<void> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      setRoomResourceAttached(
+        server,
+        params.roomId,
+        params.kind,
+        params.resourceId,
+        params.attached
+      )
+    ),
+
+  /** A document attached to a room, read in full. */
+  getRoomDocument: (params: {
+    workspaceId: string;
+    roomId: string;
+    documentId: string;
+  }): Promise<RoomDocumentContent> =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      fetchRoomDocument(server, params.roomId, params.documentId)
+    ),
+
+  /** The workspace library's references or documents the signed-in person may read. */
+  listLibraryItems: (params: { workspaceId: string; kind: LibraryKind }): Promise<LibraryItem[]> =>
+    withWorkspaceSession(params.workspaceId, (server) => fetchLibraryItems(server, params.kind)),
+
+  /** One library item; a document comes with its content. */
+  getLibraryItem: (params: {
+    workspaceId: string;
+    kind: LibraryKind;
+    itemId: string;
+  }): Promise<LibraryItem | LibraryDocument> =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      fetchLibraryItem(server, params.kind, params.itemId)
+    ),
+
+  /** Add a reference or document to the library. Refusals propagate in the gateway's words. */
+  createLibraryItem: (params: {
+    workspaceId: string;
+    kind: LibraryKind;
+    input: LibraryItemInput;
+  }): Promise<LibraryItem> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      createLibraryItem(server, params.kind, params.input)
+    ),
+
+  /** Change a library item. */
+  updateLibraryItem: (params: {
+    workspaceId: string;
+    kind: LibraryKind;
+    itemId: string;
+    changes: LibraryItemChanges;
+  }): Promise<LibraryItem | LibraryDocument> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      updateLibraryItem(server, params.kind, params.itemId, params.changes)
+    ),
+
+  /** Delete a library item, detaching it from its rooms and packages. */
+  deleteLibraryItem: (params: {
+    workspaceId: string;
+    kind: LibraryKind;
+    itemId: string;
+  }): Promise<LibraryDeleteResult> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      deleteLibraryItem(server, params.kind, params.itemId)
+    ),
+
+  /** The rooms a library item is attached to. */
+  listLibraryItemRooms: (params: {
+    workspaceId: string;
+    kind: LibraryKind;
+    itemId: string;
+  }): Promise<LibraryItemRoom[]> =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      fetchLibraryItemRooms(server, params.kind, params.itemId)
+    ),
+
+  /** The references or documents a package holds. */
+  listPackageMembers: (params: {
+    workspaceId: string;
+    packageId: string;
+    kind: PackageMemberKind;
+  }): Promise<LibraryItem[]> =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      fetchPackageMembers(server, params.packageId, params.kind)
+    ),
+
+  /** Put a reference or document in a package, or take it out. Refusals propagate in the gateway's words. */
+  addPackageMember: (params: {
+    workspaceId: string;
+    packageId: string;
+    kind: PackageMemberKind;
+    memberId: string;
+  }): Promise<void> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      addPackageMember(server, params.packageId, params.kind, params.memberId)
+    ),
+
+  removePackageMember: (params: {
+    workspaceId: string;
+    packageId: string;
+    kind: PackageMemberKind;
+    memberId: string;
+  }): Promise<PackageMemberRemoval> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      removePackageMember(server, params.packageId, params.kind, params.memberId)
+    ),
+
+  /** The types a new reference may be given. */
+  listReferenceTypes: (params: { workspaceId: string }): Promise<ReferenceTypeOption[]> =>
+    withWorkspaceSession(params.workspaceId, (server) => fetchReferenceTypes(server)),
+
+  /** The reference types the signed-in person may change. */
+  listManagedReferenceTypes: (params: { workspaceId: string }): Promise<ManagedReferenceType[]> =>
+    withWorkspaceSession(params.workspaceId, (server) => fetchManagedReferenceTypes(server)),
+
+  /** Add, change or delete a reference type. Refusals propagate in the gateway's words. */
+  createReferenceType: (params: {
+    workspaceId: string;
+    input: ReferenceTypeInput;
+  }): Promise<ManagedReferenceType> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      createReferenceType(server, params.input)
+    ),
+
+  updateReferenceType: (params: {
+    workspaceId: string;
+    type: string;
+    changes: ReferenceTypeChanges;
+  }): Promise<ManagedReferenceType> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      updateReferenceType(server, params.type, params.changes)
+    ),
+
+  deleteReferenceType: (params: { workspaceId: string; type: string }): Promise<void> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      deleteReferenceType(server, params.type)
+    ),
+
+  /** The rooms a room points at. */
+  listLinkedRooms: (params: { workspaceId: string; roomId: string }): Promise<LinkedRoom[]> =>
+    withWorkspaceSession(params.workspaceId, (server) => fetchLinkedRooms(server, params.roomId)),
+
+  /** Point a room at another. */
+  addLinkedRoom: (params: {
+    workspaceId: string;
+    roomId: string;
+    targetRoomId: string;
+    label: string;
+  }): Promise<LinkedRoom> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      addLinkedRoom(server, params.roomId, params.targetRoomId, params.label)
+    ),
+
+  /** Stop a room pointing at another. */
+  removeLinkedRoom: (params: {
+    workspaceId: string;
+    roomId: string;
+    targetRoomId: string;
+  }): Promise<void> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      removeLinkedRoom(server, params.roomId, params.targetRoomId)
+    ),
+
+  /** The people Switch knows on one bridge, with who linked each, for offering them to a room. */
+  listBridgePeople: (params: { workspaceId: string; bridgeId: string }): Promise<BridgePerson[]> =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      fetchBridgePeople(server, params.bridgeId)
+    ),
+
+  /** A room's schedules, for its configuration page. */
+  listRoomSchedules: (params: {
+    workspaceId: string;
+    roomId: string;
+  }): Promise<RemoteRoomSchedule[]> =>
+    withWorkspaceSession(params.workspaceId, (server) => fetchRoomSchedules(server, params.roomId)),
+
+  /**
+   * Add, change, pause or remove one of a room's schedules. Failures propagate
+   * as-is, so a refusal (no write access, an agent not in the room, a time
+   * already past) reaches the form in the server's own words.
+   */
+  createRoomSchedule: (params: {
+    workspaceId: string;
+    roomId: string;
+    draft: RoomScheduleDraft;
+  }): Promise<RemoteRoomSchedule> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      createRoomSchedule(server, params.roomId, params.draft)
+    ),
+
+  updateRoomSchedule: (params: {
+    workspaceId: string;
+    roomId: string;
+    scheduleId: string;
+    draft: RoomScheduleDraft;
+  }): Promise<RemoteRoomSchedule> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      updateRoomSchedule(server, params.roomId, params.scheduleId, params.draft)
+    ),
+
+  setRoomSchedulePaused: (params: {
+    workspaceId: string;
+    roomId: string;
+    scheduleId: string;
+    paused: boolean;
+  }): Promise<RemoteRoomSchedule> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      setRoomSchedulePaused(server, params.roomId, params.scheduleId, params.paused)
+    ),
+
+  deleteRoomSchedule: (params: {
+    workspaceId: string;
+    roomId: string;
+    scheduleId: string;
+  }): Promise<void> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      deleteRoomSchedule(server, params.roomId, params.scheduleId)
+    ),
+
+  /**
+   * Turn auto-route on or off in a room, or name its triage agent, through the
+   * same store `!auto-route` writes. Answers with the setting as it now stands;
+   * a refusal propagates, so the toggle never shows a state the server didn't take.
+   */
+  setRoomAutoRoute: ({
+    workspaceId,
+    roomId,
+    ...changes
+  }: SetRoomAutoRouteParams): Promise<RoomAutoRoute> =>
+    withReachableWorkspaceSession(workspaceId, (server) =>
+      setRoomAutoRoute(server, roomId, changes)
+    ),
+
+  /**
+   * The agents the signed-in person may bring into `roomId`, or into a new
+   * room when it is null; null from a server that cannot say.
+   */
+  roomAgentCandidates: (params: {
+    workspaceId: string;
+    roomId: string | null;
+  }): Promise<string[] | null> =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      fetchRoomAgentCandidates(server, params.roomId)
     ),
 
   /**
    * Add agents to a room. Failures propagate as-is: the caller shows the
    * gateway's own words (e.g. an agent whose server-side client is not running,
-   * which the gateway rejects) rather than a generic message.
+   * which the gateway rejects) rather than a generic message. Reported either
+   * way, with the reason a failure can be told by.
    */
-  addRoomAgents: (params: {
+  addRoomAgents: async (params: {
     workspaceId: string;
     roomId: string;
     agentIds: string[];
@@ -912,14 +1426,24 @@ export const workspacesController = createRPCController({
      * adding one agent.
      */
     direction: TelemetryRoomAgentsDirection;
-  }): Promise<void> =>
-    withReachableWorkspaceSession(params.workspaceId, async (server) => {
-      await addRoomAgents(server, params.roomId, params.agentIds);
+  }): Promise<void> => {
+    const report = (failure_reason: TelemetryRoomAgentsAddFailure) =>
       trackEvent('room_agents_added', {
         agent_count: params.agentIds.length,
         direction: roomAgentsDirectionOf(params.direction),
+        outcome: failure_reason === 'none' ? 'success' : 'failure',
+        failure_reason,
       });
-    }),
+    try {
+      await withReachableWorkspaceSession(params.workspaceId, (server) =>
+        addRoomAgents(server, params.roomId, params.agentIds)
+      );
+    } catch (error) {
+      report(roomAgentsAddFailureReason(error));
+      throw error;
+    }
+    report('none');
+  },
 
   /** Remove one agent from a room. Membership only — the agent is not deleted. */
   removeRoomAgent: (params: {
@@ -985,7 +1509,9 @@ export const workspacesController = createRPCController({
       searchDirectoryOnServer(server, params.bridgeId, params.query)
     ),
 
-  /** Claim a messaging-app account as the signed-in Switch user's own. */
+  /** Claim a messaging-app account as the signed-in Switch user's own. A
+   * current server holds the link pending until a code is posted from the
+   * account, and the result carries that code. */
   claimBridgeIdentity: async (params: ClaimIdentityParams): Promise<ClaimIdentityResult> => {
     const result = await withReachableWorkspaceSession(params.workspaceId, (server) =>
       claimIdentityOnServer(server, {
@@ -994,27 +1520,107 @@ export const workspacesController = createRPCController({
         username: params.username,
       })
     );
+    const outcome: TelemetryIdentityClaimOutcome =
+      result.kind === 'claimed' ? 'success' : result.kind === 'pending' ? 'pending' : 'failure';
     // Reported after the lease, not inside it: the platform lookup takes a lease
     // of its own, and the bridge is still there to read afterwards.
     reportWithBridge(bridgePlatformOf(params.workspaceId, params.bridgeId), (bridge_platform, at) =>
-      trackEventAt(
-        'bridge_identity_claimed',
-        {
-          bridge_platform,
-          outcome: result.kind === 'claimed' ? 'success' : 'failure',
-        },
-        at
-      )
+      trackEventAt('bridge_identity_claimed', { bridge_platform, outcome }, at)
     );
     return result;
   },
 
-  /** Give up a claim on a messaging-app account, leaving any other user's claim
-   * on it in place. `userId` is whose claim to drop — null for the signed-in
-   * user, which is the only one this app offers. Failures propagate: unclaiming
-   * is a deliberate act, and reporting success for one that did not happen
-   * would leave the user thinking an agent is no longer reachable by them when
-   * it still is. */
+  /** A fresh code confirming the signed-in user's link to a messaging-app
+   * account — one still pending, or one made before links had to be confirmed.
+   * Replaces any code issued before. */
+  issueIdentityLinkCode: (params: {
+    workspaceId: string;
+    bridgeId: string;
+    identityId: string;
+  }): Promise<IssueLinkCodeResult> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      issueLinkCodeOnServer(server, params.bridgeId, params.identityId)
+    ),
+
+  /**
+   * Report that a link the confirmation screen was waiting on is confirmed.
+   *
+   * The code is posted in the chat app, so the screen watching for it is the
+   * only thing that sees this happen; it says so, and `kind` is its own name for
+   * the link. The server is asked before anything is reported, so a screen that
+   * is wrong reports nothing — and nothing at all is asked while sharing is off.
+   * Never fails: a report that cannot be made is logged and dropped.
+   */
+  reportIdentityConfirmed: async (params: {
+    workspaceId: string;
+    bridgeId: string;
+    identityId: string;
+    kind: string;
+  }): Promise<void> => {
+    const at = Date.now();
+    try {
+      if (!(await telemetryService.canSend())) return;
+      const identities = await withWorkspaceSession(params.workspaceId, fetchMyIdentities);
+      const confirmed = identities.find(
+        (i) => i.id === params.identityId && i.bridgeId === params.bridgeId && i.verified
+      );
+      if (confirmed === undefined) return;
+      trackEventAt(
+        'bridge_identity_confirmed',
+        {
+          bridge_platform: bridgePlatformOfType(confirmed.bridgeType),
+          link_kind: identityLinkKindOf(params.kind),
+        },
+        at
+      );
+    } catch (error) {
+      log.warn('A confirmed link could not be checked to report it', {
+        event: 'telemetry_identity_confirmed',
+        errorCode: error instanceof GatewayError ? error.kind : 'error',
+        error: String(error),
+      });
+    }
+  },
+
+  /** The links on a messaging app made before links had to be confirmed, which
+   * still count. Admin only; empty on a server that predates them. */
+  listUnconfirmedLinks: (params: {
+    workspaceId: string;
+    bridgeId: string;
+  }): Promise<UnconfirmedLink[]> =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      fetchUnconfirmedLinks(server, params.bridgeId)
+    ),
+
+  /** Stop trusting a messaging app's older links until each owner confirms
+   * theirs with a code. Admin only. */
+  requireLinkConfirmation: (params: {
+    workspaceId: string;
+    bridgeId: string;
+    /** The links the admin was shown; only these move. */
+    links: Pick<UnconfirmedLink, 'id' | 'userId'>[];
+  }): Promise<RequireLinkConfirmationResult> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      requireLinkConfirmationOnServer(server, params.bridgeId, params.links)
+    ),
+
+  /** Withdraw the signed-in user's confirmation waiting on a code. A link that
+   * already works stays; unlinking is {@link releaseBridgeIdentity}. */
+  cancelIdentityLinkRequest: (params: {
+    workspaceId: string;
+    bridgeId: string;
+    identityId: string;
+  }): Promise<CancelLinkRequestResult> =>
+    withReachableWorkspaceSession(params.workspaceId, (server) =>
+      cancelLinkRequestOnServer(server, params.bridgeId, params.identityId)
+    ),
+
+  /** Give up a claim on a messaging-app account, along with any confirmation
+   * waiting on it, leaving any other user's claim on it in place. `userId` is
+   * whose claim to drop — null for the signed-in user, which is the only one
+   * this app offers. Failures propagate: unclaiming is a deliberate act, and
+   * reporting success for one that did not happen would leave the user thinking
+   * an agent is no longer reachable by them when it still is. */
   releaseBridgeIdentity: (params: {
     workspaceId: string;
     bridgeId: string;
@@ -1025,9 +1631,16 @@ export const workspacesController = createRPCController({
       releaseBridgeIdentity(server, params.bridgeId, params.identityId, params.userId)
     ),
 
-  /** The messaging accounts the signed-in user has claimed in this workspace. */
+  /** The messaging accounts linked to the signed-in user in this workspace —
+   * only links that count; see {@link listMyPendingIdentities} for the rest. */
   listMyIdentities: (workspaceId: string): Promise<LinkedIdentity[]> =>
     withWorkspaceSession(workspaceId, fetchMyIdentities),
+
+  /** The messaging accounts waiting for a code to confirm a link to the
+   * signed-in user in this workspace. Empty on a server that predates
+   * confirming links. */
+  listMyPendingIdentities: (workspaceId: string): Promise<PendingIdentity[]> =>
+    withWorkspaceSession(workspaceId, fetchMyPendingIdentities),
 
   /** Whether the signed-in user owns an agent here that is set to answer its
    * owner, which is what makes an unlinked messaging account worth warning
@@ -1057,12 +1670,19 @@ export const workspacesController = createRPCController({
 
   /**
    * Start signing in to `service` for this workspace: the browser opens at the
-   * vendor, and this Console's listener takes the result back. Resolves to the
-   * flow's id.
+   * vendor, and this Console's listener takes the result back. `choices` are
+   * what the person picked first (a vendor's site). Resolves to the flow's id,
+   * and the server's callback where the browser returns through it.
    */
-  startServiceConnection: (params: { workspaceId: string; service: string }) =>
+  startServiceConnection: (params: {
+    workspaceId: string;
+    service: string;
+    choices: Record<string, string>;
+  }) =>
     withWorkspaceSession(params.workspaceId, (server) =>
-      startServiceBrowserFlow(server, params.service, (url) => appService.openExternal(url))
+      startServiceBrowserFlow(server, params.service, params.choices, (url) =>
+        appService.openExternal(url)
+      )
     ),
 
   getServiceFlow: (params: { workspaceId: string; service: string; flowId: string }) =>
@@ -1083,6 +1703,19 @@ export const workspacesController = createRPCController({
   }) =>
     withWorkspaceSession(params.workspaceId, (server) =>
       connectServiceWithKey(server, params.service, params.fields)
+    ),
+
+  /**
+   * Connect `service` with a token or keys pasted in place of its sign-in, at
+   * what was picked for its choices (a site); Switch checks them at the service.
+   */
+  connectServiceWithPaste: (params: { workspaceId: string; service: string } & ServicePaste) =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      connectServiceWithPaste(server, params.service, {
+        method: params.method,
+        fields: params.fields,
+        choices: params.choices,
+      })
     ),
 
   /** Disconnect `service` in this workspace: its grants go with it. */
@@ -1193,6 +1826,15 @@ export const workspacesController = createRPCController({
   }): Promise<RemoteAgentSummary> =>
     withWorkspaceSession(params.workspaceId, (server) =>
       updateAgentIcon(server, params.agentId, params.iconUrl)
+    ),
+
+  updateMidTurnDelivery: (params: {
+    workspaceId: string;
+    agentId: string;
+    mode: 'steer' | 'queue';
+  }): Promise<RemoteAgentSummary> =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      updateMidTurnDelivery(server, params.agentId, params.mode)
     ),
 
   /** Change an agent's description. Returns the agent as the server now holds it. */

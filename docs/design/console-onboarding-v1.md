@@ -200,7 +200,7 @@ This PR changes:
    found without a restart.
 3. **Run the sign-in for the user.** Console runs the provider's own sign-in
    command (`claude auth login`, `codex login`, `opencode auth login`,
-   `agent login`, `antigravity-acp --login`) in a visible terminal panel
+   `agent login`, `agy acp --login`) in a visible terminal panel
    inside onboarding. Most of these open the provider's page in the default
    browser. When the command exits, Console asks the controller to re-check.
 4. **One source of truth.** The provider step, the "Start with…" buttons and

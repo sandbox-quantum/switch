@@ -117,6 +117,22 @@ describe('presentUpdate', () => {
       expect(failed.detail).toBe('The update could not be completed.');
     });
 
+    it('offers a manual download, not another restart, for an update that did not install', () => {
+      const failed = present({
+        status: 'install-failed',
+        message: "Version 0.18.0 didn't install: Switch Console restarted on version 0.17.1.",
+      });
+
+      expect(failed.title).toBe("Update didn't install");
+      expect(failed.detail).toBe(
+        "Version 0.18.0 didn't install: Switch Console restarted on version 0.17.1."
+      );
+      expect(failed.actionKind).toBe('manual');
+      expect(failed.actionLabel).toBe('Download manually');
+      expect(failed.tone).toBe('warning');
+      expect(failed.indicatorIcon).toBe('alert');
+    });
+
     it('makes failures visible in the indicator', () => {
       const failed = present({ status: 'error', message: 'boom' });
 
@@ -135,6 +151,7 @@ describe('presentUpdate', () => {
       { status: 'downloading', progress: { percent: 1 } },
       { status: 'downloaded' },
       { status: 'installing' },
+      { status: 'install-failed', message: 'x' },
       { status: 'error', message: 'x' },
     ];
 

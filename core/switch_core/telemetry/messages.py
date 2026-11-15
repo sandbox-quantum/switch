@@ -8,10 +8,12 @@ thing being reported on. Three rules keep it off that path:
   record and return. One worker task looks up what the event needs (the
   room's platform, type and membership, who the sender is) and emits.
 - **Lookups are cached.** A busy room says a lot and changes membership
-  rarely, so a room is read at most once per `_CACHE_TTL_SECONDS` rather than
-  once per message. The member counts can therefore be that far behind. A
-  lookup that finds nothing is cached too, as `unknown`: a room deleted while
-  its last messages were queued must not cost a query per message.
+  rarely, so a room is read at most once per `_ROOM_TTL_SECONDS` rather than
+  once per message. The member counts can therefore be that far behind. Who
+  a sender is and an agent's runtime do not change, and are kept for
+  `_IDENTITY_TTL_SECONDS`. A lookup that finds nothing is cached too, as
+  `unknown`: a room deleted while its last messages were queued must not cost
+  a query per message.
 - **A failing lookup is left alone.** A room, sender or agent whose lookup
   failed is not looked up again for `_LOOKUP_BACKOFF_SECONDS`, and events
   report it as `unknown` meanwhile. Only that key: one tenant or room that
@@ -37,6 +39,7 @@ from dataclasses import dataclass
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.chats import CHAT_OPERATION_ID_KEY, MEMBER_CLIENT_TYPE
 from switch_core.db.models import Agent, Client, ClientRoom, CollaborationBridge, Room
 from switch_core.db.session_scope import tenant_session
 from switch_core.observability.throttle import WarningThrottle
@@ -53,8 +56,15 @@ from switch_core.transport.observer import ParticipantMessage
 logger = logging.getLogger(__name__)
 
 _QUEUE_SIZE = 10_000
-_CACHE_TTL_SECONDS = 300.0
-_CACHE_MAX_ENTRIES = 10_000
+# A room's facts are re-read this often, so its member counts are at most
+# this far behind. Most rooms are quiet: kept for minutes rather than an hour,
+# a room's lookup is a query for most of its messages.
+_ROOM_TTL_SECONDS = 900.0
+# Who a sender is, and an agent's runtime: neither changes.
+_IDENTITY_TTL_SECONDS = 3600.0
+# Above the agents and rooms of a large deployment, so a cache at its limit
+# does not evict what it is about to be asked again.
+_CACHE_MAX_ENTRIES = 50_000
 _WARNING_INTERVAL_SECONDS = 60.0
 _LOOKUP_BACKOFF_SECONDS = 5.0
 # Failures in a row, from any keys, that read as the database failing rather
@@ -65,17 +75,20 @@ _FAILURES_TO_PAUSE_ALL = 3
 _DRAIN_SECONDS = 0.3
 
 # The transport's `ActorRole` as the catalogue's `sender_kind`. A system or
-# bridge writer is Switch itself.
+# bridge writer is Switch itself; `member` is a person in Switch Console, which
+# the chat service reports rather than a transport.
 _ROLE_KIND = {
     "human": "user",
     "agent": "agent",
     "system": "platform",
     "bridge": "platform",
+    MEMBER_CLIENT_TYPE: "member",
 }
 
 # `clients.type` as `sender_kind`. `admin` is Switch's own client.
 _CLIENT_TYPE_KIND = {
     HUMAN_CLIENT_TYPE: "user",
+    MEMBER_CLIENT_TYPE: "member",
     AGENT_CLIENT_TYPE: "agent",
     "admin": "platform",
     "bridge": "platform",
@@ -90,18 +103,33 @@ _UNKNOWN_RUNTIME = "unknown"
 class _RoomFacts:
     bridge_platform: str
     channel_type: str
-    user_count: int
-    agent_count: int
+    user_count: int | None
+    agent_count: int | None
+    # `true` / `false` / `unknown`: whether Switch Console made the room as a
+    # chat, as a tri-state because a room whose lookup failed cannot say.
+    console_chat: str
 
 
 # A room whose lookup failed. Reported rather than dropped, so a lookup
-# problem shows as `unknown` in the charts instead of as fewer messages; -1
-# rather than 0 so it cannot be read as an empty room. The catalogue has no
-# empty value, so an average of the counts has to filter on
-# `bridge_platform != unknown` — the docs say so.
+# problem shows as `unknown` in the charts instead of as fewer messages. Its
+# sizes are left off the event rather than reported as 0, which would read as
+# an empty room, so an average of them skips it.
 _UNKNOWN_ROOM = _RoomFacts(
-    bridge_platform="unknown", channel_type="unknown", user_count=-1, agent_count=-1
+    bridge_platform="unknown",
+    channel_type="unknown",
+    user_count=None,
+    agent_count=None,
+    console_chat="unknown",
 )
+
+
+def _people(members_by_type: dict[str, int]) -> int:
+    """A room's people: those on a messaging platform and those in Switch
+    Console. Someone who is both counts twice, as someone on two platforms
+    does."""
+    return members_by_type.get(HUMAN_CLIENT_TYPE, 0) + members_by_type.get(
+        MEMBER_CLIENT_TYPE, 0
+    )
 
 
 @dataclass(frozen=True)
@@ -110,6 +138,7 @@ class _AgentAddressed:
     room_id: str
     sender_transport_user_id: str
     from_platform: bool
+    from_app: bool
     known_agent_type: str
     agent_live: bool
     has_attachment: bool
@@ -142,8 +171,7 @@ class _TtlCache[K, V]:
 
 
 class MessageTelemetry:
-    """Reports `room_message_sent`, `agent_message_sent` and
-    `agent_message_received`.
+    """Reports `message_sent` and `agent_message_received`.
 
     The transport's `ParticipantMessageObserver`, and what the router tells
     once a message addressed to an agent has committed. Does nothing at all
@@ -164,13 +192,13 @@ class MessageTelemetry:
         self._worker: asyncio.Task[None] | None = None
         self._closed = False
         self._rooms: _TtlCache[tuple[str, str], _RoomFacts] = _TtlCache(
-            _CACHE_TTL_SECONDS, _CACHE_MAX_ENTRIES
+            _ROOM_TTL_SECONDS, _CACHE_MAX_ENTRIES
         )
         self._sender_kinds: _TtlCache[tuple[str, str], str] = _TtlCache(
-            _CACHE_TTL_SECONDS, _CACHE_MAX_ENTRIES
+            _IDENTITY_TTL_SECONDS, _CACHE_MAX_ENTRIES
         )
         self._agent_runtimes: _TtlCache[tuple[str, str], str] = _TtlCache(
-            _CACHE_TTL_SECONDS, _CACHE_MAX_ENTRIES
+            _IDENTITY_TTL_SECONDS, _CACHE_MAX_ENTRIES
         )
         # Keys whose lookup failed, as `(lookup, tenant_id, id)`, until they
         # may be tried again.
@@ -179,6 +207,9 @@ class MessageTelemetry:
         )
         self._failures_in_a_row = 0
         self._all_lookups_resume_at: float | None = None
+        # When each tenant may next be read whole (`_read_tenant`), on the
+        # monotonic clock.
+        self._tenants_read: dict[str, float] = {}
         # Taken off the queue and not yet reported. Not `qsize`, which leaves
         # out the one the worker is cancelled in the middle of.
         self._in_hand = 0
@@ -208,6 +239,7 @@ class MessageTelemetry:
         room_id: str,
         sender_transport_user_id: str,
         from_platform: bool,
+        from_app: bool,
         agent_metadata: dict | None,
         agent_live: bool,
         has_attachment: bool,
@@ -225,6 +257,7 @@ class MessageTelemetry:
                 room_id=room_id,
                 sender_transport_user_id=sender_transport_user_id,
                 from_platform=from_platform,
+                from_app=from_app,
                 known_agent_type=normalise_known_agent_type(agent_metadata),
                 agent_live=agent_live,
                 has_attachment=has_attachment,
@@ -301,42 +334,43 @@ class MessageTelemetry:
     async def _report_message(self, message: ParticipantMessage) -> None:
         room = await self._room_facts(message.tenant_id, message.room_id)
         self._telemetry.emit(
-            "room_message_sent",
-            sender_kind=_ROLE_KIND.get(message.sender_role, "unknown"),
-            bridge_platform=room.bridge_platform,
-            channel_type=room.channel_type,
-            room_user_count=room.user_count,
-            room_agent_count=room.agent_count,
-            has_attachment=message.has_attachment,
-            in_thread=message.in_thread,
-        )
-        if message.sender_role != "agent":
-            return
-        self._telemetry.emit(
-            "agent_message_sent",
-            known_agent_type=await self._agent_runtime(
-                message.tenant_id, message.sender_client_id
+            "message_sent",
+            sender_kind=(
+                "bot"
+                if message.sender_is_app
+                else _ROLE_KIND.get(message.sender_role, "unknown")
+            ),
+            known_agent_type=(
+                await self._agent_runtime(message.tenant_id, message.sender_client_id)
+                if message.sender_role == "agent"
+                else None
             ),
             bridge_platform=room.bridge_platform,
             channel_type=room.channel_type,
+            console_chat=room.console_chat,
             room_user_count=room.user_count,
+            room_agent_count=room.agent_count,
             has_attachment=message.has_attachment,
             in_thread=message.in_thread,
         )
 
     async def _report_addressed(self, item: _AgentAddressed) -> None:
         room = await self._room_facts(item.tenant_id, item.room_id)
-        sender_kind = (
-            "platform"
-            if item.from_platform
-            else await self._sender_kind(item.tenant_id, item.sender_transport_user_id)
-        )
+        if item.from_platform:
+            sender_kind = "platform"
+        elif item.from_app:
+            sender_kind = "bot"
+        else:
+            sender_kind = await self._sender_kind(
+                item.tenant_id, item.sender_transport_user_id
+            )
         self._telemetry.emit(
             "agent_message_received",
             sender_kind=sender_kind,
             known_agent_type=item.known_agent_type,
             bridge_platform=room.bridge_platform,
             channel_type=room.channel_type,
+            console_chat=room.console_chat,
             has_attachment=item.has_attachment,
             agent_live=item.agent_live,
         )
@@ -444,6 +478,104 @@ class MessageTelemetry:
                 misses,
             )
 
+    async def _read_tenant(self, tenant_id: str) -> None:
+        """Read the facts of every open room, the kind of every client and the
+        runtime of every agent of the tenant at once, the first time a lookup
+        of it misses, and again once `_ROOM_TTL_SECONDS` have passed.
+
+        In a workspace of thousands of agents and rooms, a process reports a
+        message about most of them before it reports a second one, so with one
+        lookup each a cache that kept every answer still missed for most
+        messages. A read that fails raises, and the lookup that asked counts
+        it as its own failure; it is tried again once a failed lookup would be.
+        """
+        next_read = self._tenants_read.get(tenant_id)
+        if next_read is not None and time.monotonic() < next_read:
+            return
+        # Not again for as long as a failed lookup waits; a read that succeeds
+        # puts it off for as long as a room is kept, below.
+        self._tenants_read[tenant_id] = time.monotonic() + _LOOKUP_BACKOFF_SECONDS
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            open_room = and_(Room.tenant_id == tenant_id, Room.archived_at.is_(None))
+            rooms = (
+                await session.execute(
+                    select(
+                        Room.id,
+                        Room.channel_type,
+                        CollaborationBridge.type,
+                        Room.metadata_.has_key(CHAT_OPERATION_ID_KEY),
+                    )
+                    .select_from(Room)
+                    .outerjoin(
+                        CollaborationBridge,
+                        and_(
+                            CollaborationBridge.id == Room.bridge_id,
+                            CollaborationBridge.tenant_id == tenant_id,
+                        ),
+                    )
+                    .where(open_room)
+                )
+            ).all()
+            members = (
+                await session.execute(
+                    select(ClientRoom.room_id, Client.type, func.count())
+                    .select_from(ClientRoom)
+                    .join(Client, Client.id == ClientRoom.client_id)
+                    .join(Room, Room.id == ClientRoom.room_id)
+                    .where(
+                        ClientRoom.tenant_id == tenant_id,
+                        Client.tenant_id == tenant_id,
+                        open_room,
+                    )
+                    .group_by(ClientRoom.room_id, Client.type)
+                )
+            ).all()
+            clients = (
+                await session.execute(
+                    select(Client.transport_user_id, Client.type).where(
+                        Client.tenant_id == tenant_id
+                    )
+                )
+            ).all()
+            agents = (
+                await session.execute(
+                    select(
+                        Agent.client_id,
+                        Agent.metadata_["known_agent_type"].astext,
+                    ).where(Agent.tenant_id == tenant_id)
+                )
+            ).all()
+        self._tenants_read[tenant_id] = time.monotonic() + _ROOM_TTL_SECONDS
+        by_room: dict[str, dict[str, int]] = {}
+        for room_id, client_type, count in members:
+            by_room.setdefault(room_id, {})[client_type] = int(count)
+        for room_id, channel_type, platform, console_chat in rooms:
+            by_type = by_room.get(room_id, {})
+            self._rooms.put(
+                (tenant_id, room_id),
+                _RoomFacts(
+                    bridge_platform=normalise_platform(platform),
+                    channel_type=normalise_channel_type(channel_type),
+                    user_count=_people(by_type),
+                    agent_count=by_type.get(AGENT_CLIENT_TYPE, 0),
+                    console_chat="true" if console_chat else "false",
+                ),
+            )
+        for transport_user_id, client_type in clients:
+            self._sender_kinds.put(
+                (tenant_id, transport_user_id),
+                _CLIENT_TYPE_KIND.get(client_type, "unknown"),
+            )
+        for client_id, known_agent_type in agents:
+            self._agent_runtimes.put(
+                (tenant_id, client_id),
+                normalise_known_agent_type(
+                    None
+                    if known_agent_type is None
+                    else {"known_agent_type": known_agent_type}
+                ),
+            )
+
     async def _room_facts(self, tenant_id: str, room_id: str) -> _RoomFacts:
         key = (tenant_id, room_id)
         cached = self._rooms.get(key)
@@ -452,6 +584,14 @@ class MessageTelemetry:
         failure_key = ("room", tenant_id, room_id)
         if not self._may_look_up(failure_key):
             return _UNKNOWN_ROOM
+        try:
+            await self._read_tenant(tenant_id)
+        except Exception:
+            self._lookup_failed(failure_key, f"room {room_id}")
+            return _UNKNOWN_ROOM
+        cached = self._rooms.get(key)
+        if cached is not None:
+            return cached
         try:
             facts = await self._load_room_facts(tenant_id, room_id)
         except Exception:
@@ -469,7 +609,11 @@ class MessageTelemetry:
         async with tenant_session(self._session_factory, tenant_id) as session:
             row = (
                 await session.execute(
-                    select(Room.channel_type, CollaborationBridge.type)
+                    select(
+                        Room.channel_type,
+                        CollaborationBridge.type,
+                        Room.metadata_.has_key(CHAT_OPERATION_ID_KEY),
+                    )
                     .select_from(Room)
                     .outerjoin(
                         CollaborationBridge,
@@ -495,12 +639,13 @@ class MessageTelemetry:
                 .group_by(Client.type)
             )
             by_type = {client_type: int(count) for client_type, count in members.all()}
-        channel_type, platform = row
+        channel_type, platform, console_chat = row
         return _RoomFacts(
             bridge_platform=normalise_platform(platform),
             channel_type=normalise_channel_type(channel_type),
-            user_count=by_type.get(HUMAN_CLIENT_TYPE, 0),
+            user_count=_people(by_type),
             agent_count=by_type.get(AGENT_CLIENT_TYPE, 0),
+            console_chat="true" if console_chat else "false",
         )
 
     async def _sender_kind(self, tenant_id: str, transport_user_id: str) -> str:
@@ -511,6 +656,14 @@ class MessageTelemetry:
         failure_key = ("sender", tenant_id, transport_user_id)
         if not self._may_look_up(failure_key):
             return "unknown"
+        try:
+            await self._read_tenant(tenant_id)
+        except Exception:
+            self._lookup_failed(failure_key, "a message sender")
+            return "unknown"
+        cached = self._sender_kinds.get(key)
+        if cached is not None:
+            return cached
         try:
             async with tenant_session(self._session_factory, tenant_id) as session:
                 client_type = (
@@ -541,6 +694,14 @@ class MessageTelemetry:
         failure_key = ("agent", tenant_id, client_id)
         if not self._may_look_up(failure_key):
             return _UNKNOWN_RUNTIME
+        try:
+            await self._read_tenant(tenant_id)
+        except Exception:
+            self._lookup_failed(failure_key, "an agent's runtime")
+            return _UNKNOWN_RUNTIME
+        cached = self._agent_runtimes.get(key)
+        if cached is not None:
+            return cached
         try:
             async with tenant_session(self._session_factory, tenant_id) as session:
                 result = await session.execute(

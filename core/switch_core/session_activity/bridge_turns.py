@@ -16,6 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
+from switch_core.bridges.collaboration.session.renderers import RUNNING_CLOCK_SECONDS
 from switch_core.db.models import AgentSessionActivityItem
 from switch_core.db.stores.session_activity_store import TURN_ITEM_ID
 from switch_core.sessions.contract import TURN_ENDED, Item, TurnUpsert
@@ -32,6 +33,9 @@ class TurnView:
     # The turn's own row: where it was asked, and when it started and ended.
     row: AgentSessionActivityItem
     started_at: datetime
+    # The Switch messages people steered into this turn while it ran, in the
+    # order they arrived: each carries the work marker until the turn ends.
+    steered_messages: list[str]
 
     @property
     def ended(self) -> bool:
@@ -66,11 +70,13 @@ def turn_view(rows: list[AgentSessionActivityItem]) -> TurnView | None:
             turn_id=step.turn_id,
             revision=step.revision,
             kind=step.kind,  # type: ignore[arg-type]
+            subagent=bool(step.subagent),
             status=step.status,  # type: ignore[arg-type]
             title=step.title,
             text=step.text,
             attachments=[],
             origin=None,
+            delivery=step.delivery,  # type: ignore[arg-type]
         )
         for step in steps
     ]
@@ -85,6 +91,13 @@ def turn_view(rows: list[AgentSessionActivityItem]) -> TurnView | None:
         items=items,
         row=row,
         started_at=started_at,
+        steered_messages=[
+            step.message_id
+            for step in steps
+            if step.kind == "user-message"
+            and step.delivery == "steered"
+            and step.message_id is not None
+        ],
     )
 
 
@@ -94,18 +107,21 @@ def status_state(
     elapsed_seconds: float | None,
     interrupt_turn_id: str | None,
     clock_redraws: bool,
+    closed_by_platform: bool,
 ) -> str:
     """What the turn's message is showing, so an unchanged redraw can be skipped.
 
     The turn's state and its tools count. The clock counts only where the
-    platform redraws for it. What the agent is saying does not: prose is
+    platform redraws for it, and then in the whole minutes a running turn
+    shows. What the agent is saying does not: prose is
     revised on every token, and it goes out with the next change to either,
     and with the edit that ends the turn. The turn a stop control names
     counts, so a queued turn's message stops offering to stop a turn that
-    has ended.
+    has ended. So does the platform having closed the message on its own,
+    since closing it changed what it shows.
     """
     clock = (
-        str(int(elapsed_seconds))
+        str(int(elapsed_seconds // RUNNING_CLOCK_SECONDS))
         if clock_redraws and elapsed_seconds is not None
         else ""
     )
@@ -113,5 +129,7 @@ def status_state(
         f"{item.item_id}:{item.revision}"
         for item in view.items
         if item.kind == "tool-activity"
+        or (item.kind == "user-message" and item.delivery is not None)
     )
-    return f"{view.turn.status}:{interrupt_turn_id or ''}:{clock}/{tools}"
+    closed = ":closed" if closed_by_platform else ""
+    return f"{view.turn.status}:{interrupt_turn_id or ''}:{clock}/{tools}{closed}"

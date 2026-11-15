@@ -60,16 +60,15 @@ class BudgetGuard:
 
     async def require_within(
         self, session: AsyncSession, *, tenant_id: str, agent_id: str
-    ) -> None:
+    ) -> bool:
         """Raise `BudgetExceeded` if the agent has reached any budget covering
         it. When several have, the one that resets last is reported, because
-        that is how long the agent is actually stopped for."""
-        exhausted = [
-            standing
-            for standing in await self._store.standings(
-                session, tenant_id=tenant_id, agent_id=agent_id
-            )
-            if standing.exhausted
-        ]
+        that is how long the agent is actually stopped for. Returns whether
+        any budget covers the agent."""
+        standings = await self._store.standings(
+            session, tenant_id=tenant_id, agent_id=agent_id
+        )
+        exhausted = [standing for standing in standings if standing.exhausted]
         if exhausted:
             raise BudgetExceeded(max(exhausted, key=lambda s: s.resets_at))
+        return bool(standings)

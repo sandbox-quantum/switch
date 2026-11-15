@@ -10,6 +10,7 @@ route coroutine directly against a lightweight config stub.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 from fastapi import Response
@@ -22,6 +23,7 @@ from switch_core.keys import Keyring
 # Dummy HS256 signing key for these unit tests only — not a real secret.
 _SECRET = "unit-test-jwt-key-unit-test-jwt-key-unit-test"  # gitleaks:allow
 _KEYRING = Keyring.parse("test:" + _SECRET, legacy_secret=None)
+_SIGNED_IN = datetime.now(UTC) - timedelta(days=1)
 
 
 def _config(*, cookie_secure: bool = False) -> SimpleNamespace:
@@ -30,10 +32,12 @@ def _config(*, cookie_secure: bool = False) -> SimpleNamespace:
 
 
 def _request(*, tenant_id: str | None) -> SimpleNamespace:
-    # refresh() only reads request.state.tenant_id — the tenant
-    # get_current_user just resolved this request to, which it must carry
-    # forward into the re-minted cookie (CHOO-2723).
-    return SimpleNamespace(state=SimpleNamespace(tenant_id=tenant_id))
+    # refresh() only reads the tenant and sign-in time get_current_user just
+    # resolved this request to, which it must carry forward into the re-minted
+    # cookie (CHOO-2723).
+    return SimpleNamespace(
+        state=SimpleNamespace(tenant_id=tenant_id, session_auth_time=_SIGNED_IN)
+    )
 
 
 def _extract_cookie(response: Response) -> str:
@@ -46,7 +50,9 @@ def _extract_cookie(response: Response) -> str:
 
 
 async def test_refresh_remints_cookie_for_current_user() -> None:
-    user = User(id="u-1", name="Ada", email="ada@example.com", role="user")
+    user = User(
+        id="u-1", name="Ada", email="ada@example.com", role="user", session_version=0
+    )
     response = Response()
 
     result = await refresh(_request(tenant_id="tenant-0"), response, user, _config())
@@ -66,7 +72,9 @@ async def test_refresh_remints_cookie_for_current_user() -> None:
 async def test_refresh_carries_the_selected_tenant_forward() -> None:
     """The trap the design calls out by name: re-minting from `user` alone
     would silently drop whichever tenant this session had selected."""
-    user = User(id="u-3", name="Cy", email="cy@example.com", role="user")
+    user = User(
+        id="u-3", name="Cy", email="cy@example.com", role="user", session_version=0
+    )
     response = Response()
 
     await refresh(_request(tenant_id="tenant-b"), response, user, _config())
@@ -74,10 +82,13 @@ async def test_refresh_carries_the_selected_tenant_forward() -> None:
     token = _extract_cookie(response)
     payload = decode_jwt(token, _KEYRING)
     assert payload["tenant_id"] == "tenant-b"
+    assert payload["auth_time"] == int(_SIGNED_IN.timestamp())
 
 
 async def test_refresh_cookie_is_httponly_and_respects_secure_flag() -> None:
-    user = User(id="u-2", name="Bo", email="bo@example.com", role="admin")
+    user = User(
+        id="u-2", name="Bo", email="bo@example.com", role="admin", session_version=0
+    )
 
     insecure = Response()
     await refresh(

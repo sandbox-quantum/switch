@@ -14,7 +14,7 @@ export type UpdateTone = 'neutral' | 'info' | 'success' | 'warning';
 
 export type UpdateIndicatorIcon = 'none' | 'available' | 'downloading' | 'restart' | 'alert';
 
-export type UpdateActionKind = 'none' | 'download' | 'restart' | 'retry' | 'check';
+export type UpdateActionKind = 'none' | 'download' | 'restart' | 'retry' | 'check' | 'manual';
 
 export interface UpdatePresentation {
   tone: UpdateTone;
@@ -151,6 +151,22 @@ export function presentUpdate(state: UpdateState, currentVersion: string): Updat
         actionLabel: null,
         busy: true,
         progressPercent: 100,
+      };
+
+    case 'install-failed':
+      return {
+        tone: 'warning',
+        indicatorLabel: 'Update failed',
+        indicatorIcon: 'alert',
+        actionable: true,
+        title: "Update didn't install",
+        detail: state.message,
+        // Restarting again would fail the same way. The release page has the
+        // installer, and the app quits so it can be replaced.
+        actionKind: 'manual',
+        actionLabel: 'Download manually',
+        busy: false,
+        progressPercent: null,
       };
 
     case 'error':

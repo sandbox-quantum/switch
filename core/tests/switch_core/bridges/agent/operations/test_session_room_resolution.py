@@ -56,7 +56,11 @@ def _caller(session_id: str, room_id: str | None) -> CallContext:
         agent_id=AGENT,
         session_key=CONNECTION,
         session=CallerSession(
-            id=session_id, host_id=HOST, epoch=EPOCH, room_id=room_id
+            id=session_id,
+            host_id=HOST,
+            epoch=EPOCH,
+            room_id=room_id,
+            placed_by_controller=False,
         ),
     )
 

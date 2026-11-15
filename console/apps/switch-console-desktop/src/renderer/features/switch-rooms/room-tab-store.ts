@@ -1,16 +1,15 @@
 import { makeAutoObservable } from 'mobx';
-import { bridgeCanEmbed } from '@shared/core/switch-rooms/room-embed';
 
-/** The two things a room page can show. */
-export type RoomTab = 'chat' | 'configuration';
+/** The things a room page can show beside its participants. */
+export type RoomTab = 'chat' | 'resources' | 'configuration';
 
 /**
- * What a room shown inside another page opens on: its conversation when its
- * platform can be drawn inline, otherwise its settings, rather than a notice
- * that the conversation lives elsewhere.
+ * What a room shown inside another page opens on: its conversation whenever it
+ * has one — a group chat here, or a channel on a messaging app, drawn inline or
+ * offered as a way out to that app — and its settings only when it has none.
  */
-export function embeddedRoomTab(bridgeType: string | null): RoomTab {
-  return bridgeCanEmbed(bridgeType) ? 'chat' : 'configuration';
+export function embeddedRoomTab(bridgeType: string | null, consoleChat: boolean): RoomTab {
+  return bridgeType !== null || consoleChat ? 'chat' : 'configuration';
 }
 
 /**

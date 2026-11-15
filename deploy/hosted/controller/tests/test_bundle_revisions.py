@@ -104,6 +104,7 @@ class FakeCloud:
         self.user_data: str | None = None
         self.calls: list[str] = []
         self.codes_at_boot: list[list[str | None]] = []
+        self.launched_images: list[str] = []
 
     def get_volume(self, machine):
         return self.volume
@@ -148,6 +149,7 @@ class FakeCloud:
 
     def run_instance(self, machine):
         self.calls.append("run_instance")
+        self.launched_images.append(machine.image_id)
         self.user_data = machine.bundle
         launched = self.calls.count("run_instance")
         self.instance = {
@@ -510,3 +512,50 @@ def test_a_running_instance_whose_user_data_is_unknown_is_left_running(tmp_path)
     assert cloud.calls.count("stop_instance") == 0
     assert cloud.calls.count("run_instance") == 1
     store.close()
+
+
+NEW_IMAGE = "ami-0fedcba9876543210"
+
+
+def test_a_running_machine_keeps_its_image_until_it_stops(tmp_path):
+    store, core, cloud, poll = running_machine(tmp_path)
+    core.controller_ids[SEAT_A] = CONTROLLER_A
+    cloud.image_id = NEW_IMAGE
+    poll()
+    poll()
+    assert "stop_instance" not in cloud.calls
+    assert cloud.launched_images == ["ami-0123456789abcdef0"]
+    assert store.get(MACHINE_ID).observed_state is ObservedState.RUNNING
+
+
+def test_a_stopped_machine_starts_on_the_configured_image_with_its_data_volume(tmp_path):
+    store, core, cloud, poll = running_machine(tmp_path)
+    core.controller_ids[SEAT_A] = CONTROLLER_A
+    core.sleep()
+    poll()
+    poll()
+    assert cloud.instance is not None and cloud.instance["State"]["Name"] == "stopped"
+    cloud.image_id = NEW_IMAGE
+    core.wake()
+    for _ in range(4):
+        poll()
+    assert cloud.calls[-3:] == ["terminate_instance", "run_instance", "boot"]
+    assert "start_instance" not in cloud.calls
+    assert cloud.launched_images == ["ami-0123456789abcdef0", NEW_IMAGE]
+    machine = store.get(MACHINE_ID)
+    assert machine.image_id == NEW_IMAGE
+    assert machine.data_volume_id == VOLUME_ID
+    assert machine.recovery_count == 0
+    assert machine.observed_state is ObservedState.RUNNING
+
+
+def test_a_stopped_machine_on_the_configured_image_only_starts(tmp_path):
+    store, core, cloud, poll = running_machine(tmp_path)
+    core.controller_ids[SEAT_A] = CONTROLLER_A
+    core.sleep()
+    poll()
+    poll()
+    core.wake()
+    poll()
+    assert "terminate_instance" not in cloud.calls
+    assert cloud.calls[-2:] == ["start_instance", "boot"]

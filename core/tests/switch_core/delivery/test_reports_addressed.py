@@ -92,6 +92,7 @@ async def test_an_addressed_message_is_reported_once(scene: _Scene) -> None:
             "room_id": scene.room.id,
             "sender_transport_user_id": scene.alice.transport_user_id,
             "from_platform": False,
+            "from_app": False,
             "agent_metadata": None,
             "agent_live": True,
             "has_attachment": False,

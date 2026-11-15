@@ -22,10 +22,10 @@ import {
 } from "@mui/material";
 import type { GridColDef } from "@mui/x-data-grid";
 import { useCallback, useMemo, useState } from "react";
-import DataTable from "../../components/DataTable";
+import DataTable, { TableEmptyState } from "../../components/DataTable";
 import { type Budget, type CurrentTenant, type UsageTotal, deleteBudget } from "../../data/api";
 import { useBudgets, useCurrentTenant, useUsage } from "../../data/hooks";
-import { formatDateTime } from "../../theme/hootFormat";
+import { formatDateTime } from "../../theme/format";
 import BudgetDialog from "./BudgetDialog";
 import { formatAmount, formatPeriod, metricLabel } from "./usageFormat";
 
@@ -47,7 +47,7 @@ export default function UsagePage() {
   if (!tenant.administers) {
     return (
       <Alert severity="info">
-        Only owners and admins of {tenant.name} can see its usage and budgets.
+        Only admins of {tenant.name} can see its usage and budgets.
       </Alert>
     );
   }
@@ -197,8 +197,20 @@ function BudgetsSection({ tenantId }: { tenantId: string }) {
       ) : error ? (
         <Alert severity="error">Could not load budgets.</Alert>
       ) : (
-        <Box sx={{ display: "flex", flexDirection: "column", height: Math.min(420, 108 + (budgets?.length ?? 0) * 56) }}>
-          <DataTable rows={budgets ?? []} columns={columns} fillHeight pageSize={10} />
+        <Box
+          sx={{ display: "flex", flexDirection: "column", height: Math.min(420, 108 + Math.max(1, budgets?.length ?? 0) * 56) }}
+        >
+          <DataTable
+            rows={budgets ?? []}
+            columns={columns}
+            fillHeight
+            pageSize={10}
+            emptyState={
+              <TableEmptyState title="No budgets">
+                Without one, there is no limit on what agents spend.
+              </TableEmptyState>
+            }
+          />
         </Box>
       )}
 
@@ -309,6 +321,7 @@ function UsageSection({ tenantId }: { tenantId: string }) {
           size="small"
           value={windowHours}
           onChange={(e) => setWindowHours(Number(e.target.value))}
+          slotProps={{ htmlInput: { "aria-label": "Period" } }}
           sx={{ width: 200 }}
         >
           {WINDOWS.map((w) => (
@@ -323,7 +336,17 @@ function UsageSection({ tenantId }: { tenantId: string }) {
       ) : error ? (
         <Alert severity="error">Could not load usage.</Alert>
       ) : (
-        <DataTable rows={rows} columns={columns} fillHeight pageSize={25} />
+        <DataTable
+          rows={rows}
+          columns={columns}
+          fillHeight
+          pageSize={25}
+          emptyState={
+            <TableEmptyState title="Nothing spent in this period">
+              What agents spend shows up here as they take turns.
+            </TableEmptyState>
+          }
+        />
       )}
     </Box>
   );

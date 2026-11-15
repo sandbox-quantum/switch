@@ -9,6 +9,7 @@ from switch_core.bridges.agent.api_key_cache import ApiKeyCache
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
+from switch_core.bridges.agent.room_access_cache import RoomAccessCache
 from switch_core.bridges.collaboration.lifecycle_service import (
     CollaborationBridgeLifecycleService,
 )
@@ -54,6 +55,7 @@ def init_dependencies(
     config: Any,
     approval_outcomes: ApprovalOutcomes,
     trust_client: TrustClient,
+    room_access: RoomAccessCache | None = None,
     telemetry: TelemetryService | None = None,
 ) -> None:
     _state["agent_store"] = agent_store
@@ -93,6 +95,7 @@ def init_dependencies(
         config=config,
         approval_outcomes=approval_outcomes,
         trust_client=trust_client,
+        room_access=room_access,
         telemetry=telemetry,
     )
 

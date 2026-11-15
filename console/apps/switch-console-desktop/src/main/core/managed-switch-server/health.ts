@@ -20,6 +20,24 @@ const sleep = (ms: number, signal?: AbortSignal): Promise<void> =>
     );
   });
 
+/** The readiness probe's address on a server. */
+function healthUrl(serverUrl: string): string {
+  return `${serverUrl}/gateway/auth/config`;
+}
+
+/**
+ * One readiness probe: whether the gateway answers right now. For watching a
+ * server that is already up, where a single miss is not yet a verdict.
+ */
+export async function probeHealth(serverUrl: string, timeoutMs = 5000): Promise<boolean> {
+  try {
+    const res = await fetch(healthUrl(serverUrl), { signal: AbortSignal.timeout(timeoutMs) });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Poll the Switch core until its gateway answers, so we only register the server
  * once it can actually serve requests. `/gateway/auth/config` is unauthenticated
@@ -32,7 +50,7 @@ export async function waitForHealth(
 ): Promise<boolean> {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const deadline = Date.now() + timeoutMs;
-  const url = `${serverUrl}/gateway/auth/config`;
+  const url = healthUrl(serverUrl);
 
   while (Date.now() < deadline) {
     try {

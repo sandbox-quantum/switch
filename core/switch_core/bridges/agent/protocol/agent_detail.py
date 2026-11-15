@@ -133,6 +133,7 @@ def agent_summary(
         known_agent_options=known_agent_options
         if isinstance(known_agent_options, dict)
         else None,
+        mid_turn_delivery="queue" if agent.mid_turn_delivery == "queue" else "steer",
         addressing_policy=(
             AddressingPolicy.model_validate(agent.addressing_policy)
             if isinstance(agent.addressing_policy, dict)
@@ -200,6 +201,7 @@ async def assemble_agent_detail(
     session: AsyncSession,
     *,
     agent: Agent,
+    visible_room_ids: set[str],
     agent_store: AgentStore,
     room_store: RoomStore,
     user_store: UserStore,
@@ -220,9 +222,13 @@ async def assemble_agent_detail(
         len(models),
     )
 
+    # Rooms the viewer may not read (outside `visible_room_ids`) are never
+    # named to them: they are left out of the agent's rooms, and a session in
+    # one carries no room name.
     rooms = await room_store.get_rooms_for_agent(
         session, agent.id, include_archived=True
     )
+    rooms = [room for room in rooms if room.id in visible_room_ids]
     room_name_by_id = {room.id: room.name for room in rooms}
 
     room_ids = [room.id for room in rooms]
@@ -256,7 +262,8 @@ async def assemble_agent_detail(
         ]
         if room_id is not None and room_id not in room_name_by_id
     }
-    for other in (await room_store.get_many(session, other_room_ids)).values():
+    shown_others = other_room_ids & visible_room_ids
+    for other in (await room_store.get_many(session, shown_others)).values():
         room_name_by_id[other.id] = other.name
 
     now = datetime.now(UTC)
@@ -522,6 +529,7 @@ class AgentProfileUpdate:
         display_name: str | None,
         icon_url: str | None,
         addressing: str | None,
+        mid_turn_delivery: str | None,
         third_party_avatars: bool,
     ) -> AgentProfileUpdate:
         """None leaves a field as it is; an empty `display_name` or `icon_url`
@@ -541,4 +549,10 @@ class AgentProfileUpdate:
             )
         if addressing is not None:
             columns["addressing_policy"] = addressing_policy_for(addressing)
+        if mid_turn_delivery is not None:
+            if mid_turn_delivery not in ("steer", "queue"):
+                raise ValueError(
+                    f'mid_turn_delivery must be "steer" or "queue", not {mid_turn_delivery!r}'
+                )
+            columns["mid_turn_delivery"] = mid_turn_delivery
         return cls(columns=columns)

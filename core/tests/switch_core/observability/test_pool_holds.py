@@ -128,7 +128,7 @@ class TestTheLongHoldLog:
         clock = iter([100.0, 110.0, 200.0])
         monkeypatch.setattr(pool_module.time, "monotonic", lambda: next(clock))
         log = _LongHoldLog()
-        hold = _Hold(started=0.0, caller="switch_core.rooms:slow", stack=())
+        hold = _Hold(started=0.0, caller="switch_core.rooms:slow")
 
         with caplog.at_level(logging.WARNING, logger=pool_module.__name__):
             log.report(hold, 2.0)

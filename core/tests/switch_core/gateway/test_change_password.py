@@ -15,6 +15,7 @@ loop, and the `session_factory` fixture's connections belong to this one.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import httpx
@@ -97,7 +98,15 @@ async def _stored_hash(
 
 
 def _client(app: FastAPI, user_id: str, email: str) -> httpx.AsyncClient:
-    token = create_jwt(user_id, email, "user", _KEYRING, None)
+    token = create_jwt(
+        user_id,
+        email,
+        "user",
+        _KEYRING,
+        None,
+        session_version=0,
+        auth_time=datetime.now(UTC),
+    )
     return httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app),
         base_url="http://test",

@@ -64,24 +64,72 @@ it('does not classify a transport failure as missing credentials', async () => {
 // which does not test the sign-in, it performs it, opening a browser. It then
 // reported success whether or not anything had happened. Asking a question must
 // not be the thing that changes the answer.
-it('answers Antigravity sign-in from the handshake, without signing in', async () => {
+const agy = { ...input, binaryPath: 'agy', provider: 'antigravity' };
+it('asks agy for its sessions, which it refuses when signed out, without signing in', async () => {
+  mock.request
+    .mockResolvedValueOnce({ authMethods: [{ id: 'oauth-personal' }] })
+    .mockResolvedValueOnce({ sessions: [] });
+  const result = await checkProviderReadiness(agy);
+  expect(result.status).toBe('authenticated');
+  expect(mock.request.mock.calls.map((call) => call[0])).toEqual(['initialize', 'session/list']);
+  expect(mock.dispose).toHaveBeenCalledOnce();
+});
+it('reports a signed-out agy as unauthenticated, pointing at agy acp --login', async () => {
+  mock.request
+    .mockResolvedValueOnce({ authMethods: [{ id: 'oauth-personal' }] })
+    .mockRejectedValueOnce(new JsonRpcError(-32000, 'Authentication required'));
+  const result = await checkProviderReadiness(agy);
+  expect(result.status).toBe('unauthenticated');
+  expect(result.message).toContain('agy acp --login');
+  expect(mock.request.mock.calls.map((call) => call[0])).not.toContain('authenticate');
+  expect(mock.dispose).toHaveBeenCalledOnce();
+});
+// agy keeps the method it is sent: authenticating with the key, even once,
+// would move a user signed in with Google onto the key for good.
+it('checks agy without choosing the Gemini API key the environment carries', async () => {
+  mock.request.mockResolvedValueOnce({}).mockResolvedValueOnce({ sessions: [] });
+  const result = await checkProviderReadiness({ ...agy, env: { GEMINI_API_KEY: 'placeholder' } });
+  expect(result.status).toBe('authenticated');
+  expect(mock.request.mock.calls).toEqual([
+    ['initialize', expect.anything()],
+    ['session/list', {}],
+  ]);
+});
+it('counts on the Gemini API key for an agy not signed in itself, saying it is unchecked', async () => {
+  mock.request
+    .mockResolvedValueOnce({})
+    .mockRejectedValueOnce(new JsonRpcError(-32000, 'Authentication required'));
+  const result = await checkProviderReadiness({ ...agy, env: { GEMINI_API_KEY: 'placeholder' } });
+  expect(result).toMatchObject({ status: 'authenticated' });
+  expect(result.message).toContain('checked when one starts');
+  expect(mock.request.mock.calls.map((call) => call[0])).toEqual(['initialize', 'session/list']);
+});
+// A legacy `antigravity-acp` install keeps its own profile and is checked as before.
+const legacy = { ...input, binaryPath: '/home/u/.local/bin/antigravity-acp' };
+it('answers legacy Antigravity ACP sign-in from the handshake, without signing in', async () => {
   mock.request.mockResolvedValueOnce({ authMethods: [] });
-  const result = await checkProviderReadiness({ ...input, provider: 'antigravity' });
+  const result = await checkProviderReadiness({ ...legacy, provider: 'antigravity' });
   expect(result.status).toBe('authenticated');
   expect(mock.request.mock.calls.map((call) => call[0])).toEqual(['initialize']);
   expect(mock.dispose).toHaveBeenCalledOnce();
 });
-it('never calls authenticate, whatever the agent reports', async () => {
+it('never calls authenticate on a legacy install, whatever it reports', async () => {
   mock.request.mockResolvedValueOnce({ authMethods: [{ id: 'oauth-personal' }] });
-  await checkProviderReadiness({ ...input, provider: 'antigravity' });
+  await checkProviderReadiness({ ...legacy, provider: 'antigravity' });
   expect(mock.request.mock.calls.map((call) => call[0])).not.toContain('authenticate');
 });
-it('reports an outstanding Antigravity sign-in as unauthenticated', async () => {
+it('reports an outstanding legacy sign-in as unauthenticated', async () => {
   mock.request.mockResolvedValueOnce({ authMethods: [{ id: 'oauth-personal' }] });
-  const result = await checkProviderReadiness({ ...input, provider: 'antigravity' });
+  const result = await checkProviderReadiness({ ...legacy, provider: 'antigravity' });
   expect(result.status).toBe('unauthenticated');
   expect(result.message).toContain('antigravity-acp --login');
+  // Console's sign-in hint and button follow the executable checked.
+  expect(result.loginCommand).toBe('antigravity-acp --login');
   expect(mock.dispose).toHaveBeenCalledOnce();
+});
+it('names no login command of its own for agy, the provider’s usual one', async () => {
+  mock.request.mockResolvedValueOnce({}).mockResolvedValueOnce({ sessions: [] });
+  expect(await checkProviderReadiness(agy)).not.toHaveProperty('loginCommand');
 });
 // Antigravity ACP 1.3 lists every sign-in method in its handshake, signed in or
 // not: the token --login wrote is what says.
@@ -89,7 +137,7 @@ it('counts the token --login wrote as signed in when the handshake lists methods
   mock.request.mockResolvedValueOnce({ authMethods: [{ id: 'oauth-personal' }] });
   mock.token = '{"access_token":"a","refresh_token":"r"}';
   const result = await checkProviderReadiness({
-    ...input,
+    ...legacy,
     provider: 'antigravity',
     env: { GEMINI_HOME: '/profile' },
   });
@@ -97,9 +145,9 @@ it('counts the token --login wrote as signed in when the handshake lists methods
   expect(mock.request.mock.calls.map((call) => call[0])).toEqual(['initialize']);
 });
 // An agent that says nothing about auth is not an agent asking to be signed in.
-it('treats a handshake with no authMethods as nothing outstanding', async () => {
+it('treats a legacy handshake with no authMethods as nothing outstanding', async () => {
   mock.request.mockResolvedValueOnce({});
-  expect((await checkProviderReadiness({ ...input, provider: 'antigravity' })).status).toBe(
+  expect((await checkProviderReadiness({ ...legacy, provider: 'antigravity' })).status).toBe(
     'authenticated'
   );
 });

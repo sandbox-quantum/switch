@@ -21,6 +21,7 @@ import {
 } from "@mui/material";
 import { useCallback, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
+import ConfirmDialog from "../../components/ConfirmDialog";
 import SearchablePickerDialog, {
   type PickerOption,
 } from "../../components/SearchablePickerDialog";
@@ -30,10 +31,13 @@ import {
   assignRoomsToGroup,
   createRoomGroup,
   deleteRoomGroup,
+  loadRooms,
   setRoomGroup,
   updateRoomGroup,
 } from "../../data/api";
-import { useRoomGroups, useRooms } from "../../data/hooks";
+import { useAuth } from "../../data/AuthContext";
+import { useRoomGroups } from "../../data/hooks";
+import { useLoad } from "../workspace/useLoad";
 import {
   ancestorChain,
   buildGroupIndex,
@@ -132,7 +136,7 @@ function GroupFormDialog({
       <DialogContent>
         <Stack spacing={2} sx={{ mt: 1 }}>
           {error && <Alert severity="error">{error}</Alert>}
-          <Stack direction="row" spacing={1} alignItems="center">
+          <Stack direction="row" spacing={1} alignItems="flex-end">
             <TextField
               label="Name"
               size="small"
@@ -185,6 +189,7 @@ function GroupTree({
   byId,
   standaloneCount,
   selectedId,
+  canManage,
   onSelect,
   onEdit,
   onDelete,
@@ -193,6 +198,7 @@ function GroupTree({
   byId: Map<string, RoomGroupDetail>;
   standaloneCount: number;
   selectedId: string | null;
+  canManage: boolean;
   onSelect: (id: string) => void;
   onEdit: (group: RoomGroupDetail) => void;
   onDelete: (group: RoomGroupDetail) => void;
@@ -227,6 +233,7 @@ function GroupTree({
             <Typography variant="caption" color="text.secondary">
               {group.room_count}
             </Typography>
+            {canManage && (
             <Stack
               direction="row"
               className="group-actions"
@@ -253,6 +260,7 @@ function GroupTree({
                 <DeleteOutline fontSize="small" />
               </IconButton>
             </Stack>
+            )}
           </Stack>
         );
       })}
@@ -298,12 +306,15 @@ function MembershipPanel({
   group,
   byId,
   rooms,
+  canAddRooms,
   onChanged,
 }: {
   selectedId: string | null;
   group: RoomGroupDetail | null;
   byId: Map<string, RoomGroupDetail>;
   rooms: RoomSummary[];
+  /** Only a workspace admin may put rooms in a group. */
+  canAddRooms: boolean;
   onChanged: () => void;
 }) {
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -318,11 +329,12 @@ function MembershipPanel({
     [rooms, selectedId, isStandalone],
   );
 
-  // Rooms eligible to add: everything not already directly in this group.
+  // Rooms eligible to add: those the viewer may change (filing a room takes
+  // write access to it) that are not already directly in this group.
   const addableOptions = useMemo<PickerOption[]>(
     () =>
       rooms
-        .filter((r) => r.group_id !== selectedId)
+        .filter((r) => r.can_write && r.group_id !== selectedId)
         .map((r) => ({
           id: r.id,
           primary: r.name,
@@ -385,7 +397,7 @@ function MembershipPanel({
         <Typography variant="h6" sx={{ flexGrow: 1 }} noWrap>
           {title}
         </Typography>
-        {!isStandalone && (
+        {!isStandalone && canAddRooms && (
           <Button
             variant="contained"
             size="small"
@@ -401,8 +413,9 @@ function MembershipPanel({
 
       {isStandalone && (
         <Typography variant="body2" color="text.secondary">
-          These rooms aren't in any group. Select a group and use “Add rooms” to
-          organize them.
+          {canAddRooms
+            ? "These rooms aren't in any group. Select a group and use “Add rooms” to organize them."
+            : "These rooms aren't in any group. A workspace admin can file them into one."}
         </Typography>
       )}
 
@@ -423,7 +436,7 @@ function MembershipPanel({
               <Typography variant="body2" sx={{ flexGrow: 1 }} noWrap>
                 {room.name}
               </Typography>
-              {!isStandalone && (
+              {!isStandalone && room.can_write && (
                 <IconButton
                   size="small"
                   onClick={() => handleRemove(room.id)}
@@ -454,14 +467,19 @@ function MembershipPanel({
 
 export default function GroupsPage() {
   const navigate = useNavigate();
-  const { data: groups, loading, refetch } = useRoomGroups();
-  const { data: rooms, refetch: refetchRooms } = useRooms();
+  // Groups are shared by the workspace, so only an admin creates, edits or
+  // deletes them, or puts rooms in one; anyone who can write to a room may
+  // take it out.
+  const { canAdminTenant: canManageGroups } = useAuth();
+  const { data: groups, loading, error: groupsError, refetch } = useRoomGroups();
+  const { data: rooms, error: roomsError, refetch: refetchRooms } = useLoad(loadRooms);
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [formOpen, setFormOpen] = useState(false);
   const [editGroup, setEditGroup] = useState<RoomGroupDetail | null>(null);
+  // The target outlives the dialog's closing, so its title holds while it fades.
   const [deleteTarget, setDeleteTarget] = useState<RoomGroupDetail | null>(null);
-  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [deleteOpen, setDeleteOpen] = useState(false);
 
   const groupList = useMemo(() => groups ?? [], [groups]);
   const roomList = useMemo(() => rooms ?? [], [rooms]);
@@ -476,57 +494,66 @@ export default function GroupsPage() {
 
   const refetchAll = useCallback(() => {
     refetch();
-    refetchRooms();
+    void refetchRooms();
   }, [refetch, refetchRooms]);
 
+  // Failing, it throws, and the dialog stays open with the server's reason.
   const handleDelete = useCallback(async () => {
     if (!deleteTarget) return;
-    setDeleteError(null);
-    try {
-      await deleteRoomGroup(deleteTarget.id);
-    } catch (err) {
-      setDeleteError(err instanceof Error ? err.message : "Failed to delete group");
-      return;
-    }
+    await deleteRoomGroup(deleteTarget.id);
     if (selectedId === deleteTarget.id) setSelectedId(null);
-    setDeleteTarget(null);
     refetchAll();
   }, [deleteTarget, selectedId, refetchAll]);
-
-  const closeDelete = useCallback(() => {
-    setDeleteTarget(null);
-    setDeleteError(null);
-  }, []);
 
   return (
     <Box>
       <Stack direction="row" alignItems="center" spacing={1} mb={2}>
-        <IconButton onClick={() => navigate("/rooms")} size="small">
+        <IconButton onClick={() => navigate("/rooms")} size="small" aria-label="Back to rooms">
           <ArrowBack />
         </IconButton>
         <Typography variant="h5" sx={{ flexGrow: 1 }}>
           Room groups
         </Typography>
-        <Button
-          variant="contained"
-          startIcon={<AddIcon />}
-          onClick={() => {
-            setEditGroup(null);
-            setFormOpen(true);
-          }}
-        >
-          New group
-        </Button>
+        {canManageGroups && (
+          <Button
+            variant="contained"
+            startIcon={<AddIcon />}
+            onClick={() => {
+              setEditGroup(null);
+              setFormOpen(true);
+            }}
+          >
+            New group
+          </Button>
+        )}
       </Stack>
 
+      {roomsError && (
+        <Alert severity="error" sx={{ mb: 2 }}>
+          Couldn't load the rooms: {roomsError}
+        </Alert>
+      )}
       {loading ? (
         <CircularProgress />
+      ) : groupsError ? (
+        <Alert
+          severity="error"
+          action={
+            <Button color="inherit" size="small" onClick={refetch}>
+              Try again
+            </Button>
+          }
+        >
+          Couldn't load the room groups.
+        </Alert>
       ) : (
         <Stack direction="row" spacing={2} sx={{ alignItems: "stretch" }}>
           <Paper variant="outlined" sx={{ borderRadius: 2, p: 1.5, width: 320, flexShrink: 0 }}>
             {groupList.length === 0 ? (
               <Typography variant="body2" color="text.secondary" sx={{ p: 1 }}>
-                No groups yet. Create one to start organizing rooms.
+                {canManageGroups
+                  ? "No groups yet. Create one to start organizing rooms."
+                  : "No groups yet. A workspace admin can create them."}
               </Typography>
             ) : (
               <GroupTree
@@ -534,12 +561,16 @@ export default function GroupsPage() {
                 byId={byId}
                 standaloneCount={standaloneCount}
                 selectedId={selectedId}
+                canManage={canManageGroups}
                 onSelect={setSelectedId}
                 onEdit={(g) => {
                   setEditGroup(g);
                   setFormOpen(true);
                 }}
-                onDelete={(g) => setDeleteTarget(g)}
+                onDelete={(g) => {
+                  setDeleteTarget(g);
+                  setDeleteOpen(true);
+                }}
               />
             )}
           </Paper>
@@ -550,6 +581,7 @@ export default function GroupsPage() {
               group={selectedGroup}
               byId={byId}
               rooms={roomList}
+              canAddRooms={canManageGroups}
               onChanged={refetchAll}
             />
           </Paper>
@@ -564,26 +596,15 @@ export default function GroupsPage() {
         onSaved={refetchAll}
       />
 
-      <Dialog open={deleteTarget !== null} onClose={closeDelete}>
-        <DialogTitle>Delete group?</DialogTitle>
-        <DialogContent>
-          {deleteError && (
-            <Alert severity="error" sx={{ mb: 2 }}>
-              {deleteError}
-            </Alert>
-          )}
-          <Typography variant="body2">
-            Delete <b>{deleteTarget?.name}</b>? Its rooms become standalone and any
-            subgroups move up to this group's parent. This cannot be undone.
-          </Typography>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={closeDelete}>Cancel</Button>
-          <Button color="error" variant="contained" onClick={handleDelete}>
-            Delete
-          </Button>
-        </DialogActions>
-      </Dialog>
+      <ConfirmDialog
+        open={deleteOpen}
+        title={`Delete ${deleteTarget?.name ?? "group"}?`}
+        description="Its rooms become standalone and any subgroups move up to this group's parent. This cannot be undone."
+        confirmLabel="Delete group"
+        tone="destructive"
+        onConfirm={handleDelete}
+        onClose={() => setDeleteOpen(false)}
+      />
     </Box>
   );
 }

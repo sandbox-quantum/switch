@@ -1,22 +1,59 @@
-from collections.abc import Collection
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import NamedTuple
 
-from sqlalchemy import delete, insert, or_, select, update
+from sqlalchemy import (
+    ColumnElement,
+    DateTime,
+    Text,
+    cast,
+    delete,
+    exists,
+    literal,
+    or_,
+    select,
+    true,
+    union,
+    update,
+)
 from sqlalchemy import func as sa_func
+from sqlalchemy import tuple_ as sa_tuple
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import InstrumentedAttribute
 
+from switch_core.authz import require_group_filing
+from switch_core.chats import MEMBER_CLIENT_TYPE
+from switch_core.db.id_lists import any_of
 from switch_core.db.models import (
     Agent,
     Client,
     ClientRoom,
+    ExternalUser,
+    ExternalUserClaim,
+    Message,
     Room,
+    RoomAdmin,
     RoomGroup,
+    TenantMember,
+    User,
     require_tenant_id,
     room_agents,
 )
 from switch_core.db.stores.delivery_cursor_store import DeliveryCursorStore
+
+# Where a room's name came from, in its `metadata`. Both "channel" and
+# "created" follow the linked channel's renames:
+# - "channel": a room the bridge adopted from a channel, named
+#   "<messaging app>: <channel name>".
+# - "created": a room named in Switch whose channel Switch made from that name;
+#   it takes the channel's new name as the platform shows it.
+# - "custom": a person or an agent named it; it keeps that name.
+# Absent on rooms from before it was kept.
+NAME_SOURCE_KEY = "name_source"
+# The linked platform channel's name as the bridge last saw it.
+LINKED_CHANNEL_NAME_KEY = "linked_channel_name"
 
 # Keys in a room's `metadata` for the follow-the-conversation settings. Both
 # are absent by default (follow-ups on, no main agent), so rooms made before
@@ -25,6 +62,15 @@ from switch_core.db.stores.delivery_cursor_store import DeliveryCursorStore
 FOLLOW_UPS_OFF_KEY = "follow_ups_off"
 # `!assign-agent @name`: the agent id every message in the room goes to.
 MAIN_AGENT_KEY = "main_agent_id"
+# `!auto-route on`: messages no rule delivers are sent to the decision
+# service. Absent by default, so automatic routing is off.
+AUTO_ROUTE_ON_KEY = "auto_route_on"
+# `!auto-route fallback @name`: the agent id that gets the messages auto-route
+# could not decide because the decision service failed. Absent by default.
+AUTO_ROUTE_FALLBACK_KEY = "auto_route_fallback_agent"
+# When Switch last told the room auto-route is unavailable, so it says so at
+# most once an hour however many processes and restarts there are.
+DECISION_NOTICE_AT_KEY = "decision_notice_at"
 
 
 def follow_ups_enabled_in(metadata: dict | None) -> bool:
@@ -35,6 +81,17 @@ def follow_ups_enabled_in(metadata: dict | None) -> bool:
 def main_agent_in(metadata: dict | None) -> str | None:
     """The main agent a room's metadata names, if any."""
     value = (metadata or {}).get(MAIN_AGENT_KEY)
+    return value if isinstance(value, str) else None
+
+
+def auto_route_on_in(metadata: dict | None) -> bool:
+    """Whether a room's metadata turns automatic routing on."""
+    return (metadata or {}).get(AUTO_ROUTE_ON_KEY) is True
+
+
+def auto_route_fallback_in(metadata: dict | None) -> str | None:
+    """The agent id a room's metadata names as its triage agent, if any."""
+    value = (metadata or {}).get(AUTO_ROUTE_FALLBACK_KEY)
     return value if isinstance(value, str) else None
 
 
@@ -86,6 +143,75 @@ class RoomStore:
         """Set (or clear, with None) the room's main agent. Raises ValueError
         for a room that does not exist."""
         await self._set_metadata_key(session, room_id, MAIN_AGENT_KEY, agent_id)
+
+    async def auto_route_on(self, session: AsyncSession, room_id: str) -> bool:
+        """Whether automatic routing is on in this room (`!auto-route`), off
+        unless someone turned it on."""
+        room = await session.get(Room, room_id)
+        if room is None:
+            return False
+        return auto_route_on_in(room.metadata_)
+
+    async def set_auto_route_on(
+        self, session: AsyncSession, room_id: str, on: bool
+    ) -> None:
+        """Turn automatic routing on or off for a room. Raises ValueError for
+        a room that does not exist."""
+        await self._set_metadata_key(
+            session, room_id, AUTO_ROUTE_ON_KEY, True if on else None
+        )
+
+    async def auto_route_fallback(
+        self, session: AsyncSession, room_id: str
+    ) -> str | None:
+        """The agent id of the room's triage agent for auto-route, if any."""
+        room = await session.get(Room, room_id)
+        if room is None:
+            return None
+        return auto_route_fallback_in(room.metadata_)
+
+    async def set_auto_route_fallback(
+        self, session: AsyncSession, room_id: str, agent_id: str | None
+    ) -> None:
+        """Name the room's triage agent, or none with None. Raises ValueError
+        for a room that does not exist."""
+        await self._set_metadata_key(
+            session, room_id, AUTO_ROUTE_FALLBACK_KEY, agent_id
+        )
+
+    async def claim_decision_notice(
+        self, session: AsyncSession, room_id: str, *, every_seconds: int
+    ) -> bool:
+        """Record that the room is being told auto-route is unavailable, and
+        say whether to tell it: False when it was told less than
+        `every_seconds` ago. One statement on the database's clock, so two
+        processes failing at once tell the room once."""
+        stamped = await session.scalar(
+            update(Room)
+            .where(
+                Room.id == room_id,
+                or_(
+                    Room.metadata_[DECISION_NOTICE_AT_KEY].astext.is_(None),
+                    Room.metadata_[DECISION_NOTICE_AT_KEY].astext.cast(
+                        DateTime(timezone=True)
+                    )
+                    < sa_func.now()
+                    - sa_func.make_interval(0, 0, 0, 0, 0, 0, every_seconds),
+                ),
+            )
+            .values(
+                metadata_=sa_func.coalesce(
+                    Room.metadata_, sa_func.jsonb_build_object()
+                ).op("||")(
+                    sa_func.jsonb_build_object(
+                        DECISION_NOTICE_AT_KEY, cast(sa_func.now(), Text)
+                    )
+                )
+            )
+            .returning(Room.id)
+            .execution_options(synchronize_session=False)
+        )
+        return stamped is not None
 
     async def _set_metadata_key(
         self, session: AsyncSession, room_id: str, key: str, value: object
@@ -154,6 +280,18 @@ class RoomStore:
         )
         return result.scalar_one_or_none()
 
+    async def transport_ids_of_open_rooms(
+        self, session: AsyncSession, tenant_id: str
+    ) -> list[tuple[str, str]]:
+        """The transport room id and the room id of every room of the tenant
+        that is not archived, in one read (`transport.postgres.RoomIds`)."""
+        result = await session.execute(
+            select(Room.transport_room_id, Room.id).where(
+                Room.tenant_id == tenant_id, Room.archived_at.is_(None)
+            )
+        )
+        return [(transport_room_id, room_id) for transport_room_id, room_id in result]
+
     async def run_rooms(self, session: AsyncSession, root_id: str) -> list[Room]:
         """Every room of the run rooted at ``root_id``, the root first, then in
         the order they were created. Archived rooms are included: a run is a
@@ -217,6 +355,19 @@ class RoomStore:
         result = await session.execute(stmt.limit(limit))
         return [row[0] for row in result.all()]
 
+    async def count(self, session: AsyncSession) -> int:
+        """How many rooms the bound tenant has that are not archived, as the
+        rooms list shows them."""
+        return (
+            await session.scalar(
+                select(sa_func.count())
+                .select_from(Room)
+                .where(
+                    Room.tenant_id == require_tenant_id(), Room.archived_at.is_(None)
+                )
+            )
+        ) or 0
+
     async def get_all(
         self, session: AsyncSession, *, include_archived: bool = False
     ) -> list[Room]:
@@ -226,6 +377,57 @@ class RoomStore:
         result = await session.execute(stmt)
         return list(result.scalars().all())
 
+    async def page_all(
+        self,
+        session: AsyncSession,
+        *,
+        include_archived: bool,
+        name_contains: str | None,
+        limit: int,
+        after: tuple[datetime, str] | None,
+        reader_id: str | None,
+        reader_is_admin: bool,
+        member_agent_id: str,
+    ) -> list[Room]:
+        """Up to `limit` rooms after the `(created_at, id)` position `after`,
+        oldest first, whose name contains `name_contains` (any case).
+
+        Only rooms an agent may see are returned: those its owner `reader_id`
+        may read (as `list_readable`; every room for a workspace admin) and
+        those `member_agent_id` is in. An agent with no owner sees public
+        rooms and its own."""
+        stmt = select(Room)
+        if not reader_is_admin:
+            stmt = stmt.where(_visible_to_agent(reader_id, member_agent_id))
+        if not include_archived:
+            stmt = stmt.where(Room.archived_at.is_(None))
+        if name_contains:
+            stmt = stmt.where(Room.name.icontains(name_contains, autoescape=True))
+        if after is not None:
+            stmt = stmt.where(
+                sa_tuple(Room.created_at, Room.id)
+                > sa_tuple(literal(after[0]), literal(after[1]))
+            )
+        stmt = stmt.order_by(Room.created_at, Room.id).limit(limit)
+        return list((await session.execute(stmt)).scalars().all())
+
+    async def list_visible_to_agent(
+        self,
+        session: AsyncSession,
+        *,
+        reader_id: str | None,
+        reader_is_admin: bool,
+        member_agent_id: str,
+        include_archived: bool,
+    ) -> list[Room]:
+        """Every room an agent may see, as `page_all` filters them, unpaged."""
+        stmt = select(Room)
+        if not reader_is_admin:
+            stmt = stmt.where(_visible_to_agent(reader_id, member_agent_id))
+        if not include_archived:
+            stmt = stmt.where(Room.archived_at.is_(None))
+        return list((await session.execute(stmt)).scalars().all())
+
     async def list_readable(
         self,
         session: AsyncSession,
@@ -234,17 +436,192 @@ class RoomStore:
         is_admin: bool,
         include_archived: bool = False,
     ) -> list[Room]:
-        """Return rooms the user may read: owned, publicly readable, or all
-        if admin. Archived rooms are excluded unless `include_archived`."""
-        stmt = select(Room)
-        if not is_admin:
-            stmt = stmt.where(
-                or_(Room.owner_id == user_id, Room.read_visibility == "public")
-            )
+        """Return rooms the user may read: publicly readable, ones they take
+        part in (`involves`), or all if admin. Archived rooms are excluded
+        unless `include_archived`."""
+        stmt = select(Room).where(readable_by(user_id, is_admin=is_admin))
         if not include_archived:
             stmt = stmt.where(Room.archived_at.is_(None))
         result = await session.execute(stmt)
         return list(result.scalars().all())
+
+    async def visible_room_ids(
+        self,
+        session: AsyncSession,
+        room_ids: Collection[str],
+        visible: ColumnElement[bool],
+    ) -> set[str]:
+        """Of `room_ids`, the rooms `visible` holds for."""
+        if not room_ids:
+            return set()
+        result = await session.execute(
+            select(Room.id).where(Room.id.in_(room_ids), visible)
+        )
+        return set(result.scalars().all())
+
+    async def involved_room_ids(
+        self, session: AsyncSession, user_id: str, room_ids: Collection[str]
+    ) -> set[str]:
+        """Of `room_ids`, the rooms `involves(user_id)` holds for."""
+        if not room_ids:
+            return set()
+        result = await session.execute(
+            select(Room.id).where(Room.id.in_(room_ids), involves(user_id))
+        )
+        return set(result.scalars().all())
+
+    async def last_message_at(
+        self, session: AsyncSession, room_ids: Collection[str]
+    ) -> dict[str, datetime]:
+        """When each of `room_ids` last had a message, from any platform; a
+        room with none is left out. One newest-row lookup per room on
+        `ix_messages_room_sent_at`, not a scan of its history."""
+        if not room_ids:
+            return {}
+        newest = (
+            select(Message.sent_at)
+            .where(Message.room_id == Room.id, Message.event_type == "m.room.message")
+            .order_by(Message.sent_at.desc())
+            .limit(1)
+            .correlate(Room)
+            .scalar_subquery()
+        )
+        result = await session.execute(
+            select(Room.id, newest).where(Room.id.in_(room_ids))
+        )
+        return {room_id: at for room_id, at in result.all() if at is not None}
+
+    async def admin_room_ids(
+        self, session: AsyncSession, user_id: str, room_ids: Collection[str]
+    ) -> set[str]:
+        """Of `room_ids`, the rooms `user_id` is a room admin of. Only while
+        they take part in it: a grant left behind by someone who has gone
+        counts for nothing."""
+        if not room_ids:
+            return set()
+        result = await session.execute(
+            select(Room.id).where(
+                Room.id.in_(room_ids),
+                involves(user_id),
+                exists().where(
+                    RoomAdmin.room_id == Room.id, RoomAdmin.user_id == user_id
+                ),
+                _still_a_member(user_id),
+            )
+        )
+        return set(result.scalars().all())
+
+    async def people_in_room(
+        self, session: AsyncSession, room_id: str
+    ) -> list[tuple[str, str]]:
+        """(user id, name) of every workspace member who takes part in the
+        room, by name: who could be made a room admin.
+
+        The same four ways in as `involves`, read from the room's own rows
+        rather than tested for every member of the workspace, so a large
+        workspace costs no more than a small one."""
+        ways_in = union(
+            select(Room.owner_id.label("user_id")).where(Room.id == room_id),
+            select(Client.user_id).where(
+                ClientRoom.room_id == room_id,
+                ClientRoom.client_id == Client.id,
+                Client.type == MEMBER_CLIENT_TYPE,
+            ),
+            select(ExternalUserClaim.user_id).where(
+                ClientRoom.room_id == room_id,
+                ClientRoom.client_id == ExternalUser.client_id,
+                ExternalUser.id == ExternalUserClaim.external_user_id,
+            ),
+            select(Agent.owner_id).where(
+                room_agents.c.room_id == room_id,
+                room_agents.c.agent_id == Agent.id,
+            ),
+        ).subquery()
+        result = await session.execute(
+            select(User.id, User.name)
+            .join(ways_in, ways_in.c.user_id == User.id)
+            .join(
+                TenantMember,
+                (TenantMember.user_id == User.id)
+                & (TenantMember.tenant_id == require_tenant_id()),
+            )
+            .order_by(User.name, User.id)
+        )
+        return [(uid, name) for uid, name in result.tuples()]
+
+    async def list_admins(self, session: AsyncSession, room_id: str) -> list[RoomAdmin]:
+        """The room's room admins who still take part in it, longest-standing
+        first."""
+        result = await session.execute(
+            select(RoomAdmin)
+            .join(Room, Room.id == RoomAdmin.room_id)
+            .where(
+                RoomAdmin.room_id == room_id,
+                involves(RoomAdmin.user_id),
+                _still_a_member(RoomAdmin.user_id),
+            )
+            .order_by(RoomAdmin.granted_at, RoomAdmin.user_id)
+        )
+        return list(result.scalars().all())
+
+    async def add_admin(
+        self,
+        session: AsyncSession,
+        room_id: str,
+        user_id: str,
+        *,
+        granted_by: str | None,
+    ) -> bool:
+        """Make `user_id` a room admin of `room_id`, and say whether this call
+        did (False when they already were). Whether they may be one is the
+        caller's to check (`room_admins.grant`)."""
+        added = await session.scalar(
+            pg_insert(RoomAdmin)
+            .values(
+                tenant_id=require_tenant_id(),
+                room_id=room_id,
+                user_id=user_id,
+                granted_by=granted_by,
+            )
+            .on_conflict_do_nothing()
+            .returning(RoomAdmin.user_id)
+        )
+        await session.flush()
+        return added is not None
+
+    async def remove_admin(
+        self, session: AsyncSession, room_id: str, user_id: str
+    ) -> bool:
+        """Take `user_id` off `room_id`'s room admins, and say whether they
+        were on it."""
+        removed = await session.scalar(
+            delete(RoomAdmin)
+            .where(RoomAdmin.room_id == room_id, RoomAdmin.user_id == user_id)
+            .returning(RoomAdmin.user_id)
+        )
+        await session.flush()
+        return removed is not None
+
+    async def prune_admins(self, session: AsyncSession, room_id: str) -> list[str]:
+        """Drop the room admins of `room_id` who no longer take part in it,
+        and return their user ids. Called when someone leaves the room, and
+        before anyone joins it, so leaving takes the role with it rather than
+        keeping it for a return. Reads (`admin_room_ids`, `list_admins`) also
+        ignore a grant its holder has outlived, for the ways of leaving that
+        happen elsewhere."""
+        gone = (
+            select(Room.id)
+            .where(Room.id == room_id, involves(RoomAdmin.user_id))
+            .exists()
+        )
+        result = await session.execute(
+            delete(RoomAdmin)
+            .where(RoomAdmin.room_id == room_id, ~gone)
+            .returning(RoomAdmin.user_id)
+        )
+        removed = list(result.scalars().all())
+        await session.flush()
+        return removed
 
     async def delete(self, session: AsyncSession, room_id: str) -> None:
         await session.execute(delete(ClientRoom).where(ClientRoom.room_id == room_id))
@@ -313,14 +690,17 @@ class RoomStore:
         """Add agents to a room.
 
         `join_event_listeners` is the subset of `agent_ids` that should receive
-        `room_join` events in this room. Any agent not in that set keeps the
+        `room_join` and `room_leave` events in this room. Any agent not in that set keeps the
         column default (off) — agents are opted in to join events explicitly.
+        An agent already in the room is left as it is, so two concurrent adds
+        of the same agent both succeed.
         """
         if not agent_ids:
             return
+        await self.prune_admins(session, room_id)
         listeners = join_event_listeners or set()
         await session.execute(
-            insert(room_agents),
+            pg_insert(room_agents).on_conflict_do_nothing(),
             [
                 {
                     "room_id": room_id,
@@ -335,7 +715,7 @@ class RoomStore:
     async def set_receives_join_events(
         self, session: AsyncSession, room_id: str, agent_id: str, value: bool
     ) -> None:
-        """Toggle whether `agent_id` receives `room_join` events in `room_id`.
+        """Toggle whether `agent_id` receives `room_join` and `room_leave` events in `room_id`.
 
         Raises ValueError if the agent is not a member of the room.
         """
@@ -354,7 +734,7 @@ class RoomStore:
     async def get_receives_join_events(
         self, session: AsyncSession, room_id: str, agent_id: str
     ) -> bool:
-        """Whether `agent_id` is configured to receive `room_join` events in
+        """Whether `agent_id` is configured to receive `room_join` and `room_leave` events in
         `room_id`. Returns False if the agent is not a member."""
         result = await session.execute(
             select(room_agents.c.receives_join_events).where(
@@ -367,7 +747,7 @@ class RoomStore:
     async def get_join_event_listeners(
         self, session: AsyncSession, room_id: str
     ) -> list[str]:
-        """Agent ids in `room_id` configured to receive `room_join` events."""
+        """Agent ids in `room_id` configured to receive `room_join` and `room_leave` events."""
         result = await session.execute(
             select(room_agents.c.agent_id).where(
                 room_agents.c.room_id == room_id,
@@ -378,10 +758,11 @@ class RoomStore:
 
     async def remove_agents(
         self, session: AsyncSession, room_id: str, agent_ids: list[str]
-    ) -> None:
+    ) -> int:
+        """Take agents out of a room. Returns how many were in it."""
         if not agent_ids:
-            return
-        await session.execute(
+            return 0
+        result = await session.execute(
             delete(room_agents).where(
                 room_agents.c.room_id == room_id,
                 room_agents.c.agent_id.in_(agent_ids),
@@ -393,6 +774,9 @@ class RoomStore:
         if room is not None and main_agent_in(room.metadata_) in agent_ids:
             await self.set_main_agent(session, room_id, None)
         await session.flush()
+        # Someone who took part only through an agent has left with it.
+        await self.prune_admins(session, room_id)
+        return int(result.rowcount or 0)  # type: ignore[attr-defined]
 
     async def get_rooms_for_agent(
         self, session: AsyncSession, agent_id: str, *, include_archived: bool = False
@@ -406,6 +790,24 @@ class RoomStore:
             stmt = stmt.where(Room.archived_at.is_(None))
         result = await session.execute(stmt)
         return list(result.scalars().all())
+
+    async def room_ids_by_agent(
+        self, session: AsyncSession, agent_ids: Collection[str]
+    ) -> dict[str, set[str]]:
+        """The ids of every room each agent is a member of, archived rooms
+        included, in one query: what `get_rooms_for_agent(include_archived=True)`
+        gives one agent at a time. Every agent asked about has a key."""
+        by_agent: dict[str, set[str]] = {agent_id: set() for agent_id in agent_ids}
+        if not by_agent:
+            return by_agent
+        result = await session.execute(
+            select(room_agents.c.agent_id, room_agents.c.room_id)
+            .join(Room, Room.id == room_agents.c.room_id)
+            .where(room_agents.c.agent_id.in_(by_agent))
+        )
+        for agent_id, room_id in result.all():
+            by_agent[agent_id].add(room_id)
+        return by_agent
 
     async def get_agent_ids(self, session: AsyncSession, room_id: str) -> list[str]:
         result = await session.execute(
@@ -522,6 +924,10 @@ class RoomStore:
         else does: two writers racing for one membership must not greet the
         room twice.
         """
+        # Before the arrival: someone coming back doesn't bring back a role
+        # they lost by leaving in a way nothing pruned (an account unlinked,
+        # an agent deleted or handed on).
+        await self.prune_admins(session, room_id)
         recorded = await session.scalar(
             pg_insert(ClientRoom)
             .values(client_id=client_id, room_id=room_id)
@@ -538,14 +944,25 @@ class RoomStore:
 
     async def remove_client(
         self, session: AsyncSession, client_id: str, room_id: str
-    ) -> None:
-        await session.execute(
-            delete(ClientRoom).where(
+    ) -> bool:
+        """Delete a membership, and say whether this call deleted it.
+
+        Whoever deletes it writes the departure that announces it, the mirror
+        of `add_client`: two writers racing to remove one member must not tell
+        the room twice that they left.
+        """
+        removed = await session.scalar(
+            delete(ClientRoom)
+            .where(
                 ClientRoom.client_id == client_id,
                 ClientRoom.room_id == room_id,
             )
+            .returning(ClientRoom.client_id)
         )
         await session.flush()
+        if removed is not None:
+            await self.prune_admins(session, room_id)
+        return removed is not None
 
     async def get_for_client(self, session: AsyncSession, client_id: str) -> list[Room]:
         """The rooms a client is a member of.
@@ -590,7 +1007,7 @@ class RoomStore:
         result = await session.execute(
             select(ClientRoom.room_id, ClientRoom.joined_at).where(
                 ClientRoom.client_id == client_id,
-                ClientRoom.room_id.in_(room_ids),
+                any_of(ClientRoom.room_id, room_ids),
             )
         )
         return {room_id: joined_at for room_id, joined_at in result.all()}
@@ -618,6 +1035,34 @@ class RoomStore:
             by_room.setdefault(room_id, []).append(client_id)
         return by_room
 
+    async def member_users_by_room(
+        self, session: AsyncSession, room_ids: Collection[str]
+    ) -> dict[str, list[tuple[str, str]]]:
+        """The people in each room through their Switch Console member client,
+        as `(user id, user name)` sorted by name, for many rooms in one query.
+        A room with no such people has no key.
+
+        Sorted here rather than in SQL, so the order is Python's, the same as
+        a bridged room's names in the gateway, whatever the database's
+        collation."""
+        if not room_ids:
+            return {}
+        result = await session.execute(
+            select(ClientRoom.room_id, User.id, User.name)
+            .join(Client, Client.id == ClientRoom.client_id)
+            .join(User, User.id == Client.user_id)
+            .where(
+                any_of(ClientRoom.room_id, room_ids),
+                Client.type == MEMBER_CLIENT_TYPE,
+            )
+        )
+        by_room: dict[str, list[tuple[str, str]]] = {}
+        for room_id, user_id, name in result.all():
+            by_room.setdefault(room_id, []).append((user_id, name))
+        for members in by_room.values():
+            members.sort(key=lambda member: (member[1], member[0]))
+        return by_room
+
     async def get_member_agent_clients(
         self, session: AsyncSession, room_id: str
     ) -> dict[str, str]:
@@ -637,6 +1082,24 @@ class RoomStore:
             client_id: transport_user_id
             for client_id, transport_user_id in result.all()
         }
+
+    async def member_agent_clients_by_room(
+        self, session: AsyncSession, room_ids: Collection[str]
+    ) -> dict[str, dict[str, str]]:
+        """`get_member_agent_clients` for many rooms in one query, keyed by
+        room id. A room with no agent members has no key."""
+        if not room_ids:
+            return {}
+        result = await session.execute(
+            select(room_agents.c.room_id, Client.id, Client.transport_user_id)
+            .join(Agent, Agent.id == room_agents.c.agent_id)
+            .join(Client, Client.id == Agent.client_id)
+            .where(room_agents.c.room_id.in_(room_ids))
+        )
+        by_room: dict[str, dict[str, str]] = {}
+        for room_id, client_id, transport_user_id in result.all():
+            by_room.setdefault(room_id, {})[client_id] = transport_user_id
+        return by_room
 
     async def get_by_bridge(self, session: AsyncSession, bridge_id: str) -> list[Room]:
         result = await session.execute(select(Room).where(Room.bridge_id == bridge_id))
@@ -713,13 +1176,14 @@ class RoomStore:
         instructions: str | None = None,
         admin_mode: bool | None = None,
         read_visibility: str | None = None,
-        write_visibility: str | None = None,
     ) -> None:
         room = await session.get(Room, room_id)
         if room is None:
             raise ValueError(f"Room not found: {room_id}")
-        if name is not None:
+        if name is not None and name != room.name:
             room.name = name
+            # Named by someone: a platform's channel name no longer replaces it.
+            room.metadata_ = {**(room.metadata_ or {}), NAME_SOURCE_KEY: "custom"}
         if description is not None:
             room.description = description
         if instructions is not None:
@@ -728,17 +1192,137 @@ class RoomStore:
             room.admin_mode = admin_mode
         if read_visibility is not None:
             room.read_visibility = read_visibility
-        if write_visibility is not None:
-            room.write_visibility = write_visibility
         await session.flush()
 
-    async def set_group(
-        self, session: AsyncSession, room_id: str, group_id: str | None
+    async def set_platform_name(
+        self, session: AsyncSession, room_id: str, name: str, channel_name: str
     ) -> None:
-        """Assign the room to a group, or make it standalone (`group_id=None`)."""
+        """Name the room after its platform channel, so it follows the
+        channel's renames from now on."""
         room = await session.get(Room, room_id)
         if room is None:
             raise ValueError(f"Room not found: {room_id}")
+        self._follow(room, name, channel_name, "channel")
+        await session.flush()
+
+    async def set_created_channel_name(
+        self, session: AsyncSession, room_id: str, channel_name: str
+    ) -> None:
+        """Record the channel Switch just made from the room's name, so the
+        room follows that channel's renames from now on."""
+        room = await session.get(Room, room_id)
+        if room is None:
+            raise ValueError(f"Room not found: {room_id}")
+        room.metadata_ = {
+            **(room.metadata_ or {}),
+            NAME_SOURCE_KEY: "created",
+            LINKED_CHANNEL_NAME_KEY: channel_name,
+        }
+        await session.flush()
+
+    async def follow_channel_name(
+        self,
+        session: AsyncSession,
+        room_id: str,
+        *,
+        old_name: str,
+        new_name: str,
+        bridge_display_name: str,
+        channel_name_for: Callable[[str], str],
+    ) -> bool:
+        """Rename the room after its renamed channel when it follows the
+        channel, decided on the row locked for it so a name someone gives the
+        room meanwhile wins. True when the room now carries the channel's
+        name; False, and nothing written, when it does not follow.
+
+        `old_name` is empty when the platform did not say, and equals
+        `new_name` when the bridge is only reporting the name it sees. A report
+        naming the channel the room already knows (`LINKED_CHANNEL_NAME_KEY`,
+        or `old_name` where nothing is recorded) is not a rename: platforms
+        also report a channel the first time the bridge sees it. Nor is one
+        whose old name is not the one recorded: it renamed something else. A room from before
+        `NAME_SOURCE_KEY` was kept follows only while its name still matches
+        the channel's old name, and takes the source that match implies.
+        `channel_name_for` is the channel name the bridge would make from a
+        room name."""
+        room = (
+            await session.execute(
+                select(Room).where(Room.id == room_id).with_for_update()
+            )
+        ).scalar_one_or_none()
+        if room is None:
+            return False
+        metadata = room.metadata_ or {}
+        source = metadata.get(NAME_SOURCE_KEY)
+        known = metadata.get(LINKED_CHANNEL_NAME_KEY)
+        if new_name == (known if known is not None else old_name):
+            return False
+        if old_name and old_name != new_name and known not in (None, old_name):
+            # A rename of something other than the name the room follows,
+            # such as a Teams team whose General channel is known by its own.
+            return False
+        prefixed = f"{bridge_display_name}: {new_name}"
+        if source == "channel":
+            self._follow(room, prefixed, new_name, "channel")
+        elif source == "created":
+            self._follow(room, new_name, new_name, "created")
+        elif source is None and room.name == f"{bridge_display_name}: {old_name}":
+            self._follow(room, prefixed, new_name, "channel")
+        elif (
+            source is None
+            and old_name
+            and old_name
+            in {
+                room.name,
+                channel_name_for(room.name),
+            }
+        ):
+            self._follow(room, new_name, new_name, "created")
+        else:
+            return False
+        await session.flush()
+        return True
+
+    @staticmethod
+    def _follow(room: Room, name: str, channel_name: str, source: str) -> None:
+        room.name = name
+        room.metadata_ = {
+            **(room.metadata_ or {}),
+            NAME_SOURCE_KEY: source,
+            LINKED_CHANNEL_NAME_KEY: channel_name,
+        }
+
+    async def record_channel_name(
+        self, session: AsyncSession, room_id: str, channel_name: str
+    ) -> None:
+        room = await session.get(Room, room_id)
+        if room is None:
+            raise ValueError(f"Room not found: {room_id}")
+        room.metadata_ = {
+            **(room.metadata_ or {}),
+            LINKED_CHANNEL_NAME_KEY: channel_name,
+        }
+        await session.flush()
+
+    async def set_group(
+        self,
+        session: AsyncSession,
+        room_id: str,
+        group_id: str | None,
+        *,
+        acting_is_admin: bool,
+    ) -> None:
+        """Assign the room to a group, or make it standalone (`group_id=None`).
+
+        Putting the room in a group it is not already in needs a workspace
+        admin (`require_group_filing`, raising ``PermissionError``); making
+        it standalone, or leaving it where it is, does not. Authorizing the
+        room itself is the caller's job."""
+        room = await session.get(Room, room_id)
+        if room is None:
+            raise ValueError(f"Room not found: {room_id}")
+        if group_id is not None and group_id != room.group_id:
+            require_group_filing(acting_is_admin)
         if group_id is not None:
             group = await session.get(RoomGroup, group_id)
             if group is None:
@@ -747,13 +1331,21 @@ class RoomStore:
         await session.flush()
 
     async def set_group_bulk(
-        self, session: AsyncSession, room_ids: list[str], group_id: str | None
+        self,
+        session: AsyncSession,
+        room_ids: list[str],
+        group_id: str | None,
+        *,
+        acting_is_admin: bool,
     ) -> int:
         """Assign many rooms to a group (or `None` for standalone) in one UPDATE.
 
-        The caller is responsible for validating the group and authorizing the
-        rooms. Returns the number of rows updated.
+        Putting rooms in a group needs a workspace admin
+        (`require_group_filing`). The caller is responsible for validating the
+        group and authorizing the rooms. Returns the number of rows updated.
         """
+        if group_id is not None:
+            require_group_filing(acting_is_admin)
         if not room_ids:
             return 0
         result = await session.execute(
@@ -761,3 +1353,95 @@ class RoomStore:
         )
         await session.flush()
         return result.rowcount or 0  # type: ignore[attr-defined]
+
+
+class AttachedRooms(NamedTuple):
+    """How many rooms a reference, document or package is in: every one, and
+    those a given reader may read (`readable_by`). Counted in one query, so
+    the two agree."""
+
+    every: int
+    readable: int
+
+
+def readable_by(user_id: str | None, *, is_admin: bool) -> ColumnElement[bool]:
+    """True for a `Room` row the user may read: publicly readable, or one they
+    take part in (`involves`). Every room, for a tenant admin; only public ones
+    for a reader with no user (an agent nobody owns), who takes part in none."""
+    if is_admin:
+        return true()
+    if user_id is None:
+        return Room.read_visibility == "public"
+    return or_(Room.read_visibility == "public", involves(user_id))
+
+
+def _visible_to_agent(reader_id: str | None, agent_id: str) -> ColumnElement[bool]:
+    """True for a `Room` row an agent may see when its owner is not a
+    workspace admin: public, one the owner takes part in, or one the agent is
+    in. An agent with no owner sees public rooms and its own."""
+    visible = [
+        Room.read_visibility == "public",
+        exists().where(
+            room_agents.c.room_id == Room.id,
+            room_agents.c.agent_id == agent_id,
+        ),
+    ]
+    if reader_id is not None:
+        visible.append(involves(reader_id))
+    return or_(*visible)
+
+
+def _still_a_member(
+    user_id: "str | ColumnElement[str] | InstrumentedAttribute[str]",
+) -> ColumnElement[bool]:
+    """True while the user is a member of the bound workspace: a room admin
+    grant counts only then, so someone removed from the workspace who is
+    still in a channel through a claimed account changes nothing."""
+    return (
+        exists()
+        .where(
+            TenantMember.tenant_id == require_tenant_id(),
+            TenantMember.user_id == user_id,
+        )
+        .correlate_except(TenantMember)
+    )
+
+
+def involves(
+    user_id: "str | ColumnElement[str] | InstrumentedAttribute[str]",
+) -> ColumnElement[bool]:
+    """True for a `Room` row the user takes part in: they own it, their Switch
+    Console member client or a platform account they have claimed is in it,
+    or an agent they own is. It grants reading and listing, and unlinking
+    resources (`authz.can_unlink_from_room`); no write or configuration
+    access.
+
+    `user_id` may be a column of an enclosing query (`RoomAdmin.user_id`,
+    `User.id`): each test correlates everything but its own tables, so it
+    reads that row rather than taking the column's table in as its own."""
+    return or_(
+        Room.owner_id == user_id,
+        exists()
+        .where(
+            ClientRoom.room_id == Room.id,
+            ClientRoom.client_id == Client.id,
+            Client.user_id == user_id,
+            Client.type == MEMBER_CLIENT_TYPE,
+        )
+        .correlate_except(ClientRoom, Client),
+        exists()
+        .where(
+            ClientRoom.room_id == Room.id,
+            ClientRoom.client_id == ExternalUser.client_id,
+            ExternalUser.id == ExternalUserClaim.external_user_id,
+            ExternalUserClaim.user_id == user_id,
+        )
+        .correlate_except(ClientRoom, ExternalUser, ExternalUserClaim),
+        exists()
+        .where(
+            room_agents.c.room_id == Room.id,
+            room_agents.c.agent_id == Agent.id,
+            Agent.owner_id == user_id,
+        )
+        .correlate_except(room_agents, Agent),
+    )

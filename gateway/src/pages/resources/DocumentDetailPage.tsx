@@ -1,10 +1,8 @@
 import ArrowBack from "@mui/icons-material/ArrowBack";
-import DeleteOutline from "@mui/icons-material/DeleteOutline";
 import {
   Alert,
   Box,
   Button,
-  Chip,
   CircularProgress,
   Divider,
   IconButton,
@@ -12,79 +10,57 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router";
+import TransferOwnershipSection from "../../components/TransferOwnershipSection";
 import {
   type DocumentDetail,
-  fetchDocument,
+  loadDocument,
   updateDocument,
 } from "../../data/api";
-import { useAuth } from "../../data/AuthContext";
 import { AccessChip, AccessSelect } from "../../components/AccessControls";
 import {
+  ACCESS_HELPERS_FOR_OTHERS,
   type AccessLevel,
   fromAccessLevel,
   toAccessLevel,
 } from "../../data/visibility";
-import { usePackages } from "../../data/hooks";
-import { EM_DASH, MONO_SX, formatDateTime } from "../../theme/hootFormat";
+import { formatDateTime } from "../../theme/format";
 import DeleteResourceDialog from "./DeleteResourceDialog";
 import ResourceAttachmentsSection from "./ResourceAttachmentsSection";
+import {
+  DangerSection,
+  DetailLoadFailed,
+  DetailLoading,
+  InPackagesSection,
+  InfoLine,
+  requiredHelper,
+  useAfterTransfer,
+  useResourceDetail,
+} from "./detailParts";
+
+const LIST_PATH = "/resources?tab=documents";
 
 export default function DocumentDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { user, canAdminTenant } = useAuth();
-  const [doc, setDoc] = useState<DocumentDetail | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [fetchError, setFetchError] = useState<string | null>(null);
+  const { data: doc, setData: setDoc, error, loading, reload } = useResourceDetail(id, loadDocument);
+  const { afterTransfer, refreshNotice } = useAfterTransfer(id, loadDocument, setDoc, LIST_PATH);
   const [deleteOpen, setDeleteOpen] = useState(false);
 
-  useEffect(() => {
-    if (!id) return;
-    let cancelled = false;
-    setLoading(true);
-    fetchDocument(id).then((d) => {
-      if (cancelled) return;
-      if (d) setDoc(d);
-      else setFetchError("Document not found");
-      setLoading(false);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [id]);
-
-  if (loading) {
-    return (
-      <Box sx={{ display: "flex", justifyContent: "center", py: 8 }}>
-        <CircularProgress />
-      </Box>
-    );
+  if (doc === null && loading) return <DetailLoading />;
+  if (doc === null || !id) {
+    return <DetailLoadFailed what="document" listPath={LIST_PATH} error={error} onRetry={reload} />;
   }
-
-  if (fetchError || !doc || !id) {
-    return (
-      <Box>
-        <Button startIcon={<ArrowBack />} onClick={() => navigate("/resources")}>
-          Back to resources
-        </Button>
-        <Alert severity="error" sx={{ mt: 2 }}>
-          {fetchError ?? "Document not found"}
-        </Alert>
-      </Box>
-    );
-  }
-
-  const canMutate =
-    !!user && (user.id === doc.owner_id || canAdminTenant);
 
   return (
     <Box>
+      {refreshNotice}
       <Stack direction="row" alignItems="center" spacing={1} mb={2}>
         <IconButton
-          onClick={() => navigate("/resources?tab=documents")}
+          onClick={() => navigate(LIST_PATH)}
           size="small"
+          aria-label="Back"
         >
           <ArrowBack />
         </IconButton>
@@ -99,29 +75,53 @@ export default function DocumentDetailPage() {
         <Divider />
         <EditFieldsSection
           doc={doc}
-          canMutate={canMutate}
+          canEdit={doc.can_edit}
+          canChangeAccess={doc.can_manage}
           onSaved={(updated) => setDoc(updated)}
         />
         <Divider />
         <InPackagesSection packageIds={doc.packages ?? []} />
         <Divider />
-        <ResourceAttachmentsSection kind="document" resourceId={id} />
-        {canMutate && (
+        <ResourceAttachmentsSection
+          kind="document"
+          resourceId={id}
+          resourceLabel={doc.name || id}
+          hiddenRoomsCount={doc.hidden_rooms_count}
+          // A room's own document stays in its room.
+          canAttach={doc.scope !== "room"}
+        />
+        {doc.can_transfer && (
           <>
             <Divider />
-            <DangerSection onDelete={() => setDeleteOpen(true)} />
+            <TransferOwnershipSection
+              kind="document"
+              resourceId={id}
+              resourceLabel={doc.name || id}
+              ownerId={doc.owner_id}
+              blockedReason={null}
+              onTransferred={() => void afterTransfer()}
+            />
+          </>
+        )}
+        {doc.can_manage && (
+          <>
+            <Divider />
+            <DangerSection what="document" onDelete={() => setDeleteOpen(true)} />
           </>
         )}
       </Stack>
 
-      <DeleteResourceDialog
-        open={deleteOpen}
-        kind="document"
-        resourceId={id}
-        resourceLabel={doc.name || id}
-        onClose={() => setDeleteOpen(false)}
-        onDeleted={() => navigate("/resources?tab=documents")}
-      />
+      {deleteOpen && (
+        <DeleteResourceDialog
+          kind="document"
+          resourceId={id}
+          resourceLabel={doc.name || id}
+          hiddenRoomsCount={doc.hidden_rooms_count}
+          packageCount={(doc.packages ?? []).length}
+          onClose={() => setDeleteOpen(false)}
+          onDeleted={() => navigate(LIST_PATH)}
+        />
+      )}
     </Box>
   );
 }
@@ -142,38 +142,15 @@ function DocInfoSection({ doc }: { doc: DocumentDetail }) {
   );
 }
 
-function InfoLine({
-  label,
-  value,
-  mono,
-}: {
-  label: string;
-  value: string | null | undefined;
-  mono?: boolean;
-}) {
-  return (
-    <Typography variant="body2" color="text.secondary">
-      <strong>{label}:</strong>{" "}
-      {value ? (
-        <Box component="span" sx={mono ? MONO_SX : undefined}>
-          {value}
-        </Box>
-      ) : (
-        <Box component="span" sx={{ color: "text.secondary" }}>
-          {EM_DASH}
-        </Box>
-      )}
-    </Typography>
-  );
-}
-
 function EditFieldsSection({
   doc,
-  canMutate,
+  canEdit,
+  canChangeAccess,
   onSaved,
 }: {
   doc: DocumentDetail;
-  canMutate: boolean;
+  canEdit: boolean;
+  canChangeAccess: boolean;
   onSaved: (updated: DocumentDetail) => void;
 }) {
   const [name, setName] = useState(doc.name);
@@ -194,6 +171,9 @@ function EditFieldsSection({
     [name, description, instructions, content, access, doc],
   );
 
+  // What creating one requires, kept on an edit.
+  const complete = name.trim() !== "" && description.trim() !== "" && content.trim() !== "";
+
   const handleSave = async () => {
     setSaving(true);
     setError(null);
@@ -203,7 +183,8 @@ function EditFieldsSection({
         description,
         instructions,
         content,
-        ...fromAccessLevel(access),
+        // Changing who may see or change it is the manager's alone.
+        ...(access !== toAccessLevel(doc) ? fromAccessLevel(access) : {}),
       });
       onSaved(updated);
     } catch (e) {
@@ -222,22 +203,23 @@ function EditFieldsSection({
         label="Name"
         value={name}
         onChange={(e) => setName(e.target.value)}
-        disabled={!canMutate || saving}
+        disabled={!canEdit || saving}
+        {...requiredHelper(name)}
       />
       <TextField
         label="Description"
         value={description}
         onChange={(e) => setDescription(e.target.value)}
-        disabled={!canMutate || saving}
+        disabled={!canEdit || saving}
         multiline
         minRows={2}
-        helperText="Short, human-readable summary. Shown in lists."
+        {...requiredHelper(description, "Short, human-readable summary. Shown in lists.")}
       />
       <TextField
         label="Instructions"
         value={instructions}
         onChange={(e) => setInstructions(e.target.value)}
-        disabled={!canMutate || saving}
+        disabled={!canEdit || saving}
         multiline
         minRows={4}
         helperText="Sent to agents on connect. Not shown in lists."
@@ -246,15 +228,17 @@ function EditFieldsSection({
         label="Content"
         value={content}
         onChange={(e) => setContent(e.target.value)}
-        disabled={!canMutate || saving}
+        disabled={!canEdit || saving}
         multiline
         minRows={12}
         slotProps={{ input: { sx: { fontFamily: "monospace" } } }}
+        {...requiredHelper(content)}
       />
       <AccessSelect
         value={access}
         onChange={setAccess}
-        disabled={!canMutate || saving}
+        disabled={!canChangeAccess || saving}
+        helpers={canChangeAccess ? undefined : ACCESS_HELPERS_FOR_OTHERS}
         sx={{ maxWidth: 320 }}
       />
       {error && <Alert severity="error">{error}</Alert>}
@@ -262,66 +246,12 @@ function EditFieldsSection({
         <Button
           variant="contained"
           onClick={handleSave}
-          disabled={!canMutate || !dirty || saving}
+          disabled={!(canEdit || canChangeAccess) || !dirty || !complete || saving}
           startIcon={saving ? <CircularProgress size={16} /> : undefined}
         >
           Save
         </Button>
       </Box>
-    </Stack>
-  );
-}
-
-function InPackagesSection({ packageIds }: { packageIds: string[] }) {
-  const navigate = useNavigate();
-  const { data: allPackages } = usePackages();
-  const nameById = useMemo(() => {
-    const m: Record<string, string> = {};
-    for (const p of allPackages ?? []) m[p.id] = p.name || p.description;
-    return m;
-  }, [allPackages]);
-  return (
-    <Stack spacing={1}>
-      <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
-        In packages
-      </Typography>
-      {packageIds.length === 0 ? (
-        <Typography variant="body2" color="text.secondary">
-          Not in any package.
-        </Typography>
-      ) : (
-        <Stack direction="row" flexWrap="wrap" gap={0.5}>
-          {packageIds.map((pid) => (
-            <Chip
-              key={pid}
-              label={nameById[pid] ?? pid}
-              size="small"
-              variant="outlined"
-              onClick={() => navigate(`/resources/packages/${pid}`)}
-              sx={{ cursor: "pointer" }}
-            />
-          ))}
-        </Stack>
-      )}
-    </Stack>
-  );
-}
-
-function DangerSection({ onDelete }: { onDelete: () => void }) {
-  return (
-    <Stack spacing={1}>
-      <Typography variant="overline" sx={{ color: "error.main", display: "block" }}>
-        Danger zone
-      </Typography>
-      <Button
-        variant="outlined"
-        color="error"
-        startIcon={<DeleteOutline />}
-        onClick={onDelete}
-        sx={{ alignSelf: "flex-start" }}
-      >
-        Delete document
-      </Button>
     </Stack>
   );
 }

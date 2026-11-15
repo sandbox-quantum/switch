@@ -21,7 +21,7 @@ import {
   tokenRequestSchema,
   tokenResponseSchema,
 } from './schemas';
-import { STREAM_FRAME_SCHEMAS } from './stream';
+import { SOCKET_FRAME_SCHEMAS } from './stream';
 
 /**
  * Core's contract fixtures: one JSON file per wire message. Core checks its
@@ -69,7 +69,7 @@ const SCHEMA_FOR: Record<string, z.ZodType> = {
 /** `stream_frames.json` is a list of `{event, data}`; each is read as the stream reads it. */
 const streamFramesSchema = z.array(
   z.object({ event: z.string(), data: z.unknown() }).superRefine((frame, context) => {
-    const schema = (STREAM_FRAME_SCHEMAS as Record<string, z.ZodType>)[frame.event];
+    const schema = (SOCKET_FRAME_SCHEMAS as Record<string, z.ZodType>)[frame.event];
     if (!schema) {
       context.addIssue({ code: 'custom', message: `No schema for stream event '${frame.event}'.` });
       return;
@@ -108,7 +108,7 @@ describe('Core contract fixtures', () => {
       event: string;
     }[];
     expect(new Set(frames.map((frame) => frame.event))).toEqual(
-      new Set(Object.keys(STREAM_FRAME_SCHEMAS))
+      new Set(Object.keys(SOCKET_FRAME_SCHEMAS))
     );
   });
 });
@@ -231,6 +231,13 @@ describe('status report', () => {
 
   it('accepts a full snapshot', () => {
     expect(statusReportSchema.safeParse(report).success).toBe(true);
+  });
+
+  it('carries the controller’s start time when it has one', () => {
+    const started = { ...report.controller, started_at: '2026-01-01T00:00:00.000Z' };
+    expect(statusReportSchema.safeParse({ ...report, controller: started }).success).toBe(true);
+    const empty = { ...report.controller, started_at: '' };
+    expect(statusReportSchema.safeParse({ ...report, controller: empty }).success).toBe(false);
   });
 
   it('requires the workspaces directory and each agent’s directory', () => {

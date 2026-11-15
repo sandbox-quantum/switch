@@ -2,10 +2,12 @@ import { type ChildProcess, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { createInterface } from 'node:readline';
+import { loginCommandOf, providerRuntime } from '@switch-console/agent-providers';
 import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
 import { requireProvider } from '@shared/core/providers/agent-provider-registry';
 import { providerLoginExitChannel, providerLoginLineChannel } from '@shared/events/appEvents';
+import { localDependencyManager } from '../dependencies/dependency-managers';
 
 /**
  * Runs a provider's own sign-in command on this computer, one attempt at a
@@ -20,24 +22,26 @@ class ProviderLoginRunner {
   private current: { attemptId: string; child: ChildProcess } | null = null;
 
   start(providerId: string): { attemptId: string } {
-    const provider = requireProvider(providerId);
+    requireProvider(providerId);
+    // The command for the CLI found here: an older runtime of a provider can
+    // sign in with a command of its own.
+    const loginCommand = loginCommandOf(
+      providerRuntime(providerId),
+      localDependencyManager.get(providerId)?.path ?? ''
+    );
     this.cancel();
     const attemptId = randomUUID();
     const windows = process.platform === 'win32';
     const shell = windows
       ? (process.env.ComSpec ?? 'cmd.exe')
       : (process.env.SHELL ?? (process.platform === 'darwin' ? '/bin/zsh' : '/bin/bash'));
-    const child = spawn(
-      shell,
-      windows ? ['/c', provider.loginCommand] : ['-lc', provider.loginCommand],
-      {
-        cwd: homedir(),
-        env: process.env,
-        stdio: ['pipe', 'pipe', 'pipe'],
-        detached: !windows,
-        windowsHide: true,
-      }
-    );
+    const child = spawn(shell, windows ? ['/c', loginCommand] : ['-lc', loginCommand], {
+      cwd: homedir(),
+      env: process.env,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      detached: !windows,
+      windowsHide: true,
+    });
     this.current = { attemptId, child };
     log.info('Running a provider sign-in command', { provider: providerId, attemptId });
     const relay = (stream: NodeJS.ReadableStream | null) => {
@@ -56,11 +60,9 @@ class ProviderLoginRunner {
       if (error) log.warn('A provider sign-in command failed', { provider: providerId, error });
       events.emit(providerLoginExitChannel, { attemptId, exitCode, error });
     };
-    child.once('error', (error) =>
-      end(null, `Could not run ${provider.loginCommand}: ${error.message}`)
-    );
+    child.once('error', (error) => end(null, `Could not run ${loginCommand}: ${error.message}`));
     child.once('exit', (code, signal) =>
-      end(code, signal ? `${provider.loginCommand} was stopped (${signal}).` : null)
+      end(code, signal ? `${loginCommand} was stopped (${signal}).` : null)
     );
     return { attemptId };
   }

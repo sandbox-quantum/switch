@@ -37,7 +37,8 @@ export class ChatActivityStream {
   private stopped = false;
   private running = false;
   private abort: AbortController | null = null;
-  private cancelTimer: (() => void) | null = null;
+  /** Ends the backoff wait early; set only while the loop is waiting to retry. */
+  private wake: (() => void) | null = null;
   private attempt = 0;
   /** A server without the feed: not asked again until the next `start`. */
   private tooOld = false;
@@ -59,18 +60,16 @@ export class ChatActivityStream {
 
   start(): void {
     this.stopped = false;
-    if (this.running) return;
-    this.cancelTimer?.();
-    this.cancelTimer = null;
+    if (this.running && !this.wake) return;
     this.attempt = 0;
     this.tooOld = false;
-    void this.loop();
+    if (this.wake) this.wake();
+    else void this.loop();
   }
 
   stop(): void {
     this.stopped = true;
-    this.cancelTimer?.();
-    this.cancelTimer = null;
+    this.wake?.();
     this.abort?.abort();
     this.abort = null;
   }
@@ -97,10 +96,13 @@ export class ChatActivityStream {
           if (this.tooOld || this.deps.isUnauthorized(error)) return;
           const wait = this.deps.backoffMs(this.attempt++);
           await new Promise<void>((resolve) => {
-            this.cancelTimer = this.deps.setTimer(() => {
-              this.cancelTimer = null;
+            let cancel = (): void => {};
+            this.wake = () => {
+              this.wake = null;
+              cancel();
               resolve();
-            }, wait);
+            };
+            cancel = this.deps.setTimer(() => this.wake?.(), wait);
           });
         }
       }

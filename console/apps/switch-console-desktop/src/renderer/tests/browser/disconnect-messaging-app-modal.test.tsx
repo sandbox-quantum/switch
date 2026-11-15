@@ -193,7 +193,7 @@ describe('confirming and disconnecting', () => {
     await click(confirmButton(el));
     await settle();
 
-    expect(el.textContent).toContain('requires an owner or admin of this workspace');
+    expect(el.textContent).toContain('requires an admin of this workspace');
   });
 
   it('says the app is already gone rather than retrying a disconnect', async () => {

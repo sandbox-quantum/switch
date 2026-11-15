@@ -32,6 +32,7 @@ const {
   callbackHostHop,
   cancelOidcLogin,
   oidcLogin,
+  passwordLogin,
   reauthenticateManagedServer,
   refreshSession,
   signup,
@@ -174,6 +175,24 @@ function response(status: number, body: unknown, cookies: string[] = []): Respon
     headers: cookies.map((cookie) => ['Set-Cookie', cookie] as [string, string]),
   });
 }
+
+describe('passwordLogin', () => {
+  it('surfaces secure-storage failures after the server accepts the credentials', async () => {
+    fetchMock.mockResolvedValueOnce(response(200, USER, ['switch_auth=SESSION']));
+    setSessionCookie.mockRejectedValueOnce(new Error('Secure secret storage is unavailable.'));
+
+    const result = await passwordLogin(SIGNUP_SERVER, 'ada@example.com', 'correct-horse');
+
+    expect(result).toEqual({
+      success: false,
+      error: {
+        kind: 'failed',
+        message:
+          'Login succeeded, but Switch Console could not save the session securely: Secure secret storage is unavailable. Check that the operating system keychain is available, then sign in again.',
+      },
+    });
+  });
+});
 
 describe('signup', () => {
   beforeEach(() => {

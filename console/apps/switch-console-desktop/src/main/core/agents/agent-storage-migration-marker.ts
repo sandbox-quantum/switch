@@ -19,6 +19,8 @@ const MARKER_KEY = 'agentStorageMigrationComplete';
  * - `2` — the credential collapse runs for every provider.
  * - `3` — every agent gets a config file, taking over what a Claude Code agent
  *   kept in its definition and what other providers kept on the agent row.
+ * - `4` — every file in an agent's working directory that can hold its token
+ *   is made readable by its owner alone, by changing permissions only.
  *
  * Bump this whenever the migration learns to fix something it previously
  * skipped, so installs that latched an earlier generation run the new pass
@@ -26,7 +28,7 @@ const MARKER_KEY = 'agentStorageMigrationComplete';
  * it says. Then teach `migrateAgentStorage` which agents the new generation can
  * actually change, so the re-run does not re-open workspaces it cannot fix.
  */
-export const AGENT_STORAGE_MIGRATION_GENERATION = 3;
+export const AGENT_STORAGE_MIGRATION_GENERATION = 4;
 
 /** The generation last completed on this install; 0 when it has never run. */
 export async function completedAgentStorageMigrationGeneration(): Promise<number> {

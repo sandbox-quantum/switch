@@ -1,4 +1,9 @@
-import type { IRepoAgentsBehavior, PluginFs } from '@switch-console/core/agents/plugins';
+import type {
+  IRepoAgentsBehavior,
+  PluginFs,
+  PluginFsProtectOptions,
+} from '@switch-console/core/agents/plugins';
+import { isPermissionDenied } from '@main/core/fs/permission-denied';
 import { getLocationById } from '@main/core/locations/store';
 import { getPlugin } from '@main/core/providers/plugin-registry';
 import {
@@ -16,16 +21,22 @@ import { markAgentUnmigrated } from './agent-storage-migration-ready';
 import { resolveWorkdirFsFor } from './agent-workdir-fs';
 import { getAgents } from './getAgents';
 import { importAgentConfig } from './import-agent-config';
-import { agentSettingsRelativePath, SWITCH_SETTINGS_RELATIVE_PATH } from './switch-settings-paths';
-import { writeNeutralAgentSettingsFs } from './write-switch-settings';
+import {
+  agentSettingsRelativePath,
+  SWITCH_AGENTS_DIR_RELATIVE,
+  SWITCH_SETTINGS_RELATIVE_PATH,
+  SWITCH_SUBAGENTS_DIR_RELATIVE,
+} from './switch-settings-paths';
+import { holdsSwitchToken, writeNeutralAgentSettingsFs } from './write-switch-settings';
 
 /**
  * Migrate existing Switch Console-managed agents to the current storage layout
  * (CHOO-1440): every agent has a per-agent credentials file at
- * `.switch/agents/<name>.json` and a config file at `.switch/config/<name>.json`,
- * both keyed by the agent's single `name`. Pre-CHOO-1440 installs kept
- * credentials in the legacy `.claude/switch-subagents/<name>.settings.json` (or
- * the shared `.claude/settings.local.json`).
+ * `.switch/agents/<name>.json`, readable by its owner alone, and a config file
+ * at `.switch/config/<name>.json`, both keyed by the agent's single `name`.
+ * Pre-CHOO-1440 installs kept credentials in the legacy
+ * `.claude/switch-subagents/<name>.settings.json` (or the shared
+ * `.claude/settings.local.json`).
  *
  * Runs once at boot, best-effort: each agent is migrated in isolation so one bad
  * directory or unreachable host never aborts the rest, and every step is
@@ -83,6 +94,7 @@ async function migrateOne(agent: Agent, completedGeneration: number): Promise<bo
   // Generation 2 only broadened step 1 to providers WITHOUT a behavior; for one
   // that has it, step 1 is what generation 1 already ran.
   const credentialsDone = completedGeneration >= 2 || (completedGeneration >= 1 && !!behavior);
+  const credentialsPrivate = completedGeneration >= 4;
 
   const location = await getLocationById(agent.locationId);
   if (!location) return false;
@@ -109,6 +121,11 @@ async function migrateOne(agent: Agent, completedGeneration: number): Promise<bo
         providerConfig: agent.providerConfig,
       })
     ) {
+      changed = true;
+    }
+
+    // 3. Every credential in the working directory readable by its owner alone.
+    if (!credentialsPrivate && (await protectCredentials(workdir.fs, name))) {
       changed = true;
     }
 
@@ -180,6 +197,69 @@ async function migrateCredentials(
     }
   }
 
+  return changed;
+}
+
+/**
+ * Make every file in a working directory that can hold a Switch token readable
+ * by its owner alone: each `.switch/agents/*.json` (the agent's own, a stale
+ * id-keyed one the credential step refused, another agent's), the legacy
+ * `.claude/switch-subagents/*.settings.json`, and `.claude/settings.local.json`
+ * while it still carries a token. `.claude/` belongs to Claude Code, so only
+ * the files there change. Only permissions change, never content, so a rename
+ * or endpoint change landing meanwhile is not undone.
+ *
+ * A file this account is refused (another account's) is left with a warning
+ * and counts as done: no retry would change it, and leaving the generation
+ * unlatched would re-open every agent's working directory on every boot.
+ */
+async function protectCredentials(fs: PluginFs, name: string): Promise<boolean> {
+  const refused = (path: string, error: unknown) => {
+    if (!isPermissionDenied(error)) throw error;
+    log.warn('migrateAgentStorage: cannot make a credentials file private; left as it is', {
+      path,
+      error: String(error),
+    });
+  };
+  // Strict: a directory that could not be read must not pass for an empty one,
+  // or the files in it would be skipped without a word and never retried.
+  const inDir = async (dir: string, suffix: string) => {
+    try {
+      const entries = await fs.list(dir, { strict: true });
+      return entries.filter((entry) => entry.endsWith(suffix)).map((e) => `${dir}/${e}`);
+    } catch (error) {
+      refused(dir, error);
+      return [];
+    }
+  };
+
+  const neutral = new Set([
+    agentSettingsRelativePath(name),
+    ...(await inDir(SWITCH_AGENTS_DIR_RELATIVE, '.json')),
+  ]);
+  const targets: Array<{ path: string; options?: PluginFsProtectOptions }> = [
+    ...[...neutral].map((path) => ({ path })),
+    ...(await inDir(SWITCH_SUBAGENTS_DIR_RELATIVE, '.settings.json')).map((path) => ({
+      path,
+      options: { fileOnly: true },
+    })),
+  ];
+  try {
+    if (holdsSwitchToken(await fs.read(SWITCH_SETTINGS_RELATIVE_PATH))) {
+      targets.push({ path: SWITCH_SETTINGS_RELATIVE_PATH, options: { fileOnly: true } });
+    }
+  } catch (error) {
+    refused(SWITCH_SETTINGS_RELATIVE_PATH, error);
+  }
+
+  let changed = false;
+  for (const { path, options } of targets) {
+    try {
+      if (await fs.protectSecret(path, options)) changed = true;
+    } catch (error) {
+      refused(path, error);
+    }
+  }
   return changed;
 }
 

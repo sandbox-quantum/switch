@@ -6,7 +6,7 @@
           "block_id": "switch-request:tok-status",
           "status": "in_progress",
           "task_id": "turn-1",
-          "title": "Working… 12s",
+          "title": "Working…",
           "type": "task_card"
         },
         {
@@ -27,7 +27,7 @@
         },
         "event_type": "switch_publication"
       },
-      "text": "<@U0OWNER> Working… 12s",
+      "text": "<@U0OWNER> Working…",
       "thread_ts": null,
       "unfurl_links": false,
       "unfurl_media": false,

@@ -8,12 +8,14 @@ import { DisclosureRow } from '@renderer/lib/ui/disclosure-row';
 import { Field, FieldGroup, FieldLabel } from '@renderer/lib/ui/field';
 import { Input } from '@renderer/lib/ui/input';
 import { cn } from '@renderer/utils/utils';
-import type {
-  ClearTrustSettingsResult,
-  FetchTrustSettingsResult,
-  TrustSettings,
-  UpdateTrustSettingsResult,
+import {
+  type ClearTrustSettingsResult,
+  type FetchTrustSettingsResult,
+  type TrustSettings,
+  type UpdateTrustSettingsResult,
+  dashboardOrigin,
 } from '@shared/core/switch-servers/switch-servers';
+import { openServerPage } from './open-server-page';
 import { switchServersStore } from './switch-servers-store';
 
 type FormState = {
@@ -43,8 +45,10 @@ function recoverableResultText(result: { kind: string; message?: string }): stri
 }
 
 /**
- * Switch Trust's one server-global guardrails settings, inline on the
- * server's Home page between Messaging apps and the admin interface link.
+ * Switch Trust's one server-global guardrails settings, in Admin under
+ * Server, for a server that still has them. A newer server has each
+ * organization connect its own policy in the dashboard, and answers the read
+ * with where to go instead, which this shows with a way there.
  *
  * Admin-only (a deployment operator, not a workspace admin) — one policy
  * covers the whole deployment, not a workspace, so `switchServersStore`'s
@@ -56,20 +60,24 @@ function recoverableResultText(result: { kind: string; message?: string }): stri
 export const GuardrailsSection = observer(function GuardrailsSection({
   serverId,
   className,
+  initiallyOpen = false,
 }: {
   serverId: string;
   className?: string;
+  /** Open on arrival, where the settings are the page rather than one row of it. */
+  initiallyOpen?: boolean;
 }) {
   const isOperator = switchServersStore.statusFor(serverId)?.user?.role === 'admin';
 
   const [settings, setSettings] = useState<TrustSettings | null>(null);
   const [form, setForm] = useState<FormState | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [moved, setMoved] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [confirmingOff, setConfirmingOff] = useState(false);
   const [clearing, setClearing] = useState(false);
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(initiallyOpen);
 
   useEffect(() => {
     if (!isOperator) return;
@@ -77,6 +85,7 @@ export const GuardrailsSection = observer(function GuardrailsSection({
     setSettings(null);
     setForm(null);
     setLoadError(null);
+    setMoved(null);
     setConfirmingOff(false);
     rpc.switchServers.getTrustSettings(serverId).then(
       (result: FetchTrustSettingsResult) => {
@@ -84,6 +93,8 @@ export const GuardrailsSection = observer(function GuardrailsSection({
         if (result.kind === 'loaded') {
           setSettings(result.settings);
           setForm(formFor(result.settings));
+        } else if (result.kind === 'moved') {
+          setMoved(result.message);
         } else {
           setLoadError(recoverableResultText(result));
         }
@@ -144,9 +155,31 @@ export const GuardrailsSection = observer(function GuardrailsSection({
 
   const formValid = form !== null && form.endpoint.trim() !== '';
 
+  const server = switchServersStore.serverById(serverId);
+
   return (
     <div className={className}>
       {loadError && <p className="text-xs text-destructive">{loadError}</p>}
+
+      {moved && (
+        <div className="flex flex-col items-start gap-2">
+          <p className="text-xs text-foreground-muted">{moved}</p>
+          {server && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() =>
+                void openServerPage(
+                  serverId,
+                  `${dashboardOrigin(server).replace(/\/+$/, '')}/settings/org/guardrails`
+                )
+              }
+            >
+              Open organization guardrails
+            </Button>
+          )}
+        </div>
+      )}
 
       {form && settings && (
         <>
@@ -165,7 +198,9 @@ export const GuardrailsSection = observer(function GuardrailsSection({
           <div className={cn('flex flex-col gap-3 pt-3', !open && 'hidden')}>
             <p className="text-xs text-foreground-muted">
               Every message this server sends is checked before it goes out once an endpoint and an
-              API key are set.
+              API key are set, including the text inside attached files, of which only the first
+              20,000 characters are checked. Files with no text to read, such as images and
+              archives, are sent without being checked.
             </p>
             <FieldGroup>
               <Field>

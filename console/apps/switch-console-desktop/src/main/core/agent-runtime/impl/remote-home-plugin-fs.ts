@@ -1,4 +1,4 @@
-import type { PluginFs } from '@switch-console/core/agents/plugins';
+import type { PluginFs, PluginFsWriteOptions } from '@switch-console/core/agents/plugins';
 import type { IExecutionContext } from '@main/core/execution-context/types';
 
 /**
@@ -41,7 +41,12 @@ export function createRemoteHomePluginFs(ctx: IExecutionContext): PluginFs {
       return Buffer.from(stdout.slice(1), 'base64').toString('utf8');
     },
 
-    async write(path: string, content: string): Promise<void> {
+    async write(path: string, content: string, options?: PluginFsWriteOptions): Promise<void> {
+      // Nothing secret is kept under the remote home today; refuse rather than
+      // write a credential with the host's default permissions.
+      if (options?.secret) {
+        throw new Error(`remote home fs: cannot write ${path} as a secret file`);
+      }
       await ctx.exec('sh', [
         '-c',
         'set -e; mkdir -p "$HOME/$(dirname "$1")"; printf %s "$2" | base64 -d > "$HOME/$1"',
@@ -49,6 +54,10 @@ export function createRemoteHomePluginFs(ctx: IExecutionContext): PluginFs {
         checked(path),
         Buffer.from(content, 'utf8').toString('base64'),
       ]);
+    },
+
+    async protectSecret(path: string): Promise<boolean> {
+      throw new Error(`remote home fs: cannot protect ${path} as a secret file`);
     },
 
     async delete(path: string): Promise<void> {

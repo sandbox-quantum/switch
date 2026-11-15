@@ -48,22 +48,17 @@ export function hasUnlinkedMessagingApp(
 }
 
 /**
- * The apps the server home keeps prompting "Link your <app> account" for: every
- * active one the signed-in user has claimed no account in. Unlike the warning
- * above it does not wait for an owner-addressed agent — it is the reminder for
- * a link step skipped after adding the app, and it stays until the account is
- * linked. Empty while the identity list is unknown, for the same reason as
- * there. A connection that is down is left out: nobody reaches an agent
- * through it until it is back.
+ * The account to show for an app when several are linked there: a confirmed
+ * one if there is any, else any link that counts. Every surface that names one
+ * account per app reads it from here, so a row never shows an unconfirmed link
+ * while a confirmed one exists.
  */
-export function messagingAppsToLink(
-  bridges: RemoteBridge[],
-  identities: LinkedIdentity[] | null
-): RemoteBridge[] {
-  if (identities === null) return [];
-  return bridges.filter(
-    (bridge) => bridge.status === 'active' && !identities.some((i) => i.bridgeId === bridge.id)
-  );
+export function linkedIdentityOn(
+  bridgeId: string,
+  identities: LinkedIdentity[]
+): LinkedIdentity | null {
+  const linked = identities.filter((i) => i.bridgeId === bridgeId);
+  return linked.find((i) => i.verified) ?? linked[0] ?? null;
 }
 
 /** The warning, as one sentence naming the apps. Callers pass a non-empty list

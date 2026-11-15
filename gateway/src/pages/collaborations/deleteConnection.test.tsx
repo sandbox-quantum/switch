@@ -25,6 +25,7 @@ function chat(id: string, overrides: Partial<InstalledApp> = {}): InstalledApp {
     bridge_id: "b1",
     installed_at: "2026-01-01",
     ended_at: null,
+    can_disconnect: true,
     ...overrides,
   };
 }

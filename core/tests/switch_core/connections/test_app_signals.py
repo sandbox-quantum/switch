@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 
 import pytest
@@ -25,6 +25,7 @@ from switch_core.connections.app_signals import (
 )
 from switch_core.connections.broker import ServiceBroker
 from switch_core.signals import SignalBus
+from tests.switch_core.connections.standing import connectable
 from tests.switch_core.connections.test_app_credentials import _apps, _broker, _save
 
 DELIVERY_TIMEOUT = 10.0
@@ -58,13 +59,19 @@ async def _process(
     broker = _broker(session_factory)
     state = State()
     bus = _bus(postgres_url, session_factory)
-    signals = ConnectorAppSignals(apps=apps, broker=broker, state=state, bus=bus)
+    signals = ConnectorAppSignals(
+        apps=apps, organization_apps=None, broker=broker, state=state, bus=bus
+    )
     return _Process(apps, broker, state, bus, signals)
 
 
-async def _eventually(check: Callable[[], bool]) -> None:
+async def _not(answer: Awaitable[bool]) -> bool:
+    return not await answer
+
+
+async def _eventually(check: Callable[[], Awaitable[bool]]) -> None:
     async with asyncio.timeout(DELIVERY_TIMEOUT):
-        while not check():
+        while not await check():
             await asyncio.sleep(0.02)
 
 
@@ -89,7 +96,7 @@ class TestAcrossProcesses:
         two_processes: tuple[_Process, _Process],
     ) -> None:
         here, there = two_processes
-        assert there.broker.connectable(GOOGLE) is False
+        assert await connectable(there.broker, GOOGLE) is False
 
         # As the save route does: commit, apply here, announce.
         await _save(
@@ -101,7 +108,7 @@ class TestAcrossProcesses:
         await here.apps.apply(GOOGLE, broker=here.broker, state=here.state)
         here.apps.announce(GOOGLE)
 
-        await _eventually(lambda: there.broker.connectable(GOOGLE))
+        await _eventually(lambda: connectable(there.broker, GOOGLE))
         assert there.apps.effective(GOOGLE).values.client_id == "saved-client-id"  # type: ignore[union-attr]
 
     async def test_a_client_removed_in_one_process_goes_from_the_other(
@@ -118,7 +125,7 @@ class TestAcrossProcesses:
         )
         for process in (here, there):
             await process.apps.apply(GOOGLE, broker=process.broker, state=process.state)
-        assert there.broker.connectable(GOOGLE) is True
+        assert await connectable(there.broker, GOOGLE) is True
 
         async with session_factory() as session:
             await here.apps.store.remove(session, GOOGLE)
@@ -126,7 +133,7 @@ class TestAcrossProcesses:
         await here.apps.apply(GOOGLE, broker=here.broker, state=here.state)
         here.apps.announce(GOOGLE)
 
-        await _eventually(lambda: not there.broker.connectable(GOOGLE))
+        await _eventually(lambda: _not(connectable(there.broker, GOOGLE)))
 
 
 class TestRecheck:
@@ -150,7 +157,7 @@ class TestRecheck:
         await process.bus.start()
         try:
             await process.signals.recheck()
-            await _eventually(lambda: process.broker.connectable(GOOGLE))
+            await _eventually(lambda: connectable(process.broker, GOOGLE))
         finally:
             await process.bus.stop()
         assert await process.apps.changed_since_resolved() == []

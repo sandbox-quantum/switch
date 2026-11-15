@@ -82,7 +82,7 @@ describe('managedAgentState', () => {
 const LAPTOP: OwnedMachine = {
   ...AGENT.machine!,
   local: { kind: 'this-computer' },
-  providers: [{ provider: 'claude', ready: true, problem: null, detail: null }],
+  providers: [{ provider: 'claude', ready: true, problem: null, detail: null, loginHelps: true }],
   acceptsLogins: false,
   cloud: false,
   workspacesDir: null,
@@ -137,9 +137,34 @@ describe('machineProblem', () => {
     expect(
       machineProblem(AGENT, {
         ...LAPTOP,
-        providers: [{ provider: 'claude', ready: false, problem: 'not logged in', detail: null }],
+        providers: [
+          {
+            provider: 'claude',
+            ready: false,
+            problem: 'not logged in',
+            detail: null,
+            loginHelps: true,
+          },
+        ],
       })
     ).toBe('Claude Code is not ready on laptop: not logged in.');
+  });
+
+  it('says what the machine said about a provider that is not ready', () => {
+    expect(
+      machineProblem(AGENT, {
+        ...LAPTOP,
+        providers: [
+          {
+            provider: 'claude',
+            ready: false,
+            problem: 'not logged in',
+            detail: 'Its login is in the OS keyring.',
+            loginHelps: true,
+          },
+        ],
+      })
+    ).toBe('Claude Code is not ready on laptop: not logged in. Its login is in the OS keyring.');
   });
 
   it('is quiet, not alarming, while the agent is stopped', () => {

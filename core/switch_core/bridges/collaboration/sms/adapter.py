@@ -30,6 +30,7 @@ from switch_core.bridges.collaboration.models import (
     ChannelCreationUnsupported,
     ChannelRetirement,
     ChannelType,
+    CreatedChannel,
     FailureReason,
     InboundAgentJoin,
     InboundAppJoin,
@@ -94,6 +95,7 @@ class SmsAdapter(PlatformAdapter):
     display_name: ClassVar[str] = "SMS (Twilio)"
     docs_slug: ClassVar[str | None] = "sms"
     receives_webhooks: ClassVar[bool] = True
+    keeps_quiet_unless_listening: ClassVar[bool] = True
     supports_channel_creation: ClassVar[bool] = False
     supports_directory_search: ClassVar[bool] = False
     renders_custom_url_schemes: ClassVar[bool] = False
@@ -163,8 +165,9 @@ class SmsAdapter(PlatformAdapter):
             auth_token=self._config.auth_token,
             http=self._http,
         )
-        phone_sid = await self._client.phone_number_sid(self._config.phone_number)
-        await self._client.set_sms_webhook(phone_sid, self.webhook_url)
+        if self._listening:
+            phone_sid = await self._client.phone_number_sid(self._config.phone_number)
+            await self._client.set_sms_webhook(phone_sid, self.webhook_url)
 
     async def stop(self) -> None:
         self._client = None
@@ -338,7 +341,8 @@ class SmsAdapter(PlatformAdapter):
         topic: str,
         *,
         channel_type: ChannelType = "channel_public",
-    ) -> str:
+        owner_external_id: str | None = None,
+    ) -> CreatedChannel:
         raise ChannelCreationUnsupported(
             "SMS conversations begin when an allow-listed number texts the Twilio number"
         )

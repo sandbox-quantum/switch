@@ -2,10 +2,12 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BridgeDetail } from "../../data/api";
 import * as api from "../../data/api";
+import { ALL_OFF } from "../../data/featureFlags";
 import { useAuth } from "../../data/AuthContext";
 import * as hooks from "../../data/hooks";
 import type { UseQueryResult } from "../../data/hooks";
 import CollaborationsPage from "./CollaborationsPage";
+import { bridgeDetail } from "./testFixtures";
 
 vi.mock("../../data/AuthContext", () => ({
   useAuth: vi.fn(),
@@ -23,6 +25,7 @@ vi.mock("../../data/api", async (importOriginal) => {
   return {
     ...actual,
     beginAppInstall: vi.fn(),
+    updateBridge: vi.fn(),
   };
 });
 
@@ -34,9 +37,23 @@ function authState(canAdminTenant: boolean) {
     loadError: null,
     isOperator: false,
     canAdminTenant,
+    capabilities: {
+      isOperator: false,
+      administersWorkspace: canAdminTenant,
+      administersOrganization: false,
+      inOrganization: false,
+      canDeleteWorkspace: false,
+      canManageDataProtection: false,
+      features: ALL_OFF,
+    },
+    staleError: null,
+    linkNotice: null,
+    dismissLinkNotice: vi.fn(),
+    recheck: vi.fn(),
     refresh: vi.fn(async () => {}),
     login: vi.fn(async () => {}),
     logout: vi.fn(async () => {}),
+    logoutEverywhere: vi.fn(async () => {}),
     switchTo: vi.fn(async () => {}),
   };
 }
@@ -45,22 +62,7 @@ function queryResult<T>(data: T | null): UseQueryResult<T> {
   return { data, loading: false, error: null, refetch: vi.fn() };
 }
 
-function bridge(overrides: Partial<BridgeDetail> = {}): BridgeDetail {
-  return {
-    bridge_id: "b1",
-    bridge_type: "teams",
-    display_name: "Acme Corp",
-    status: "active",
-    agent_greetings_enabled: true,
-    channel_creation_supported: true,
-    channel_creation_enabled: false,
-    room_count: 2,
-    created_at: "2026-01-01",
-    attention: null,
-    team_placement_supported: false,
-    ...overrides,
-  };
-}
+const bridge = bridgeDetail;
 
 function setup({
   isAdmin = true,
@@ -72,7 +74,10 @@ function setup({
   installablePlatforms?: string[];
 } = {}) {
   vi.mocked(useAuth).mockReturnValue(authState(isAdmin));
-  vi.mocked(hooks.useBridges).mockReturnValue(queryResult(bridges));
+  // The server answers whether this person may change or delete each one.
+  vi.mocked(hooks.useBridges).mockReturnValue(
+    queryResult(isAdmin ? bridges : bridges.map((b) => ({ ...b, can_manage: false, can_delete: false }))),
+  );
   vi.mocked(hooks.useInstallablePlatforms).mockReturnValue(
     queryResult(installablePlatforms),
   );
@@ -272,6 +277,59 @@ describe("CollaborationsPage", () => {
         screen.queryByText("Microsoft did not answer; try again shortly."),
       ).toBeNull(),
     );
+  });
+
+  it("offers delete only on a connection the server says may be deleted", () => {
+    setup({
+      bridges: [
+        bridge({ bridge_id: "b1", display_name: "Deletable" }),
+        bridge({ bridge_id: "b2", display_name: "Kept", can_delete: false }),
+      ],
+    });
+    render(<CollaborationsPage />);
+
+    expect(screen.getByRole("button", { name: "Delete Deletable" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Delete Kept" })).toBeNull();
+  });
+
+  it("lets someone who may not change a connection see it, with nothing to act on", () => {
+    setup({
+      isAdmin: false,
+      bridges: [bridge({ bridge_id: "b1", display_name: "Acme Corp", team_placement_supported: true })],
+    });
+    render(<CollaborationsPage />);
+
+    expect(screen.getByText("Acme Corp")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Delete Acme Corp" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Choose which teams this app is in" })).toBeNull();
+    for (const toggle of screen.getAllByRole("switch")) {
+      expect((toggle as HTMLInputElement).disabled).toBe(true);
+    }
+  });
+
+  it("says so when a switch is refused, rather than flicking back silently", async () => {
+    setup({ bridges: [bridge({ display_name: "Acme Corp" })] });
+    vi.mocked(api.updateBridge).mockRejectedValue(new Error("Only an admin may change this."));
+    render(<CollaborationsPage />);
+
+    fireEvent.click(screen.getByRole("switch", { name: "Agent greetings for Acme Corp" }));
+
+    expect(await screen.findByText("Only an admin may change this.")).toBeTruthy();
+    expect(api.updateBridge).toHaveBeenCalledWith("b1", { agent_greetings_enabled: false });
+  });
+
+  it("says the list could not be loaded instead of claiming there are no apps", () => {
+    setup();
+    vi.mocked(hooks.useBridges).mockReturnValue({
+      data: null,
+      loading: false,
+      error: "Failed to fetch data",
+      refetch: vi.fn(),
+    });
+    render(<CollaborationsPage />);
+
+    expect(screen.getByText(/Could not load the messaging apps/)).toBeTruthy();
+    expect(screen.queryByText("No messaging apps yet")).toBeNull();
   });
 
   it("labels the type column with the platform's own name", () => {

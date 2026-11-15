@@ -37,21 +37,21 @@ async def _events(
         return list(result.scalars().all())
 
 
-async def _owner(
+async def _admin(
     session_factory: async_sessionmaker[AsyncSession], tenant_id: str, name: str
 ) -> tuple[str, str]:
     await _make_tenant(session_factory, tenant_id)
-    owner_id = await _make_member(
-        session_factory, name=name, tenant_id=tenant_id, role="owner"
+    admin_id = await _make_member(
+        session_factory, name=name, tenant_id=tenant_id, role="admin"
     )
-    return owner_id, _token(owner_id, f"{name}@example.invalid", tenant_id)
+    return admin_id, _token(admin_id, f"{name}@example.invalid", tenant_id)
 
 
 class TestMembershipEvents:
     async def test_a_role_change_is_recorded_with_both_roles(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
-        owner_id, token = await _owner(session_factory, TENANT_A, "audit-owner")
+        admin_id, token = await _admin(session_factory, TENANT_A, "audit-admin")
         member_id = await _make_member(
             session_factory, name="audit-member", tenant_id=TENANT_A, role="member"
         )
@@ -64,7 +64,7 @@ class TestMembershipEvents:
 
         [event] = await _events(session_factory, TENANT_A)
         assert event.action == AuditAction.MEMBER_ROLE_CHANGED
-        assert event.actor_user_id == owner_id
+        assert event.actor_user_id == admin_id
         assert event.target_type == "user"
         assert event.target_id == member_id
         assert event.details == {"from": "member", "to": "admin"}
@@ -72,7 +72,7 @@ class TestMembershipEvents:
     async def test_setting_the_same_role_records_nothing(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
-        _, token = await _owner(session_factory, TENANT_A, "audit-owner")
+        _, token = await _admin(session_factory, TENANT_A, "audit-admin")
         member_id = await _make_member(
             session_factory, name="audit-member", tenant_id=TENANT_A, role="member"
         )
@@ -88,7 +88,7 @@ class TestMembershipEvents:
     async def test_removing_a_member_is_recorded(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
-        owner_id, token = await _owner(session_factory, TENANT_A, "audit-owner")
+        admin_id, token = await _admin(session_factory, TENANT_A, "audit-admin")
         member_id = await _make_member(
             session_factory, name="audit-member", tenant_id=TENANT_A, role="member"
         )
@@ -99,7 +99,7 @@ class TestMembershipEvents:
 
         [event] = await _events(session_factory, TENANT_A)
         assert event.action == AuditAction.MEMBER_REMOVED
-        assert event.actor_user_id == owner_id
+        assert event.actor_user_id == admin_id
         assert event.target_id == member_id
         assert event.details is not None
         assert event.details["role"] == "member"
@@ -107,12 +107,13 @@ class TestMembershipEvents:
     async def test_a_refused_change_records_nothing(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
-        owner_id, token = await _owner(session_factory, TENANT_A, "sole-owner")
+        admin_id, token = await _admin(session_factory, TENANT_A, "sole-admin")
 
         async with _client(_app(session_factory), token) as client:
             response = await client.patch(
-                f"/tenants/{TENANT_A}/members/{owner_id}", json={"role": "member"}
+                f"/tenants/{TENANT_A}/members/{admin_id}", json={"role": "member"}
             )
+        # The last admin stays.
         assert response.status_code == 409
 
         assert await _events(session_factory, TENANT_A) == []
@@ -122,7 +123,7 @@ class TestInvitationEvents:
     async def test_creating_and_revoking_an_invitation_are_both_recorded(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
-        owner_id, token = await _owner(session_factory, TENANT_A, "audit-owner")
+        admin_id, token = await _admin(session_factory, TENANT_A, "audit-admin")
 
         async with _client(_app(session_factory), token) as client:
             created = await client.post(
@@ -141,7 +142,7 @@ class TestInvitationEvents:
             AuditAction.INVITATION_REVOKED,
         ]
         assert {e.target_id for e in events} == {invitation_id}
-        assert {e.actor_user_id for e in events} == {owner_id}
+        assert {e.actor_user_id for e in events} == {admin_id}
         assert events[0].details is not None
         assert events[0].details["role"] == "member"
 
@@ -153,7 +154,7 @@ class TestApiKeyEvents:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         monkeypatch.setattr(api_keys, "get_protocol", _fake_protocol)
-        user_id, token = await _owner(session_factory, TENANT_A, "key-owner")
+        user_id, token = await _admin(session_factory, TENANT_A, "key-owner")
         app = _app(session_factory)
         app.include_router(api_keys.router, prefix="/api-keys")
 
@@ -183,7 +184,7 @@ class TestReadingTheLog:
     async def test_admins_read_their_own_tenant_newest_first(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
-        owner_id, token = await _owner(session_factory, TENANT_A, "audit-owner")
+        admin_id, token = await _admin(session_factory, TENANT_A, "audit-admin")
         await _make_tenant(session_factory, TENANT_B)
         for tenant_id, action in (
             (TENANT_A, AuditAction.JOIN_DOMAIN_ADDED),
@@ -194,7 +195,7 @@ class TestReadingTheLog:
                 await record_audit_event(
                     session,
                     tenant_id=tenant_id,
-                    actor_user_id=owner_id,
+                    actor_user_id=admin_id,
                     action=action,
                     target_type="join_domain",
                     target_id="example.invalid",

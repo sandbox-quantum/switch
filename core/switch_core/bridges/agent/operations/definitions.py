@@ -14,12 +14,13 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
+from datetime import datetime
 from typing import Any
 
 from switch_core.agent_refusals import AgentRefused, record_refusal
 from switch_core.agent_template_ops import ActingFor, AgentTemplates
 from switch_core.agent_templates import plan_template
-from switch_core.authz import Principal
+from switch_core.authz import Principal, require_group_filing
 from switch_core.bridges.agent.api.handlers import parse_timestamp_ms
 from switch_core.bridges.agent.operations.agent_management import (
     management_permission,
@@ -54,11 +55,13 @@ from switch_core.bridges.agent.protocol.agent_detail import (
 )
 from switch_core.bridges.agent.protocol.agent_management import ManagedAgentChanges
 from switch_core.bridges.agent.protocol.instructions import build_room_instructions
-from switch_core.bridges.agent.protocol.types import IntegrationProfile
+from switch_core.bridges.agent.protocol.types import IntegrationProfile, TrustFeedback
 from switch_core.clients.agent_admin import DELETE_CONFIRM_SECONDS
 from switch_core.db.models import CollaborationBridge, User, require_tenant_id
+from switch_core.db.session_scope import shared_tenant_session
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.feature_flags import AGENT_MANAGEMENT, SWITCH_BUDDY
+from switch_core.providers.registry import offered_provider_ids
 from switch_core.rooms_yaml import GroupSpec, RoomReader, template_json_schema
 from switch_core.template_guide import TEMPLATE_GUIDE
 from switch_core.template_installs import InstallSource, record_install, source_of
@@ -70,10 +73,12 @@ from switch_core.template_runs import (
     NewAgentPlan,
     Problem,
     TemplateAgents,
+    opening_rooms_as_made,
     pending_addressing,
     room_ids_of,
 )
 from switch_core.template_v2 import is_v2_text
+from switch_core.ui_spec import parse_ui_spec
 
 logger = logging.getLogger(__name__)
 
@@ -444,14 +449,25 @@ async def _decorate_linked_rooms(
     ``"member"`` if the calling agent is assigned to the target room,
     ``"not_member"`` otherwise. For ``not_member`` rows, also include a
     human-readable ``access_note`` warning that ``connect_to_room`` will
-    fail until the agent is added by an operator."""
+    fail until the agent is added by an operator.
+
+    A link whose target the agent may not see (see `list_all_rooms`) is left
+    out: it would show a private room's name and description."""
     if not linked_rooms:
         return []
     async with protocol.session_factory() as session:
         agent_rooms = await protocol.room_store.get_rooms_for_agent(session, agent_id)
+        visible_ids = {
+            r.id
+            for r in await protocol.rooms_visible_to(
+                session, agent_id, include_archived=True
+            )
+        }
     member_ids = {r.id for r in agent_rooms}
     out: list[dict[str, Any]] = []
     for entry in linked_rooms:
+        if entry["target_room_id"] not in visible_ids:
+            continue
         is_member = entry["target_room_id"] in member_ids
         decorated = {
             **entry,
@@ -564,6 +580,8 @@ async def create_room_document(
     agent) can later update or delete it via `update_room_document` /
     `delete_room_document`. Other room members can read it via
     `load_internal_documents`, and human users can delete it from the room UI.
+    A document the room's template made can be updated or deleted by an
+    agent in the room whose owner can edit the room.
 
     Args:
         name: Short identifier for the document. Must be unique within this room.
@@ -598,10 +616,11 @@ async def update_room_document(
     instructions: str | None = None,
     content: str | None = None,
 ) -> dict[str, str]:
-    """Update a room-scoped document you created in the connected room.
+    """Update a room-scoped document in the connected room.
 
-    Only the agent that created the document can update it. Pass only the
-    fields you want to change; omit (or set to None) the others.
+    A document an agent created can be updated only by that agent; one the
+    room's template made, by an agent whose owner can edit the room. Pass
+    only the fields you want to change; omit (or set to None) the others.
     """
     if (
         content is not None
@@ -625,9 +644,10 @@ async def update_room_document(
 
 @operation
 async def delete_room_document(document_id: str) -> dict[str, str]:
-    """Delete a room-scoped document you created in the connected room.
+    """Delete a room-scoped document in the connected room.
 
-    Only the agent that created the document can delete it via MCP. Users
+    A document an agent created can be deleted only by that agent; one the
+    room's template made, by an agent whose owner can edit the room. Users
     can also delete from the room UI as an admin escape hatch.
     """
     agent_id = get_agent_id()
@@ -665,9 +685,11 @@ async def read_context(
     any entry's) `id` as the `thread_id` argument to post_message /
     send_targeted_message to reply into that thread.
 
-    `kind` is "message" for something a participant said, or "room_join" for
-    someone arriving in the room (body reads "<name> joined the room"). Joins
-    are part of the timeline so the history explains who appeared and when.
+    `kind` is "message" for something a participant said, "room_join" for
+    someone arriving in the room (body reads "<name> joined the room"), or
+    "room_leave" for someone leaving it (body reads "<name> left the room", or
+    "<name> was removed from the room by <who>"). Joins and leaves are part of
+    the timeline so the history explains who appeared and went, and when.
 
     **`truncated` matters.** It is True when older history exists that this
     call did not reach — you are looking at a partial conversation. Widen
@@ -716,16 +738,19 @@ async def read_context(
 
     buffer = protocol.event_buffer
     tenant_id = require_tenant_id()
-    # The room's newest `messages.seq`, taken before the history read because
-    # a message written while the read is in flight is not in its response.
-    # Recording the catch-up through a later number would mark such a message
-    # as read when the agent never saw it. Recording it through this number
-    # can at worst count a message twice.
-    through = (await buffer.room_heads(tenant_id, {room_id}))[room_id]
+    # The room's head, the membership check and the history read share one
+    # session, so a context read costs one pool checkout and one transaction.
+    async with shared_tenant_session(protocol.session_factory, tenant_id):
+        # The room's newest `messages.seq`, taken before the history read
+        # because a message written while the read is in flight is not in its
+        # response. Recording the catch-up through a later number would mark
+        # such a message as read when the agent never saw it. Recording it
+        # through this number can at worst count a message twice.
+        through = (await buffer.room_heads(tenant_id, {room_id}))[room_id]
 
-    context = await protocol.read_context(
-        agent_id, room_id, limit=limit, since_ms=since_ms, before_ms=before_ms
-    )
+        context = await protocol.read_context(
+            agent_id, room_id, limit=limit, since_ms=since_ms, before_ms=before_ms
+        )
 
     reader = counting_reader()
     if reader is not None and room_id in connected:
@@ -770,7 +795,9 @@ async def list_participants() -> list[dict[str, Any]]:
 
 
 @operation
-async def post_message(body: str, thread_id: str | None = None) -> dict[str, str]:
+async def post_message(
+    body: str, thread_id: str | None = None, ui: dict[str, Any] | None = None
+) -> dict[str, Any]:
     """Send a message to the connected room (broadcast, no specific recipient).
 
     Args:
@@ -784,16 +811,38 @@ async def post_message(body: str, thread_id: str | None = None) -> dict[str, str
             reply) — it is normalised to the thread root. Omit for a top-level
             message. Get ids from read_context or from a notification's
             thread_id.
+        ui: Optional. A rich card to show with the message, as a spec of
+            `root` and `elements` (see the skill's "Rich cards" section).
+            Platforms that can draw it (Slack) show the card; the rest show
+            `body`, so `body` must still say what matters. An invalid spec
+            fails the call, listing each problem, and nothing is posted.
 
     Returns:
-        {"event_id": "<event id>"} for the posted message.
+        {"event_id": "<event id>"} for the posted message, plus `trust` when
+        Switch Trust changed or flagged it (see below). No `trust` means the
+        room received exactly what you sent.
+
+        `trust` is {"outcome": "redacted", "delivered": "<the text the room
+        received>"} when parts of your message were redacted before anyone
+        saw them; {"outcome": "alerted", "note": "<the notice>"} when it was
+        delivered as sent but flagged, with that notice posted under it; or
+        {"outcome": "errored", "note": "<the notice>"} when it was delivered
+        without being fully checked. `note` is there only when the notice was
+        posted in the room; when it could not be, `note` is absent and
+        `notice_error` says why, and the room was not warned. A blocked
+        message is not delivered at all, and the call fails instead.
+        `trust.card` is "dropped" when Switch Trust redacted the text of your
+        `ui` card: the card was not sent, only `body` (as `delivered`).
     """
     agent_id = get_agent_id()
     room_id = await require_connected_room()
 
+    spec = parse_ui_spec(ui) if ui is not None else None
     protocol = get_protocol()
-    event_id = await protocol.send_message(agent_id, room_id, body, thread_id=thread_id)
-    return {"event_id": event_id}
+    sent = await protocol.send_message(
+        agent_id, room_id, body, thread_id=thread_id, ui=spec
+    )
+    return _with_trust({"event_id": sent.event_id}, sent.trust)
 
 
 @operation
@@ -802,6 +851,7 @@ async def send_targeted_message(
     target_names: list[str] | None = None,
     target_roles: list[str] | None = None,
     thread_id: str | None = None,
+    ui: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Send a message addressed to specific agents/users and/or roles.
 
@@ -829,6 +879,11 @@ async def send_targeted_message(
         thread_id: Optional. The `id` of a message to reply into, making this a
             threaded reply. Pass any message id from the thread — it is
             normalised to the thread root. Omit for a top-level message.
+        ui: Optional. A rich card to show with the message, as a spec of
+            `root` and `elements` (see the skill's "Rich cards" section).
+            Platforms that can draw it (Slack) show the card; the rest show
+            `body`, so `body` must still say what matters. An invalid spec
+            fails the call, listing each problem, and nothing is posted.
 
     At least one of target_names / target_roles is required.
 
@@ -856,10 +911,14 @@ async def send_targeted_message(
         (its bridge is down or has no channel for the room, so the message
         never reaches the platform). It says what Switch sent, not what the
         platform confirmed.
+
+        `trust` is present, as for post_message, when Switch Trust changed or
+        flagged the message.
     """
     agent_id = get_agent_id()
     room_id = await require_connected_room()
 
+    spec = parse_ui_spec(ui) if ui is not None else None
     protocol = get_protocol()
     result = await protocol.send_targeted_message(
         agent_id,
@@ -868,11 +927,23 @@ async def send_targeted_message(
         body,
         thread_id=thread_id,
         target_roles=target_roles or [],
+        ui=spec,
     )
-    return {
-        "event_id": result.event_id,
-        "target_statuses": {n: s.value for n, s in result.target_statuses.items()},
-    }
+    return _with_trust(
+        {
+            "event_id": result.event_id,
+            "target_statuses": {n: s.value for n, s in result.target_statuses.items()},
+        },
+        result.trust,
+    )
+
+
+def _with_trust(result: dict[str, Any], trust: TrustFeedback | None) -> dict[str, Any]:
+    """A send's result, with `trust` only when Switch Trust did something:
+    a message it left alone reports nothing about it."""
+    if trust is not None:
+        result["trust"] = trust.to_result()
+    return result
 
 
 # ── Moderation ───────────────────────────────────────────────────────────────
@@ -893,13 +964,14 @@ async def create_room(
     reference_ids: list[str] | None = None,
     package_ids: list[str] | None = None,
     linked_rooms: list[dict[str, str]] | None = None,
-    read_visibility: str = "public",
-    write_visibility: str = "public",
+    read_visibility: str | None = None,
+    write_visibility: str | None = None,
     group_name: str | None = None,
     roles: list[dict[str, Any]] | None = None,
     include_subagents_for: list[str] | None = None,
     join_event_listeners: list[str] | None = None,
     aliases: dict[str, str] | None = None,
+    include_owner: bool = False,
 ) -> dict[str, Any]:
     """Create a new Switch room.
 
@@ -917,14 +989,16 @@ async def create_room(
         name: Display name for the room.
         description: Free-text description shown to participants.
         agent_names: Names of agents to add to the room at creation. The
-            calling agent is not added automatically — include its name here
-            if it should join. Names must already exist in the registry.
+            calling agent is not a member unless listed here — include your
+            own name if you should join (`caller_is_member` in the result
+            says whether you did). Names must already exist in the registry.
         user_names: Optional list of people to add, each named by their
             username on the room's messaging app, or by the e-mail address of
             their account there (not on Discord, which never shares e-mail
             addresses); their Switch name does not resolve. Your
             owner's usernames are in `get_my_context` (`messaging_apps`,
-            `your_usernames`). Only meaningful for bridged rooms.
+            `your_usernames`). Only meaningful for bridged rooms; to put your
+            owner in an internal-only room, use `include_owner`.
         channel_type: One of "channel_public", "channel_private", or "direct".
             Required when `bridge_id` is set; ignored for internal-only rooms.
             Use "direct" to open a 1:1 DM room — exactly one entry in
@@ -946,11 +1020,14 @@ async def create_room(
             references.
         linked_rooms: Directed links from this room to existing rooms. Each
             entry is `{"target_room_id": "...", "label": "..."}`.
-        read_visibility: "public" (anyone may read) or "private" (owner/admin
-            only). Defaults to "public".
-        write_visibility: "public" (anyone may modify — invite, attach, edit)
-            or "private" (owner/admin only). Defaults to "public". Must not be
-            "public" while read_visibility is "private".
+        read_visibility: Who may see the room: "public" (everyone in the
+            workspace) or "private" (those taking part, its owner and
+            admins). Omit it and the room follows its channel: a private
+            channel or DM makes a private room, a public channel or no
+            channel a public one. Only the owner and admins change a room,
+            whichever it is.
+        write_visibility: Ignored. Accepted so older instructions that pass
+            it still work; a room has no write visibility of its own.
         group_name: Optional existing room group to file this room under (a
             navigation/visualization layer surfaced in the room list and
             graph). Give its path from the top level, e.g. "Fraud/Incidents",
@@ -958,6 +1035,8 @@ async def create_room(
             Names match exactly. An ambiguous bare name errors with the path
             of each match to retry with; an unknown path errors naming the
             first segment not found. Omit to leave the room standalone.
+            Filing a room in a group needs an owner who is a workspace
+            admin; anyone else is refused.
         roles: Optional room-roles to define at creation. Each entry is
             `{"name": "...", "instructions": "...", "exclusive": bool}`.
             Roles are assumable instruction bundles agents pick up with
@@ -967,17 +1046,25 @@ async def create_room(
             registered `.claude/agents` subagents) should also be added to the
             room. Only the named parents are expanded, not every agent.
         join_event_listeners: Per-agent opt-in. A subset of `agent_names` that
-            should receive `room_join` events in this room (fired when someone
-            joins). Agents not listed do not receive them. Use for a welcome /
-            onboarding agent that should greet new arrivals.
+            should receive `room_join` and `room_leave` events in this room
+            (fired when someone joins or leaves). Agents not listed do not
+            receive them. Use for a welcome / onboarding agent that should
+            greet new arrivals, or a moderator that tracks who is in the room.
         aliases: Optional per-room agent aliases, keyed by agent name → alias.
             `@<alias>` then addresses that agent in the room exactly like its
             real name. Each agent must be in `agent_names`; an alias may
             contain only letters, digits, '.', '-', '_' and must not clash
             with an agent's real name, a room role, or another alias.
+        include_owner: Also add your owner (the person who owns you) to the
+            room, so it shows in their Switch Console chat list as a group
+            chat with its agents, where they read and post. Requires
+            `internal_only=True`, no `bridge_id`, and a channel_type other
+            than "direct". As in any group chat, their messages reach an
+            agent they @-mention (or a follow-up to one).
 
     Returns:
-        `{"id", "name", "matrix_room_id", "failed_attachments": [...]}`.
+        `{"id", "name", "matrix_room_id", "caller_is_member",
+        "failed_attachments": [...]}`.
         `failed_attachments` is empty on full success; otherwise it lists
         `{kind, id, error}` for each attachment that could not be applied
         after the room was created (race-time failures only; predictable
@@ -1004,11 +1091,15 @@ async def create_room(
             package_ids=package_ids,
             linked_rooms=linked_rooms,
             read_visibility=read_visibility,
-            write_visibility=write_visibility,
             group_name=group_name,
             roles=roles,
             aliases=aliases,
             from_room_id=await connected_room(),
+            include_owner=include_owner,
+        )
+    async with protocol.session_factory() as session:
+        caller_is_member = agent_id in await protocol.room_store.get_agent_ids(
+            session, result.room.id
         )
     return {
         "id": result.room.id,
@@ -1016,6 +1107,7 @@ async def create_room(
         "transport_room_id": result.room.transport_room_id,
         # Deprecated alias, carried for the connector compatibility window.
         "matrix_room_id": result.room.transport_room_id,
+        "caller_is_member": caller_is_member,
         "failed_attachments": result.failed_attachments,
     }
 
@@ -1068,7 +1160,8 @@ async def get_role_detail(room_id: str, role_name: str) -> dict[str, Any]:
 async def define_role(
     name: str, instructions: str, exclusive: bool = False
 ) -> dict[str, Any]:
-    """Define a new role in the connected room. Requires write access to the room.
+    """Define a new role in the connected room. Your owner must be the room's
+    owner or a workspace admin.
 
     Args:
         name: Role name, unique within the room (e.g. "manager", "worker").
@@ -1091,7 +1184,8 @@ async def edit_role(
     instructions: str | None = None,
     exclusive: bool | None = None,
 ) -> dict[str, Any]:
-    """Edit a role's instructions and/or exclusivity. Requires write access.
+    """Edit a role's instructions and/or exclusivity. Your owner must be the
+    room's owner or a workspace admin.
 
     Edits take effect on the next `assume_role`; any current holder keeps the
     instructions it already received.
@@ -1108,7 +1202,7 @@ async def edit_role(
 async def delete_role(name: str) -> dict[str, Any]:
     """Delete a role from the connected room (and any lease on it).
 
-    Requires write access to the room.
+    Your owner must be the room's owner or a workspace admin.
     """
     agent_id = get_agent_id()
     room_id = await require_connected_room()
@@ -1350,6 +1444,144 @@ async def unlink_rooms(source_room_id: str, target_room_id: str) -> dict[str, bo
 
 
 @operation
+async def list_room_schedules(room_id: str) -> list[dict[str, Any]]:
+    """List a room's schedules: the messages Switch posts to its agents on a timer.
+
+    Args:
+        room_id: The Switch room id.
+
+    Returns:
+        One `{id, agents, text, cron, run_at, timezone, paused, next_run_at,
+        last_run_at, set_up_by_you}` per schedule, oldest first. `next_run_at`
+        is null once a one-off has been sent; `set_up_by_you` marks the ones
+        you may change.
+    """
+    return await get_protocol().list_room_schedules(get_agent_id(), room_id)
+
+
+def _moment(run_at: str | None) -> datetime | None:
+    if run_at is None:
+        return None
+    try:
+        return datetime.fromisoformat(run_at)
+    except ValueError as e:
+        raise ValueError(
+            f"run_at must be an ISO 8601 time with its offset, such as "
+            f"2026-11-20T09:00:00+00:00, not {run_at!r}."
+        ) from e
+
+
+@operation
+async def create_room_schedule(
+    room_id: str,
+    agents: list[str],
+    text: str,
+    timezone: str,
+    cron: str | None = None,
+    run_at: str | None = None,
+) -> dict[str, Any]:
+    """Set up a message Switch posts in a room, addressed to some of its agents,
+    once or on a repeating rule.
+
+    It is posted as you, so each agent answers it as it would answer you, and
+    it stops (paused, the room told) if you leave the room. You need to be in
+    the room, and your owner needs to be allowed to manage it (its owner or a
+    workspace admin). Give exactly one of `cron` and `run_at`.
+
+    Args:
+        room_id: The Switch room id.
+        agents: Names of the agents in the room it is for. You may name
+            yourself, for a reminder of your own.
+        text: What to post, up to 4000 characters.
+        timezone: An IANA zone, such as `Europe/London`, that `cron` is read
+            in.
+        cron: A five-field cron rule, such as `0 9 * * 1-5` for weekdays at
+            09:00.
+        run_at: For a one-off: an ISO 8601 time with its offset, in the
+            future.
+
+    Returns:
+        The schedule, shaped as `list_room_schedules` lists it.
+    """
+    return await get_protocol().create_room_schedule(
+        get_agent_id(),
+        room_id,
+        agents=agents,
+        text=text,
+        cron=cron,
+        run_at=_moment(run_at),
+        timezone=timezone,
+    )
+
+
+@operation
+async def update_room_schedule(
+    room_id: str,
+    schedule_id: str,
+    agents: list[str],
+    text: str,
+    timezone: str,
+    cron: str | None = None,
+    run_at: str | None = None,
+) -> dict[str, Any]:
+    """Replace what one of your own schedules says, to whom and when.
+
+    Only a schedule you set up yourself can be changed this way; one a person
+    set up is theirs to change. Arguments as for `create_room_schedule`.
+
+    Returns:
+        The schedule as it now stands.
+    """
+    return await get_protocol().update_room_schedule(
+        get_agent_id(),
+        room_id,
+        schedule_id,
+        agents=agents,
+        text=text,
+        cron=cron,
+        run_at=_moment(run_at),
+        timezone=timezone,
+    )
+
+
+@operation
+async def pause_room_schedule(
+    room_id: str, schedule_id: str, paused: bool
+) -> dict[str, Any]:
+    """Pause one of your own schedules, or resume it.
+
+    Resuming starts again from now: runs that fell due while it was paused are
+    not sent.
+
+    Args:
+        room_id: The Switch room id.
+        schedule_id: The schedule's id, from `list_room_schedules`.
+        paused: True to pause it, false to resume it.
+
+    Returns:
+        The schedule as it now stands.
+    """
+    return await get_protocol().pause_room_schedule(
+        get_agent_id(), room_id, schedule_id, paused=paused
+    )
+
+
+@operation
+async def delete_room_schedule(room_id: str, schedule_id: str) -> dict[str, bool]:
+    """Delete one of your own schedules.
+
+    Args:
+        room_id: The Switch room id.
+        schedule_id: The schedule's id, from `list_room_schedules`.
+
+    Returns:
+        `{"ok": true}`.
+    """
+    await get_protocol().delete_room_schedule(get_agent_id(), room_id, schedule_id)
+    return {"ok": True}
+
+
+@operation
 async def list_bridges() -> list[dict[str, Any]]:
     """List collaboration bridges available on this Switch instance.
 
@@ -1358,16 +1590,30 @@ async def list_bridges() -> list[dict[str, Any]]:
 
     Returns:
         List of `{id, type, display_name, status, is_default,
-        can_create_channels}` dicts. Only `status` == "active" bridges are
+        can_create_channels, can_create_private_channels,
+        private_channel_needs_linked_account}` dicts. Only `status` == "active" bridges are
         usable for new rooms; others are shown for context. `is_default`
         marks the bridge that `create_room` uses when no `bridge_id` is given
         (at most one).
 
         `can_create_channels` is false when Switch cannot make a channel on
-        that bridge — either the platform has no such call (Telegram) or an
-        operator has withheld it. Creating a room on one of those fails, so
-        offer an existing channel instead: the chat is made on the platform,
-        the Switch app is added to it, and the room is adopted from that.
+        that bridge — the platform has no such call (Telegram), an operator
+        has withheld it, or a Microsoft Teams connection has no default team
+        yet, which it gets when Switch is added to a team. Creating a room on
+        one of those fails, so offer an existing channel instead: the chat is
+        made on the platform, the Switch app is added to it, and the room is
+        adopted from that.
+
+        `can_create_private_channels` says whether `channel_type`
+        "channel_private" can be asked for there. Where
+        `private_channel_needs_linked_account` is true, the room's owner,
+        your owner when you create it, must have linked and confirmed their
+        account on that platform: Switch puts them in the private channel
+        through it (on Teams, as its owner), and refuses the room when they
+        have not, since nobody could get into it otherwise. A new public
+        channel puts them in too when they have such an account (not on
+        Teams, where that would add them to the whole team), and is made
+        without them when they have none.
     """
     protocol = get_protocol()
     return await protocol.list_bridges()
@@ -1378,6 +1624,9 @@ async def invite_agent_to_room(
     room_id: str, agent_name: str, include_subagents: bool = False
 ) -> dict[str, bool]:
     """Invite an agent into an existing room by name.
+
+    A direct or group conversation is refused: its platform fixes who is in
+    it, and the people in it add agents with `!invite-agent` there.
 
     Args:
         room_id: The Switch room id (UUID string).
@@ -1405,8 +1654,10 @@ async def remove_agent_from_room(room_id: str, agent_name: str) -> dict[str, boo
     connected there is disconnected from it. You need not be in the room.
 
     Allowed when you may address that agent (its addressing policy admits
-    you), or when you can manage agents and it belongs to your owner. Anything
-    else is refused with the reason — relay it rather than retrying.
+    you), or when you can manage agents and it belongs to your owner. A direct
+    or group conversation is refused: its platform fixes who is in it, and the
+    people in it use `!remove-agent` there. Anything else is refused with the
+    reason — relay it rather than retrying.
 
     Args:
         room_id: The Switch room id (UUID string).
@@ -1432,7 +1683,8 @@ async def add_users_to_room(room_id: str, user_names: list[str]) -> dict[str, An
     be a user already known to that bridge — e.g. someone who has signed into
     the workspace — otherwise the bridge cannot resolve them. Use this after a
     bridge change to re-invite the humans who were dropped, since their
-    identities are bridge-specific and are not carried across.
+    identities are bridge-specific and are not carried across. A direct or
+    group conversation is refused: its platform fixes who is in it.
 
     Args:
         room_id: The Switch room id (UUID string).
@@ -1456,31 +1708,95 @@ async def add_users_to_room(room_id: str, user_names: list[str]) -> dict[str, An
 
 
 @operation
-async def list_all_rooms(include_archived: bool = False) -> list[dict[str, Any]]:
-    """List every room on this Switch instance (not just rooms this agent
-    is a member of). Use `list_rooms` instead to see only the rooms this
-    agent is assigned to.
+async def remove_users_from_room(room_id: str, user_names: list[str]) -> dict[str, Any]:
+    """Take one or more people out of a bridged room by name — the opposite of
+    `add_users_to_room`.
+
+    Each person is taken out of the room's platform channel and then the
+    Switch room, which stops what reaches them and ends what being in the
+    room let them do. The room's history records that you removed them. Only
+    the room's owner, a room admin or a workspace admin may (an agent acts
+    with its owner's rights). A direct or group conversation is refused: its platform fixes who
+    is in it. Confirm with the person asking first.
+
+    The room follows its channel, so someone the platform will not remove
+    stays in the room too: everyone on Telegram, whose bots cannot remove
+    people; anyone in Slack's #general; anyone in a standard Teams channel,
+    whose members are its team's. Tell the person asking to remove them on
+    the platform; Switch notices and takes them out of the room itself.
+
+    Args:
+        room_id: The Switch room id (UUID string).
+        user_names: The people to remove, each named by their username on the
+            room's messaging app, as `add_users_to_room` takes them. Their
+            Switch name does not resolve.
+
+    Returns:
+        `{"ok": bool, "removed": [...], "not_in_room": [...],
+        "platform_refused": [...]}`. `not_in_room` lists names nobody in the
+        room goes by. `platform_refused` lists people the platform would not
+        remove, who are still in the room. `ok` is true only when everyone
+        named was removed.
+    """
+    agent_id = get_agent_id()
+    protocol = get_protocol()
+    misses = await protocol.remove_users_from_room(agent_id, room_id, user_names)
+    missed = {m.name for m in misses}
+    return {
+        "ok": not misses,
+        "removed": [name for name in user_names if name not in missed],
+        "not_in_room": [m.name for m in misses if m.reason == "not_in_room"],
+        "platform_refused": [m.name for m in misses if m.reason == "platform_refused"],
+    }
+
+
+@operation
+async def list_all_rooms(
+    include_archived: bool = False,
+    name_contains: str | None = None,
+    limit: int = 100,
+    cursor: str | None = None,
+) -> dict[str, Any]:
+    """List the rooms on this Switch instance this agent may see, a page at
+    a time, oldest first: every room its owner can read (public rooms and
+    ones the owner takes part in; all rooms for a workspace admin) plus the
+    rooms it is a member of. Use `list_rooms` instead to see only the rooms
+    this agent is assigned to.
 
     Args:
         include_archived: When false (default), archived rooms are omitted.
             Set true to also include archived rooms (each carries
             `archived: true`).
+        name_contains: Only rooms whose name contains this text, in any case.
+        limit: Rooms per page, 1 to 500 (default 100).
+        cursor: The `next_cursor` of the previous page, to read the next one.
+            Pass the same `include_archived` and `name_contains` with it.
 
     Returns:
-        List of {room_id, name, description, archived} dicts.
+        `{"rooms": [{room_id, name, description, archived}, ...],
+        "next_cursor"}`; `next_cursor` is null on the last page.
     """
     agent_id = get_agent_id()
     protocol = get_protocol()
-    rooms = await protocol.list_all_rooms(agent_id, include_archived=include_archived)
-    return [
-        {
-            "room_id": r.id,
-            "name": r.name,
-            "description": r.description,
-            "archived": r.archived_at is not None,
-        }
-        for r in rooms
-    ]
+    rooms, next_cursor = await protocol.list_all_rooms(
+        agent_id,
+        include_archived=include_archived,
+        name_contains=name_contains,
+        limit=limit,
+        cursor=cursor,
+    )
+    return {
+        "rooms": [
+            {
+                "room_id": r.id,
+                "name": r.name,
+                "description": r.description,
+                "archived": r.archived_at is not None,
+            }
+            for r in rooms
+        ],
+        "next_cursor": next_cursor,
+    }
 
 
 @operation
@@ -1518,7 +1834,9 @@ async def create_room_group(
     A room group is a named bucket that rooms can be filed under (via
     `create_room`'s `group_name`), and groups can nest under a parent group to
     form a tree. Creating a group does not move any rooms into it, and does
-    not create missing parents: create each level first.
+    not create missing parents: create each level first. Groups are shared by
+    the whole workspace, so only an agent whose owner is a workspace admin
+    may create one; anyone else gets a permission error.
 
     Args:
         name: The group's display name. It cannot contain "/" (the path
@@ -1588,7 +1906,9 @@ async def create_room_from_yaml(
     Args:
         yaml: The template text. A top-level ``room:`` makes one room; a
             ``group:`` with a ``rooms:`` list (and optional ``links:``) makes
-            a room group. Either may declare ``params:`` with defaults and
+            a room group, which an agent is refused: only a workspace admin
+            puts rooms in a group, and an agent acts without its owner's
+            admin reach. Either may declare ``params:`` with defaults and
             descriptions; placeholders are filled in before provisioning.
         inputs: Values for declared params. A required param with no default
             must be supplied here, or provisioning fails naming it.
@@ -1707,8 +2027,11 @@ async def _provision_as_agent(
         user_id=owner.id, name=owner.name, email=owner.email, text=yaml, inputs=inputs
     )
     parsed = rooms_yaml.parse_template(yaml, inputs=inputs, builtins=builtins)
+    if isinstance(parsed.spec, GroupSpec):
+        # Without the owner's admin reach, which filing rooms in a group needs.
+        require_group_filing(False)
     await rooms_yaml.check_entity_params(parsed, reader=reader)
-    await rooms_yaml.check_bridges(parsed)
+    await rooms_yaml.check_bridges(parsed, creator=builtins["$creator"])
     room_specs = (
         [(r, r.kickoff) for r in parsed.spec.rooms]
         if isinstance(parsed.spec, GroupSpec)
@@ -1734,6 +2057,7 @@ async def _provision_as_agent(
             if creator is None
             else await creator.create(tenant_id, owner.id, checked)
         )
+        room_made = opening_rooms_as_made(creator, tenant_id, created, room_addressing)
         try:
             if isinstance(parsed.spec, GroupSpec):
                 group_result = await rooms_yaml.provision_group(
@@ -1743,6 +2067,7 @@ async def _provision_as_agent(
                     creator_name=builtins["$creator"],
                     origin=origin,
                     template_name=template_name,
+                    on_room_made=room_made,
                 )
                 result = group_result.model_dump()
             else:
@@ -1754,6 +2079,7 @@ async def _provision_as_agent(
                     creator_name=builtins["$creator"],
                     origin=origin,
                     template_name=template_name,
+                    on_room_made=room_made,
                 )
                 result = room_result.model_dump()
             if creator is not None and room_addressing:
@@ -1809,6 +2135,7 @@ def _agent_templates() -> AgentTemplates:
         max_bytes=protocol.config.template_max_bytes,
         agent_management=protocol.config.feature_flags[AGENT_MANAGEMENT],
         switch_buddy=protocol.config.feature_flags[SWITCH_BUDDY],
+        telemetry=protocol.telemetry,
     )
 
 
@@ -1833,11 +2160,14 @@ async def list_templates(
     query: str | None = None,
     kind: str | None = None,
 ) -> list[dict[str, Any]]:
-    """List the templates saved on this workspace that you can use.
+    """List the templates on this workspace that you can use.
 
-    That is every shared template plus your owner's private ones. Each row
-    says who saved it (a person, or which agent) and ``can_edit``: whether
-    you may change or delete it, which is true only for templates you saved.
+    That is the templates that come with Switch (ids starting ``official:``,
+    saved by "Switch"), less any a workspace admin removed from the
+    workspace, then every shared template plus your owner's private ones.
+    Each row says who saved it (a person, or which agent) and ``can_edit``:
+    whether you may change or delete it, which is true only for templates
+    you saved.
 
     Args:
         query: Only templates whose name or description contains this.
@@ -1918,7 +2248,10 @@ async def run_template(
     Args:
         template_id: The id from ``list_templates``.
         inputs: Values for the template's params (see ``get_template``),
-            including a ``machine`` or ``provider`` param.
+            including a ``machine`` or ``provider`` param. A ``bridge`` param
+            also takes ``"Switch Console"``: the room is then on no messaging
+            app, with your owner in it as one of their Switch Console chats
+            (only where the server has group chats).
         agents: Existing agents to stand in for slots instead of creating
             them, ``{slot name: agent name}``, the slot named as
             ``get_template`` lists it or as it reads with your inputs. Only a
@@ -1940,13 +2273,27 @@ async def run_template(
         async with protocol.session_factory() as session:
             template = await _agent_templates().load(session, acting, template_id)
             content, name = template.content, template.name
-        return await _run_document(
+        result = await _run_document(
             content,
             inputs,
             agents or {},
             template_name=name,
             source=source_of(template),
         )
+        await _count_run(template.id)
+        return result
+
+
+async def _count_run(template_id: str) -> None:
+    """Count a run that has already made its agents and rooms. A failure here
+    is not the run's: it is logged, and the run goes uncounted rather than
+    reported as failed to an agent that might then run it again."""
+    try:
+        async with get_protocol().session_factory() as session:
+            await TemplateStore().record_run(session, template_id)
+            await session.commit()
+    except Exception:
+        logger.exception("Could not count a run of template %s", template_id)
 
 
 async def _run_document(
@@ -1986,6 +2333,7 @@ async def _run_document(
         inputs or {},
         builtins=builtins,
         machines=await _owners_machines(),
+        providers=offered_provider_ids(protocol.config.feature_flags),
     )
     result = await _provision_as_agent(
         plan.document,
@@ -2183,6 +2531,7 @@ async def get_agent_detail(agent_id: str) -> dict[str, Any]:
 
     Readable for any agent (not just your own). Use it to inspect another
     agent's configuration, capabilities, room memberships, and live sessions.
+    A room your owner cannot read is not named in it.
 
     Args:
         agent_id: The target agent's id (from `list_participants` or
@@ -2269,6 +2618,7 @@ async def update_agent_detail(
     display_name: str | None = None,
     icon_url: str | None = None,
     addressing: str | None = None,
+    mid_turn_delivery: str | None = None,
     provider: str | None = None,
     model: str | None = None,
     advanced_config: dict[str, Any] | None = None,
@@ -2305,6 +2655,11 @@ async def update_agent_detail(
         addressing: Who can address it: "owner_only" (your owner alone, not
             even their other agents, you included), "owner_and_owner_agents"
             (your owner and any agent they own) or "anyone".
+        mid_turn_delivery: What a message sent while it is working does:
+            "steer" (the default) hands it to the running turn, whoever sent
+            it and from wherever; "queue" always runs it as a turn of its own
+            once the running one ends. Providers that cannot steer always
+            queue.
 
     A managed agent (one `list_managed_agents` shows) only, and only with the
     "can manage agents" capability:
@@ -2355,6 +2710,7 @@ async def update_agent_detail(
         display_name=display_name,
         icon_url=icon_url,
         addressing=addressing,
+        mid_turn_delivery=mid_turn_delivery,
         third_party_avatars=protocol.config.third_party_avatars_enabled,
     )
     changes = ManagedAgentChanges(
@@ -2487,7 +2843,7 @@ async def update_room(
             unchanged.
         admin_mode: New admin-mode flag, or None to leave unchanged.
         join_event_listeners: Partial map of agent name → whether that agent
-            should receive `room_join` events in this room. Only the named
+            should receive `room_join` and `room_leave` events in this room. Only the named
             agents change; omit to leave all memberships unchanged. Each named
             agent must already be a member of the room.
         bridge_id: Move the room onto this collaboration bridge. A fresh
@@ -2554,8 +2910,8 @@ async def archive_room(room_id: str) -> dict[str, Any]:
     feature-implementation or bug-fix room) to keep the active list tidy.
     Reverse it with `unarchive_room`.
 
-    You must be a member of the room and have write access to it; fails with
-    a permission error otherwise.
+    Your owner must be the room's owner or a workspace admin; fails with a
+    permission error otherwise.
 
     Args:
         room_id: The Switch room id (UUID string).
@@ -2574,8 +2930,8 @@ async def unarchive_room(room_id: str) -> dict[str, Any]:
     """Unarchive a room you are a member of, restoring it to the default
     active room lists.
 
-    The inverse of `archive_room`. You must be a member of the room and have
-    write access to it; fails with a permission error otherwise.
+    The inverse of `archive_room`. Your owner must be the room's owner or a
+    workspace admin; fails with a permission error otherwise.
 
     Args:
         room_id: The Switch room id (UUID string).

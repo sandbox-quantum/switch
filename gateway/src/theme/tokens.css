@@ -1,0 +1,487 @@
+/* Theme tokens — the SINGLE SOURCE OF TRUTH for token values.
+   Copied from the design prototype's token file (last synced from its
+   2026-09-10 revision).
+
+   Only these things are adapted from upstream:
+     - every token is prefixed `--sw-`;
+     - the theme selectors target MUI's `data-mui-color-scheme` attribute
+       instead of upstream's own theme attribute, so MUI's colour-scheme
+       switching drives them, and upstream's theme-independent block is
+       `:root`. MUI puts the attribute on <html>, so the var() chains in that
+       block resolve against the active scheme;
+     - the Google Fonts @import and the Tailwind-specific type and font
+       rules are dropped — the font is bundled and the type ramp is applied
+       through MUI's typography, reading the vars below;
+     - the gateway's own tokens and its overrides of upstream values are the
+       last two blocks, below upstream's.
+
+   Token VALUES are otherwise byte-identical to upstream: re-syncing is a copy
+   of everything from the light block to the end of the theme-independent one.
+   `tokens.ts` is GENERATED from this file (`npm run gen:tokens`) — MUI's
+   palette needs parseable colours, so the values here are resolved and
+   converted to sRGB there. Never hand-edit that file; edit this one and
+   regenerate. Comments inside the blocks are upstream's and talk in its
+   Tailwind class names. */
+
+:root,
+[data-mui-color-scheme="light"] {
+  /* Every near-black in light theme is ONE colour — the Flint brand black, referenced
+     as var(--sw-brand-black) rather than restated, so ink and primary can't drift
+     apart or drift off-brand. Body ink and the primary fill used to sit two steps
+     apart (L 0.14 vs L 0.21) for no reason a user could see; both are now #1B1817
+     (~13:1 on the canvas, well past AA). Author against the ROLE token — `foreground`
+     for ink, `primary` for the one strong action — never `brand-black` directly; the
+     roles are what dark theme flips. */
+
+  /* Guardian sand — the cream the app shell has always actually painted (#F4EEE6). The
+     token used to sit two steps lighter than the canvas the shells hard-coded, so every
+     prototype wrote the hex by hand and the background token was the wrong cream.
+     Token now matches reality; the literal is gone from the shells. Points at the named
+     constant in the theme-independent block below, so every warm-canvas wash (`cream`,
+     `widget`) shares one source and can't drift from the canvas they're tinting. */
+  --sw-background: var(--sw-guardian-sand);
+  --sw-foreground: var(--sw-brand-black);
+  /* Cream is a translucent wash of guardian sand, not a separate near-white — it used to
+     be its own slightly different hue (#F2EEE7), which is how the canvas and its own
+     tinted panels ended up not quite matching. Generic grouping-panel role: summary
+     tiles, add-agent cards, list rows, cap panels — used across every prototype.
+     See `widget` below for the one role that was split off from it. */
+  --sw-cream: color-mix(in oklch, var(--sw-guardian-sand) 20%, transparent);
+  /* Widget surface — the dashboard-tile background (AgentSummaryWidget, BurnRateWidget,
+     the ROI/cost/performance widgets on Overview). Split off from `cream` in the 2026-09
+     consolidation: `cream` is reused for many unrelated groupings across every
+     prototype, so a change made for the dashboard-widget look was rippling into things
+     that had nothing to do with it. Same guardian-sand wash today; free to diverge. */
+  --sw-widget: color-mix(in oklch, var(--sw-guardian-sand) 20%, transparent);
+  --sw-card: oklch(0.995 0.002 78);
+  --sw-card-foreground: var(--sw-brand-black);
+  --sw-popover: oklch(0.995 0.002 78);
+  --sw-popover-foreground: var(--sw-brand-black);
+  --sw-primary: var(--sw-brand-black);
+  /* One warm off-white for every light neutral fill and the ink that sits on primary —
+     absorbed into the same value as secondary/muted/accent (it used to sit one
+     imperceptible step lighter, which bought nothing and gave the palette a fourth
+     near-white to keep in sync). */
+  --sw-primary-foreground: oklch(0.955 0.005 78);
+  --sw-secondary: oklch(0.955 0.005 78);
+  --sw-secondary-foreground: var(--sw-brand-black);
+  --sw-muted: oklch(0.955 0.005 78);
+  --sw-muted-foreground: oklch(0.37 0.013 285.805);
+  --sw-accent: oklch(0.955 0.005 78);
+  --sw-accent-foreground: var(--sw-brand-black);
+  /* Semantic + guardrail-action families — every hue below now POINTS AT a signal
+     constant (see the signal palette in the theme-independent block) instead of
+     restating one. Before the 2026-09 consolidation the system carried three
+     different reds (destructive 27.3°, blocked/critical 18.9°) and two ambers that
+     nobody could tell apart; now there is exactly ONE red, and destructive, blocked
+     and severity-critical are the same colour on purpose — a rejected action and a
+     critical finding are the same news. Washes are baked with color-mix() because
+     these tokens have no <alpha-value> channel (an opacity modifier on them emits NO CSS). */
+  --sw-destructive: var(--sw-signal-red);
+  --sw-destructive-foreground: oklch(1 0 0);
+  --sw-destructive-muted: color-mix(in oklch, var(--sw-signal-red) 15%, transparent);
+  --sw-success: var(--sw-signal-green);
+  --sw-success-foreground: oklch(1 0 0);
+  --sw-success-muted: color-mix(in oklch, var(--sw-signal-green) 15%, transparent);
+  /* Warning is signal ORANGE, knowingly shared with action-redacted: both mean
+     "we intervened, nothing broke". It used to be a yellow-amber that read as a
+     third severity step next to `medium`. */
+  --sw-warning: var(--sw-signal-orange);
+  --sw-warning-muted: color-mix(in oklch, var(--sw-signal-orange) 15%, transparent);
+  --sw-action-blocked: var(--sw-signal-red);
+  --sw-action-blocked-foreground: oklch(1 0 0);
+  --sw-action-blocked-muted: color-mix(in oklch, var(--sw-signal-red) 15%, transparent);
+  --sw-action-redacted: var(--sw-signal-orange);
+  /* Ink on orange is ALWAYS brand black. White on this fill was 2.6:1 — an AA failure
+     logged in DESIGN.md and shipped in the Redacted badge for months. */
+  --sw-action-redacted-foreground: var(--sw-brand-black);
+  --sw-action-alerted: var(--sw-signal-amber);
+
+  /* Switch — the Switch blue, and it is not a status. It marks surfaces that
+     belong to Switch (the agent-orchestration framework Flint connects to), so it
+     stays out of the semantic families entirely: a Switch chip must never read as a
+     success, a warning or a guardrail outcome. It is one of exactly TWO blues in the
+     system and the two never substitute for each other — `switch` says "this belongs
+     to Switch", `ui-blue` (below) is a plain UI accent. It IS the brand blue: `switch` and its
+     wash point at --sw-brand-blue (#A1C9D2) instead of restating the value, so the
+     two can never drift — low chroma on purpose, so it sits inside the warm
+     near-monochrome palette rather than shouting over it.
+     `switch` is the light edge/fill; `switch-foreground` is a deep same-hue ink that
+     clears AA (8.7:1) on `switch-muted` and stays literal (it is a darker relative of
+     the brand hue, not the hue itself); `switch-muted` bakes its own alpha via
+     color-mix, because these tokens have no <alpha-value> channel and an opacity
+     modifier on them would compile to no CSS at all. */
+  --sw-switch: var(--sw-brand-blue);
+  --sw-switch-foreground: oklch(0.360 0.060 212.9);
+  --sw-switch-muted: color-mix(in oklch, var(--sw-brand-blue) 40%, transparent);
+
+  /* UI blue — a plain UI accent, NOT a status and NOT a Switch marker. Reserved for
+     affirmative product marks that aren't semantic outcomes. Deliberately distinct
+     from `switch`: that blue means "this belongs to Switch", and letting a general
+     UI accent borrow it would make everything wearing it look Switch-connected.
+     `ui-blue` is a fill value (visually identical to #0F90BF, expressed in oklch like
+     every other token here); it carries white glyphs at 3.8:1, above the 3:1 non-text
+     floor. `ui-blue-foreground` is the same hue darkened until it clears AA for *text*
+     (5.6:1 on card) — the fill itself is only 3.7:1 on white, so a label painted in
+     the base value would fail. Same split as `switch` / `switch-foreground`.
+     NOTE — currently defined but not consumed anywhere. It was introduced for the
+     Managed agent badge, which now draws in `foreground` instead (the tick reads as
+     part of the agent's name rather than as a coloured status pip). The token is kept
+     on purpose as the sanctioned non-Switch blue: reach for it before inventing
+     another one. No `-muted`; if a wash is ever needed, bake it with color-mix —
+     these tokens have no <alpha-value>, so an opacity modifier on them compiles to
+     no CSS at all. */
+  --sw-ui-blue: oklch(0.613 0.121 231);
+  --sw-ui-blue-foreground: oklch(0.510 0.115 231);
+
+  /* Severity ramp — see DESIGN.md § Severity. Severity is the one scale in the product
+     with four *ordered* steps plus an off-ramp Info, and every step is now a straight
+     reference to a signal constant: the ramp IS the signal palette in order, so it can
+     no longer drift a half-step away from the semantic families. Critical/high are the
+     same red/orange as action-blocked/redacted by design — a blocked turn and a critical
+     finding are the same news. Medium and low used to be hand-tuned amber/yellow one
+     nudge off the signal values; they are the signal values now. */
+  --sw-severity-critical: var(--sw-signal-red);
+  --sw-severity-high:     var(--sw-signal-orange);
+  --sw-severity-medium:   var(--sw-signal-amber);
+  --sw-severity-low:      var(--sw-signal-yellow);
+  /* Informational is the spectral signal BLUE, not a grey-lavender: on a ramp that runs
+     red → orange → amber → yellow, a neutral bottom step read as "no data" rather than
+     "lowest severity". Blue is off the warm ramp, so Info can never be mistaken for a
+     dimmer High. It is a severity/data colour ONLY — never notification chrome, never an
+     interactive state (that is what `primary` is for). */
+  --sw-severity-info:     var(--sw-signal-blue);
+  --sw-severity-track:    oklch(0.90 0.005 78);
+  --sw-border: oklch(0.92 0.005 78);
+  /* border-strong and input are legacy ALIASES of --sw-border: one hairline weight in
+     the system. The darker "strong" variant read as a stray rule wherever it landed, and
+     `input` predates the form-field chrome below (use --sw-field-border for fields). */
+  --sw-border-strong: var(--sw-border);
+  --sw-input: var(--sw-border);
+  --sw-ring: oklch(0.705 0.015 286.067);
+
+  /* Form-field chrome — see DESIGN.md § Form fields. One look for every editable
+     control: white fill, hairline border, one subtle shadow layer. The border and
+     shadow alphas are mixes of the WARM brand black, not of pure black: a neutral
+     grey hairline on a cream canvas reads faintly blue-cold next to everything else
+     in the palette. These tokens have NO <alpha-value> channel, so Tailwind opacity
+     modifiers emit no CSS at all — bake the alpha into the token
+     instead, as the color-mix()es below do. `readonly` and `disabled` are the shared
+     surface/muted neutrals rather than two more bespoke near-whites. */
+  --sw-field: oklch(1 0 0);
+  --sw-field-border: color-mix(in oklch, var(--sw-brand-black) 10%, transparent);
+  --sw-field-border-hover: color-mix(in oklch, var(--sw-brand-black) 18%, transparent);
+  --sw-field-border-focus: var(--sw-foreground);
+  --sw-field-ring: color-mix(in oklch, var(--sw-brand-black) 14%, transparent);
+  --sw-field-shadow: 0 1px 2px color-mix(in oklch, var(--sw-brand-black) 6%, transparent);
+  --sw-field-readonly: var(--sw-surface);
+  --sw-field-disabled: var(--sw-muted);
+  --sw-field-disabled-foreground: oklch(0.58 0.01 286);
+  --sw-radius: 0.625rem;
+  --sw-surface: oklch(0.98 0.007 78);
+}
+
+[data-mui-color-scheme="dark"] {
+  --sw-background: oklch(0.141 0.005 285.823);
+  --sw-foreground: oklch(0.985 0 0);
+  /* Cream and widget stay guardian-sand washes in dark theme too — same warm hue as
+     light, just a lighter touch (8% vs 20%) so the tint still reads against a dark
+     card without lifting the whole surface. Dark canvas itself stays its own cool
+     neutral above; guardian sand is a light-canvas colour used here only as a tint. */
+  --sw-cream: color-mix(in oklch, var(--sw-guardian-sand) 8%, transparent);
+  --sw-widget: color-mix(in oklch, var(--sw-guardian-sand) 8%, transparent);
+  --sw-card: oklch(0.21 0.006 285.885);
+  --sw-card-foreground: oklch(0.985 0 0);
+  --sw-popover: oklch(0.21 0.006 285.885);
+  --sw-popover-foreground: oklch(0.985 0 0);
+  --sw-primary: oklch(0.92 0.004 286.32);
+  /* Ink on a light fill, so it is the brand black here too — dark theme's *surfaces*
+     stay their own cooler, darker greys (a brand-black canvas would lift the whole
+     theme); only the near-black INKS derive from the brand. */
+  --sw-primary-foreground: var(--sw-brand-black);
+  --sw-secondary: oklch(0.274 0.006 286.033);
+  --sw-secondary-foreground: oklch(0.985 0 0);
+  --sw-muted: oklch(0.274 0.006 286.033);
+  --sw-muted-foreground: oklch(0.705 0.015 286.067);
+  --sw-accent: oklch(0.274 0.006 286.033);
+  --sw-accent-foreground: oklch(0.985 0 0);
+  /* Destructive and warning are THEME-INVARIANT signal constants here, matching how
+     action-blocked/redacted/alerted have always behaved in dark: a guardrail red must
+     be the same red in both themes or a screenshot stops meaning one thing. They used
+     to be separately lifted hues (a pinker red, a yellower amber), which is how dark
+     theme ended up with a fourth red nobody chose. Dark NEUTRALS are untouched. */
+  --sw-destructive: var(--sw-signal-red);
+  --sw-destructive-foreground: oklch(1 0 0);
+  --sw-destructive-muted: color-mix(in oklch, var(--sw-signal-red) 15%, transparent);
+  --sw-success: oklch(0.696 0.17 162.48);
+  --sw-success-foreground: oklch(1 0 0);
+  --sw-success-muted: oklch(0.696 0.17 162.48 / 15%);
+  --sw-warning: var(--sw-signal-orange);
+  --sw-warning-muted: color-mix(in oklch, var(--sw-signal-orange) 15%, transparent);
+  --sw-action-blocked: oklch(0.589 0.187 18.9);
+  --sw-action-blocked-foreground: oklch(1 0 0);
+  --sw-action-blocked-muted: oklch(0.589 0.187 18.9 / 15%);
+  --sw-action-redacted: oklch(0.692 0.176 37.7);
+  /* Ink on orange is brand black in BOTH themes — the fill is light, so the ink is dark
+     regardless of surface. */
+  --sw-action-redacted-foreground: var(--sw-brand-black);
+  --sw-action-alerted: oklch(0.823 0.104 69.3);
+
+  /* Switch (dark) — the light-theme values inverted in role rather than repeated: the
+     brand blue at 0.810 would be a glaring hairline on a dark card, so `switch` drops
+     to a mid teal-blue that reads as a quiet edge (2.4:1 on --sw-card), and the ink
+     goes light (9.4:1 on the wash). The wash is heavier than light theme's because a
+     translucent mid tone over a dark surface loses more of itself. */
+  --sw-switch: oklch(0.450 0.055 212.9);
+  --sw-switch-foreground: oklch(0.860 0.052 212.9);
+  --sw-switch-muted: oklch(0.450 0.055 212.9 / 28%);
+
+  /* UI blue (dark) — the fill drops a touch so the white check inside the badge keeps
+     3.4:1 while the shape still separates from a dark card (5.2:1); the label ink goes
+     light instead of dark (9.7:1 on --sw-card). */
+  --sw-ui-blue: oklch(0.630 0.118 231);
+  --sw-ui-blue-foreground: oklch(0.800 0.095 231);
+
+  /* Severity ramp (dark). The signal hues, lifted a touch so the bars still separate
+     from a dark card; the empty-bar track goes to a white wash instead of a grey.
+     Medium and low are the signal amber/yellow chroma+hue at a raised lightness — the
+     lift is the only thing dark theme changes, so the ramp reads as the same four
+     colours it does in light. */
+  --sw-severity-critical: oklch(0.660 0.190 18.9);
+  --sw-severity-high:     oklch(0.730 0.170 37.7);
+  --sw-severity-medium:   oklch(0.85 0.104 69.3);
+  --sw-severity-low:      oklch(0.91 0.119 85);
+  --sw-severity-info:     oklch(0.665 0.112 240);
+  --sw-severity-track:    oklch(1 0 0 / 15%);
+  --sw-border: oklch(1 0 0 / 10%);
+  --sw-border-strong: oklch(1 0 0 / 20%);
+  --sw-input: oklch(1 0 0 / 15%);
+  --sw-ring: oklch(0.552 0.016 285.938);
+
+  /* Form-field chrome — see DESIGN.md § Form fields. Dark theme's "white fill" is a
+     raised surface one step lighter than --sw-card, so fields still read as the
+     interactive layer. No <alpha-value> channel: never use opacity modifiers. */
+  --sw-field: oklch(0.26 0.007 286.033);
+  --sw-field-border: oklch(1 0 0 / 14%);
+  --sw-field-border-hover: oklch(1 0 0 / 24%);
+  --sw-field-border-focus: oklch(1 0 0 / 70%);
+  --sw-field-ring: oklch(1 0 0 / 18%);
+  --sw-field-shadow: 0 1px 2px oklch(0 0 0 / 40%);
+  --sw-field-readonly: oklch(0.235 0.008 78);
+  --sw-field-disabled: oklch(0.24 0.004 286.033);
+  --sw-field-disabled-foreground: oklch(0.6 0.012 286.067);
+  --sw-radius: 0.625rem;
+  --sw-surface: oklch(0.24 0.012 78);
+}
+
+:root {
+  /* Flint brand palette — the six literal colours from the Flint AI Brand Library
+     (Figma: BxkmBQ8L5G6VmnwUg3rSwH, node 1-344). These are BRAND CONSTANTS, not
+     roles: they do NOT flip between light and dark, which is exactly why they live
+     in the theme-independent block. Use them only where the brand itself is the
+     subject — logo lockups, marketing/sign-in surfaces, onboarding illustration,
+     an upgrade or empty-state hero. Everywhere else keep authoring against the
+     role tokens (background/foreground/primary/status/…), which already derive
+     their warmth from this palette and follow both themes for free. Painting a
+     status, a chart series or a button out of `brand-flame` breaks the rule that
+     colour always means something — see DESIGN.md § Colors.
+     Values are the brand hexes converted to oklch (hex given for reference; the
+     brand sheet's RGB column disagrees with its own hex on three swatches, so the
+     hex is treated as authoritative). No <alpha-value> channel here either —
+     an opacity modifier compiles to NO CSS; use color-mix() if you need a wash. */
+  --sw-brand-black:         oklch(0.212 0.005 39.4);    /* #1B1817 — Black */
+  --sw-brand-flame:         oklch(0.776 0.136 39.1);    /* #FF9673 — Flame */
+  --sw-brand-amber:         oklch(0.851 0.097 68.9);    /* #F8C388 — Amber */
+  --sw-brand-blue:          oklch(0.810 0.044 212.9);   /* #A1C9D2 — Blue; the same
+                                 value --sw-switch is keyed on, deliberately. */
+  --sw-brand-clarity-white: oklch(0.993 0.003 106.4);   /* #FDFDFB — Clarity White */
+  --sw-brand-sand:          oklch(0.948 0.014 64.3);    /* #F5ECE4 — Sand */
+
+  /* Guardian sand — the warm neutral the app canvas has always actually painted
+     (#F4EEE6), promoted to a named constant in the 2026-09 palette consolidation.
+     THEME-INVARIANT like the brand/signal constants above: `background`, `cream` and
+     `widget` all derive from it (background at 100%, cream/widget as translucent
+     washes), so the whole warm-canvas family can't drift out of sync with itself.
+     Distinct from `--sw-brand-sand` just above (#F5ECE4) — a different, cooler brand
+     hue; the two are not interchangeable. Author against the ROLE token
+     (background/cream/widget), never this directly. */
+  --sw-guardian-sand: oklch(0.952 0.012 75.4); /* #F4EEE6 */
+
+  /* Signal palette — the six theme-invariant STATUS hues from the 2026-09 palette
+     consolidation (Figma: EXP – Color › "Palette consolidation — v2 · final
+     decisions"). Like the brand constants these do NOT flip between light and dark:
+     a guardrail red that changed hue with the theme meant a screenshot no longer said
+     one thing. Unlike the brand constants they are the raw material for MEANING —
+     every semantic and severity role token above is a var() reference to one of these,
+     which is what stopped the system carrying three reds and two indistinguishable
+     ambers. Do NOT author against these directly: use the ROLE token (destructive,
+     warning, severity-high, …) so the intent is legible at the call site and dark
+     theme's lifts still apply. No <alpha-value> channel here either — use color-mix().
+     Ink pairing is fixed: white sits on red and green; brand black sits on orange,
+     amber, yellow and never on anything else. */
+  --sw-signal-red:    oklch(0.589 0.187 18.9);    /* #D53E4F */
+  --sw-signal-orange: oklch(0.692 0.176 37.7);    /* #F46D43 */
+  --sw-signal-amber:  oklch(0.823 0.104 69.3);    /* #F1B979 */
+  --sw-signal-yellow: oklch(0.891 0.119 85.0);    /* #FFD57B */
+  --sw-signal-blue:   oklch(0.599 0.114 240);     /* #3288BD */
+  --sw-signal-green:  oklch(0.596 0.145 163.225); /* #009966 */
+
+  /* DEPRECATED — the sidebar namespace. Never use these in new work; author against the
+     role tokens they now point at. Kept only because 13 older prototype shells still
+     write the sidebar classes, and deleting the tokens would
+     silently un-paint their navigation. A sidebar is a surface, not a colour family: it
+     carried its own eight-token palette that duplicated background/foreground/primary/
+     accent and then drifted from them (dark's sidebar-primary was a blue-violet no other
+     token in the system used). var() chains resolve per-theme at the point of use, so
+     ONE alias set here serves both themes. */
+  --sw-sidebar:                    var(--sw-background);
+  --sw-sidebar-foreground:         var(--sw-foreground);
+  --sw-sidebar-primary:            var(--sw-primary);
+  --sw-sidebar-primary-foreground: var(--sw-primary-foreground);
+  --sw-sidebar-accent:             var(--sw-accent);
+  --sw-sidebar-accent-foreground:  var(--sw-accent-foreground);
+  --sw-sidebar-border:             var(--sw-border);
+  --sw-sidebar-ring:               var(--sw-ring);
+
+  /* Recipe tokens — the mixes the codebase kept hand-writing, named once. Each one
+     references a ROLE token, so they follow the theme for free. They exist because a
+     Tailwind opacity modifier emits NO CSS on these colours (no <alpha-value> channel),
+     so the intuitive short form silently does nothing: ~32 dimmed labels, five link
+     hover states and two callout borders shipped with no styling at all. Reach for
+     these instead of an opacity modifier or another inline color-mix. */
+
+  /* Text emphasis ramp — replaces the broken foreground classes with a 40–70 opacity
+     suffix. Three levels only: foreground for read text, secondary for labels and meta,
+     tertiary for the faintest supporting text. Anything fainter is not worth shipping. */
+  --sw-foreground-secondary: color-mix(in oklch, var(--sw-foreground) 70%, transparent);
+  --sw-foreground-tertiary:  color-mix(in oklch, var(--sw-foreground) 50%, transparent);
+
+  /* Primary tints — codifies the 14 hand-written color-mix sites (selected rows, active
+     chips, focus washes) that all meant "a little bit of primary". */
+  --sw-primary-wash:   color-mix(in oklch, var(--sw-primary) 5%, transparent);
+  --sw-primary-muted:  color-mix(in oklch, var(--sw-primary) 10%, transparent);
+  --sw-primary-border: color-mix(in oklch, var(--sw-primary) 20%, transparent);
+
+  /* Modal scrim — one dim level for every overlay, replacing bg-black at 60% (pure
+     black, and cold against a warm palette). */
+  --sw-overlay: color-mix(in oklch, var(--sw-brand-black) 60%, transparent);
+
+  /* Semantic border tints — the missing hairlines. Eight callout and badge sites asked
+     for a 30% border with an opacity modifier and got no border whatsoever. */
+  --sw-destructive-border: color-mix(in oklch, var(--sw-destructive) 30%, transparent);
+  --sw-success-border:     color-mix(in oklch, var(--sw-success) 30%, transparent);
+  --sw-warning-border:     color-mix(in oklch, var(--sw-warning) 30%, transparent);
+
+  /* Severity washes + hairlines — the fill/edge pair for a severity chip or a tinted
+     row, at the same 15% / 30% strengths the semantic families use. */
+  --sw-severity-critical-muted: color-mix(in oklch, var(--sw-severity-critical) 15%, transparent);
+  --sw-severity-high-muted:     color-mix(in oklch, var(--sw-severity-high) 15%, transparent);
+  --sw-severity-medium-muted:   color-mix(in oklch, var(--sw-severity-medium) 15%, transparent);
+  --sw-severity-low-muted:      color-mix(in oklch, var(--sw-severity-low) 15%, transparent);
+  --sw-severity-info-muted:     color-mix(in oklch, var(--sw-severity-info) 15%, transparent);
+  --sw-severity-critical-border: color-mix(in oklch, var(--sw-severity-critical) 30%, transparent);
+  --sw-severity-high-border:     color-mix(in oklch, var(--sw-severity-high) 30%, transparent);
+  --sw-severity-medium-border:   color-mix(in oklch, var(--sw-severity-medium) 30%, transparent);
+  --sw-severity-low-border:      color-mix(in oklch, var(--sw-severity-low) 30%, transparent);
+  --sw-severity-info-border:     color-mix(in oklch, var(--sw-severity-info) 30%, transparent);
+
+  /* Card elevation — three steps, replacing the hand-typed arbitrary shadow classes
+     built on rgba(0,0,0,0.04). Consume as `--sw-elevation-1` / `-2` / `-3`. */
+  --sw-elevation-1: 0px 0px 6px 0px  color-mix(in oklch, var(--sw-brand-black) 4%, transparent);
+  --sw-elevation-2: 0px 0px 12px 0px color-mix(in oklch, var(--sw-brand-black) 4%, transparent);
+  --sw-elevation-3: 0px 0px 12px 2px color-mix(in oklch, var(--sw-brand-black) 4%, transparent);
+
+  --sw-text-xs:   0.8125rem;  /* 13px */
+  --sw-text-sm:   0.875rem;   /* 14px */
+  --sw-text-base: 0.9375rem;  /* 15px */
+  --sw-text-lg:   1.0625rem;  /* 17px */
+  --sw-text-xl:   1.1875rem;  /* 19px */
+  --sw-text-2xl:  1.4375rem;  /* 23px */
+  --sw-text-3xl:  1.8125rem;  /* 29px */
+
+  --sw-leading-xs:   1rem;     /* 16px */
+  --sw-leading-sm:   1.25rem;  /* 20px */
+  --sw-leading-base: 1.5rem;   /* 24px */
+  --sw-leading-lg:   1.625rem; /* 26px */
+  --sw-leading-xl:   1.75rem;  /* 28px */
+  --sw-leading-2xl:  2rem;     /* 32px */
+  --sw-leading-3xl:  2.25rem;  /* 36px */
+
+  /* Border radius — theme-independent. Literal values (no calc/var) so the sync
+     script can copy them verbatim. Signature = --sw-radius (10px); the calc()
+     radii in Button.jsx still read --sw-radius live and stay relative to it. */
+  --sw-radius-none:      0;
+  --sw-radius-px:        1px;
+  --sw-radius-sm:        0.125rem;  /* 2px  */
+  --sw-radius-base:      0.25rem;   /* 4px  */
+  --sw-radius-md:        0.375rem;  /* 6px  */
+  --sw-radius-lg:        0.5rem;    /* 8px  */
+  --sw-radius-signature: 0.625rem;  /* 10px — mirrors --sw-radius */
+  --sw-radius-xl:        0.75rem;   /* 12px */
+  --sw-radius-2xl:       1rem;      /* 16px */
+  --sw-radius-full:      9999px;
+
+  /* Spacing — theme-independent, standard 4px scale (only the steps in use).
+     Dots in step names are encoded as `_` (CSS vars can't contain `.`). */
+  --sw-space-0:   0;
+  --sw-space-0_5: 0.125rem;  /* 2px  */
+  --sw-space-1:   0.25rem;   /* 4px  */
+  --sw-space-1_5: 0.375rem;  /* 6px  */
+  --sw-space-2:   0.5rem;    /* 8px  */
+  --sw-space-2_5: 0.625rem;  /* 10px */
+  --sw-space-3:   0.75rem;   /* 12px */
+  --sw-space-3_5: 0.875rem;  /* 14px */
+  --sw-space-4:   1rem;      /* 16px */
+  --sw-space-5:   1.25rem;   /* 20px */
+  --sw-space-6:   1.5rem;    /* 24px */
+  --sw-space-7:   1.75rem;   /* 28px */
+  --sw-space-8:   2rem;      /* 32px */
+  --sw-space-9:   2.25rem;   /* 36px */
+  --sw-space-10:  2.5rem;    /* 40px */
+  --sw-space-12:  3rem;      /* 48px */
+  --sw-space-16:  4rem;      /* 64px */
+  --sw-space-20:  5rem;      /* 80px */
+  --sw-space-24:  6rem;      /* 96px */
+
+  /* Dashboard widget-grid row heights — see references/UI-BUILD-CONVENTIONS.md
+     § Dashboard widget grid. One of these per row, never a bespoke h-[Npx]. */
+  --sw-widget-h-xs: 10rem;    /* 160px */
+  --sw-widget-h-sm: 12.5rem;  /* 200px */
+  --sw-widget-h-md: 18.75rem; /* 300px */
+  --sw-widget-h-lg: 25rem;    /* 400px */
+  --sw-widget-h-xl: 31.25rem; /* 500px */
+}
+
+/* Gateway additions — not in the upstream tokens. */
+:root {
+  /* The warm canvas the shell's rail and top bar sit bare on. Upstream paints
+     its shells with `background`, so this is that and not a colour of its own. */
+  --sw-canvas: var(--sw-background);
+
+  /* Elevation as the gateway's layout reads it. The surface and the active
+     rail item are upstream's elevation steps; a floating panel has none. */
+  --sw-shadow-surface: var(--sw-elevation-2);
+  --sw-shadow-rail-active: var(--sw-elevation-3);
+  --sw-shadow-popover: 0 2px 6px 0 rgb(0 0 0 / 0.08), 0 10px 28px 0 rgb(0 0 0 / 0.14);
+
+  /* Red as text. Upstream's red is one value for both schemes, which is
+     under 4.5:1 for small text on the dark card (and only just on the light
+     one), so text takes it mixed toward the scheme's own ink: a little darker
+     in light, lighter in dark. Fills keep the red itself. */
+  --sw-destructive-text: color-mix(in oklab, var(--sw-destructive) 80%, var(--sw-foreground));
+  /* Green as text, for the same reason: upstream's green is 3.6:1 on the light
+     card, under AA for the small text it is used in ("Enabled"). */
+  --sw-success-text: color-mix(in oklab, var(--sw-success) 80%, var(--sw-foreground));
+}
+
+/* Gateway overrides of upstream values, the same in both schemes. Last in the
+   file so they win over upstream's per-scheme blocks. */
+:root,
+[data-mui-color-scheme="light"],
+[data-mui-color-scheme="dark"] {
+  /* Upstream's warning is its signal orange, which reads as an error beside
+     the signal red. The gateway keeps an amber, so a warning and an error stay
+     distinguishable at a glance. */
+  --sw-warning: oklch(0.769 0.188 70.08);
+  --sw-warning-muted: color-mix(in oklch, var(--sw-warning) 15%, transparent);
+}

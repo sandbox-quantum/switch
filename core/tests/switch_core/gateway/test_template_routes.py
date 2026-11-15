@@ -349,6 +349,7 @@ class TestOwnership:
                     _TEMPLATE_STORE,
                     bob,
                     await _is_admin(session, bob),
+                    _config(),
                 )
             assert exc.value.status_code == 403
             assert await _TEMPLATE_STORE.get(session, created.id) is not None  # type: ignore[attr-defined]
@@ -412,6 +413,7 @@ class TestOwnership:
                 _TEMPLATE_STORE,
                 alice,
                 await _is_admin(session, alice),
+                _config(),
             )
             assert result.deleted_id == created.id  # type: ignore[attr-defined]
             assert await _TEMPLATE_STORE.get(session, created.id) is None  # type: ignore[attr-defined]
@@ -431,6 +433,7 @@ class TestOwnership:
                 _TEMPLATE_STORE,
                 admin,
                 await _is_admin(session, admin),
+                _config(),
             )
             assert await _TEMPLATE_STORE.get(session, created.id) is None  # type: ignore[attr-defined]
 
@@ -471,6 +474,7 @@ class TestOwnership:
                     _TEMPLATE_STORE,
                     alice,
                     await _is_admin(session, alice),
+                    _config(),
                 )
             assert exc.value.status_code == 404
 

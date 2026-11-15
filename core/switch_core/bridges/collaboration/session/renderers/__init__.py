@@ -26,11 +26,23 @@ from switch_core.sessions.contract import (
     TurnUpsert,
 )
 
+from .subagents import is_tool_call
+
+# How finely a running turn's clock is shown, and so how often the clock alone
+# is worth redrawing a message for. Seconds would sit still between those
+# redraws and read as a card that had stopped.
+RUNNING_CLOCK_SECONDS = 60
+
 # Where the turn itself has got to. One message per turn is edited in place, so
 # without this a turn that finished and a turn that stalled read identically:
 # the same tool log, the last line still marked in progress, and nothing to say
 # which of the two a reader is looking at. Plain sentences, not markup, so
 # every renderer reads the same wording rather than each keeping its own copy.
+#: A turn's state while its message waits for a turn that was already running.
+QUEUED_BEHIND = "Queued behind the running turn. Starts when it ends."
+#: How a message steered into a running turn is introduced in the turn's log.
+STEERED_MARKER = "Steered into this turn"
+
 TURN_STATE = {
     "queued": "Queued. Waiting for the agent to start…",
     "running": "Working…",
@@ -61,7 +73,9 @@ def turn_state(
 
     `elapsed_seconds` comes from outside: neither a turn nor an item carries
     a timestamp, so a caller that tracked one against the session's own event
-    log supplies it. A running turn shows the live duration. A completed turn shows it in
+    log supplies it. A running turn shows the whole minutes it has run, and
+    nothing until the first, because that is as often as anything redraws it
+    for the clock alone. A completed turn shows the exact duration in
     place of the plain "Turn complete." — that phrase said only that the turn
     was over, and this says what happened while it ran. An interrupted or
     errored turn keeps its own phrase, since that is still worth knowing on
@@ -75,27 +89,39 @@ def turn_state(
     reported wherever the turn is.
     """
     state = TURN_STATE[turn.status]
+    if turn.status == "queued" and any(
+        item.kind == "user-message" and item.delivery == "queued" for item in items
+    ):
+        state = QUEUED_BEHIND
     if turn.status not in TURN_ENDED:
+        if elapsed_seconds is not None and elapsed_seconds >= RUNNING_CLOCK_SECONDS:
+            state = f"{state} {int(elapsed_seconds // RUNNING_CLOCK_SECONDS)}m"
+    else:
         if elapsed_seconds is not None:
-            return f"{state} {_format_duration(elapsed_seconds)}"
-        return state
-    if elapsed_seconds is not None:
-        worked = _worked_for(elapsed_seconds, items, tool_detail=tool_detail)
-        state = worked if turn.status == "completed" else f"{state} {worked}"
-    unfinished = sum(
-        1
-        for item in items
-        if item.kind == "tool-activity" and item.status == "in-progress"
-    )
-    if not unfinished:
-        return state
-    step = "step" if unfinished == 1 else "steps"
-    return f"{state} {unfinished} {step} left unfinished."
+            worked = _worked_for(elapsed_seconds, items, tool_detail=tool_detail)
+            state = worked if turn.status == "completed" else f"{state} {worked}"
+        unfinished = sum(
+            1 for item in items if is_tool_call(item) and item.status == "in-progress"
+        )
+        if unfinished:
+            step = "step" if unfinished == 1 else "steps"
+            state += f" {unfinished} {step} left unfinished."
+    steered = sum(1 for item in items if is_steered(item))
+    if steered:
+        noun = "message" if steered == 1 else "messages"
+        state += f" {steered} {noun} steered into this turn."
+    return state
+
+
+def is_steered(item: Item) -> bool:
+    """A person's message that joined this turn while it ran, rather than
+    waiting for a turn of its own."""
+    return item.kind == "user-message" and item.delivery == "steered"
 
 
 def _worked_for(elapsed_seconds: float, items: list[Item], *, tool_detail: bool) -> str:
     """How long a turn ran, and how much of that was tool calls."""
-    calls = sum(1 for item in items if item.kind == "tool-activity")
+    calls = sum(1 for item in items if is_tool_call(item))
     worked = f"Worked for {_format_duration(elapsed_seconds)}."
     if not calls or not tool_detail:
         return worked

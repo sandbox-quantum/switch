@@ -1,6 +1,11 @@
 import { Check, Loader2, MoreHorizontal, X } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { toast } from 'sonner';
+import {
+  InstalledBadge,
+  RecommendedBadge,
+  UsedBadge,
+} from '@renderer/lib/components/provider-status-badges';
 import type { HostDependencyInstallation } from '@renderer/lib/stores/use-agent-installation-statuses';
 import {
   DropdownMenu,
@@ -20,7 +25,6 @@ import type {
   SelectedSource,
 } from '@shared/core/providers/agent-payload';
 import { resolveActiveInstallation, sourceKey } from '@shared/core/providers/agent-payload';
-import { InstalledBadge, RecommendedBadge, UsedBadge } from './agent-status-badge';
 import { buildSourceRows, provenanceLabel } from './installation-sources';
 
 export type InstallationState = 'found' | 'not-found' | 'uninstalled' | 'checking';

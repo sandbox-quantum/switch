@@ -94,7 +94,12 @@ environment's app itself, to test against.
      cluster's service-account issuer, subject
      `system:serviceaccount:<namespace>:<service account>`, audience
      `api://AzureADTokenExchange`. No secret exists. In the chart,
-     `switchCore.teamsApp.credential: federated` mounts the projected token.
+     `switchCore.teamsApp.credential: federated` mounts the projected token,
+     and the service account is switch-core's own, `<release>-switch-core`
+     (`switchCore.serviceAccount`). Never trust `default`: every pod in the
+     namespace that names no account runs as it. An app accepts several
+     federated credentials, so to change the account, add the new subject
+     before deploying and remove the old one after.
    - **Certificate:** upload the public certificate; give Switch the
      certificate and its key (`TEAMS_APP_CERTIFICATE`,
      `TEAMS_APP_CERTIFICATE_PRIVATE_KEY`).
@@ -153,8 +158,13 @@ startup. Setting `TEAMS_APP_CLIENT_ID` is what enables the button.
 5. The connection's **Microsoft Teams** panel lists the organisation's teams.
    The workspace's admins add Switch to the teams they want and choose the
    default team new channels go in; choosing one turns channel creation on.
-   Only a team Switch is in can be the default, and taking Switch out of the
-   default team turns channel creation off until another is chosen. Switch
+   Only a team Switch is in can be the default. A team Switch joins with no
+   default set, whether added here or from Teams, becomes the default on its
+   own, and taking Switch out of its default team, either way, clears it;
+   neither changes whether channel creation is on. A removal Switch only
+   notices on its periodic check (below) leaves the default alone and is
+   logged, since it may be one wrong answer from Microsoft. Until there is a
+   default team, a room cannot be created with a new channel. Switch
    captures messages only in teams it is in: taking it out of a team stops
    capture there, restarts included, until it is added back. Where Teams does
    not tell the bot that Switch was added or removed, Switch notices within

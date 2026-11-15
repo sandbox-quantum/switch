@@ -27,6 +27,7 @@ from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.types import (
     AgentStatus,
     RoomWideMentionStatus,
+    SentMessage,
 )
 from switch_core.bridges.collaboration.slack.adapter import (
     SlackAdapter,
@@ -41,6 +42,7 @@ from switch_core.db.stores.room_store import RoomStore
 from switch_core.delivery.addressing import AddressingResolver, IncomingMessage
 from switch_core.room_wide_mention import ROOM_WIDE_MENTION_MARKER
 from switch_core.transport.content import message_content
+from switch_core.ui_spec import UISpec
 
 
 async def _make_agent(session: AsyncSession, name: str) -> Agent:
@@ -148,9 +150,10 @@ def _service(
         thread_id: str | None = None,
         *,
         extra_content: dict[str, object] | None = None,
-    ) -> str:
+        ui: UISpec | None = None,
+    ) -> SentMessage:
         sent.append(_Sent(body, extra_content))
-        return f"evt-{len(sent)}"
+        return SentMessage(event_id=f"evt-{len(sent)}", trust=None)
 
     svc.list_participants = _participants  # type: ignore[assignment]
     svc.send_message = _send_message  # type: ignore[assignment]

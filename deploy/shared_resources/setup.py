@@ -13,6 +13,8 @@ comes up knowing which chat account its owner is.
 import os
 import sys
 import time
+from dataclasses import dataclass
+from typing import Any
 
 import httpx
 
@@ -183,6 +185,53 @@ def setup_mattermost() -> str | None:
     return user_id
 
 
+@dataclass(frozen=True)
+class AmbiguousBundledBridge:
+    """Several Mattermost bridges, none of them singled out as the bundled one."""
+
+    bridge_ids: list[str]
+
+
+def bundled_mattermost_bridge(
+    bridges: list[dict[str, Any]],
+) -> dict[str, Any] | AmbiguousBundledBridge | None:
+    """Which listed bridge is the deployment's own Mattermost.
+
+    The one Mattermost bridge marked ``preconfigured``; failing that, on a
+    server too old to list the flag, the only Mattermost bridge there is.
+    None when no Mattermost bridge could be the bundled one, so one is to be
+    registered: there is none, or only one and that one marked as connected
+    by a person (``preconfigured`` false). Several and no single marked one
+    is ambiguous: one of them may be a Mattermost somebody connected by hand,
+    and nothing says which.
+
+    The same rule as ``bundledMattermostBridge`` in Switch Console
+    (``src/shared/core/switch-servers/bundled-bridge.ts``), which repoints the
+    bundled bridge before this runs.
+    """
+    mattermost = [b for b in bridges if b.get("bridge_type") == "mattermost"]
+    marked = [b for b in mattermost if b.get("preconfigured") is True]
+    if len(marked) == 1:
+        return marked[0]
+    if not marked and len(mattermost) == 1:
+        only = mattermost[0]
+        return only if only.get("preconfigured") is None else None
+    if not mattermost:
+        return None
+    return AmbiguousBundledBridge([b["bridge_id"] for b in mattermost])
+
+
+def ambiguous_bundled_bridge_message(bridge_ids: list[str]) -> str:
+    return (
+        f"The server has {len(bridge_ids)} Mattermost bridges "
+        f"({', '.join(bridge_ids)}) and none is marked as the deployment's "
+        "bundled one, so setup cannot tell which to adopt. Mark the bundled "
+        "one by setting preconfigured on it (PATCH "
+        '/gateway/collaborations/<bridge_id> with {"preconfigured": true}) '
+        "and run setup again."
+    )
+
+
 def gateway_login() -> httpx.Client:
     """A gateway client authenticated as the seeded admin.
 
@@ -222,10 +271,12 @@ def gateway_login() -> httpx.Client:
     return client
 
 
-def register_bridge(client: httpx.Client) -> str:
+def register_bridge(client: httpx.Client) -> str | None:
     """Register Mattermost bridge with Switch via the authorized gateway API.
 
-    Returns the bridge id — the one already registered, or the new one. Every
+    Returns the bridge id — the one already registered, or the new one — or
+    None when several Mattermost bridges are registered and none is marked as
+    the bundled one, in which case it registers and changes nothing. Every
     call it makes raises on failure, the read included: without a bridge there
     is no deployment to speak of, so none of it is something to carry on past.
     """
@@ -243,49 +294,60 @@ def register_bridge(client: httpx.Client) -> str:
         )
         resp.raise_for_status()
     bridges = resp.json()
-    for bridge in bridges:
-        if bridge.get("bridge_type") == "mattermost":
-            bridge_id = bridge["bridge_id"]
-            print(f"Mattermost bridge already registered: {bridge_id}")
-            # Adopt the default on an instance that predates it, so an
-            # existing deployment gains the invariant on its next setup run
-            # rather than only new ones.
-            if not any(b.get("is_default") for b in bridges):
-                client.post(
-                    f"/gateway/collaborations/{bridge_id}/default"
-                ).raise_for_status()
-                print(f"Set Mattermost bridge as default: {bridge_id}")
-            # And mark it as the deployment's own, for a bridge registered
-            # before the flag existed. Telemetry leaves a preconfigured
-            # connector out of onboarding: it came up because the deployment
-            # booted, not because anybody connected anything. A server that
-            # predates the flag does not list it, and is left alone rather
-            # than sent a field it would ignore.
-            if bridge.get("preconfigured") is False:
-                client.patch(
-                    f"/gateway/collaborations/{bridge_id}",
-                    json={"preconfigured": True},
-                ).raise_for_status()
-                print(f"Marked Mattermost bridge as preconfigured: {bridge_id}")
-            # Same reason: a bridge registered before callbacks existed
-            # would otherwise keep drawing cards with no buttons on them,
-            # and the only cure would be editing a connection field by
-            # hand. Sent every run rather than only when it is missing,
-            # because the config a bridge holds is not readable back — it
-            # carries the admin password, so no endpoint returns it.
-            if MATTERMOST_CALLBACK_BASE_URL:
-                client.patch(
-                    f"/gateway/collaborations/{bridge_id}",
-                    json={
-                        "connection_config": {
-                            "callback_base_url": MATTERMOST_CALLBACK_BASE_URL
-                        }
-                    },
-                ).raise_for_status()
-                print(
-                    f"Set Mattermost callback address: {MATTERMOST_CALLBACK_BASE_URL}"
-                )
-            return bridge_id
+    # A deployment can hold a Mattermost its users connected themselves beside
+    # the bundled one. Adopting the wrong one would repoint, re-default and
+    # mark someone's own chat, and registering another bundled bridge beside
+    # an unidentifiable one only doubles the confusion, so leave them all be.
+    # Not fatal: the job reruns on every upgrade, and failing it would stop the
+    # rest of setup each time over something only an admin can settle.
+    bridge = bundled_mattermost_bridge(bridges)
+    if isinstance(bridge, AmbiguousBundledBridge):
+        print(
+            f"ERROR: {ambiguous_bundled_bridge_message(bridge.bridge_ids)} "
+            "Registering no bridge and changing none."
+        )
+        return None
+    if bridge is not None:
+        bridge_id = bridge["bridge_id"]
+        print(f"Mattermost bridge already registered: {bridge_id}")
+        # Adopt the default on an instance that predates it, so an
+        # existing deployment gains the invariant on its next setup run
+        # rather than only new ones.
+        if not any(b.get("is_default") for b in bridges):
+            client.post(
+                f"/gateway/collaborations/{bridge_id}/default"
+            ).raise_for_status()
+            print(f"Set Mattermost bridge as default: {bridge_id}")
+        # Same reason: a bridge registered before callbacks existed
+        # would otherwise keep drawing cards with no buttons on them,
+        # and the only cure would be editing a connection field by
+        # hand. Sent every run rather than only when it is missing,
+        # because the config a bridge holds is not readable back — it
+        # carries the admin password, so no endpoint returns it.
+        if MATTERMOST_CALLBACK_BASE_URL:
+            client.patch(
+                f"/gateway/collaborations/{bridge_id}",
+                json={
+                    "connection_config": {
+                        "callback_base_url": MATTERMOST_CALLBACK_BASE_URL
+                    }
+                },
+            ).raise_for_status()
+            print(f"Set Mattermost callback address: {MATTERMOST_CALLBACK_BASE_URL}")
+        return bridge_id
+
+    # A bundled bridge registered before the flag existed, and never marked
+    # since, reads the same as a Mattermost a person connected, so say which
+    # bridge the new one is registered beside.
+    for other in bridges:
+        if other.get("bridge_type") == "mattermost":
+            print(
+                "WARNING: Registering the bundled Mattermost bridge beside "
+                f"{other['bridge_id']}, which is marked as connected by a "
+                "person (preconfigured false). If it is in fact the bundled "
+                "one, registered before the flag existed, mark it preconfigured "
+                "and delete the bridge registered now."
+            )
 
     # Register new bridge
     connection_config: dict[str, str] = {
@@ -365,15 +427,32 @@ def link_owner_identity(
     deployment's own chat, and the Home page reports an account the user has to
     link by hand (CHOO-2172).
 
-    Only ever claims when the admin holds no identity on this bridge, so a
-    re-run is a no-op. Someone who deliberately unlinks themselves and runs
-    setup again does get relinked; that is the cost of repairing every existing
+    A link only counts once the account confirms it (CHOO-3881). A person does
+    that by posting a code, which needs a channel with an agent in it to hear
+    it, and a fresh deployment has none; so setup confirms it with the
+    account's own Mattermost session instead, which it can open because it
+    created the account.
+
+    Only ever claims when the admin holds no identity on this bridge, or holds
+    the seeded one unconfirmed, so a re-run is a no-op once it is confirmed.
+    Someone who deliberately unlinks themselves and runs setup again does get
+    relinked; that is the cost of repairing every existing
     deployment on its next run, and the manual control to undo it is still
     there.
     """
     resp = client.get("/gateway/auth/me/identities")
     if resp.is_success:
-        if any(i.get("bridge_id") == bridge_id for i in resp.json()):
+        on_bridge = [i for i in resp.json() if i.get("bridge_id") == bridge_id]
+        # A link from before links needed confirming reads as unverified. One
+        # to the seeded account is confirmed below like a new link; one the
+        # admin made to some other account is theirs, and left alone.
+        unconfirmed_seeded = [
+            i
+            for i in on_bridge
+            if i.get("external_user_id") == external_user_id
+            and not i.get("verified", True)
+        ]
+        if on_bridge and not unconfirmed_seeded:
             print(f"Gateway admin already linked to a Mattermost account: {bridge_id}")
             return
     else:
@@ -394,16 +473,72 @@ def link_owner_identity(
 
     resp = client.post(
         f"/gateway/collaborations/{bridge_id}/identities",
-        json={"external_user_id": external_user_id, "username": MATTERMOST_USER},
+        json={
+            "external_user_id": external_user_id,
+            "username": MATTERMOST_USER,
+            "expects_confirmation": True,
+        },
     )
     if resp.is_success:
-        print(f"Linked {GATEWAY_ADMIN_EMAIL} to Mattermost account {MATTERMOST_USER}")
+        identity = resp.json()
+        if identity.get("link_request") is None:
+            print(
+                f"Linked {GATEWAY_ADMIN_EMAIL} to Mattermost account {MATTERMOST_USER}"
+            )
+        else:
+            confirm_owner_identity(client, bridge_id, identity["id"])
         return
     print(
         f"WARNING: Could not link {GATEWAY_ADMIN_EMAIL} to the Mattermost account "
         f"{MATTERMOST_USER}: {resp.status_code} {resp.text}. Owner-only agents will "
         "not recognise you in Mattermost until you link the account yourself from "
         "the server's Messaging apps section."
+    )
+
+
+def confirm_owner_identity(
+    client: httpx.Client, bridge_id: str, identity_id: str
+) -> None:
+    """Confirm the admin's waiting link with the seeded account's own session.
+
+    The session is opened for this and closed straight after, so setup leaves
+    no login of the account behind.
+    """
+    mattermost = httpx.Client(base_url=MATTERMOST_URL, timeout=10)
+    try:
+        login = mattermost.post(
+            "/api/v4/users/login",
+            json={"login_id": MATTERMOST_USER, "password": MATTERMOST_USER_PASSWORD},
+        )
+        if not login.is_success:
+            print(
+                f"WARNING: Could not sign in to Mattermost as {MATTERMOST_USER} "
+                f"({login.status_code} {login.text}), so the link to "
+                f"{GATEWAY_ADMIN_EMAIL} is waiting to be confirmed. Confirm it "
+                "from the server's Messaging apps section."
+            )
+            return
+        token = login.headers["token"]
+        try:
+            resp = client.post(
+                f"/gateway/collaborations/{bridge_id}/identities/{identity_id}"
+                "/verify-session",
+                json={"token": token},
+            )
+        finally:
+            mattermost.post(
+                "/api/v4/users/logout", headers={"Authorization": f"Bearer {token}"}
+            )
+    finally:
+        mattermost.close()
+    if resp.is_success:
+        print(f"Linked {GATEWAY_ADMIN_EMAIL} to Mattermost account {MATTERMOST_USER}")
+        return
+    print(
+        f"WARNING: Could not confirm the link from {GATEWAY_ADMIN_EMAIL} to the "
+        f"Mattermost account {MATTERMOST_USER}: {resp.status_code} {resp.text}. "
+        "Owner-only agents will not recognise you in Mattermost until you confirm "
+        "it from the server's Messaging apps section."
     )
 
 
@@ -417,7 +552,12 @@ def main() -> None:
     client = gateway_login()
     try:
         bridge_id = register_bridge(client)
-        if mattermost_user_id is None:
+        if bridge_id is None:
+            print(
+                f"ERROR: No bundled Mattermost bridge to link {GATEWAY_ADMIN_EMAIL} "
+                f"to the Mattermost account {MATTERMOST_USER} on"
+            )
+        elif mattermost_user_id is None:
             print(
                 f"WARNING: No Mattermost account for {MATTERMOST_USER}, so "
                 f"{GATEWAY_ADMIN_EMAIL} could not be linked to one"

@@ -52,6 +52,49 @@ describe('resolveCommandPath with login-shell banner noise', () => {
   });
 });
 
+describe('resolveCommandPath on Windows', () => {
+  function recordingCtx(stdout: string) {
+    const calls: string[][] = [];
+    const ctx = makeCtx(async (command, args) => {
+      calls.push([command, ...args]);
+      return { stdout, stderr: '' };
+    });
+    return { ctx, calls };
+  }
+
+  it('asks `where` for a path as dir:name, which it can parse', async () => {
+    const path = 'C:\\Users\\KRISHNA ASWANI T\\.local\\bin\\claude.exe';
+    const { ctx, calls } = recordingCtx(`${path}\r\n`);
+    await expect(resolveCommandPath(path, ctx, 'windows')).resolves.toBe(path);
+    expect(calls).toEqual([['where', 'C:\\Users\\KRISHNA ASWANI T\\.local\\bin:claude.exe']]);
+  });
+
+  it('keeps the root of a drive a directory', async () => {
+    const { ctx, calls } = recordingCtx('C:\\claude.exe\r\n');
+    await expect(resolveCommandPath('C:\\claude.exe', ctx, 'windows')).resolves.toBe(
+      'C:\\claude.exe'
+    );
+    expect(calls).toEqual([['where', 'C:\\:claude.exe']]);
+  });
+
+  it('passes a bare name through', async () => {
+    const { ctx, calls } = recordingCtx('C:\\tools\\claude.exe\r\n');
+    await resolveCommandPath('claude', ctx, 'windows');
+    expect(calls).toEqual([['where', 'claude']]);
+  });
+
+  it('skips npm’s extensionless shell script for the .cmd beside it', async () => {
+    const npm = 'C:\\Users\\Phil\\AppData\\Roaming\\npm';
+    const { ctx } = recordingCtx(`${npm}\\opencode\r\n${npm}\\opencode.cmd\r\n`);
+    await expect(resolveCommandPath('opencode', ctx, 'windows')).resolves.toBe(
+      `${npm}\\opencode.cmd`
+    );
+    await expect(resolveAllCommandPaths('opencode', ctx, 'windows')).resolves.toEqual([
+      `${npm}\\opencode.cmd`,
+    ]);
+  });
+});
+
 describe('resolveAllCommandPaths with login-shell banner noise', () => {
   it('keeps every real match in PATH order and drops banner lines', async () => {
     const ctx = makeCtx(async () => ({

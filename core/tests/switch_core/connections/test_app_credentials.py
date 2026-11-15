@@ -18,9 +18,13 @@ from starlette.datastructures import State
 from switch_core.connections.adapters.github import GitHubAdapter
 from switch_core.connections.adapters.oauth import OAuthAdapter
 from switch_core.connections.app_credentials import (
+    GITHUB_NEEDS_HTTPS,
     SECRET_NAMES,
+    UNREADABLE,
     ConnectorApps,
+    UnreadableAppError,
     install_github_app,
+    load_saved_app,
 )
 from switch_core.connections.broker import ServiceBroker
 from switch_core.connections.loader import CATALOG
@@ -34,6 +38,7 @@ from switch_core.db.stores.workspace_service_store import WorkspaceServiceStore
 from switch_core.keys import Keyring
 from tests.conftest import TEST_KEYRING
 from tests.switch_core.connections.adapters.test_github import _app_files, _config
+from tests.switch_core.connections.standing import connectable, sign_in
 
 PUBLIC_URL = "https://switch.example.test"
 GOOGLE_VARIABLE = "GOOGLE_WORKSPACE_CLIENT_CONFIG_PATH"
@@ -78,6 +83,7 @@ def _apps(
             keyring=TEST_KEYRING,
             public_url=settings.gateway_public_url,
             server_name="switch.local",
+            redirects=settings.service_sign_in_redirect,
         ),
     )
 
@@ -124,12 +130,14 @@ def _broker(session_factory: async_sessionmaker[AsyncSession]) -> ServiceBroker:
         keyring=TEST_KEYRING,
         catalog=CATALOG,
         adapters={},
+        organization_apps=None,
         disabled={},
         store=ServiceConnectionStore(),
         token_retention=timedelta(days=30),
         workspace_services=WorkspaceServiceStore(),
         workspace_gate=False,
         public_url=None,
+        allow_non_expiring_keys=False,
     )
 
 
@@ -140,10 +148,35 @@ class TestSpecs:
             "github": "github_app",
             "google-workspace": "oauth_client",
             "airtable": "oauth_client",
+            "gitlab": "oauth_client",
         }
         assert specs["google-workspace"].variables == (GOOGLE_VARIABLE,)
         assert specs["airtable"].variables == ("AIRTABLE_CLIENT_CONFIG_PATH",)
+        assert specs["gitlab"].variables == ("GITLAB_CLIENT_CONFIG_PATH",)
         assert specs["github"].secret_names == {"client_secret", "private_key"}
+
+
+class TestSavedSecrets:
+    def test_what_opens_to_no_payload_of_secrets_is_unreadable(
+        self, session_factory
+    ) -> None:
+        """A key opens it, but what it opens is not JSON: only entering the
+        secrets again mends it, as when no key opens it."""
+        spec = _apps(session_factory).specs["google-workspace"]
+
+        def not_json() -> dict[str, str]:
+            return json.loads("not json")
+
+        with pytest.raises(UnreadableAppError) as unreadable:
+            load_saved_app(
+                spec,
+                definition=CATALOG["google-workspace"].definition,
+                client_id="example-client-id",
+                settings={},
+                secrets=not_json,
+                public_url=PUBLIC_URL,
+            )
+        assert str(unreadable.value) == UNREADABLE
 
 
 class TestPrecedence:
@@ -271,7 +304,7 @@ class TestSavedGitHubApp:
             f"{PUBLIC_URL}/gateway/provider-connections/github/callback"
         )
 
-    async def test_it_is_not_set_up_without_an_https_public_url(
+    async def test_it_is_not_set_up_on_another_computers_http_address(
         self, session_factory
     ) -> None:
         await _save(
@@ -285,8 +318,29 @@ class TestSavedGitHubApp:
         await apps.load()
         effective = apps.effective("github")
         assert effective.source == "none"
-        assert effective.load_error is not None
-        assert "https" in effective.load_error
+        assert effective.load_error == GITHUB_NEEDS_HTTPS
+
+    @pytest.mark.parametrize(
+        "public_url", ["http://127.0.0.1:8000", "http://localhost:8000"]
+    )
+    async def test_it_is_set_up_on_this_computers_http_address(
+        self, session_factory, public_url: str
+    ) -> None:
+        await _save(
+            session_factory,
+            "github",
+            client_id="example-client-id",
+            settings={"slug": "example-app"},
+            secrets={"client_secret": "example-secret-0000", "private_key": _rsa_pem()},
+        )
+        apps = _apps(session_factory, gateway_public_url=public_url)
+        await apps.load()
+        assert apps.effective("github").load_error is None
+        app = apps.github_app()
+        assert app is not None
+        assert app.connections.callback == (
+            f"{public_url}/gateway/provider-connections/github/callback"
+        )
 
     async def test_a_key_that_is_not_rsa_leaves_it_not_set_up(
         self, session_factory, caplog: pytest.LogCaptureFixture
@@ -331,7 +385,7 @@ class TestApply:
         apps = _apps(session_factory)
         await apps.load()
         broker = _broker(session_factory)
-        assert broker.connectable("google-workspace") is False
+        assert await connectable(broker, "google-workspace") is False
 
         await _save(
             session_factory,
@@ -341,15 +395,15 @@ class TestApply:
         )
         await apps.apply("google-workspace", broker=broker, state=State())
 
-        assert broker.connectable("google-workspace") is True
-        _, adapter = broker.sign_in("google-workspace")
+        assert await connectable(broker, "google-workspace") is True
+        _, adapter = await sign_in(broker, "google-workspace")
         assert isinstance(adapter, OAuthAdapter)
 
         async with session_factory() as session:
             await apps.store.remove(session, "google-workspace")
             await session.commit()
         await apps.apply("google-workspace", broker=broker, state=State())
-        assert broker.connectable("google-workspace") is False
+        assert await connectable(broker, "google-workspace") is False
 
     async def test_the_saved_github_app_is_swapped_in_place(
         self, session_factory

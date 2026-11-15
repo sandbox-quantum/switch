@@ -25,6 +25,7 @@ const fakeFs = vi.hoisted(() => (): PluginFs => ({
   delete: async (path: string) => {
     state.files.delete(path);
   },
+  protectSecret: async (path: string) => state.files.has(path),
   exists: async (path: string) => state.files.has(path),
   list: async () => [],
 }));

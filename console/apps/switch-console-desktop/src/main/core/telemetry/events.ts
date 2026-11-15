@@ -1,4 +1,5 @@
 import type { InstallMethod } from '@switch-console/core/deps';
+import type { ManagedStartFailure } from '@shared/core/managed-switch-server/managed-switch-server';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import type { HostSetupStepKind } from '@shared/core/remote-hosts/setup';
 import type { SearchStatus } from '@shared/core/search';
@@ -98,14 +99,6 @@ export type TelemetryAgentRemoveFailure =
   | 'gateway_network'
   | 'error';
 
-/** Why resetting a remote agent failed. Also named rather than derived. */
-export type TelemetryAgentResetFailure =
-  | 'none'
-  | 'agent_not_found'
-  | 'not_remote'
-  | 'connect'
-  | 'error';
-
 /**
  * What removed an agent.
  *
@@ -114,6 +107,14 @@ export type TelemetryAgentResetFailure =
  * identical to a dozen people giving up on their agents.
  */
 export type TelemetryAgentRemoveTrigger = 'user' | 'server_teardown';
+
+/**
+ * Why an agent its Switch server no longer has was removed from this app:
+ * `gone_from_server` when a pass found it deleted there, by anyone, anywhere;
+ * `managed_agent_deleted` when the managed agent it had moved to was deleted
+ * from this app, which takes the agent it moved from with it.
+ */
+export type TelemetryAgentPruneCause = 'gone_from_server' | 'managed_agent_deleted';
 
 /** Installing, updating or removing an agent's own CLI. */
 export type TelemetryCliAction = 'install' | 'update' | 'uninstall';
@@ -163,6 +164,14 @@ export type TelemetryCliFailure =
 declare const durationMsBrand: unique symbol;
 export type TelemetryDurationMs = number & { readonly [durationMsBrand]: true };
 
+/**
+ * An app version, as the app reports its own: semver only, checked where it is
+ * minted (`appVersionOf`). Branded so only that check produces one, the way a
+ * platform key below is: a string type here would let free text through.
+ */
+declare const appVersionBrand: unique symbol;
+export type TelemetryAppVersion = string & { readonly [appVersionBrand]: true };
+
 declare const platformKeyBrand: unique symbol;
 
 /**
@@ -179,25 +188,73 @@ export type TelemetryBridgePlatform =
   | 'unknown'
   | (string & { readonly [platformKeyBrand]: true });
 
-/**
- * What asked for an update check.
- *
- * `startup` and `scheduled` are the app's own; `user` is a menu item or a button
- * somebody pressed. Note a manual check that lands while an automatic one is
- * already running joins it rather than starting a new one, so a small number of
- * user checks are reported under the trigger that got there first.
- */
-export type TelemetryUpdateTrigger = 'user' | 'startup' | 'scheduled';
-
 export type TelemetryBridgeFailure = 'none' | 'unauthenticated' | 'forbidden' | 'invalid' | 'error';
 
+/**
+ * How linking a messaging account came out. `pending` is a link the server is
+ * holding until a one-time code is posted from the account, which counts for
+ * nothing yet — reported apart from `success` so the links that are never
+ * confirmed stay visible. A server that predates confirming links answers
+ * `success` straight away.
+ */
+export type TelemetryIdentityClaimOutcome = 'success' | 'pending' | 'failure';
+
+/**
+ * Which link a confirmation finished. `new` was claimed and waiting on its
+ * code, so it follows a `pending` claim; `existing` was made before links had to
+ * be confirmed and counted all along. Kept apart so confirmations can be read
+ * against the claims that were waiting for them. `unknown` when the caller did
+ * not say.
+ */
+export type TelemetryIdentityLinkKind = 'new' | 'existing' | 'unknown';
+
+/**
+ * Why a room create failed. `unreachable` is the server's host known to be
+ * down before asking; `network` a request that never reached the server;
+ * `forbidden`, `not_found`, `conflict` and `server_error` the server's own
+ * answer (403, 404, 409, 5xx); `error` anything with no answer to read.
+ */
 export type TelemetryRoomCreateFailure =
   | 'none'
   | 'unauthenticated'
   | 'bridge_unavailable'
   | 'invalid'
   | 'unreachable'
+  | 'network'
+  | 'forbidden'
+  | 'not_found'
+  | 'conflict'
+  | 'server_error'
   | 'error';
+
+/**
+ * Why a chat action failed, as an enumerated code. The gateway's own refusal
+ * codes (`NOT_A_MEMBER`, …) are not passed through: they are the server's
+ * vocabulary and grow with it, and a refusal is one bucket here — the server
+ * reports its own side.
+ */
+export type TelemetryChatFailure =
+  | 'none'
+  | 'unauthenticated'
+  /** The server answered and said no: a 4xx not named below, coded or not. */
+  | 'refused'
+  /** A 429: the server asked the app to slow down. */
+  | 'rate_limited'
+  /** `REQUEST_REUSED`: the request id was already used for a different request. */
+  | 'request_reused'
+  /** No answer: the server could not be reached, or the request timed out (408). */
+  | 'network'
+  | 'server_error'
+  | 'error';
+
+/**
+ * A chat as the server made it: one agent and its person, or a group.
+ * `unknown` when the create failed, so there is no chat to read it from.
+ */
+export type TelemetryChatKind = 'direct' | 'group' | 'unknown';
+
+/** Whom a message named: nobody, an agent, a person, or both. Never which. */
+export type TelemetryChatMentions = 'none' | 'agent' | 'person' | 'both';
 
 /** How a room came to be made: the Create room dialog, or a template run. */
 export type TelemetryRoomCreateSource = 'dialog' | 'template';
@@ -227,12 +284,18 @@ export type TelemetryHostSetupAction = 'install' | 'update' | 'skip';
 
 export type TelemetryManagedServerAction = 'start' | 'stop' | 'reset';
 
+/**
+ * Why a managed server's start, stop or reset failed. The start's own causes
+ * are named where the code can tell them apart (`ManagedStartFailure`); `error`
+ * is everything else, including anything that threw.
+ */
 export type TelemetryManagedServerFailure =
   | 'none'
   | 'docker_not_installed'
   | 'docker_daemon_down'
   | 'version_downgrade'
   | 'matrix_migration_failed'
+  | Exclude<ManagedStartFailure, 'unexpected'>
   | 'error';
 
 /**
@@ -254,25 +317,70 @@ export type TelemetryDockerAvailability = 'available' | 'unavailable' | 'unknown
 export type TelemetryRoomAgentsDirection = 'agents_to_room' | 'room_to_agents';
 
 /**
+ * Why adding agents to a room failed. `unreachable` is the server's host known
+ * to be down before asking; `unauthenticated` a session the server refused;
+ * `network` a request that never reached the server; `forbidden`, `not_found`,
+ * `conflict`, `invalid` and `server_error` the server's own answer (403, 404,
+ * 409, 400 or 422, 5xx); `error` anything with no answer to read.
+ */
+export type TelemetryRoomAgentsAddFailure =
+  | 'none'
+  | 'unreachable'
+  | 'unauthenticated'
+  | 'network'
+  | 'forbidden'
+  | 'not_found'
+  | 'conflict'
+  | 'invalid'
+  | 'server_error'
+  | 'error';
+
+/**
  * Which control the user reached the action from, and who started a session.
  *
  * Both are declared in `@shared` because the renderer names them and the main
- * process reports them; see that module for what the variants mean.
+ * process reports them; see that module for what the variants mean. A session
+ * the app adopted rather than started is `session_discovered`, never a start.
  */
 export type TelemetryEntryPoint = UiEntryPoint;
-export type TelemetrySessionStartSource = SessionStartSource;
+export type TelemetrySessionStartSource = Exclude<SessionStartSource, 'adopted'>;
 
-/** A retry's trigger, minus `initial`, which is not a retry and is not sent. */
-export type TelemetrySessionProvisionTrigger = Exclude<SessionProvisionTrigger, 'initial'>;
+/**
+ * A retry someone asked for. `initial` is not a retry and is not sent, and
+ * `auto` is the app's own, sent as `session_reopened`.
+ */
+export type TelemetrySessionProvisionTrigger = Exclude<SessionProvisionTrigger, 'initial' | 'auto'>;
 
-/** Which setting was changed. The keys of the app's settings, and nothing else. */
-export type TelemetrySettingKey = AppSettingsKeyName;
+/**
+ * Which setting was changed. The keys of the app's settings, and nothing else,
+ * less the two the app writes as it goes rather than a person setting them:
+ * `telemetry`, which the first-run notice records the moment it is shown and
+ * whose own answer is `telemetry_consent_changed`, and `onboarding`.
+ */
+export type TelemetrySettingKey = Exclude<AppSettingsKeyName, 'telemetry' | 'onboarding'>;
 
 /** How a search ended. The search's own union, reused rather than restated. */
 export type TelemetrySearchStatus = SearchStatus;
 
-/** The kinds of server this install can hold. Named once, used by five events. */
-export type TelemetryServerKind = 'local' | 'remote_managed' | 'external';
+/**
+ * The kinds of server this install can hold. Named once, used by six events.
+ * `cloud` is Switch Cloud, the server this build offers by name; `external` is
+ * any other server someone registered by address. `unknown` is a server
+ * registered by address while this build names a Cloud whose address it cannot
+ * read, so neither of those two could be told apart.
+ */
+export type TelemetryServerKind = 'local' | 'remote_managed' | 'external' | 'cloud' | 'unknown';
+
+/**
+ * Why registering a server by address failed: the address is already another
+ * server's, or it answered with a page rather than the server's API (the
+ * dashboard's address pasted in place of the server's).
+ */
+export type TelemetryServerAddFailure =
+  | 'none'
+  | 'already_added'
+  | 'not_the_server_address'
+  | 'error';
 
 /**
  * A setup step's kind, reused from the remote-host model rather than restated.
@@ -295,7 +403,8 @@ export type TelemetryHostSetupStepKind = HostSetupStepKind | 'unknown';
  * mean.
  *
  * The ambient fields every event carries — app version, operating system, build
- * channel, install id — are added by the emitter and are not repeated here.
+ * channel, install id, the record's own random id and its session — are added
+ * by the emitter and are not repeated here.
  *
  * Keep this set small. It exists to answer "is the app used, and where does it
  * break"; a question the current set cannot answer is the bar for adding to it,
@@ -303,9 +412,22 @@ export type TelemetryHostSetupStepKind = HostSetupStepKind | 'unknown';
  * depend on it.
  */
 export type TelemetryEventMap = {
-  /** The app started, and which kind of launch it was. */
+  /**
+   * The app started, and which kind of launch it was.
+   *
+   * A launch on a new version after an update is the end of that update, and
+   * says so. `from_version` is the version the previous launch ran; `unknown`
+   * for an install from before launches were recorded, or a stored value that
+   * is not a version. `update_trigger` is `restart_button` when the previous run handed
+   * the update to the installer from Restart to update, `other` when the version
+   * changed without that (installed when the app quit, or by hand), and
+   * `unknown` when that record could not be read. Both are `none` on any launch
+   * that is not an upgrade's.
+   */
   app_launched: {
     install_kind: TelemetryInstallKind;
+    from_version: TelemetryAppVersion | 'unknown' | 'none';
+    update_trigger: 'restart_button' | 'other' | 'unknown' | 'none';
   };
   agent_created: {
     agent_type: TelemetryAgentType;
@@ -313,6 +435,23 @@ export type TelemetryEventMap = {
     outcome: TelemetryOutcome;
     failure_reason: TelemetryAgentCreateFailure;
     entry_point: TelemetryEntryPoint;
+  };
+  /**
+   * An agent already set up in a directory on a host was loaded into this app
+   * under the Switch identity it already has (Load existing agents). Nothing
+   * was created: the agent existed before, set up by another install.
+   */
+  agent_attached: {
+    agent_type: TelemetryAgentType;
+    location: TelemetryLocationKind;
+  };
+  /**
+   * An agent's session spawned a subagent, and the app took it on as an agent
+   * of its own. Nobody did anything in the app.
+   */
+  subagent_adopted: {
+    agent_type: TelemetryAgentType;
+    location: TelemetryLocationKind;
   };
   session_started: {
     agent_type: TelemetryAgentType;
@@ -327,50 +466,85 @@ export type TelemetryEventMap = {
     connected_to_room: boolean;
   };
   /**
-   * A session finished. `normal` is a session the user ended (deleted or
-   * archived); `failed` is one whose agent process died and could not be
-   * recovered. A session still running when the app quits reports neither.
+   * A session this app found on a host rather than started: the poll that
+   * watches each agent's host noticed it, and took it on. That includes a
+   * session the room watcher started because the agent was addressed in a
+   * room, which the Switch server's own `session_started` counts as it happens.
+   * Stamped when the app noticed it, which is when the app next ran, and two
+   * installs watching one host each report it. Nobody did anything in the app.
+   */
+  session_discovered: {
+    agent_type: TelemetryAgentType;
+    location: TelemetryLocationKind;
+  };
+  /**
+   * A session finished: deleted or archived here, or gone from its host when the
+   * app next looked. `outcome` is always `normal`. A session still running when
+   * the app quits reports nothing.
    */
   session_ended: {
     agent_type: TelemetryAgentType;
     location: TelemetryLocationKind;
-    outcome: 'normal' | 'failed';
+    outcome: 'normal';
   };
   /**
    * A server was added to this install.
    *
-   * `outcome: 'failure'` is reported only for `external` — registering a URL is
-   * the one add that is a discrete action able to fail on its own. Bringing up a
-   * managed stack fails in ways of its own (no Docker, a version downgrade),
-   * which `managed_server_action` reports with the dimension that explains them;
-   * counting those here as well would double-count the same wall.
+   * `outcome: 'failure'` is reported only for a server registered by address
+   * (`external` or `cloud`) — registering one is the one add that is a discrete
+   * action able to fail on its own. Bringing up a managed stack fails in ways of
+   * its own (no Docker, a version downgrade), which `managed_server_action`
+   * reports with the dimension that explains them; counting those here as well
+   * would double-count the same wall.
    */
   server_added: {
-    /** `external` is a server the user registered by URL: Switch Console does not run it. */
-    server_kind: 'local' | 'remote_managed' | 'external';
+    /**
+     * `external` is a server the user registered by URL: Switch Console does not
+     * run it. `cloud` is Switch Cloud, registered from its own button or by its
+     * address.
+     */
+    server_kind: TelemetryServerKind;
     outcome: TelemetryOutcome;
+    failure_reason: TelemetryServerAddFailure;
   };
   /**
-   * The app checked for an update. `trigger` separates a check someone asked for
-   * from the hourly one, because only the first says anything about intent.
+   * Someone asked for an update check, from the menu or a Check button, and
+   * how the check came out. One that lands while the app's own check is
+   * already running joins it, and reports that check's result. The app's own
+   * checks are `update_checked`.
    */
-  update_checked: {
-    trigger: TelemetryUpdateTrigger;
+  update_check_requested: {
     result: 'available' | 'up_to_date' | 'failed';
   };
+  /**
+   * The app checked for an update on its own, as a window loaded (`startup`)
+   * or on its hourly timer (`scheduled`), and how the check came out. Not
+   * someone using the app (`BACKGROUND_EVENTS`): it is there for the
+   * updater's health. One that joins a check already running is not sent;
+   * the check it joined already is.
+   */
+  update_checked: {
+    trigger: 'startup' | 'scheduled';
+    result: 'available' | 'up_to_date' | 'failed';
+  };
+  /**
+   * Download was pressed for an available update. Downloads only ever start on
+   * that press (`autoDownload` is off), so this is the press, and
+   * `update_downloaded` is how it ended. Nothing to carry: which update is the
+   * event's own app version and the check before it.
+   */
+  update_download_started: Record<never, never>;
   update_downloaded: {
     outcome: TelemetryOutcome;
   };
   /**
-   * An install was started — not finished.
-   *
-   * Deliberately named for what it can actually observe. A successful install
-   * quits the app, so there is no moment afterwards in which to report one; what
-   * this counts is the point the update was handed to the installer. Whether it
-   * worked is answered by the next `app_launched` and its version.
+   * An install that was started did not finish: the app never went down for
+   * the installer, or the launch after it came back on the old version.
+   * Failures only. One that worked is the next launch's `app_launched`, with
+   * `install_kind: updated`.
    */
   update_install_started: {
-    outcome: TelemetryOutcome;
+    outcome: 'failure';
   };
   /** A messaging platform was connected to a server. */
   bridge_connected: {
@@ -392,7 +566,16 @@ export type TelemetryEventMap = {
   /** Someone linked their account on a messaging platform to their Switch user. */
   bridge_identity_claimed: {
     bridge_platform: TelemetryBridgePlatform;
-    outcome: TelemetryOutcome;
+    outcome: TelemetryIdentityClaimOutcome;
+  };
+  /**
+   * A link was confirmed by posting its one-time code from the account. Only
+   * the confirmation screen sees this happen, and the server is asked before it
+   * is reported.
+   */
+  bridge_identity_confirmed: {
+    bridge_platform: TelemetryBridgePlatform;
+    link_kind: TelemetryIdentityLinkKind;
   };
   /**
    * An agent was removed. `delete_in_switch` says whether its identity on the
@@ -403,19 +586,19 @@ export type TelemetryEventMap = {
     agent_type: TelemetryAgentType;
     location: TelemetryLocationKind;
     delete_in_switch: boolean;
-    trigger: TelemetryAgentRemoveTrigger;
+    trigger: TelemetryAgentRemoveTrigger | 'unknown';
     outcome: TelemetryOutcome;
     failure_reason: TelemetryAgentRemoveFailure;
   };
   /**
-   * A remote agent was reset — every one of its panes on the host killed and the
-   * agent brought back up. Remote-only, and a real SSH operation, so unlike most
-   * of this catalogue it fails for reasons outside the app.
+   * An agent its Switch server no longer has was removed from this app by the
+   * pass that keeps the two in step, rather than by a person removing it.
    */
-  agent_reset: {
+  agent_pruned: {
     agent_type: TelemetryAgentType;
+    location: TelemetryLocationKind;
+    cause: TelemetryAgentPruneCause;
     outcome: TelemetryOutcome;
-    failure_reason: TelemetryAgentResetFailure;
   };
   /**
    * A server was removed from this install.
@@ -426,10 +609,12 @@ export type TelemetryEventMap = {
    * so a count here would always be zero, which reads as an answer.
    */
   server_removed: {
-    server_kind: 'local' | 'remote_managed' | 'external';
+    server_kind: TelemetryServerKind;
   };
   /**
-   * A session whose setup had not completed was provisioned again.
+   * Someone asked for a session whose setup had not completed to be
+   * provisioned again: `retry_button` is Retry, `session_click` clicking the
+   * session in the sidebar or a session list.
    *
    * The first attempt for a session is not reported: what is worth knowing is
    * whether a second one worked, and whether anyone had to ask for it.
@@ -441,14 +626,12 @@ export type TelemetryEventMap = {
     outcome: TelemetryOutcome;
   };
   /**
-   * A remote session's terminal was attached, or could not be.
-   *
-   * Reported only for an attach a person waited on. A transport drop cancels
-   * every queued attach at once, which is one failure rather than a host's
-   * worth, so a cancelled attach is not reported as one.
+   * The app provisioned a session again on its own: the session view opened
+   * on one that was not running, typically the screen a launch resumes on.
    */
-  session_attached: {
+  session_reopened: {
     agent_type: TelemetryAgentType;
+    location: TelemetryLocationKind;
     outcome: TelemetryOutcome;
   };
   /**
@@ -493,7 +676,9 @@ export type TelemetryEventMap = {
   };
   room_agents_added: {
     agent_count: number;
-    direction: TelemetryRoomAgentsDirection;
+    direction: TelemetryRoomAgentsDirection | 'unknown';
+    outcome: TelemetryOutcome;
+    failure_reason: TelemetryRoomAgentsAddFailure;
   };
   /** Someone signed in to a server. */
   server_sign_in: {
@@ -541,28 +726,80 @@ export type TelemetryEventMap = {
     docker_available: TelemetryDockerAvailability;
   };
   /**
-   * The four events below are reported by the interface, through the one gate in
-   * `./renderer-events`. They are here because they are catalogue events like
-   * any other — the same consent check, the same property filter — and only the
-   * place they are observed differs.
+   * A Switch Console chat was made: a 1-1 with an agent, or a group. `kind` is
+   * read from the chat the server made. `agent_count` and `person_count` are
+   * what was asked for — the counts of agents and of other people invited,
+   * never who. `on_messaging_app` is a chat opened in a messaging app
+   * connection rather than in Switch. Finishing a create an earlier attempt
+   * already made, or a retry of one already reported, is not reported again.
+   */
+  chat_created: {
+    server_kind: TelemetryServerKind;
+    kind: TelemetryChatKind;
+    agent_count: number;
+    person_count: number;
+    on_messaging_app: boolean;
+    outcome: TelemetryOutcome;
+    failure_reason: TelemetryChatFailure;
+  };
+  /**
+   * A message was sent in a chat. Nothing of the message: whether it carried
+   * files, whether it was a thread reply, and whether it named an agent or a
+   * person — never which.
+   */
+  chat_message_sent: {
+    server_kind: TelemetryServerKind;
+    has_attachment: boolean;
+    in_thread: boolean;
+    mentions: TelemetryChatMentions;
+    outcome: TelemetryOutcome;
+    failure_reason: TelemetryChatFailure;
+  };
+  /** A person or an agent was added to a chat, or taken out of one. */
+  chat_member_changed: {
+    server_kind: TelemetryServerKind;
+    change: 'added' | 'removed';
+    member_kind: 'person' | 'agent';
+    outcome: TelemetryOutcome;
+    failure_reason: TelemetryChatFailure;
+  };
+  /**
+   * Stop, Reset, Compact or Retry was sent to an agent in a chat. Written out
+   * rather than taken from `ChatControlCommand`, so the disclosure test reads
+   * the values; a command added there fails to compile at the call site.
+   */
+  chat_control_sent: {
+    server_kind: TelemetryServerKind;
+    command: 'interrupt' | 'reset' | 'compact' | 'retry';
+    outcome: TelemetryOutcome;
+    failure_reason: TelemetryChatFailure;
+  };
+  /** An agent's approval request was answered in a chat. Never the answer. */
+  chat_approval_answered: {
+    server_kind: TelemetryServerKind;
+    outcome: TelemetryOutcome;
+    failure_reason: TelemetryChatFailure;
+  };
+  /**
+   * The events from here to `renderer_crashed` are reported by the interface,
+   * through the one gate in `./renderer-events`. They are here because they are
+   * catalogue events like any other — the same consent check, the same property
+   * filter — and only the place they are observed differs.
    */
   view_opened: RendererTelemetryEvents['view_opened'];
   command_executed: RendererTelemetryEvents['command_executed'];
   deeplink_opened: RendererTelemetryEvents['deeplink_opened'];
-  onboarding_step_started: RendererTelemetryEvents['onboarding_step_started'];
-  onboarding_checklist_dismissed: RendererTelemetryEvents['onboarding_checklist_dismissed'];
-  onboarding_completed: RendererTelemetryEvents['onboarding_completed'];
   add_server_step: RendererTelemetryEvents['add_server_step'];
   onboarding_page: RendererTelemetryEvents['onboarding_page'];
   buddy_step: RendererTelemetryEvents['buddy_step'];
-  buddy_message_sent: RendererTelemetryEvents['buddy_message_sent'];
   /** A screen failed. A count, with nothing of what failed or where. */
   renderer_crashed: RendererTelemetryEvents['renderer_crashed'];
   /**
    * A setting was changed. **The key only, never the value.** Several settings
    * hold free text — a sound file, a default directory, a font, a browser
    * profile — and the useful question is which settings people touch, which the
-   * key answers on its own.
+   * key answers on its own. Only a write that changed the stored value counts:
+   * saving a setting as it already was is not changing it.
    */
   setting_changed: {
     setting_key: TelemetrySettingKey;
@@ -604,6 +841,31 @@ export type TelemetryEventMap = {
 export type TelemetryEventName = keyof TelemetryEventMap;
 
 /**
+ * The events that are not someone using the app: the app noticing, retrying or
+ * tidying up on its own, an update that did not install, and a screen that
+ * failed. Amplitude counts activity per event name, and these are the names to
+ * count as inactive. They carry no session (`flint.session_id` is -1,
+ * `./session`) and never start or prolong one. One occurrence of another event
+ * that nobody caused is sent the same way with `trackBackgroundEvent`: a
+ * session ending because a pass pruned its agent, or the usage-data answer the
+ * first-run notice records by itself.
+ */
+export const BACKGROUND_EVENTS: ReadonlySet<TelemetryEventName> = new Set<TelemetryEventName>([
+  'session_discovered',
+  'session_reopened',
+  'subagent_adopted',
+  'agent_pruned',
+  'update_checked',
+  'update_install_started',
+  'renderer_crashed',
+]);
+
+/** One event and what it carries, as a union a `switch` on `name` narrows. */
+export type TelemetryEvent = {
+  [K in TelemetryEventName]: { name: K; properties: TelemetryEventMap[K] };
+}[TelemetryEventName];
+
+/**
  * The properties each event may carry, as data rather than as types alone.
  *
  * The types above are the design; this is what the emitter enforces at runtime.
@@ -612,8 +874,10 @@ export type TelemetryEventName = keyof TelemetryEventMap;
  * checking does not apply — cannot ride along into a payload unnoticed.
  */
 export const TELEMETRY_EVENT_PROPERTIES = {
-  app_launched: ['install_kind'],
+  app_launched: ['install_kind', 'from_version', 'update_trigger'],
   agent_created: ['agent_type', 'location', 'outcome', 'failure_reason', 'entry_point'],
+  agent_attached: ['agent_type', 'location'],
+  subagent_adopted: ['agent_type', 'location'],
   session_started: [
     'agent_type',
     'location',
@@ -624,14 +888,18 @@ export const TELEMETRY_EVENT_PROPERTIES = {
     'has_initial_prompt',
     'connected_to_room',
   ],
+  session_discovered: ['agent_type', 'location'],
   session_ended: ['agent_type', 'location', 'outcome'],
-  server_added: ['server_kind', 'outcome'],
+  server_added: ['server_kind', 'outcome', 'failure_reason'],
+  update_check_requested: ['result'],
   update_checked: ['trigger', 'result'],
+  update_download_started: [],
   update_downloaded: ['outcome'],
   update_install_started: ['outcome'],
   bridge_connected: ['bridge_platform', 'outcome', 'failure_reason'],
   bridge_disconnected: ['bridge_platform', 'outcome'],
   bridge_identity_claimed: ['bridge_platform', 'outcome'],
+  bridge_identity_confirmed: ['bridge_platform', 'link_kind'],
   agent_removed: [
     'agent_type',
     'location',
@@ -640,9 +908,10 @@ export const TELEMETRY_EVENT_PROPERTIES = {
     'outcome',
     'failure_reason',
   ],
-  agent_reset: ['agent_type', 'outcome', 'failure_reason'],
+  agent_pruned: ['agent_type', 'location', 'cause', 'outcome'],
   server_removed: ['server_kind'],
   session_provision_retried: ['agent_type', 'location', 'trigger', 'outcome'],
+  session_reopened: ['agent_type', 'location', 'outcome'],
   setting_changed: ['setting_key'],
   search_performed: ['status', 'result_count'],
   agent_cli_action: [
@@ -664,7 +933,27 @@ export const TELEMETRY_EVENT_PROPERTIES = {
     'source',
   ],
   room_deleted: ['server_kind', 'outcome'],
-  room_agents_added: ['agent_count', 'direction'],
+  room_agents_added: ['agent_count', 'direction', 'outcome', 'failure_reason'],
+  chat_created: [
+    'server_kind',
+    'kind',
+    'agent_count',
+    'person_count',
+    'on_messaging_app',
+    'outcome',
+    'failure_reason',
+  ],
+  chat_message_sent: [
+    'server_kind',
+    'has_attachment',
+    'in_thread',
+    'mentions',
+    'outcome',
+    'failure_reason',
+  ],
+  chat_member_changed: ['server_kind', 'change', 'member_kind', 'outcome', 'failure_reason'],
+  chat_control_sent: ['server_kind', 'command', 'outcome', 'failure_reason'],
+  chat_approval_answered: ['server_kind', 'outcome', 'failure_reason'],
   server_sign_in: ['auth_method', 'server_kind', 'outcome', 'failure_reason'],
   server_sign_out: ['server_kind'],
   host_setup_step: ['step_kind', 'agent_type', 'action', 'outcome'],
@@ -674,16 +963,11 @@ export const TELEMETRY_EVENT_PROPERTIES = {
   view_opened: ['view_id'],
   command_executed: ['command_id', 'invoked_by'],
   deeplink_opened: ['resolved', 'cold_start'],
-  onboarding_step_started: ['step_id'],
-  onboarding_checklist_dismissed: [],
-  onboarding_completed: [],
   add_server_step: ['step', 'choice', 'first_run'],
   onboarding_page: ['page', 'path'],
   buddy_step: ['action', 'provider'],
-  buddy_message_sent: ['nth'],
   renderer_crashed: [],
   telemetry_consent_changed: ['source', 'install_kind'],
-  session_attached: ['agent_type', 'outcome'],
 } as const satisfies { [K in TelemetryEventName]: readonly (keyof TelemetryEventMap[K])[] };
 
 /**

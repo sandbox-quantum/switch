@@ -3,7 +3,10 @@ import { homeView } from '@renderer/app/home-view';
 import { adminView } from '@renderer/features/admin/admin-view';
 import { chatView } from '@renderer/features/chats/chat-view';
 import { connectorsView } from '@renderer/features/connectors/connectors-view';
+import { libraryItemView } from '@renderer/features/library/library-item-view';
+import { libraryView } from '@renderer/features/library/library-view';
 import { locationView } from '@renderer/features/locations/view';
+import { machineView } from '@renderer/features/machines/machine-view';
 import { managedAgentView } from '@renderer/features/managed-agents/managed-agent-view';
 import { remoteHostView } from '@renderer/features/remote-hosts/views/remote-host-view';
 import { remoteHostsView } from '@renderer/features/remote-hosts/views/remote-hosts-view';
@@ -26,7 +29,7 @@ import type { ViewIdName } from '@shared/core/views/view-ids';
 
 // Switch Console views: agents-at-a-location (location), sessions (session), home, settings,
 // and a connected Switch gateway's workspace — its Home (server) plus that
-// server's agents and rooms. Automations, library, skills, and mcp were removed.
+// server's agents, rooms and library. Automations, skills, and mcp were removed.
 export const views = {
   home: homeView,
   location: locationView,
@@ -38,11 +41,14 @@ export const views = {
   server: serverView,
   managedServer: managedServerView,
   serverAgents: serverAgentsView,
+  machine: machineView,
   connectors: connectorsView,
   serverRooms: serverRoomsView,
   remoteHosts: remoteHostsView,
   remoteHost: remoteHostView,
   templateImport: templateImportView,
+  library: libraryView,
+  libraryItem: libraryItemView,
   templates: templatesView,
   templateDetail: templateDetailView,
   templateUse: templateUseView,

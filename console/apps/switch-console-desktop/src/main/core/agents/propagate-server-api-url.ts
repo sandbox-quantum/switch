@@ -4,6 +4,7 @@ import { eq } from 'drizzle-orm';
 import { SshFileSystem } from '@main/core/fs/impl/ssh-fs';
 import { FileSystemError, FileSystemErrorCodes } from '@main/core/fs/types';
 import { sshConnectionIdForHost } from '@main/core/locations/location-transport';
+import { protectSecretFile, writeSecretFile } from '@main/core/providers/plugin-fs';
 import { ensureSshConnected } from '@main/core/ssh/connect/connect-agent-ssh';
 import { db } from '@main/db/client';
 import { agents, workspaces } from '@main/db/schema';
@@ -14,7 +15,7 @@ import { getAgentLocation } from './agent-location';
 import { agentSettingsRelativePath, SWITCH_SETTINGS_RELATIVE_PATH } from './switch-settings-paths';
 import { updateAgent } from './updateAgent';
 import { mapAgentRowToAgent } from './utils';
-import { mergeSwitchApiEndpoint } from './write-switch-settings';
+import { holdsSwitchToken, mergeSwitchApiEndpoint } from './write-switch-settings';
 
 /**
  * Rewrite one local agent's `SWITCH_API_ENDPOINT`, preserving its token and
@@ -50,6 +51,13 @@ async function propagateLocal(
       throw new Error('The agent credentials file is invalid; its endpoint was not changed.');
     return false;
   }
+  if (relativePath !== SWITCH_SETTINGS_RELATIVE_PATH) {
+    await writeSecretFile(settingsPath, merged);
+    return true;
+  }
+  // Claude Code's own file, so only the file is restricted, not `.claude/`; before
+  // the write, which keeps an existing file's mode.
+  if (holdsSwitchToken(merged)) await protectSecretFile(settingsPath, { fileOnly: true });
   await nodeFs.writeFile(settingsPath, merged, 'utf8');
   return true;
 }
@@ -90,6 +98,11 @@ async function propagateRemote(
         throw new Error('The agent credentials file is invalid; its endpoint was not changed.');
       return false;
     }
+    if (relativePath !== SWITCH_SETTINGS_RELATIVE_PATH) {
+      await fs.writeSecret(relativePath, merged);
+      return true;
+    }
+    if (holdsSwitchToken(merged)) await fs.protectSecret(relativePath, { fileOnly: true });
     const result = await fs.write(relativePath, merged);
     if (!result.success) {
       throw new Error(`failed to write remote Switch settings: ${result.error ?? 'unknown error'}`);

@@ -36,6 +36,7 @@ describe('buildNativeCoreSettings', () => {
     telemetryEnvironment: 'local',
     telemetryInternal: false,
     telemetryEndpoint: 'https://relay.example.test',
+    gatewayUiDir: null,
   });
 
   it('holds every listener to loopback', () => {

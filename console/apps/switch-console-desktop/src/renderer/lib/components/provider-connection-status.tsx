@@ -50,10 +50,11 @@ export function useProviderReadiness(
 
 /** What is wrong with a provider on a machine, in a few words, or null when nothing is known to be. */
 export function providerProblem(
-  data: { installed: boolean | null; status: string } | undefined
+  data: { installed: boolean | null; status: string; loginHelps?: boolean } | undefined
 ): string | null {
   if (!data) return null;
   if (data.installed === false) return 'CLI not installed';
+  if (data.status === 'unauthenticated' && data.loginHelps === false) return 'Can’t be used yet';
   if (data.status === 'unauthenticated') return 'Not signed in';
   if (data.status === 'unconfigured') return 'No backend configured';
   return null;
@@ -76,6 +77,11 @@ export function ProviderConnectionStatus({
     mutationFn: (command: string) => navigator.clipboard.writeText(command),
   });
   const data = query.data;
+  // The executable checked may sign in with a command of its own.
+  const loginCommand =
+    (data && 'loginCommand' in data ? data.loginCommand : undefined) ??
+    provider?.loginCommand ??
+    '';
   const checking = query.isFetching;
   const missing = data?.installed === false;
   const ready = data?.installed === true && data.status === 'authenticated';
@@ -86,7 +92,9 @@ export function ProviderConnectionStatus({
       : missing
         ? 'CLI not installed'
         : data?.status === 'unauthenticated'
-          ? 'Not signed in'
+          ? data.loginHelps === false
+            ? 'Can’t be used yet'
+            : 'Not signed in'
           : data?.status === 'unconfigured'
             ? 'No backend configured'
             : ready
@@ -99,13 +107,14 @@ export function ProviderConnectionStatus({
       ? null
       : query.error
         ? 'Could not reach this host. Check the connection and try again.'
-        : data?.status === 'unauthenticated'
-          ? 'Sign in to use this provider.'
-          : (data?.message ?? null);
+        : (data?.message ?? null);
   // Only a CLI that answered "signed out" (or "no backend") is fixed by its
-  // login command. An unknown status means the check itself could not run,
-  // and the reason says what to do instead.
-  const loginMayHelp = data?.status === 'unauthenticated' || data?.status === 'unconfigured';
+  // login command, and not when the check says signing in would not help. An
+  // unknown status means the check itself could not run, and the reason says
+  // what to do instead.
+  const loginMayHelp =
+    (data?.status === 'unauthenticated' || data?.status === 'unconfigured') &&
+    data.loginHelps !== false;
   const Icon = checking ? Loader2 : ready ? CheckCircle2 : CircleAlert;
   const tone = checking || ready ? 'text-foreground-muted' : 'text-foreground-warning';
   if (compact)
@@ -147,13 +156,11 @@ export function ProviderConnectionStatus({
         <div className="mt-2 space-y-1">
           <p>Run in a terminal {sshHost ? `on ${sshHost}` : 'on this computer'}, then Recheck:</p>
           <div className="flex items-center gap-2 rounded bg-background px-2 py-1">
-            <code className="min-w-0 flex-1 text-xs break-all select-all">
-              {provider.loginCommand}
-            </code>
+            <code className="min-w-0 flex-1 text-xs break-all select-all">{loginCommand}</code>
             <Button
               size="sm"
               variant="ghost"
-              onClick={() => copy.mutate(provider.loginCommand)}
+              onClick={() => copy.mutate(loginCommand)}
               aria-label="Copy sign-in command"
             >
               {copy.isSuccess ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}

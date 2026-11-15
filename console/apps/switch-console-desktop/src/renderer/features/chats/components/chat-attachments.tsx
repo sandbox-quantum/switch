@@ -1,9 +1,11 @@
-import { FileIcon, Loader2 } from 'lucide-react';
+import { Download, FileIcon, Loader2, X } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { events } from '@renderer/lib/ipc';
+import { Button } from '@renderer/lib/ui/button';
+import { Dialog, DialogClose, DialogContent, DialogTitle } from '@renderer/lib/ui/dialog';
 import { chatRemovedChannel, chatResetChannel } from '@shared/core/chats/chatEvents';
 import type { ChatAttachment } from '@shared/core/chats/chats';
 
@@ -44,6 +46,37 @@ function mediaUrl(serverId: string, roomId: string, uri: string): Promise<string
   return url;
 }
 
+async function saveAttachment(
+  serverId: string,
+  roomId: string,
+  attachment: ChatAttachment
+): Promise<void> {
+  try {
+    const url = await mediaUrl(serverId, roomId, attachment.uri);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = attachment.filename;
+    link.click();
+  } catch (caught) {
+    toast({ title: failureText(caught, 'Could not download the file.'), variant: 'destructive' });
+  }
+}
+
+function DownloadButton({ filename, onClick }: { filename: string; onClick: () => void }) {
+  return (
+    <Button
+      type="button"
+      variant="secondary"
+      size="icon-xs"
+      aria-label={`Download ${filename}`}
+      title={`Download ${filename}`}
+      onClick={onClick}
+    >
+      <Download className="size-3" />
+    </Button>
+  );
+}
+
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
@@ -61,6 +94,7 @@ function ChatImage({
 }) {
   const [url, setUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [open, setOpen] = useState(false);
   useEffect(() => {
     let cancelled = false;
     mediaUrl(serverId, roomId, attachment.uri)
@@ -80,12 +114,55 @@ function ChatImage({
         <Loader2 className="size-4 animate-spin text-foreground-muted" />
       </span>
     );
+  const save = () => void saveAttachment(serverId, roomId, attachment);
   return (
-    <img
-      src={url}
-      alt={attachment.filename}
-      className="max-h-72 max-w-full rounded-lg border border-border object-contain"
-    />
+    <span className="group/image relative inline-block max-w-full">
+      <button
+        type="button"
+        aria-label={`Open ${attachment.filename}`}
+        onClick={() => setOpen(true)}
+        className="block max-w-full cursor-zoom-in rounded-lg"
+      >
+        <img
+          src={url}
+          alt={attachment.filename}
+          className="max-h-72 max-w-full rounded-lg border border-border object-contain"
+        />
+      </button>
+      <span className="absolute top-1 right-1 opacity-0 shadow-sm transition-opacity group-focus-within/image:opacity-100 group-hover/image:opacity-100">
+        <DownloadButton filename={attachment.filename} onClick={save} />
+      </span>
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent
+          className="inset-0 h-full max-h-none w-full max-w-none translate-x-0 translate-y-0 gap-2 rounded-none bg-black/85 p-4 ring-0 sm:max-w-none"
+          onClick={(event) => {
+            // The popup fills the window, so its empty area stands in for the backdrop.
+            if (!(event.target as Element).closest('img, button')) setOpen(false);
+          }}
+        >
+          <div className="flex shrink-0 items-center gap-2">
+            <DialogTitle className="min-w-0 flex-1 truncate text-sm font-medium text-white">
+              {attachment.filename}
+            </DialogTitle>
+            <DownloadButton filename={attachment.filename} onClick={save} />
+            <DialogClose
+              render={
+                <Button type="button" variant="secondary" size="icon-xs" aria-label="Close" />
+              }
+            >
+              <X className="size-3" />
+            </DialogClose>
+          </div>
+          <div className="flex min-h-0 flex-1 items-center justify-center">
+            <img
+              src={url}
+              alt={attachment.filename}
+              className="max-h-full max-w-full object-contain"
+            />
+          </div>
+        </DialogContent>
+      </Dialog>
+    </span>
   );
 }
 
@@ -101,17 +178,8 @@ function ChatFileChip({
   const [busy, setBusy] = useState(false);
   const download = async () => {
     setBusy(true);
-    try {
-      const url = await mediaUrl(serverId, roomId, attachment.uri);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = attachment.filename;
-      link.click();
-    } catch (caught) {
-      toast({ title: failureText(caught, 'Could not download the file.'), variant: 'destructive' });
-    } finally {
-      setBusy(false);
-    }
+    await saveAttachment(serverId, roomId, attachment);
+    setBusy(false);
   };
   return (
     <button

@@ -3,6 +3,7 @@ import type { Origin, ServerEvent } from '@switch-console/shared/session-v1';
 import { z } from 'zod';
 import type { TokenUsage } from '../events';
 import { Journal } from './journal';
+import { roomMessageWords } from './room-prompt';
 
 /**
  * What Switch shows of a session on messaging platforms, derived from the
@@ -22,6 +23,7 @@ export type ActivityRow = {
   turn_id: string;
   item_id: string;
   kind: 'turn' | 'user-message' | 'assistant-message' | 'tool-activity' | 'notice';
+  subagent?: boolean;
   revision: number;
   status: string;
   title: string;
@@ -36,6 +38,12 @@ export type ActivityRow = {
    * there is nothing to say, so a server that predates it takes the row.
    */
   usage?: UsageRow[];
+  /**
+   * On a user message sent while another turn ran: steered into that turn,
+   * or queued behind it. Left out otherwise, so a server that predates it
+   * takes every other row.
+   */
+  delivery?: 'steered' | 'queued';
 };
 
 export type UsageRow = {
@@ -119,8 +127,8 @@ export class ActivityReporter {
     usageOf: (turnId: string) => TokenUsage[]
   ): Report[] {
     const body = event.body;
-    const place = (turnId: string): Placement => {
-      const origin = originOf(turnId);
+    const place = (turnId: string, itemOrigin?: Origin | null): Placement => {
+      const origin = itemOrigin ?? originOf(turnId);
       return {
         room_id: origin?.roomId ?? null,
         thread_id: origin ? (origin.threadId ?? origin.messageId) : null,
@@ -160,13 +168,22 @@ export class ActivityReporter {
               turn_id: item.turnId,
               item_id: item.itemId,
               kind: item.kind,
+              ...(item.subagent ? { subagent: true } : {}),
               revision: item.revision,
               status: item.status,
               title: truncate(item.title, MAX_TITLE),
-              text: truncate(item.text, MAX_TEXT),
+              // A person's message is shown in their own words, not in the
+              // prompt the host wrapped around it for the agent.
+              text: truncate(
+                item.kind === 'user-message'
+                  ? (roomMessageWords(item.text) ?? item.text)
+                  : item.text,
+                MAX_TEXT
+              ),
               command_id: null,
-              ...place(item.turnId),
+              ...place(item.turnId, item.kind === 'user-message' ? item.origin : null),
               occurred_at: event.occurredAt,
+              ...(item.kind === 'user-message' && item.delivery ? { delivery: item.delivery } : {}),
             },
           },
         ];

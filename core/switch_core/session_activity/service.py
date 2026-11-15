@@ -17,6 +17,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.addressing import allows_on_behalf_of, parse_policy
@@ -30,6 +31,7 @@ from switch_core.db.models import (
     require_tenant_id,
 )
 from switch_core.db.session_scope import tenant_session
+from switch_core.db.stores.agent_session_store import AgentSessionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
@@ -42,7 +44,9 @@ from switch_core.db.stores.session_activity_store import (
 )
 from switch_core.db.stores.usage_store import UsageStore
 from switch_core.delivery.addressing import AddressingResolver
+from switch_core.process_lease import LEASE_TTL
 from switch_core.sessions.contract import (
+    ORPHANED_SUBAGENT_TEXT,
     TURN_ENDED,
     ApprovalResult,
     QuestionsResult,
@@ -71,6 +75,17 @@ _OPTION_DESCRIPTION_CHARS = 1000
 # outlives a working day is no longer the question anyone is looking at.
 MAX_APPROVAL_LIFETIME = timedelta(hours=24)
 NOTICE_PREFIX = "notice:"
+# A turn left queued or running by a host that went away (it crashed, or its
+# provider failed before it reported the turn's end) is ended once its agent is
+# offline and nothing in it has moved for this long, so no one is shown it as
+# still working. A live session's turn is never ended here.
+ORPHANED_TURN_QUIET = timedelta(minutes=10)
+# Longer when the agent is still connected and only the turn's own session
+# went quiet: a tool can run that long without a step to report.
+ORPHANED_SESSION_QUIET = timedelta(minutes=30)
+ORPHANED_TURN_TEXT = (
+    "Ended by Switch: the agent's session went away before this turn finished."
+)
 
 ITEM_STATUSES: dict[str, frozenset[str]] = {
     "turn": frozenset({"queued", "running", "completed", "interrupted", "error"}),
@@ -186,6 +201,8 @@ class AgentSessionActivityService:
         message_id: str | None,
         occurred_at: datetime,
         usage: list[TokenSpend],
+        subagent: bool = False,
+        delivery: str | None = None,
     ) -> bool:
         """Record one step of a turn. False when a revision at least as new is stored.
 
@@ -194,6 +211,17 @@ class AgentSessionActivityService:
         """
         if kind not in SESSION_ACTIVITY_KINDS:
             raise SessionError("INVALID_EVENT", f"Unknown activity kind: {kind}")
+        if subagent and kind != "tool-activity":
+            raise SessionError(
+                "INVALID_EVENT", "Only tool activity can describe a subagent."
+            )
+        if delivery is not None and (
+            kind != "user-message" or delivery not in ("steered", "queued")
+        ):
+            raise SessionError(
+                "INVALID_EVENT",
+                "Only a person's message says how it was delivered: steered or queued.",
+            )
         if status not in ITEM_STATUSES[kind]:
             raise SessionError(
                 "INVALID_EVENT", f"{status!r} is not a status of a {kind} row."
@@ -234,26 +262,34 @@ class AgentSessionActivityService:
                 if kind == "turn"
                 else None
             )
-            moved = await self._activity.upsert(
-                db,
-                AgentSessionActivityItem(
-                    tenant_id=tenant_id,
-                    agent_id=agent_id,
-                    session_id=session_id,
-                    turn_id=turn_id,
-                    item_id=item_id,
-                    kind=kind,
-                    revision=revision,
-                    status=status,
-                    title=title,
-                    text=text,
-                    command_id=command_id,
-                    room_id=room_id,
-                    thread_id=thread_id,
-                    message_id=message_id,
-                    occurred_at=occurred_at,
-                ),
-            )
+            try:
+                moved = await self._activity.upsert(
+                    db,
+                    AgentSessionActivityItem(
+                        tenant_id=tenant_id,
+                        agent_id=agent_id,
+                        session_id=session_id,
+                        turn_id=turn_id,
+                        item_id=item_id,
+                        kind=kind,
+                        subagent=subagent,
+                        delivery=delivery,
+                        revision=revision,
+                        status=status,
+                        title=title,
+                        text=text,
+                        command_id=command_id,
+                        room_id=room_id,
+                        thread_id=thread_id,
+                        message_id=message_id,
+                        occurred_at=occurred_at,
+                    ),
+                )
+            except IntegrityError:
+                if room_id is None:
+                    raise
+                # The room was deleted between the membership check and the insert.
+                raise SessionError("NOT_FOUND", f"Room not found: {room_id}") from None
             if moved and kind == "turn":
                 if prior_status is None:
                     await self._meter_turn(db, tenant_id, agent_id)
@@ -548,6 +584,24 @@ class AgentSessionActivityService:
             if row.delivered_at is None:
                 row.delivered_at = datetime.now(UTC)
             return row
+
+    async def end_orphaned_turns(self) -> list[tuple[str, str, str]]:
+        """End the bound tenant's turns whose session is gone, and settle the
+        subagents still running in it (`end_orphaned_turns` on the store). Run
+        on a timer."""
+        async with (
+            tenant_session(self._sessions, require_tenant_id()) as db,
+            db.begin(),
+        ):
+            return await self._activity.end_orphaned_turns(
+                db,
+                offline_quiet=ORPHANED_TURN_QUIET,
+                session_quiet=ORPHANED_SESSION_QUIET,
+                lease_ttl=LEASE_TTL,
+                heartbeat_ttl=AgentSessionStore.ALWAYS_ON_TTL,
+                text=ORPHANED_TURN_TEXT,
+                subagent_text=ORPHANED_SUBAGENT_TEXT,
+            )
 
     async def expire_due(self) -> list[ApprovalRequest]:
         """Expire the bound tenant's overdue requests. Run on a timer."""

@@ -1,4 +1,4 @@
-"""Switch cloud machines, which run the agent controller.
+"""Switch Cloud machines, which run the agent controller.
 
 A cloud machine is its owner's, whichever workspaces it serves
 (`CloudMachine`). For each workspace it boots a `switch-agent-controller` of
@@ -15,8 +15,9 @@ not import (`management/wiring.py` installs it here with
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime, timedelta
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -33,11 +34,24 @@ from switch_core.db.stores.hosted_machine_store import (
     bump_revision,
     idle_sleeping,
 )
+from switch_core.gateway.dependencies import current_telemetry
 from switch_core.keys import Keyring
+from switch_core.logging_context import STRUCTURED_FIELDS
+from switch_core.observability.hosted import (
+    box_summary,
+    record_box_report,
+    record_controller_restart,
+    record_machine_event,
+    record_provisioned,
+    reports_memory,
+)
+from switch_core.telemetry import emit_after_commit
 
 # How recent the machine's last status report must be for its silence to count
 # as idle rather than as a machine that stopped reporting.
 FRESH_HEARTBEAT = timedelta(minutes=5)
+
+logger = logging.getLogger(__name__)
 
 
 class CloudEnrollment(Protocol):
@@ -172,12 +186,62 @@ def _reading(free: Any, total: Any) -> dict[str, int] | None:
     return None
 
 
+def _log_new_login_problems(
+    machine_id: str, before: Any, summary: dict[str, Any]
+) -> None:
+    """One line with a fixed event name when a provider's login problem
+    first shows in a machine's reports, not on every report: the provider and
+    reason (fixed words) and the machine id only."""
+    previous = (
+        before.get("metrics", {}).get("login_problems", {})
+        if isinstance(before, dict) and isinstance(before.get("metrics"), dict)
+        else {}
+    )
+    for key in sorted(summary.get("login_problems", {})):
+        if key in previous:
+            continue
+        provider, _, reason = key.partition(":")
+        logger.warning(
+            "Cloud machine %s: the %s login is %s",
+            machine_id,
+            provider,
+            reason,
+            extra={
+                STRUCTURED_FIELDS: {
+                    "switch": {
+                        "event": "hosted.provider_login_problem",
+                        "provider": provider,
+                        "reason": reason,
+                        "machine": machine_id,
+                    }
+                }
+            },
+        )
+
+
+def _restarted(before: Any, started: str | None) -> bool:
+    """Whether this workspace's controller names a new start time: the same
+    seat reported one before, and this one differs. The first report with a
+    start time, or a report without one, is not a restart."""
+    previous = before.get("started_at") if isinstance(before, dict) else None
+    return previous is not None and started is not None and started != previous
+
+
 async def record_controller_status(
-    session: AsyncSession, controller_id: str, machine_reading: dict[str, Any]
+    session: AsyncSession,
+    controller_id: str,
+    machine_reading: dict[str, Any],
+    agents: list[Any] | None = None,
+    providers: list[Any] | None = None,
+    started_at: datetime | None = None,
 ) -> None:
     """A status report from a cloud machine's controller is its heartbeat: it
     records the machine's disk and memory, and makes a machine that started
-    at this revision ready. The caller commits."""
+    at this revision ready. The caller commits.
+
+    It also keeps the report's metrics summary beside it: counts and fixed
+    words only (`observability.hosted.box_summary`), which the hosted metrics
+    sampler reads. Never the report's ids or text."""
     found = await machine_of_controller(session, controller_id)
     if found is None:
         return
@@ -185,10 +249,25 @@ async def record_controller_status(
     now = datetime.now(UTC)
     sessions = machine_reading.get("sessions_running")
     reports = controller_reports(machine)
+    before = reports.get(workspace.id)
+    summary = box_summary(machine_reading, agents or [], providers or [])
+    _log_new_login_problems(machine.id, before, summary)
+    started = None
+    if started_at is not None:
+        aware = started_at if started_at.tzinfo else started_at.replace(tzinfo=UTC)
+        started = aware.astimezone(UTC).isoformat()
+    if _restarted(before, started):
+        record_controller_restart()
     reports[workspace.id] = {
         "at": now.isoformat(),
         "sessions_running": sessions if isinstance(sessions, int) else None,
+        "metrics": summary,
+        # Kept so the next report can tell a restart; a controller older
+        # than the field sends none, and then nothing is counted.
+        "started_at": started,
     }
+    if reports_memory(reports, workspace.id, now):
+        record_box_report(machine_reading)
     machine.heartbeat = {
         "disk": _reading(
             machine_reading.get("disk_free_bytes"),
@@ -212,15 +291,43 @@ async def record_controller_status(
         machine.error = None
         machine.error_code = None
         machine.updated_at = now
+        # New until it has first been ready, however many revisions that took
+        # (a retry after a failed start included). Only the first is timed,
+        # since nothing records when a later start began.
+        new_machine = machine.first_ready_at is None
+        if new_machine:
+            machine.first_ready_at = now
+        emit_after_commit(
+            session,
+            current_telemetry(),
+            "cloud_machine_ready",
+            {
+                "new_machine": new_machine,
+                "provisioning_seconds": (
+                    max((now - machine.created_at).total_seconds(), 0.0)
+                    if new_machine
+                    else None
+                ),
+            },
+        )
+        record_machine_event(session, "ready", "new" if new_machine else "restart")
+        if new_machine:
+            # Clamped like the telemetry above: `created_at` is the
+            # database's clock, so a fast first report can read a hair negative.
+            record_provisioned(max((now - machine.created_at).total_seconds(), 0.0))
 
 
 async def wake_controller_machine(
-    session: AsyncSession, controller_id: str, now: datetime
+    session: AsyncSession,
+    controller_id: str,
+    now: datetime,
+    trigger: Literal["message", "agent_placed"],
 ) -> CloudMachine | None:
     """The cloud machine running `controller_id`, started again if it was put
     to sleep when idle, and kept awake otherwise. A machine its owner stopped
     is left stopped. None for a controller that runs on no cloud machine. The
-    caller holds no other machine lock, and commits."""
+    caller holds no other machine lock, and commits; `trigger` is what woke
+    it, for telemetry."""
     found = await machine_of_controller(session, controller_id)
     if found is None:
         return None
@@ -228,6 +335,10 @@ async def wake_controller_machine(
     store = CloudMachineStore()
     if idle_sleeping(machine):
         store.start(machine, now)
+        emit_after_commit(
+            session, current_telemetry(), "cloud_machine_woken", {"trigger": trigger}
+        )
+        record_machine_event(session, "woken", trigger)
     elif machine.desired_state == "running":
         machine.active_at = now
     return machine

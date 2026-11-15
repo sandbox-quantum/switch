@@ -8,8 +8,11 @@ import { useParams } from '@renderer/lib/layout/navigation-provider';
 import { appState } from '@renderer/lib/stores/app-state';
 import { ChatHeaderControls, ChatHeaderTitle } from './components/chat-header';
 import { ChatPanel, useAgentActivities } from './components/chat-panel';
+import { useOpenGroupAsRoom } from './console-chat-redirect';
+import { directChats } from './start-direct-chat';
 import { agentChatsFlag } from './stores/agent-chats-flag';
 import { chatsStore } from './stores/chats';
+import { UNSAVED_CHAT_NAME, UNSAVED_CHAT_PREFIX } from './stores/direct-chat-starter';
 
 type ChatParams = { serverId: string; roomId: string; agentId: string | null };
 
@@ -26,7 +29,9 @@ const ChatTitlebar = observer(function ChatTitlebar() {
           {chat ? (
             <ChatHeaderTitle serverId={params.serverId} chat={chat} />
           ) : (
-            <span className="text-sm text-foreground-muted">Chat</span>
+            <span className="text-sm text-foreground-muted">
+              {directChats.unsavedChat(params.roomId) ? UNSAVED_CHAT_NAME : 'Chat'}
+            </span>
           )}
         </div>
       }
@@ -69,6 +74,7 @@ function useLeaveWhenChatsOff(params: ChatParams): boolean | undefined {
 const ChatMainPanel = observer(function ChatMainPanel(): React.JSX.Element | null {
   const { params } = useParams('chat');
   const enabled = useLeaveWhenChatsOff(params);
+  useOpenGroupAsRoom(params.roomId, 'chat');
   if (enabled !== true) return null;
   return (
     <ChatPanel
@@ -91,6 +97,9 @@ export const chatView = {
       typeof value.roomId !== 'string' ||
       (value.agentId !== null && value.agentId !== undefined && typeof value.agentId !== 'string')
     )
+      return { ok: false, redirect: 'home', discardParams: true };
+    // An unsaved chat lives only in memory: one restored after a restart is gone.
+    if (value.roomId.startsWith(UNSAVED_CHAT_PREFIX) && !directChats.unsavedChat(value.roomId))
       return { ok: false, redirect: 'home', discardParams: true };
     return { ok: true };
   },

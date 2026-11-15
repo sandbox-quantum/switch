@@ -26,6 +26,9 @@ function workspace(name: string, tenantId: string | null): Workspace {
     tenantId,
     slug: null,
     role: null,
+    organizationId: null,
+    organizationName: null,
+    organizationRole: null,
     createdAt: '',
     updatedAt: '',
   };

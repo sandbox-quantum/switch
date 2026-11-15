@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, notExists } from 'drizzle-orm';
 import { db } from '@main/db/client';
-import { locations, type LocationRow } from '@main/db/schema';
+import { agents, locations, type LocationRow } from '@main/db/schema';
 import type { Location } from '@shared/core/locations/locations';
 
 function rowToLocation(row: LocationRow): Location {
@@ -60,4 +60,29 @@ export async function ensureLocation(params: {
     })
     .returning();
   return rowToLocation(row!);
+}
+
+/** Delete a location row once no agent uses it. Never touches the directory itself. */
+export async function deleteLocationIfUnused(locationId: string): Promise<void> {
+  await db
+    .delete(locations)
+    .where(
+      and(
+        eq(locations.id, locationId),
+        notExists(
+          db.select({ id: agents.id }).from(agents).where(eq(agents.locationId, locationId))
+        )
+      )
+    );
+}
+
+/** Delete every location row no agent uses. Never touches the directories themselves. */
+export async function deleteUnusedLocations(): Promise<void> {
+  await db
+    .delete(locations)
+    .where(
+      notExists(
+        db.select({ id: agents.id }).from(agents).where(eq(agents.locationId, locations.id))
+      )
+    );
 }

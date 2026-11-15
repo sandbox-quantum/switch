@@ -5,9 +5,11 @@ from typing import Any
 
 import pytest
 
+from switch_core.addressing import owner_and_owner_agents_policy
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.types import AgentStatus
+from switch_core.room_policy import RoomPermissionError
 
 
 class _FakeSession:
@@ -20,6 +22,9 @@ class _FakeSession:
     async def commit(self) -> None:
         return None
 
+    async def get(self, model: Any, key: str) -> Any:
+        return None  # The owner's user row: not an admin.
+
 
 def _session_factory() -> _FakeSession:
     return _FakeSession()
@@ -31,14 +36,29 @@ class _FakeRoomStore:
         rooms: dict[str, Any],
         agent_ids: list[str],
         client_ids: list[str],
+        member_users: list[tuple[str, str]] | None = None,
     ) -> None:
         self._rooms = rooms
         self._agent_ids = agent_ids
         self._client_ids = client_ids
+        self._member_users = member_users or []
         self.update_calls: list[dict[str, Any]] = []
+        # Users taking part in every room, and the room admins among them.
+        self.involved: set[str] = set()
+        self.room_admins: set[str] = set()
 
     async def get(self, session: Any, room_id: str) -> Any:
         return self._rooms.get(room_id)
+
+    async def involved_room_ids(
+        self, session: Any, user_id: str, room_ids: list[str]
+    ) -> set[str]:
+        return set(room_ids) if user_id in self.involved else set()
+
+    async def admin_room_ids(
+        self, session: Any, user_id: str, room_ids: list[str]
+    ) -> set[str]:
+        return set(room_ids) if user_id in self.room_admins else set()
 
     async def get_agent_ids(self, session: Any, room_id: str) -> list[str]:
         return list(self._agent_ids)
@@ -53,6 +73,15 @@ class _FakeRoomStore:
 
     async def get_client_ids(self, session: Any, room_id: str) -> list[str]:
         return list(self._client_ids)
+
+    async def member_users_by_room(
+        self, session: Any, room_ids: Any
+    ) -> dict[str, list[tuple[str, str]]]:
+        return {
+            room_id: list(self._member_users)
+            for room_id in room_ids
+            if self._member_users
+        }
 
     async def get_join_event_listeners(self, session: Any, room_id: str) -> list[str]:
         return []
@@ -99,7 +128,15 @@ class _FakeAgentStore:
         self._agents = agents
 
     async def get(self, session: Any, agent_id: str) -> Any:
-        return self._agents.get(agent_id)
+        agent = self._agents.get(agent_id)
+        if agent is not None and not hasattr(agent, "addressing_policy"):
+            # Takes requests from its owner and their agents only, so it acts
+            # with its owner's rights on the room.
+            agent.addressing_policy = _OWNERS_ONLY
+        return agent
+
+
+_OWNERS_ONLY = owner_and_owner_agents_policy().model_dump()
 
 
 class _FakeBridgeStore:
@@ -135,6 +172,7 @@ def _room(**overrides: Any) -> SimpleNamespace:
         "read_visibility": "public",
         "write_visibility": "public",
         "archived_at": None,
+        "metadata_": None,
     }
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -145,6 +183,7 @@ def _build_service(
     room: SimpleNamespace,
     agent_ids: list[str],
     client_ids: list[str] | None = None,
+    member_users: list[tuple[str, str]] | None = None,
     agents: dict[str, Any] | None = None,
     bridges: dict[str, Any] | None = None,
     ext_users: dict[str, list[Any]] | None = None,
@@ -156,7 +195,9 @@ def _build_service(
     # (CHOO-1857); an empty registry means "rows only".
     svc.connections = AgentConnectionRegistry()
     svc.session_factory = _session_factory  # type: ignore[assignment]
-    svc.room_store = _FakeRoomStore({room.id: room}, agent_ids, client_ids or [])  # type: ignore[assignment]
+    svc.room_store = _FakeRoomStore(
+        {room.id: room}, agent_ids, client_ids or [], member_users
+    )  # type: ignore[assignment]
     svc.agent_store = _FakeAgentStore(agents or {})  # type: ignore[assignment]
     svc.bridge_store = _FakeBridgeStore(bridges or {})  # type: ignore[assignment]
     svc.external_user_store = _FakeExternalUserStore(ext_users or {})  # type: ignore[assignment]
@@ -299,15 +340,72 @@ class TestGetRoomDetail:
         # Sorted by name; the client with no matching external user is dropped.
         assert detail.connected_user_names == ["louisa", "zara"]
 
+    async def test_a_console_chat_names_its_members(self) -> None:
+        room = _room(metadata_={"chat_operation_id": "op-1"})
+        svc = _build_service(
+            room=room,
+            agent_ids=["agent-1"],
+            client_ids=["member-ada", "member-bob", "agent-client"],
+            member_users=[("user-ada", "ada"), ("user-bob", "bob")],
+            agents={
+                "agent-1": SimpleNamespace(name="claude-code.alice", owner_id=None)
+            },
+        )
+
+        detail = await svc.get_room_detail("agent-1", "room-1")
+
+        # The chat has no messaging app, so its people are its members.
+        assert detail.connected_user_names == ["ada", "bob"]
+
+    async def test_a_console_chat_on_an_app_names_the_accounts_there(self) -> None:
+        room = _room(
+            bridge_id="bridge-1",
+            external_channel_id="D123",
+            metadata_={"chat_operation_id": "op-1"},
+        )
+        svc = _build_service(
+            room=room,
+            agent_ids=["agent-1"],
+            client_ids=["client-a"],
+            member_users=[("user-ada", "ada")],
+            agents={
+                "agent-1": SimpleNamespace(name="claude-code.alice", owner_id=None)
+            },
+            bridges={"bridge-1": SimpleNamespace(display_name="Slack")},
+            ext_users={
+                "bridge-1": [
+                    SimpleNamespace(client_id="client-a", external_username="ada.l")
+                ]
+            },
+        )
+
+        detail = await svc.get_room_detail("agent-1", "room-1")
+
+        assert detail.connected_user_names == ["ada.l"]
+
+    async def test_a_room_that_is_not_a_chat_does_not_count_members(self) -> None:
+        svc = _build_service(
+            room=_room(),
+            agent_ids=["agent-1"],
+            member_users=[("user-ada", "ada")],
+            agents={
+                "agent-1": SimpleNamespace(name="claude-code.alice", owner_id=None)
+            },
+        )
+
+        detail = await svc.get_room_detail("agent-1", "room-1")
+
+        assert detail.connected_user_names == []
+
 
 class TestUpdateRoom:
     async def test_only_provided_fields_are_passed_through(self) -> None:
-        room = _room()
+        room = _room(owner_id="u-alice")
         svc = _build_service(
             room=room,
             agent_ids=["agent-1"],
             agents={
-                "agent-1": SimpleNamespace(name="claude-code.alice", owner_id=None)
+                "agent-1": SimpleNamespace(name="claude-code.alice", owner_id="u-alice")
             },
         )
 
@@ -354,15 +452,90 @@ class TestUpdateRoom:
         assert isinstance(store, _FakeRoomStore)
         assert store.update_calls == []
 
-
-class TestSetRoomArchived:
-    async def test_archive_then_unarchive_reflected_in_detail(self) -> None:
-        room = _room()
+    async def test_refuses_an_agent_whose_owner_does_not_own_the_room(self) -> None:
+        room = _room(owner_id="u-alice")
         svc = _build_service(
             room=room,
             agent_ids=["agent-1"],
             agents={
-                "agent-1": SimpleNamespace(name="claude-code.alice", owner_id=None)
+                "agent-1": SimpleNamespace(name="claude-code.bob", owner_id="u-bob")
+            },
+        )
+
+        with pytest.raises(
+            RoomPermissionError, match="a room admin or a workspace admin can change"
+        ):
+            await svc.update_room("agent-1", "room-1", name="Hijacked")
+
+        store = svc.room_store
+        assert isinstance(store, _FakeRoomStore)
+        assert store.update_calls == []
+
+    async def test_an_agent_of_a_room_admin_changes_the_room(self) -> None:
+        room = _room(owner_id="u-alice")
+        svc = _build_service(
+            room=room,
+            agent_ids=["agent-1"],
+            agents={
+                "agent-1": SimpleNamespace(name="claude-code.bob", owner_id="u-bob")
+            },
+        )
+        store = svc.room_store
+        assert isinstance(store, _FakeRoomStore)
+        store.involved.add("u-bob")
+        store.room_admins.add("u-bob")
+
+        await svc.update_room("agent-1", "room-1", name="Renamed by Bob")
+
+        assert store.update_calls
+
+    async def test_an_agent_of_someone_in_the_room_is_still_refused(self) -> None:
+        room = _room(owner_id="u-alice")
+        svc = _build_service(
+            room=room,
+            agent_ids=["agent-1"],
+            agents={
+                "agent-1": SimpleNamespace(name="claude-code.bob", owner_id="u-bob")
+            },
+        )
+        store = svc.room_store
+        assert isinstance(store, _FakeRoomStore)
+        store.involved.add("u-bob")
+
+        with pytest.raises(RoomPermissionError):
+            await svc.update_room("agent-1", "room-1", name="Hijacked")
+        assert store.update_calls == []
+
+    @pytest.mark.parametrize(
+        "change",
+        [{"channel_type": "channel_private"}, {"external_channel_id": "C999"}, {}],
+    )
+    async def test_any_other_change_needs_the_rooms_owner(
+        self, change: dict[str, str]
+    ) -> None:
+        """Only a call that changes nothing but aliases skips the owner check,
+        so a parameter the check doesn't list fails closed."""
+        room = _room(owner_id="u-alice")
+        svc = _build_service(
+            room=room,
+            agent_ids=["agent-1"],
+            agents={
+                "agent-1": SimpleNamespace(name="claude-code.bob", owner_id="u-bob")
+            },
+        )
+
+        with pytest.raises(RoomPermissionError):
+            await svc.update_room("agent-1", "room-1", **change)  # type: ignore[arg-type]
+
+
+class TestSetRoomArchived:
+    async def test_archive_then_unarchive_reflected_in_detail(self) -> None:
+        room = _room(owner_id="u-alice")
+        svc = _build_service(
+            room=room,
+            agent_ids=["agent-1"],
+            agents={
+                "agent-1": SimpleNamespace(name="claude-code.alice", owner_id="u-alice")
             },
         )
 
