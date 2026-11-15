@@ -5,8 +5,8 @@ import { SCREEN_READER_ONLY } from "../screenReaderOnly";
 import type { CatalogueConnector } from "./ConnectorCard";
 
 /**
- * A search box, the page's own controls before it and filters after it,
- * and the connectors two to a row. The page narrows the list first (its own tabs or toggles) and
+ * A search box, the page's own controls beside it, and the connectors two
+ * to a row. The page narrows the list first (its own tabs or toggles) and
  * passes what is left; this only applies the search, so searching reads the
  * same way on every page that shows the catalogue.
  *
@@ -22,7 +22,6 @@ export default function CatalogueGrid<T extends CatalogueConnector>({
   query,
   onQueryChange,
   controls,
-  filters,
   emptyMessage,
   trailing,
   renderCard,
@@ -32,8 +31,6 @@ export default function CatalogueGrid<T extends CatalogueConnector>({
   query: string;
   onQueryChange: (query: string) => void;
   controls?: ReactNode;
-  /** Further filters the page applies itself, after the search. */
-  filters?: ReactNode;
   /** Shown when nothing is left to show, worded by the page. */
   emptyMessage: ReactNode;
   trailing?: ReactNode;
@@ -67,7 +64,6 @@ export default function CatalogueGrid<T extends CatalogueConnector>({
             },
           }}
         />
-        {filters}
       </Stack>
       {/* Announced as the search narrows the list, since the results change
           away from the field being typed in. */}

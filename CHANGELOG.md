@@ -455,9 +455,8 @@ version of their own to them without also giving them a release of their own.
   page always opens, as in Switch Console. Yours ends with a card that opens
   Discover, and a search there that matches nothing connected offers to search
   Discover instead, keeping the search.
-  Cards on Yours no longer carry the green connected tick. A category filter
-  sits beside the search, and Discover ends with a link to request a connector
-  on GitHub. A connector's category must now be one of a fixed list.
+  Cards on Yours no longer carry the green connected tick. Discover ends with
+  a link to request a connector on GitHub. A connector's category must now be one of a fixed list.
 - **Switch Trust guardrails are set per organization instead of once for
   the whole server.** Each organization's admins connect its own policy, with
   a policy ID and an API key, under Organization settings › Guardrails. Switch
@@ -4230,9 +4229,8 @@ version of their own to them without also giving them a release of their own.
   "Browse all connectors" card that opens Discover, and a search there that
   matches nothing connected offers to search Discover instead, keeping the
   search, rather than saying "No connector matches". Cards on Yours no longer
-  carry the green connected tick; Discover keeps it. A category filter sits
-  beside the search, and Discover ends with a link to request a connector on
-  GitHub.
+  carry the green connected tick; Discover keeps it. Discover ends with a
+  link to request a connector on GitHub.
 - **Admin › Switch Trust points to the organization's guardrails on a server
   that sets them per organization.** Such a server no longer has a
   server-wide policy to edit, so the form gives way to its note and a button

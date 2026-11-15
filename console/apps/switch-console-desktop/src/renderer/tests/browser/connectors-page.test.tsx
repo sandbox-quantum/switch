@@ -1077,60 +1077,6 @@ it('says what a pasted token reaches only while it works', async () => {
   );
 });
 
-async function pickCategory(choice: string): Promise<void> {
-  await act(async () => document.querySelector<HTMLElement>('[aria-label="Category"]')!.click());
-  await vi.waitFor(() =>
-    expect(document.querySelectorAll('[role="option"]').length).toBeGreaterThan(0)
-  );
-  const option = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(
-    (candidate) => candidate.textContent?.trim() === choice
-  )!;
-  await act(async () => option.click());
-}
-
-const CATEGORISED = [
-  entry({
-    slug: 'atlassian',
-    name: 'Atlassian',
-    category: 'Project management',
-    status: 'connected',
-  }),
-  entry({ slug: 'example', name: 'Example', category: 'Development' }),
-  entry({
-    slug: 'clickup',
-    name: 'ClickUp',
-    category: 'Project management',
-    enabled: false,
-    status: 'coming_soon',
-  }),
-];
-
-it('narrows Discover to one category, coming soon included, and back', async () => {
-  const page = await discover(CATEGORISED);
-
-  await pickCategory('Project management');
-  await vi.waitFor(() => expect(button(/^Example/, grid(page)!)).toBeUndefined());
-  expect(button(/^Atlassian/, grid(page)!)).toBeDefined();
-  expect(button(/^ClickUp/, comingSoonGrid(page)!)).toBeDefined();
-
-  await pickCategory('Any category');
-  await vi.waitFor(() => expect(button(/^Example/, grid(page)!)).toBeDefined());
-});
-
-it('keeps the category on the way from Yours to Discover', async () => {
-  workspaces.getServiceConnections.mockResolvedValue(CATEGORISED);
-  const page = await openYours();
-
-  await pickCategory('Development');
-  await vi.waitFor(() =>
-    expect(page.textContent).toContain('None of your connectors are in Development.')
-  );
-  await act(async () => button(/^Browse Development on Discover$/, page)!.click());
-  await vi.waitFor(() => expect(pressed(page, 'Discover')).toBe('true'));
-  expect(button(/^Example/, grid(page)!)).toBeDefined();
-  expect(button(/^Atlassian/, grid(page)!)).toBeUndefined();
-});
-
 it('offers a connector request on Discover only, opening the issue form', async () => {
   const page = await discover(CATALOG);
 

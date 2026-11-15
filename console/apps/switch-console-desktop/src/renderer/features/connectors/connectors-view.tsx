@@ -10,7 +10,6 @@ import {
   operatesServer,
 } from '@renderer/features/switch-servers/workspace-admin';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
-import { FilterSelect } from '@renderer/lib/components/filter-select';
 import { LIST_PAGE_WIDTH, ListToolbar } from '@renderer/lib/components/list-toolbar';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
@@ -37,14 +36,11 @@ import { ConnectorProfile } from './connector-profile';
 import { ConnectorTile } from './connector-tile';
 import {
   CONNECTOR_REQUEST_URL,
-  type ConnectorFilter,
   type ConnectorsTab,
   cardQuickAction,
-  connectorCategories,
   connectorsInTab,
   connectorsPageAccess,
   moreOnDiscover,
-  nothingMatchesText,
   toDiscoverText,
 } from './connectors-catalog';
 import {
@@ -134,8 +130,6 @@ function Connectors({
   const catalog = useConnectorCatalog(workspaceId);
   const [tab, setTab] = useState<ConnectorsTab>('discover');
   const [query, setQuery] = useState('');
-  const [category, setCategory] = useState<string | null>(null);
-  const filter: ConnectorFilter = { query, category };
   const { navigate } = useNavigate();
   const open = useParams('connectors').params.connector ?? null;
   const [justConnected, setJustConnected] = useState<{
@@ -243,18 +237,6 @@ function Connectors({
               onChange={(event) => setQuery(event.target.value)}
             />
           }
-          filters={
-            <FilterSelect
-              label="Category"
-              anyLabel="Any category"
-              value={category}
-              options={connectorCategories(catalog.data).map((name) => ({
-                value: name,
-                label: name,
-              }))}
-              onChange={setCategory}
-            />
-          }
         />
       )}
       {catalog.isError ? (
@@ -265,10 +247,10 @@ function Connectors({
         </p>
       ) : (
         <ConnectorGrid
-          entries={connectorsInTab(catalog.data, tab, filter)}
-          more={tab === 'yours' && moreOnDiscover(catalog.data, filter)}
+          entries={connectorsInTab(catalog.data, tab, query)}
+          more={tab === 'yours' && moreOnDiscover(catalog.data, query)}
           tab={tab}
-          filter={filter}
+          query={query}
           onBrowse={() => setTab('discover')}
           viewer={viewer}
           turningOn={turningOn}
@@ -326,7 +308,7 @@ function ConnectorGrid({
   entries,
   more,
   tab,
-  filter,
+  query,
   onBrowse,
   viewer,
   turningOn,
@@ -339,8 +321,8 @@ function ConnectorGrid({
   /** On Yours, whether Discover lists anything for the search that Yours does not. */
   more: boolean;
   tab: ConnectorsTab;
-  filter: ConnectorFilter;
-  /** Switches to Discover, keeping the search and the category. */
+  query: string;
+  /** Switches to Discover, keeping the search. */
   onBrowse: () => void;
   viewer: ConnectorViewer;
   /** The services being turned on for the workspace from their card. */
@@ -353,19 +335,22 @@ function ConnectorGrid({
   if (entries.length === 0 && more)
     return (
       <p className="flex flex-wrap items-center gap-2 text-sm text-foreground-muted">
-        {nothingMatchesText(tab, filter)}
+        {query.trim()
+          ? `None of your connectors match “${query.trim()}”.`
+          : 'You have not connected anything yet.'}
         <Button size="sm" variant="outline" onClick={onBrowse}>
-          {toDiscoverText(filter)}
+          {toDiscoverText(query)}
         </Button>
       </p>
     );
-  // Nothing more on Discover either, so a filtered Yours is empty because
-  // nothing anywhere matches, and says that rather than "none of yours".
-  const narrowed = filter.query.trim() !== '' || filter.category !== null;
   if (entries.length === 0)
     return (
       <p className="text-sm text-foreground-muted">
-        {nothingMatchesText(narrowed ? 'discover' : tab, filter)}
+        {query.trim()
+          ? `No connector matches “${query.trim()}”.`
+          : tab === 'yours'
+            ? 'You have not connected anything yet. Find a service under Discover.'
+            : 'This server offers no connectors.'}
       </p>
     );
   const card = (entry: ConnectionCatalogEntry) => (
@@ -402,7 +387,7 @@ function ConnectorGrid({
             className="focus-visible:ring-ring flex cursor-pointer items-center gap-3 rounded-lg border border-dashed border-border p-4 text-left text-sm font-medium text-foreground transition-colors hover:bg-background-tertiary-2 focus-visible:ring-2 focus-visible:outline-none"
           >
             <Compass className="size-5 shrink-0 text-foreground-muted" />
-            {toDiscoverText(filter)}
+            {toDiscoverText(query)}
           </button>
         )}
       </div>
