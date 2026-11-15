@@ -88,6 +88,7 @@ def test_the_stored_identifiers_of_existing_providers_are_unchanged() -> None:
         "droid": ("droid", "Droid CLI"),
         "cline": ("cline", "Cline CLI"),
         "junie": ("junie", "Junie CLI"),
+        "openhands": ("openhands", "OpenHands CLI"),
     }
 
 
@@ -118,6 +119,7 @@ _CONSOLE_SIGN_IN = {
     "droid": ("droid/droid-adapter.ts", r"DROID_LOGIN = '([^']+)'"),
     "cline": ("cline/cline-adapter.ts", r"CLINE_LOGIN = '([^']+)'"),
     "junie": ("junie/junie-adapter.ts", r"JUNIE_LOGIN = '([^']+)'"),
+    "openhands": ("openhands/openhands-acp.ts", r"OPENHANDS_LOGIN = '([^']+)'"),
 }
 
 
@@ -137,7 +139,7 @@ def test_an_unknown_provider_is_refused_with_the_ones_there_are() -> None:
         agent_provider("gemini")
     assert str(raised.value) == (
         "unknown provider 'gemini'; one of claude, codex, opencode, antigravity, cursor, "
-        "deepseek-harness, pi, copilot, kiro, mistral-vibe, goose, qwen, droid, cline, junie"
+        "deepseek-harness, pi, copilot, kiro, mistral-vibe, goose, qwen, droid, cline, junie, openhands"
     )
 
 

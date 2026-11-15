@@ -16,6 +16,7 @@ import { provider as junie } from './impl/junie';
 import { provider as kiro } from './impl/kiro';
 import { provider as mistralVibe } from './impl/mistral-vibe';
 import { provider as opencode } from './impl/opencode';
+import { provider as openhands } from './impl/openhands';
 import { provider as pi } from './impl/pi';
 import { provider as qwen } from './impl/qwen';
 
@@ -38,6 +39,7 @@ for (const p of [
   droid,
   cline,
   junie,
+  openhands,
 ]) {
   pluginRegistry.register(p);
 }

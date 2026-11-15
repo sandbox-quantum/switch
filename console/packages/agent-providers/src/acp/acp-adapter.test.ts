@@ -4,7 +4,7 @@ import { beforeEach, expect, it, vi } from 'vitest';
 import { ProviderConversationUnavailableError } from '../adapter';
 import { FakeAppServer } from '../codex/fake-app-server';
 import type { ProviderRuntimeEvent } from '../events';
-import type { AcpProviderHooks } from './hooks';
+import type { AcpAdapterOptions, AcpProviderHooks } from './hooks';
 
 vi.mock('node:fs/promises', async (original) => ({
   ...(await original<typeof fs>()),
@@ -61,9 +61,10 @@ beforeEach(() => {
 
 async function start(
   hooks: AcpProviderHooks = dummy,
-  input: Partial<Parameters<ReturnType<typeof createAcpAdapter>['startSession']>[0]> = {}
+  input: Partial<Parameters<ReturnType<typeof createAcpAdapter>['startSession']>[0]> = {},
+  options: AcpAdapterOptions = {}
 ) {
-  const adapter = createAcpAdapter(hooks, {});
+  const adapter = createAcpAdapter(hooks, options);
   const events: ProviderRuntimeEvent[] = [];
   adapter.subscribe((event) => events.push(event));
   const session = await adapter.startSession({
@@ -106,6 +107,60 @@ it('asks for a fresh conversation when the agent cannot resume', async () => {
   );
 });
 
+it('resumes through session/new an agent launched with its conversation, and no other one', async () => {
+  const hooks: AcpProviderHooks = {
+    ...dummy,
+    resumeOnLaunch: true,
+    launch: ({ binaryPath, env, resumeSessionId }) => ({
+      command: binaryPath,
+      args: resumeSessionId ? ['--resume', resumeSessionId] : [],
+      env,
+    }),
+  };
+  agent.capabilities = { loadSession: true };
+  agent.session = { sessionId: 'saved' };
+  const { server, session } = await start(hooks, { resume: { nativeSessionId: 'saved' } });
+  expect(spawned).toEqual([{ command: 'dummy-acp', args: ['--resume', 'saved'] }]);
+  expect(server.received.map((m) => m.method)).toEqual(['initialize', 'session/new']);
+  expect(server.received[1]?.params).not.toHaveProperty('sessionId');
+  expect(session.nativeSessionId).toBe('saved');
+  agent.session = {};
+  await expect(start(hooks, { resume: { nativeSessionId: 'saved' } })).rejects.toBeInstanceOf(
+    ProviderConversationUnavailableError
+  );
+});
+
+it('hands each HTTP MCP server as a stdio relay to an agent that cannot take one, and refuses without a relay', async () => {
+  const hooks: AcpProviderHooks = { ...dummy, httpMcpOverStdio: true };
+  const mcpServers = {
+    switch: {
+      transport: 'http' as const,
+      url: 'http://127.0.0.1:1/mcp',
+      headers: { Authorization: 'Bearer t' },
+    },
+    tools: { transport: 'stdio' as const, command: 'node', args: ['tools.js'] },
+  };
+  await expect(start(hooks, { mcpServers })).rejects.toThrow('cannot relay switch');
+  const relay = {
+    transport: 'stdio' as const,
+    command: '/node',
+    args: ['/host.mjs', '--mcp-relay'],
+  };
+  const { server } = await start(hooks, { mcpServers }, { mcpRelay: relay });
+  expect(server.received.find((m) => m.method === 'session/new')?.params?.mcpServers).toEqual([
+    {
+      name: 'switch',
+      command: '/node',
+      args: ['/host.mjs', '--mcp-relay'],
+      env: [
+        { name: 'SWITCH_MCP_RELAY_URL', value: 'http://127.0.0.1:1/mcp' },
+        { name: 'SWITCH_MCP_RELAY_HEADERS', value: '{"Authorization":"Bearer t"}' },
+      ],
+    },
+    { name: 'tools', command: 'node', args: ['tools.js'], env: [] },
+  ]);
+});
+
 it('selects models through the models list when the agent offers no model config option', async () => {
   agent.session = { models: { availableModels: [{ modelId: 'fast', name: 'Fast' }] } };
   const { adapter, server } = await start();
@@ -132,6 +187,61 @@ it('selects models through the model config option, refusing one it does not off
     value: 'deep',
   });
   expect(server.received.some((m) => m.method === 'session/set_model')).toBe(false);
+});
+
+it('lists only the model an agent runs from its own settings, takes it, and refuses any other', async () => {
+  const hooks: AcpProviderHooks = { ...dummy, fixedModel: async (env) => env.SETTINGS_MODEL };
+  agent.session = { models: { availableModels: [{ modelId: 'listed', name: 'Listed' }] } };
+  const { adapter, server } = await start(hooks, {
+    env: { SETTINGS_MODEL: 'vendor/deep' },
+    model: { id: 'vendor/deep' },
+  });
+  expect(await adapter.listModels('s')).toEqual([
+    { id: 'vendor/deep', label: 'vendor/deep', options: {} },
+  ]);
+  await expect(adapter.setModel('s', { id: 'listed' })).rejects.toThrow(
+    'Dummy ACP runs vendor/deep, the model set in its own settings, and cannot run listed.'
+  );
+  expect(server.received.some((m) => m.method === 'session/set_model')).toBe(false);
+  const unset = await start(hooks);
+  expect(await unset.adapter.listModels('s')).toEqual([]);
+  await expect(unset.adapter.setModel('s', { id: 'listed' })).rejects.toThrow(
+    'Dummy ACP has no model set in its own settings.'
+  );
+});
+
+it('sends a prompt longer than the agent reads in labelled parts, showing only the answer to the last', async () => {
+  const context = 'Context line, nothing to do.\n'.repeat(150);
+  const { adapter, events, server } = await start(
+    { ...dummy, maxLineBytes: 2000 },
+    { systemContext: context }
+  );
+  server.replyAlways('session/prompt', (params) => {
+    const [block] = params.prompt as Array<{ text: string }>;
+    server.notify('session/update', {
+      sessionId: 'native',
+      update: {
+        sessionUpdate: 'agent_message_chunk',
+        content: { type: 'text', text: block?.text.endsWith('go') ? 'done' : 'OK' },
+      },
+    });
+    return { stopReason: 'end_turn' };
+  });
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'go' });
+  await vi.waitFor(() => expect(events.some((e) => e.type === 'turn.completed')).toBe(true));
+  const prompts = server.received.filter((m) => m.method === 'session/prompt');
+  expect(prompts.length).toBeGreaterThan(1);
+  for (const message of prompts)
+    expect(Buffer.byteLength(`${JSON.stringify(message)}\n`)).toBeLessThanOrEqual(2000);
+  const texts = prompts.map(
+    (m) => (m.params?.prompt as Array<{ text: string }> | undefined)?.[0]?.text ?? ''
+  );
+  expect(texts[0]).toMatch(/^\[Part 1 of \d+ of one message\. Reply with only "OK"/);
+  expect(texts.map((text) => text.slice(text.indexOf(']\n\n') + 3)).join('')).toBe(
+    `${context}\n\ngo`
+  );
+  expect(events.find((e) => e.type === 'turn.completed')).toMatchObject({ outcome: 'completed' });
+  expect(events.flatMap((e) => (e.type === 'content.delta' ? [e.delta] : []))).toEqual(['done']);
 });
 
 it('sends attachments as the agent advertises it can take them, else as resource links', async () => {
@@ -252,6 +362,91 @@ it('auto-approves a tool the hooks place on any session-registered MCP server', 
     outcome: { outcome: 'selected', optionId: 'once' },
   });
   expect(events.filter((e) => e.type === 'request.opened')).toHaveLength(1);
+});
+
+it('answers a request about every announced tool call from those calls, and shows them', async () => {
+  const hooks: AcpProviderHooks = {
+    ...dummy,
+    mcpServerOf: (toolCall, names) =>
+      toolCall.rawInput?.mcp === true && names.size === 1 ? [...names][0] : undefined,
+    confirmsAnnouncedToolCalls: (request) => request.toolCall.toolCallId === 'confirm',
+  };
+  const { adapter, events, server } = await start(hooks, {
+    mcpServers: { switch: { transport: 'stdio', command: 'node', args: ['switch.js'] } },
+  });
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'go' });
+  const update = (toolCallId: string, fields: Record<string, unknown>) =>
+    server.notify('session/update', {
+      sessionId: 'native',
+      update: { sessionUpdate: 'tool_call', toolCallId, status: 'in_progress', ...fields },
+    });
+  const confirm = (id: number) =>
+    server.send({
+      id,
+      method: 'session/request_permission',
+      params: {
+        sessionId: 'native',
+        toolCall: { toolCallId: 'confirm', title: 'Confirm actions', kind: 'other' },
+        options: [{ optionId: 'yes', name: 'Yes', kind: 'allow_once' }],
+      },
+    });
+  const opened = () => events.filter((e) => e.type === 'request.opened');
+  // The session's own MCP server: let through without asking.
+  update('reply', { kind: 'other', title: 'post_message', rawInput: { mcp: true } });
+  confirm(80);
+  await flush();
+  expect(server.received.find((m) => m.id === 80)?.result).toEqual({
+    outcome: { outcome: 'selected', optionId: 'yes' },
+  });
+  expect(events.find((e) => e.type === 'item.started')).toMatchObject({
+    item: { id: 'reply', type: 'mcp_tool_call' },
+  });
+  update('reply', { sessionUpdate: 'tool_call_update', status: 'completed' });
+  // One command: the card is that command's.
+  update('cmd', { kind: 'execute', title: '$ uname -a' });
+  confirm(81);
+  await flush();
+  expect(opened()[0]).toMatchObject({
+    requestType: 'command_execution_approval',
+    title: '$ uname -a',
+  });
+  expect(opened()[0]).not.toHaveProperty('detail');
+  const [first] = opened();
+  if (first?.type !== 'request.opened') throw new Error('No approval');
+  await adapter.respondToRequest('s', first.requestId, 'accept');
+  update('cmd', { sessionUpdate: 'tool_call_update', status: 'completed' });
+  // Several: the agent's title, with each of them.
+  update('edit', { kind: 'edit', title: 'Editing notes.txt' });
+  update('again', { kind: 'other', title: 'post_message', rawInput: { mcp: true } });
+  confirm(82);
+  await flush();
+  expect(opened()[1]).toMatchObject({
+    requestType: 'tool_approval',
+    title: 'Confirm actions',
+    detail: '- Editing notes.txt\n- post_message',
+  });
+});
+
+it('gives mcpServerOf the MCP servers the agent has of its own with the session ones', async () => {
+  const given: string[][] = [];
+  const hooks: AcpProviderHooks = {
+    ...dummy,
+    ownMcpServers: async () => ['own', 'switch'],
+    mcpServerOf: (_toolCall, names) => {
+      given.push([...names]);
+      return undefined;
+    },
+  };
+  const { adapter, server } = await start(hooks, {
+    mcpServers: { switch: { transport: 'stdio', command: 'node', args: ['switch.js'] } },
+  });
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'go' });
+  server.notify('session/update', {
+    sessionId: 'native',
+    update: { sessionUpdate: 'tool_call', toolCallId: 'c', kind: 'other', status: 'in_progress' },
+  });
+  await flush();
+  expect(given).toEqual([['switch', 'own']]);
 });
 
 it('asks mcpServerOf about a request with its own call, then with the call as it was last placed', async () => {

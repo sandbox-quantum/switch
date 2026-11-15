@@ -105,7 +105,7 @@ Add hooks only for what really differs:
 | `persistentPermissionKinds` | Permission option kinds the agent remembers beyond the session (Junie's `allow_always` writes its allowlist for every later run). They are never offered. |
 | `promptCapabilities` | Content the agent accepts without advertising it. Prefer fixing the advertisement upstream. |
 | `mcpCapabilities` | MCP transports the agent accepts without advertising them, such as HTTP for Mistral Vibe. Prefer fixing the advertisement upstream. |
-| `mcpServerOf` | How a tool call names its MCP server, if the agent says so (in `_meta`, `rawInput`…), as one of the registered server names it is given. Without it, tools on registered servers still ask for permission. |
+| `mcpServerOf` | How a tool call names its MCP server, if the agent says so (in `_meta`, `rawInput`…), as one of the server names it is given (the session's registered servers and `ownMcpServers`), or which of them it must be on. Without it, tools on registered servers still ask for permission. |
 | `itemType` | Vendor typing for tool calls, such as subagents. |
 | `toolTitle` | A title for tool calls the agent titles only with the tool's name (DeepSeek Harness): the command, the file. |
 | `toolKind` | The ACP `kind` of a tool the agent leaves unlabelled (Cline reports `apply_patch` as `other`). It decides the approval a call needs, such as whether `auto-accept-edits` lets it through, and the card it shows as. |
@@ -113,6 +113,14 @@ Add hooks only for what really differs:
 | `extensions` | Vendor-specific requests and notifications, such as Cursor's `cursor/ask_question`, `cursor/create_plan` and `update_todos`. Use `askQuestions`, `requestDecision` and `completeItem` on the context they're given; these already cancel when no turn is running. |
 | `clientCapabilities` | Client capabilities to announce in `initialize` beyond the protocol's own, for requests your `extensions` answer. An agent that asks its questions as ACP form elicitations needs only `FORM_ELICITATION_CAPABILITIES` here and `answerFormElicitations` as `extensions`, both from `src/acp/elicitation.ts`, as Antigravity and Mistral Vibe use them. |
 | `nativeSessionIdPrefix` | Only when an earlier, non-ACP runtime of the same provider stored session ids that must not be resumed. |
+| `httpMcpOverStdio` | Only when the agent cannot take an MCP server over HTTP as ACP sends one (OpenHands passes the headers on as a list). Each is handed to it as a stdio relay. |
+| `renamedToolArguments` | Only with `httpMcpOverStdio`, when the agent fails on a tool argument of some name (OpenHands on `kind`). The relay offers it with a trailing underscore and passes it on under its own name. |
+| `resumeOnLaunch` | Only when the agent's `session/load` drops the session's MCP servers. `launch` is given the conversation to resume, and the session starts with `session/new` (OpenHands' `--resume`). |
+| `fixedModel` | Only when the agent runs the model in its own settings whatever `session/set_model` asks for (OpenHands accepts it and changes nothing). Return that model: the session lists it as its only one and refuses any other. |
+| `interruptPermissionWithError` | Only when the agent takes ACP's `cancelled` answer to a permission request as a refusal and carries on with the turn (OpenHands). A request an interrupt cuts off is answered with an error instead, which stops it. |
+| `maxLineBytes` | Only when the agent stops reading its input at a line longer than this (OpenHands, 64 KiB). Prompt text over it, the system context included, is sent in labelled parts, the earlier ones answered with "OK" and not shown; any other message over it is refused. |
+| `confirmsAnnouncedToolCalls` | Only when one permission request covers every tool call the turn announced and hasn't finished, rather than the one it names (OpenHands' "Confirm Agent Actions"). The request is answered from those calls and shows them. |
+| `ownMcpServers` | Only with an `mcpServerOf` that goes by which MCP servers there are, when the agent also runs servers from its own settings (OpenHands' `mcp.json`). Return their names, so a tool call that may be on one of them isn't put on a session server. |
 
 Then add the runtime to `PROVIDER_RUNTIMES` in `src/providers/registry.ts`:
 
