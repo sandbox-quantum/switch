@@ -1628,7 +1628,8 @@ class AgentCore:
         return [_describe_room(r) for r in rooms]
 
     async def list_participants(self, room_id: str) -> list[ParticipantDescriptor]:
-        """List all agents and users in a room."""
+        """List all agents and people in a room: agents, chat-platform users,
+        and people who joined through Switch Console."""
         async with self.session_factory() as session:
             agent_ids = await self.room_store.get_agent_ids(session, room_id)
             agents: list[Agent] = []
@@ -1640,6 +1641,7 @@ class AgentCore:
             external_users = await self.external_user_store.get_by_room(
                 session, room_id
             )
+            members = await self.room_store.get_member_clients(session, room_id)
             # role_id -> live holder agent_ids, plus role_id -> name. Each agent
             # holds at most one role (unique agent_id), so the inverse map is
             # well-defined even for shared roles with several holders.
@@ -1674,6 +1676,14 @@ class AgentCore:
                 ParticipantDescriptor(
                     id=user.id,
                     name=user.external_username,
+                    type="user",
+                )
+            )
+        for member in members:
+            result.append(
+                ParticipantDescriptor(
+                    id=member.id,
+                    name=member.display_name,
                     type="user",
                 )
             )

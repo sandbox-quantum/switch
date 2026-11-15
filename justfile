@@ -94,7 +94,11 @@ decision-down:
 # The Python project lives in core/; `--project core` selects that environment
 # while keeping the repo root as the working directory. Tool configs are passed explicitly since the repo root no longer
 # holds pyproject.toml / alembic.ini.
+# Listens on 127.0.0.1 unless SERVER_HOST / COLLABORATION_CALLBACK_HOST say
+# otherwise (.env.example, "Listening address").
 run:
+    SERVER_HOST="${SERVER_HOST:-127.0.0.1}" \
+    COLLABORATION_CALLBACK_HOST="${COLLABORATION_CALLBACK_HOST:-127.0.0.1}" \
     GATEWAY_COOKIE_SECURE="${GATEWAY_COOKIE_SECURE:-false}" uv run --project core python -m switch_core.main
 
 # ── Run switch-core as a stand-in for Switch Cloud ────────────────────────────
@@ -109,6 +113,8 @@ local-cloud:
     GATEWAY_SMTP_USERNAME= GATEWAY_SMTP_PASSWORD= \
     GATEWAY_SMTP_FROM="Switch <invites@switch.local>" \
     FRONTEND_BASE_URL=http://localhost:8000 GATEWAY_COOKIE_SECURE=false \
+    SERVER_HOST="${SERVER_HOST:-127.0.0.1}" \
+    COLLABORATION_CALLBACK_HOST="${COLLABORATION_CALLBACK_HOST:-127.0.0.1}" \
     uv run --project core python -m switch_core.main
 
 # Run Switch Console with "Switch Cloud" pointing at `just local-cloud`, in

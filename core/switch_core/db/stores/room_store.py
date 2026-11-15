@@ -1035,6 +1035,18 @@ class RoomStore:
             by_room.setdefault(room_id, []).append(client_id)
         return by_room
 
+    async def get_member_clients(
+        self, session: AsyncSession, room_id: str
+    ) -> list[Client]:
+        """The Switch Console member clients in the room: people taking part
+        as themselves rather than through a chat platform account."""
+        result = await session.execute(
+            select(Client)
+            .join(ClientRoom, ClientRoom.client_id == Client.id)
+            .where(ClientRoom.room_id == room_id, Client.type == MEMBER_CLIENT_TYPE)
+        )
+        return list(result.scalars().all())
+
     async def member_users_by_room(
         self, session: AsyncSession, room_ids: Collection[str]
     ) -> dict[str, list[tuple[str, str]]]:

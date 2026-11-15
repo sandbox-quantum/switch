@@ -177,6 +177,32 @@ switch-core where to send the browser back to after a flow that leaves the
 dashboard, such as the OIDC login redirect — it should match wherever
 `just gateway-dev` is actually listening.
 
+`just run` and `just local-cloud` listen on `127.0.0.1` only, so nothing else
+on your network can reach a local server. Set `SERVER_HOST` and
+`COLLABORATION_CALLBACK_HOST` in `.env` to listen elsewhere; `.env.example`
+says when Linux Docker needs that for Mattermost's button callbacks.
+
+### Signing in from a script
+
+`FRONTEND_BASE_URL` is also one of the origins switch-core accepts a sign-in
+from. A sign-in (`POST /gateway/auth/login`) that carries an `Origin` header,
+or a `Referer` or `Sec-Fetch-Site` header as any browser or browser-driving
+tool sends, has to come from one of the server's own origins:
+`FRONTEND_BASE_URL`, `GATEWAY_PUBLIC_URL`, or an entry in
+`GATEWAY_EXTRA_ORIGINS`. Anything else gets a 403, "This request didn't come
+from Switch". So a script that sets `Origin` should set it to
+`FRONTEND_BASE_URL` (`http://localhost:5173` by default), not to
+`http://localhost:8000`. A plain `curl` that sends none of the three headers
+is let through.
+
+### Service connections are behind a flag
+
+The service-connection routes (connecting a vendor such as Linear or Jira,
+granting it to an agent, and an agent fetching its token) exist only when
+`FEATURE_FLAGS_ENABLED` in `.env` includes `service_connections`. Without it
+they answer 404, as if the path were wrong, rather than saying the feature is
+off. Add the flag and restart `just run`.
+
 ## Connecting Switch Console to your local server
 
 Switch Console (the desktop app) connects to a Switch server by one address:
