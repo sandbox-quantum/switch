@@ -1,11 +1,14 @@
 import { join } from 'node:path';
 import { app, BrowserWindow, dialog } from 'electron';
 import appIcon from '@/assets/images/switch-console/icon-dock.png?asset';
+import { roomEmbedOrigin } from '@main/core/switch-rooms/room-embed-grants';
 import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
 import { registerExternalLinkHandlers, registerGuestLinkHandlers } from '@main/utils/externalLinks';
 import { PRODUCT_NAME } from '@shared/app-identity';
 import { appCommandNavigateChannel } from '@shared/events/appEvents';
+import { DEVTOOLS_ENABLED } from './devtools';
+import { constrainGuest } from './guest-webview';
 import { APP_ORIGIN } from './protocol';
 
 let mainWindow: BrowserWindow | null = null;
@@ -30,6 +33,7 @@ export function createMainWindow(): BrowserWindow {
       // constrained in the will-attach-webview handler below, which is what
       // actually keeps this from widening the app's attack surface.
       webviewTag: true,
+      devTools: DEVTOOLS_ENABLED,
     },
     ...(process.platform === 'darwin'
       ? {
@@ -44,8 +48,8 @@ export function createMainWindow(): BrowserWindow {
           //
           // A transparent `backgroundColor` is what stops Electron painting an
           // opaque sheet over the effect. The renderer must not repaint one
-          // either: `index.html` keys its translucent material on the same
-          // platform test this branch does.
+          // either: its boot script (`renderer/public/theme-boot.js`) keys its
+          // translucent material on the same platform test this branch does.
           vibrancy: 'under-window',
           visualEffectState: 'active',
           backgroundColor: '#00000000',
@@ -61,7 +65,7 @@ export function createMainWindow(): BrowserWindow {
   }
 
   // Route external links to the user’s default browser
-  registerExternalLinkHandlers(mainWindow, import.meta.env.DEV);
+  registerExternalLinkHandlers(mainWindow);
 
   constrainEmbeddedWebviews(mainWindow);
 
@@ -109,30 +113,24 @@ export function createMainWindow(): BrowserWindow {
   return mainWindow;
 }
 
-/**
- * Strip privileges from any `<webview>` the renderer attaches.
- *
- * `webviewTag: true` lets renderer markup ask for a guest with whatever
- * webPreferences it likes, so the renderer is no longer the only thing that has
- * to be trusted — the embedded page is too. Rather than trusting the tag's
- * attributes, we overwrite the dangerous ones here, and allow only the guest
- * preload the app ships. Anything else is dropped.
- */
+/** Hold every `<webview>` the renderer attaches to what {@link constrainGuest} allows. */
 function constrainEmbeddedWebviews(window: BrowserWindow): void {
   const guestPreload = join(import.meta.dirname, '../preload/mattermost-guest.mjs');
 
   window.webContents.on('will-attach-webview', (event, webPreferences, params) => {
-    // Never honour a preload named in markup — pin it to the one we ship.
-    webPreferences.preload = guestPreload;
-    webPreferences.nodeIntegration = false;
-    webPreferences.contextIsolation = true;
-
-    // Only ever embed real web content. A file:// or custom-scheme guest would
-    // be running local content with a preload attached, which is not something
-    // this feature needs.
-    const protocol = params.src ? new URL(params.src).protocol : null;
-    if (protocol !== 'http:' && protocol !== 'https:') {
-      log.warn('Blocked webview attach for non-http source', { src: params.src });
+    const refusal = constrainGuest(
+      webPreferences,
+      params,
+      guestPreload,
+      DEVTOOLS_ENABLED,
+      roomEmbedOrigin
+    );
+    if (refusal !== null) {
+      log.warn('Blocked a webview attach', {
+        reason: refusal,
+        src: params.src,
+        partition: params.partition,
+      });
       event.preventDefault();
     }
   });

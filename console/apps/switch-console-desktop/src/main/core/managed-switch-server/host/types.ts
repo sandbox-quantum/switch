@@ -17,10 +17,13 @@ import type { StackStateHost } from '../stack-state';
  *   the same numbers to be free on the desktop's loopback (see remote host).
  * - `establishNetworking` makes the published ports reachable from the desktop
  *   (a no-op locally; a persistent mirrored SSH forward remotely) so the same
- *   `http://localhost:<port>` URL works for the desktop and local agents.
+ *   `http://127.0.0.1:<port>` URL works for the desktop and local agents.
  *
  * One host instance backs one start/stop/reset operation and is disposed after.
  */
+/** Readable by its owner alone: a file holding the stack's secrets. */
+export const SECRET_FILE_MODE = 0o600;
+
 export interface ServerHost {
   readonly kind: 'local' | 'remote';
 
@@ -58,8 +61,10 @@ export interface ServerHost {
   readonly sharedState: StackStateHost | null;
 
   /** Write `content` to `relPath` under {@link workingDir}, creating parent
-   * directories. `mode` (e.g. 0o600 for the secret-bearing `.env`) is enforced
-   * when provided. */
+   * directories. `mode` is enforced when provided; {@link SECRET_FILE_MODE}
+   * (the secret-bearing `.env`) is written to a temporary file created `0600`
+   * in a `0700` directory and renamed into place, so the content is never in a
+   * file anyone else can read, not even for a moment. */
   writeFile(relPath: string, content: string, mode?: number): Promise<void>;
 
   /** Read `relPath` under {@link workingDir} as UTF-8, or null when the file
@@ -96,7 +101,7 @@ export interface ServerHost {
   pickFreePorts(): Promise<LocalServerPorts>;
 
   /** Make the published ports reachable from the desktop at
-   * `http://localhost:<port>`. Local: no-op (already on loopback). Remote:
+   * `http://127.0.0.1:<port>`. Local: no-op (already on loopback). Remote:
    * start persistent mirrored port-forward listeners (same number both sides)
    * over the SSH connection, kept alive across reconnects. */
   establishNetworking(ports: LocalServerPorts): Promise<void>;

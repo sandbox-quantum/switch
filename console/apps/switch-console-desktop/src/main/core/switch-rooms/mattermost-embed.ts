@@ -12,6 +12,7 @@ import {
   type RoomEmbed,
 } from '@shared/core/switch-rooms/room-embed';
 import { mattermostOriginFor } from './mattermost-origin';
+import { grantRoomEmbed } from './room-embed-grants';
 
 const MATTERMOST_AUTH_COOKIE = 'MMAUTHTOKEN';
 
@@ -185,6 +186,7 @@ export async function resolveChannelEmbed(params: {
   try {
     const partition = await installMattermostSession(origin, serverId);
     if (theme) await applyMattermostTheme(origin, partition, theme);
+    grantRoomEmbed(partition, new URL(url).origin);
     return { kind: 'inline', url, partition, chromeless: true };
   } catch (cause) {
     const reason = cause instanceof Error ? cause.message : String(cause);

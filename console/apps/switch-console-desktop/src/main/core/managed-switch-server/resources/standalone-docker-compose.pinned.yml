@@ -172,7 +172,10 @@ services:
       # boot. Mattermost's own schema has no row-level security in it, so
       # there is no isolation reason to run it as the restricted role too.
       MM_SQLSETTINGS_DATASOURCE: postgres://${DB_OWNER_USER}:${DB_OWNER_PASSWORD}@postgres:5432/mattermost?sslmode=disable
-      MM_SERVICESETTINGS_SITEURL: http://localhost:${MATTERMOST_HOST_PORT:-8065}
+      # Switch Console sets MATTERMOST_SITE_HOST to 127.0.0.1, the address it
+      # reaches Mattermost at: `localhost` resolves to the IPv6 loopback first,
+      # which the published port does not hold.
+      MM_SERVICESETTINGS_SITEURL: http://${MATTERMOST_SITE_HOST:-localhost}:${MATTERMOST_HOST_PORT:-8065}
       MM_SERVICESETTINGS_ENABLELOCALMODE: "true"
       # The first-run onboarding checklist opens a modal over a dimmed page,
       # which in the embedded room view is chrome the user cannot meaningfully

@@ -5,6 +5,7 @@ import {
   TELEMETRY_ENABLED_KEY,
   TELEMETRY_ENDPOINT_KEY,
 } from '../env-file';
+import { loopbackUrl } from '../free-port';
 import type { LocalServerSecrets } from '../secret-values';
 import { GATEWAY_UI_ENV } from './gateway-ui';
 import { DATABASE, OWNER_ROLE, RUNTIME_ROLE } from './postgres-cluster';
@@ -29,7 +30,7 @@ export type NativeCoreSettingsParams = {
 };
 
 export function nativeApiUrl(apiPort: number): string {
-  return `http://localhost:${apiPort}`;
+  return loopbackUrl(apiPort);
 }
 
 /**
