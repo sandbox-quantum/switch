@@ -1,4 +1,4 @@
-"""How many password sign-ins the gateway takes before it waits.
+"""How many password sign-ins, and sign-ups, the gateway takes before it waits.
 
 Failed password sign-ins are counted against the email address typed and
 against the client's address. A few failures against one email are free, for
@@ -8,7 +8,9 @@ and `gateway_login_max_failures` within the window locks the email out for
 (`gateway_login_max_failures_per_address`), as many people can share one, and
 locks out at its limit with no waits before. A success clears the email's
 count, and takes its own attempt back off the address's, so the address
-counts only failures.
+counts only failures. Sign-ups are counted per client address too
+(`gateway_signup_max_per_hour_per_address`), in front of the deployment-wide
+cap `auth_routes._refuse_signup` keeps.
 
 An attempt is counted before its password is checked, under a row lock, so a
 burst sent in parallel is counted exactly and none of it passes on a count
@@ -48,6 +50,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from switch_core.config import SwitchConfig
 from switch_core.db.models import AuthAttempt
 from switch_core.db.stores.auth_attempt_store import AuthAttemptStore
+from switch_core.gateway.dependencies import current_telemetry
+from switch_core.telemetry import emit_safely
 
 logger = logging.getLogger(__name__)
 
@@ -55,11 +59,14 @@ STORE = AuthAttemptStore()
 
 LOGIN_EMAIL = "login_email"
 LOGIN_ADDRESS = "login_address"
+SIGNUP_ADDRESS = "signup_address"
 
 # Failures against one email that cost nothing: a person mistyping. Each one
 # after makes the next attempt wait, from `_FIRST_WAIT` and doubling.
 _FREE_FAILURES = 3
 _FIRST_WAIT = timedelta(seconds=1)
+
+_SIGNUP_WINDOW = timedelta(hours=1)
 
 # What a reverse proxy, a container network or the server's own computer
 # reaches switch-core from. Behind one, every client arrives with its address.
@@ -114,6 +121,17 @@ def _login_address(config: SwitchConfig) -> Limit:
     )
 
 
+def _signup_address(config: SwitchConfig) -> Limit:
+    return Limit(
+        kind=SIGNUP_ADDRESS,
+        counts="sign-ups from one client address",
+        most=config.gateway_signup_max_per_hour_per_address,
+        window=_SIGNUP_WINDOW,
+        lock=_SIGNUP_WINDOW,
+        waits=False,
+    )
+
+
 def digest(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
 
@@ -143,10 +161,10 @@ def counted_address(request: Request) -> str | None:
     if not _warned_uncounted:
         _warned_uncounted = True
         logger.warning(
-            "Sign-in limits per client address are not applied to requests "
-            "from %s: it is not a client's own internet address, so it likely "
-            "stands for every client behind a proxy. Only the per-account "
-            "sign-in limit applies to them. "
+            "Sign-in and sign-up limits per client address are not applied to "
+            "requests from %s: it is not a client's own internet address, so it "
+            "likely stands for every client behind a proxy. Only the per-account "
+            "sign-in limit and the deployment-wide sign-up cap apply to them. "
             "Set FORWARDED_ALLOW_IPS to the proxy's address, and have the proxy "
             "send X-Forwarded-For, for switch-core to see each client's address.",
             host or "an unknown address",
@@ -257,3 +275,29 @@ async def clear_login_failures(session: AsyncSession, email: str) -> None:
     """Forget an email's failed sign-ins, lifting any lock on it. Does not
     commit."""
     await STORE.clear(session, LOGIN_EMAIL, email_key(email))
+
+
+async def refuse_signup_from(session: AsyncSession, address: str | None) -> None:
+    """Raise 429 if the client address has signed up as many accounts as it
+    may this hour. Reads only; `count_signup` counts one."""
+    if address is None:
+        return
+    row = await STORE.get(session, SIGNUP_ADDRESS, digest(address))
+    wait = _refused_for(row, datetime.now(UTC))
+    if wait is not None:
+        logger.warning("Refused sign-up: the client address's hourly limit is reached")
+        await session.rollback()
+        emit_safely(current_telemetry(), "signup_refused", {"reason": "rate_limited"})
+        raise _too_many("sign-ups from your network", wait)
+
+
+async def count_signup(
+    session: AsyncSession, config: SwitchConfig, address: str | None
+) -> None:
+    """Count an account signed up from the client address, in the caller's
+    transaction, to commit with the account."""
+    if address is None:
+        return
+    now = datetime.now(UTC)
+    [row] = await STORE.lock(session, [(SIGNUP_ADDRESS, digest(address))], now)
+    _charge(row, _signup_address(config), now)
