@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { OrganizationGuardrails as Guardrails } from "../../../data/api";
 import { answerFetch } from "../../../test/answerFetch";
+import { TRUST_COVERAGE } from "../../guardrails/GuardrailPolicyCard";
 import OrganizationGuardrails from "./OrganizationGuardrails";
 
 // Made up; the last four are what the page shows of it.
@@ -68,6 +69,7 @@ describe("OrganizationGuardrails", () => {
       ),
     ).toBeTruthy();
     expect(screen.getByText("pol_123")).toBeTruthy();
+    expect(screen.getByText(TRUST_COVERAGE)).toBeTruthy();
     expect(screen.getByText(/Connected by Olga/)).toBeTruthy();
     const said = screen.getByText("Switch Trust is connected with Baseline Monitoring (Alert).");
     // A plain success is the snackbar's, not a notice left on the page.

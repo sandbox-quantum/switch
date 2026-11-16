@@ -34,7 +34,9 @@ function serve(initialDays: number | null, toDelete = 0) {
 
 describe("describeRetention", () => {
   it("says what the policy does in plain words", () => {
-    expect(describeRetention(null)).toBe("Messages are kept forever.");
+    expect(describeRetention(null)).toBe(
+      "No retention policy is set, so Switch keeps every message and file. Nothing is deleted automatically.",
+    );
     expect(describeRetention(1)).toBe("Messages older than 1 day are deleted.");
     expect(describeRetention(90)).toBe("Messages older than 90 days are deleted.");
   });
@@ -49,7 +51,7 @@ describe("RetentionSection", () => {
     render(<RetentionSection tenantId="t1" canSetWindow />);
 
     await screen.findByText("boom");
-    expect(screen.queryByText(/kept forever/)).toBeNull();
+    expect(screen.queryByText(/No retention policy is set/)).toBeNull();
     expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
   });
 
@@ -61,7 +63,7 @@ describe("RetentionSection", () => {
   it("asks for confirmation with the number of messages before turning retention on", async () => {
     const calls = serve(null, 1234);
     render(<RetentionSection tenantId="t1" canSetWindow />);
-    await screen.findByText(/Messages are kept forever/);
+    await screen.findByText(/No retention policy is set/);
 
     fireEvent.click(screen.getByLabelText("Delete messages older than"));
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
@@ -83,7 +85,7 @@ describe("RetentionSection", () => {
     fireEvent.click(screen.getByLabelText("Keep forever"));
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
-    await screen.findByText(/Messages are kept forever/);
+    await screen.findByText(/No retention policy is set/);
     expect(calls.some((c) => c.method === "DELETE")).toBe(true);
     expect(screen.queryByRole("dialog")).toBeNull();
   });

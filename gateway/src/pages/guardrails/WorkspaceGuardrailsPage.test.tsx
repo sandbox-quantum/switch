@@ -3,6 +3,7 @@ import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAuth } from "../../data/AuthContext";
 import { answer, signedInAs } from "../../test/signedIn";
+import { TRUST_COVERAGE } from "./GuardrailPolicyCard";
 import WorkspaceGuardrailsPage from "./WorkspaceGuardrailsPage";
 
 vi.mock("../../data/AuthContext", () => ({ useAuth: vi.fn() }));
@@ -49,6 +50,9 @@ describe("WorkspaceGuardrailsPage", () => {
     expect(screen.getByRole("heading", { name: "Baseline Monitoring (Alert)" })).toBeTruthy();
     expect(screen.queryByText("Switch Trust policy")).toBeNull();
     expect(screen.getByText("Switch Trust checks every message in Acme.")).toBeTruthy();
+    // What it never reads is said beside the policy, so no one assumes every file is checked.
+    expect(screen.getByText(TRUST_COVERAGE)).toBeTruthy();
+    expect(TRUST_COVERAGE).toMatch(/Images, audio, video, archives.*delivered unchecked/);
     expect(screen.getByRole("link", { name: /View on Switch Trust/ }).getAttribute("href")).toBe(POLICY.policy_url);
     expect(screen.queryByRole("link", { name: "organization settings" })).toBeNull();
   });
