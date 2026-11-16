@@ -18,7 +18,7 @@ describe("CreateUserDialog", () => {
     fireEvent.click(await screen.findByRole("option", { name: "Platform operator" }));
     expect(
       within(dialog).getByText(
-        "Runs this server. It doesn't make them an admin of any workspace or organization.",
+        "Runs Switch here. It doesn't make them an admin of any workspace or organization.",
       ),
     ).toBeTruthy();
   });

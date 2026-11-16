@@ -93,7 +93,7 @@ export default function CreateUserDialog({ open, onClose, onCreated }: Props) {
             onChange={(e) => setRole(e.target.value as UserRole)}
             helperText={
               role === "admin"
-                ? "Runs this server. It doesn't make them an admin of any workspace or organization."
+                ? "Runs Switch here. It doesn't make them an admin of any workspace or organization."
                 : undefined
             }
           >

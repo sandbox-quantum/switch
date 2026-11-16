@@ -110,7 +110,7 @@ function OperatorWorkspaces() {
         error === null && <CircularProgress size={20} />
       ) : workspaces.length === 0 ? (
         <Typography variant="body2" color="text.secondary">
-          There are no workspaces on this server yet.
+          There are no workspaces here yet.
         </Typography>
       ) : (
         <List disablePadding dense>
