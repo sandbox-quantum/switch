@@ -37,6 +37,7 @@ from switch_core.gateway.hosted_machines import MACHINES_DISABLED
 from switch_core.gateway.hosted_machines import router as machine_router
 from switch_core.keys import Keyring
 from switch_core.tenant_context import tenant_scope
+from tests.switch_core.gateway.login_limit_defaults import LOGIN_LIMIT_DEFAULTS
 from tests.telemetry_records import recording_telemetry
 
 TEST_KEYRING = Keyring.parse("test:" + "x" * 40, legacy_secret=None)
@@ -67,6 +68,7 @@ async def signup_app(session_factory):
         hosted_agents_enabled=True,
         keyring=TEST_KEYRING,
         gateway_cookie_secure=False,
+        **LOGIN_LIMIT_DEFAULTS,
     )
     identity: dict[str, User] = {}
 

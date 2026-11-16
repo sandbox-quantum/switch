@@ -516,6 +516,9 @@ ROUTES: dict[str, Case] = {
     "POST /gateway/users/{user_id}/sessions/revoke": post(
         f"{G}/users/{{user_target}}/sessions/revoke", operator()
     ),
+    "DELETE /gateway/users/{user_id}/sign-in-lock": delete(
+        f"{G}/users/{{user_target}}/sign-in-lock", operator()
+    ),
     "POST /gateway/auth/sessions/revoke": post(
         f"{G}/auth/sessions/revoke",
         SELF,

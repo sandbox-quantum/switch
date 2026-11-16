@@ -353,6 +353,19 @@ class SwitchConfig(BaseSettings):
     # OIDC first sign-in alike), read from the users table so it holds across
     # replicas. Sign-up is refused once the count reaches this.
     gateway_signup_max_per_hour: int = Field(default=20, ge=1)
+    # Password sign-in guessing (`gateway/login_limits.py`). Failures with one
+    # email address, whether or not an account has it, lock it out for
+    # `gateway_login_lock_minutes` once there are this many within the window,
+    # and the few before that make each next attempt wait a little longer. A
+    # client address may fail more often, as many people can share one. A
+    # success clears the email's count; the operator can clear it too
+    # (`DELETE /users/{id}/sign-in-lock`). Kept in the `auth_attempts` table,
+    # so the counts hold across replicas. Behind a proxy, client addresses are
+    # counted only once uvicorn trusts the proxy (`FORWARDED_ALLOW_IPS`).
+    gateway_login_max_failures: int = Field(default=10, ge=1)
+    gateway_login_max_failures_per_address: int = Field(default=50, ge=1)
+    gateway_login_failure_window_minutes: int = Field(default=15, ge=1)
+    gateway_login_lock_minutes: int = Field(default=15, ge=1)
     # The name of a request header that a trusted edge in front of the server
     # (prod's WAF) adds to requests from countries where new accounts are not
     # offered. A request carrying it, with any value (empty included), may not
