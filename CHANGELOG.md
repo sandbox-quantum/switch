@@ -800,6 +800,16 @@ version of their own to them without also giving them a release of their own.
 - **Another person's agent's page says its options are its owner's and
   admins' to see**, rather than showing the option defaults as if they were
   its options, and no longer shows an empty OAuth client line.
+- **Budgets say they are soft limits.** The Usage & budget page and the budget
+  dialog say that an agent that reaches a budget takes no new work until it
+  resets, but that work it already started finishes and can go past it.
+- **Workspace settings say plainly when no retention policy is set.** The Data
+  retention section reads "No retention policy is set, so Switch keeps every
+  message and the files attached to it."
+- **The guardrails pages say which files Switch Trust cannot read.** Beside the
+  policy, the workspace and organization guardrails pages say that images,
+  audio, video, archives and Office files other than Word documents are
+  delivered unchecked.
 
 #### Fixed
 - **A sign-out that fails in the dashboard says so.** Signing out, or out of
