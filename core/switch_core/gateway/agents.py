@@ -43,6 +43,7 @@ from switch_core.bridges.agent.protocol.statuses import overall_statuses
 from switch_core.bridges.agent.protocol.types import (
     IntegrationProfile,
 )
+from switch_core.bridges.agent.registration_bootstrap import is_bootstrap_owner
 from switch_core.chats.service import ChatService
 from switch_core.config import SwitchConfig
 from switch_core.db.audit import AuditAction, record_audit_event
@@ -176,6 +177,24 @@ async def _summary_for_caller(
     return found[0]
 
 
+async def _may_widen_addressing(
+    session: AsyncSession, principal: Principal, owner_id: str | None
+) -> bool:
+    """Whether `principal` may let more people or agents address an agent:
+    its owner, whose service access it acts with; or a workspace admin when
+    the agent acts for no person, being owned by nobody or by the
+    registration service account, which signs in to nothing and holds no
+    one's service access. Without that, nobody could ever open such an agent."""
+    if owns(principal, owner_id):
+        return True
+    if not principal.is_admin:
+        return False
+    if owner_id is None:
+        return True
+    owner = await session.get(User, owner_id)
+    return owner is None or is_bootstrap_owner(owner)
+
+
 async def _detail_for_caller(
     session: AsyncSession,
     detail: AgentDetail,
@@ -199,7 +218,9 @@ async def _detail_for_caller(
         **shown_to(principal, detail).model_dump(exclude={"children"}),
         **_capabilities(detail, principal, facts[detail.id]),
         can_change_manage_agents=owner,
-        can_widen_addressing=owner,
+        can_widen_addressing=await _may_widen_addressing(
+            session, principal, detail.owner_id
+        ),
         can_grant_services=owner
         and config.service_connections_enabled
         and _has_known_spec(detail),
@@ -932,8 +953,9 @@ async def update_addressing_policy(
     agent misbehaving, never let in anyone it did not already admit
     (`lets_in_more`): the agent acts with the service access its owner
     granted it, often on its owner's machine, so whoever may address it acts
-    for its owner. A change by anyone but the owner is recorded in the audit
-    log.
+    for its owner. An agent that acts for no person (`_may_widen_addressing`)
+    an admin may open too. A change by anyone but the owner is recorded in
+    the audit log.
     """
     agent = await agent_store.get(session, agent_id)
     if agent is None:
@@ -949,7 +971,9 @@ async def update_addressing_policy(
         )
     before = agent.addressing_policy
     owner = owns(principal, agent.owner_id)
-    if not owner and lets_in_more(
+    if not await _may_widen_addressing(
+        session, principal, agent.owner_id
+    ) and lets_in_more(
         req.policy if req.policy is not None else AddressingPolicy(),
         parse_policy(before),
     ):

@@ -10,7 +10,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.addressing import default_agent_policy, owner_only_policy
-from switch_core.db.models import Agent, AuditEvent
+from switch_core.bridges.agent.registration_bootstrap import (
+    BOOTSTRAP_OWNER_MARKER_META_KEY,
+)
+from switch_core.db.models import Agent, AuditEvent, User
 from switch_core.tenant_context import tenant_scope
 from tests.switch_core.gateway.role_matrix.harness import (
     TENANT,
@@ -132,3 +135,33 @@ async def test_its_owner_may_open_it_and_is_not_audited(
     assert opened.json()["can_widen_addressing"] is True
     assert await _policy(session_factory, agent_id) is None
     assert await _audited(session_factory) == []
+
+
+async def test_an_admin_may_open_an_agent_the_registration_account_owns(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """An agent added with the shared registration token is owned by a
+    service account that signs in to nothing and holds no one's service
+    access: an admin opening it lends nobody's, and nobody else could."""
+    gateway = build_gateway(session_factory)
+    people = await seed_people(session_factory)
+    async with session_factory() as session:
+        service_account = await session.get(User, people.ids[Persona.OWNER])
+        assert service_account is not None
+        service_account.metadata_ = {BOOTSTRAP_OWNER_MARKER_META_KEY: True}
+        await session.commit()
+    async with client(gateway) as http:
+        world = World(session_factory, people, "addressing-service", http, gateway)
+        agent_id = await world.agent()
+        await _set_policy(session_factory, agent_id, OWNER_ONLY)
+        opened = await http.put(
+            f"/gateway/agents/{agent_id}/addressing-policy",
+            json={"policy": None},
+            headers=people.headers(Persona.WORKSPACE_ADMIN),
+        )
+
+    assert opened.status_code == 200, opened.text
+    assert opened.json()["can_widen_addressing"] is True
+    assert await _policy(session_factory, agent_id) is None
+    [event] = await _audited(session_factory)
+    assert event.actor_user_id == people.ids[Persona.WORKSPACE_ADMIN]
