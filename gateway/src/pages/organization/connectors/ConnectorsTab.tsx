@@ -195,7 +195,7 @@ export default function ConnectorsTab({
                 meta={reachText(service, services.workspaces)}
                 onOpen={() =>
                   navigate(`/connectors/${service.slug}`, {
-                    state: { back: { label: "Connectors and apps", to: "/settings/org/connectors" } },
+                    state: { back: { label: "Connectors", to: "/settings/org/connectors" } },
                   })
                 }
                 trailing={

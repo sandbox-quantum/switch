@@ -416,10 +416,27 @@ describe("the layout", () => {
   });
 
   describe("workspace settings", () => {
+    it("is titled Settings across the area, with its own pages headed This workspace", async () => {
+      mockFetch(signedInAs("member"));
+      renderAt("/settings/general");
+      expect(await screen.findByRole("heading", { level: 1, name: "Settings" })).toBeTruthy();
+      const menu = await screen.findByRole("navigation", { name: "Settings" });
+      expect(within(menu).getByText("This workspace")).toBeTruthy();
+    });
+
+    it("marks the way into Organization settings with a chevron, not text", async () => {
+      mockFetch(signedInAs("org_admin"));
+      renderAt("/settings/general");
+      const menu = await screen.findByRole("navigation", { name: "Settings" });
+      const across = within(menu).getByRole("link", { name: "Organization settings" });
+      expect(across.getAttribute("href")).toBe("/settings/org");
+      expect(across.querySelector("svg")).not.toBeNull();
+    });
+
     it("shows a member the pages they may open, with nothing an admin's", async () => {
       mockFetch(signedInAs("member"));
       renderAt("/settings/general");
-      expect(await menuLabels("Workspace settings")).toEqual([
+      expect(await menuLabels("Settings")).toEqual([
         "General",
         "Users",
         "Messaging apps",
@@ -436,15 +453,15 @@ describe("the layout", () => {
         }),
       );
       renderAt("/settings/general");
-      expect(await menuLabels("Workspace settings")).toEqual([
+      expect(await menuLabels("Settings")).toEqual([
         "General",
         "Users",
         "Messaging apps",
         "Connectors",
         "API keys",
         "Guardrails",
-        "Devices",
         "Usage & budget",
+        "Devices",
         "Your account",
       ]);
     });
@@ -452,17 +469,17 @@ describe("the layout", () => {
     it("leads an organization admin on to Organization settings", async () => {
       mockFetch(signedInAs("org_admin"));
       renderAt("/settings/general");
-      expect(await menuLabels("Workspace settings")).toContain("Organization settings ›");
+      expect(await menuLabels("Settings")).toContain("Organization settings");
     });
 
     it("sets Your account, and the way to Organization settings, each in a group of its own", async () => {
       mockFetch(signedInAs("org_admin"));
       renderAt("/settings/general");
-      const menu = await screen.findByRole("navigation", { name: "Workspace settings" });
+      const menu = await screen.findByRole("navigation", { name: "Settings" });
       const groups = within(menu)
         .getAllByRole("list")
         .map((list) => within(list).getAllByRole("link").map((link) => link.textContent));
-      expect(groups.slice(1)).toEqual([["Your account"], ["Organization settings ›"]]);
+      expect(groups.slice(1)).toEqual([["Your account"], ["Organization settings"]]);
       expect(groups[0]).not.toContain("Your account");
       expect(within(menu).getAllByRole("separator")).toHaveLength(2);
     });
@@ -470,7 +487,7 @@ describe("the layout", () => {
     it("gives a member's Your account its own group too, with no way to the organization", async () => {
       mockFetch(signedInAs("member"));
       renderAt("/settings/general");
-      const menu = await screen.findByRole("navigation", { name: "Workspace settings" });
+      const menu = await screen.findByRole("navigation", { name: "Settings" });
       const lists = within(menu).getAllByRole("list");
       expect(within(lists[lists.length - 1]).getAllByRole("link").map((l) => l.textContent)).toEqual([
         "Your account",
@@ -481,7 +498,7 @@ describe("the layout", () => {
     it("keeps Usage & budget at its own URL, inside the area", async () => {
       mockFetch(signedInAs("workspace_admin"));
       renderAt("/usage");
-      expect(await menuLabels("Workspace settings")).toContain("Usage & budget");
+      expect(await menuLabels("Settings")).toContain("Usage & budget");
     });
 
     it("refuses a settings page named in the URL, and says why", async () => {
@@ -507,7 +524,7 @@ describe("the layout", () => {
     it("remembers the page someone opens", async () => {
       mockFetch(signedInAs("member"));
       renderAt("/settings/users");
-      await screen.findByRole("navigation", { name: "Workspace settings" });
+      await screen.findByRole("navigation", { name: "Settings" });
       await waitFor(() =>
         expect(window.localStorage.getItem("switch.settings.lastPage.workspace")).toBe(
           "/settings/users",
@@ -539,6 +556,17 @@ describe("the layout", () => {
   });
 
   describe("organization settings", () => {
+    it("is titled Organization settings, with no heading over its menu", async () => {
+      mockFetch(signedInAs("org_admin"));
+      renderAt("/settings/org/general");
+      expect(
+        await screen.findByRole("heading", { level: 1, name: "Organization settings" }),
+      ).toBeTruthy();
+      const menu = await screen.findByRole("navigation", { name: "Organization settings" });
+      expect(within(menu).queryByText("This workspace")).toBeNull();
+      expect(within(menu).queryByText("Organization settings")).toBeNull();
+    });
+
     it("lets an organization admin in, on General", async () => {
       mockFetch(signedInAs("org_admin"));
       renderAt("/organization");
@@ -549,7 +577,6 @@ describe("the layout", () => {
         "Users",
         "Guardrails",
         "Audit log",
-        "‹ Workspace settings",
       ]);
     });
 
@@ -559,14 +586,14 @@ describe("the layout", () => {
       expect(await menuLabels("Organization settings")).toContain("Devices");
     });
 
-    it("lists Connectors and apps where the server lets organizations have them", async () => {
+    it("lists Connectors where the server lets organizations have them", async () => {
       mockFetch(
         signedInAs("org_admin", {
           flags: ["service_connections", "organization_connector_apps"],
         }),
       );
       renderAt("/settings/org/general");
-      expect(await menuLabels("Organization settings")).toContain("Connectors and apps");
+      expect(await menuLabels("Organization settings")).toContain("Connectors");
     });
 
     it("lets the operator in, to restore an organization's admin, and no further", async () => {
@@ -576,7 +603,6 @@ describe("the layout", () => {
         "General",
         "Workspaces",
         "Users",
-        "‹ Workspace settings",
       ]);
       cleanup();
 
@@ -600,7 +626,7 @@ describe("the layout", () => {
     it("is not offered to a workspace admin", async () => {
       mockFetch(signedInAs("workspace_admin"));
       renderAt("/settings/general");
-      expect(await menuLabels("Workspace settings")).not.toContain("Organization settings ›");
+      expect(await menuLabels("Settings")).not.toContain("Organization settings");
     });
   });
 
@@ -796,13 +822,22 @@ describe("the layout", () => {
   });
 
   describe("in organization settings", () => {
-    it("hides the rail and leads back to the workspace", async () => {
+    it("hides the rail and leads back to the workspace settings page that was open", async () => {
       mockFetch(signedInAs("org_admin"));
       renderAt("/settings/org/general");
       const back = await screen.findByRole("link", { name: "Back to workspace" });
-      expect(back.getAttribute("href")).toBe("/");
+      expect(back.getAttribute("href")).toBe("/settings");
       expect(screen.queryByRole("navigation", { name: "Main" })).toBeNull();
       expect(screen.queryByRole("button", { name: /Acme Group/ })).toBeNull();
+    });
+
+    it("comes back out on the workspace settings page it was entered from", async () => {
+      mockFetch(signedInAs("org_admin"));
+      renderAt("/settings/api-keys");
+      fireEvent.click(await screen.findByRole("link", { name: "Organization settings" }));
+      await landsOn("/settings/org/general");
+      fireEvent.click(await screen.findByRole("link", { name: "Back to workspace" }));
+      await landsOn("/settings/api-keys");
     });
 
     it("shows someone it refuses, or a page that is not there, in the workspace's own chrome", async () => {
@@ -1058,13 +1093,13 @@ describe("a page that falls behind the server", () => {
   it("follows a change of role when the tab comes back", async () => {
     mockFetch(signedInAs("member"));
     renderAt("/settings/general");
-    expect(await menuLabels("Workspace settings")).not.toContain("Usage & budget");
+    expect(await menuLabels("Settings")).not.toContain("Usage & budget");
 
     mockFetch(signedInAs("workspace_admin"));
     comeBackToTheTab();
 
     await waitFor(async () =>
-      expect(await menuLabels("Workspace settings")).toContain("Usage & budget"),
+      expect(await menuLabels("Settings")).toContain("Usage & budget"),
     );
     expect(reload).not.toHaveBeenCalled();
   });

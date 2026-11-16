@@ -78,7 +78,7 @@ export default function OrganizationConnectorsSettings() {
 
   return (
     <Box>
-      <Typography variant="h5">Connectors and apps</Typography>
+      <Typography variant="h5">Connectors</Typography>
       <Tabs
         value={tab}
         onChange={(_, value: OrgConnectorsTab) => show({ tab: value })}

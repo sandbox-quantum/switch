@@ -114,7 +114,7 @@ export interface AreaDefinition {
 
 export const AREAS: Record<SettingsArea, AreaDefinition> = {
   workspace: {
-    title: "Workspace settings",
+    title: "Settings",
     access: everyone,
     first: "/settings/general",
     outsideWorkspace: false,
@@ -228,8 +228,8 @@ export const ROUTES: readonly AppRoute[] = [
   ),
   settingsPage("/settings/api-keys", "workspace", "API keys", everyone, <ApiKeysPage />),
   settingsPage("/settings/guardrails", "workspace", "Guardrails", everyone, <WorkspaceGuardrailsPage />),
-  settingsPage("/settings/devices", "workspace", "Devices", agentManagement, <DevicesPage />),
   settingsPage("/usage", "workspace", "Usage & budget", workspaceAdmins, <UsagePage />),
+  settingsPage("/settings/devices", "workspace", "Devices", agentManagement, <DevicesPage />),
   personalSettingsPage("/settings/account", "Your account", everyone, <AccountPage />),
 
   // Organization settings: the area admits the organization's admins, and
@@ -253,7 +253,7 @@ export const ROUTES: readonly AppRoute[] = [
   settingsPage(
     "/settings/org/connectors",
     "organization",
-    "Connectors and apps",
+    "Connectors",
     orgConnectors,
     <OrganizationConnectorsPage />,
   ),

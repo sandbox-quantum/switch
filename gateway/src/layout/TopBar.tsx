@@ -14,7 +14,7 @@ import {
   organizationName,
 } from "../data/workspaceSwitcher";
 import CreateInvitationDialog from "../pages/workspace/CreateInvitationDialog";
-import { outsideWorkspace, underAreaOutsideWorkspace } from "../routes/routeTable";
+import { areaOf, outsideWorkspace, underAreaOutsideWorkspace } from "../routes/routeTable";
 import { DevRoleSlot } from "./DevRoleSlot";
 import WorkspaceMenu from "./WorkspaceMenu";
 
@@ -60,13 +60,16 @@ function PageLabel({ label }: { label: string | undefined }) {
 
 /** The breadcrumb: "Organization / Workspace", which opens the
  * workspace switcher, then the page. In an area outside the workspace,
- * organization settings or Platform, the way back to it instead. */
+ * organization settings or Platform, the way back to it instead: from
+ * organization settings to the workspace settings page that was open. */
 function WorkspaceCrumbs({
   section,
   outside,
+  backTo,
 }: {
   section: string | undefined;
   outside: boolean;
+  backTo: string;
 }) {
   const { session, switchTo } = useAuth();
   const [organizations, setOrganizations] = useState<OrganizationName[]>([]);
@@ -113,7 +116,7 @@ function WorkspaceCrumbs({
     crumbs = (
       <Button
         component={RouterLink}
-        to="/"
+        to={backTo}
         color="inherit"
         startIcon={<ChevronLeftOutlined sx={{ fontSize: 18 }} />}
         sx={{ ...CRUMB_TEXT, px: 1 }}
@@ -206,6 +209,7 @@ export default function TopBar() {
     !outside && underAreaOutsideWorkspace(pathname)
       ? undefined
       : SECTION_LABELS.find(([prefix]) => pathname.startsWith(prefix))?.[1];
+  const backTo = areaOf(pathname) === "organization" ? "/settings" : "/";
 
   return (
     <Stack
@@ -218,7 +222,7 @@ export default function TopBar() {
         pr: 1,
       }}
     >
-      <WorkspaceCrumbs section={section} outside={outside} />
+      <WorkspaceCrumbs section={section} outside={outside} backTo={backTo} />
 
       <Stack direction="row" sx={{ alignItems: "center", gap: 1 }}>
         <DevRoleSlot />

@@ -146,16 +146,21 @@ export const RAIL: Record<Persona, readonly string[]> = {
 
 export type MatrixSettingsArea = "workspace" | "organization" | "platform";
 
-const WORKSPACE_MENU_MEMBER = [
+const WORKSPACE_MENU_EVERYONE = [
   "General",
   "Users",
   "Messaging apps",
   "Connectors",
   "API keys",
   "Guardrails",
-  "Devices",
 ];
-const WORKSPACE_MENU_ADMIN = [...WORKSPACE_MENU_MEMBER, "Usage & budget", "Your account"];
+const WORKSPACE_MENU_MEMBER = [...WORKSPACE_MENU_EVERYONE, "Devices", "Your account"];
+const WORKSPACE_MENU_ADMIN = [
+  ...WORKSPACE_MENU_EVERYONE,
+  "Usage & budget",
+  "Devices",
+  "Your account",
+];
 
 /** Each settings area's menu, in order: the pages it lists, not the link
  * across to the other area. Null where the role may not
@@ -165,7 +170,7 @@ export const SETTINGS_MENUS: Record<MatrixSettingsArea, Record<Persona, readonly
     workspace: {
       orgAdmin: WORKSPACE_MENU_ADMIN,
       workspaceAdmin: WORKSPACE_MENU_ADMIN,
-      member: [...WORKSPACE_MENU_MEMBER, "Your account"],
+      member: WORKSPACE_MENU_MEMBER,
       operator: WORKSPACE_MENU_ADMIN,
     },
     organization: {
@@ -173,7 +178,7 @@ export const SETTINGS_MENUS: Record<MatrixSettingsArea, Record<Persona, readonly
         "General",
         "Workspaces",
         "Users",
-        "Connectors and apps",
+        "Connectors",
         "Guardrails",
         "Devices",
         "Audit log",
