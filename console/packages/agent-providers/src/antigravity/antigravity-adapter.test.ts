@@ -711,20 +711,18 @@ it('registers an HTTP MCP server with its headers when the agent declares HTTP',
   });
 });
 
-it('refuses to start a session whose HTTP MCP servers the agent cannot reach', async () => {
+it('accepts HTTP MCP servers even when agy initialize omits mcpCapabilities.http', async () => {
   acp.http = false;
   const adapter = createAntigravityAdapter();
-  await expect(
-    adapter.startSession({
-      sessionId: 'no-http',
-      cwd: '/work',
-      runtimeMode: 'approval-required',
-      env: {},
-      mcpServers: httpSwitch,
-      connectorMcpServers: [],
-    })
-  ).rejects.toThrow('Antigravity does not declare MCP over HTTP');
-  expect(servers.at(-1)!.received.some((m) => m.method === 'session/new')).toBe(false);
+  await adapter.startSession({
+    sessionId: 'http-fallback',
+    cwd: '/work',
+    runtimeMode: 'approval-required',
+    env: {},
+    mcpServers: httpSwitch,
+    connectorMcpServers: [],
+  });
+  expect(servers.at(-1)!.received.some((m) => m.method === 'session/new')).toBe(true);
 });
 
 it('auto-approves calls to any MCP server the session registered, not only Switch', async () => {

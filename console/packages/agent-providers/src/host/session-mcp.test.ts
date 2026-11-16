@@ -116,3 +116,149 @@ it('answers a call its parent could not make as an error the agent can read', as
   expect(called.body?.result?.isError).toBe(true);
   expect(JSON.stringify(called.body?.result?.content)).toContain('No room watcher is running');
 });
+
+it('compacts secondary Switch operations when compactTools is enabled over the threshold', async () => {
+  const coreNames = [
+    'connect_to_room',
+    'post_message',
+    'send_targeted_message',
+    'read_context',
+    'get_my_context',
+    'download_attachment',
+    'send_attachment',
+    'list_rooms',
+    'list_all_rooms',
+    'get_room_detail',
+    'list_participants',
+    'list_agents',
+    'get_agent_detail',
+    'create_agent',
+    'list_managed_agents',
+    'list_machines',
+    'list_bridges',
+    'run_template',
+    'create_room',
+    'update_room',
+    'list_roles',
+    'get_role_detail',
+    'assume_role',
+    'release_role',
+    'list_references',
+    'load_internal_documents',
+    'list_templates',
+  ];
+  const secondaryNames = [
+    'archive_room',
+    'unarchive_room',
+    'invite_agent_to_room',
+    'remove_agent_from_room',
+    'add_users_to_room',
+    'link_rooms',
+    'unlink_rooms',
+    'list_linked_rooms',
+    'create_room_from_yaml',
+    'create_room_group',
+    'list_room_groups',
+    'get_room_group_detail',
+    'update_agent_detail',
+    'request_agent_deletion',
+    'set_agent_service',
+    'remove_agent_service',
+    'get_advanced_config',
+    'define_role',
+    'edit_role',
+    'delete_role',
+    'list_all_references',
+    'list_reference_types',
+    'create_reference',
+    'attach_reference_to_room',
+    'create_room_document',
+    'update_room_document',
+    'delete_room_document',
+    'list_room_schedules',
+    'create_room_schedule',
+    'update_room_schedule',
+    'pause_room_schedule',
+    'delete_room_schedule',
+    'get_template',
+    'get_template_guide',
+    'get_template_status',
+    'save_template',
+    'update_template',
+    'delete_template',
+  ];
+  const rawTools = [...coreNames, ...secondaryNames].map((name) => ({
+    name,
+    description: `${name} summary.`,
+    inputSchema: {
+      type: 'object',
+      required: name === 'archive_room' ? ['room_id'] : [],
+      properties: name === 'archive_room' ? { room_id: { type: 'string' } } : {},
+    },
+  }));
+  const links = new SessionLinks();
+  const answered = vi.fn(async (_caller: { sessionId: string }, ask: Record<string, unknown>) =>
+    ask.type === 'tools'
+      ? rawTools
+      : { content: [{ type: 'text', text: `ran ${ask.name}:${JSON.stringify(ask.arguments)}` }] }
+  );
+  links.answer('agent', answered);
+  const parent = pipe(links, '/roots/compact');
+  parent.identify({ agentId: 'agent', sessionId: 's', hostId: 'h', epoch: 'e' });
+  const mcp = await startSessionMcp(parent, { compactTools: true });
+  closing.push(mcp.close);
+
+  const listed = await rpc(mcp.spec.url, tokenOf(mcp.spec.headers), 'tools/list');
+  const listedTools = listed.body?.result?.tools as Array<{ name: string; description: string }>;
+  expect(listedTools).toHaveLength(33);
+  for (const name of coreNames) {
+    expect(listedTools.some((tool) => tool.name === name)).toBe(true);
+  }
+  const manageRooms = listedTools.find((tool) => tool.name === 'manage_rooms');
+  expect(manageRooms?.description).toContain('- archive_room(room_id*): archive_room summary.');
+
+  // Direct core call passes through untouched.
+  const direct = await rpc(mcp.spec.url, tokenOf(mcp.spec.headers), 'tools/call', {
+    name: 'post_message',
+    arguments: { body: 'hello' },
+  });
+  expect(direct.body?.result?.content).toEqual([
+    { type: 'text', text: 'ran post_message:{"body":"hello"}' },
+  ]);
+
+  // Grouped call unwraps back to the real Switch operation name.
+  const dispatched = await rpc(mcp.spec.url, tokenOf(mcp.spec.headers), 'tools/call', {
+    name: 'manage_rooms',
+    arguments: { action: 'archive_room', arguments: { room_id: 'r1' } },
+  });
+  expect(dispatched.body?.result?.content).toEqual([
+    { type: 'text', text: 'ran archive_room:{"room_id":"r1"}' },
+  ]);
+
+  // `describe: true` returns the underlying schema locally without calling the parent.
+  const callCountBeforeDescribe = answered.mock.calls.length;
+  const described = await rpc(mcp.spec.url, tokenOf(mcp.spec.headers), 'tools/call', {
+    name: 'manage_rooms',
+    arguments: { action: 'archive_room', describe: true },
+  });
+  expect(answered.mock.calls.length).toBe(callCountBeforeDescribe);
+  const describedText = (
+    described.body?.result?.content as Array<{ text: string }> | undefined
+  )?.[0]?.text;
+  expect(JSON.parse(describedText!)).toMatchObject({
+    name: 'archive_room',
+    inputSchema: { required: ['room_id'] },
+  });
+
+  // Invalid actions and invalid `arguments` return readable tool errors.
+  const badAction = await rpc(mcp.spec.url, tokenOf(mcp.spec.headers), 'tools/call', {
+    name: 'manage_roles',
+    arguments: { action: 'archive_room' },
+  });
+  expect(badAction.body?.result?.isError).toBe(true);
+  const badArgs = await rpc(mcp.spec.url, tokenOf(mcp.spec.headers), 'tools/call', {
+    name: 'manage_rooms',
+    arguments: { action: 'archive_room', arguments: 'oops' },
+  });
+  expect(badArgs.body?.result?.isError).toBe(true);
+});

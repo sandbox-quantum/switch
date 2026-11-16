@@ -67,6 +67,7 @@ export const antigravityAcp: AcpProviderHooks = {
   provider: 'antigravity',
   label: 'Antigravity',
   defaultBinary: 'agy',
+  mcpCapabilities: { http: true },
   capabilities: {
     modelSwitchInSession: true,
     steering: false,
