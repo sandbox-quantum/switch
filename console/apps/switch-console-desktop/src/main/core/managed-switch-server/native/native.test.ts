@@ -77,7 +77,9 @@ describe('buildNativeCoreSettings', () => {
 
 describe('mattermost', () => {
   it('runs the image the bundled compose pins', () => {
-    expect(mattermostImage()).toMatch(/^mattermost\/mattermost-team-edition:\d+\.\d+\.\d+$/);
+    expect(mattermostImage()).toMatch(
+      /^mattermost\/mattermost-team-edition:\d+\.\d+\.\d+@sha256:[0-9a-f]{64}$/
+    );
   });
 
   it('shares the host network on Linux and listens on loopback only', () => {

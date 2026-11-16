@@ -21,6 +21,9 @@ spec:
       {{- if .Values.global.imagePullSecrets }}
       {{- include "switch.imagePullSecrets" . | nindent 6 }}
       {{- end }}
+      automountServiceAccountToken: false
+      securityContext:
+        {{- toYaml .Values.postgresql.podSecurityContext | nindent 8 }}
       containers:
         - name: postgresql
           image: {{ .Values.postgresql.image }}
@@ -62,15 +65,27 @@ spec:
               command: ["pg_isready", "-U", "postgres"]
             initialDelaySeconds: 15
             periodSeconds: 15
+          securityContext:
+            {{- toYaml .Values.postgresql.securityContext | nindent 12 }}
           volumeMounts:
             - name: data
               mountPath: /var/lib/postgresql/data
             - name: init-scripts
               mountPath: /docker-entrypoint-initdb.d
               readOnly: true
+            # The root filesystem is read-only: the server's socket and lock
+            # file, and the entrypoint's temporary files, go here.
+            - name: run
+              mountPath: /var/run/postgresql
+            - name: tmp
+              mountPath: /tmp
           resources:
             {{- toYaml .Values.postgresql.resources | nindent 12 }}
       volumes:
+        - name: run
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
         - name: init-scripts
           configMap:
             name: {{ include "switch.fullname" . }}-postgresql-init

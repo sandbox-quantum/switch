@@ -39,7 +39,16 @@ data:
             proxy_set_header X-Real-IP $remote_addr;
         }
 
+        # The dashboard's own files: scripts and connections only to this origin,
+        # styles inline (MUI writes them at runtime), images from anywhere over HTTPS
+        # (vendors host connector logos and agent icons), no framing, no type
+        # sniffing, and no Referer to other sites. What /gateway answers keeps
+        # switch-core's own headers.
         location / {
+            add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'" always;
+            add_header X-Frame-Options DENY always;
+            add_header X-Content-Type-Options nosniff always;
+            add_header Referrer-Policy same-origin always;
             try_files $uri $uri/ /index.html;
         }
     }
