@@ -33,10 +33,9 @@ export default function AcceptInvitePage({ token }: { token: string }) {
       (found) => {
         if (current) setPreview(found);
       },
+      // Kept until they choose Continue, which drops it.
       (err: unknown) => {
-        if (!current) return;
-        clearPendingInvite();
-        setError(err instanceof Error ? err.message : "Could not read the invitation");
+        if (current) setError(err instanceof Error ? err.message : "Could not read the invitation");
       },
     );
     return () => {
