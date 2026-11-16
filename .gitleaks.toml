@@ -37,7 +37,7 @@ description = "Webhook URL carrying an embedded token"
 regex = '''https?://[A-Za-z0-9.-]+/[A-Za-z0-9._/-]*webhooks?/[A-Za-z0-9._-]*/[A-Za-z0-9_-]{32,}'''
 keywords = ["webhook"]
 
-[allowlist]
+[[allowlists]]
 description = "Known false positives"
 regexTarget = "line"
 regexes = [
