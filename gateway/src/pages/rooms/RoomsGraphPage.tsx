@@ -12,7 +12,6 @@ import ForceGraph2D from "react-force-graph-2d";
 import { useNavigate } from "react-router";
 import { useAuth } from "../../data/AuthContext";
 import { loadRoomsWithArchived } from "../../data/api";
-import { GATEWAY_V2 } from "../../data/featureFlags";
 import { useRoomGraph, useRoomGroups } from "../../data/hooks";
 import { type ListScope, listScopeOf, roomsInScope } from "../../data/listScope";
 import { useLoad } from "../workspace/useLoad";
@@ -52,10 +51,10 @@ export default function RoomsGraphPage() {
   const filters = useRoomFilterState();
 
   // Nodes come from the same rooms the list shows, narrowed the same way for
-  // a member in the new layout, so the graph never shows a room the list
+  // a member, so the graph never shows a room the list
   // hides; the link edges come from the link graph. Group colouring uses the
   // group tree.
-  const scope: ListScope = capabilities.features[GATEWAY_V2] ? listScopeOf(capabilities) : "workspace";
+  const scope: ListScope = listScopeOf(capabilities);
   const { data: allRooms, loading: roomsLoading, error: roomsError } = useLoad(loadRoomsWithArchived);
   const rooms = useMemo(() => (allRooms ? roomsInScope(allRooms, scope) : null), [allRooms, scope]);
   const { data: groups } = useRoomGroups();

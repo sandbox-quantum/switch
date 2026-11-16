@@ -10,7 +10,7 @@ const AFTER_SWITCH_KEY = "switch.settings.afterSwitch";
 const LAST_PAGE_KEY = "switch.settings.lastPage";
 
 // `/usage` stays where it is until Usage & budget is rebuilt, but sits in
-// Workspace settings in the new layout.
+// Workspace settings.
 function inSettings(pathname: string): boolean {
   return pathname === "/settings" || pathname.startsWith("/settings/") || pathname === "/usage";
 }
@@ -18,8 +18,8 @@ function inSettings(pathname: string): boolean {
 /** Where to load after switching workspace from `pathname`. A settings page
  * is carried across; anything else starts again from the landing page,
  * because what it showed belonged to the workspace being left. */
-export function landingAfterSwitch(pathname: string, newLayout: boolean): string {
-  if (!newLayout || !inSettings(pathname)) return "/";
+export function landingAfterSwitch(pathname: string): string {
+  if (!inSettings(pathname)) return "/";
   window.sessionStorage.setItem(AFTER_SWITCH_KEY, pathname);
   return "/settings";
 }

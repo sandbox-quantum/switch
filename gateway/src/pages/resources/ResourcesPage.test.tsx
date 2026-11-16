@@ -117,7 +117,7 @@ const BUILT_IN = {
 const show = (tab: string) =>
   render(
     <MemoryRouter initialEntries={[`/resources?tab=${tab}`]}>
-      <ResourcesPage withTemplates={false} />
+      <ResourcesPage />
     </MemoryRouter>,
   );
 

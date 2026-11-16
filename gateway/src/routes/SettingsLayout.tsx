@@ -18,7 +18,7 @@ import {
   rememberedSettingsPage,
   rememberSettingsPage,
 } from "../data/settingsLanding";
-import { AREAS, type Layout, accessTo, menuOf } from "./routeTable";
+import { AREAS, accessTo, menuOf } from "./routeTable";
 import { NoAccessPage } from "./StatusPages";
 
 /** A settings area: its section menu beside the page. The menu lists only the
@@ -29,12 +29,12 @@ import { NoAccessPage } from "./StatusPages";
  * Each group of the menu sits below a rule: the area's own pages, then the
  * pages about the person (Your account), then the way across to the other
  * area, which leaves this one. */
-export function SettingsLayout({ area, layout }: { area: SettingsArea; layout: Layout }) {
+export function SettingsLayout({ area }: { area: SettingsArea }) {
   const { capabilities } = useAuth();
   const { pathname } = useLocation();
   const definition = AREAS[area];
   const entry = definition.access(capabilities);
-  const allowedHere = accessTo(pathname, layout, capabilities)?.allowed === true;
+  const allowedHere = accessTo(pathname, capabilities)?.allowed === true;
 
   useEffect(() => {
     if (entry.allowed && allowedHere) rememberSettingsPage(area, pathname);
@@ -42,10 +42,10 @@ export function SettingsLayout({ area, layout }: { area: SettingsArea; layout: L
 
   if (!entry.allowed) return <NoAccessPage access={entry} />;
 
-  const menu = menuOf(area, layout, capabilities);
+  const menu = menuOf(area, capabilities);
   const own = menu.filter((item) => !item.personal);
   const personal = menu.filter((item) => item.personal);
-  const organization = accessTo("/settings/org", layout, capabilities)?.allowed === true;
+  const organization = accessTo("/settings/org", capabilities)?.allowed === true;
   const otherArea =
     area === "workspace" && organization
       ? { label: "Organization settings ›", path: "/settings/org" }
@@ -107,7 +107,7 @@ function menuRow(item: { label: string; path: string }, pathname: string) {
  * page when not, so a switch or a change of role never lands someone on a
  * page they cannot use. A page named in the URL is different: it shows why it
  * is refused (`Guarded`). */
-export function SettingsIndex({ area, layout }: { area: SettingsArea; layout: Layout }) {
+export function SettingsIndex({ area }: { area: SettingsArea }) {
   const { capabilities } = useAuth();
   const definition = AREAS[area];
   const entry = definition.access(capabilities);
@@ -123,7 +123,7 @@ export function SettingsIndex({ area, layout }: { area: SettingsArea; layout: La
     (path): path is string => path !== null,
   );
   const landing =
-    candidates.find((path) => accessTo(path, layout, capabilities)?.allowed === true) ??
+    candidates.find((path) => accessTo(path, capabilities)?.allowed === true) ??
     definition.first;
   return <Navigate to={landing} replace />;
 }

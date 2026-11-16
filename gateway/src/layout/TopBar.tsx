@@ -14,27 +14,20 @@ import {
   organizationName,
 } from "../data/workspaceSwitcher";
 import CreateInvitationDialog from "../pages/workspace/CreateInvitationDialog";
-import { type Layout, outsideWorkspace } from "../routes/routeTable";
+import { outsideWorkspace } from "../routes/routeTable";
 import { DevRoleSlot } from "./DevRoleSlot";
 import WorkspaceMenu from "./WorkspaceMenu";
 
 const SECTION_LABELS: [prefix: string, label: string][] = [
-  ["/ecosystem", "Ecosystem"],
-  ["/rooms", "Rooms"],
-  ["/resources", "Resources"],
-  ["/agents", "Agents"],
-  ["/collaborations", "Messaging apps"],
-  ["/registration-keys", "API keys"],
-  ["/machines", "Devices"],
-  ["/connectors", "Connectors"],
-  ["/users", "Users"],
-  ["/workspace", "Workspace"],
-  ["/organization", "Organization"],
-  ["/operator/workspaces", "All workspaces"],
-  ["/usage", "Usage"],
-  // The new layout's own (`gateway_v2`).
   ["/overview", "Overview"],
+  ["/ecosystem", "Ecosystem"],
+  ["/agents", "Agents"],
+  ["/rooms", "Rooms"],
   ["/templates", "Templates"],
+  ["/connectors", "Connectors"],
+  ["/resources", "Resources"],
+  ["/workspace", "Workspace"],
+  ["/usage", "Usage"],
   ["/settings/org", "Organization settings"],
   ["/settings", "Settings"],
   ["/platform", "Platform"],
@@ -65,28 +58,7 @@ function PageLabel({ label }: { label: string | undefined }) {
   );
 }
 
-/** Today's breadcrumb: Switch, the workspace, the page. */
-function CurrentCrumbs({ section }: { section: string | undefined }) {
-  const { session } = useAuth();
-  const crumbs = [session?.tenant?.name, section].filter(
-    (crumb): crumb is string => Boolean(crumb),
-  );
-  return (
-    <Typography sx={{ ...CRUMB_TEXT, px: 2 }}>
-      Switch
-      {crumbs.map((crumb, i) => (
-        <Box component="span" key={i}>
-          <Separator />
-          <Box component="span" sx={{ fontWeight: i === crumbs.length - 1 ? 700 : 500 }}>
-            {crumb}
-          </Box>
-        </Box>
-      ))}
-    </Typography>
-  );
-}
-
-/** The new layout's breadcrumb: "Organization / Workspace", which opens the
+/** The breadcrumb: "Organization / Workspace", which opens the
  * workspace switcher, then the page. In an area outside the workspace,
  * organization settings or Platform, the way back to it instead. */
 function WorkspaceCrumbs({
@@ -228,7 +200,7 @@ function LinkButton({ href, icon, children }: { href: string; icon: ReactNode; c
   );
 }
 
-export default function TopBar({ layout }: { layout: Layout }) {
+export default function TopBar() {
   const { pathname } = useLocation();
   const section = SECTION_LABELS.find(([prefix]) => pathname.startsWith(prefix))?.[1];
 
@@ -243,19 +215,13 @@ export default function TopBar({ layout }: { layout: Layout }) {
         pr: 1,
       }}
     >
-      {layout === "v2" ? (
-        <WorkspaceCrumbs section={section} outside={outsideWorkspace(pathname, layout)} />
-      ) : (
-        <CurrentCrumbs section={section} />
-      )}
+      <WorkspaceCrumbs section={section} outside={outsideWorkspace(pathname)} />
 
       <Stack direction="row" sx={{ alignItems: "center", gap: 1 }}>
         <DevRoleSlot />
-        {layout === "v2" && (
-          <LinkButton href={HELP_URL} icon={<HelpOutlineOutlined sx={{ fontSize: 18 }} />}>
-            Help
-          </LinkButton>
-        )}
+        <LinkButton href={HELP_URL} icon={<HelpOutlineOutlined sx={{ fontSize: 18 }} />}>
+          Help
+        </LinkButton>
         <LinkButton href={DOCS_URL} icon={<MenuBookOutlined sx={{ fontSize: 18 }} />}>
           Docs
         </LinkButton>

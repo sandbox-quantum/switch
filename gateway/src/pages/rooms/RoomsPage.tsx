@@ -31,7 +31,6 @@ import {
   loadRoomsWithArchived,
   unarchiveRoom,
 } from "../../data/api";
-import { GATEWAY_V2 } from "../../data/featureFlags";
 import { useRoomGroups } from "../../data/hooks";
 import { type ListScope, listScopeOf, roomsInScope } from "../../data/listScope";
 import { EM_DASH, MONO_SX, channelTypeLabel, formatDate } from "../../theme/format";
@@ -124,10 +123,9 @@ export default function RoomsPage() {
     return passed ? { severity: "warning", text: passed } : null;
   });
 
-  // Only the new layout narrows a member's list to their own rooms, as its
-  // Overview counts them; today's layout keeps showing every room they may
-  // read. Narrowing is a view, not a permission.
-  const scope: ListScope = capabilities.features[GATEWAY_V2] ? listScopeOf(capabilities) : "workspace";
+  // A member's list is narrowed to their own rooms, as Overview counts them.
+  // Narrowing is a view, not a permission.
+  const scope: ListScope = listScopeOf(capabilities);
   const workspace = session?.tenant?.name ?? "this workspace";
 
   const groupList = useMemo(() => groups.data ?? [], [groups.data]);

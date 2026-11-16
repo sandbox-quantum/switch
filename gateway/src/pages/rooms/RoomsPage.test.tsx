@@ -8,12 +8,12 @@ import type { RoomSummary, Session } from "../../data/api";
 import * as api from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
 import { capabilitiesOf } from "../../data/capabilities";
-import { ALL_OFF, GATEWAY_V2 } from "../../data/featureFlags";
+import { ALL_OFF } from "../../data/featureFlags";
 import RoomsPage from "./RoomsPage";
 
 // The list offers each room's actions as the server allows them (archive on
-// write access, delete on managing it), confirms archive and delete, and in
-// the new layout narrows a member's list to the rooms they take part in.
+// write access, delete on managing it), confirms archive and delete, and
+// narrows a member's list to the rooms they take part in.
 
 const navigate = vi.fn();
 let locationState: unknown = null;
@@ -155,7 +155,7 @@ vi.mock("../../components/DataTable", () => ({
 
 type Role = "member" | "admin";
 
-function signedInAs(role: Role, layout: "v1" | "v2") {
+function signedInAs(role: Role) {
   const tenant = {
     id: "t1",
     slug: "acme",
@@ -187,7 +187,7 @@ function signedInAs(role: Role, layout: "v1" | "v2") {
         can_delete: false,
         can_manage_data_protection: false,
       },
-      { ...ALL_OFF, [GATEWAY_V2]: layout === "v2" },
+      ALL_OFF,
     ),
   } as unknown as ReturnType<typeof useAuth>);
 }
@@ -203,7 +203,7 @@ async function openMenu(name: string) {
 
 beforeEach(() => {
   locationState = null;
-  signedInAs("admin", "v2");
+  signedInAs("admin");
   vi.mocked(api.loadRoomsWithArchived).mockResolvedValue(ROOMS);
 });
 
@@ -340,7 +340,7 @@ describe("RoomsPage rows and actions", () => {
     await screen.findByTestId("row-mine");
     expect(api.loadRoomsWithArchived).toHaveBeenCalledTimes(1);
 
-    signedInAs("member", "v2");
+    signedInAs("member");
     rerender(<RoomsPage />);
     await waitFor(() => expect(api.loadRoomsWithArchived).toHaveBeenCalledTimes(2));
   });
@@ -362,8 +362,8 @@ describe("RoomsPage rows and actions", () => {
 });
 
 describe("RoomsPage scope", () => {
-  it("shows a member only their own rooms in the new layout", async () => {
-    signedInAs("member", "v2");
+  it("shows a member only their own rooms", async () => {
+    signedInAs("member");
     render(<RoomsPage />);
     await screen.findByTestId("row-mine");
     expect(rowNames()).toEqual(["mine", "bridged"]);
@@ -377,20 +377,13 @@ describe("RoomsPage scope", () => {
     expect(screen.getByText("Rooms in Acme.")).toBeTruthy();
   });
 
-  it("keeps showing a member every room they may read in today's layout", async () => {
-    signedInAs("member", "v1");
-    render(<RoomsPage />);
-    await screen.findByTestId("row-mine");
-    expect(rowNames()).toEqual(["mine", "open", "readonly", "bridged"]);
-  });
-
   it("words an empty list for an admin and for a member", async () => {
     vi.mocked(api.loadRoomsWithArchived).mockResolvedValue([]);
     render(<RoomsPage />);
     expect(await screen.findByText("No rooms in Acme yet")).toBeTruthy();
     cleanup();
 
-    signedInAs("member", "v2");
+    signedInAs("member");
     render(<RoomsPage />);
     expect(await screen.findByText("You're not in any rooms in Acme yet")).toBeTruthy();
     expect(within(screen.getByTestId("empty")).getByRole("button", { name: "New room" })).toBeTruthy();

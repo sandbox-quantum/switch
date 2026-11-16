@@ -346,31 +346,18 @@ export function readOnlyReasonFor(
 }
 
 /** The operator's way from a service that is not set up to where it is set
- * up: their server-wide connector apps, under Platform in the new layout. */
+ * up: their server-wide connector apps, under Platform. */
 function SetUpLink() {
-  const { capabilities } = useAuth();
   return (
-    <Button
-      component={RouterLink}
-      to={capabilities.features.gateway_v2 ? "/platform/connectors" : "/connectors"}
-      size="small"
-      sx={{ ml: 1 }}
-    >
+    <Button component={RouterLink} to="/platform/connectors" size="small" sx={{ ml: 1 }}>
       Set up
     </Button>
   );
 }
 
-/** Where to connect a service before granting it: in the new layout its own
- * page, which connects it or says how; otherwise Switch Console. */
+/** Where to connect a service before granting it: its own page, which
+ * connects it or says how. */
 function ConnectFirst({ slug, what }: { slug: string; what: string }) {
-  const { capabilities } = useAuth();
-  if (!capabilities.features.gateway_v2)
-    return (
-      <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-        {what} in Switch Console, under Connectors.
-      </Typography>
-    );
   return (
     <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
       {what}.

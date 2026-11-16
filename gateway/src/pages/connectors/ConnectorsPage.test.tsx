@@ -14,7 +14,7 @@ function signedIn({ admin = false } = {}) {
       user: { id: "me", name: "Ada", email: "ada@example.test", is_operator: false },
       tenant: { id: "t1", slug: "acme", name: "Acme", role: admin ? "admin" : "member", organization_role: null, organization_id: "o1" },
     },
-    capabilities: { administersWorkspace: admin, administersOrganization: false, features: { gateway_v2: true } },
+    capabilities: { administersWorkspace: admin, administersOrganization: false },
     isOperator: false,
   } as unknown as ReturnType<typeof useAuth>);
 }

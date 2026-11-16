@@ -1,7 +1,7 @@
 import { Alert, Box, Button, Stack } from "@mui/material";
 import { Outlet, useLocation } from "react-router";
 import { useAuth } from "../data/AuthContext";
-import { type Layout, outsideWorkspace } from "../routes/routeTable";
+import { outsideWorkspace } from "../routes/routeTable";
 import LinkNoticeBanner from "./LinkNoticeBanner";
 import NavRail from "./NavRail";
 import TopBar from "./TopBar";
@@ -9,12 +9,11 @@ import TopBar from "./TopBar";
 /** The signature shell: a narrow icon rail and a slim top bar sitting bare on
  *  the warm canvas, framing a single rounded content surface. Chrome recedes so
  *  the content is the hero — an "app within a surface", not edge-to-edge chrome.
- *  The new layout's organization settings and Platform area are places of
- *  their own, outside the workspace: no rail there, and the top bar leads
- *  back. */
-export default function PageShell({ layout }: { layout: Layout }) {
+ *  Organization settings and the Platform area are places of their own,
+ *  outside the workspace: no rail there, and the top bar leads back. */
+export default function PageShell() {
   const { pathname } = useLocation();
-  const withRail = !outsideWorkspace(pathname, layout);
+  const withRail = !outsideWorkspace(pathname);
   return (
     <Box
       sx={{
@@ -24,7 +23,7 @@ export default function PageShell({ layout }: { layout: Layout }) {
         backgroundColor: "var(--sw-canvas)",
       }}
     >
-      {withRail && <NavRail layout={layout} />}
+      {withRail && <NavRail />}
       <Stack
         sx={{
           flex: 1,
@@ -35,7 +34,7 @@ export default function PageShell({ layout }: { layout: Layout }) {
           pb: "var(--surface-gutter)",
         }}
       >
-        <TopBar layout={layout} />
+        <TopBar />
         <Stack
           component="main"
           sx={{

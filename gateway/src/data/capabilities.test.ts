@@ -43,14 +43,13 @@ describe("featureFlagsFrom", () => {
   it("keeps the flags the dashboard knows, and treats any it was not sent as off", () => {
     const flags = featureFlagsFrom([
       { key: "agent_management", enabled: true },
-      { key: "gateway_v2", enabled: false },
+      { key: "service_connections", enabled: false },
       { key: "something_newer", enabled: true },
     ]);
     expect(flags).toEqual({
       agent_management: true,
       service_connections: false,
       organization_connector_apps: false,
-      gateway_v2: false,
     });
   });
 });

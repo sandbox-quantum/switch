@@ -1,6 +1,5 @@
 import AccountCircleOutlined from "@mui/icons-material/AccountCircleOutlined";
 import AddOutlined from "@mui/icons-material/AddOutlined";
-import LockOutlined from "@mui/icons-material/LockOutlined";
 import LogoutOutlined from "@mui/icons-material/LogoutOutlined";
 import {
   Alert,
@@ -21,8 +20,7 @@ import { NavLink, Link as RouterLink, useLocation } from "react-router";
 import type { MouseEvent } from "react";
 import { useAuth } from "../data/AuthContext";
 import CreateWorkspaceForm from "../pages/onboarding/CreateWorkspaceForm";
-import { type Layout, type RailItem as RailItemDefinition, railFor } from "../routes/routeTable";
-import ChangePasswordDialog from "./ChangePasswordDialog";
+import { type RailItem as RailItemDefinition, railFor } from "../routes/routeTable";
 import ThemeModeToggle from "./ThemeModeToggle";
 
 // The rail follows the window's height: at a laptop's it is sized so an
@@ -84,24 +82,13 @@ function RailItem({ item, active }: { item: RailItemDefinition; active: boolean 
   );
 }
 
-export default memo(function NavRail({ layout }: { layout: Layout }) {
+export default memo(function NavRail() {
   const location = useLocation();
-  const { user, session, isOperator, capabilities, logout, logoutEverywhere, switchTo } =
-    useAuth();
+  const { user, session, isOperator, capabilities, logout, logoutEverywhere } = useAuth();
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
-  const [passwordDialogOpen, setPasswordDialogOpen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
-  // What the menu last failed to do: switching workspace or signing out.
+  // What the menu last failed to do: signing out.
   const [menuError, setMenuError] = useState<string | null>(null);
-
-  const switchWorkspace = async (tenantId: string) => {
-    setAnchor(null);
-    try {
-      await switchTo(tenantId);
-    } catch (err) {
-      setMenuError(err instanceof Error ? err.message : "Could not switch workspace");
-    }
-  };
 
   // A sign-out that works leaves the dashboard; one that fails says so.
   const signOut = async (action: () => Promise<void>, failure: string) => {
@@ -113,13 +100,9 @@ export default memo(function NavRail({ layout }: { layout: Layout }) {
     }
   };
 
-  const items = railFor(layout, capabilities);
+  const items = railFor(capabilities);
   const isActive = (item: RailItemDefinition) =>
     item.activeFor.some((prefix) => location.pathname.startsWith(prefix));
-  const current = session?.tenant ?? null;
-  // The new layout switches workspace from the top bar's breadcrumb.
-  const others =
-    layout === "v2" ? [] : (session?.tenants ?? []).filter((t) => t.id !== current?.id);
   const initial = (user?.email ?? "?").charAt(0).toUpperCase();
 
   return (
@@ -253,36 +236,15 @@ export default memo(function NavRail({ layout }: { layout: Layout }) {
           )}
         </Box>
         <Divider sx={{ my: 0.5 }} />
-        {layout === "v2" ? (
-          <MenuItem
-            component={RouterLink}
-            to="/settings/account"
-            onClick={() => setAnchor(null)}
-            sx={{ gap: 1 }}
-          >
-            <AccountCircleOutlined sx={{ fontSize: 16 }} />
-            Your account
-          </MenuItem>
-        ) : (
-          <Box sx={{ px: 1.5, pt: 0.5, pb: 0.25 }}>
-            <Typography variant="caption" sx={{ color: "text.secondary" }}>
-              Workspace
-            </Typography>
-            <Typography variant="body2" sx={{ fontWeight: 500 }} noWrap>
-              {current?.name}
-            </Typography>
-          </Box>
-        )}
-        {others.map((tenant) => (
-          <MenuItem
-            key={tenant.id}
-            onClick={() => switchWorkspace(tenant.id)}
-          >
-            <Typography variant="body2" noWrap>
-              Switch to {tenant.name}
-            </Typography>
-          </MenuItem>
-        ))}
+        <MenuItem
+          component={RouterLink}
+          to="/settings/account"
+          onClick={() => setAnchor(null)}
+          sx={{ gap: 1 }}
+        >
+          <AccountCircleOutlined sx={{ fontSize: 16 }} />
+          Your account
+        </MenuItem>
         {session?.can_create_workspace && (
           <MenuItem
             onClick={() => {
@@ -309,19 +271,6 @@ export default memo(function NavRail({ layout }: { layout: Layout }) {
           <ThemeModeToggle />
         </Box>
         <Divider sx={{ my: 0.5 }} />
-        {/* The new layout changes the password on Your account. */}
-        {layout !== "v2" && (
-          <MenuItem
-            onClick={() => {
-              setAnchor(null);
-              setPasswordDialogOpen(true);
-            }}
-            sx={{ gap: 1 }}
-          >
-            <LockOutlined sx={{ fontSize: 16 }} />
-            Change password
-          </MenuItem>
-        )}
         <MenuItem onClick={() => signOut(logout, "Couldn't sign out")} sx={{ gap: 1 }}>
           <LogoutOutlined sx={{ fontSize: 16 }} />
           Sign out
@@ -351,11 +300,6 @@ export default memo(function NavRail({ layout }: { layout: Layout }) {
           {menuError}
         </Alert>
       </Snackbar>
-
-      <ChangePasswordDialog
-        open={passwordDialogOpen}
-        onClose={() => setPasswordDialogOpen(false)}
-      />
     </Stack>
   );
 });

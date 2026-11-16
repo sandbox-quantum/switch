@@ -26,7 +26,6 @@ import {
   clearOrganizationService,
   setOrganizationService,
 } from "../../../data/api";
-import { reachText } from "../OrganizationServicesSection";
 import {
   POLICIES,
   type Policy,
@@ -37,6 +36,7 @@ import {
   policyChip,
   policyForSwitch,
   policyOf,
+  reachText,
   settingOf,
   setupNeed,
 } from "./orgConnectors";

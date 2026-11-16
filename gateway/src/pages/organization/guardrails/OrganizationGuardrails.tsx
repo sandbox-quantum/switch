@@ -23,18 +23,8 @@ const MIN_KEY_LENGTH = 8;
 /** The Switch Trust policy the organization checks every message in its
  * workspaces against: connecting one, with its policy ID and an API key,
  * checked with Switch Trust before it is kept; the policy once connected;
- * and disconnecting it. Its admins only, as the route table admits.
- *
- * `heading` says where it sits: as Organization settings › Guardrails in the
- * new layout, or as one section of today's organization page, the only
- * place to set guardrails while the new layout is off. */
-export default function OrganizationGuardrails({
-  organizationName,
-  heading,
-}: {
-  organizationName: string;
-  heading: "page" | "section";
-}) {
+ * and disconnecting it. Its admins only, as the route table admits. */
+export default function OrganizationGuardrails({ organizationName }: { organizationName: string }) {
   const load = useCallback(() => fetchOrganizationGuardrails(), []);
   const { data, error, loading, refetch } = useLoad(load);
   const [setting, setSetting] = useState(false);
@@ -62,8 +52,8 @@ export default function OrganizationGuardrails({
 
   return (
     <Box>
-      <Stack spacing={0.5} sx={{ mb: heading === "page" ? 3 : 1.5 }}>
-        <Typography variant={heading === "page" ? "h5" : "h6"}>Guardrails</Typography>
+      <Stack spacing={0.5} sx={{ mb: 3 }}>
+        <Typography variant="h5">Guardrails</Typography>
         {subtitle !== null && (
           <Stack direction="row" spacing={0.5} sx={{ alignItems: "center" }}>
             <Typography variant="body2" color="text.secondary">

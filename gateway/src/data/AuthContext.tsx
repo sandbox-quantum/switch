@@ -14,7 +14,7 @@ import {
   switchTenant,
 } from "./api";
 import { type Capabilities, capabilitiesOf } from "./capabilities";
-import { ALL_OFF, type FeatureFlags, GATEWAY_V2 } from "./featureFlags";
+import { ALL_OFF, type FeatureFlags } from "./featureFlags";
 import { landingAfterSwitch } from "./settingsLanding";
 import { clearPendingInvite } from "./sessionState";
 import {
@@ -262,14 +262,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   // A full reload rather than a state update: every page holds data fetched
   // for the workspace it was opened in, and none of it is valid in the next.
-  const newLayout = loaded.flags[GATEWAY_V2];
-  const switchTo = useCallback(
-    async (tenantId: string) => {
-      await switchTenant(tenantId);
-      window.location.assign(landingAfterSwitch(window.location.pathname, newLayout));
-    },
-    [newLayout],
-  );
+  const switchTo = useCallback(async (tenantId: string) => {
+    await switchTenant(tenantId);
+    window.location.assign(landingAfterSwitch(window.location.pathname));
+  }, []);
 
   const capabilities = capabilitiesOf(loaded.session, loaded.tenant, loaded.flags);
   const value: AuthState = {

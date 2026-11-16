@@ -214,26 +214,6 @@ describe("AppRoutes", () => {
     expect(screen.getByText("Beta Co")).toBeTruthy();
   });
 
-  it("opens the app in the current workspace", async () => {
-    mockFetch(signedInAs("org_admin", { tenants: [beta] }));
-    renderAt("/workspace");
-    expect(await screen.findByRole("heading", { name: "Acme" })).toBeTruthy();
-    expect(screen.getByRole("link", { name: /Workspace/ })).toBeTruthy();
-    expect(screen.queryByRole("link", { name: /Users/ })).toBeNull();
-    expect(screen.queryByRole("link", { name: /Connectors/ })).toBeNull();
-  });
-
-  it("gives the server's operator Connectors beside Users", async () => {
-    mockFetch({
-      ...signedInAs("operator", { flags: ["service_connections"] }),
-      "/connector-apps": [200, { public_url: "https://switch.example.test", apps: [] }],
-    });
-    renderAt("/connectors");
-    expect(await screen.findByRole("heading", { name: "Connectors" })).toBeTruthy();
-    expect(screen.getByRole("link", { name: /Users/ })).toBeTruthy();
-    expect(screen.getByRole("link", { name: /Connectors/ })).toBeTruthy();
-  });
-
   it("puts a pending invite before everything else", async () => {
     storePendingInvite("abc");
     mockFetch(signedInAs("org_admin"));
@@ -303,64 +283,10 @@ describe("AppRoutes", () => {
     renderAt("/no-such-page");
     expect(await screen.findByText("There's no page here")).toBeTruthy();
   });
-});
-
-describe("today's layout", () => {
-  it("shows a member the pages anyone in the workspace may open", async () => {
-    mockFetch(signedInAs("member"));
-    renderAt("/rooms");
-    expect(await railLabels()).toEqual([
-      "Ecosystem",
-      "Rooms",
-      "Resources",
-      "Agents",
-      "Apps",
-      "API keys",
-      "Workspace",
-      "Organization",
-    ]);
-  });
-
-  it("leaves Organization off the rail outside an organization", async () => {
-    mockFetch(signedInAs("member", { inOrganization: false }));
-    renderAt("/rooms");
-    expect(await railLabels()).not.toContain("Organization");
-  });
-
-  it("gives a workspace admin Usage, and Machines where agent management runs", async () => {
-    mockFetch(signedInAs("workspace_admin", { flags: ["agent_management"] }));
-    renderAt("/rooms");
-    const labels = await railLabels();
-    expect(labels).toContain("Usage");
-    expect(labels).toContain("Devices");
-    expect(labels).not.toContain("All workspaces");
-  });
-
-  it("gives the operator the platform's pages", async () => {
-    mockFetch(signedInAs("operator"));
-    renderAt("/rooms");
-    expect((await railLabels()).slice(-4)).toEqual(["Usage", "All workspaces", "Users", "Connectors"]);
-  });
-
-  it("refuses a page by its URL to someone who may not open it, and says why", async () => {
-    mockFetch(signedInAs("member"));
-    renderAt("/usage");
-    expect(await screen.findByText("You don't have access to this page")).toBeTruthy();
-    expect(screen.getByText("Only this workspace's admins can open this page.")).toBeTruthy();
-  });
-
-  it("keeps the operator's pages from everyone else", async () => {
-    for (const path of ["/users", "/connectors", "/operator/workspaces"]) {
-      mockFetch(signedInAs("org_admin"));
-      renderAt(path);
-      expect(await screen.findByText("Only the platform operator can open this page.")).toBeTruthy();
-      cleanup();
-    }
-  });
 
   it("says a page is not turned on, and tells the operator how", async () => {
     mockFetch(signedInAs("operator"));
-    renderAt("/machines");
+    renderAt("/settings/devices");
     expect(await screen.findByText("Not turned on")).toBeTruthy();
     expect(screen.getByText("Agent management isn't turned on here.")).toBeTruthy();
     expect(
@@ -370,51 +296,9 @@ describe("today's layout", () => {
 
   it("does not tell anyone but the operator how to turn a page on", async () => {
     mockFetch(signedInAs("member"));
-    renderAt("/machines");
+    renderAt("/settings/devices");
     expect(await screen.findByText("Not turned on")).toBeTruthy();
     expect(screen.queryByText(/FEATURE_FLAGS_ENABLED/)).toBeNull();
-  });
-
-  it("sends the new layout's URLs back to today's pages, keeping the query and fragment", async () => {
-    mockFetch(signedInAs("workspace_admin"));
-    renderAt("/settings/api-keys?q=ci#top");
-    await landsOn("/registration-keys?q=ci#top");
-  });
-
-  it("sends a template's new URL back to it under Resources", async () => {
-    mockFetch(signedInAs("member"));
-    renderAt("/templates/tpl-1");
-    await landsOn("/resources/templates/tpl-1");
-  });
-
-  it("has no page at a URL only the new layout has", async () => {
-    mockFetch(signedInAs("member"));
-    renderAt("/settings/account");
-    expect(await screen.findByText("There's no page here")).toBeTruthy();
-  });
-
-  it("opens on Rooms", async () => {
-    mockFetch(signedInAs("member"));
-    renderAt("/");
-    await landsOn("/rooms");
-  });
-
-  it("keeps switching workspace in the account menu, and claims nothing about the system's health", async () => {
-    mockFetch(signedInAs("member", { tenants: [beta] }));
-    renderAt("/rooms");
-    fireEvent.click(await screen.findByRole("button", { name: "Account menu" }));
-    expect(await screen.findByText("Switch to Beta Co")).toBeTruthy();
-    expect(screen.queryByText("System healthy")).toBeNull();
-    expect(screen.queryByRole("link", { name: "Help" })).toBeNull();
-  });
-
-  it("keeps changing the password in the account menu, which has no Your account page", async () => {
-    mockFetch(signedInAs("member"));
-    renderAt("/rooms");
-    fireEvent.click(await screen.findByRole("button", { name: "Account menu" }));
-    fireEvent.click(await screen.findByRole("menuitem", { name: "Change password" }));
-    expect(await screen.findByRole("dialog", { name: "Change password" })).toBeTruthy();
-    expect(screen.queryByRole("menuitem", { name: "Your account" })).toBeNull();
   });
 
   it("stays signed in, saying so, when signing out of every device from the menu fails", async () => {
@@ -435,29 +319,28 @@ describe("today's layout", () => {
 describe("deleting the workspace", () => {
   it("is offered where the server says the caller may delete it", async () => {
     mockFetch(signedInAs("workspace_admin", { canDelete: true }));
-    renderAt("/workspace");
+    renderAt("/settings/general");
     expect(await screen.findByRole("button", { name: "Delete workspace" })).toBeTruthy();
   });
 
   it("is not offered to an admin the server will not let delete it, such as an org admin", async () => {
     mockFetch(signedInAs("org_admin", { canDelete: false }));
-    renderAt("/workspace");
-    expect(await screen.findByRole("heading", { name: "Acme" })).toBeTruthy();
+    renderAt("/settings/general");
+    expect(await screen.findByRole("heading", { name: "General" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Delete workspace" })).toBeNull();
   });
 });
 
-describe("the new layout (gateway_v2)", () => {
-  const V2: FeatureFlagKey[] = ["gateway_v2"];
+describe("the layout", () => {
 
   it("opens on Overview", async () => {
-    mockFetch(signedInAs("member", { flags: V2 }));
+    mockFetch(signedInAs("member"));
     renderAt("/");
     await landsOn("/overview");
   });
 
   it("shows a member the new rail", async () => {
-    mockFetch(signedInAs("member", { flags: V2 }));
+    mockFetch(signedInAs("member"));
     renderAt("/overview");
     expect(await railLabels()).toEqual([
       "Overview",
@@ -470,7 +353,7 @@ describe("the new layout (gateway_v2)", () => {
   });
 
   it("puts Connectors on the rail where connectors run, and Platform for the operator", async () => {
-    mockFetch(signedInAs("operator", { flags: [...V2, "service_connections"] }));
+    mockFetch(signedInAs("operator", { flags: ["service_connections"] }));
     renderAt("/overview");
     const labels = await railLabels();
     expect(labels).toContain("Connectors");
@@ -486,7 +369,7 @@ describe("the new layout (gateway_v2)", () => {
       ["/resources?tab=templates&q=ci#top", "/templates?q=ci#top"],
     ];
     for (const [from, to] of moves) {
-      mockFetch(signedInAs("workspace_admin", { flags: V2 }));
+      mockFetch(signedInAs("workspace_admin"));
       renderAt(from);
       await landsOn(to);
       cleanup();
@@ -498,7 +381,7 @@ describe("the new layout (gateway_v2)", () => {
       ["/operator/workspaces", "/platform/workspaces"],
       ["/users", "/platform/users"],
     ]) {
-      mockFetch(signedInAs("operator", { flags: V2 }));
+      mockFetch(signedInAs("operator"));
       renderAt(from);
       await landsOn(to);
       cleanup();
@@ -506,7 +389,7 @@ describe("the new layout (gateway_v2)", () => {
   });
 
   it("keeps Templates out of Resources", async () => {
-    mockFetch(signedInAs("member", { flags: V2 }));
+    mockFetch(signedInAs("member"));
     renderAt("/resources");
     expect(await screen.findByRole("tab", { name: "References" })).toBeTruthy();
     expect(screen.queryByRole("tab", { name: "Templates" })).toBeNull();
@@ -514,7 +397,7 @@ describe("the new layout (gateway_v2)", () => {
 
   describe("workspace settings", () => {
     it("shows a member the pages they may open, with nothing an admin's", async () => {
-      mockFetch(signedInAs("member", { flags: V2 }));
+      mockFetch(signedInAs("member"));
       renderAt("/settings/general");
       expect(await menuLabels("Workspace settings")).toEqual([
         "General",
@@ -529,7 +412,7 @@ describe("the new layout (gateway_v2)", () => {
     it("gives a workspace admin Usage & budget, and Devices and Connectors where they run", async () => {
       mockFetch(
         signedInAs("workspace_admin", {
-          flags: [...V2, "agent_management", "service_connections"],
+          flags: ["agent_management", "service_connections"],
         }),
       );
       renderAt("/settings/general");
@@ -547,13 +430,13 @@ describe("the new layout (gateway_v2)", () => {
     });
 
     it("leads an organization admin on to Organization settings", async () => {
-      mockFetch(signedInAs("org_admin", { flags: V2 }));
+      mockFetch(signedInAs("org_admin"));
       renderAt("/settings/general");
       expect(await menuLabels("Workspace settings")).toContain("Organization settings ›");
     });
 
     it("sets Your account, and the way to Organization settings, each in a group of its own", async () => {
-      mockFetch(signedInAs("org_admin", { flags: V2 }));
+      mockFetch(signedInAs("org_admin"));
       renderAt("/settings/general");
       const menu = await screen.findByRole("navigation", { name: "Workspace settings" });
       const groups = within(menu)
@@ -565,7 +448,7 @@ describe("the new layout (gateway_v2)", () => {
     });
 
     it("gives a member's Your account its own group too, with no way to the organization", async () => {
-      mockFetch(signedInAs("member", { flags: V2 }));
+      mockFetch(signedInAs("member"));
       renderAt("/settings/general");
       const menu = await screen.findByRole("navigation", { name: "Workspace settings" });
       const lists = within(menu).getAllByRole("list");
@@ -576,33 +459,33 @@ describe("the new layout (gateway_v2)", () => {
     });
 
     it("keeps Usage & budget at its own URL, inside the area", async () => {
-      mockFetch(signedInAs("workspace_admin", { flags: V2 }));
+      mockFetch(signedInAs("workspace_admin"));
       renderAt("/usage");
       expect(await menuLabels("Workspace settings")).toContain("Usage & budget");
     });
 
     it("refuses a settings page named in the URL, and says why", async () => {
-      mockFetch(signedInAs("member", { flags: V2 }));
+      mockFetch(signedInAs("member"));
       renderAt("/usage");
       expect(await screen.findByText("Only this workspace's admins can open this page.")).toBeTruthy();
     });
 
     it("opens on the page last used there", async () => {
       window.localStorage.setItem("switch.settings.lastPage.workspace", "/settings/api-keys");
-      mockFetch(signedInAs("member", { flags: V2 }));
+      mockFetch(signedInAs("member"));
       renderAt("/settings");
       await landsOn("/settings/api-keys");
     });
 
     it("opens on General when the page last used there may no longer be opened", async () => {
       window.localStorage.setItem("switch.settings.lastPage.workspace", "/usage");
-      mockFetch(signedInAs("member", { flags: V2 }));
+      mockFetch(signedInAs("member"));
       renderAt("/settings");
       await landsOn("/settings/general");
     });
 
     it("remembers the page someone opens", async () => {
-      mockFetch(signedInAs("member", { flags: V2 }));
+      mockFetch(signedInAs("member"));
       renderAt("/settings/users");
       await screen.findByRole("navigation", { name: "Workspace settings" });
       await waitFor(() =>
@@ -614,7 +497,7 @@ describe("the new layout (gateway_v2)", () => {
 
     it("carries a settings page across a workspace switch", async () => {
       window.sessionStorage.setItem("switch.settings.afterSwitch", "/settings/api-keys");
-      mockFetch(signedInAs("member", { flags: V2 }));
+      mockFetch(signedInAs("member"));
       renderAt("/settings");
       await landsOn("/settings/api-keys");
       expect(window.sessionStorage.getItem("switch.settings.afterSwitch")).toBeNull();
@@ -622,14 +505,14 @@ describe("the new layout (gateway_v2)", () => {
 
     it("carries an organization settings page across to an organization admin", async () => {
       window.sessionStorage.setItem("switch.settings.afterSwitch", "/settings/org/users");
-      mockFetch(signedInAs("org_admin", { flags: V2 }));
+      mockFetch(signedInAs("org_admin"));
       renderAt("/settings");
       await landsOn("/settings/org/users");
     });
 
     it("lands on General after a switch to a workspace where the page may not be opened", async () => {
       window.sessionStorage.setItem("switch.settings.afterSwitch", "/settings/org/users");
-      mockFetch(signedInAs("member", { flags: V2 }));
+      mockFetch(signedInAs("member"));
       renderAt("/settings");
       await landsOn("/settings/general");
     });
@@ -637,7 +520,7 @@ describe("the new layout (gateway_v2)", () => {
 
   describe("organization settings", () => {
     it("lets an organization admin in, on General", async () => {
-      mockFetch(signedInAs("org_admin", { flags: V2 }));
+      mockFetch(signedInAs("org_admin"));
       renderAt("/organization");
       await landsOn("/settings/org/general");
       expect(await menuLabels("Organization settings")).toEqual([
@@ -651,7 +534,7 @@ describe("the new layout (gateway_v2)", () => {
     });
 
     it("lists Devices where the server runs agent management", async () => {
-      mockFetch(signedInAs("org_admin", { flags: [...V2, "agent_management"] }));
+      mockFetch(signedInAs("org_admin", { flags: ["agent_management"] }));
       renderAt("/settings/org/general");
       expect(await menuLabels("Organization settings")).toContain("Devices");
     });
@@ -659,7 +542,7 @@ describe("the new layout (gateway_v2)", () => {
     it("lists Connectors and apps where the server lets organizations have them", async () => {
       mockFetch(
         signedInAs("org_admin", {
-          flags: [...V2, "service_connections", "organization_connector_apps"],
+          flags: ["service_connections", "organization_connector_apps"],
         }),
       );
       renderAt("/settings/org/general");
@@ -667,7 +550,7 @@ describe("the new layout (gateway_v2)", () => {
     });
 
     it("lets the operator in, to restore an organization's admin, and no further", async () => {
-      mockFetch(signedInAs("operator", { flags: V2 }));
+      mockFetch(signedInAs("operator"));
       renderAt("/settings/org/users");
       expect(await menuLabels("Organization settings")).toEqual([
         "General",
@@ -677,14 +560,14 @@ describe("the new layout (gateway_v2)", () => {
       ]);
       cleanup();
 
-      mockFetch(signedInAs("operator", { flags: V2 }));
+      mockFetch(signedInAs("operator"));
       renderAt("/settings/org/audit-log");
       expect(await screen.findByText("Only the organization's admins can open this page.")).toBeTruthy();
     });
 
     it("keeps workspace admins and members out, showing no menu", async () => {
       for (const role of ["workspace_admin", "member"] as const) {
-        mockFetch(signedInAs(role, { flags: V2 }));
+        mockFetch(signedInAs(role));
         renderAt("/settings/org/users");
         expect(
           await screen.findByText("Only the organization's admins can open this page."),
@@ -695,7 +578,7 @@ describe("the new layout (gateway_v2)", () => {
     });
 
     it("is not offered to a workspace admin", async () => {
-      mockFetch(signedInAs("workspace_admin", { flags: V2 }));
+      mockFetch(signedInAs("workspace_admin"));
       renderAt("/settings/general");
       expect(await menuLabels("Workspace settings")).not.toContain("Organization settings ›");
     });
@@ -703,14 +586,14 @@ describe("the new layout (gateway_v2)", () => {
 
   describe("platform", () => {
     it("gives the operator their pages", async () => {
-      mockFetch(signedInAs("operator", { flags: V2 }));
+      mockFetch(signedInAs("operator"));
       renderAt("/platform");
       await landsOn("/platform/workspaces");
       expect(await menuLabels("Platform")).toEqual(["All workspaces", "Users", "Connectors"]);
     });
 
     it("keeps everyone else out", async () => {
-      mockFetch(signedInAs("org_admin", { flags: V2 }));
+      mockFetch(signedInAs("org_admin"));
       renderAt("/platform/users");
       expect(await screen.findByText("Only the platform operator can open this page.")).toBeTruthy();
     });
@@ -723,21 +606,21 @@ describe("the new layout (gateway_v2)", () => {
     }
 
     it("names the organization, the workspace and the page", async () => {
-      mockFetch(signedInAs("member", { flags: V2 }));
+      mockFetch(signedInAs("member"));
       renderAt("/rooms");
       expect(await screen.findByRole("button", { name: /Acme Group\s*\/\s*Acme/ })).toBeTruthy();
       expect(screen.getByText("Rooms", { selector: "span" })).toBeTruthy();
     });
 
     it("names only the workspace where it belongs to no organization", async () => {
-      mockFetch(signedInAs("member", { flags: V2, inOrganization: false }));
+      mockFetch(signedInAs("member", { inOrganization: false }));
       renderAt("/rooms");
       const crumb = await screen.findByRole("button", { name: "Acme" });
       expect(crumb.getAttribute("aria-haspopup")).toBe("menu");
     });
 
     it("lists the workspaces by organization, with their users and agents", async () => {
-      mockFetch(signedInAs("member", { flags: V2, tenants: [beta] }));
+      mockFetch(signedInAs("member", { tenants: [beta] }));
       renderAt("/rooms");
       const menu = await openSwitcher();
       expect(within(menu).getByText("Acme Group")).toBeTruthy();
@@ -758,7 +641,7 @@ describe("the new layout (gateway_v2)", () => {
         organization_id: "o9",
         archived_at: null,
       };
-      const operator = signedInAs("operator", { flags: V2, tenants: [beta] });
+      const operator = signedInAs("operator", { tenants: [beta] });
       mockFetch({
         ...operator,
         "/auth/session": [
@@ -799,7 +682,7 @@ describe("the new layout (gateway_v2)", () => {
 
     it("says so when the counts cannot be read, and still lists the workspaces", async () => {
       mockFetch({
-        ...signedInAs("member", { flags: V2, tenants: [beta] }),
+        ...signedInAs("member", { tenants: [beta] }),
         "/tenants/counts": [500, { detail: "counts unavailable" }],
       });
       renderAt("/rooms");
@@ -820,7 +703,7 @@ describe("the new layout (gateway_v2)", () => {
       });
       try {
         mockFetch({
-          ...signedInAs("member", { flags: V2, tenants: [beta] }),
+          ...signedInAs("member", { tenants: [beta] }),
           "/tenants/t2/switch": [200, { ok: true }],
         });
         renderAt("/rooms");
@@ -841,7 +724,7 @@ describe("the new layout (gateway_v2)", () => {
 
     it("lets a workspace admin or an organization admin invite people", async () => {
       for (const role of ["workspace_admin", "org_admin"] as const) {
-        mockFetch(signedInAs(role, { flags: V2 }));
+        mockFetch(signedInAs(role));
         renderAt("/rooms");
         const menu = await openSwitcher();
         fireEvent.click(within(menu).getByRole("menuitem", { name: "Invite people to Acme" }));
@@ -851,14 +734,14 @@ describe("the new layout (gateway_v2)", () => {
     });
 
     it("does not offer a member to invite people", async () => {
-      mockFetch(signedInAs("member", { flags: V2 }));
+      mockFetch(signedInAs("member"));
       renderAt("/rooms");
       const menu = await openSwitcher();
       expect(within(menu).queryByRole("menuitem", { name: /Invite people/ })).toBeNull();
     });
 
     it("links to help and the docs, and claims nothing about the system's health", async () => {
-      mockFetch(signedInAs("member", { flags: V2 }));
+      mockFetch(signedInAs("member"));
       renderAt("/rooms");
       const help = await screen.findByRole("link", { name: "Help" });
       expect(help.getAttribute("href")).toBe(
@@ -871,7 +754,7 @@ describe("the new layout (gateway_v2)", () => {
 
   describe("the account menu", () => {
     it("leads to your account, where the password changes, and leaves switching workspace to the top bar", async () => {
-      mockFetch(signedInAs("member", { flags: V2, tenants: [beta] }));
+      mockFetch(signedInAs("member", { tenants: [beta] }));
       renderAt("/rooms");
       fireEvent.click(await screen.findByRole("button", { name: "Account menu" }));
       const account = await screen.findByRole("menuitem", { name: "Your account" });
@@ -885,7 +768,7 @@ describe("the new layout (gateway_v2)", () => {
 
   describe("in organization settings", () => {
     it("hides the rail and leads back to the workspace", async () => {
-      mockFetch(signedInAs("org_admin", { flags: V2 }));
+      mockFetch(signedInAs("org_admin"));
       renderAt("/settings/org/general");
       const back = await screen.findByRole("link", { name: "Back to workspace" });
       expect(back.getAttribute("href")).toBe("/");
@@ -894,7 +777,7 @@ describe("the new layout (gateway_v2)", () => {
     });
 
     it("keeps the rail everywhere else in settings", async () => {
-      mockFetch(signedInAs("org_admin", { flags: V2 }));
+      mockFetch(signedInAs("org_admin"));
       renderAt("/settings/general");
       expect(await screen.findByRole("navigation", { name: "Main" })).toBeTruthy();
     });
@@ -902,7 +785,7 @@ describe("the new layout (gateway_v2)", () => {
 
   describe("in the Platform area", () => {
     it("hides the rail and leads back to the workspace, as it spans every one", async () => {
-      mockFetch({ ...signedInAs("operator", { flags: V2 }), "/users": [200, []] });
+      mockFetch({ ...signedInAs("operator"), "/users": [200, []] });
       renderAt("/platform/users");
       const back = await screen.findByRole("link", { name: "Back to workspace" });
       expect(back.getAttribute("href")).toBe("/");
@@ -913,8 +796,7 @@ describe("the new layout (gateway_v2)", () => {
   });
 });
 
-describe("renaming the workspace (gateway_v2)", () => {
-  const V2: FeatureFlagKey[] = ["gateway_v2"];
+describe("renaming the workspace", () => {
 
   afterEach(() => Reflect.deleteProperty(document, "visibilityState"));
 
@@ -965,7 +847,7 @@ describe("renaming the workspace (gateway_v2)", () => {
   const breadcrumb = () => screen.getByRole("button", { name: /Acme Group/ });
 
   it("shows a member the name with no way to change it, and says who can", async () => {
-    serverHolding(signedInAs("member", { flags: V2 }));
+    serverHolding(signedInAs("member"));
     renderAt("/settings/general");
     expect(await screen.findByRole("heading", { name: "General" })).toBeTruthy();
     expect((screen.getByLabelText("Workspace name") as HTMLInputElement).value).toBe("Acme");
@@ -975,7 +857,7 @@ describe("renaming the workspace (gateway_v2)", () => {
 
   it("puts the new name in the breadcrumb and the switcher as soon as it is updated", async () => {
     const { state } = serverHolding({
-      ...signedInAs("workspace_admin", { flags: V2, tenants: [beta] }),
+      ...signedInAs("workspace_admin", { tenants: [beta] }),
       ...retention,
     });
     renderAt("/settings/general");
@@ -1002,7 +884,7 @@ describe("renaming the workspace (gateway_v2)", () => {
 
   it("reads the session again after a read already under way, which still has the old name", async () => {
     const { state, release } = serverHolding({
-      ...signedInAs("org_admin", { flags: V2 }),
+      ...signedInAs("org_admin"),
       ...retention,
     });
     renderAt("/settings/general");
@@ -1053,8 +935,8 @@ describe("a page that falls behind the server", () => {
 
   async function restoreAfter(serverSession: Session) {
     mockFetch(signedInAs("org_admin", { tenants: [beta] }));
-    renderAt("/workspace");
-    expect(await screen.findByRole("heading", { name: "Acme" })).toBeTruthy();
+    renderAt("/settings/general");
+    expect(await screen.findByRole("heading", { name: "General" })).toBeTruthy();
     mockFetch({ ...signedInAs("org_admin"), "/auth/session": [200, serverSession] });
     window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
     await waitFor(() => expect(fetch).toHaveBeenCalled());
@@ -1122,13 +1004,15 @@ describe("a page that falls behind the server", () => {
 
   it("follows a change of role when the tab comes back", async () => {
     mockFetch(signedInAs("member"));
-    renderAt("/rooms");
-    expect(await railLabels()).not.toContain("Usage");
+    renderAt("/settings/general");
+    expect(await menuLabels("Workspace settings")).not.toContain("Usage & budget");
 
     mockFetch(signedInAs("workspace_admin"));
     comeBackToTheTab();
 
-    await waitFor(async () => expect(await railLabels()).toContain("Usage"));
+    await waitFor(async () =>
+      expect(await menuLabels("Workspace settings")).toContain("Usage & budget"),
+    );
     expect(reload).not.toHaveBeenCalled();
   });
 });
@@ -1317,7 +1201,7 @@ describe("a link naming a workspace", () => {
 
   it("does not hand a kept link to the next person after signing out", async () => {
     mockFetch({
-      ...signedInAs("member", { flags: ["gateway_v2"] }),
+      ...signedInAs("member"),
       "/auth/logout": [200, {}],
     });
     renderAt("/rooms");

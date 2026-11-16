@@ -28,7 +28,7 @@ const CONNECTED: Guardrails = {
 };
 
 function renderIt() {
-  render(<OrganizationGuardrails organizationName="Acme" heading="page" />);
+  render(<OrganizationGuardrails organizationName="Acme" />);
 }
 
 describe("OrganizationGuardrails", () => {

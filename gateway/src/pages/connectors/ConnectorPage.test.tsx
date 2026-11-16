@@ -22,7 +22,6 @@ function signedIn({ admin = false, orgAdmin = false } = {}) {
     capabilities: {
       administersWorkspace: admin,
       administersOrganization: orgAdmin,
-      features: { gateway_v2: true },
     },
     isOperator: false,
   } as unknown as ReturnType<typeof useAuth>);
