@@ -882,9 +882,11 @@ class SwitchConfig(BaseSettings):
     max_message_chars: int = Field(default=64 * 1024, ge=1)
 
     # How fast one sender's messages are accepted: `message_rate_burst` at
-    # once, then `message_rate_per_second`. Counted in each process, so with
-    # several replicas a sender whose messages are spread across them gets
-    # that many times the rate.
+    # once, then `message_rate_per_second`. One allowance per sender, shared
+    # by every room they write in, by design: an agent busy in several rooms
+    # draws on the one allowance. Counted in each process, so with several
+    # replicas a sender whose messages are spread across them gets that many
+    # times the rate.
     message_rate_burst: int = Field(default=30, ge=1)
     message_rate_per_second: float = Field(default=2.0, gt=0)
 

@@ -13,9 +13,10 @@ bridged person gets a notice (`CollaborationCore`). Nothing is cut short or
 dropped quietly.
 
 The rate is a token bucket per sender, kept in this process's memory: a
-sender gets `burst` messages at once, then `per_second`. With several
-replicas, a sender whose messages reach more than one of them gets up to that
-many times the rate.
+sender gets `burst` messages at once, then `per_second`. It is one bucket per
+sender, not per room, on purpose: one allowance covers everything a sender
+writes, wherever they write it. With several replicas, a sender whose
+messages reach more than one of them gets up to that many times the rate.
 """
 
 from __future__ import annotations
