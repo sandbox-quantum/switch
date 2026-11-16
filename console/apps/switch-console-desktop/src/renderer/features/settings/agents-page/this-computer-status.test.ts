@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { reportedHeadline } from '@renderer/lib/components/reported-provider';
+import { reportedHeadline, reportedLine } from '@renderer/lib/components/reported-provider';
 import type { MachineProvider } from '@shared/core/managed-agents/managed-agents';
 import { installedHere, installSourcesDiffer, reportedProvider } from './this-computer-status';
 
@@ -42,12 +42,23 @@ describe('Settings → Agent providers on this computer', () => {
       expect(installedHere(reported({ problem }), 'missing')).toBe(true);
     expect(reportedHeadline(reported({ problem: 'not logged in' }))).toBe('Not signed in');
     expect(reportedHeadline(reported({ problem: 'login expired' }))).toBe('Sign-in expired');
-    expect(reportedHeadline(reported({ problem: 'login not checked yet' }))).toBe(
-      'Checking sign-in…'
-    );
     expect(reportedHeadline(reported({ problem: 'login could not be checked' }))).toBe(
-      'Sign-in could not be checked'
+      'Sign-in couldn’t be checked'
     );
+  });
+
+  it('gives the reason a sign-in could not be checked, when the machine said one', () => {
+    expect(
+      reportedLine(
+        reported({ problem: 'login could not be checked', detail: 'The sign-in check failed.' })
+      )
+    ).toBe('Sign-in couldn’t be checked: The sign-in check failed.');
+    expect(reportedLine(reported({ problem: 'login could not be checked' }))).toBe(
+      'Sign-in couldn’t be checked'
+    );
+    expect(
+      reportedLine(reported({ problem: 'not logged in', detail: 'Run claude auth login.' }))
+    ).toBe('Not signed in');
   });
 
   it('says when the controller and Console disagree on whether it is installed', () => {

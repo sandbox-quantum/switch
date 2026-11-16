@@ -376,6 +376,54 @@ describe('the providers a server machine offers', () => {
     expect(onChange).not.toHaveBeenCalled();
   });
 
+  const UNCHECKED: OwnedMachine = {
+    ...BOX,
+    providers: [
+      ...BOX.providers,
+      {
+        provider: 'cursor',
+        ready: false,
+        problem: 'login could not be checked',
+        detail: 'The sign-in check failed: exited 1',
+        loginHelps: true,
+      },
+    ],
+  };
+
+  it('lets a provider whose sign-in could not be checked be picked', async () => {
+    const onChange = vi.fn();
+    const machine = UNCHECKED;
+    const el = await render(
+      <MachineProviderPicker
+        serverId="server-1"
+        machine={machine}
+        value="claude"
+        onChange={onChange}
+        defaultAgent="claude"
+      />
+    );
+    expect(tile(el, 'Cursor').disabled).toBe(false);
+    expect(tile(el, 'Cursor').textContent).toMatch(/Couldn’t check sign-in/);
+    expect(el.querySelector('[role="status"]')).toBeNull();
+    await act(async () => tile(el, 'Cursor').click());
+    expect(onChange).toHaveBeenCalledWith('cursor');
+  });
+
+  it('warns that the picked provider’s sign-in could not be checked', async () => {
+    const picked = await render(
+      <MachineProviderPicker
+        serverId="server-1"
+        machine={UNCHECKED}
+        value="cursor"
+        onChange={vi.fn()}
+        defaultAgent="claude"
+      />
+    );
+    expect(picked.querySelector('[role="status"]')?.textContent).toMatch(
+      /build-box couldn’t check whether Cursor is signed in: The sign-in check failed: exited 1/
+    );
+  });
+
   it('leaves out a provider the server does not offer, even ready on the machine', async () => {
     flagState.additionalProviders = false;
     const el = await render(

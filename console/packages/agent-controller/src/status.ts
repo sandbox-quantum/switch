@@ -202,7 +202,14 @@ export function providerStatusFrom(
     ...(located.versionProblem ? { version_problem: located.versionProblem } : {}),
     checked_at: checkedAt,
   };
-  if (!readiness) return { ...base, auth: 'unknown', auth_source: null, reason: 'internal' };
+  if (!readiness)
+    return {
+      ...base,
+      auth: 'unknown',
+      auth_source: null,
+      reason: 'internal',
+      auth_problem: 'The sign-in check did not run.',
+    };
   const said = readiness.message ? { auth_problem: readiness.message.slice(0, 300) } : {};
   switch (readiness.status) {
     case 'authenticated':
@@ -222,6 +229,7 @@ export function providerStatusFrom(
         ...base,
         auth: 'unknown',
         auth_source: null,
+        auth_problem: `${provider} did not say whether it is signed in.`,
         ...said,
         ...(readiness.loginHelps === false ? { login_helps: false } : {}),
       };
@@ -452,7 +460,7 @@ export class ProviderStatuses {
     provider: Provider,
     path: string,
     login: GivenLogin | null
-  ): Promise<ProviderReadiness | null> {
+  ): Promise<ProviderReadiness> {
     try {
       return await this.deps.runtime.probe(provider, path, this.deps.probeCwd, login);
     } catch (error) {
@@ -461,7 +469,11 @@ export class ProviderStatuses {
         given: login !== null,
         error: errorMessage(error),
       });
-      return null;
+      return {
+        status: 'unknown',
+        message: `The sign-in check failed: ${errorMessage(error)}`,
+        models: [],
+      };
     }
   }
 

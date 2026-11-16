@@ -6,6 +6,7 @@ import {
   type MachineLocal,
   type MachineProvider,
   type OwnedMachine,
+  SIGN_IN_UNCHECKED,
   type ThisComputerReport,
 } from '@shared/core/managed-agents/managed-agents';
 
@@ -25,9 +26,7 @@ export function machineProvider(report: ControllerProviderReport): MachineProvid
         ? 'not logged in'
         : report.auth === 'expired'
           ? 'login expired'
-          : report.problem
-            ? 'login could not be checked'
-            : 'login not checked yet';
+          : SIGN_IN_UNCHECKED;
   return {
     provider: report.provider,
     ready: problem === null,

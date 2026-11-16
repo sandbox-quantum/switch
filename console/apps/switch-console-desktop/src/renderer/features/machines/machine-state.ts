@@ -268,7 +268,7 @@ const REFUSED_PROBLEMS = new Set(['not installed', 'not logged in', 'login expir
 /**
  * Whether an agent running `provider` can be moved to `machine`, by the rules
  * Switch places it by: the machine is connected, and has the provider
- * installed and not signed out. A sign-in it has not checked yet is let
+ * installed and not signed out. A sign-in it could not check is let
  * through, as Switch lets it through.
  */
 export function moveTarget(machine: OwnedMachine, provider: string): MoveTarget {

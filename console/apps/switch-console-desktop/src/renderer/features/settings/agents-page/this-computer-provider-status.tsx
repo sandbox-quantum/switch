@@ -1,4 +1,4 @@
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useIsMutating, useMutation, useQueryClient } from '@tanstack/react-query';
 import { CheckCircle2, CircleAlert, Loader2, RefreshCw } from 'lucide-react';
 import { ProviderConnectionStatus } from '@renderer/lib/components/provider-connection-status';
 import { ReportedProviderLine } from '@renderer/lib/components/provider-status-row';
@@ -24,9 +24,8 @@ export function ThisComputerProviderStatus({
   providerId: AgentProviderId;
   compact?: boolean;
 }) {
-  const queryClient = useQueryClient();
   const report = useThisComputerReport();
-  const recheck = useMutation({ mutationFn: () => recheckThisComputer(queryClient) });
+  const recheck = useRecheckThisComputer();
   const reported = reportedProvider(report.data, providerId);
 
   // Neither check is shown until it is known whether there is a report, so
@@ -37,7 +36,7 @@ export function ThisComputerProviderStatus({
       <ProviderConnectionStatus providerId={providerId} sshHost={null} dir="" compact={compact} />
     );
 
-  const checking = recheck.isPending || reported.problem === 'login not checked yet';
+  const checking = recheck.isPending;
   const headline = recheck.isPending
     ? 'Checking installation and sign-in…'
     : reportedHeadline(reported);
@@ -82,6 +81,39 @@ export function ThisComputerProviderStatus({
         )}
     </div>
   );
+}
+
+/**
+ * Asks this computer's agent controller to check its providers again, for a
+ * row in the providers list whose sign-in could not be checked.
+ */
+export function RecheckThisComputer({ providerName }: { providerName: string }) {
+  const recheck = useRecheckThisComputer();
+  return (
+    <Button
+      size="sm"
+      variant="ghost"
+      disabled={recheck.isPending}
+      onClick={() => recheck.mutate()}
+      aria-label={`Recheck ${providerName} sign-in`}
+    >
+      <RefreshCw className={`size-3.5 ${recheck.isPending ? 'animate-spin' : ''}`} />
+      Recheck
+    </Button>
+  );
+}
+
+const RECHECK_KEY = ['recheck-this-computer'] as const;
+
+/** A recheck of this computer's providers, pending wherever one was started. */
+function useRecheckThisComputer() {
+  const queryClient = useQueryClient();
+  const recheck = useMutation({
+    mutationKey: RECHECK_KEY,
+    mutationFn: () => recheckThisComputer(queryClient),
+  });
+  const pending = useIsMutating({ mutationKey: RECHECK_KEY }) > 0;
+  return { isPending: pending, mutate: () => recheck.mutate() };
 }
 
 function Checking({ compact }: { compact: boolean }) {

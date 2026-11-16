@@ -64,7 +64,7 @@ describe('machineProvider', () => {
     expect(problem(true, 'unknown')).toEqual({
       provider: 'codex',
       ready: false,
-      problem: 'login not checked yet',
+      problem: 'login could not be checked',
       detail: null,
       loginHelps: true,
     });

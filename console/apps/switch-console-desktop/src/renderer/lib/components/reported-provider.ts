@@ -1,4 +1,7 @@
-import type { MachineProvider } from '@shared/core/managed-agents/managed-agents';
+import {
+  type MachineProvider,
+  SIGN_IN_UNCHECKED,
+} from '@shared/core/managed-agents/managed-agents';
 
 /**
  * A provider's state as a machine's controller reported it, worded as
@@ -14,9 +17,15 @@ export function reportedHeadline(reported: MachineProvider): string {
       return reported.loginHelps ? 'Not signed in' : 'Can’t be used yet';
     case 'login expired':
       return 'Sign-in expired';
-    case 'login not checked yet':
-      return 'Checking sign-in…';
     default:
-      return 'Sign-in could not be checked';
+      return 'Sign-in couldn’t be checked';
   }
+}
+
+/** The headline with the machine's reason, for a sign-in it could not check. */
+export function reportedLine(reported: MachineProvider): string {
+  const headline = reportedHeadline(reported);
+  return reported.problem === SIGN_IN_UNCHECKED && reported.detail
+    ? `${headline}: ${reported.detail}`
+    : headline;
 }

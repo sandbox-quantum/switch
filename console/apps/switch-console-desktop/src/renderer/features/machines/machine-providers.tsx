@@ -252,11 +252,9 @@ function MachineProviderRow({
   );
 }
 
-/** The sign-in pill's tone: signed in, a check still to come, or signed out. */
+/** The sign-in pill's tone: signed in, or not. */
 function signInTone(provider: MachineProviderDetail): MachineTone {
-  if (provider.ready) return 'ok';
-  if (provider.problem === 'login not checked yet') return 'idle';
-  return 'warning';
+  return provider.ready ? 'ok' : 'warning';
 }
 
 /** Where a provider's sign-in on the machine comes from, in a few words. */

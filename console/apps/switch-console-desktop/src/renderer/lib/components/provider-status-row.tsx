@@ -4,7 +4,7 @@ import { AgentIcon } from '@renderer/lib/components/agent-icon';
 import { InstalledBadge, UninstalledBadge } from '@renderer/lib/components/provider-status-badges';
 import { cn } from '@renderer/utils/utils';
 import type { MachineProvider } from '@shared/core/managed-agents/managed-agents';
-import { reportedHeadline } from './reported-provider';
+import { reportedLine } from './reported-provider';
 
 /**
  * One agent provider on one machine: its icon and name, whether it is
@@ -17,6 +17,7 @@ export function ProviderStatusRow({
   name,
   installed,
   status,
+  action,
   onClick,
 }: {
   providerId: string;
@@ -24,14 +25,16 @@ export function ProviderStatusRow({
   installed: boolean;
   /** The line under the name: sign-in state, or a check in progress. */
   status: ReactNode;
+  /** A control beside the row, outside its button (Recheck). */
+  action?: ReactNode;
   /** Makes the whole row a button. */
   onClick?: () => void;
 }) {
   const Tag = onClick ? 'button' : 'div';
-  return (
+  const row = (
     <Tag
       className={cn(
-        'group flex w-full items-center gap-3 rounded-lg p-3 hover:bg-background-1',
+        'group flex w-full min-w-0 items-center gap-3 rounded-lg p-3 hover:bg-background-1',
         onClick && 'cursor-pointer text-left'
       )}
       onClick={onClick}
@@ -50,6 +53,13 @@ export function ProviderStatusRow({
       </div>
     </Tag>
   );
+  if (!action) return row;
+  return (
+    <div className="flex w-full items-center gap-1">
+      {row}
+      <div className="shrink-0">{action}</div>
+    </div>
+  );
 }
 
 /** The status line for a provider as a machine's controller reported it. */
@@ -61,18 +71,18 @@ export function ReportedProviderLine({
   /** A recheck is under way: says so rather than repeating the last answer. */
   checking: boolean;
 }) {
-  const busy = checking || reported.problem === 'login not checked yet';
-  const headline = checking ? 'Checking installation and sign-in…' : reportedHeadline(reported);
-  const Icon = busy ? Loader2 : reported.ready ? CheckCircle2 : CircleAlert;
+  const headline = checking ? 'Checking installation and sign-in…' : reportedLine(reported);
+  const Icon = checking ? Loader2 : reported.ready ? CheckCircle2 : CircleAlert;
   return (
     <span
       className={cn(
-        'inline-flex items-center gap-1.5 text-xs',
-        busy || reported.ready ? 'text-foreground-muted' : 'text-foreground-warning'
+        'inline-flex min-w-0 items-center gap-1.5 text-xs',
+        checking || reported.ready ? 'text-foreground-muted' : 'text-foreground-warning'
       )}
+      title={checking ? undefined : (reported.detail ?? undefined)}
     >
-      <Icon className={cn('size-3.5 shrink-0', busy && 'animate-spin')} />
-      {headline}
+      <Icon className={cn('size-3.5 shrink-0', checking && 'animate-spin')} />
+      <span className="truncate">{headline}</span>
     </span>
   );
 }

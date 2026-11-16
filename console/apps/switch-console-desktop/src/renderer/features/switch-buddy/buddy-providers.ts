@@ -33,9 +33,7 @@ export function buddyProviders(
         ? 'ready'
         : reported.problem === 'not installed'
           ? 'install'
-          : reported.problem === 'login not checked yet'
-            ? 'checking'
-            : 'sign-in';
+          : 'sign-in';
     return {
       id: provider.id,
       name: provider.name,

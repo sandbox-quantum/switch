@@ -45,13 +45,6 @@ describe('buddyProviders', () => {
           detail: null,
           loginHelps: true,
         },
-        {
-          provider: 'cursor',
-          ready: false,
-          problem: 'login not checked yet',
-          detail: null,
-          loginHelps: true,
-        },
       ])
     );
     expect(states.map((p) => [p.id, p.state])).toEqual([

@@ -279,6 +279,7 @@ describe('providerStatusFrom', () => {
     expect(providerStatusFrom('claude', located, readiness('unknown'), at)).toMatchObject({
       auth: 'unknown',
       auth_source: null,
+      auth_problem: 'claude did not say whether it is signed in.',
     });
     expect(
       providerStatusFrom(
@@ -291,6 +292,29 @@ describe('providerStatusFrom', () => {
     expect(providerStatusFrom('claude', located, null, at)).toMatchObject({
       auth: 'unknown',
       reason: 'internal',
+      auth_problem: 'The sign-in check did not run.',
+    });
+  });
+});
+
+describe('ProviderStatuses when a sign-in check fails', () => {
+  it('reports the sign-in as unknown, with what went wrong', async () => {
+    const providers = new ProviderStatuses({
+      locator: new FakeLocator(),
+      runtime: {
+        probe: () => Promise.reject(new Error('the probe exited 1: cannot read the config')),
+      },
+      sealed: null,
+      probeCwd: '/tmp',
+      now: () => NOW,
+      log: silentLogger,
+      onChange: () => {},
+    });
+    expect(await providers.check('claude')).toMatchObject({
+      installed: true,
+      auth: 'unknown',
+      auth_source: null,
+      auth_problem: 'The sign-in check failed: the probe exited 1: cannot read the config',
     });
   });
 });

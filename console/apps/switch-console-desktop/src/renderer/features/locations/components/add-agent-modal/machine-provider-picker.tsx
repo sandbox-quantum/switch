@@ -5,7 +5,11 @@ import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { Field, FieldLabel } from '@renderer/lib/ui/field';
 import { cn } from '@renderer/utils/utils';
 import type { FeatureFlags } from '@shared/core/feature-flags/feature-flags';
-import type { OwnedMachine } from '@shared/core/managed-agents/managed-agents';
+import {
+  type OwnedMachine,
+  providerPickable,
+  SIGN_IN_UNCHECKED,
+} from '@shared/core/managed-agents/managed-agents';
 import {
   offeredAgentProviders,
   type AgentProviderId,
@@ -14,19 +18,27 @@ import { autoSelectedAgentType } from './agent-type-auto-selection';
 import { GiveMachineLogin, loginKindsFor } from './give-machine-login';
 
 /**
- * Each provider the server offers (its `flags`), and whether the machine last
- * reported it installed and logged in.
+ * Each provider the server offers (its `flags`), whether the machine last
+ * reported it installed and logged in, and whether it can be picked: as
+ * Switch places agents, one whose sign-in could not be checked can.
  */
 export function machineProviderOptions(
   machine: OwnedMachine,
   flags: FeatureFlags
-): { id: AgentProviderId; name: string; ready: boolean; problem: string | null }[] {
+): {
+  id: AgentProviderId;
+  name: string;
+  ready: boolean;
+  pickable: boolean;
+  problem: string | null;
+}[] {
   return offeredAgentProviders(flags).map((provider) => {
     const reported = machine.providers.find((entry) => entry.provider === provider.id);
     return {
       id: provider.id,
       name: provider.name,
       ready: reported?.ready ?? false,
+      pickable: reported ? providerPickable(reported) : false,
       problem: reported ? reported.problem : 'not checked yet',
     };
   });
@@ -34,7 +46,8 @@ export function machineProviderOptions(
 
 /**
  * The agent provider for a managed agent, from what its machine reports to the
- * server: only the providers installed and logged in there can be picked.
+ * server: the providers installed and logged in there can be picked, and so
+ * can one whose sign-in could not be checked, with a warning.
  */
 export function MachineProviderPicker({
   serverId,
@@ -64,6 +77,8 @@ export function MachineProviderPicker({
       )
     : [];
   const [giving, setGiving] = useState<AgentProviderId | null>(null);
+  const picked = options.find((option) => option.id === value);
+  const pickedDetail = machine.providers.find((entry) => entry.provider === value)?.detail ?? null;
 
   useEffect(() => {
     if (value) return;
@@ -89,7 +104,7 @@ export function MachineProviderPicker({
           <button
             key={option.id}
             type="button"
-            disabled={!option.ready}
+            disabled={!option.pickable}
             aria-pressed={value === option.id}
             title={option.problem ? `${option.name}: ${option.problem}` : undefined}
             onClick={() => onChange(option.id)}
@@ -98,17 +113,35 @@ export function MachineProviderPicker({
               value === option.id
                 ? 'border-foreground bg-[var(--sel-soft)]'
                 : 'border-border hover:bg-[var(--sel-soft)]',
-              !option.ready && 'cursor-not-allowed opacity-50 bg-background-1 hover:bg-transparent'
+              !option.pickable &&
+                'cursor-not-allowed opacity-50 bg-background-1 hover:bg-transparent'
             )}
           >
             <AgentIcon id={option.id} size={22} />
             <span className="w-full truncate text-sm text-foreground">{option.name}</span>
             <span className="text-xs text-foreground-muted">
-              {option.problem ? capitalize(option.problem) : 'Ready'}
+              {option.problem === SIGN_IN_UNCHECKED
+                ? 'Couldn’t check sign-in'
+                : option.problem
+                  ? capitalize(option.problem)
+                  : 'Ready'}
             </span>
           </button>
         ))}
       </div>
+      {picked?.problem === SIGN_IN_UNCHECKED && (
+        <div
+          role="status"
+          className="flex items-start gap-2 rounded-md border border-border bg-background-1 px-2 py-1.5 text-xs text-foreground-muted"
+        >
+          <CircleAlert className="mt-0.5 size-3.5 shrink-0 text-amber-500" />
+          <span>
+            {machine.name} couldn’t check whether {picked.name} is signed in
+            {pickedDetail ? `: ${pickedDetail}` : '.'} You can still create the agent. If{' '}
+            {picked.name} isn’t signed in there, the agent won’t start until it is.
+          </span>
+        </div>
+      )}
       <p className="text-xs text-foreground-muted">
         As {machine.name} last reported to the server.
       </p>

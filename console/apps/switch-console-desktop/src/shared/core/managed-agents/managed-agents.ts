@@ -84,6 +84,18 @@ export type MachineProvider = {
   loginHelps: boolean;
 };
 
+/** A provider's `problem` when its machine could not tell whether it is signed in. */
+export const SIGN_IN_UNCHECKED = 'login could not be checked';
+
+/**
+ * Whether an agent can be placed with this provider, by the rule Switch
+ * places it by: installed and not signed out. One whose sign-in could not be
+ * checked is let through, as Switch lets it through.
+ */
+export function providerPickable(provider: Pick<MachineProvider, 'ready' | 'problem'>): boolean {
+  return provider.ready || provider.problem === SIGN_IN_UNCHECKED;
+}
+
 /**
  * This computer's providers as its agent controller last reported them to a
  * server: what Switch goes by when it creates an agent here, so what every

@@ -270,12 +270,12 @@ describe('moveTarget', () => {
       ).toBe(false);
   });
 
-  it('lets a sign-in not checked yet through, as Switch does', () => {
+  it('lets a sign-in that could not be checked through, as Switch does', () => {
     expect(
       moveTarget(
         machine({
           id: 'm',
-          providers: [{ ...ready, ready: false, problem: 'login not checked yet' }],
+          providers: [{ ...ready, ready: false, problem: 'login could not be checked' }],
         }),
         'claude'
       )
