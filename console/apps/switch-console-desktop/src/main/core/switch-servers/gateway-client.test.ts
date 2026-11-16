@@ -560,6 +560,7 @@ describe('room creation', () => {
           home_url: 'mattermost://chat.example.com/switch',
           channel_creation_supported: true,
           channel_creation_enabled: true,
+          directory_search_hint: 'Your name, handle or email',
         },
         { bridge_id: 'b2', bridge_type: 'slack', display_name: 'Slack', status: 'stopped' },
       ]) as never
@@ -577,6 +578,7 @@ describe('room creation', () => {
         channelCreationSupported: true,
         canCreateChannels: true,
         directorySearchSupported: true,
+        directorySearchHint: 'Your name, handle or email',
         attention: null,
         teamPlacementSupported: false,
         channelIdsRefused: null,
@@ -602,6 +604,7 @@ describe('room creation', () => {
         channelCreationSupported: true,
         canCreateChannels: true,
         directorySearchSupported: true,
+        directorySearchHint: 'Your name or handle',
         attention: null,
         teamPlacementSupported: false,
         channelIdsRefused: null,

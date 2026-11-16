@@ -334,6 +334,9 @@ class _NoRunningBridges:
         """Read from the adapter class for the same reason."""
         return True
 
+    def directory_search_hint(self, bridge_id: str, bridge_type: str) -> str:
+        return "Your name or handle"
+
     def receives_webhooks(self, bridge_type: str) -> bool:
         return False
 

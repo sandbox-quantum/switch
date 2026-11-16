@@ -90,6 +90,7 @@ describe('updateBridgeOnServer', () => {
         channelCreationSupported: true,
         canCreateChannels: false,
         directorySearchSupported: true,
+        directorySearchHint: 'Your name or handle',
         attention: null,
         teamPlacementSupported: false,
         channelIdsRefused: null,

@@ -47,6 +47,7 @@ export const BridgeIdentitySearch = observer(function BridgeIdentitySearch({
   bridgeDisplayName,
   platform,
   directorySearchSupported,
+  directorySearchHint,
   autoFocus,
   onClaimed,
   onConfirmationNeeded,
@@ -59,6 +60,8 @@ export const BridgeIdentitySearch = observer(function BridgeIdentitySearch({
   /** The platform as a person names it, for prose about what is searchable. */
   platform: string;
   directorySearchSupported: boolean;
+  /** What the search can find a person by, from the connection. */
+  directorySearchHint: string;
   autoFocus: boolean;
   onClaimed: (identity: LinkedIdentity) => void;
   /** A link that waits on a code posted from the account: one just made, one
@@ -160,7 +163,7 @@ export const BridgeIdentitySearch = observer(function BridgeIdentitySearch({
         <FieldLabel>Search {bridgeDisplayName}</FieldLabel>
         <Input
           autoFocus={autoFocus}
-          placeholder="Your name, handle or email"
+          placeholder={directorySearchHint}
           value={search}
           spellCheck={false}
           onChange={(e) => {
@@ -326,10 +329,13 @@ function DirectoryResults({
             >
               <div className="flex min-w-0 flex-col">
                 <span className="truncate text-sm text-foreground">{person.displayName}</span>
-                <span className="truncate text-xs text-foreground-muted">
-                  @{person.username}
-                  {person.email ? ` · ${person.email}` : ''}
-                </span>
+                {(person.hasHandle || person.email) && (
+                  <span className="truncate text-xs text-foreground-muted">
+                    {[person.hasHandle ? `@${person.username}` : null, person.email]
+                      .filter(Boolean)
+                      .join(' · ')}
+                  </span>
+                )}
                 {others.length > 0 && (
                   <span className="truncate text-xs text-foreground-muted">
                     Also linked to {others.map((c) => c.userName).join(', ')}

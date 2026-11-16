@@ -13,6 +13,7 @@ import httpx
 import pytest
 from sqlalchemy import func, select, update
 
+from switch_core.agent_runs import AgentOrigin, RunService
 from switch_core.db.models import (
     Agent,
     Client,
@@ -22,6 +23,8 @@ from switch_core.db.models import (
     Room,
     User,
 )
+from switch_core.db.stores.agent_store import AgentStore
+from switch_core.db.stores.room_store import RoomStore
 from switch_core.tenant_context import tenant_scope
 from tests.switch_core.gateway.conftest import _Harness
 from tests.switch_core.gateway.test_chats_routes import _code
@@ -202,6 +205,43 @@ async def test_a_bridged_chat_goes_by_the_agents_display_name(
     assert response.status_code == 200, response.text
     assert response.json()["chat"]["name"] == "Helper Bot · Acme Slack"
     assert [call["agent_name"] for call in core.dm_calls] == ["Helper Bot"]
+
+
+async def test_a_bridged_chat_describes_its_channel_not_a_console_chat(
+    chats: _Harness,
+) -> None:
+    """The buddy's hand-off room is a channel on the platform. Its
+    description is what Console shows for the room, and what the run trace
+    repeats in a later kickoff, which people read too."""
+    agent = await chats.agent("helper", owner=chats.alice)
+    bridge_id, _core = await _slack(chats, link=chats.alice)
+
+    response = await _create(chats, [agent], bridge_id)
+
+    assert response.status_code == 200, response.text
+    room_id = response.json()["chat"]["roomId"]
+    async with chats.factory() as session:
+        room = await session.get(Room, room_id)
+        assert room is not None
+        assert room.description == "Private Slack channel with helper"
+
+    runs = RunService(
+        room_store=RoomStore(), agent_store=AgentStore(), session_factory=chats.factory
+    )
+    with tenant_scope(TENANT):
+        trace = await runs._trace(
+            AgentOrigin(
+                agent_id=agent.id,
+                agent_name="helper",
+                owner_id=chats.alice.id,
+                owner_name="Alice",
+                parent_room_id=room_id,
+                run_id=None,
+            )
+        )
+    assert trace is not None
+    assert "Private Slack channel with helper" in trace
+    assert "Switch Console chat" not in trace
 
 
 async def test_the_linked_account_is_used_even_when_another_shares_its_name(

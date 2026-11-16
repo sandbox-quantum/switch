@@ -81,6 +81,9 @@ class _Lifecycle:
     def supports_directory_search(self, bridge_type: str) -> bool:
         return False
 
+    def directory_search_hint(self, bridge_id: str, bridge_type: str) -> str:
+        return "Your name or handle"
+
     def receives_webhooks(self, bridge_type: str) -> bool:
         return False
 

@@ -132,6 +132,7 @@ import {
   type NewRoomChannel,
   type RoomAccess,
   roomAccessForChannel,
+  DEFAULT_DIRECTORY_SEARCH_HINT,
 } from '@shared/core/switch-servers/switch-servers';
 import type {
   Invitation,
@@ -1869,6 +1870,8 @@ type BridgeJson = {
   channel_creation_enabled?: boolean;
   // Absent on a server predating Telegram, where every bridge had a directory.
   directory_search_supported?: boolean;
+  // Absent on a server predating it; see `RemoteBridge.directorySearchHint`.
+  directory_search_hint?: string;
   // Both absent on a server predating this pair of fields — read as "nothing
   // to warn about" and "not the distributed Teams app", which is how every
   // bridge behaved before either existed.
@@ -1902,6 +1905,7 @@ function mapBridge(b: BridgeJson): RemoteBridge {
     channelCreationSupported,
     canCreateChannels: channelCreationSupported && channelCreationEnabled,
     directorySearchSupported: b.directory_search_supported ?? true,
+    directorySearchHint: b.directory_search_hint ?? DEFAULT_DIRECTORY_SEARCH_HINT,
     attention: b.attention ?? null,
     teamPlacementSupported: b.team_placement_supported ?? false,
     channelIdsRefused: b.channel_ids_refused ?? null,
@@ -2612,6 +2616,7 @@ export async function searchBridgeDirectory(
     username: string;
     display_name: string;
     email?: string | null;
+    has_handle?: boolean;
     known_external_user_id?: string | null;
     claimed_by?: IdentityClaimantJson[];
   };
@@ -2629,6 +2634,7 @@ export async function searchBridgeDirectory(
       username: u.username,
       displayName: u.display_name,
       email: u.email ?? null,
+      hasHandle: u.has_handle ?? true,
       knownExternalUserId: u.known_external_user_id ?? null,
       claimedBy: (u.claimed_by ?? []).map((c) => ({
         userId: c.user_id,
