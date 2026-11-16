@@ -183,7 +183,7 @@ export async function checkRail(ui: GatewayUi, persona: Persona): Promise<string
 
 /** Each settings area's landmark, by the title it is labelled with. */
 const AREA_TITLE: Record<MatrixSettingsArea, string> = {
-  workspace: 'Workspace settings',
+  workspace: 'Settings',
   organization: 'Organization settings',
   platform: 'Platform',
 };
@@ -217,9 +217,7 @@ export async function checkSettingsMenus(ui: GatewayUi, persona: Persona): Promi
       const across = links.some((link) => link.path === AREA_PATH.organization);
       const allowed = SETTINGS_MENUS.organization[persona] !== null;
       if (across !== allowed) {
-        wrong.push(
-          `Workspace settings menu: wanted ${allowed ? 'a' : 'no'} link to Organization settings`
-        );
+        wrong.push(`Settings menu: wanted ${allowed ? 'a' : 'no'} link to Organization settings`);
       }
     }
   }

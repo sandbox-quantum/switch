@@ -2,7 +2,7 @@ import ChevronLeftOutlined from "@mui/icons-material/ChevronLeftOutlined";
 import ExpandMoreOutlined from "@mui/icons-material/ExpandMoreOutlined";
 import HelpOutlineOutlined from "@mui/icons-material/HelpOutlineOutlined";
 import MenuBookOutlined from "@mui/icons-material/MenuBookOutlined";
-import { Alert, Box, Button, Snackbar, Stack, Typography } from "@mui/material";
+import { Alert, Box, Button, IconButton, Snackbar, Stack, Tooltip, Typography } from "@mui/material";
 import { useCallback, useEffect, useState } from "react";
 import type { MouseEvent, ReactNode } from "react";
 import { Link as RouterLink, useLocation } from "react-router";
@@ -14,12 +14,12 @@ import {
   organizationName,
 } from "../data/workspaceSwitcher";
 import CreateInvitationDialog from "../pages/workspace/CreateInvitationDialog";
-import { outsideWorkspace } from "../routes/routeTable";
+import { areaOf, outsideWorkspace, underAreaOutsideWorkspace } from "../routes/routeTable";
 import { DevRoleSlot } from "./DevRoleSlot";
 import WorkspaceMenu from "./WorkspaceMenu";
 
 const SECTION_LABELS: [prefix: string, label: string][] = [
-  ["/overview", "Overview"],
+  ["/overview", "Home"],
   ["/ecosystem", "Ecosystem"],
   ["/agents", "Agents"],
   ["/rooms", "Rooms"],
@@ -60,13 +60,16 @@ function PageLabel({ label }: { label: string | undefined }) {
 
 /** The breadcrumb: "Organization / Workspace", which opens the
  * workspace switcher, then the page. In an area outside the workspace,
- * organization settings or Platform, the way back to it instead. */
+ * organization settings or Platform, the way back to it instead: from
+ * organization settings to the workspace settings page that was open. */
 function WorkspaceCrumbs({
   section,
   outside,
+  backTo,
 }: {
   section: string | undefined;
   outside: boolean;
+  backTo: string;
 }) {
   const { session, switchTo } = useAuth();
   const [organizations, setOrganizations] = useState<OrganizationName[]>([]);
@@ -113,7 +116,7 @@ function WorkspaceCrumbs({
     crumbs = (
       <Button
         component={RouterLink}
-        to="/"
+        to={backTo}
         color="inherit"
         startIcon={<ChevronLeftOutlined sx={{ fontSize: 18 }} />}
         sx={{ ...CRUMB_TEXT, px: 1 }}
@@ -133,13 +136,13 @@ function WorkspaceCrumbs({
       >
         {organization !== null && (
           <>
-            <Box component="span" sx={{ color: "text.secondary" }}>
-              {organization}
-            </Box>
+            {organization}
             <Separator />
           </>
         )}
-        {tenant?.name}
+        <Box component="span" sx={{ fontWeight: 700 }}>
+          {tenant?.name}
+        </Box>
       </Button>
     );
   }
@@ -185,24 +188,28 @@ function WorkspaceCrumbs({
   );
 }
 
-function LinkButton({ href, icon, children }: { href: string; icon: ReactNode; children: string }) {
+function LinkButton({ href, icon, label }: { href: string; icon: ReactNode; label: string }) {
   return (
-    <Button
-      color="inherit"
-      href={href}
-      target="_blank"
-      rel="noreferrer"
-      startIcon={icon}
-      sx={{ fontWeight: 500 }}
-    >
-      {children}
-    </Button>
+    <Tooltip title={label}>
+      <IconButton color="inherit" href={href} target="_blank" rel="noreferrer" aria-label={label}>
+        {icon}
+      </IconButton>
+    </Tooltip>
   );
 }
 
 export default function TopBar() {
   const { pathname } = useLocation();
-  const section = SECTION_LABELS.find(([prefix]) => pathname.startsWith(prefix))?.[1];
+  const { capabilities } = useAuth();
+  const outside = outsideWorkspace(pathname, capabilities);
+  // A refused page or a missing one under an area outside the workspace is
+  // shown in the workspace's chrome, where the area's name would read as if
+  // it had been entered.
+  const section =
+    !outside && underAreaOutsideWorkspace(pathname)
+      ? undefined
+      : SECTION_LABELS.find(([prefix]) => pathname.startsWith(prefix))?.[1];
+  const backTo = areaOf(pathname) === "organization" ? "/settings" : "/";
 
   return (
     <Stack
@@ -215,16 +222,16 @@ export default function TopBar() {
         pr: 1,
       }}
     >
-      <WorkspaceCrumbs section={section} outside={outsideWorkspace(pathname)} />
+      <WorkspaceCrumbs section={section} outside={outside} backTo={backTo} />
 
       <Stack direction="row" sx={{ alignItems: "center", gap: 1 }}>
         <DevRoleSlot />
-        <LinkButton href={HELP_URL} icon={<HelpOutlineOutlined sx={{ fontSize: 18 }} />}>
-          Help
-        </LinkButton>
-        <LinkButton href={DOCS_URL} icon={<MenuBookOutlined sx={{ fontSize: 18 }} />}>
-          Docs
-        </LinkButton>
+        <LinkButton href={HELP_URL} icon={<HelpOutlineOutlined sx={{ fontSize: 20 }} />} label="Help" />
+        <LinkButton
+          href={DOCS_URL}
+          icon={<MenuBookOutlined sx={{ fontSize: 20 }} />}
+          label="Documentation"
+        />
       </Stack>
     </Stack>
   );

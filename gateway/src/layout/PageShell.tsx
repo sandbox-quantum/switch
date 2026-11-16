@@ -1,7 +1,7 @@
 import { Alert, Box, Button, Stack } from "@mui/material";
 import { Outlet, useLocation } from "react-router";
 import { useAuth } from "../data/AuthContext";
-import { outsideWorkspace } from "../routes/routeTable";
+import { AREAS, enteredArea } from "../routes/routeTable";
 import LinkNoticeBanner from "./LinkNoticeBanner";
 import NavRail from "./NavRail";
 import TopBar from "./TopBar";
@@ -10,10 +10,14 @@ import TopBar from "./TopBar";
  *  the warm canvas, framing a single rounded content surface. Chrome recedes so
  *  the content is the hero — an "app within a surface", not edge-to-edge chrome.
  *  Organization settings and the Platform area are places of their own,
- *  outside the workspace: no rail there, and the top bar leads back. */
+ *  outside the workspace: no rail there, and the top bar leads back. A
+ *  settings area draws its own title bar, menu and padding across the whole
+ *  surface; one refused is shown like any other page. */
 export default function PageShell() {
   const { pathname } = useLocation();
-  const withRail = !outsideWorkspace(pathname);
+  const { capabilities } = useAuth();
+  const area = enteredArea(pathname, capabilities);
+  const withRail = area === null || !AREAS[area].outsideWorkspace;
   return (
     <Box
       sx={{
@@ -45,11 +49,13 @@ export default function PageShell() {
             backgroundColor: "background.paper",
             color: "text.primary",
             boxShadow: "var(--sw-shadow-surface)",
-            p: 4,
+            ...(area === null ? { p: 4 } : { overflowY: "hidden" }),
           }}
         >
-          <StaleSessionBanner />
-          <LinkNoticeBanner />
+          <Box sx={area === null ? undefined : { px: 3, pt: 3, "&:empty": { display: "none" } }}>
+            <StaleSessionBanner />
+            <LinkNoticeBanner />
+          </Box>
           <Outlet />
         </Stack>
       </Stack>
