@@ -21,6 +21,7 @@ from switch_core.addressing import (
 )
 from switch_core.bridges.agent.agent_change_requests import (
     addressing_widens,
+    bypass_fields,
     changed_fields,
     confirm_with,
     fields_to_confirm,
@@ -143,6 +144,40 @@ class TestWhatWaitsForTheOwner:
 
         assert fields_to_confirm(_changes(auto_mode=True), manual) == ("auto_mode",)
 
+    @pytest.mark.parametrize("now", [None, "default", "acceptEdits", "plan", "dontAsk"])
+    def test_the_providers_own_auto_mode_waits_as_auto_mode_does(
+        self, now: str | None
+    ) -> None:
+        current = {
+            **CURRENT,
+            "advanced_config": {} if now is None else {"permissionMode": now},
+        }
+
+        assert fields_to_confirm(
+            _changes(advanced_config={"permissionMode": "auto", "effort": "high"}),
+            current,
+        ) == ("advanced_config",)
+
+    @pytest.mark.parametrize(
+        ("now", "then"),
+        [
+            # Already auto: no change.
+            ("auto", {"permissionMode": "auto", "effort": "high"}),
+            # Turning it off, to any other mode or to none.
+            ("auto", {"permissionMode": "default"}),
+            ("auto", {"permissionMode": "acceptEdits"}),
+            ("auto", {}),
+            # Narrower than the bypass it has.
+            ("bypassPermissions", {"permissionMode": "auto"}),
+        ],
+    )
+    def test_the_providers_own_auto_mode_off_or_kept_applies_at_once(
+        self, now: str, then: dict[str, Any]
+    ) -> None:
+        current = {**CURRENT, "advanced_config": {"permissionMode": now}}
+
+        assert fields_to_confirm(_changes(advanced_config=then), current) == ()
+
     def test_turning_bypass_off_does_not_wait(self) -> None:
         bypassing = {
             **CURRENT,
@@ -191,6 +226,24 @@ class TestWhatANewAgentWaitsFor:
                 new_agent_fields_to_confirm(_spec(advanced_config=safer), PLACEMENT)
                 == ()
             )
+
+    @pytest.mark.parametrize("auto_mode", [True, False])
+    def test_the_providers_own_auto_mode_waits_no_more_than_auto_mode(
+        self, auto_mode: bool
+    ) -> None:
+        """A new agent is made in auto mode unless it says otherwise, so
+        neither auto mode nor the provider's own waits when one is made."""
+        spec = _spec(auto_mode=auto_mode, advanced_config={"permissionMode": "auto"})
+
+        assert new_agent_fields_to_confirm(spec, PLACEMENT) == ()
+
+    def test_bypass_is_either_way_of_skipping_every_check(self) -> None:
+        """What an agent's template run is refused, as `create_agent` holds."""
+        assert bypass_fields(True, {"permissionMode": "bypassPermissions"}) == (
+            "auto_approve",
+            "advanced_config",
+        )
+        assert bypass_fields(False, {"permissionMode": "auto"}) == ()
 
 
 OWNER_ONLY = owner_only_policy([]).model_dump()
