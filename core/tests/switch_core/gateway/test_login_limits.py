@@ -13,6 +13,7 @@ from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
+import bcrypt
 import httpx
 import pytest
 from fastapi import FastAPI
@@ -383,3 +384,34 @@ class TestOperator:
         async with world.client() as client:
             missing = await client.delete("/users/no-such-user/sign-in-lock")
         assert missing.status_code == 404
+
+
+class TestOnePasswordCheckEach:
+    """Every sign-in pays for one bcrypt comparison, so its timing does not
+    say whether the email has an account."""
+
+    @pytest.mark.parametrize(
+        ("email", "password", "status"),
+        [
+            (NOBODY, PASSWORD, 401),
+            (ADA, "a wrong guess", 401),
+            (ADA, PASSWORD, 200),
+            ("sso-only@example.com", PASSWORD, 401),
+        ],
+    )
+    async def test_exactly_one_comparison(
+        self, world: World, monkeypatch, email: str, password: str, status: int
+    ) -> None:
+        await _user(world.factory, "sso-only@example.com", password=None)
+        checked = []
+        real = bcrypt.checkpw
+
+        def counting(password: bytes, hashed: bytes) -> bool:
+            checked.append(hashed)
+            return real(password, hashed)
+
+        monkeypatch.setattr(bcrypt, "checkpw", counting)
+        assert (await world.sign_in(email, password)).status_code == status
+        assert len(checked) == 1
+        # At the cost every account's hash is made with.
+        assert checked[0].split(b"$")[2] == hash_password("x").encode().split(b"$")[2]

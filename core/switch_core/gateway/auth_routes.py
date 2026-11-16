@@ -51,6 +51,7 @@ from switch_core.gateway.auth import (
     list_held_memberships,
     list_tenant_memberships,
     operator_entered_workspace,
+    password_matches_off_loop,
     require_admin,
     session_auth_time,
     set_session_cookie,
@@ -183,12 +184,11 @@ async def login(
     user = await user_store.get_by_email(session, req.email)
     # One connection at a time, and none held across bcrypt.
     await session.commit()
-    if user is None or not await verify_password_off_loop(
-        req.password, user.password_hash
-    ):
+    if not await password_matches_off_loop(user, req.password):
         # Counted for the alert on password guessing; nothing about who.
         metrics().increment(AUTH_SIGN_IN_FAILURES, {})
         raise HTTPException(status_code=401, detail="Invalid email or password")
+    assert user is not None
     await attempt.succeeded(session)
 
     set_session_cookie(

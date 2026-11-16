@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import functools
 import logging
+import secrets
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -124,6 +126,32 @@ async def verify_password_off_loop(password: str, password_hash: str | None) -> 
     """`verify_password` on a worker thread, for the same reason as
     `hash_password_off_loop`."""
     return await asyncio.to_thread(verify_password, password, password_hash)
+
+
+@functools.cache
+def _stand_in_hash() -> str:
+    """A hash of a password nobody has, made once a process at the cost
+    `hash_password` uses, to compare against where there is no account's."""
+    return hash_password(secrets.token_urlsafe(32))
+
+
+def password_matches(user: User | None, password: str) -> bool:
+    """Whether `password` is `user`'s, at the cost of exactly one bcrypt
+    comparison whether or not there is an account, or one with a password.
+
+    A sign-in that answered sooner for an email with no account would say by
+    its timing alone which emails have one, whatever its answer said.
+    """
+    if user is None or user.password_hash is None:
+        bcrypt.checkpw(password.encode(), _stand_in_hash().encode())
+        return False
+    return verify_password(password, user.password_hash)
+
+
+async def password_matches_off_loop(user: User | None, password: str) -> bool:
+    """`password_matches` on a worker thread, for the same reason as
+    `hash_password_off_loop`."""
+    return await asyncio.to_thread(password_matches, user, password)
 
 
 def create_jwt(
