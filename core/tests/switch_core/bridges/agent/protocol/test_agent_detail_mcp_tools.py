@@ -127,6 +127,13 @@ async def _make_agent(
     return agent
 
 
+async def _caller(session: AsyncSession) -> str:
+    """The agent making the call: a real one, since it acts as its owner, who
+    owns nothing else here."""
+    owner = await _make_user(session, "caller-owner")
+    return (await _make_agent(session, "caller", owner_id=owner.id, known=False)).id
+
+
 class TestListAgents:
     async def test_unfiltered_lists_all_sorted_by_name(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -136,10 +143,11 @@ class TestListAgents:
             owner = await _make_user(session, "owner")
             await _make_agent(session, "zeta", owner_id=owner.id)
             await _make_agent(session, "alpha", owner_id=owner.id)
+            caller = await _caller(session)
             await session.commit()
 
-        out = await svc.list_agents("caller", None, None, None)
-        assert [a["name"] for a in out] == ["alpha", "zeta"]
+        out = await svc.list_agents(caller, None, None, None)
+        assert [a["name"] for a in out] == ["alpha", "caller", "zeta"]
 
     async def test_name_contains_is_case_insensitive_substring(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -149,9 +157,10 @@ class TestListAgents:
             owner = await _make_user(session, "owner")
             await _make_agent(session, "data-bot", owner_id=owner.id)
             await _make_agent(session, "chatter", owner_id=owner.id)
+            caller = await _caller(session)
             await session.commit()
 
-        out = await svc.list_agents("caller", "BOT", None, None)
+        out = await svc.list_agents(caller, "BOT", None, None)
         assert [a["name"] for a in out] == ["data-bot"]
 
     async def test_owner_name_filter(
@@ -163,9 +172,10 @@ class TestListAgents:
             owner_b = await _make_user(session, "bob")
             await _make_agent(session, "a1", owner_id=owner_a.id)
             await _make_agent(session, "b1", owner_id=owner_b.id)
+            caller = await _caller(session)
             await session.commit()
 
-        out = await svc.list_agents("caller", None, "alice", None)
+        out = await svc.list_agents(caller, None, "alice", None)
         assert [a["name"] for a in out] == ["a1"]
         assert out[0]["owner_name"] == "alice"
 
@@ -177,9 +187,10 @@ class TestListAgents:
             owner = await _make_user(session, "owner")
             await _make_agent(session, "known", owner_id=owner.id, known=True)
             await _make_agent(session, "other", owner_id=owner.id, known=False)
+            caller = await _caller(session)
             await session.commit()
 
-        out = await svc.list_agents("caller", None, None, "claude-code")
+        out = await svc.list_agents(caller, None, None, "claude-code")
         assert [a["name"] for a in out] == ["known"]
 
 

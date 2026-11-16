@@ -1029,6 +1029,47 @@ class TestListingOrganizationsAndWorkspaces:
         assert row["admins"] == [carol]
         assert row["created_at"]
 
+    async def test_a_member_is_told_only_of_their_own_agents_and_the_rooms_they_may_read(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """A private room they are not in is not counted to them, nor another
+        person's agent: as their own Rooms and Agents lists hold them."""
+        ada, carol, bob = _name("ada"), _name("carol"), _name("bob")
+        tenant_id = await _workspace(
+            session_factory,
+            {
+                ada: ("admin", "org_admin"),
+                carol: ("admin", "member"),
+                bob: ("member", "member"),
+            },
+        )
+        async with tenant_session(session_factory, tenant_id) as session:
+            session.add(Room(transport_room_id="!open", name="Open", description=""))
+            session.add(
+                Room(
+                    transport_room_id="!private",
+                    name="Leadership",
+                    description="",
+                    owner_id=carol,
+                    read_visibility="private",
+                    write_visibility="private",
+                )
+            )
+            await session.commit()
+        await _agent(session_factory, tenant_id, carol)
+        await _agent(session_factory, tenant_id, bob)
+        app = _app(session_factory)
+
+        counts: dict[str, tuple[int, int, int]] = {}
+        for who in (ada, bob):
+            async with _client(app, who, tenant_id) as client:
+                response = await client.get("/organizations/current/workspaces")
+            assert response.status_code == 200, response.text
+            [row] = response.json()
+            counts[who] = (row["users"], row["agents"], row["rooms"])
+
+        assert counts == {ada: (3, 2, 2), bob: (3, 1, 1)}
+
     async def test_the_platform_operator_sees_every_workspace_of_it(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:

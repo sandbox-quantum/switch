@@ -2683,6 +2683,8 @@ class TestWorkspaceCountsRoute:
     async def test_counts_each_workspace_of_a_member_on_its_own(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
+        """Agents as the caller's agent list holds them: every one where they
+        administer the workspace, else only their own."""
         await _make_tenant(session_factory, TENANT_A)
         await _make_tenant(session_factory, TENANT_B)
         member_id = await _make_member(
@@ -2700,6 +2702,12 @@ class TestWorkspaceCountsRoute:
             await _make_agent_with_key(
                 session_factory, tenant_id=TENANT_A, owner_id=other_id
             )
+            await _make_agent_with_key(
+                session_factory, tenant_id=TENANT_B, owner_id=other_id
+            )
+        await _make_agent_with_key(
+            session_factory, tenant_id=TENANT_A, owner_id=member_id
+        )
         await _make_agent_with_key(
             session_factory, tenant_id=TENANT_B, owner_id=member_id
         )
@@ -2710,8 +2718,8 @@ class TestWorkspaceCountsRoute:
 
         assert response.status_code == 200, response.text
         assert sorted(response.json(), key=lambda row: row["id"]) == [
-            {"id": TENANT_A, "users": 2, "agents": 2},
-            {"id": TENANT_B, "users": 1, "agents": 1},
+            {"id": TENANT_A, "users": 2, "agents": 1},
+            {"id": TENANT_B, "users": 1, "agents": 3},
         ]
 
     async def test_counts_an_org_admin_once_whether_or_not_they_are_a_member(
