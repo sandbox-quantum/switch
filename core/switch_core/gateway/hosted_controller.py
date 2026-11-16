@@ -414,16 +414,20 @@ async def _ask_for_waiting_boxes(
 _V2_OFF_STOPS = ("running", "retained")
 
 
-@router.get("/machines")
-async def machines(
-    session: Annotated[AsyncSession, Depends(controller_session)],
-    factory: Annotated[async_sessionmaker[AsyncSession], Depends(get_session_factory)],
-    config: Annotated[SwitchConfig, Depends(get_config)],
-    settings: Annotated[HostedControllerSettings, Depends(controller_settings)],
-) -> dict:
-    reconciler_heard()
+async def sweep_hosted_machines(
+    session: AsyncSession,
+    factory: async_sessionmaker[AsyncSession],
+    config: SwitchConfig,
+    settings: HostedControllerSettings,
+    now: datetime,
+) -> list[CloudMachine]:
+    """Switch's own lifecycle changes to cloud machines: the v1/v2 switch's
+    stops, the lifecycle sweep, spent codes, expired box requests and boxes to
+    ask for again. Run by the controller's poll (`GET /machines`) and, with
+    hosted agents v2 on, by Core's own loop (`hosted_sweep`), so a box whose
+    request expires is marked even when nothing polls. Returns the machines
+    read at the start. The caller commits."""
     store = CloudMachineStore()
-    now = datetime.now(UTC)
     candidates = list(
         await session.scalars(
             select(CloudMachine)
@@ -458,6 +462,12 @@ async def machines(
                     machine.id,
                 )
             await session.commit()
+    if box_provisioning_on(config):
+        # First, so a box whose request ran out is marked as not made before
+        # the lifecycle sweep could time it out as never scheduled: the same
+        # outcome whether Core's loop or the controller's poll gets there.
+        await expire_provisions(session, now)
+        await session.commit()
     # A machine whose box is still being made is left alone: its start
     # clocks run from the box's existence, not the claim.
     being_made = await open_provision_machines(session, now) if v2 else frozenset()
@@ -490,11 +500,22 @@ async def machines(
             if candidate.backend == "box":
                 await clear_spent_codes(factory, candidate.id, now)
     if box_provisioning_on(config):
-        await expire_provisions(session, now)
-        await session.commit()
         await _ask_for_waiting_boxes(
             factory, candidates, being_made, config, settings, now
         )
+    return candidates
+
+
+@router.get("/machines")
+async def machines(
+    session: Annotated[AsyncSession, Depends(controller_session)],
+    factory: Annotated[async_sessionmaker[AsyncSession], Depends(get_session_factory)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
+    settings: Annotated[HostedControllerSettings, Depends(controller_settings)],
+) -> dict:
+    reconciler_heard()
+    now = datetime.now(UTC)
+    await sweep_hosted_machines(session, factory, config, settings, now)
     rows = await session.scalars(
         select(CloudMachine)
         .where(CloudMachine.state != "deleted")
@@ -505,7 +526,7 @@ async def machines(
     # For the operator only (this route takes the controller's token): the
     # server lets every workspace and account claim a machine. Absent when
     # either list narrows it; owners' routes never carry it.
-    if v2 and open_to_all(settings, config.hosted_launch_capacity):
+    if process_hosted_v2() and open_to_all(settings, config.hosted_launch_capacity):
         response["open_to_all"] = True
     await session.commit()
     return response

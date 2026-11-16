@@ -46,6 +46,7 @@ from switch_core.db.audit import ServerAuditAction, record_server_audit_event
 from switch_core.db.models import CloudMachine, ServerAuditEvent
 from switch_core.db.stores.hosted_machine_store import (
     _advisory_lock,
+    bump_revision,
     ever_hosted,
     lock_claims,
     lock_machine,
@@ -499,36 +500,54 @@ async def record_provision_result(
             # The start clocks run from the box's existence, not the claim.
             machine.updated_at = now
         elif machine is not None and machine.state != "deleted":
-            # A box that couldn't be made isn't asked for again on every sweep:
-            # the machine goes to error, which the existing retry
-            # and clean-up handle. A retry asks again. It counts as a launch
-            # refused, which "launches failing" pages on, once per failure.
-            if machine.state != "error":
-                record_machine_event(
-                    session, "failed", "launch_refused", machine.backend
-                )
-            machine.state = "error"
-            machine.error_code = BOX_NOT_MADE
-            machine.error = BOX_NOT_MADE_MESSAGE
-            machine.updated_at = now
+            _box_not_made(session, machine, now)
+
+
+def _box_not_made(session: AsyncSession, machine: CloudMachine, now: datetime) -> None:
+    """A box that couldn't be made, by a failed result or a request that ran
+    out: the machine goes to error, which the existing retry and clean-up
+    handle, and isn't asked for again on every sweep. A retry asks again. It
+    counts as a launch refused, which "launches failing" pages on, once per
+    failure. It's no longer wanted running either, so the box scaler is never
+    asked to start a box Core has given up on; the owner's Retry wants it
+    running again (`CloudMachineStore.retry`). The caller holds the machine's
+    lock."""
+    # Counted first, under its own fixed word: the one failure is a launch
+    # refused, never a `stop_failed` from the stop that follows.
+    if machine.state != "error":
+        record_machine_event(session, "failed", "launch_refused", machine.backend)
+    machine.state = "error"
+    machine.error_code = BOX_NOT_MADE
+    machine.error = BOX_NOT_MADE_MESSAGE
+    if machine.desired_state == "running":
+        machine.desired_state = "stopped"
+        bump_revision(machine, now)
+    machine.updated_at = now
 
 
 async def expire_provisions(session: AsyncSession, now: datetime) -> int:
-    """Write `expired` for requests past their 15 minutes with no result.
+    """Write `expired` for requests past their 15 minutes with no result, and
+    mark each one's machine as not made if it's still waiting for its box.
     Returns how many. The caller commits."""
     rows = await session.execute(
-        select(ServerAuditEvent).where(
+        select(ServerAuditEvent)
+        .where(
             ServerAuditEvent.action == ACTION,
             ServerAuditEvent.details["phase"].astext == "requested",
             ServerAuditEvent.occurred_at <= now - TTL,
             ServerAuditEvent.occurred_at > now - TTL - timedelta(days=1),
         )
+        # One order for every caller: Core's loop and the controller's poll
+        # can both run this at once, and each takes the requests' advisory
+        # locks, then their machines', in this order, so they can't deadlock.
+        .order_by(ServerAuditEvent.id)
     )
     expired = 0
     for request in rows.scalars().all():
         await _advisory_lock(session, f"box-provision:{request.id}")
         if _result_of(await _linked(session, request.id)) is not None:
             continue
+        machine_id = (request.details or {}).get("machine_id")
         await record_server_audit_event(
             session,
             actor_user_id=None,
@@ -539,10 +558,21 @@ async def expire_provisions(session: AsyncSession, now: datetime) -> int:
                 "phase": "result",
                 "result": "expired",
                 "linked_to": request.id,
-                "machine_id": (request.details or {}).get("machine_id"),
+                "machine_id": machine_id,
             },
         )
         expired += 1
+        # Nothing made the box in time: the machine is marked as not made,
+        # as a failed result marks it, so its owner sees an error rather than
+        # a start that never ends. Only a machine still waiting for its box:
+        # one that has since come up, errored or gone is left as it is.
+        if isinstance(machine_id, str):
+            await lock_machine(session, machine_id)
+            machine = await session.get(
+                CloudMachine, machine_id, populate_existing=True
+            )
+            if machine is not None and machine.state in ("queued", "provisioning"):
+                _box_not_made(session, machine, now)
     return expired
 
 
@@ -569,8 +599,9 @@ async def ask_for_box(
 ) -> str | Waiting | None:
     """`request_box_if_needed` when box provisioning is on for this server, with its caps
     and its gates.
-    Off, or with no keyed-id key, it asks for nothing: boxes are made by hand
-    as before, and the user's machine waits as it does today."""
+    Off, it asks for nothing. On with no keyed-id key, no box can be named,
+    so none is asked for and a box still waiting for one is marked as not
+    made at once (`_box_not_made`), rather than waiting for ever."""
     if not box_provisioning_on(config) or settings is None:
         return None
     key = process_keyed_id_key()
@@ -578,6 +609,7 @@ async def ask_for_box(
         logger.error(
             "Box provisioning is on, but there's no keyed-id key to name a box"
         )
+        await _not_made_without_key(session_factory, machine_id, now)
         return None
     gate_settings = settings
 
@@ -596,6 +628,27 @@ async def ask_for_box(
     if asked is not None:
         await _cap_alerts(session_factory, asked, config, now)
     return asked
+
+
+async def _not_made_without_key(
+    session_factory: async_sessionmaker[AsyncSession], machine_id: str, now: datetime
+) -> None:
+    """With no keyed-id key, a box waiting for one is marked as not made, once:
+    only a v2 box still wanted running and still queued or provisioning."""
+    with no_tenant():
+        async with session_factory() as session:
+            await lock_machine(session, machine_id)
+            machine = await session.get(
+                CloudMachine, machine_id, populate_existing=True
+            )
+            if (
+                machine is not None
+                and machine.backend == "box"
+                and machine.desired_state == "running"
+                and machine.state in ("queued", "provisioning")
+            ):
+                _box_not_made(session, machine, now)
+            await session.commit()
 
 
 async def _cap_alerts(

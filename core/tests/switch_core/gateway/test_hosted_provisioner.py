@@ -21,6 +21,7 @@ from switch_core.db.models import (
     User,
     require_tenant_id,
 )
+from switch_core.db.stores.hosted_machine_store import CloudMachineStore
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.cloud_controllers import set_cloud_enrollment
 from switch_core.gateway.dependencies import (
@@ -409,6 +410,8 @@ async def test_a_failed_provision_names_its_step(provisioner_app) -> None:
         machine = await session.get(CloudMachine, app.machine_id)
         assert machine is not None
         assert (machine.state, machine.error_code) == ("error", "box_not_made")
+        # Core gave up on the box: it's no longer wanted running.
+        assert machine.desired_state == "stopped"
     assert await _ask(app.factory, app.machine_id) is None
     listed = await app.client.get("/hosted-controller/machines", headers=_bearer(TOKEN))
     assert listed.status_code == 200
@@ -454,7 +457,9 @@ async def test_a_box_that_could_not_be_made_counts_as_a_launch_refused(
         uninstall()
 
 
-async def test_an_expired_request_is_closed_and_asked_again(provisioner_app) -> None:
+async def test_an_expired_request_is_closed_and_asked_again_on_retry(
+    provisioner_app,
+) -> None:
     app = provisioner_app
     then = datetime.now(UTC) - TTL - timedelta(minutes=1)
     old = await _ask(app.factory, app.machine_id, now=then)
@@ -480,6 +485,19 @@ async def test_an_expired_request_is_closed_and_asked_again(provisioner_app) -> 
         await session.rollback()
     async with app.factory() as session:
         assert await expire_provisions(session, datetime.now(UTC)) == 1
+        await session.commit()
+    # The machine is marked as not made, so it isn't asked for again by
+    # itself; its owner's Retry asks again.
+    async with app.factory() as session:
+        machine = await session.get(CloudMachine, app.machine_id)
+        assert machine is not None
+        assert (machine.state, machine.error_code) == ("error", "box_not_made")
+    assert await _ask(app.factory, app.machine_id) is None
+    async with app.factory() as session:
+        store = CloudMachineStore()
+        locked = await store.locked(session, app.machine_id)
+        assert locked is not None
+        store.retry(locked, datetime.now(UTC))
         await session.commit()
     assert isinstance(await _ask(app.factory, app.machine_id), str)
 

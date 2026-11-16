@@ -554,6 +554,15 @@ class CloudMachineStore:
             self.retry(machine, now)
 
     def retry(self, machine: CloudMachine, now: datetime) -> None:
+        # A box Core marked as not made was stopped by Core, not by anyone
+        # (no stop reason): Retry wants it running again. A stop someone made
+        # (owner, idle, admin, pause, turn-off) is left as it is.
+        if (
+            machine.error_code == "box_not_made"
+            and machine.desired_state == "stopped"
+            and machine.stop_reason is None
+        ):
+            machine.desired_state = "running"
         machine.state = "queued"
         machine.error = None
         machine.error_code = None

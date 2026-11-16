@@ -203,6 +203,7 @@ from switch_core.delivery.router import (
 from switch_core.feature_flags import AGENT_MANAGEMENT, SWITCH_BUDDY
 from switch_core.gateway.app import create_gateway_app
 from switch_core.gateway.auth import hash_password
+from switch_core.gateway.hosted_sweep import start_hosted_sweep
 from switch_core.gateway.invite_mail import SmtpInviteMailer
 from switch_core.gateway.ui import GatewayUi
 from switch_core.hosted_v2 import hosted_v2_on
@@ -1745,6 +1746,16 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
             # Owned work, as upstream's sweeps: one process runs it.
             if management is not None and v2:
                 own_restart_sweep(ownership, session_factory, router.post_as_agent)
+            # Core's own run of the hosted sweep, so a box request that runs
+            # out is marked even when no controller service polls. v2 only:
+            # a v1 server starts no loop and takes no lease for it.
+            start_hosted_sweep(
+                v2,
+                ownership,
+                session_factory,
+                config,
+                lambda: getattr(gateway_app.state, "hosted_controller_settings", None),
+            )
             # A pause or resume Core stopped part-way through is recorded
             # failed at the step it reached. Once, at start.
             # Held, so the loop keeps a reference until it ends (a bare
