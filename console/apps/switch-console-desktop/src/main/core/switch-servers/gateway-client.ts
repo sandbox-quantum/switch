@@ -2144,8 +2144,13 @@ export async function fetchBridgeTypes(server: SwitchServer): Promise<RemoteBrid
 /** Slack's create-app page, filled in with the app this server needs. */
 export async function fetchSlackOwnAppSetup(server: SwitchServer): Promise<SlackOwnAppSetup> {
   const res = await gatewayFetch(server, '/collaborations/setup/slack', { authenticated: true });
-  const body = z.object({ create_url: z.string() }).parse(await res.json());
-  return { createUrl: body.create_url };
+  const body = z
+    .object({ create_url: z.string(), manifest: z.record(z.string(), z.unknown()).optional() })
+    .parse(await res.json());
+  return {
+    createUrl: body.create_url,
+    manifestJson: body.manifest ? JSON.stringify(body.manifest, null, 2) : null,
+  };
 }
 
 /**

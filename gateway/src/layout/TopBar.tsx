@@ -3,10 +3,11 @@ import ExpandMoreOutlined from "@mui/icons-material/ExpandMoreOutlined";
 import HelpOutlineOutlined from "@mui/icons-material/HelpOutlineOutlined";
 import MenuBookOutlined from "@mui/icons-material/MenuBookOutlined";
 import { Alert, Box, Button, Snackbar, Stack, Typography } from "@mui/material";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { MouseEvent, ReactNode } from "react";
 import { Link as RouterLink, useLocation } from "react-router";
 import { useAuth } from "../data/AuthContext";
+import { useOrganizationRenamed } from "../data/organizationEvents";
 import {
   type OrganizationName,
   loadOrganizationNames,
@@ -104,6 +105,9 @@ function WorkspaceCrumbs({
 
   const tenant = session?.tenant ?? null;
   const currentOrganizationId = tenant?.organization_id ?? null;
+  // Bumped when the organization is renamed, so its name is read again.
+  const [renames, setRenames] = useState(0);
+  useOrganizationRenamed(useCallback(() => setRenames((n) => n + 1), []));
   useEffect(() => {
     let cancelled = false;
     loadOrganizationNames(currentOrganizationId).then(
@@ -119,7 +123,7 @@ function WorkspaceCrumbs({
     return () => {
       cancelled = true;
     };
-  }, [currentOrganizationId]);
+  }, [currentOrganizationId, renames]);
 
   const switchWorkspace = async (tenantId: string) => {
     setAnchor(null);
@@ -190,6 +194,7 @@ function WorkspaceCrumbs({
         <CreateInvitationDialog
           open={inviteOpen}
           tenantId={tenant.id}
+          fromOrganization={false}
           workspaceName={tenant.name}
           emailEnabled={session?.invite_email_enabled ?? false}
           onClose={() => setInviteOpen(false)}

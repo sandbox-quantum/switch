@@ -47,7 +47,10 @@ export default function OperatorWorkspacesPage() {
         headerName: "Workspace",
         flex: 1,
         minWidth: 160,
-        renderCell: ({ row }) => (row.id === currentId ? `${row.name} (current)` : row.name),
+        renderCell: ({ row }) =>
+          [row.name, row.id === currentId && "(current)", row.archived_at !== null && "(archived)"]
+            .filter(Boolean)
+            .join(" "),
       },
       { field: "slug", headerName: "Slug", flex: 1, minWidth: 140 },
       {

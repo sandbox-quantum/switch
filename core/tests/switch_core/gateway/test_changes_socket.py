@@ -63,7 +63,7 @@ def _signed_in(
         return not sessions_ended
 
     monkeypatch.setattr(changes, "authenticate_socket", _authenticate)
-    monkeypatch.setattr(changes, "session_is_current", _current)
+    monkeypatch.setattr(changes, "session_still_enters", _current)
 
 
 @pytest.fixture

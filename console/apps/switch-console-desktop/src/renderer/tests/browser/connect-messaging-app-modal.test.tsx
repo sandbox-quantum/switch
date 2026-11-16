@@ -47,6 +47,9 @@ vi.mock('@renderer/lib/ipc', () => ({
       beginChatClaim,
       listBridges,
       createBridge,
+      slackOwnAppSetup: () =>
+        Promise.resolve({ createUrl: 'https://api.slack.com/apps?x', manifestJson: null }),
+      checkSlackTokens: () => new Promise(() => {}),
     },
   },
   events: { on: () => () => {}, emit: () => {} },
@@ -391,6 +394,40 @@ describe('linking your account once an app is added', () => {
       bridgeId: 'b-new',
     });
     expect(toast).not.toHaveBeenCalled();
+  });
+
+  it('says which tokens are still needed, though Slack asks for them in its steps', async () => {
+    listMessagingApps.mockResolvedValue({ installable: [], claimable: [] });
+    const token = (key: string, label: string) => ({
+      key,
+      label,
+      description: null,
+      required: true,
+      secret: true,
+      kind: 'string',
+      default: null,
+    });
+    listBridgeTypes.mockResolvedValue([
+      {
+        key: 'slack',
+        fields: [token('bot_token', 'Bot token'), token('app_token', 'App-level token')],
+        channelCreationSupported: true,
+        directorySearchSupported: true,
+      },
+    ]);
+    const el = await renderFromConsoleLink();
+
+    await act(async () => {
+      el.querySelector<HTMLElement>('[role="combobox"]')!.click();
+    });
+    await settle();
+    const option = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find((o) =>
+      o.textContent?.includes('Slack')
+    );
+    await act(async () => option!.click());
+    await settle();
+
+    expect(el.textContent).toContain('Bot token, App-level token are required to connect.');
   });
 
   it('offers it after connecting your own app with tokens too', async () => {

@@ -1,8 +1,10 @@
-import { Alert, Box, CircularProgress, Stack, Typography } from "@mui/material";
+import { Alert, Box, CircularProgress, Snackbar, Stack, Typography } from "@mui/material";
 import { useCallback, useState } from "react";
 import type { CurrentOrganization, Session } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
-import { fetchCurrentOrganization } from "../../data/api";
+import { ORGANIZATION_NAME_MAX, fetchCurrentOrganization, renameOrganization } from "../../data/api";
+import { announceOrganizationRenamed } from "../../data/organizationEvents";
+import EditableField from "../../components/EditableField";
 import { useLoad } from "../workspace/useLoad";
 import OrganizationAuditSection from "./OrganizationAuditSection";
 import OrganizationConnectorsSettings from "./connectors/OrganizationConnectorsSettings";
@@ -10,6 +12,10 @@ import OrganizationConnectorsSection from "./OrganizationConnectorsSection";
 import OrganizationServicesSection from "./OrganizationServicesSection";
 import OrganizationIssuesNotice from "./OrganizationIssuesNotice";
 import OrganizationMembersSection from "./OrganizationMembersSection";
+import OrganizationDevicesSettings from "./devices/OrganizationDevicesSettings";
+import OrganizationGuardrails from "./guardrails/OrganizationGuardrails";
+import OrganizationUsersSettings from "./users/OrganizationUsersSettings";
+import OrganizationWorkspacesSettings from "./workspaces/OrganizationWorkspacesSettings";
 import WorkspacesSection from "./WorkspacesSection";
 
 function useOrganization() {
@@ -113,6 +119,9 @@ export default function OrganizationPage() {
             onChanged={onMembersChanged}
           />
         )}
+        {isAdmin && organization !== null && (
+          <OrganizationGuardrails organizationName={organization.name} heading="section" />
+        )}
         {isAdmin && connectorsEnabled && <OrganizationServicesSection />}
         {isAdmin && connectorsEnabled && <OrganizationConnectorsSection />}
         {isAdmin && <OrganizationAuditSection />}
@@ -125,27 +134,62 @@ export default function OrganizationPage() {
 // organization's admins, and the operator to General, Workspaces and Users.
 
 export function OrganizationGeneralPage() {
-  const { data: organization, error } = useOrganization();
+  const { data: organization, error, refetch } = useOrganization();
+  // Kept after the message closes, so it still names the organization while
+  // it fades out.
+  const [renamedTo, setRenamedTo] = useState("");
+  const [noticeOpen, setNoticeOpen] = useState(false);
+
+  const rename = async (draft: string) => {
+    const { name } = await renameOrganization(draft);
+    announceOrganizationRenamed();
+    await refetch();
+    setRenamedTo(name);
+    setNoticeOpen(true);
+  };
+
   return (
     <Box>
-      <OrganizationHeading organization={organization} isAdmin={organization?.administers === true} />
-      {error && <Alert severity="error">{error}</Alert>}
-      <Stack spacing={4}>
-        {organization?.can_manage_members && <OrganizationIssuesNotice />}
+      <Stack spacing={0.5} sx={{ mb: 3 }}>
+        <Typography variant="h5">General</Typography>
       </Stack>
+      {error && <Alert severity="error">{error}</Alert>}
+      {organization === null ? (
+        !error && <CircularProgress />
+      ) : (
+        <Stack spacing={4}>
+          {organization.can_manage_members && <OrganizationIssuesNotice />}
+          <EditableField
+            label="Organization name"
+            value={organization.name}
+            canEdit={organization.administers}
+            readOnlyHelper="Only an org admin can change this."
+            editLabel="Rename organization"
+            maxLength={ORGANIZATION_NAME_MAX}
+            width={420}
+            onSave={rename}
+          />
+        </Stack>
+      )}
+      <Snackbar
+        open={noticeOpen}
+        autoHideDuration={5000}
+        onClose={() => setNoticeOpen(false)}
+        anchorOrigin={{ vertical: "bottom", horizontal: "left" }}
+      >
+        <Alert severity="success" onClose={() => setNoticeOpen(false)}>
+          Organization renamed to {renamedTo}.
+        </Alert>
+      </Snackbar>
     </Box>
   );
 }
 
 export function OrganizationWorkspacesPage() {
-  const { session } = useAuth();
-  const tenant = session?.tenant;
-  if (!session || !tenant) return <CircularProgress />;
-  return <WorkspacesSection currentId={tenant.id} canAdd={session.can_add_workspace} />;
+  return <OrganizationWorkspacesSettings />;
 }
 
 export function OrganizationUsersPage() {
-  const { session } = useAuth();
   const { data: organization, error, refetch: refetchOrganization } = useOrganization();
   // As on the organization page: after a change to the members, the issues
   // and the organization's own answers are read again.
@@ -154,21 +198,28 @@ export function OrganizationUsersPage() {
     setMembersChanged((n) => n + 1);
     void refetchOrganization();
   }, [refetchOrganization]);
-  const tenant = session?.tenant;
   if (error) return <Alert severity="error">{error}</Alert>;
-  if (!session || !tenant?.organization_id || organization === null) return <CircularProgress />;
+  if (organization === null) return <CircularProgress />;
   return (
     <Stack spacing={4}>
       {organization.can_manage_members && <OrganizationIssuesNotice key={membersChanged} />}
-      <MembersSection
-        session={session}
-        organizationId={tenant.organization_id}
-        organization={organization}
-        isAdmin={organization.administers}
-        onChanged={onMembersChanged}
-      />
+      <OrganizationUsersSettings organization={organization} onChanged={onMembersChanged} />
     </Stack>
   );
+}
+
+export function OrganizationGuardrailsPage() {
+  const { data: organization, error } = useOrganization();
+  if (error) return <Alert severity="error">{error}</Alert>;
+  if (organization === null) return <CircularProgress />;
+  return <OrganizationGuardrails organizationName={organization.name} heading="page" />;
+}
+
+export function OrganizationDevicesPage() {
+  const { data: organization, error } = useOrganization();
+  if (error) return <Alert severity="error">{error}</Alert>;
+  if (organization === null) return <CircularProgress />;
+  return <OrganizationDevicesSettings organizationName={organization.name} />;
 }
 
 export function OrganizationConnectorsPage() {

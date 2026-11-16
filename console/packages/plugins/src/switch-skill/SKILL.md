@@ -351,8 +351,8 @@ agent is declined the same way.
 
 ## Switch Trust guardrails
 
-A deployment may run every message through **Switch Trust**, a guardrails
-service, before it is sent. This is unrelated to the addressing policy above:
+An organization may run every message in its workspaces through **Switch
+Trust**, a guardrails service, before it is sent. This is unrelated to the addressing policy above:
 addressing refusals always reach the room; a guardrails block does not.
 
 If your content is blocked, `post_message`, `send_targeted_message`,
@@ -1004,8 +1004,10 @@ does not manage agents, so say so rather than looking for another way.
   setting `advanced_config`.
 - **`create_agent`** — create a new agent for your owner on one of those
   machines: `name`, `description`, `machine` (its id, or its exact name),
-  `provider` (`claude`, `codex`, `opencode`, `antigravity`, `cursor`,
-  `deepseek-harness`, `pi`, `mistral-vibe`, `junie`), and
+  `provider` (`claude`, `codex`, `opencode`, `antigravity`, `cursor`, and,
+  on a server that offers them, `deepseek-harness`, `pi`, `copilot`, `kiro`,
+  `mistral-vibe`, `goose`, `qwen`, `droid`, `cline` and `junie`; a server that
+  does not refuses them, naming the feature flag they need), and
   optionally `model`, `advanced_config` (e.g. `{"effort": "high"}`; keys from
   `get_advanced_config`), `instructions`, `directory`, `auto_mode` (on by
   default: the provider's automatic review runs safe actions and asks before

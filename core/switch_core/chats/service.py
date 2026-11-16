@@ -2376,7 +2376,7 @@ class ChatService:
         (`trust/attachments.py`): redacted if it redacted the text, with a
         note for anything flagged or not checked. Runs before the send's own
         transaction, so no database work waits on Switch Trust."""
-        if not await trust_is_active(self._trust_client):
+        if not await trust_is_active(self._trust_client, tenant_id):
             return body
         async with tenant_session(self.session_factory, tenant_id) as session:
             room, _ = await self.require_member(session, tenant_id, user, room_id)
@@ -2400,19 +2400,35 @@ class ChatService:
         if body.strip() and files:
             text_check, files_check = await asyncio.gather(
                 check_message(
-                    self._trust_client, role="user", content=body, room_id=room.id
+                    self._trust_client,
+                    tenant_id=tenant_id,
+                    role="user",
+                    content=body,
+                    room_id=room.id,
                 ),
                 check_attachments(
-                    self._trust_client, role="user", files=files, room_id=room.id
+                    self._trust_client,
+                    tenant_id=tenant_id,
+                    role="user",
+                    files=files,
+                    room_id=room.id,
                 ),
             )
         elif body.strip():
             text_check = await check_message(
-                self._trust_client, role="user", content=body, room_id=room.id
+                self._trust_client,
+                tenant_id=tenant_id,
+                role="user",
+                content=body,
+                room_id=room.id,
             )
         elif files:
             files_check = await check_attachments(
-                self._trust_client, role="user", files=files, room_id=room.id
+                self._trust_client,
+                tenant_id=tenant_id,
+                role="user",
+                files=files,
+                room_id=room.id,
             )
 
         if text_check is not None and (

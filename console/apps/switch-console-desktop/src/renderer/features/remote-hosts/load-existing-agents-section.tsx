@@ -24,6 +24,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
+import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { rpc } from '@renderer/lib/ipc';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { Button } from '@renderer/lib/ui/button';
@@ -41,7 +42,7 @@ import {
 import { Spinner } from '@renderer/lib/ui/spinner';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
-import { agentProviders, getProvider } from '@shared/core/providers/agent-provider-registry';
+import { getProvider, offeredAgentProviders } from '@shared/core/providers/agent-provider-registry';
 
 type LoadableAgentRow = {
   name: string;
@@ -318,7 +319,8 @@ export function LoadExistingAgentsSection({
     return () => clearInterval(id);
   }, [deepScan.isPending]);
 
-  const providerOptions = agentProviders();
+  const flags = useFeatureFlags(serverId);
+  const providerOptions = offeredAgentProviders(flags);
 
   return (
     <section className="pt-2">

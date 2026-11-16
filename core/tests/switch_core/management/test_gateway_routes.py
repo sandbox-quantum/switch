@@ -304,6 +304,41 @@ class TestManagedAgents:
         assert agent.metadata_["known_agent_options"]["auto_session"] is True
         assert agent.metadata_["known_agent_options"]["repo_dir"] == "/srv/example"
 
+    async def test_an_additional_provider_needs_its_flag_for_a_new_agent(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        offered = build_harness(session_factory)
+        owner = await add_member(session_factory, "ada")
+        async with offered.client() as client:
+            existing = await create_managed_agent(
+                client,
+                owner,
+                name="gander",
+                controller_id=None,
+                definition_body=definition("goose"),
+            )
+        assert existing.status_code == 201, existing.text
+
+        withheld = build_harness(session_factory, additional_agent_providers=False)
+        async with withheld.client() as client:
+            refused = await create_managed_agent(
+                client,
+                owner,
+                name="goose-two",
+                controller_id=None,
+                definition_body=definition("goose"),
+            )
+            edited = await client.patch(
+                f"/gateway/management/agents/{existing.json()['agent_id']}",
+                json={"definition": definition("goose", instructions="Honk.")},
+                cookies=cookies_for(owner),
+            )
+        assert refused.status_code == 422
+        assert refused.json()["error"]["code"] == "validation_error"
+        assert "additional_agent_providers" in refused.json()["error"]["message"]
+        assert edited.status_code == 200, edited.text
+        assert edited.json()["definition"]["instructions"] == "Honk."
+
     async def test_create_gives_the_generated_icon_unless_one_is_chosen(
         self, harness: Harness
     ) -> None:

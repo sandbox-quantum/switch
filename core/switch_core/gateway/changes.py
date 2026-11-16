@@ -52,7 +52,7 @@ from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.auth import (
     SocketCaller,
     authenticate_socket,
-    session_is_current,
+    session_still_enters,
 )
 from switch_core.gateway.dependencies import (
     get_config,
@@ -106,8 +106,12 @@ async def changes_socket(
     user_store: Annotated[UserStore, Depends(get_user_store)],
 ) -> None:
     async def still_current() -> bool:
-        return await session_is_current(
-            session_factory, user_store, caller.user_id, caller.session_version
+        return await session_still_enters(
+            session_factory,
+            user_store,
+            caller.user_id,
+            caller.session_version,
+            caller.tenant_id,
         )
 
     await websocket.accept()

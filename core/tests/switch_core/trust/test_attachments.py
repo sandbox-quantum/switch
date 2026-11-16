@@ -29,10 +29,12 @@ class _ContentTrustClient:
     def __init__(self) -> None:
         self.checked: list[tuple[str, str]] = []
 
-    async def is_active(self) -> bool:
+    async def is_active(self, tenant_id: str) -> bool:
         return True
 
-    async def check(self, *, role: str, content: str, room_id: str) -> TrustCheckResult:
+    async def check(
+        self, *, tenant_id: str, role: str, content: str, room_id: str
+    ) -> TrustCheckResult:
         self.checked.append((role, content))
         finding = (TrustFinding(category="test", detector_name="t", severity="high"),)
         if "FORBIDDEN" in content:
@@ -120,6 +122,7 @@ async def test_an_image_alone_carries_no_note_and_is_not_checked() -> None:
     client = _ContentTrustClient()
     verdict = await check_attachments(
         client,  # type: ignore[arg-type]
+        tenant_id="tenant-1",
         role="user",
         files=[(b"\x89PNG", "cat.png", "image/png")],
         room_id="room-1",
@@ -134,6 +137,7 @@ async def test_an_image_still_blocks_when_unchecked_files_are_not_relayed(
     monkeypatch.setattr(attachments, "RELAY_UNCHECKED_FILES", False)
     verdict = await check_attachments(
         _ContentTrustClient(),  # type: ignore[arg-type]
+        tenant_id="tenant-1",
         role="user",
         files=[(b"\x89PNG", "cat.png", "image/png")],
         room_id="room-1",
@@ -155,6 +159,7 @@ async def test_a_blocked_file_blocks_and_names_the_file() -> None:
     client = _ContentTrustClient()
     verdict = await check_attachments(
         client,  # type: ignore[arg-type]
+        tenant_id="tenant-1",
         role="user",
         files=[(b"fine", "a.txt", "text/plain"), (b"FORBIDDEN", "b.txt", "text/plain")],
         room_id="room-1",
@@ -167,6 +172,7 @@ async def test_a_blocked_file_blocks_and_names_the_file() -> None:
 async def test_a_redacted_file_blocks_because_a_file_cannot_be_redacted() -> None:
     verdict = await check_attachments(
         _ContentTrustClient(),  # type: ignore[arg-type]
+        tenant_id="tenant-1",
         role="user",
         files=[(b"my SECRET", "notes.md", "text/markdown")],
         room_id="room-1",
@@ -180,6 +186,7 @@ async def test_unreadable_flagged_and_long_files_each_carry_a_note() -> None:
     client = _ContentTrustClient()
     verdict = await check_attachments(
         client,  # type: ignore[arg-type]
+        tenant_id="tenant-1",
         role="assistant",
         files=[
             (b"\x89PNG", "cat.png", "image/png"),
@@ -211,6 +218,7 @@ async def test_a_file_padded_with_blank_space_still_says_the_rest_was_not_checke
     client = _ContentTrustClient()
     verdict = await check_attachments(
         client,  # type: ignore[arg-type]
+        tenant_id="tenant-1",
         role="user",
         files=[(b" " * TRUST_FILE_TEXT_LIMIT + b"FORBIDDEN", "pad.txt", "text/plain")],
         room_id="room-1",
@@ -229,6 +237,7 @@ async def test_unchecked_files_block_when_the_policy_says_so(
     monkeypatch.setattr(attachments, "RELAY_UNCHECKED_FILES", False)
     verdict = await check_attachments(
         _ContentTrustClient(),  # type: ignore[arg-type]
+        tenant_id="tenant-1",
         role="user",
         files=[(b"\x89PNG", "cat.png", "image/png")],
         room_id="room-1",
@@ -453,6 +462,7 @@ async def test_a_renamed_header_is_found_through_the_relationships() -> None:
     client = _ContentTrustClient()
     verdict = await check_attachments(
         client,  # type: ignore[arg-type]
+        tenant_id="tenant-1",
         role="user",
         files=[
             (
@@ -498,6 +508,7 @@ async def test_parts_of_a_word_document_that_cannot_be_read_carry_a_note() -> No
     )
     verdict = await check_attachments(
         _ContentTrustClient(),  # type: ignore[arg-type]
+        tenant_id="tenant-1",
         role="user",
         files=[(data, "memo.docx", _DOCX_TYPE)],
         room_id="room-1",
@@ -587,6 +598,7 @@ async def test_a_document_that_takes_too_long_to_read_is_not_checked(
     with caplog.at_level(logging.WARNING):
         verdict = await check_attachments(
             client,  # type: ignore[arg-type]
+            tenant_id="tenant-1",
             role="user",
             files=[(_pdf("FORBIDDEN"), "slow.pdf", "application/pdf")],
             room_id="room-1",
@@ -624,6 +636,7 @@ async def test_blocked_text_inside_a_word_document_or_a_pdf_blocks() -> None:
     client = _ContentTrustClient()
     verdict = await check_attachments(
         client,  # type: ignore[arg-type]
+        tenant_id="tenant-1",
         role="user",
         files=[
             (_docx("FORBIDDEN plan"), "plan.docx", _DOCX_TYPE),
@@ -640,6 +653,7 @@ async def test_blocked_text_inside_a_word_document_or_a_pdf_blocks() -> None:
 async def test_a_scanned_pdf_is_relayed_with_a_not_checked_note() -> None:
     verdict = await check_attachments(
         _ContentTrustClient(),  # type: ignore[arg-type]
+        tenant_id="tenant-1",
         role="user",
         files=[(_pdf(None), "scan.pdf", "application/pdf")],
         room_id="room-1",

@@ -166,6 +166,7 @@ export default function InvitationsSection({
       <CreateInvitationDialog
         open={createOpen}
         tenantId={tenantId}
+        fromOrganization={false}
         workspaceName={workspaceName}
         emailEnabled={emailEnabled}
         onClose={() => setCreateOpen(false)}

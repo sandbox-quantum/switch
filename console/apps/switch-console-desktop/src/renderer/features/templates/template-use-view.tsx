@@ -57,6 +57,7 @@ import type { OwnedMachine } from '@shared/core/managed-agents/managed-agents';
 import {
   type AgentProviderId,
   isValidProviderId,
+  providerOffered,
   providerDisplayName,
 } from '@shared/core/providers/agent-provider-registry';
 import { describeRemoteDirRefusal } from '@shared/core/remote-hosts/remote-dir';
@@ -316,8 +317,9 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
   const params = useViewParams();
   const { serverId, intoRoomId = null } = params;
   const workspaceId = workspacesStore.idOnServerInScope(serverId);
+  const serverFlags = useFeatureFlags(serverId || null);
   // Without the server's group_chats flag there are no Switch Console rooms.
-  const consoleOffered = useFeatureFlags(serverId || null).group_chats;
+  const consoleOffered = serverFlags.group_chats;
   const { navigate } = useNavigate();
   const { showModal } = useModalContext();
   const queryClient = useQueryClient();
@@ -757,7 +759,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
         // The providers its machine last reported ready; none to go by until it has a machine.
         const machine = setups[agentIndexOf(param)]?.machine;
         candidates = machine
-          ? machineProviderOptions(machine)
+          ? machineProviderOptions(machine, serverFlags)
               .filter((option) => option.ready)
               .map((option) => option.id)
           : undefined;
@@ -769,7 +771,10 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
             ? availability.data
             : localAvailability.data;
         candidates = list
-          ?.filter((a) => a.available && isValidProviderId(a.agentId))
+          ?.filter(
+            (a) =>
+              a.available && isValidProviderId(a.agentId) && providerOffered(a.agentId, serverFlags)
+          )
           .map((a) => a.agentId);
       }
       if (candidates === undefined) continue; // the list is still loading
@@ -793,6 +798,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
     localAvailability.data,
     machinesQuery.data,
     management,
+    serverFlags,
   ]);
 
   // ── Names: taken, invalid, or still unresolved ──────────────────────────
