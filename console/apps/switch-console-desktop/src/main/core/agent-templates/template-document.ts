@@ -71,6 +71,13 @@ export type ParsedAgentEntry = {
   autoMode: boolean | string | null;
   /** Run tools without asking: `true`, `false`, or a `{param}`; null for false. */
   autoApprove: boolean | string | null;
+  /**
+   * `auto_approve` and `addressing` exactly as written, undefined when absent.
+   * Version 2 lets either be a list of `if:` cases, and `addressing` be
+   * `{anyone_in: [rooms]}`, which the fields above do not hold; the Use page
+   * works out from these what a run will give the agent.
+   */
+  permissionsAsWritten: { autoApprove: unknown; addressing: unknown };
   /** The deployer's connections it is granted, as written. */
   connections: TemplateConnection[];
   /** Its working directory, or a `{param}`. Null when the template has no `directory` field. */
@@ -266,6 +273,7 @@ export function parseTemplateAgents(
         typeof agent.auto_approve === 'boolean'
           ? agent.auto_approve
           : optionalString(agent.auto_approve),
+      permissionsAsWritten: { autoApprove: agent.auto_approve, addressing: agent.addressing },
       connections: parseConnections(agent.connections, warnings, label),
       directory: optionalString(agent.directory),
       join: Array.isArray(agent.join)
