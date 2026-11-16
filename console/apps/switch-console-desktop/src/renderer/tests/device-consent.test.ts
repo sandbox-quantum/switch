@@ -106,8 +106,10 @@ describe('the ask', () => {
       )
     );
     const text = document.body.textContent ?? '';
-    expect(text).toContain('Allow Scout on this computer?');
-    expect(text).toContain('scout, an agent from Acme (switch.example.com), asks to');
+    expect(document.body.querySelector('[data-slot="dialog-title"]')?.textContent).toBe(
+      'Allow scout from Acme (switch.example.com) on this computer?'
+    );
+    expect(text).toContain('scout (shown as “Scout”) asks to:');
     expect(text).toContain('Run every command without asking you first, as you, on this computer.');
     expect(text).toContain('Work in /srv/repo on this computer.');
 
@@ -119,6 +121,39 @@ describe('the ask', () => {
     });
     expect(rpc.embeddedController.denyForAgent).not.toHaveBeenCalled();
     expect(onSuccess).toHaveBeenCalled();
+  });
+
+  it('leads with the unique name, not a display name its owner set to pass for something else', async () => {
+    await render(
+      inDialog(
+        createElement(DeviceConsentModal, {
+          serverId: 'srv',
+          ask: { ...ASK, displayName: 'IT Security Update' },
+          onSuccess: vi.fn(),
+          onClose: vi.fn(),
+        })
+      )
+    );
+    const text = document.body.textContent ?? '';
+    expect(text).toContain('Allow scout from Acme (switch.example.com) on this computer?');
+    expect(text).not.toContain('Allow IT Security Update');
+    expect(text).toContain('scout (shown as “IT Security Update”) asks to:');
+  });
+
+  it('says nothing about a display name that is the agent’s name', async () => {
+    await render(
+      inDialog(
+        createElement(DeviceConsentModal, {
+          serverId: 'srv',
+          ask: { ...ASK, displayName: null },
+          onSuccess: vi.fn(),
+          onClose: vi.fn(),
+        })
+      )
+    );
+    const text = document.body.textContent ?? '';
+    expect(text).toContain('scout asks to:');
+    expect(text).not.toContain('shown as');
   });
 
   it('records a no without allowing anything', async () => {
