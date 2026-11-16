@@ -111,7 +111,7 @@ export default function BudgetDialog({ tenantId, budget, open, onClose, onSaved 
             value={agentId}
             onChange={(e) => setAgentId(e.target.value)}
             disabled={budget !== null}
-            helperText="A workspace budget caps what all agents spend together."
+            helperText="A workspace budget limits what all agents spend together."
             fullWidth
           >
             <MenuItem value={WHOLE_WORKSPACE}>Every agent in the workspace</MenuItem>
@@ -160,7 +160,11 @@ export default function BudgetDialog({ tenantId, budget, open, onClose, onSaved 
               required
               fullWidth
               error={limitInvalid}
-              helperText={limitInvalid ? `A whole number from 1 to ${formatAmount(MAX_BUDGET_AMOUNT)}.` : undefined}
+              helperText={
+                limitInvalid
+                  ? `A whole number from 1 to ${formatAmount(MAX_BUDGET_AMOUNT)}.`
+                  : "A soft limit: work already running can go past it."
+              }
               slotProps={{ htmlInput: { min: 1, max: MAX_BUDGET_AMOUNT, step: 1 } }}
             />
             <TextField

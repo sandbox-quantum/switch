@@ -183,7 +183,8 @@ function BudgetsSection({ tenantId }: { tenantId: string }) {
             Budgets
           </Typography>
           <Typography variant="body2" color="text.secondary">
-            An agent that reaches a budget stops taking work until it resets. People are
+            A budget is a soft limit. An agent that reaches one takes no new work until it
+            resets, but work it already started finishes and can go past the limit. People are
             never stopped. No budget means no limit.
           </Typography>
         </Box>
