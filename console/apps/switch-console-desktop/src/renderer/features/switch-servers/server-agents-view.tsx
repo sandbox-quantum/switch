@@ -80,6 +80,7 @@ const ServerAgentsPanel = observer(function ServerAgentsPanel() {
     <ServerPage
       width={880}
       title="Your Agents"
+      term="agent"
       description={`Your agents created and registered on ${server?.name ?? 'this server'}.`}
     >
       {machines.data

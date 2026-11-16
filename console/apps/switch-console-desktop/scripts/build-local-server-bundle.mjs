@@ -27,6 +27,7 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createWriteStream, existsSync } from 'node:fs';
 import {
+  copyFile,
   cp,
   mkdir,
   mkdtemp,
@@ -91,6 +92,7 @@ const wanted = {
   postgresVersion: pins.postgresArchive(platform) ? pins.POSTGRES_VERSION : null,
   opensslVersion: buildsOpenssl ? pins.OPENSSL_VERSION : null,
   python: pins.SWITCH_CORE_PYTHON,
+  vcRuntime: process.platform === 'win32' ? pins.VC_RUNTIME_DLLS.join(',') : null,
   // Bumped when what the bundle holds of the gateway changes, so a bundle
   // already on disk from before is rebuilt (1: its built pages).
   gatewayUi: 1,
@@ -197,6 +199,21 @@ if (postgres) {
   }
   for (const drop of ['share/doc', 'share/man', 'share/locale']) {
     await rm(path.join(dir, drop), { recursive: true, force: true });
+  }
+  // The Windows build links against the VC++ runtime, which a clean Windows
+  // lacks. Ship it next to the binaries (app-local deployment, which the
+  // Redistributable's licence allows) so they load without it installed.
+  if (process.platform === 'win32') {
+    const system32 = path.win32.join(process.env.SystemRoot, 'System32');
+    for (const dll of pins.VC_RUNTIME_DLLS) {
+      const source = path.win32.join(system32, dll);
+      if (!existsSync(source)) {
+        throw new Error(
+          `${source} is missing; the bundled PostgreSQL needs it on a clean Windows.`
+        );
+      }
+      await copyFile(source, path.join(dir, 'bin', dll));
+    }
   }
   // Recreate the shared-library links npm packaging cannot carry.
   const linksFile = path.join(dir, 'pg-symlinks.json');

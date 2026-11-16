@@ -1,13 +1,17 @@
 import { Separator } from '../ui/separator';
+import { type GlossaryTerm, TermInfo } from './term-info';
 
 export function PageHeader({
   title,
+  term,
   description,
   children,
   back,
   sticky = false,
 }: {
   title: string;
+  /** The Switch term the page is about, explained beside its title. */
+  term?: GlossaryTerm;
   description?: React.ReactNode;
   children?: React.ReactNode;
   /**
@@ -24,7 +28,14 @@ export function PageHeader({
     <div className="flex flex-col gap-6">
       <div className="flex flex-col gap-1 [-webkit-app-region:drag]">
         {back && <div className="mb-1 flex [-webkit-app-region:no-drag]">{back}</div>}
-        <h2 className="text-xl">{title}</h2>
+        <h2 className="flex items-center gap-2 text-xl">
+          {title}
+          {term && (
+            <span className="flex [-webkit-app-region:no-drag]">
+              <TermInfo term={term} />
+            </span>
+          )}
+        </h2>
         <p className="text-sm text-foreground-muted [&_a]:[-webkit-app-region:no-drag] [&_button]:[-webkit-app-region:no-drag]">
           {description}
         </p>

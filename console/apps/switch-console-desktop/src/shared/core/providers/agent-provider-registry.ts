@@ -21,6 +21,8 @@ export type AgentProviderDefinition = {
   docUrl: string;
   /** What to tell someone to install, where the product name alone would be ambiguous. */
   cliLabel: string;
+  /** The bare product name, without the vendor `name` may carry: "Codex". */
+  shortName: string;
   /** The command a person runs on the execution machine to sign the CLI in. */
   loginCommand: string;
   /** The Switch gateway's known-agent type, sent when an agent registers. */

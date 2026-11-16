@@ -25,6 +25,7 @@ import { Fragment, useEffect, useMemo, useState } from 'react';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon';
 import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
+import { TermInfo } from '@renderer/lib/components/term-info';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { toast as showToast } from '@renderer/lib/hooks/use-toast';
 import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
@@ -311,6 +312,7 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-2">
           <h3 className="text-sm font-medium text-foreground">Messaging apps</h3>
+          <TermInfo term="messagingApp" />
           {/* What the section is for, in the order the two facts matter:
               connecting puts the agents somewhere people already are, and
               linking is what lets those agents tell who is talking to them.
