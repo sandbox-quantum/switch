@@ -12,17 +12,22 @@ import { ControllerStore } from './store';
 let dir: string;
 let bundle: string;
 let stderr: string[];
+let stdout: string[];
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'controller-main-'));
   bundle = join(dir, 'shared-host.mjs');
   writeFileSync(bundle, '');
   stderr = [];
+  stdout = [];
   vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => {
     stderr.push(String(chunk));
     return true;
   });
-  vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+  vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+    stdout.push(String(chunk));
+    return true;
+  });
 });
 
 afterEach(() => {
@@ -55,7 +60,72 @@ describe('main', () => {
     expect(await main([])).toBe(EXIT_CONFIGURATION);
     expect(await main(['--help'])).toBe(EXIT_OK);
   });
+  it('prints enrolled status as JSON', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            controller_id: 'controller-1',
+            credential: 'swcc_test',
+          }),
+          { status: 201, headers: { 'Content-Type': 'application/json' } }
+        )
+      )
+    );
 
+    try {
+      const enrollCode = await main([
+        'enroll',
+        '--server',
+        'https://switch.example.com',
+        '--code',
+        'swce_test',
+        '--name',
+        'build-box',
+        '--data-dir',
+        dir,
+      ]);
+
+      expect(enrollCode).toBe(EXIT_OK);
+
+      stdout.length = 0;
+
+      const statusCode = await main(['status', '--data-dir', dir, '--json']);
+
+      expect(statusCode).toBe(EXIT_OK);
+
+      const report = JSON.parse(stdout.join(''));
+
+      expect(report).toMatchObject({
+        dataDir: dir,
+        enrolled: true,
+        controller: {
+          id: 'controller-1',
+          name: 'build-box',
+          server: 'https://switch.example.com',
+        },
+        credential: 'present',
+        assignment: { status: 'not-pulled' },
+        agents: [],
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+  it('prints unenrolled status as JSON', async () => {
+    const code = await main(['status', '--data-dir', dir, '--json']);
+
+    expect(code).toBe(EXIT_FAILURE);
+
+    const report = JSON.parse(stdout.join(''));
+
+    expect(report).toMatchObject({
+      dataDir: dir,
+      enrolled: false,
+      agents: [],
+    });
+  });
   it('enrolls with the name and description it is given', async () => {
     const bodies: unknown[] = [];
     vi.stubGlobal(
@@ -86,6 +156,16 @@ describe('main', () => {
     vi.unstubAllGlobals();
     expect(code).toBe(EXIT_OK);
     expect(bodies).toHaveLength(1);
+    const output = stdout.join('');
+
+    expect(output).toContain('OK Enrollment successful');
+    expect(output).toContain('Controller');
+    expect(output).toContain('controller-1');
+    expect(output).toContain('build-box');
+    expect(output).toContain('https://switch.example.com');
+    expect(output).toContain('Next steps');
+    expect(output).toContain('switch-agent-controller install-service');
+    expect(output).toContain('switch-agent-controller run');
     expect(bodies[0]).toMatchObject({
       controller: { kind: 'daemon', name: 'build-box', description: 'The build box in the office' },
     });
