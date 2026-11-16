@@ -11,10 +11,11 @@ import { chatRemovedChannel, chatResetChannel } from '@shared/core/chats/chatEve
 import type { ChatAttachment } from '@shared/core/chats/chats';
 
 /**
- * A room attachment's bytes, fetched through the chat's media route (which
- * checks membership and that the file belongs to the room) and kept for the
- * session as object URLs — dropped when the person loses the room or the
- * server's chats are reset.
+ * A room image's bytes, fetched through the chat's media route (which checks
+ * membership and that the file belongs to the room) and kept for the session
+ * as object URLs — dropped when the person loses the room or the server's
+ * chats are reset. Only images are drawn from them; saving a file goes through
+ * the main process, which writes the bytes to disk without rendering them.
  */
 const media = new Map<string, Promise<string>>();
 const mediaKey = (serverId: string, roomId: string, uri: string) =>
@@ -53,11 +54,12 @@ async function saveAttachment(
   attachment: ChatAttachment
 ): Promise<void> {
   try {
-    const url = await mediaUrl(serverId, roomId, attachment.uri);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = attachmentFilename(attachment.filename);
-    link.click();
+    await rpc.chats.saveAttachment({
+      serverId,
+      roomId,
+      uri: attachment.uri,
+      filename: attachment.filename,
+    });
   } catch (caught) {
     toast({ title: failureText(caught, 'Could not download the file.'), variant: 'destructive' });
   }
