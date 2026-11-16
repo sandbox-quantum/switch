@@ -38,6 +38,7 @@ import {
   turnEndLabel,
   turnShown,
 } from './chat-activity-block';
+import { requestAsker } from './chat-approval-card';
 import { ChatAttachments } from './chat-attachments';
 import { MentionMark } from './mention-mark';
 
@@ -282,7 +283,11 @@ export const ChatTimelineView = observer(function ChatTimelineView({
         head={head}
         className={spacing(head)}
       >
-        <ChatRequests activity={activity} requests={requests} />
+        <ChatRequests
+          activity={activity}
+          requests={requests}
+          asker={requestAsker(agent, activity.agentId)}
+        />
       </AgentRow>
     );
   };
@@ -469,6 +474,7 @@ export const ChatTimelineView = observer(function ChatTimelineView({
                     name: turnAgent ? chatAgentLabel(turnAgent) : activity.agentId,
                     iconUrl: turnAgent?.iconUrl ?? null,
                   }}
+                  asker={requestAsker(turnAgent, activity.agentId)}
                   className={spacing(head)}
                 />
               );
