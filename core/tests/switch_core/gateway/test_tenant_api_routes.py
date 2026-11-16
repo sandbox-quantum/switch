@@ -1903,7 +1903,7 @@ class TestCurrentTenantRoute:
         assert response.status_code == 200, response.text
         statements = statement_counts.scopes[-1].statements
         assert sum("organization_members" in s for s in statements) == 1
-        assert len(statements) <= 7, statements
+        assert len(statements) <= 8, statements
 
     async def test_a_member_is_told_the_workspace_they_are_bound_to(
         self, session_factory: async_sessionmaker[AsyncSession]

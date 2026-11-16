@@ -1,6 +1,6 @@
 import { mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   allowInPolicy,
@@ -98,7 +98,7 @@ describe('the device policy', () => {
     });
     policy = allowInPolicy(policy, 'agent-1', { bypass: false, directory: '/srv/b' });
     policy = disallowInPolicy(policy, 'agent-1', { bypass: true, directory: '/srv/a' });
-    expect(policy.agents['agent-1']).toEqual({ directories: ['/srv/b'] });
+    expect(policy.agents['agent-1']).toEqual({ directories: [resolve('/srv/b')] });
     expect(disallowInPolicy(policy, 'agent-1', 'all')).toEqual(emptyDevicePolicy());
   });
 

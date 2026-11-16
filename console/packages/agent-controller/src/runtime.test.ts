@@ -62,6 +62,7 @@ let dir: string;
 let bundle: string;
 let runtime: InProcessRuntime;
 let home: string | undefined;
+let userProfile: string | undefined;
 let opened: { agentId: string; scope: string; filter: string; signal: AbortSignal }[];
 let attempts: number;
 let failOpens: number;
@@ -97,7 +98,9 @@ async function waitFor(condition: () => boolean, what: string): Promise<void> {
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'controller-runtime-'));
   home = process.env.HOME;
+  userProfile = process.env.USERPROFILE;
   process.env.HOME = join(dir, 'home');
+  process.env.USERPROFILE = join(dir, 'home');
   bundle = join(dir, 'fake-bundle.cjs');
   writeFileSync(bundle, FAKE_BUNDLE);
   opened = [];
@@ -118,6 +121,8 @@ afterEach(async () => {
   for (const child of children) child.kill('SIGKILL');
   children.length = 0;
   process.env.HOME = home;
+  if (userProfile === undefined) delete process.env.USERPROFILE;
+  else process.env.USERPROFILE = userProfile;
   rmSync(dir, { recursive: true, force: true });
 });
 

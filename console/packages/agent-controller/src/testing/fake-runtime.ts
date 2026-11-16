@@ -1,3 +1,4 @@
+import { isAbsolute } from 'node:path';
 import type {
   OpenAgentStream,
   ProviderReadiness,
@@ -88,7 +89,7 @@ export class FakeRuntime implements AgentRuntime {
     directory: string | null
   ): Promise<string> {
     if (directory === null) return `/data/workspaces/${name}`;
-    if (!directory.startsWith('/'))
+    if (!isAbsolute(directory))
       throw new ReasonedError('definition_invalid', `'${directory}' is not absolute.`);
     return directory;
   }
