@@ -17,6 +17,7 @@ import { useAuth } from "../../data/AuthContext";
 import { useEcosystemGraph } from "../../data/hooks";
 import { agentsInScope, listScopeOf } from "../../data/listScope";
 import { useGraphCanvasTheme } from "../graphCanvasTheme";
+import { graphTooltip } from "../graphTooltip";
 import { useLoad } from "../workspace/useLoad";
 import { graphInScope } from "./graphScope";
 
@@ -347,9 +348,7 @@ export default function EcosystemGraphPage() {
           onNodeClick={(n) => handleNodeClick(n as GraphNode)}
           nodeLabel={(n) => {
             const node = n as GraphNode;
-            return node.sublabel
-              ? `${node.label}\n${node.sublabel}`
-              : node.label;
+            return graphTooltip(node.label, node.sublabel);
           }}
           cooldownTicks={120}
           enableZoomInteraction

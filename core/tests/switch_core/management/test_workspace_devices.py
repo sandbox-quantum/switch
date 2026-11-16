@@ -35,8 +35,10 @@ from tests.switch_core.management.harness import (
     create_managed_agent,
     enroll_console,
     enroll_daemon,
+    ensure_connected,
     provider,
     report_status,
+    status_report,
 )
 
 WORKSPACE = "/gateway/management/workspace"
@@ -220,6 +222,7 @@ class TestTheWorkspaceList:
             "ok",
         )
         assert reports["codex"]["auth"] == "expired"
+        assert reports["codex"]["auth_problem"] == "token expired"
         assert reports["opencode"]["installed"] is False
         assert device["providers"] == ["claude", "codex", "opencode"]
         [agent] = listed.json()["managed_agents"]
@@ -229,6 +232,60 @@ class TestTheWorkspaceList:
             "exited with 1",
         )
         assert agent["updating"] is True
+
+    async def test_a_report_passes_on_its_named_fields_only(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        # A device's status takes keys this server doesn't know; none of them,
+        # nor more than a short run of its own words, reaches whoever sees it.
+        harness = build_harness(session_factory, controller_release=_RELEASE)
+        ada = await add_member(harness.session_factory, "ada")
+        carol = await _admin(harness.session_factory, "carol")
+        async with harness.client() as client:
+            controller, _agent = await _device_with_agent(harness, client, ada, "scout")
+            report = status_report(
+                3,
+                providers=[
+                    {
+                        **provider("claude", auth="expired"),
+                        "auth_problem": "x" * 5000,
+                        "home": "/home/ada/.config",
+                    }
+                ],
+            )
+            report["update"] = {
+                "target": _RELEASE.version,
+                "state": "failed",
+                "problem": "disk full",
+                "proxy": "http://user:secret@proxy.example.test",
+            }
+            await ensure_connected(client, controller)
+            reported = await client.put(
+                f"/v1/management/controllers/{controller.controller_id}/status",
+                json=report,
+                headers=controller.headers,
+            )
+            assert reported.status_code < 300, reported.text
+            listed = await client.get(WORKSPACE, cookies=cookies_for(carol))
+
+        [device] = listed.json()["devices"]
+        [report] = device["provider_reports"]
+        assert set(report) == {
+            "provider",
+            "installed",
+            "version",
+            "auth",
+            "auth_source",
+            "checked_at",
+            "reason",
+            "auth_problem",
+        }
+        assert len(report["auth_problem"]) == 500
+        assert device["update"] == {
+            "target": _RELEASE.version,
+            "state": "failed",
+            "problem": "disk full",
+        }
 
     async def test_a_headless_device_says_whether_it_runs_the_release(
         self, session_factory: async_sessionmaker[AsyncSession]
