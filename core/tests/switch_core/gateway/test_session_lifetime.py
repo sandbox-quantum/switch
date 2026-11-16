@@ -8,6 +8,7 @@ end. Real HTTP against real Postgres, like `test_session_version.py`.
 
 from __future__ import annotations
 
+import secrets
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
@@ -90,6 +91,7 @@ def _session_signed_in(
             None,
             session_version=0,
             auth_time=datetime.now(UTC),
+            session_id=secrets.token_urlsafe(16),
         ),
         _KEYRING,
     )

@@ -191,6 +191,10 @@ ORGANIZATION_POLICY_NAME = "organization_isolation"
 # is no workspace yet to file a count under, and an email address with no
 # account belongs to none at all. A row holds digests and counters, and lasts
 # minutes.
+#
+# `revoked_sessions` names sessions someone signed out of. A session is a
+# person's, across their workspaces, and a row holds only its random id and
+# when it can be forgotten.
 GLOBAL_TABLES = frozenset(
     {
         "cloud_machines",
@@ -208,6 +212,7 @@ GLOBAL_TABLES = frozenset(
         "service_app_credentials",
         "server_audit_events",
         "auth_attempts",
+        "revoked_sessions",
     }
 )
 

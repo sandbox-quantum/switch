@@ -5311,6 +5311,28 @@ class AuthAttempt(Base):
     )
 
 
+class RevokedSession(Base):
+    """A session someone signed out of (`/auth/logout`). Every copy of its
+    cookie carries its id (`gateway/auth.py`'s `sid` claim) and is refused
+    from then on, wherever it was copied to.
+
+    Kept until no copy of the session could still be live, `SESSION_MAX_AGE`
+    after it signed in, however often it was refreshed; the next sign-out
+    after that deletes it.
+
+    Not tenant-scoped: a session is a person's, across their workspaces, and
+    the row holds only its random id.
+    """
+
+    __tablename__ = "revoked_sessions"
+    __table_args__ = (Index("ix_revoked_sessions_expires_at", "expires_at"),)
+
+    session_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+
 class WorkspaceServiceSetting(TenantScoped, Base):
     """A workspace admin switched a catalog service on or off for the workspace.
 

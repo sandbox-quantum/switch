@@ -75,7 +75,7 @@
     "GET /gateway/service-connections/{service}/flows/authorize": "The third-party sign-in round trip: the flow is identified by its state, not a session.",
     "GET /gateway/service-connections/{service}/flows/callback": "The third-party sign-in round trip: the flow is identified by its state, not a session.",
     "POST /gateway/auth/login": "How a session is obtained.",
-    "POST /gateway/auth/logout": "Only clears the session cookie; there is nothing behind it to protect.",
+    "POST /gateway/auth/logout": "Signs out of the session the cookie belongs to, if it is one, and clears the cookie. It needs no valid session, so a client holding an expired cookie can always clear it.",
     "POST /gateway/auth/oidc/exchange": "Trades a code from an OIDC sign-in for a session, so it runs before one exists; the code is good only with the PKCE verifier its challenge was made from, and only while fresh.",
     "POST /gateway/auth/signup": "How an account, and its first session, is created."
   },

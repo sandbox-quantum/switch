@@ -53,8 +53,10 @@ from switch_core.gateway.auth import (
     operator_entered_workspace,
     password_matches_off_loop,
     require_admin,
-    session_auth_time,
+    session_signed_in,
     set_session_cookie,
+    sign_out_session,
+    signed_in_now,
     signup_refused_by_edge,
     tenants_held_by,
     verify_password_off_loop,
@@ -200,7 +202,7 @@ async def login(
         config.keyring,
         config.gateway_cookie_secure,
         await initial_tenant_claim(session_factory, user_store, user),
-        datetime.now(UTC),
+        signed_in_now(),
     )
     return _session_response(user)
 
@@ -331,7 +333,7 @@ async def signup(
             config.keyring,
             config.gateway_cookie_secure,
             TENANT_ZERO_ID,
-            datetime.now(UTC),
+            signed_in_now(),
         )
         signed_in = _session_response(user)
         machine = await _prewarm(session, session_factory, user.id, config, settings)
@@ -361,13 +363,27 @@ async def refresh(
         config.keyring,
         config.gateway_cookie_secure,
         request.state.tenant_id,
-        session_auth_time(request),
+        session_signed_in(request),
     )
     return _session_response(user)
 
 
 @router.post("/auth/logout")
-async def logout(response: Response) -> dict[str, bool]:
+async def logout(
+    request: Request,
+    response: Response,
+    session: Annotated[AsyncSession, Depends(get_system_session)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
+) -> dict[str, bool]:
+    """Sign out of this session: clear this browser's cookie, and refuse
+    every copy of it from now on, wherever it was copied to. The account's
+    other sessions are left alone; `/auth/sessions/revoke` ends them all.
+
+    Takes no session, so a client holding an expired or broken cookie can
+    always clear it, and `get_system_session` because a session belongs to no
+    workspace: the revocation is one global row (`revoked_sessions`).
+    """
+    await sign_out_session(session, request, config)
     response.delete_cookie("switch_auth", path="/")
     return {"ok": True}
 
@@ -840,7 +856,7 @@ async def change_password(
         config.keyring,
         config.gateway_cookie_secure,
         request.state.tenant_id,
-        session_auth_time(request),
+        session_signed_in(request),
     )
     return {"ok": True}
 

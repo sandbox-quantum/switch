@@ -73,6 +73,9 @@ _ROUTES_WITH_NO_TENANT_BOUND = {
     # "Sign out of all devices" moves the caller's `users` row on, which has no
     # tenant, and must work for a caller with no workspace selected.
     ("POST", "/auth/sessions/revoke"),
+    # Signing out of one session records its id in `revoked_sessions`, which
+    # belongs to no workspace, and needs no valid session to clear a cookie.
+    ("POST", "/auth/logout"),
 }
 
 # Every route that does not resolve a tenant, for any reason. `get_current_user`
