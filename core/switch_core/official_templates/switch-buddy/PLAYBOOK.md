@@ -6,16 +6,19 @@ section stands on its own: read the one you were pointed at, then act.
 
 ## Telegram private channel
 
-Bots can't create chats on Telegram. They make a group with the bot and send
-`/invite_agent @<agent-name>` and `/invite_agent @<your-name>` in it. If
-`your_account_link` is `none`, they link from
+Bots can't create chats on Telegram. They make a group with the bot. With the
+bot's Group Privacy on (BotFather's default) it sees only commands and replies to
+its own messages; they can turn it off in BotFather (`/setprivacy`, Disable)
+before adding the bot, or, if it is already in, remove it and add it back or make
+it an admin. Linking comes first: if `your_account_link` is `none`, they link from
 [Messaging apps in Settings](switchdash://open/settings?tab=messaging-apps) and send `/link_account CODE` to
-the bot; until then owner-only agents ignore them. Then they talk to the agent
-there by name. Only where the bridge has said in that group that it can see
-just the messages that tag it (privacy mode on, bot not an admin) do they
-reply to the bot's message and include the agent's name: Telegram delivers
-nothing else there. Don't say it otherwise; in a group the bot sees whole it
-is wrong.
+the bot, in its private chat or in that group, since `/invite_agent` is refused
+and owner-only agents ignore them until then. Then they send
+`/invite_agent @<agent-name>` and `/invite_agent @<your-name>` in it, and talk to
+an agent by mentioning its name or replying to its message. Only where the
+bridge has said in that group that it can see just the messages that tag it do
+they need to reply to the bot's message: Telegram delivers nothing else there.
+Don't say it otherwise.
 
 ## Teams private channel
 
