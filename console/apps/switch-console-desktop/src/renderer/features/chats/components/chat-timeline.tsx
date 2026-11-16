@@ -26,6 +26,7 @@ import {
   personTargets,
   tokensFromSpans,
 } from '../mentions';
+import { messageText } from '../message-text';
 import { hiddenStopRows } from '../stop-rows';
 import type { AgentActivity } from '../stores/chat-activity-store';
 import type { ChatTimeline, PendingSend } from '../stores/chat-timeline-store';
@@ -78,7 +79,7 @@ function MentionText({
   people: MentionPerson[];
   serverId: string;
 }) {
-  const body = message.body;
+  const body = messageText(message);
   // The server's stretches say whom each mention names; older messages are read from the text,
   // the people the message names first, so one sharing an agent's name reads as the person.
   const tokens = message.mentions.length
@@ -428,7 +429,7 @@ export const ChatTimelineView = observer(function ChatTimelineView({
                 <div className="flex flex-col gap-1">
                   {chip && <ThreadChipButton chip={chip} />}
                   <div className="text-sm leading-relaxed">
-                    <ChatMarkdown>{message.body}</ChatMarkdown>
+                    <ChatMarkdown>{messageText(message)}</ChatMarkdown>
                   </div>
                   <ChatAttachments
                     serverId={serverId}
