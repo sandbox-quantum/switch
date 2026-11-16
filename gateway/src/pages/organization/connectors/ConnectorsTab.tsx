@@ -33,6 +33,7 @@ import {
   available,
   needsConfirming,
   offConfirmation,
+  policyChanged,
   policyChip,
   policyForSwitch,
   policyOf,
@@ -133,8 +134,7 @@ export default function ConnectorsTab({
         ? await clearOrganizationService(service.slug)
         : await setOrganizationService(service.slug, setting);
     setWarning(left);
-    const label = POLICIES.find((p) => p.value === to)!.label;
-    onChanged(`${service.name}: ${label.toLowerCase()}.`);
+    onChanged(policyChanged(service.name, to));
   };
 
   const choose = async (service: OrganizationService, to: Policy) => {

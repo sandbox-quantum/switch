@@ -45,7 +45,7 @@ describe("OrganizationAuditSection", () => {
         ],
       ],
     });
-    render(<OrganizationAuditSection />);
+    render(<OrganizationAuditSection organizationName="Acme" />);
 
     const renamed = within(await screen.findByTestId("row-e1"));
     expect(renamed.getByText("Workspace renamed")).toBeTruthy();
@@ -67,7 +67,7 @@ describe("OrganizationAuditSection", () => {
       event(`e${i}`, { occurred_at: `2026-11-12T10:${String(59 - i).padStart(2, "0")}:00Z` }),
     );
     const calls = answerFetch({ [EVENTS]: [[200, full], [200, [event("older")]]] });
-    render(<OrganizationAuditSection />);
+    render(<OrganizationAuditSection organizationName="Acme" />);
 
     fireEvent.click(await screen.findByRole("button", { name: "Load older events" }));
 
@@ -79,12 +79,12 @@ describe("OrganizationAuditSection", () => {
 
   it("says nothing is recorded yet, and shows a failure as one", async () => {
     answerFetch({ [EVENTS]: [200, []] });
-    render(<OrganizationAuditSection />);
+    render(<OrganizationAuditSection organizationName="Acme" />);
     expect(await screen.findByText("Nothing recorded yet")).toBeTruthy();
     cleanup();
 
     answerFetch({ [EVENTS]: [500, { detail: "The database is unavailable" }] });
-    render(<OrganizationAuditSection />);
+    render(<OrganizationAuditSection organizationName="Acme" />);
     expect(await screen.findByText(/The database is unavailable/)).toBeTruthy();
   });
 });

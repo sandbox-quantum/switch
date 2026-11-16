@@ -146,6 +146,7 @@ describe("Organization settings › Connectors and apps", () => {
       ),
     );
     expect(screen.queryByRole("dialog")).toBeNull();
+    expect(await screen.findByText("Each workspace now decides whether to use GitHub.")).toBeTruthy();
   });
 
   it("sets the other settings from the menu beside the switch", async () => {

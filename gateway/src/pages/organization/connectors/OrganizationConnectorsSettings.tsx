@@ -1,6 +1,7 @@
-import { Alert, Box, CircularProgress, Snackbar, Tab, Tabs, Typography } from "@mui/material";
+import { Alert, Box, CircularProgress, Tab, Tabs, Typography } from "@mui/material";
 import { useCallback, useState } from "react";
 import { useSearchParams } from "react-router";
+import SuccessSnackbar from "../../../components/SuccessSnackbar";
 import { fetchCurrentOrganization, fetchOrganizationServices } from "../../../data/api";
 import { useConnectorApps } from "../../../data/hooks";
 import { useLoad } from "../../workspace/useLoad";
@@ -110,12 +111,7 @@ export default function OrganizationConnectorsSettings() {
           onChanged={changed}
         />
       )}
-      <Snackbar
-        open={toast !== null}
-        autoHideDuration={5000}
-        onClose={() => setToast(null)}
-        message={toast}
-      />
+      <SuccessSnackbar message={toast} onClose={() => setToast(null)} />
     </Box>
   );
 }
