@@ -2552,9 +2552,13 @@ async def remove_member_from_workspace(
     workspace's own route and its organization's
     (`gateway/organization_workspaces.py`). Raises `ServiceError` when a
     revocation is refused."""
-    # Locked until the removal commits, as handing the member something locks
-    # it (`accounts/transfer.py`), so no agent reaches them after the check
-    # below finds none.
+    # The admins' rows first, then the member's: every removal takes them in
+    # that order, so two admins removing themselves at once queue on the
+    # first lock rather than each holding one the other waits on. The
+    # member's row is locked until the removal commits, as handing the member
+    # something locks it (`accounts/transfer.py`), so no agent reaches them
+    # after the check below finds none.
+    admins = await user_store.lock_admins(session)
     membership = await session.get(
         TenantMember,
         (tenant_id, user_id),
@@ -2565,9 +2569,8 @@ async def remove_member_from_workspace(
         raise HTTPException(status_code=404, detail="Not a member of this workspace")
     await _refuse_organization_admin(session, user_store, tenant_id, user_id)
 
-    if membership.role == "admin":
-        if await user_store.lock_admins(session) <= 1:
-            raise HTTPException(status_code=409, detail="Cannot remove the last admin")
+    if membership.role == "admin" and admins <= 1:
+        raise HTTPException(status_code=409, detail="Cannot remove the last admin")
 
     owned_agents = await revocation.agent_store.get_by_owner(session, user_id)
     if owned_agents:

@@ -758,11 +758,13 @@ class UserStore:
         what makes that hold when two admins act at once: without it, each of
         two concurrent demotions counts two admins and both commit. With it,
         the second waits for the first, and its count leaves out the row the
-        first demoted or removed.
+        first demoted or removed. In user order, so two callers lock the rows
+        in the same order.
         """
         result = await session.scalars(
             select(TenantMember.user_id)
             .where(TenantMember.role == "admin")
+            .order_by(TenantMember.user_id)
             .with_for_update()
         )
         return len(result.all())
