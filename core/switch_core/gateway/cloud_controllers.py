@@ -92,6 +92,11 @@ class CloudEnrollment(Protocol):
         the old box works again. Already revoked is fine. The caller commits."""
         ...
 
+    def announce_revoked(self, controller_ids: list[str]) -> None:
+        """Tell every process these controllers are revoked, so each drops
+        their streams at once. After the revoking transaction commits."""
+        ...
+
 
 _enrollment: CloudEnrollment | None = None
 

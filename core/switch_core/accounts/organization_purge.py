@@ -103,7 +103,13 @@ from switch_core.db.rls_ddl import (
     organization_scoped_tables,
 )
 from switch_core.db.session_scope import organization_session, tenant_session
-from switch_core.db.stores.hosted_machine_store import CloudMachineStore, bump_revision
+from switch_core.db.stores.hosted_machine_store import (
+    CloudMachineStore,
+    RevokeController,
+    bump_revision,
+    revoke_box_controllers,
+    workspaces_on,
+)
 from switch_core.db.stores.messaging_install_store import (
     INSTALL_ACTIVE,
     INSTALL_DISCONNECTED,
@@ -216,6 +222,11 @@ class OrganizationPurge:
     # import it.
     controller_removed: Callable[[str], None]
     admin_email: str
+    # Revokes a hosted agents v2 box's controller as its machine is torn down
+    # (its disk is kept, and holds the credential). Agent management's,
+    # handed over by the wiring; None where it doesn't run, when the purge's
+    # deletion of the workspace's rows removes the credential anyway.
+    revoke_box_controller: RevokeController | None = None
 
     async def find(self, reference: str) -> str:
         """The id of the organization `reference` names, by id, slug or
@@ -556,12 +567,32 @@ class OrganizationPurge:
                 machine = await store.locked(session, machine_id)
                 if machine is None or machine.state == "deleted":
                     continue
-                if machine.desired_state != "deleted":
+                newly = machine.desired_state != "deleted"
+                if newly:
                     machine.desired_state = "deleted"
                     bump_revision(machine, datetime.now(UTC))
                     logger.info("Set cloud machine %s to be deleted", machine_id)
                 state = machine.state
                 await session.commit()
+            if newly and self.revoke_box_controller is not None:
+                # Never allowed to stop a purge: the workspace's rows, the
+                # credential among them, are deleted later anyway.
+                try:
+                    revoked = await revoke_box_controllers(
+                        self.session_factory,
+                        machine,
+                        await workspaces_on(self.session_factory, machine_id),
+                        self.revoke_box_controller,
+                    )
+                except Exception as exc:
+                    logger.error(
+                        "Could not revoke cloud machine %s's box controllers (%s)",
+                        machine_id,
+                        type(exc).__name__,
+                    )
+                    revoked = []
+                for controller_id in revoked:
+                    self.controller_removed(controller_id)
             outcome.waiting.append(
                 f"Cloud machine {machine_id} is being torn down (now {state})."
             )

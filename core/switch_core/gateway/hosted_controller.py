@@ -28,12 +28,14 @@ from switch_core.db.stores.hosted_machine_store import (
     ever_hosted,
     idle_sleeping,
     retention_expired,
+    revoke_box_controllers,
     workspace_on,
     workspaces_on,
 )
 from switch_core.gateway.cloud_controllers import (
     CloudEnrollmentUnavailable,
     clear_spent_codes,
+    cloud_enrollment,
     controller_machine_idle,
     controller_reports,
     enrollment_code,
@@ -225,6 +227,24 @@ def _needs_sweep(machine: CloudMachine, now: datetime, idle_minutes: int) -> boo
     )
 
 
+async def _revoke_box_controllers(
+    factory: async_sessionmaker[AsyncSession],
+    machine: CloudMachine,
+    workspaces: list[WorkspaceOnMachine],
+) -> None:
+    """A deleted box's controllers are revoked (`revoke_box_controllers`).
+    Without agent management no controller could have enrolled."""
+    try:
+        enrollment = cloud_enrollment()
+    except CloudEnrollmentUnavailable:
+        return
+    revoked = await revoke_box_controllers(
+        factory, machine, workspaces, enrollment.revoke_machine_controller
+    )
+    # Every process drops the stream at once, as a purge's revoke does.
+    enrollment.announce_revoked(revoked)
+
+
 async def _sweep(
     session: AsyncSession,
     machine: CloudMachine,
@@ -232,6 +252,7 @@ async def _sweep(
     idle_minutes: int,
     retention_days: int,
     now: datetime,
+    factory: async_sessionmaker[AsyncSession],
 ) -> None:
     store = CloudMachineStore()
     if admin_stopped(machine):
@@ -265,6 +286,7 @@ async def _sweep(
     elif machine.state in {"retained", "error"} and retention_expired(machine, now):
         machine.desired_state = "deleted"
         bump_revision(machine, now)
+        await _revoke_box_controllers(factory, machine, workspaces)
     elif _errored_unclaimed(machine, now, idle_minutes) and not ever_hosted(workspaces):
         await store.release_if_empty(
             machine, workspaces, retention_days=retention_days, now=now
@@ -491,6 +513,7 @@ async def sweep_hosted_machines(
                 config.hosted_idle_stop_minutes,
                 config.hosted_disk_retention_days,
                 now,
+                factory,
             )
         await session.commit()
     if v2 and _codes_due(now):

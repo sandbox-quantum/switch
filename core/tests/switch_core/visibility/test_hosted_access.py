@@ -769,7 +769,13 @@ async def test_the_clean_up_sweep_leaves_a_paused_box_as_it_is(
         machine = await session.get(CloudMachine, machine_id)
         workspaces = await workspaces_on(rls_harness.owner, machine_id)
         await _sweep(
-            session, machine, workspaces, idle_minutes=1, retention_days=7, now=later
+            session,
+            machine,
+            workspaces,
+            idle_minutes=1,
+            retention_days=7,
+            now=later,
+            factory=rls_harness.owner,
         )
         await session.commit()
     machine = await _machine(rls_harness, machine_id)
@@ -994,7 +1000,13 @@ async def test_the_clean_up_sweep_leaves_a_turned_off_box_as_it_is(
         machine = await session.get(CloudMachine, machine_id)
         workspaces = await workspaces_on(rls_harness.owner, machine_id)
         await _sweep(
-            session, machine, workspaces, idle_minutes=1, retention_days=7, now=later
+            session,
+            machine,
+            workspaces,
+            idle_minutes=1,
+            retention_days=7,
+            now=later,
+            factory=rls_harness.owner,
         )
         await session.commit()
     machine = await _machine(rls_harness, machine_id)

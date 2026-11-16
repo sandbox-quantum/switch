@@ -243,6 +243,31 @@ def await_reconnect(machine: CloudMachine) -> None:
 RevokeController = Callable[[AsyncSession, str, str], Awaitable[None]]
 
 
+async def revoke_box_controllers(
+    factory: async_sessionmaker[AsyncSession],
+    machine: CloudMachine,
+    workspaces: list[WorkspaceOnMachine],
+    revoke: RevokeController,
+) -> list[str]:
+    """A hosted agents v2 box being deleted keeps its disk, and the disk holds
+    its controller credential, so each of its workspace controllers is
+    revoked, in its own workspace: Core forgets the credential and its own
+    copy of the sealed logins, and a copy on the disk is refused. Already
+    revoked is fine. A v1 machine's disk goes with it, so it's left as before.
+    Returns the controller ids it revoked. Each workspace commits its own."""
+    if machine.backend != "box":
+        return []
+    revoked: list[str] = []
+    for workspace in workspaces:
+        if workspace.controller_id is None:
+            continue
+        async with tenant_session(factory, workspace.tenant_id) as scoped:
+            await revoke(scoped, workspace.tenant_id, workspace.controller_id)
+            await scoped.commit()
+        revoked.append(workspace.controller_id)
+    return revoked
+
+
 class CloudMachineStore:
     async def get(self, session: AsyncSession, machine_id: str) -> CloudMachine | None:
         return await session.get(CloudMachine, machine_id, populate_existing=True)

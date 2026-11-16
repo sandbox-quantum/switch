@@ -513,3 +513,103 @@ async def test_a_failed_account_is_recorded_and_retried_after_the_organization_w
     assert retried.finished
     assert [account.id for account in retried.deleted_accounts] == [dave]
     assert await _count(session_factory, User, User.id == dave) == 0
+
+
+@pytest.mark.parametrize(("backend", "revoked"), [("box", True), ("vm", False)])
+async def test_tearing_down_a_box_machine_revokes_its_controller(
+    session_factory: async_sessionmaker[AsyncSession], backend: str, revoked: bool
+) -> None:
+    """A hosted agents v2 box keeps its disk, which holds its controller
+    credential: tearing its machine down revokes the controller at once, and
+    every process is told. A v1 machine is torn down as before."""
+    import dataclasses
+    from datetime import UTC, datetime
+
+    from tests.switch_core.hosted_machine_helpers import link_controller
+
+    organization_id, (workspace,) = await _organization(session_factory, 1)
+    alice = await _person(session_factory, "alice", [workspace], organization_id)
+    async with tenant_session(session_factory, workspace) as session:
+        machine = await seed_machine(
+            session,
+            owner_id=alice,
+            state="ready",
+            desired_state="running",
+            stop_reason=None,
+            revision=3,
+        )
+        machine.backend = backend
+        await add_workspace(session, machine, created_at=datetime.now(UTC))
+        controller = await link_controller(session, machine)
+        await session.commit()
+        controller_id = controller.id
+    calls: list[tuple[str, str]] = []
+
+    async def revoke(_session: AsyncSession, tenant_id: str, cid: str) -> None:
+        calls.append((tenant_id, cid))
+
+    purge, _installer, signals = _purge(session_factory)
+    purge = dataclasses.replace(purge, revoke_box_controller=revoke)
+
+    first = await purge.run(await purge.plan(organization_id), "TICKET-3")
+    assert not first.finished  # still waits on the teardown, as before
+    removed = [
+        data["controller_id"]
+        for name, data in signals.published
+        if name == "controller.revoked"
+    ]
+    if revoked:
+        assert calls == [(workspace, controller_id)]
+        assert removed == [controller_id]
+    else:
+        assert calls == []
+        assert removed == []
+
+    # A second run while it waits doesn't revoke it again.
+    await purge.run(await purge.plan(organization_id), "TICKET-3")
+    assert len(calls) == (1 if revoked else 0)
+
+
+async def test_a_box_revoke_that_fails_never_stops_a_purge(
+    session_factory: async_sessionmaker[AsyncSession],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The revoke is extra care: if it fails, the purge goes on as before,
+    and the workspace's rows, the credential among them, still go later."""
+    import dataclasses
+    import logging
+    from datetime import UTC, datetime
+
+    from tests.switch_core.hosted_machine_helpers import link_controller
+
+    organization_id, (workspace,) = await _organization(session_factory, 1)
+    alice = await _person(session_factory, "alice", [workspace], organization_id)
+    async with tenant_session(session_factory, workspace) as session:
+        machine = await seed_machine(
+            session,
+            owner_id=alice,
+            state="ready",
+            desired_state="running",
+            stop_reason=None,
+            revision=3,
+        )
+        machine.backend = "box"
+        await add_workspace(session, machine, created_at=datetime.now(UTC))
+        await link_controller(session, machine)
+        await session.commit()
+        machine_id = machine.id
+
+    async def revoke(*_args: Any) -> None:
+        raise RuntimeError("token tok-secret broke")
+
+    purge, _installer, signals = _purge(session_factory)
+    purge = dataclasses.replace(purge, revoke_box_controller=revoke)
+    caplog.set_level(logging.ERROR, logger="switch_core.accounts.organization_purge")
+
+    first = await purge.run(await purge.plan(organization_id), "TICKET-5")
+
+    assert not first.finished  # waits on the teardown, as before
+    assert any(machine_id in waiting for waiting in first.waiting)
+    assert not [n for n, _ in signals.published if n == "controller.revoked"]
+    (line,) = [r for r in caplog.records if "box controllers" in r.getMessage()]
+    assert "secret" not in line.getMessage() and "(RuntimeError)" in line.getMessage()

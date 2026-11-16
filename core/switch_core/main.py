@@ -203,6 +203,7 @@ from switch_core.delivery.router import (
 from switch_core.feature_flags import AGENT_MANAGEMENT, SWITCH_BUDDY
 from switch_core.gateway.app import create_gateway_app
 from switch_core.gateway.auth import hash_password
+from switch_core.gateway.cloud_controllers import revoke_machine_controller
 from switch_core.gateway.hosted_sweep import start_hosted_sweep
 from switch_core.gateway.invite_mail import SmtpInviteMailer
 from switch_core.gateway.ui import GatewayUi
@@ -1598,6 +1599,9 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
         signals=purge_signals,
         controller_removed=controller_removal_publisher(purge_signals),
         admin_email=config.gateway_admin_email,
+        revoke_box_controller=(
+            revoke_machine_controller if management is not None else None
+        ),
     )
     gateway_app.state.organization_apps = organization_apps
     if config.members_service_url:

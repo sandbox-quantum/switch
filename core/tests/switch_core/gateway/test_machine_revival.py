@@ -20,6 +20,8 @@ from switch_core.db.models import (
     TenantMember,
     User,
 )
+from switch_core.db.session_scope import tenant_session
+from switch_core.db.stores.agent_controller_store import AgentControllerStore
 from switch_core.db.stores.hosted_machine_store import (
     CloudMachineConflict,
     CloudMachineStore,
@@ -325,3 +327,144 @@ async def test_a_v0_claim_marks_a_new_machine_as_a_box(harness: Harness) -> None
     # Without box provisioning, a new machine is a v1 one, as every row before it.
     other = await add_member(factory, "bob")
     assert (await _claim(factory, other, revoke=None)).backend == "vm"
+
+
+async def _expire_retention(harness: Harness, machine_id: str) -> None:
+    """Run the sweep's retention step on a machine retained past its date."""
+    from switch_core.db.stores.hosted_machine_store import workspaces_on
+    from switch_core.gateway.hosted_controller import _sweep
+
+    factory = harness.session_factory
+    now = datetime.now(UTC)
+    async with factory() as session:
+        machine = await CloudMachineStore().locked(session, machine_id)
+        assert machine is not None
+        machine.state = "retained"
+        machine.desired_state = "retained"
+        machine.retain_until = now - timedelta(minutes=1)
+        await session.commit()
+    async with factory() as session:
+        machine = await CloudMachineStore().locked(session, machine_id)
+        assert machine is not None
+        await _sweep(
+            session,
+            machine,
+            await workspaces_on(factory, machine_id),
+            0,
+            7,
+            now,
+            factory,
+        )
+        await session.commit()
+
+
+@pytest.mark.usefixtures("hosted_v2_on")
+async def test_a_box_deleted_at_retention_has_its_controller_revoked(
+    harness: Harness,
+) -> None:
+    """A deleted box keeps its disk, which holds its controller credential and
+    sealed logins: deleting the machine revokes the controller, so Core
+    forgets the credential and a copy left on the disk is refused."""
+    factory = harness.session_factory
+    owner = await add_member(factory, "ada")
+    machine_id, controller_id = await _enrolled_machine(harness, owner)
+    async with factory() as session:
+        controller = await session.get(AgentController, controller_id)
+        assert controller is not None and controller.api_key_id is not None
+        old_key = controller.api_key_id
+        tenant_id = controller.tenant_id
+    controllers = AgentControllerStore()
+    async with tenant_session(factory, tenant_id) as scoped:
+        await controllers.put_sealed_login(
+            scoped,
+            tenant_id,
+            controller_id,
+            "claude",
+            {"sealed": "made-up"},
+            owner.id,
+        )
+        await scoped.commit()
+
+    await _expire_retention(harness, machine_id)
+
+    async with factory() as session:
+        machine = await session.get(CloudMachine, machine_id)
+        assert machine is not None and machine.desired_state == "deleted"
+        controller = await session.get(
+            AgentController, controller_id, populate_existing=True
+        )
+        assert controller is not None and controller.revoked_at is not None
+        assert controller.revoked_by is None
+        assert await session.get(ApiKey, old_key) is None
+    async with tenant_session(factory, tenant_id) as scoped:
+        assert await controllers.sealed_logins(scoped, tenant_id, controller_id) == []
+    async with factory() as session:
+        controller = await session.get(AgentController, controller_id)
+        assert controller is not None
+        first_revoked_at = controller.revoked_at
+
+    # A second pass over it is a no-op: no error, not revoked again.
+    await _expire_retention(harness, machine_id)
+    async with factory() as session:
+        controller = await session.get(
+            AgentController, controller_id, populate_existing=True
+        )
+        assert controller is not None and controller.revoked_at == first_revoked_at
+
+
+@pytest.mark.usefixtures("hosted_v2_on")
+async def test_a_box_deleted_at_retention_with_its_controller_already_revoked(
+    harness: Harness,
+) -> None:
+    """Already revoked (a pause, say): deleting the machine is a no-op for it,
+    apart from clearing a pause's mark, as any later revoke does."""
+    factory = harness.session_factory
+    owner = await add_member(factory, "ada")
+    machine_id, controller_id = await _enrolled_machine(harness, owner)
+    async with factory() as session:
+        controller = await session.get(AgentController, controller_id)
+        assert controller is not None
+        tenant_id = controller.tenant_id
+    async with tenant_session(factory, tenant_id) as scoped:
+        await harness.management.service.revoke_controllers(
+            scoped, tenant_id, [controller_id], revoked_by="pause"
+        )
+        await scoped.commit()
+    async with factory() as session:
+        controller = await session.get(AgentController, controller_id)
+        assert controller is not None and controller.revoked_at is not None
+        revoked_at = controller.revoked_at
+
+    await _expire_retention(harness, machine_id)
+
+    async with factory() as session:
+        controller = await session.get(
+            AgentController, controller_id, populate_existing=True
+        )
+        assert controller is not None
+        assert controller.revoked_at == revoked_at  # not revoked again
+        assert controller.revoked_by is None  # the pause's mark is cleared
+
+
+@pytest.mark.usefixtures("hosted_v2_on")
+async def test_a_v1_machine_deleted_at_retention_keeps_its_controller_as_before(
+    harness: Harness,
+) -> None:
+    """A v1 machine's disk goes with it, so its deletion is as before: no
+    revoke here."""
+    factory = harness.session_factory
+    owner = await add_member(factory, "ada")
+    machine_id, controller_id = await _enrolled_machine(harness, owner)
+    async with factory() as session:
+        machine = await CloudMachineStore().locked(session, machine_id)
+        assert machine is not None
+        machine.backend = "vm"
+        await session.commit()
+
+    await _expire_retention(harness, machine_id)
+
+    async with factory() as session:
+        controller = await session.get(
+            AgentController, controller_id, populate_existing=True
+        )
+        assert controller is not None and controller.revoked_at is None

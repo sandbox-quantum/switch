@@ -91,6 +91,9 @@ class FakeEnrollment:
         #: Codes a test has made unusable (expired or used), and codes Core retired.
         self.dead: set[str] = set()
         self.retired: list[str] = []
+        #: Controllers Core revoked, and those it announced.
+        self.revoked: list[str] = []
+        self.announced: list[str] = []
 
     async def machine_enrollment_code(
         self, session: AsyncSession, workspace: MachineWorkspace, now: datetime
@@ -107,6 +110,14 @@ class FakeEnrollment:
         self, session: AsyncSession, code: str
     ) -> None:
         self.retired.append(code)
+
+    async def revoke_machine_controller(
+        self, session: AsyncSession, tenant_id: str, controller_id: str
+    ) -> None:
+        self.revoked.append(controller_id)
+
+    def announce_revoked(self, controller_ids: list[str]) -> None:
+        self.announced.extend(controller_ids)
 
 
 @dataclass
