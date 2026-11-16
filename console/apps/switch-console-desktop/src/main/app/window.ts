@@ -1,6 +1,7 @@
 import { join } from 'node:path';
 import { app, BrowserWindow, dialog } from 'electron';
 import appIcon from '@/assets/images/switch-console/icon-dock.png?asset';
+import { roomEmbedOrigin } from '@main/core/switch-rooms/room-embed-grants';
 import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
 import { registerExternalLinkHandlers, registerGuestLinkHandlers } from '@main/utils/externalLinks';
@@ -117,7 +118,13 @@ function constrainEmbeddedWebviews(window: BrowserWindow): void {
   const guestPreload = join(import.meta.dirname, '../preload/mattermost-guest.mjs');
 
   window.webContents.on('will-attach-webview', (event, webPreferences, params) => {
-    const refusal = constrainGuest(webPreferences, params, guestPreload, DEVTOOLS_ENABLED);
+    const refusal = constrainGuest(
+      webPreferences,
+      params,
+      guestPreload,
+      DEVTOOLS_ENABLED,
+      roomEmbedOrigin
+    );
     if (refusal !== null) {
       log.warn('Blocked a webview attach', {
         reason: refusal,
