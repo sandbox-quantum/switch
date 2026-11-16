@@ -98,7 +98,10 @@ vi.mock('@main/core/locations/location-manager', () => ({
 }));
 vi.mock('./agent-events', () => ({ agentEvents: { _emit: vi.fn() } }));
 vi.mock('@main/core/telemetry/telemetry-service', () => ({ trackEvent: vi.fn() }));
-vi.mock('@main/lib/logger', () => ({ log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
+vi.mock('@main/lib/logger', () => {
+  const log = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), child: () => log };
+  return { log };
+});
 vi.mock('@main/db/client', () => ({
   db: {
     select: () => ({
