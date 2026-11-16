@@ -1076,9 +1076,9 @@ class MessageRouter:
         and an earlier run of the same cause wrote it and owed what it owed.
 
         Raises `MessageTooLong`, before anything is read or written, for a
-        body longer than any message may be.
+        body longer than any row may be (`SendLimits.require_row_length`).
         """
-        self.send_limits.require_length(message.body)
+        self.send_limits.require_row_length(message.body)
         reads = await RoomReads.load(
             session,
             services=self.services,

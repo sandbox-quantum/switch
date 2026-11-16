@@ -1441,6 +1441,10 @@ class CollaborationCore:
             return None
 
         content = self._adapter.translate_inbound(msg.content)
+        # What the person wrote, which is what the length limit is held to:
+        # the `@name`, notes and Switch Trust annotation added below are
+        # Switch's, and the room makes space for them (`send_limits.py`).
+        authored = content
         if mention_target is not None and (
             mention_regex(mention_target).search(strip_emphasis(content)) is None
         ):
@@ -1527,6 +1531,7 @@ class CollaborationCore:
                         thread_root_id=thread_root_id,
                         metered=True,
                         extra_content=_inbound_extra_content(msg, check),
+                        authored=authored,
                     )
             except MessageRefused as refused:
                 await self._tell_message_refused(msg, refused, transport_room_id)
@@ -1684,6 +1689,7 @@ class CollaborationCore:
                         ),
                         metered=True,
                         extra_content=_inbound_extra_content(msg, caption_check),
+                        authored=authored if index == 0 else None,
                     )
                 if event_id is None:
                     logger.error(
