@@ -5,6 +5,7 @@ import type {
 import type { TemplateRunAgent } from '@main/core/switch-servers/gateway-client';
 import type { OwnedMachine } from '@shared/core/managed-agents/managed-agents';
 import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
+import { consoleAddressing, consoleAutoApprove } from './agent-permissions';
 import { hasPlaceholder, interpolate, type Values } from './use-template-model';
 
 /**
@@ -150,10 +151,6 @@ export function runAgent(params: {
     typeof entry.autoMode === 'string'
       ? values[entry.autoMode.replace(/^\{|\}$/g, '')] === true
       : entry.autoMode !== false;
-  const autoApprove =
-    typeof entry.autoApprove === 'string'
-      ? values[entry.autoApprove.replace(/^\{|\}$/g, '')] === true
-      : entry.autoApprove === true;
   const repo = entry.repoUrl ? interpolate(entry.repoUrl, values) : null;
   const instructions = repo
     ? `${filled(entry.instructions)}\n\nYou work on the repository ${repo}. If your working directory is not a clone of it yet, clone ${repo} into it first.`
@@ -174,9 +171,9 @@ export function runAgent(params: {
     >,
     isolation: isolation === 'isolated' ? 'isolated' : 'shared',
     autoMode,
-    autoApprove,
+    autoApprove: consoleAutoApprove(entry, values),
     directory: directory === `${AGENTS_DIR}/${name}` ? null : directory,
-    addressing: entry.addressing ?? 'owner-agents',
+    addressing: consoleAddressing(entry),
     connections: connectionsFor(entry, values),
   };
 }
