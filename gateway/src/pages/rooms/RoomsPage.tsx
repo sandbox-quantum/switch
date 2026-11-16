@@ -168,7 +168,7 @@ export default function RoomsPage() {
     return passed ? { severity: "warning", text: passed } : null;
   });
 
-  // A member's list is narrowed to their own rooms, as Overview counts them.
+  // A member's list is narrowed to their own rooms, as Home counts them.
   // Narrowing is a view, not a permission.
   const scope: ListScope = listScopeOf(capabilities);
   const workspace = session?.tenant?.name ?? "this workspace";
