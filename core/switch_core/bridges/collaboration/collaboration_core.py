@@ -70,6 +70,7 @@ from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.bridge_message_map_store import BridgeMessageMapStore
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
+from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.room_store import (
     LINKED_CHANNEL_NAME_KEY,
     RoomStore,
@@ -342,6 +343,7 @@ class CollaborationCore:
         self._external_user_store = external_user_store
         self._user_store = UserStore()
         self._bridge_message_map_store = bridge_message_map_store
+        self._message_store = MessageStore()
         self._agent_store = agent_store
         self._client_store = client_store
         self._room_service = room_service
@@ -1385,6 +1387,52 @@ class CollaborationCore:
             external_user_id=sender_id, external_username=sender_name
         )
 
+    async def _reply_target(
+        self, room_id: str, thread_root_id: str | None, content: str
+    ) -> str | None:
+        """The agent a reply to one of the app's messages addresses, or None.
+
+        On a platform where a reply answers one message (Telegram), a reply to
+        an agent's message is said to that agent, as a mention would be, and
+        in a group whose bot sees only replies and commands it is the one way
+        to say anything to it. A message that names an agent of the room is
+        left to that, and a reply to something no agent posted (a notice, or
+        a message Switch never mapped) goes to the room's agent when it has
+        exactly one, the rule a mention of the bot follows.
+        """
+        body = strip_emphasis(content)
+        async with self._session_factory() as session:
+            agents = [
+                agent
+                for agent in [
+                    await self._agent_store.get(session, agent_id)
+                    for agent_id in await self._room_store.get_agent_ids(
+                        session, room_id
+                    )
+                ]
+                if agent is not None
+            ]
+            if any(mention_regex(agent.name).search(body) for agent in agents):
+                return None
+            replied = (
+                await self._message_store.get_by_transport_event_id(
+                    session, thread_root_id
+                )
+                if thread_root_id is not None
+                else None
+            )
+        author = next(
+            (
+                agent
+                for agent in agents
+                if replied is not None and agent.client_id == replied.sender_client_id
+            ),
+            None,
+        )
+        if author is not None:
+            return author.name
+        return agents[0].name if len(agents) == 1 else None
+
     async def _handle_lobby_message(self, msg: InboundMessage) -> None:
         """The Slack app's DM ("lobby") is deprecated for talking to agents.
         Reply with a pointer to the onboarding docs instead of routing."""
@@ -1427,7 +1475,7 @@ class CollaborationCore:
             return None
         # An answer typed in words, or a word that a card is waiting. It does
         # not consume the message: the room still sees what was said.
-        await self._handle_text_answer(msg)
+        answered_card = await self._handle_text_answer(msg)
         room_ids = self._channel_to_room.get(msg.channel_id)
         if room_ids is None:
             lock = self._channel_locks.setdefault(msg.channel_id, asyncio.Lock())
@@ -1467,16 +1515,6 @@ class CollaborationCore:
             return None
 
         content = self._adapter.translate_inbound(msg.content)
-        if mention_target is not None and (
-            mention_regex(mention_target).search(strip_emphasis(content)) is None
-        ):
-            content = f"@{mention_target} {content}"
-        logger.debug(
-            "[BRIDGE-IN] writing to room=%s as human=%s attachments=%d",
-            transport_room_id,
-            human_actor.transport_user_id,
-            len(msg.attachments),
-        )
 
         # Bridge threads inbound: if the external post replied into a thread,
         # resolve that external root to the room event we bridged for it.
@@ -1490,6 +1528,22 @@ class CollaborationCore:
                     msg.root_id,
                     transport_room_id,
                 )
+
+        # A reply to the app's own message answers whoever posted it. An answer
+        # to a card is the card's, not a message to its agent.
+        if mention_target is None and msg.replies_to_app and not answered_card:
+            mention_target = await self._reply_target(room_id, thread_root_id, content)
+
+        if mention_target is not None and (
+            mention_regex(mention_target).search(strip_emphasis(content)) is None
+        ):
+            content = f"@{mention_target} {content}"
+        logger.debug(
+            "[BRIDGE-IN] writing to room=%s as human=%s attachments=%d",
+            transport_room_id,
+            human_actor.transport_user_id,
+            len(msg.attachments),
+        )
 
         # An attachment the platform offered but we could not relay must be
         # visible in the room, not swallowed. Append it to the message body so
@@ -2831,20 +2885,22 @@ class CollaborationCore:
             body=card.content["body"],
         )
 
-    async def _handle_text_answer(self, msg: InboundMessage) -> None:
-        """An answer to an approval card, typed rather than pressed.
+    async def _handle_text_answer(self, msg: InboundMessage) -> bool:
+        """An answer to an approval card, typed rather than pressed, and
+        whether the message was one, taken or refused.
 
         Runs alongside the relay rather than instead of it: an answer is also
         something the person said in the channel, and the room sees it either
         way.
         """
         if self._approval_answers is None:
-            return
+            return False
         answered = await self._approval_answers.for_text(msg)
         if isinstance(answered, Refused):
             await self._tell_refused(msg, answered, thread_ref=answered.card_ref)
         elif answered is None:
             await self._tell_if_waiting(msg)
+        return answered is not None
 
     async def _tell_if_waiting(self, msg: InboundMessage) -> None:
         """Tell the sender, once, that an open card is holding the agent up.
@@ -4017,6 +4073,7 @@ class CollaborationCore:
         if external_post_id is None:
             await self._release_outbound(transport_event_id)
             return
+        further_post_ids = self._adapter.take_further_refs(external_post_id)
         async with tenant_session(
             self._session_factory, self._bridge_tenant_id
         ) as session:
@@ -4025,6 +4082,7 @@ class CollaborationCore:
                 bridge_id=self._bridge_id,
                 transport_event_id=transport_event_id,
                 external_post_id=external_post_id,
+                further_post_ids=further_post_ids,
             )
             await session.commit()
 

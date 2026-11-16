@@ -728,7 +728,7 @@ def _approval_footer(
         # reads as one fixed string to type, and the number in it is the whole
         # decision.
         return (
-            f"Reply with {markup.code(handle)} and your choice, "
+            f"{markup.reply_with(markup.code(handle))} and your choice, "
             f"e.g. {markup.code(f'{handle} 1')}."
         )
     if request.state == "submitting":
@@ -993,7 +993,7 @@ def _questions_footer(
             # The buttons are the answer; the typed form is for a client that
             # does not draw them, so it is said once and briefly.
             return f"Tap an answer, or reply {example}."
-        start = f"Reply with {markup.code(handle)}"
+        start = markup.reply_with(markup.code(handle))
         if len(content.questions) > 1:
             return (
                 f"{start} and your answers, e.g. {example} "

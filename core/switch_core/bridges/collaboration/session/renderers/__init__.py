@@ -436,6 +436,13 @@ class Markup:
         """
         return self.code(text)
 
+    def reply_with(self, handle: str) -> str:
+        """How a card's instruction to answer starts, given its marked
+        `handle`: "Reply with `R42`". A platform where an answer only reaches
+        Switch as a reply to the card says so: in a Telegram group the bot
+        sees replies to its own messages, not the messages around them."""
+        return f"Reply with {handle}"
+
 
 MARKDOWN = Markup()
 
