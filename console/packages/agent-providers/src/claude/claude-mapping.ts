@@ -17,7 +17,10 @@ const SUBAGENT_TOOLS = new Set(['Agent', 'Task']);
 
 const MCP_PREFIX = 'mcp__';
 
-/** The model name the Claude Code CLI gives assistant messages it writes itself; the SDK does not export it. */
+/**
+ * The model name the Claude Code CLI gives assistant messages it writes
+ * itself. The SDK does not export it.
+ */
 const SYNTHETIC_MODEL = '<synthetic>';
 
 /**

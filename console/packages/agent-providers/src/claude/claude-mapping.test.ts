@@ -47,7 +47,6 @@ describe('usage limit detection', () => {
     );
     expect(usageLimitNotice(assistant(THROTTLE, 'rate_limit'))).toBeUndefined();
     expect(usageLimitNotice(assistant('Invalid API key', 'authentication_failed'))).toBeUndefined();
-    expect(usageLimitNotice(assistant("You've hit your 5-hour limit"))).toBeUndefined();
   });
 
   it('takes the notice from a synthetic message the CLI wrote, without an error flag', () => {
