@@ -190,6 +190,7 @@ jobs:
               - 'deploy/remote/helm/**'
               - 'deploy/shared_resources/**'
               - 'deploy/local/**'
+              - '.env.example'
               - '.github/workflows/**'
               - 'scripts/check_deploy_hardening.py'
             # Spans every tree, so it gets its own filter rather than riding

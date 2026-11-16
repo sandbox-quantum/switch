@@ -21,15 +21,21 @@ fails when a change breaks it:
   ServiceAccount token, since nothing in it calls the Kubernetes API;
 * the in-cluster Postgres admits only the release's own clients, and
   switch-core, the gateway and Mattermost admit only who `networkPolicy.
-  ingressFrom` names once it names anyone.
+  ingressFrom` names once it names anyone;
+* the compose files publish Postgres and Mattermost on loopback whatever
+  SWITCH_BIND_ADDR says: it opens only Switch's own ports (the API and the
+  dashboard), and each of the two has a variable of its own.
 
-Needs `helm` on PATH and PyYAML. Run from the repo root:
+Needs `helm` and `docker compose` (no daemon) on PATH, and PyYAML. Run from
+the repo root:
 
     python3 scripts/check_deploy_hardening.py
 """
 
 from __future__ import annotations
 
+import json
+import os
 import re
 import shlex
 import subprocess
@@ -81,9 +87,13 @@ def nginx_headers(conf: str, location: str) -> dict[str, str]:
     assert match, f"no `location {location}` block"
     headers: dict[str, str] = {}
     for line in match["body"].splitlines():
-        directive = re.match(r'\s*add_header\s+(\S+)\s+("[^"]*"|\S+)\s*(always)?;', line)
+        directive = re.match(
+            r'\s*add_header\s+(\S+)\s+("[^"]*"|\S+)\s*(always)?;', line
+        )
         if directive:
-            assert directive[3], f"{directive[1]} is not sent `always`, so not on errors"
+            assert directive[3], (
+                f"{directive[1]} is not sent `always`, so not on errors"
+            )
             headers[directive[1].lower()] = directive[2].strip('"')
     return headers
 
@@ -118,7 +128,8 @@ def test_the_chart_serves_the_images_nginx_config() -> None:
     configmap = next(
         d
         for d in docs
-        if d["kind"] == "ConfigMap" and d["metadata"]["name"] == f"{RELEASE}-gateway-nginx"
+        if d["kind"] == "ConfigMap"
+        and d["metadata"]["name"] == f"{RELEASE}-gateway-nginx"
     )
     rendered = configmap["data"]["default.conf"].replace(
         f"http://{RELEASE}-switch-core:8000", "http://switch:8000"
@@ -240,7 +251,9 @@ IMAGE_USERS = {
 }
 
 
-def workloads(docs: list[dict[str, Any]]) -> dict[str, tuple[dict[str, Any], dict[str, Any]]]:
+def workloads(
+    docs: list[dict[str, Any]],
+) -> dict[str, tuple[dict[str, Any], dict[str, Any]]]:
     """Each pod-running object, by component: (object, pod spec)."""
     found = {}
     for doc in docs:
@@ -266,7 +279,9 @@ def policies(docs: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
 
 def image_user(dockerfile: str) -> tuple[int, int]:
     users = re.findall(
-        r"^USER (\d+):(\d+)$", (Path("deploy/shared_resources/images") / dockerfile).read_text(), re.M
+        r"^USER (\d+):(\d+)$",
+        (Path("deploy/shared_resources/images") / dockerfile).read_text(),
+        re.M,
     )
     assert len(users) == 1, f"{dockerfile} declares no single numeric USER"
     return int(users[0][0]), int(users[0][1])
@@ -276,14 +291,23 @@ def test_every_pod_runs_unprivileged() -> None:
     renders = (
         render(),
         render("-f", OPTIONAL, *CALLBACKS),
-        render("-f", OPTIONAL, "--set", "postgresql.mode=existing", "--set", "postgresql.external.host=db.example.com"),
+        render(
+            "-f",
+            OPTIONAL,
+            "--set",
+            "postgresql.mode=existing",
+            "--set",
+            "postgresql.external.host=db.example.com",
+        ),
     )
     seen: set[str] = set()
     for docs in renders:
         for component, (doc, pod) in workloads(docs).items():
             where = f"{doc['kind']}/{doc['metadata']['name']}"
             seen.add(component)
-            assert pod.get("automountServiceAccountToken") is False, f"{where} mounts a ServiceAccount token"
+            assert pod.get("automountServiceAccountToken") is False, (
+                f"{where} mounts a ServiceAccount token"
+            )
             if component == "decision":
                 continue
             pod_context = pod.get("securityContext") or {}
@@ -291,7 +315,9 @@ def test_every_pod_runs_unprivileged() -> None:
                 name = f"{where} {container['name']}"
                 context = {**pod_context, **(container.get("securityContext") or {})}
                 assert context.get("runAsNonRoot") is True, f"{name} may run as root"
-                assert context.get("runAsUser", 0) != 0, f"{name} names no non-root user"
+                assert context.get("runAsUser", 0) != 0, (
+                    f"{name} names no non-root user"
+                )
                 assert context.get("seccompProfile") == {"type": "RuntimeDefault"}, name
                 assert context.get("allowPrivilegeEscalation") is False, name
                 assert context.get("readOnlyRootFilesystem") is True, name
@@ -302,13 +328,23 @@ def test_every_pod_runs_unprivileged() -> None:
             assert not missing, f"{where} has nowhere to write {sorted(missing)}"
             if component in IMAGE_USERS:
                 uid, gid = image_user(IMAGE_USERS[component])
-                assert (pod_context["runAsUser"], pod_context["runAsGroup"]) == (uid, gid), (
+                assert (pod_context["runAsUser"], pod_context["runAsGroup"]) == (
+                    uid,
+                    gid,
+                ), (
                     f"{where} runs as {pod_context['runAsUser']}:{pod_context['runAsGroup']}, "
                     f"its image as {uid}:{gid}"
                 )
     expected = {
-        "switch-core", "gateway", "postgresql", "mattermost", "setup", "migrate",
-        "create-runtime-role", "teams-listener-test", "decision",
+        "switch-core",
+        "gateway",
+        "postgresql",
+        "mattermost",
+        "setup",
+        "migrate",
+        "create-runtime-role",
+        "teams-listener-test",
+        "decision",
     }
     assert expected <= seen, f"never rendered: {sorted(expected - seen)}"
 
@@ -331,7 +367,12 @@ def test_postgres_admits_only_the_release_clients() -> None:
     ), rule
     assert rule["ports"] == [{"protocol": "TCP", "port": 5432}]
     assert "postgresql" not in policies(
-        render("--set", "postgresql.mode=existing", "--set", "postgresql.external.host=db.example.com")
+        render(
+            "--set",
+            "postgresql.mode=existing",
+            "--set",
+            "postgresql.external.host=db.example.com",
+        )
     )
 
 
@@ -356,8 +397,68 @@ def test_what_serves_the_outside_admits_only_who_ingress_from_names() -> None:
     assert peers(mattermost) == ["outside", "switch-core", "setup"]
     assert mattermost["ports"] == [{"protocol": "TCP", "port": 8065}]
     # Off: none of the chart's own, the decision service's (its own switch) aside.
-    off = policies(render("-f", OPTIONAL, *INGRESS_FROM, "--set", "networkPolicy.enabled=false"))
+    off = policies(
+        render("-f", OPTIONAL, *INGRESS_FROM, "--set", "networkPolicy.enabled=false")
+    )
     assert set(off) == {"decision"}, off
+
+
+DEV_COMPOSE = Path("deploy/local/docker-compose.yml")
+# The standalone stack's services that serve people and agents off this
+# machine once SWITCH_BIND_ADDR says so.
+APP_SERVICES = {"switch", "gateway"}
+
+
+def published(compose: Path, **env: str) -> dict[tuple[str, int], str]:
+    """What each service's published ports bind to, `docker compose config`
+    reading only `env`: (service, container port) -> host address."""
+    out = subprocess.run(
+        [
+            "docker",
+            "compose",
+            "--env-file",
+            os.devnull,
+            "-f",
+            str(compose),
+            "--profile",
+            "*",
+            "config",
+            "--format",
+            "json",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        env={
+            "PATH": os.environ["PATH"],
+            "HOME": os.environ.get("HOME", "/"),
+            "SWITCH_VERSION": "0.0.0-check",
+            "SECRET_KEYS": "check:" + "0" * 40,
+            **env,
+        },
+    ).stdout
+    binds = {}
+    for name, service in json.loads(out)["services"].items():
+        for port in service.get("ports") or []:
+            binds[(name, int(port["target"]))] = port.get("host_ip", "")
+    return binds
+
+
+def opened(binds: dict[tuple[str, int], str]) -> set[str]:
+    return {name for (name, _), host in binds.items() if host != "127.0.0.1"}
+
+
+def test_only_switch_leaves_loopback_when_its_bind_address_says_so() -> None:
+    standalone = published(STANDALONE_COMPOSE, SWITCH_BIND_ADDR="0.0.0.0")
+    assert {name for name, _ in standalone} >= {"postgres", "mattermost", *APP_SERVICES}
+    assert opened(standalone) == APP_SERVICES, standalone
+    assert opened(published(STANDALONE_COMPOSE)) == set()
+    assert opened(published(DEV_COMPOSE, SWITCH_BIND_ADDR="0.0.0.0")) == set()
+    for compose in (STANDALONE_COMPOSE, DEV_COMPOSE):
+        assert opened(published(compose, POSTGRES_BIND_ADDR="0.0.0.0")) == {"postgres"}
+        assert opened(published(compose, MATTERMOST_BIND_ADDR="0.0.0.0")) == {
+            "mattermost"
+        }
 
 
 TESTS = [
@@ -367,6 +468,7 @@ TESTS = [
     test_every_pod_runs_unprivileged,
     test_postgres_admits_only_the_release_clients,
     test_what_serves_the_outside_admits_only_who_ingress_from_names,
+    test_only_switch_leaves_loopback_when_its_bind_address_says_so,
 ]
 
 

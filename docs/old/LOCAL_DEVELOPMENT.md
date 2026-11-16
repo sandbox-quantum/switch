@@ -172,6 +172,11 @@ never has the switcher.
 | `http://localhost:8065` | Mattermost, seeded as the local collaboration bridge. | `just up` |
 | `http://localhost:5432` | PostgreSQL. | `just up` |
 
+Every port `just up` publishes is on loopback only. `POSTGRES_BIND_ADDR` and
+`MATTERMOST_BIND_ADDR` in `.env` move Postgres or Mattermost to another
+interface; `SWITCH_BIND_ADDR` does not, as it opens only Switch's own ports in
+the standalone stack.
+
 `FRONTEND_BASE_URL` in `.env` (default `http://localhost:5173`) tells
 switch-core where to send the browser back to after a flow that leaves the
 dashboard, such as the OIDC login redirect — it should match wherever

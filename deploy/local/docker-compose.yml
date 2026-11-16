@@ -1,8 +1,13 @@
+# Every port binds to loopback: switch-core runs on this machine and reaches
+# each service on localhost. POSTGRES_BIND_ADDR and MATTERMOST_BIND_ADDR move
+# Postgres and Mattermost off it, one at a time, for whoever knowingly wants
+# them reachable from elsewhere; SWITCH_BIND_ADDR does not, since in the
+# standalone stack it is what opens Switch itself to a team.
 services:
   postgres:
     image: postgres:16-alpine@sha256:81e77a4833487b8132fe4b00bedd39dc3f74b8641e387f19312a48f7de218c2e
     ports:
-      - "${SWITCH_BIND_ADDR:-127.0.0.1}:5432:5432"
+      - "${POSTGRES_BIND_ADDR:-127.0.0.1}:5432:5432"
     environment:
       # The container's bootstrapped superuser is the SCHEMA OWNER
       # (DB_OWNER_USER), not the runtime role Switch serves requests as
@@ -57,7 +62,7 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
-      - "${SWITCH_BIND_ADDR:-127.0.0.1}:8065:8065"
+      - "${MATTERMOST_BIND_ADDR:-127.0.0.1}:8065:8065"
     volumes:
       - mmdata:/mattermost/data
     environment:
@@ -131,8 +136,8 @@ services:
     image: axllent/mailpit:latest
     profiles: ["mail"]
     ports:
-      - "${SWITCH_BIND_ADDR:-127.0.0.1}:1025:1025"
-      - "${SWITCH_BIND_ADDR:-127.0.0.1}:8025:8025"
+      - "127.0.0.1:1025:1025"
+      - "127.0.0.1:8025:8025"
 
   # ── Decision service (auto-route) ───────────────────────────────────────────
   # `just decision-up [cpu|gpu|strands]`, or one of these profiles. Each starts
@@ -301,7 +306,7 @@ services:
     image: switch-decision:local
     profiles: ["decision", "decision-gpu"]
     ports:
-      - "${SWITCH_BIND_ADDR:-127.0.0.1}:${DECISION_PORT:-8230}:8230"
+      - "127.0.0.1:${DECISION_PORT:-8230}:8230"
     # Docker Desktop and OrbStack define host.docker.internal; Linux Docker
     # only does when asked. It is how this container reaches a collector on
     # the host (see OTLP_ENDPOINT below).
