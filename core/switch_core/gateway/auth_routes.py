@@ -192,6 +192,7 @@ async def login(
     if not await password_matches_off_loop(user, req.password):
         # Counted for the alert on password guessing; nothing about who.
         metrics().increment(AUTH_SIGN_IN_FAILURES, {})
+        attempt.failed()
         raise HTTPException(status_code=401, detail="Invalid email or password")
     assert user is not None
     await attempt.succeeded(session)
