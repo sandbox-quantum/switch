@@ -29,6 +29,9 @@ export interface RoomSummary {
   connected_user_names: string[];
   bridge_id: string | null;
   bridge_display_name: string | null;
+  // The messaging app's platform ("slack", "mattermost"), unlike the name its
+  // admin chose for it; null when the room has no channel.
+  bridge_type: string | null;
   group_id: string | null;
   group_name: string | null;
   owner_id: string | null;
