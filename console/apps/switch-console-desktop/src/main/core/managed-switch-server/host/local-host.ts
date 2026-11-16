@@ -8,7 +8,7 @@ import { writeSecretFile } from '@main/core/providers/plugin-fs';
 import type { DockerAvailability } from '@shared/core/managed-switch-server/managed-switch-server';
 import { LOCAL_SERVER_PROJECT_NAME } from '../constants';
 import { detectDocker, dockerExecutable } from '../docker';
-import { type LocalServerPorts, pickFreePorts } from '../free-port';
+import { assertIpv6LoopbackFree, type LocalServerPorts, pickFreePorts } from '../free-port';
 import { localServerDir } from '../paths';
 import { SECRET_FILE_MODE, type ServerHost } from './types';
 
@@ -115,8 +115,10 @@ export class LocalServerHost implements ServerHost {
     return pickFreePorts();
   }
 
-  async checkNetworking(): Promise<void> {
-    // Nothing is forwarded, so nothing can be in the way here.
+  async checkNetworking(ports: LocalServerPorts): Promise<void> {
+    // Nothing is forwarded; the stack publishes on 127.0.0.1 itself. What can
+    // be in the way is a program on the IPv6 loopback at the same port.
+    await assertIpv6LoopbackFree([ports.gateway, ports.api, ports.mattermost]);
   }
 
   async establishNetworking(): Promise<void> {

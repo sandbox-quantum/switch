@@ -20,7 +20,7 @@ import { pickRemoteFreePorts } from './remote-free-port';
 import { hostSlug, remoteSecretsKey } from './remote-identity';
 import { SECRET_FILE_MODE, type ServerHost } from './types';
 
-/** Ports mirrored into a desktop-side forward so a single `localhost:<port>`
+/** Ports mirrored into a desktop-side forward so a single `127.0.0.1:<port>`
  * URL reaches the stack from both the desktop and the remote host. Postgres is
  * intentionally not forwarded — nothing on the desktop talks to it directly. */
 const FORWARDED_SERVICES: (keyof LocalServerPorts)[] = ['gateway', 'api', 'mattermost'];
@@ -38,7 +38,7 @@ type RemoteHostDeps = {
  * over SSH. Commands run via `SshExecutionContext` (a login shell `cd`'d into
  * the working dir); files are written over SFTP; ports are chosen free on both
  * loopbacks and bridged with a persistent mirrored forward so the desktop and
- * local agents reach `localhost:<port>` exactly as remote-host agents reach the
+ * local agents reach `127.0.0.1:<port>` exactly as remote-host agents reach the
  * stack's own loopback.
  */
 export class RemoteServerHost implements ServerHost {

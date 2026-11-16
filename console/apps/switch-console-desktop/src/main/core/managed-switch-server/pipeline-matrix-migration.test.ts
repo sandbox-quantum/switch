@@ -62,9 +62,12 @@ vi.mock('./telemetry-consent', () => ({
 vi.mock('@main/core/telemetry/internal-account', () => ({
   currentInternalFlag: async () => 'unknown',
 }));
+vi.mock('./follow-server-address', () => ({ followManagedServerAddress: vi.fn() }));
 vi.mock('@main/core/switch-servers/servers-store', () => ({
   assertManagedServerUrlFree: () => Promise.resolve(),
   ensureManagedServer: () => Promise.resolve({ id: 'srv-1' }),
+  getManagedServer: () => Promise.resolve(null),
+  getRemoteManagedServer: () => Promise.resolve(null),
   setActiveServerId: vi.fn(),
 }));
 // Reads this install's own workspace rows, and through them the database client.

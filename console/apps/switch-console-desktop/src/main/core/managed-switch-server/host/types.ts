@@ -17,7 +17,7 @@ import type { StackStateHost } from '../stack-state';
  *   the same numbers to be free on the desktop's loopback (see remote host).
  * - `establishNetworking` makes the published ports reachable from the desktop
  *   (a no-op locally; a persistent mirrored SSH forward remotely) so the same
- *   `http://localhost:<port>` URL works for the desktop and local agents.
+ *   `http://127.0.0.1:<port>` URL works for the desktop and local agents.
  *
  * One host instance backs one start/stop/reset operation and is disposed after.
  */
@@ -101,7 +101,7 @@ export interface ServerHost {
   pickFreePorts(): Promise<LocalServerPorts>;
 
   /** Make the published ports reachable from the desktop at
-   * `http://localhost:<port>`. Local: no-op (already on loopback). Remote:
+   * `http://127.0.0.1:<port>`. Local: no-op (already on loopback). Remote:
    * start persistent mirrored port-forward listeners (same number both sides)
    * over the SSH connection, kept alive across reconnects. */
   establishNetworking(ports: LocalServerPorts): Promise<void>;
