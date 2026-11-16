@@ -107,7 +107,12 @@ function entry(overrides: Partial<ConnectionCatalogEntry> = {}): ConnectionCatal
   };
 }
 
-const MEMBER: ConnectorViewer = { operator: false, administers: false, onThisComputer: false };
+const MEMBER: ConnectorViewer = {
+  operator: false,
+  administers: false,
+  runsServer: false,
+  onThisComputer: false,
+};
 
 describe('the state a connector card shows', () => {
   it('shows each state on its own', () => {
@@ -179,8 +184,18 @@ describe('the state a connector card shows', () => {
 });
 
 describe('what each person is told about a connector that cannot be used', () => {
-  const OPERATOR: ConnectorViewer = { operator: true, administers: true, onThisComputer: false };
-  const ADMIN: ConnectorViewer = { operator: false, administers: true, onThisComputer: false };
+  const OPERATOR: ConnectorViewer = {
+    operator: true,
+    administers: true,
+    runsServer: false,
+    onThisComputer: false,
+  };
+  const ADMIN: ConnectorViewer = {
+    operator: false,
+    administers: true,
+    runsServer: false,
+    onThisComputer: false,
+  };
   const viewers = { operator: OPERATOR, admin: ADMIN, member: MEMBER };
   const notSetUp = entry({
     connectable: false,
@@ -235,6 +250,20 @@ describe('what each person is told about a connector that cannot be used', () =>
         detail: 'Ask whoever runs your Switch server to set it up.',
         tone: 'muted',
         fix: null,
+      });
+  });
+
+  it('offers the set-up to whoever Console runs the server for, not to ask someone else', () => {
+    for (const viewer of [
+      { ...MEMBER, runsServer: true },
+      { ...MEMBER, runsServer: true, onThisComputer: true },
+    ])
+      expect(connectorCardState(notSetUp, viewer)).toEqual({
+        kind: 'needs_setup',
+        label: 'Needs setup',
+        detail: 'Set up its app once, and everyone on this server can connect Example.',
+        tone: 'muted',
+        fix: 'set_up',
       });
   });
 

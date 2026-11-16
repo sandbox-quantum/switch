@@ -130,6 +130,7 @@ def _world(
         workspace_services=WorkspaceServiceStore(),
         workspace_gate=workspace_gate,
         public_url=PUBLIC,
+        managed_by_console=False,
         allow_non_expiring_keys=False,
     )
     harness = build_harness(session_factory)

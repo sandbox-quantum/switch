@@ -11,12 +11,19 @@ export type ConnectorCardKind =
 
 /**
  * What the person looking may fix: the server's operator sets up the apps
- * connectors sign in through; a workspace admin, or the operator, turns a
- * service on for the workspace.
+ * connectors sign in through, and so does whoever Switch Console runs the
+ * server for; a workspace admin, or the operator, turns a service on for the
+ * workspace.
  */
 export type ConnectorViewer = {
   operator: boolean;
   administers: boolean;
+  /**
+   * Switch Console runs this server for the person looking, so they are
+   * whoever runs Switch, and Console holds the server's own sign-in to set
+   * its apps up with.
+   */
+  runsServer: boolean;
   /** The server runs on this computer, so its own GitHub sign-in is at hand. */
   onThisComputer: boolean;
 };
@@ -53,7 +60,7 @@ function unavailableState(
   const unavailable = { kind: 'unavailable', label: 'Unavailable', tone: 'muted' } as const;
   switch (entry.unavailable_code) {
     case 'app_not_set_up':
-      return viewer.operator
+      return viewer.operator || viewer.runsServer
         ? {
             kind: 'needs_setup',
             label: 'Needs setup',

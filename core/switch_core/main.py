@@ -2489,6 +2489,7 @@ def build_service_broker(
         workspace_services=WorkspaceServiceStore(),
         workspace_gate=config.service_connections_enabled,
         public_url=config.gateway_public_url,
+        managed_by_console=config.managed_by_console,
         allow_non_expiring_keys=config.allow_non_expiring_keys,
     )
 

@@ -499,6 +499,7 @@ async def test_a_service_off_in_the_workspace_is_not_available(
         workspace_services=WorkspaceServiceStore(),
         workspace_gate=True,
         public_url=None,
+        managed_by_console=False,
         allow_non_expiring_keys=False,
     )
     buddy_id, key, ada_id = await _setup(harness)

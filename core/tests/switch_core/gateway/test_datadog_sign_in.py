@@ -109,6 +109,7 @@ def _world(
         workspace_services=WorkspaceServiceStore(),
         workspace_gate=False,
         public_url=public_url,
+        managed_by_console=False,
         allow_non_expiring_keys=allow_non_expiring_keys,
     )
     harness = build_harness(session_factory)

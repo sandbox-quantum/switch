@@ -25,6 +25,7 @@ from switch_core.connections.app_credentials import (
     UnreadableAppError,
     install_github_app,
     load_saved_app,
+    reads_only,
 )
 from switch_core.connections.broker import ServiceBroker
 from switch_core.connections.loader import CATALOG
@@ -137,6 +138,7 @@ def _broker(session_factory: async_sessionmaker[AsyncSession]) -> ServiceBroker:
         workspace_services=WorkspaceServiceStore(),
         workspace_gate=False,
         public_url=None,
+        managed_by_console=False,
         allow_non_expiring_keys=False,
     )
 
@@ -436,3 +438,12 @@ class TestApply:
         assert after.client_secret == "example-secret-1111"
         assert state.github_app.connections is after
         assert isinstance(broker._adapters["github"], GitHubAdapter)
+
+
+def test_a_read_only_app_is_theirs_to_fix_on_a_server_console_runs() -> None:
+    managed = reads_only("GitHub", organization=False, managed_by_console=True)
+    assert "Whoever runs Switch" not in managed
+    assert "You run this server" in managed
+    assert "Whoever runs Switch" in reads_only(
+        "GitHub", organization=False, managed_by_console=False
+    )

@@ -135,8 +135,16 @@ def github_needs_https(kind: AppKind | None, public_url: str | None) -> bool:
     )
 
 
-def not_set_up(name: str) -> str:
-    """What members are told about a service whose app is not set up here."""
+def not_set_up(name: str, *, managed_by_console: bool) -> str:
+    """What members are told about a service whose app is not set up here.
+    On a server Switch Console runs for the person using it, that person is
+    whoever runs Switch, so they are told where to set it up themselves."""
+    if managed_by_console:
+        return (
+            f"{name}'s connector app isn't set up on this server yet. You run "
+            f"this server, so you can set it up: in Switch Console, open "
+            f"Connectors and choose Set up on {name}."
+        )
     return (
         f"{name}'s connector app isn't set up on this server yet. "
         "Whoever runs Switch can set it up."
@@ -153,7 +161,7 @@ def cannot_work_here(name: str) -> str:
     )
 
 
-def reads_only(name: str, *, organization: bool) -> str:
+def reads_only(name: str, *, organization: bool, managed_by_console: bool) -> str:
     """What people are told of a write grant on a service whose app lets
     agents read only: a GitHub App short of the write permissions, this
     server's or, with `organization`, the workspace's organization's."""
@@ -162,6 +170,13 @@ def reads_only(name: str, *, organization: bool) -> str:
             f"Your organization's {name} App lets agents read only, so {name} "
             "can't be granted for writing. An organization admin can change "
             "that under Organization, Connectors."
+        )
+    if managed_by_console:
+        return (
+            f"Switch's {name} App lets agents read only, so {name} can't be "
+            f"granted for writing. You run this server, so you can change "
+            f"that: give the App the write permissions at {name}, then check "
+            f"it again from Switch Console's Connectors."
         )
     return (
         f"Switch's {name} App lets agents read only, so {name} can't be "

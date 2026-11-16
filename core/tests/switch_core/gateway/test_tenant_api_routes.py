@@ -209,6 +209,7 @@ def _app(
         workspace_services=WorkspaceServiceStore(),
         workspace_gate=False,
         public_url=None,
+        managed_by_console=False,
         allow_non_expiring_keys=False,
     )
     app.dependency_overrides[gw_deps.get_config] = lambda: SimpleNamespace(
@@ -1735,6 +1736,7 @@ class TestMemberRoutes:
             workspace_services=WorkspaceServiceStore(),
             workspace_gate=False,
             public_url=None,
+            managed_by_console=False,
             allow_non_expiring_keys=False,
         )
         async with _client(app, token) as client:

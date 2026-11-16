@@ -76,6 +76,7 @@ const ConnectorsPanel = observer(function ConnectorsPanel() {
   const viewer: ConnectorViewer = {
     operator: operatesServer(serverId),
     administers: administersWorkspaceInScope(serverId),
+    runsServer: server?.managed === true,
     onThisComputer: server !== undefined && runsOnThisComputer(server),
   };
   useEffect(() => {

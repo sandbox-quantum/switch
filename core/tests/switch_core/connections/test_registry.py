@@ -321,7 +321,11 @@ def test_a_core_callback_without_a_public_address_stops_the_server(
 
 
 def _broker(
-    catalog: dict, session_factory, adapters: dict, public_url: str | None
+    catalog: dict,
+    session_factory,
+    adapters: dict,
+    public_url: str | None,
+    managed_by_console: bool = False,
 ) -> ServiceBroker:
     return ServiceBroker(
         session_factory=session_factory,
@@ -335,6 +339,7 @@ def _broker(
         workspace_services=WorkspaceServiceStore(),
         workspace_gate=False,
         public_url=public_url,
+        managed_by_console=managed_by_console,
         allow_non_expiring_keys=False,
     )
 
@@ -354,6 +359,23 @@ async def test_an_app_not_set_up_here_says_who_sets_it_up(
         unavailable = (await standing(broker, service)).unavailable
         assert unavailable is not None and unavailable.code == "app_not_set_up"
         assert (await standing(broker, service)).server_setup_needed is True
+
+
+async def test_on_a_server_console_runs_an_app_not_set_up_is_theirs_to_set_up(
+    tmp_path: Path, session_factory
+) -> None:
+    broker = _broker(
+        _catalog(tmp_path, STATIC), session_factory, {}, None, managed_by_console=True
+    )
+    reason = await availability(broker, "github")
+    assert reason == (
+        "GitHub's connector app isn't set up on this server yet. You run this "
+        "server, so you can set it up: in Switch Console, open Connectors and "
+        "choose Set up on GitHub."
+    )
+    assert "Whoever runs Switch" not in reason
+    unavailable = (await standing(broker, "github")).unavailable
+    assert unavailable is not None and unavailable.code == "app_not_set_up"
 
 
 async def test_a_service_signing_in_only_through_the_server_needs_its_public_url(

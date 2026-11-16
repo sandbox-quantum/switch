@@ -218,6 +218,7 @@ async def _signed_in(session_factory, *, expires_in: float):
         workspace_services=WorkspaceServiceStore(),
         workspace_gate=False,
         public_url=None,
+        managed_by_console=False,
         allow_non_expiring_keys=False,
     )
     async with session_factory() as session:

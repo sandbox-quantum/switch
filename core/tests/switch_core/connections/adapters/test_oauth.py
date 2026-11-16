@@ -966,6 +966,7 @@ class TestThroughTheBroker:
             workspace_services=WorkspaceServiceStore(),
             workspace_gate=False,
             public_url=None,
+            managed_by_console=False,
             allow_non_expiring_keys=False,
         )
         secret = await _sign_in(adapter, vendor)
@@ -1051,6 +1052,7 @@ class TestThroughTheBroker:
             workspace_services=WorkspaceServiceStore(),
             workspace_gate=False,
             public_url=None,
+            managed_by_console=False,
             allow_non_expiring_keys=False,
         )
         secret = await _sign_in(adapter, vendor)

@@ -82,6 +82,7 @@ def _revocation(session_factory: async_sessionmaker[AsyncSession]) -> AccessRevo
             workspace_services=WorkspaceServiceStore(),
             workspace_gate=False,
             public_url=None,
+            managed_by_console=False,
             allow_non_expiring_keys=False,
         ),
         protocol=SimpleNamespace(  # type: ignore[arg-type]

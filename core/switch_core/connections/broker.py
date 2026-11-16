@@ -608,6 +608,7 @@ class ServiceBroker:
         workspace_gate: bool,
         public_url: str | None,
         allow_non_expiring_keys: bool,
+        managed_by_console: bool,
     ) -> None:
         unknown = sorted(set(adapters) - set(catalog))
         if unknown:
@@ -642,6 +643,9 @@ class ServiceBroker:
         # `ALLOW_NON_EXPIRING_KEYS`: whether a credential pasted in place of
         # a sign-in that never expires (`expires: never`) is taken here.
         self._allow_non_expiring_keys = allow_non_expiring_keys
+        # `MANAGED_BY_CONSOLE`: the person using this server runs it, so what
+        # only whoever runs Switch can fix is theirs to fix.
+        self._managed_by_console = managed_by_console
         # The access token being fetched for each connection, by (tenant,
         # owner, service), for callers that ask while it is.
         self._fetching: dict[tuple[str, str, str], asyncio.Task[AccessToken]] = {}
@@ -1920,7 +1924,10 @@ class ServiceBroker:
             if choice.problem is not None:
                 return Unavailable("organization_app_unusable", choice.problem)
             if kind is not None:
-                return Unavailable("app_not_set_up", not_set_up(name))
+                return Unavailable(
+                    "app_not_set_up",
+                    not_set_up(name, managed_by_console=self._managed_by_console),
+                )
             return Unavailable("not_set_up", f"{name} is not set up here.")
         if not adapter.can_issue:
             return Unavailable(
@@ -1942,6 +1949,7 @@ class ServiceBroker:
         return reads_only(
             self._catalog[service].definition.name,
             organization=standing.source == "organization",
+            managed_by_console=self._managed_by_console,
         )
 
     async def summary(
