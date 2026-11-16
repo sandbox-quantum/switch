@@ -114,8 +114,11 @@ async function render() {
   );
 }
 
+/** Every button but the heading's explanation of what a provider is. */
 function buttons(): string[] {
-  return [...container!.querySelectorAll('button')].map((b) => b.textContent ?? '');
+  return [...container!.querySelectorAll('button')]
+    .filter((b) => !b.closest('h2'))
+    .map((b) => b.textContent ?? '');
 }
 
 describe('MeetBuddyPage', () => {

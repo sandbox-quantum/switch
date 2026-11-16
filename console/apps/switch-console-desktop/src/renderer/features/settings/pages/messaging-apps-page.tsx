@@ -9,6 +9,7 @@ export function MessagingAppsSettingsPage() {
       <PageHeader
         sticky
         title="Messaging apps"
+        term="messagingApp"
         description="Link your account for your agents to identify you in each messaging app."
       />
       <OnSignedInServer>

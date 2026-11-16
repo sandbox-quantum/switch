@@ -6,6 +6,7 @@ import { chatsStore } from '@renderer/features/chats/stores/chats';
 import { followConsoleLink } from '@renderer/features/deeplinks/console-link-handler';
 import { useMyIdentities } from '@renderer/features/switch-servers/use-my-identities';
 import { BridgeIcon } from '@renderer/lib/components/bridge-icon';
+import { TermInfo } from '@renderer/lib/components/term-info';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
@@ -217,7 +218,10 @@ const Cards = observer(function Cards({
 
   return (
     <div className="@container mt-4 flex flex-col gap-3" data-testid="buddy-setup-cards">
-      <div className="font-semibold">Where does your team chat?</div>
+      <div className="flex items-center gap-2 font-semibold">
+        Where does your team chat?
+        <TermInfo term="messagingApp" />
+      </div>
       <div className="grid grid-cols-2 gap-3 @md:grid-cols-3 @2xl:grid-cols-5">
         <button type="button" onClick={stay} className={TILE_CLASS}>
           <SwitchConsoleMark size={28} />
