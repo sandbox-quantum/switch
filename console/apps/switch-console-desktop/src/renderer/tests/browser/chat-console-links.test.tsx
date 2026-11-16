@@ -16,10 +16,12 @@ vi.hoisted(() => {
 
 const openConsoleLink = vi.hoisted(() => vi.fn());
 const confirmOpenExternalLink = vi.hoisted(() => vi.fn());
+const toast = vi.hoisted(() => vi.fn());
 vi.mock('@renderer/features/deeplinks/console-link-handler', () => ({
   followConsoleLink: openConsoleLink,
 }));
 vi.mock('@renderer/lib/open-external-link', () => ({ confirmOpenExternalLink }));
+vi.mock('@renderer/lib/hooks/use-toast', () => ({ toast }));
 
 import { ChatMarkdown } from '@renderer/features/chats/ui/chat-markdown';
 import '@renderer/index.css';
@@ -65,5 +67,13 @@ describe('links to Console pages in chat', () => {
     await act(async () => link('the docs').click());
     expect(confirmOpenExternalLink).toHaveBeenCalledWith('https://example.test/docs');
     expect(openConsoleLink).not.toHaveBeenCalled();
+  });
+
+  it('refuse any other scheme with a notice, as links in documents are', async () => {
+    await render('Write to [support](mailto:support@example.test).');
+    await act(async () => link('support').click());
+    expect(openConsoleLink).not.toHaveBeenCalled();
+    expect(confirmOpenExternalLink).not.toHaveBeenCalled();
+    expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Link not opened' }));
   });
 });

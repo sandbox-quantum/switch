@@ -9,8 +9,8 @@ import rehypeSanitize, { defaultSchema } from 'rehype-sanitize';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import type { PluggableList } from 'unified';
+import { contentLinkHandlers, openContentLink } from '@renderer/lib/content-link';
 import { useTheme } from '@renderer/lib/hooks/useTheme';
-import { confirmOpenExternalLink } from '@renderer/lib/open-external-link';
 import { cn } from '@renderer/utils/utils';
 import { ExpandableImage } from './expandable-image';
 import { normalizeLatexDelimiters } from './markdown-latex';
@@ -204,26 +204,17 @@ function useFullComponents(
         ) : (
           <pre className="mb-3 overflow-x-auto rounded-md border border-border">{children}</pre>
         ),
-      a: ({ href, children }: AnchorProps) => {
-        const isHttp = typeof href === 'string' && /^https?:\/\//i.test(href);
-        const handleClick = (e: React.MouseEvent) => {
-          if (isHttp) {
-            e.preventDefault();
-            confirmOpenExternalLink(href);
-          }
-        };
-        return (
-          <a
-            href={href}
-            className="text-primary decoration-primary/50 hover:decoration-primary underline"
-            target="_blank"
-            rel="noopener noreferrer"
-            onClick={handleClick}
-          >
-            {children}
-          </a>
-        );
-      },
+      a: ({ href, children }: AnchorProps) => (
+        <a
+          href={href}
+          className="text-primary decoration-primary/50 hover:decoration-primary underline"
+          target="_blank"
+          rel="noopener noreferrer"
+          {...contentLinkHandlers(() => openContentLink(href))}
+        >
+          {children}
+        </a>
+      ),
       blockquote: ({ children }: WithChildren) => (
         <blockquote className="bg-muted/30 text-muted-foreground mb-3 border-l-4 border-border py-1 pl-4 text-sm italic">
           {children}
@@ -351,26 +342,17 @@ function useCompactComponents(isDark: boolean) {
       strong: ({ children }: WithChildren) => (
         <strong className="font-semibold text-foreground">{children}</strong>
       ),
-      a: ({ href, children }: AnchorProps) => {
-        const isHttp = typeof href === 'string' && /^https?:\/\//i.test(href);
-        const handleClick = (e: React.MouseEvent) => {
-          if (isHttp) {
-            e.preventDefault();
-            confirmOpenExternalLink(href);
-          }
-        };
-        return (
-          <a
-            href={href}
-            className="text-primary underline"
-            target="_blank"
-            rel="noopener noreferrer"
-            onClick={handleClick}
-          >
-            {children}
-          </a>
-        );
-      },
+      a: ({ href, children }: AnchorProps) => (
+        <a
+          href={href}
+          className="text-primary underline"
+          target="_blank"
+          rel="noopener noreferrer"
+          {...contentLinkHandlers(() => openContentLink(href))}
+        >
+          {children}
+        </a>
+      ),
       img: ({ node: _node, src, alt, className, ...props }: ImgProps) => (
         <ExpandableImage
           src={src}
