@@ -78,7 +78,7 @@ function renderAt(path = "/settings/org/connectors") {
   );
 }
 
-describe("Organization settings › Connectors and apps", () => {
+describe("Organization settings › Connectors", () => {
   afterEach(() => {
     cleanup();
     vi.unstubAllGlobals();

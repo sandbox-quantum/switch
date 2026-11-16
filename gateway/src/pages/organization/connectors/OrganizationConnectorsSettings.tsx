@@ -16,7 +16,7 @@ const TABS = [
 type OrgConnectorsTab = (typeof TABS)[number]["value"];
 
 /**
- * Organization settings › Connectors and apps: which connectors the
+ * Organization settings › Connectors: which connectors the
  * organization's workspaces may use, and the vendor apps they sign in
  * through. One page with two tabs, because the second is often why the
  * first doesn't work: a connector whose app isn't set up offers the setup

@@ -487,9 +487,9 @@ describe("a connector's page", () => {
   it("goes back to the page that opened it", async () => {
     signedIn();
     server(serviceConnection());
-    renderPage("example", { back: { label: "Connectors and apps", to: "/settings/org/connectors" } });
+    renderPage("example", { back: { label: "Connectors", to: "/settings/org/connectors" } });
 
-    fireEvent.click(await screen.findByRole("button", { name: "Connectors and apps" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Connectors" }));
 
     await waitFor(() =>
       expect(screen.getByTestId("where").textContent).toBe("/settings/org/connectors"),
