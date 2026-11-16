@@ -38,6 +38,7 @@ from switch_core.bridges.collaboration.adapter import (
     RichContentWedged,
     TurnActivity,
 )
+from switch_core.bridges.collaboration.channel_names import tidy_slug
 from switch_core.bridges.collaboration.cooldown import Cooldown
 from switch_core.bridges.collaboration.models import (
     Attachment,
@@ -109,6 +110,7 @@ _SLACK_MASS_MENTION_WORD = re.compile(
 )
 
 # A channel link, `<#C123|general>`. The label may be empty (`<#C123|>`).
+_CHANNEL_NAME_INVALID = re.compile(r"[^a-z0-9_-]")
 _SLACK_CHANNEL_LINK = re.compile(r"<#([A-Z0-9]+)(?:\|([^>]*))?>")
 
 # The only three characters Slack escapes in the text it delivers.
@@ -2741,7 +2743,13 @@ class SlackAdapter(PlatformAdapter):
 
     @classmethod
     def channel_name_for(cls, room_name: str) -> str:
-        return re.sub(r"[^a-z0-9_-]", "-", room_name.lower()).strip("-")[:80]
+        return tidy_slug(_CHANNEL_NAME_INVALID.sub("-", room_name.lower()), 80)
+
+    @classmethod
+    def channel_names_for(cls, room_name: str) -> frozenset[str]:
+        # Channels made before runs of dashes were collapsed: "x - y" made "x---y".
+        legacy = _CHANNEL_NAME_INVALID.sub("-", room_name.lower()).strip("-")[:80]
+        return frozenset({cls.channel_name_for(room_name), legacy})
 
     async def retire_channel(self, external_channel_id: str) -> RetireOutcome:
         if not self._web_client:

@@ -47,6 +47,7 @@ from switch_core.bridges.collaboration.adapter import (
     ThreadUnavailable,
     TurnActivity,
 )
+from switch_core.bridges.collaboration.channel_names import tidy_slug
 from switch_core.bridges.collaboration.discord.chunking import (
     MAX_MESSAGE,
     chunk_message,
@@ -122,6 +123,8 @@ from switch_core.sessions.contract import TURN_ENDED
 from switch_core.ui_spec import UI_ACTION_PREFIX, UISpec
 
 logger = logging.getLogger(__name__)
+
+_CHANNEL_NAME_INVALID = re.compile(r"[^a-z0-9_-]")
 
 # Webhook minted by the bridge in each channel it posts to; agents share it
 # via per-message username/avatar overrides.
@@ -3179,6 +3182,12 @@ class DiscordAdapter(PlatformAdapter):
     def channel_name_for(cls, room_name: str) -> str:
         return cls._sanitize_channel_name(room_name)
 
+    @classmethod
+    def channel_names_for(cls, room_name: str) -> frozenset[str]:
+        # Channels made before runs of dashes were collapsed: "x - y" made "x---y".
+        legacy = _CHANNEL_NAME_INVALID.sub("-", room_name.lower()).strip("-")[:100]
+        return frozenset({cls.channel_name_for(room_name), legacy})
+
     async def retire_channel(self, external_channel_id: str) -> RetireOutcome:
         try:
             channel = await self._get_channel(int(external_channel_id))
@@ -3303,7 +3312,7 @@ class DiscordAdapter(PlatformAdapter):
 
     @staticmethod
     def _sanitize_channel_name(name: str) -> str:
-        return re.sub(r"[^a-z0-9_-]", "-", name.lower()).strip("-")[:100]
+        return tidy_slug(_CHANNEL_NAME_INVALID.sub("-", name.lower()), 100)
 
     @staticmethod
     def _private_channel_overwrites(

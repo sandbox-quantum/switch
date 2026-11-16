@@ -48,6 +48,7 @@ from switch_core.bridges.collaboration.adapter import (
     RichContentThrottled,
     TurnActivity,
 )
+from switch_core.bridges.collaboration.channel_names import tidy_slug
 from switch_core.bridges.collaboration.chunking import split_markdown
 from switch_core.bridges.collaboration.ingress import (
     CallbackEndpoint,
@@ -2794,7 +2795,7 @@ class MattermostAdapter(PlatformAdapter):
             )
 
         mm_type = "P" if channel_type == "channel_private" else "O"
-        channel_name = re.sub(r"[^a-z0-9-]", "-", name.lower()).strip("-")[:64]
+        channel_name = tidy_slug(re.sub(r"[^a-z0-9-]", "-", name.lower()), 64)
         channel_id: str | None = None
 
         try:

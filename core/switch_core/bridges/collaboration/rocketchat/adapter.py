@@ -22,6 +22,7 @@ from switch_core.bridges.collaboration.adapter import (
     RichContent,
     RichContentFailed,
 )
+from switch_core.bridges.collaboration.channel_names import tidy_slug
 from switch_core.bridges.collaboration.chunking import split_markdown
 from switch_core.bridges.collaboration.models import (
     Attachment,
@@ -197,8 +198,8 @@ def _check_bot_account(me: dict[str, Any], bot_user_id: str) -> None:
 
 
 def _room_name(name: str) -> str:
-    cleaned = _ROOM_NAME_INVALID.sub("-", name.strip().lower()).strip("-.")
-    return cleaned[:64] or "switch-room"
+    cleaned = tidy_slug(_ROOM_NAME_INVALID.sub("-", name.strip().lower()), 64)
+    return cleaned.strip("-.") or "switch-room"
 
 
 class RocketChatAdapter(PlatformAdapter):

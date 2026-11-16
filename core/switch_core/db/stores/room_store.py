@@ -1228,7 +1228,7 @@ class RoomStore:
         old_name: str,
         new_name: str,
         bridge_display_name: str,
-        channel_name_for: Callable[[str], str],
+        channel_names_for: Callable[[str], frozenset[str]],
     ) -> bool:
         """Rename the room after its renamed channel when it follows the
         channel, decided on the row locked for it so a name someone gives the
@@ -1243,8 +1243,8 @@ class RoomStore:
         whose old name is not the one recorded: it renamed something else. A room from before
         `NAME_SOURCE_KEY` was kept follows only while its name still matches
         the channel's old name, and takes the source that match implies.
-        `channel_name_for` is the channel name the bridge would make from a
-        room name."""
+        `channel_names_for` is every channel name the bridge has made from a
+        room name, today's and older forms."""
         room = (
             await session.execute(
                 select(Room).where(Room.id == room_id).with_for_update()
@@ -1271,11 +1271,7 @@ class RoomStore:
         elif (
             source is None
             and old_name
-            and old_name
-            in {
-                room.name,
-                channel_name_for(room.name),
-            }
+            and old_name in {room.name, *channel_names_for(room.name)}
         ):
             self._follow(room, new_name, new_name, "created")
         else:

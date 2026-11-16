@@ -1240,7 +1240,7 @@ class CollaborationCore:
                 old_name=old_name,
                 new_name=new_name,
                 bridge_display_name=self._bridge_display_name,
-                channel_name_for=self._adapter.channel_name_for,
+                channel_names_for=self._adapter.channel_names_for,
             ):
                 return
             if (room.metadata_ or {}).get(LINKED_CHANNEL_NAME_KEY) != new_name:

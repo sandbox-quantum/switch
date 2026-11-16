@@ -1719,6 +1719,13 @@ class PlatformAdapter(ABC):
         as it is leaves this alone."""
         return room_name
 
+    @classmethod
+    def channel_names_for(cls, room_name: str) -> frozenset[str]:
+        """Every channel name `create_channel` has derived from a room's name:
+        today's `channel_name_for`, and any older form a platform's channels
+        made back then still carry."""
+        return frozenset({cls.channel_name_for(room_name)})
+
     @abstractmethod
     async def create_channel(
         self,

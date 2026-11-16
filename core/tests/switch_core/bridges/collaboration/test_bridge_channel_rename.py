@@ -96,7 +96,7 @@ async def test_the_bridge_hands_the_rename_to_the_room_with_its_own_naming() -> 
     assert asked["old_name"] == "payments"
     assert asked["new_name"] == "payments-squad"
     assert asked["bridge_display_name"] == "Slack"
-    assert asked["channel_name_for"]("Payments Team") == "payments-team"
+    assert asked["channel_names_for"]("Payments Team") == {"payments-team"}
     assert bridge._room_service.recorded == []
 
 
@@ -137,7 +137,7 @@ async def _follow(
         old_name=old,
         new_name=new,
         bridge_display_name=bridge,
-        channel_name_for=SlackAdapter.channel_name_for,
+        channel_names_for=SlackAdapter.channel_names_for,
     )
 
 
@@ -265,6 +265,22 @@ async def test_a_room_named_in_switch_keeps_its_name(
             "payments-squad",
             "created",
         ),
+        # Its channel made before runs of dashes were collapsed.
+        (
+            "switch - Code Review",
+            "switch---code-review",
+            "switch-reviews",
+            "switch-reviews",
+            "created",
+        ),
+        # And one made since.
+        (
+            "switch - Code Review",
+            "switch-code-review",
+            "switch-reviews",
+            "switch-reviews",
+            "created",
+        ),
         # A platform that took the room's name as it was (Mattermost).
         (
             "Release Train",
@@ -346,7 +362,7 @@ async def test_a_name_given_in_switch_while_the_rename_waits_wins(
                 old_name="payments-team",
                 new_name="payments-squad",
                 bridge_display_name="Slack",
-                channel_name_for=SlackAdapter.channel_name_for,
+                channel_names_for=SlackAdapter.channel_names_for,
             )
         )
         await asyncio.sleep(0.2)

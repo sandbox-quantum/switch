@@ -19,6 +19,7 @@ from switch_core.bridges.collaboration.mattermost.adapter import (
     MattermostAdapter,
     MattermostConnectionConfig,
 )
+from switch_core.bridges.collaboration.rocketchat.adapter import _room_name
 from switch_core.bridges.collaboration.slack.adapter import (
     SlackAdapter,
     SlackConnectionConfig,
@@ -31,6 +32,7 @@ from switch_core.bridges.collaboration.telegram.adapter import TelegramAdapter
 
 ROOM_NAMES = [
     "Payments Team",
+    "switch - Code Review",
     "Bug/fix #42: urgent!",
     "  Release   Train  ",
     "Ünïcödé café",
@@ -188,3 +190,61 @@ def test_channel_names_follow_each_platforms_rules() -> None:
     )
     assert TeamsAdapter.channel_name_for("  ...  ") == "switch"
     assert len(TeamsAdapter.channel_name_for("x" * 80)) == 50
+
+
+@pytest.mark.parametrize(
+    ("room_name", "slug"),
+    [
+        # The official templates name rooms "{x} - Something".
+        ("switch - Code Review", "switch-code-review"),
+        ("Acme - Brand & Messaging", "acme-brand-messaging"),
+        ("--> Launch: v2!! <--", "launch-v2"),
+        ("  ...Release   Train...  ", "release-train"),
+        ("snake_case__kept", "snake_case__kept"),
+    ],
+)
+def test_slug_channel_names_have_no_runs_of_separators(
+    room_name: str, slug: str
+) -> None:
+    assert SlackAdapter.channel_name_for(room_name) == slug
+    assert DiscordAdapter.channel_name_for(room_name) == slug
+    assert _room_name(room_name) == slug
+
+
+def test_a_name_cut_to_length_does_not_end_in_a_dash() -> None:
+    assert SlackAdapter.channel_name_for("a" * 79 + " - b") == "a" * 79
+    assert DiscordAdapter.channel_name_for("a" * 99 + " - b") == "a" * 99
+
+
+async def test_mattermost_s_url_name_has_no_runs_of_dashes() -> None:
+    adapter = MattermostAdapter(
+        config=MattermostConnectionConfig(
+            url="http://mm", admin_user="admin", admin_password="pw", team_name="team"
+        )
+    )
+    channels = _MattermostChannels()
+    adapter._admin_driver = type("_Driver", (), {"channels": channels})()  # type: ignore[assignment]
+    adapter._main_loop = asyncio.get_running_loop()
+
+    async def no_default_member(channel_id: str) -> None:
+        return None
+
+    adapter._add_default_member = no_default_member  # type: ignore[method-assign]
+    await adapter.create_channel("Acme - Brand & Messaging", "topic")
+    assert channels.created[0]["name"] == "acme-brand-messaging"
+    assert channels.created[0]["display_name"] == "Acme - Brand & Messaging"
+
+
+def test_older_channels_are_known_by_the_form_they_were_made_in() -> None:
+    for adapter in (SlackAdapter, DiscordAdapter):
+        assert adapter.channel_names_for("switch - Code Review") == {
+            "switch-code-review",
+            "switch---code-review",
+        }
+        assert adapter.channel_names_for("Payments Team") == {"payments-team"}
+    assert TelegramAdapter.channel_names_for("switch - Code Review") == {
+        "switch - Code Review"
+    }
+    assert TeamsAdapter.channel_names_for("switch - Code Review") == {
+        "switch - Code Review"
+    }

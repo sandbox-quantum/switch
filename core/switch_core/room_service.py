@@ -1632,7 +1632,7 @@ class RoomService:
         old_name: str,
         new_name: str,
         bridge_display_name: str,
-        channel_name_for: Callable[[str], str],
+        channel_names_for: Callable[[str], frozenset[str]],
     ) -> bool:
         """Rename a bridged room after its renamed channel when it still follows
         the channel (`RoomStore.follow_channel_name`); False when it does not."""
@@ -1644,7 +1644,7 @@ class RoomService:
                 old_name=old_name,
                 new_name=new_name,
                 bridge_display_name=bridge_display_name,
-                channel_name_for=channel_name_for,
+                channel_names_for=channel_names_for,
             )
             await session.commit()
         if followed:
