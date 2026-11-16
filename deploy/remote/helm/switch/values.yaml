@@ -971,11 +971,10 @@ mattermost:
   # deletion setting below).
   image: mattermost/mattermost-team-edition:11.8.3@sha256:367ebf9621d8c2f4aa41da63143a9260cfa0670558cb840be583d7fc6d0da35b
   imagePullPolicy: IfNotPresent
-  # The image's own user, mattermost (2000), which owns the data volume. The
-  # root filesystem is read-only; config, logs, plugins and temporary files
-  # are emptyDirs. Mattermost rebuilds them on every start from its
-  # environment, the database and its bundled plugins, as it did when they
-  # were in the container's own layer.
+  # The image's own user, mattermost (2000), which owns the data volume. Its
+  # root filesystem stays writable: at every start Mattermost rewrites its
+  # web app's root.html, inside the image, for the path in its site URL, and
+  # a site URL with a path serves a broken web app without that.
   podSecurityContext:
     runAsNonRoot: true
     runAsUser: 2000
@@ -986,7 +985,7 @@ mattermost:
       type: RuntimeDefault
   securityContext:
     allowPrivilegeEscalation: false
-    readOnlyRootFilesystem: true
+    readOnlyRootFilesystem: false
     capabilities:
       drop: [ALL]
   adminUser: admin

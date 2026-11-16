@@ -17,8 +17,9 @@ fails when a change breaks it:
   moved to other content; a digest cannot;
 * every pod the chart runs is unprivileged: not root (as the user its image
   runs as), no privilege escalation, no capabilities, the runtime's seccomp
-  profile, a read-only root filesystem with emptyDirs where it writes, and no
-  ServiceAccount token, since nothing in it calls the Kubernetes API;
+  profile, a read-only root filesystem with emptyDirs where it writes
+  (Mattermost's main container aside), and no ServiceAccount token, since
+  nothing in it calls the Kubernetes API;
 * the in-cluster Postgres admits only the release's own clients, and
   switch-core, the gateway and Mattermost admit only who `networkPolicy.
   ingressFrom` names once it names anyone;
@@ -232,15 +233,13 @@ WRITABLE = {
     "create-runtime-role": {"/tmp"},
     "gateway": {"/tmp", "/var/cache/nginx"},
     "postgresql": {"/tmp", "/var/run/postgresql", "/var/lib/postgresql/data"},
-    "mattermost": {
-        "/tmp",
-        "/var/tmp",
-        "/mattermost/config",
-        "/mattermost/logs",
-        "/mattermost/plugins",
-        "/mattermost/client/plugins",
-        "/mattermost/data",
-    },
+    "mattermost": {"/mattermost/data"},
+}
+# Containers whose root filesystem stays writable, and why.
+WRITABLE_ROOT = {
+    # Rewrites its web app's root.html, inside the image, at every start for
+    # the path in its site URL.
+    "mattermost",
 }
 # The images the chart runs as the user they declare (`USER` in their Dockerfile).
 IMAGE_USERS = {
@@ -320,7 +319,10 @@ def test_every_pod_runs_unprivileged() -> None:
                 )
                 assert context.get("seccompProfile") == {"type": "RuntimeDefault"}, name
                 assert context.get("allowPrivilegeEscalation") is False, name
-                assert context.get("readOnlyRootFilesystem") is True, name
+                assert context.get("readOnlyRootFilesystem") is (
+                    component not in WRITABLE_ROOT
+                    or container is not pod["containers"][0]
+                ), name
                 assert context.get("capabilities", {}).get("drop") == ["ALL"], name
             main = pod["containers"][0]
             mounts = {m["mountPath"] for m in main.get("volumeMounts") or []}

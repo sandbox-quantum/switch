@@ -159,7 +159,9 @@ setup run as 10001, the gateway's nginx as 101, Postgres as 70 (the Alpine
 image's `postgres`) and Mattermost as 2000. Every pod also has privilege
 escalation off, every capability dropped, the runtime's default seccomp
 profile and a read-only root filesystem, with emptyDirs where the process
-writes. No pod mounts a ServiceAccount token: nothing in the chart calls the
+writes. The one exception is Mattermost, whose root filesystem stays writable:
+at every start it rewrites its web app's `root.html` for its site URL's path.
+No pod mounts a ServiceAccount token: nothing in the chart calls the
 Kubernetes API. Workload identity and the Teams app's federated credential
 mount tokens of their own.
 

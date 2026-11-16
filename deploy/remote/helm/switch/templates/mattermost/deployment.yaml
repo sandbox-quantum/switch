@@ -105,40 +105,12 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /mattermost/data
-            # The root filesystem is read-only. What Mattermost writes besides
-            # its data is rebuilt on every start: its config file from the
-            # environment, its logs, its plugins from the bundled ones, and
-            # the local-mode socket (/var/tmp).
-            - name: config
-              mountPath: /mattermost/config
-            - name: logs
-              mountPath: /mattermost/logs
-            - name: plugins
-              mountPath: /mattermost/plugins
-            - name: client-plugins
-              mountPath: /mattermost/client/plugins
-            - name: tmp
-              mountPath: /tmp
-            - name: var-tmp
-              mountPath: /var/tmp
             {{- if include "switch.dbCaBundleConfigMap" . }}
             {{- include "switch.dbCaBundleVolumeMount" . | nindent 12 }}
             {{- end }}
           resources:
             {{- toYaml .Values.mattermost.resources | nindent 12 }}
       volumes:
-        - name: config
-          emptyDir: {}
-        - name: logs
-          emptyDir: {}
-        - name: plugins
-          emptyDir: {}
-        - name: client-plugins
-          emptyDir: {}
-        - name: tmp
-          emptyDir: {}
-        - name: var-tmp
-          emptyDir: {}
         - name: data
           persistentVolumeClaim:
             claimName: {{ include "switch.fullname" . }}-mattermost-data
