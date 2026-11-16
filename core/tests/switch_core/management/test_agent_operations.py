@@ -1744,6 +1744,168 @@ class TestTheOwnerConfirms:
         [confirmed] = await _audited(harness, "agent.change_confirmed")
         assert confirmed.details["agent_name"] == "builder"
 
+    async def test_a_new_agent_with_the_providers_own_bypass_waits(
+        self, harness: Harness, client: httpx.AsyncClient, desk: OwnersDesk
+    ) -> None:
+        """`permissionMode: bypassPermissions` skips every check as bypass
+        mode does, so it waits for the owner on its own, with no bypass mode
+        and no folder beside it."""
+        owner = await add_member(harness.session_factory, "ada")
+        controller = await enroll_console(harness, client, owner, name="laptop")
+        await _online(client, controller)
+        helper_id, key = await _agent_with_key(
+            harness, owner, "helper", can_manage_agents=True
+        )
+
+        response = await _call(
+            client,
+            helper_id,
+            "create_agent",
+            bearer(key),
+            _create_body(
+                "laptop", advanced_config={"permissionMode": "bypassPermissions"}
+            ),
+        )
+
+        assert response.status_code == 200, response.text
+        held = response.json()["result"]
+        assert held["status"] == "awaiting_confirmation"
+        assert held["needs_confirmation_for"] == ["advanced_config"]
+        assert held["confirm_with"] == "!agent-change builder confirm"
+        assert await _agent_row(harness, "builder") is None
+        assert await _audited(harness, "agent.created_by_agent") == []
+        [notice] = desk.posted
+        assert "asks to create the agent `builder`" in notice
+        assert "permissionMode=bypassPermissions" in notice
+
+        reply = await desk.send(await desk.in_person(owner), "builder confirm")
+
+        assert reply.startswith("Created `builder`, as helper asked")
+        created = await _agent_row(harness, "builder")
+        assert created is not None
+        definition = (await _assigned(client, controller))[created.id]["definition"]
+        assert definition["advanced_config"] == {"permissionMode": "bypassPermissions"}
+        assert definition["auto_approve"] is False
+
+    async def test_the_providers_own_bypass_on_an_agent_waits(
+        self, harness: Harness, client: httpx.AsyncClient, desk: OwnersDesk
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        controller = await enroll_console(harness, client, owner, name="laptop")
+        await _online(client, controller)
+        helper_id, key = await _agent_with_key(
+            harness, owner, "helper", can_manage_agents=True
+        )
+        new_id = await _created(client, helper_id, key, "laptop")
+        before = (await _assigned(client, controller))[new_id]
+
+        response = await _call(
+            client,
+            helper_id,
+            "update_agent_detail",
+            bearer(key),
+            {
+                "agent_id": new_id,
+                "advanced_config": {"permissionMode": "bypassPermissions"},
+            },
+        )
+
+        assert response.status_code == 200, response.text
+        result = response.json()["result"]
+        held = result["awaiting_confirmation"]
+        assert held["needs_confirmation_for"] == ["advanced_config"]
+        assert result["managed"]["advanced_config"] == {}
+        after = (await _assigned(client, controller))[new_id]
+        assert after["revision"] == before["revision"]
+        assert after["definition"]["advanced_config"] == {}
+        [notice] = desk.posted
+        assert "permissionMode=bypassPermissions" in notice
+
+        await desk.send(await desk.in_person(owner), "builder confirm")
+
+        confirmed = (await _assigned(client, controller))[new_id]["definition"]
+        assert confirmed["advanced_config"] == {"permissionMode": "bypassPermissions"}
+
+    async def test_the_providers_own_auto_mode_waits_and_turning_it_off_does_not(
+        self, harness: Harness, client: httpx.AsyncClient, desk: OwnersDesk
+    ) -> None:
+        """`permissionMode: auto` lets the provider's own review decide, as
+        `auto_mode` does, so turning it on waits as turning `auto_mode` on
+        does."""
+        owner = await add_member(harness.session_factory, "ada")
+        controller = await enroll_console(harness, client, owner, name="laptop")
+        await _online(client, controller)
+        helper_id, key = await _agent_with_key(
+            harness, owner, "helper", can_manage_agents=True
+        )
+        new_id = await _created(client, helper_id, key, "laptop")
+        before = (await _assigned(client, controller))[new_id]
+
+        on = await _call(
+            client,
+            helper_id,
+            "update_agent_detail",
+            bearer(key),
+            {"agent_id": new_id, "advanced_config": {"permissionMode": "auto"}},
+        )
+
+        assert on.status_code == 200, on.text
+        held = on.json()["result"]["awaiting_confirmation"]
+        assert held["needs_confirmation_for"] == ["advanced_config"]
+        after = (await _assigned(client, controller))[new_id]
+        assert after["revision"] == before["revision"]
+        assert after["definition"]["advanced_config"] == {}
+        [notice] = desk.posted
+        assert "permissionMode=auto" in notice
+
+        await desk.send(await desk.in_person(owner), "builder confirm")
+        confirmed = (await _assigned(client, controller))[new_id]["definition"]
+        assert confirmed["advanced_config"] == {"permissionMode": "auto"}
+
+        off = await _call(
+            client,
+            helper_id,
+            "update_agent_detail",
+            bearer(key),
+            {"agent_id": new_id, "advanced_config": {"permissionMode": "default"}},
+        )
+
+        assert off.status_code == 200, off.text
+        assert "awaiting_confirmation" not in off.json()["result"]
+        assert off.json()["result"]["managed"]["advanced_config"] == {
+            "permissionMode": "default"
+        }
+        assert len(desk.posted) == 1
+
+    async def test_a_new_agent_in_the_providers_own_auto_mode_is_made_at_once(
+        self, harness: Harness, client: httpx.AsyncClient, desk: OwnersDesk
+    ) -> None:
+        """As a new agent in auto mode is: it is made in auto mode unless it
+        says otherwise."""
+        owner = await add_member(harness.session_factory, "ada")
+        controller = await enroll_console(harness, client, owner, name="laptop")
+        await _online(client, controller)
+        helper_id, key = await _agent_with_key(
+            harness, owner, "helper", can_manage_agents=True
+        )
+
+        response = await _call(
+            client,
+            helper_id,
+            "create_agent",
+            bearer(key),
+            _create_body("laptop", advanced_config={"permissionMode": "auto"}),
+        )
+
+        assert response.status_code == 200, response.text
+        created = response.json()["result"]
+        assert created["name"] == "builder"
+        definition = (await _assigned(client, controller))[created["agent_id"]][
+            "definition"
+        ]
+        assert definition["advanced_config"] == {"permissionMode": "auto"}
+        assert desk.posted == []
+
     async def test_a_new_agent_that_would_be_refused_is_refused_rather_than_held(
         self, harness: Harness, client: httpx.AsyncClient, desk: OwnersDesk
     ) -> None:

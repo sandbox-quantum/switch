@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
@@ -20,10 +20,11 @@ from fastapi import FastAPI
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+import switch_core.gateway.oidc_routes as oidc_routes
 from switch_core.db.models import TENANT_ZERO_ID, AuthAttempt, ServerAuditEvent, User
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway import login_limits
-from switch_core.gateway.auth import get_current_user, hash_password
+from switch_core.gateway.auth import decode_jwt, get_current_user, hash_password
 from switch_core.gateway.auth_routes import router as auth_router
 from switch_core.gateway.dependencies import (
     get_config,
@@ -33,7 +34,12 @@ from switch_core.gateway.dependencies import (
     get_user_store,
 )
 from switch_core.keys import Keyring
+from switch_core.observability.catalogue import AUTH_SIGN_IN_LOCKOUTS
+from switch_core.observability.metrics import MetricsRegistry, install, uninstall
+from switch_core.organization_directory import LocalDirectory
 from switch_core.tenant_context import tenant_scope
+from tests.switch_core.gateway.test_oidc_routes import _config as oidc_config
+from tests.switch_core.gateway.test_oidc_routes import _FakeClient
 
 pytestmark = pytest.mark.no_ambient_tenant
 
@@ -45,6 +51,17 @@ NOBODY = "nobody@example.com"
 # limits are concerned, and nobody's.
 CLIENT = "203.0.113.7"
 OTHER_CLIENT = "198.51.100.9"
+
+EMAIL_PAUSED = (
+    "Password sign-in for this email address is paused after too many failed "
+    "attempts. Try again in 15 minutes. An administrator of this Switch server "
+    "can lift the pause sooner."
+)
+NETWORK_PAUSED = (
+    "Password sign-in from your network is paused after too many failed "
+    "attempts. Try again in 15 minutes."
+)
+SINGLE_SIGN_ON = "Signing in with single sign-on still works."
 
 
 class World(SimpleNamespace):
@@ -132,6 +149,8 @@ async def world(session_factory, monkeypatch) -> AsyncIterator[World]:
     app.include_router(auth_router)
     config = SimpleNamespace(
         gateway_password_login_enabled=True,
+        gateway_oidc_enabled=False,
+        gateway_tenant_choice_enabled=False,
         gateway_login_max_failures=10,
         gateway_login_max_failures_per_address=50,
         gateway_login_failure_window_minutes=15,
@@ -189,9 +208,7 @@ class TestPerEmail:
 
         refused = await world.sign_in(ADA, PASSWORD)
         assert refused.status_code == 429
-        assert refused.json() == {
-            "detail": "Too many sign-in attempts. Try again in 15 minutes."
-        }
+        assert refused.json() == {"detail": EMAIL_PAUSED}
         assert 890 <= int(refused.headers["Retry-After"]) <= 900
 
         await world.later(timedelta(minutes=15))
@@ -299,9 +316,7 @@ class TestPerAddress:
             assert response.status_code == 401
         refused = await world.sign_in("person5@example.com", "a guess")
         assert refused.status_code == 429
-        assert refused.json() == {
-            "detail": "Too many sign-in attempts. Try again in 15 minutes."
-        }
+        assert refused.json() == {"detail": NETWORK_PAUSED}
         assert (await world.sign_in(ADA, PASSWORD)).status_code == 429
         assert (
             await world.sign_in(ADA, PASSWORD, address=OTHER_CLIENT)
@@ -384,6 +399,160 @@ class TestOperator:
         async with world.client() as client:
             missing = await client.delete("/users/no-such-user/sign-in-lock")
         assert missing.status_code == 404
+
+
+class TestTheLockIsSaidPlainly:
+    """A lock says what is paused, until when, and what still gets the person
+    in, the same for an email with an account as for one without."""
+
+    async def test_single_sign_on_is_named_where_the_server_offers_it(
+        self, world: World
+    ) -> None:
+        world.config.gateway_oidc_enabled = True
+        answers = []
+        for email in (ADA, NOBODY):
+            await _fail_until_locked(world, email)
+            refused = await world.sign_in(email, PASSWORD)
+            answers.append((refused.status_code, refused.json()))
+        assert answers[0] == answers[1]
+        assert answers[0] == (
+            429,
+            {
+                "detail": EMAIL_PAUSED.replace(
+                    " An administrator", f" {SINGLE_SIGN_ON} An administrator"
+                )
+            },
+        )
+
+    async def test_a_short_wait_between_failures_is_not_called_a_pause(
+        self, world: World
+    ) -> None:
+        for _ in range(4):
+            await world.sign_in(ADA, "a wrong guess")
+        refused = await world.sign_in(ADA, "a wrong guess")
+        assert refused.json() == {
+            "detail": "Too many sign-in attempts. Try again in 1 second."
+        }
+
+    async def test_a_network_lock_is_not_offered_to_the_operator(
+        self, world: World
+    ) -> None:
+        """The operator's route lifts an email's lock, not an address's."""
+        world.config.gateway_login_max_failures_per_address = 2
+        world.config.gateway_oidc_enabled = True
+        for n in range(2):
+            await world.sign_in(f"p{n}@example.com", "a guess")
+        refused = await world.sign_in(ADA, PASSWORD)
+        assert refused.json() == {"detail": f"{NETWORK_PAUSED} {SINGLE_SIGN_ON}"}
+
+
+@pytest.fixture
+def registry() -> Iterator[MetricsRegistry]:
+    installed = MetricsRegistry()
+    install(installed)
+    yield installed
+    uninstall()
+
+
+def _lockouts(registry: MetricsRegistry) -> list[tuple[dict, float]]:
+    return sorted(
+        (
+            (dict(point.attributes), point.value)
+            for payload in registry.collect()
+            if payload.name == AUTH_SIGN_IN_LOCKOUTS.name
+            for point in payload.numbers
+        ),
+        key=repr,
+    )
+
+
+class TestLockOutsAreCounted:
+    """For an operator to see someone keeping a person out on purpose, by
+    which limit locked and nothing about whom."""
+
+    async def test_each_lock_out_counts_once_by_its_limit(
+        self, world: World, registry: MetricsRegistry
+    ) -> None:
+        await _fail_until_locked(world, ADA)
+        # Refused while locked: no new lock-out.
+        await world.sign_in(ADA, "a wrong guess")
+        await world.later(timedelta(minutes=15))
+        await _fail_until_locked(world, ADA)
+        world.config.gateway_login_max_failures_per_address = 3
+        for n in range(3):
+            await world.sign_in(f"p{n}@example.com", "a guess", OTHER_CLIENT)
+
+        assert _lockouts(registry) == [
+            ({"limit": "client_address"}, 1.0),
+            ({"limit": "email"}, 2.0),
+        ]
+
+    async def test_the_attempt_that_reaches_the_limit_and_succeeds_is_none(
+        self, world: World, registry: MetricsRegistry
+    ) -> None:
+        for _ in range(9):
+            await _guess(world, ADA)
+        await world.wait_out()
+
+        assert (await world.sign_in(ADA, PASSWORD)).status_code == 200
+        assert _lockouts(registry) == []
+
+
+class TestTheLockLeavesOtherWaysIn:
+    """The lock is on password sign-in alone (`/auth/login`): it never ends
+    a session already signed in, nor turns away single sign-on."""
+
+    async def test_a_session_signed_in_before_the_lock_carries_on(
+        self, world: World
+    ) -> None:
+        signed_in = await world.sign_in(ADA, PASSWORD)
+        assert signed_in.status_code == 200
+        cookie = signed_in.cookies["switch_auth"]
+        assert await _fail_until_locked(world, ADA) == [401] * 10 + [429]
+        del world.app.dependency_overrides[get_current_user]
+
+        async with world.client() as client:
+            client.cookies.set("switch_auth", cookie)
+            me = await client.get("/auth/me")
+            refreshed = await client.post("/auth/refresh")
+
+        assert me.status_code == 200, me.text
+        assert me.json()["email"] == ADA
+        assert refreshed.status_code == 200, refreshed.text
+        assert (await world.sign_in(ADA, PASSWORD)).status_code == 429
+
+    async def test_single_sign_on_signs_in_an_email_whose_password_is_locked(
+        self, world: World, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        assert await _fail_until_locked(world, ADA) == [401] * 10 + [429]
+        token = {
+            "userinfo": {
+                "email": ADA,
+                "email_verified": True,
+                "sub": "idp|ada",
+                "name": "Ada",
+            }
+        }
+        monkeypatch.setattr(oidc_routes, "_client", lambda: _FakeClient(token))
+
+        with tenant_scope(TENANT_ZERO_ID):
+            async with world.factory() as session:
+                response = await oidc_routes.oidc_callback(
+                    request=SimpleNamespace(session={}),  # type: ignore[arg-type]
+                    config=oidc_config(),
+                    session=session,
+                    session_factory=world.factory,
+                    user_store=UserStore(),
+                    organization_directory=LocalDirectory(),
+                )
+
+        assert response.status_code == 303
+        cookie = response.headers["set-cookie"].split("switch_auth=", 1)[1]
+        claims = decode_jwt(cookie.split(";", 1)[0], oidc_config().keyring)
+        async with world.factory() as session:
+            ada = await UserStore().get_by_email(session, ADA)
+        assert ada is not None and claims["sub"] == ada.id
+        assert (await world.sign_in(ADA, PASSWORD)).status_code == 429
 
 
 class TestOnePasswordCheckEach:

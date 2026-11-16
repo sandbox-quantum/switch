@@ -15,7 +15,29 @@ cap `auth_routes._refuse_signup` keeps.
 An attempt is counted before its password is checked, under a row lock, so a
 burst sent in parallel is counted exactly and none of it passes on a count
 the rest have not added to yet. A locked-out attempt is answered 429 with
-`Retry-After`, without the password being checked.
+`Retry-After`, without the password being checked. A lock-out's detail says
+that password sign-in for the email (or from the network) is paused, for how
+long, that single sign-on still works where the server offers it, and, for
+an email, that the operator can lift it sooner; a short wait between
+failures says only how long.
+
+**The trade-off: anyone who knows an email can pause its password sign-in.**
+The per-email lock does not care where the failures come from, which is what
+stops guessing spread across many addresses, and it means that someone who
+knows a person's email can lock their password sign-in for
+`gateway_login_lock_minutes` with `gateway_login_max_failures` wrong guesses,
+and keep it locked by repeating that. That denial is accepted as the price of
+closing the guessing: it costs the person their password sign-in for a
+while, never their account, their sessions or single sign-on. Only
+`/auth/login` reads the counts; a session already signed in, its refresh,
+and a sign-in through the OIDC provider never do. What limits the harm: the
+operator sets both thresholds (raising `gateway_login_max_failures`, or
+shortening `gateway_login_lock_minutes`, makes a targeted lock cheaper to
+sit out and costlier to keep up), lifts a lock at once with
+`DELETE /users/{id}/sign-in-lock`, and sees every lock-out counted in
+`switch.auth.sign_in_lockouts`, by which limit locked (never the email or
+the address): a steady run of email lock-outs with no address lock-outs
+beside them is someone keeping a person out on purpose.
 
 **Why 429 tells nobody whether an email has an account.** The count is keyed
 by the email typed, whether or not an account has it, so an email nobody
@@ -51,6 +73,8 @@ from switch_core.config import SwitchConfig
 from switch_core.db.models import AuthAttempt
 from switch_core.db.stores.auth_attempt_store import AuthAttemptStore
 from switch_core.gateway.dependencies import current_telemetry
+from switch_core.observability.catalogue import AUTH_SIGN_IN_LOCKOUTS
+from switch_core.observability.metrics import metrics
 from switch_core.telemetry import emit_safely
 
 logger = logging.getLogger(__name__)
@@ -60,6 +84,9 @@ STORE = AuthAttemptStore()
 LOGIN_EMAIL = "login_email"
 LOGIN_ADDRESS = "login_address"
 SIGNUP_ADDRESS = "signup_address"
+
+# What `switch.auth.sign_in_lockouts` calls each sign-in limit.
+_LOCKOUT_LIMITS = {LOGIN_EMAIL: "email", LOGIN_ADDRESS: "client_address"}
 
 # Failures against one email that cost nothing: a person mistyping. Each one
 # after makes the next attempt wait, from `_FIRST_WAIT` and doubling.
@@ -178,12 +205,14 @@ def _refused_for(row: AuthAttempt | None, now: datetime) -> timedelta | None:
     return row.locked_until - now
 
 
-def _charge(row: AuthAttempt, limit: Limit, now: datetime) -> None:
+def _charge(row: AuthAttempt, limit: Limit, now: datetime) -> bool:
+    """Count one more against `row`; whether that locks it out."""
     if row.window_started_at + limit.window <= now:
         row.attempts = 0
         row.window_started_at = now
     row.attempts += 1
-    if row.attempts >= limit.most:
+    locks = row.attempts >= limit.most
+    if locks:
         row.locked_until = now + limit.lock
         logger.warning(
             "%d %s within %s: refusing more from it for %s",
@@ -198,6 +227,7 @@ def _charge(row: AuthAttempt, limit: Limit, now: datetime) -> None:
     else:
         row.locked_until = None
     row.expires_at = max(row.window_started_at + limit.window, row.locked_until or now)
+    return locks
 
 
 def _refund(row: AuthAttempt, limit: Limit) -> None:
@@ -214,12 +244,40 @@ def _in_words(wait: timedelta) -> str:
     return "1 minute" if minutes == 1 else f"{minutes} minutes"
 
 
-def _too_many(what: str, wait: timedelta) -> HTTPException:
+def _refused(detail: str, wait: timedelta) -> HTTPException:
     return HTTPException(
         status_code=429,
-        detail=f"Too many {what}. Try again in {_in_words(wait)}.",
+        detail=detail,
         headers={"Retry-After": str(math.ceil(wait.total_seconds()))},
     )
+
+
+def _too_many(what: str, wait: timedelta) -> HTTPException:
+    return _refused(f"Too many {what}. Try again in {_in_words(wait)}.", wait)
+
+
+def _sign_in_refused(
+    config: SwitchConfig, limit: Limit, row: AuthAttempt, wait: timedelta
+) -> HTTPException:
+    """The answer to a sign-in `row` refuses for `wait`. It reads only the
+    count, never the account, so it is the same whether or not an account
+    has the email."""
+    if row.attempts < limit.most:
+        return _too_many("sign-in attempts", wait)
+    by_email = limit.kind == LOGIN_EMAIL
+    sentences = [
+        "Password sign-in "
+        + ("for this email address" if by_email else "from your network")
+        + " is paused after too many failed attempts.",
+        f"Try again in {_in_words(wait)}.",
+    ]
+    if config.gateway_oidc_enabled:
+        sentences.append("Signing in with single sign-on still works.")
+    if by_email:
+        sentences.append(
+            "An administrator of this Switch server can lift the pause sooner."
+        )
+    return _refused(" ".join(sentences), wait)
 
 
 @dataclass(frozen=True)
@@ -229,6 +287,14 @@ class LoginAttempt:
     email_key: str
     address: str | None
     address_limit: Limit
+    # The limits counting this attempt locked out: they stand if it fails.
+    locked: tuple[str, ...]
+
+    def failed(self) -> None:
+        """Count the lock-outs this attempt caused, now that it failed and
+        they stand."""
+        for kind in self.locked:
+            metrics().increment(AUTH_SIGN_IN_LOCKOUTS, {"limit": _LOCKOUT_LIMITS[kind]})
 
     async def succeeded(self, session: AsyncSession) -> None:
         """Clear the email's failures, and take this attempt back off the
@@ -257,17 +323,28 @@ async def admit_login(
         limits.insert(0, (_login_address(config), digest(address)))
     await STORE.prune(session, now)
     rows = await STORE.lock(session, [(limit.kind, key) for limit, key in limits], now)
-    waits = [wait for row in rows if (wait := _refused_for(row, now)) is not None]
-    if waits:
+    refusals = [
+        (wait, limit, row)
+        for row, (limit, _key) in zip(rows, limits, strict=True)
+        if (wait := _refused_for(row, now)) is not None
+    ]
+    if refusals:
         await session.commit()
-        raise _too_many("sign-in attempts", max(waits))
-    for row, (limit, _key) in zip(rows, limits, strict=True):
-        _charge(row, limit, now)
+        # The longest wait is the one that holds; on a tie, the address's,
+        # which the operator cannot lift.
+        wait, limit, row = max(refusals, key=lambda refusal: refusal[0])
+        raise _sign_in_refused(config, limit, row, wait)
+    locked = tuple(
+        limit.kind
+        for row, (limit, _key) in zip(rows, limits, strict=True)
+        if _charge(row, limit, now)
+    )
     await session.commit()
     return LoginAttempt(
         email_key=email_key(email),
         address=address,
         address_limit=_login_address(config),
+        locked=locked,
     )
 
 

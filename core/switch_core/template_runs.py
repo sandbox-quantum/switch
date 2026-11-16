@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from switch_core.addressing import AddressingRule, owner_only_policy
 from switch_core.agent_refusals import AgentRefused
 from switch_core.authz import Principal, can
+from switch_core.bridges.agent.agent_change_requests import bypass_fields
 from switch_core.bridges.agent.protocol.agent_core import VALID_AGENT_NAME_RE
 from switch_core.bridges.agent.protocol.agent_detail import addressing_policy_for
 from switch_core.bridges.agent.protocol.agent_management import (
@@ -183,10 +184,15 @@ def _directory(
 
 def owner_confirmation_problems(plans: Sequence[NewAgentPlan]) -> list[Problem]:
     """The agents of a run that would have bypass mode on, or the provider's
-    own permission mode set to bypass, which its owner confirms when an agent
-    asks for them with `create_agent` (`agent_change_requests`). A run an
-    agent asks for is refused for them rather than held, since its rooms are
-    made with its agents; a person runs such a template themselves."""
+    own permission mode set to bypass (`bypass_fields`), which its owner
+    confirms when an agent asks for them with `create_agent`. A run an agent
+    asks for is refused for them rather than held, since its rooms are made
+    with its agents; a person runs such a template themselves.
+
+    A folder other than the machine's own workspace, which `create_agent`
+    also holds, is not refused here: the machine runs an agent in one only
+    once the person using it allows that, so a folder the person chose (the
+    one switch-buddy passes when it runs switch-expert, say) still works."""
     return [
         Problem(
             plan.slot,
@@ -196,8 +202,7 @@ def owner_confirmation_problems(plans: Sequence[NewAgentPlan]) -> list[Problem]:
             "them to run the template themselves.",
         )
         for plan in plans
-        if plan.auto_approve
-        or plan.advanced_config.get("permissionMode") == "bypassPermissions"
+        if bypass_fields(plan.auto_approve, plan.advanced_config)
     ]
 
 

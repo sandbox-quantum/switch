@@ -2710,8 +2710,8 @@ async def update_agent_detail(
 
     Your owner confirms a change that widens what the agent may do on its
     own, or who may reach it: turning `auto_approve` or `auto_mode` on,
-    `advanced_config` with `permissionMode` "bypassPermissions", a new
-    `directory` (other than "" for the machine's own workspace), `machine`
+    `advanced_config` with `permissionMode` "bypassPermissions" or "auto", a
+    new `directory` (other than "" for the machine's own workspace), `machine`
     or `provider`, or `addressing` wider than it is now ("anyone", or
     "owner_and_owner_agents" for an agent your owner's agents cannot address
     yet). That is not made by this call: it is posted in the room you are
@@ -2720,8 +2720,9 @@ async def update_agent_detail(
     confirm` there within two minutes; otherwise it lapses. Only the owner
     can confirm it, never you or another agent, and one change per agent
     waits at a time. Tell the person what it changes and what to send.
-    Turning bypass or auto mode off, a narrower `addressing`, and every other
-    field apply at once, as does a value the agent already has.
+    Turning bypass or auto mode off, any other `permissionMode`, a narrower
+    `addressing`, and every other field apply at once, as does a value the
+    agent already has.
 
     Returns:
         The `get_agent_detail` shape plus `managed`: for a managed agent, the

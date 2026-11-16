@@ -5,15 +5,16 @@ An agent changes its owner's other agents through `update_agent_detail`
 and, with "can manage agents", makes new ones through `create_agent`. Most of
 that applies at once. A change that widens what another agent may do on its
 own, or who may reach it, is held instead: turning its bypass mode or auto
-mode on, setting the provider's own permission mode to bypass, moving its
-working folder, machine or provider, or opening who may address it; and a new
-agent with bypass on or a folder other than its machine's own workspace for
-it. It is posted in the room the asking agent is connected to and kept
+mode on, setting the provider's own permission mode to bypass or to auto,
+moving its working folder, machine or provider, or opening who may address
+it; and a new agent with bypass on or a folder other than its machine's own
+workspace for it. It is posted in the room the asking agent is connected to and kept
 (`AgentRequests`, in memory, like a deletion request) until the owner
 confirms it there with `!agent-change <name> confirm` within two minutes. A
 prompt injected into anything an agent reads can make it ask for one; only
 its owner can make it so. A change in the safer direction (bypass or auto
-mode off, a narrower addressing policy) applies at once, as do a person's own
+mode off, any other permission mode, a narrower addressing policy) applies
+at once, as do a person's own
 changes in Switch Console or the gateway, which do not come through here.
 
 Every change an agent makes to another agent, held or not, is written to the
@@ -56,10 +57,13 @@ logger = logging.getLogger(__name__)
 CONFIRM_COMMAND = "agent-change"
 
 # The advanced setting that sets a provider's own permission mode (Claude
-# Code's `permissionMode`), and the value of it that skips every check as
-# `auto_approve` does, so it waits for the owner as `auto_approve` does.
+# Code's `permissionMode`); the value of it that skips every check as
+# `auto_approve` does, so it waits for the owner as `auto_approve` does; and
+# the one that lets the provider's own review decide as `auto_mode` does, so
+# it waits as turning `auto_mode` on does.
 PERMISSION_MODE = "permissionMode"
 BYPASS_PERMISSION_MODE = "bypassPermissions"
+AUTO_PERMISSION_MODE = "auto"
 
 # How much of an agent's text the owner is shown in a request.
 _SHOWN_CHARS = 200
@@ -97,13 +101,24 @@ def changed_fields(changes: ManagedAgentChanges) -> tuple[str, ...]:
     return tuple(fields)
 
 
+def _permission_mode_widens(new: object, current: object) -> bool:
+    """Whether the provider's permission mode going from `current` to `new`
+    lets the agent do more on its own: to bypass from anything else, or to
+    auto from anything but bypass or auto."""
+    if new == BYPASS_PERMISSION_MODE:
+        return current != BYPASS_PERMISSION_MODE
+    if new == AUTO_PERMISSION_MODE:
+        return current not in (AUTO_PERMISSION_MODE, BYPASS_PERMISSION_MODE)
+    return False
+
+
 def fields_to_confirm(
     changes: ManagedAgentChanges, current: Mapping[str, Any]
 ) -> tuple[str, ...]:
     """What in `changes` widens what the agent `current` shows (as
     `AgentManagementPort.managed_agent` does) may do on its own: bypass or
-    auto mode turned on, the provider's permission mode set to bypass, or a
-    new working folder, machine or provider.
+    auto mode turned on, the provider's permission mode set to bypass or to
+    auto, or a new working folder, machine or provider.
 
     Turning bypass or auto mode off, or any other permission mode, only
     narrows it, and a value it already has is no change. A directory of ""
@@ -125,10 +140,9 @@ def fields_to_confirm(
         held.append("machine")
     if changes.provider is not None and changes.provider != current.get("provider"):
         held.append("provider")
-    if (
-        changes.advanced_config is not None
-        and changes.advanced_config.get(PERMISSION_MODE) == BYPASS_PERMISSION_MODE
-        and current_advanced.get(PERMISSION_MODE) != BYPASS_PERMISSION_MODE
+    if changes.advanced_config is not None and _permission_mode_widens(
+        changes.advanced_config.get(PERMISSION_MODE),
+        current_advanced.get(PERMISSION_MODE),
     ):
         held.append("advanced_config")
     return tuple(held)
@@ -171,22 +185,35 @@ def _own_workspace(placement: CheckedPlacement, name: str) -> set[str]:
     return {f"{root}/{name}", f"{root}\\{name}"}
 
 
+def bypass_fields(
+    auto_approve: bool, advanced_config: Mapping[str, Any]
+) -> tuple[str, ...]:
+    """Which ways of skipping every permission check a new agent asks for:
+    bypass mode, and the provider's own permission mode set to bypass.
+
+    Auto mode, and the provider's permission mode set to auto, are not among
+    them: a new agent is made in auto mode unless it says otherwise, so
+    neither waits for the owner when an agent is made."""
+    held = []
+    if auto_approve:
+        held.append("auto_approve")
+    if advanced_config.get(PERMISSION_MODE) == BYPASS_PERMISSION_MODE:
+        held.append("advanced_config")
+    return tuple(held)
+
+
 def new_agent_fields_to_confirm(
     spec: NewManagedAgent, placement: CheckedPlacement
 ) -> tuple[str, ...]:
     """What makes a new agent wait for its owner: bypass mode, the provider's
-    permission mode set to bypass, or a folder other than its machine's own
-    workspace for it."""
-    held = []
-    if spec.auto_approve:
-        held.append("auto_approve")
+    permission mode set to bypass (`bypass_fields`), or a folder other than
+    its machine's own workspace for it."""
+    held = bypass_fields(spec.auto_approve, spec.advanced_config)
     if spec.directory is not None and spec.directory not in _own_workspace(
         placement, spec.name
     ):
-        held.append("directory")
-    if spec.advanced_config.get(PERMISSION_MODE) == BYPASS_PERMISSION_MODE:
-        held.append("advanced_config")
-    return tuple(held)
+        held += ("directory",)
+    return held
 
 
 def _advanced_line(config: Mapping[str, Any]) -> str:
