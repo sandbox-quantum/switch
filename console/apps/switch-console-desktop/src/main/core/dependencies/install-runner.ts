@@ -15,6 +15,28 @@ type ShellProfileResolver = () => Promise<ResolvedShellProfile>;
 
 const ANSI_RE = /\u001b\[[0-?]*[ -/]*[@-~]/g;
 
+/**
+ * How each shell says a program is not there: Windows PowerShell and
+ * PowerShell 7, cmd.exe, and POSIX shells.
+ */
+const MISSING_COMMAND_RES = [
+  /The term '([^']+)' is not recognized as (?:the |a )?name of a cmdlet/i,
+  /'([^']+)' is not recognized as an internal or external command/i,
+  /(?:^|\n)(?:[^\n:]*: )?(?:(?:line )?\d+: )?([^\s:]+): (?:command )?not found/i,
+];
+
+/** The program a failed install command could not find, as typed (`npm`), or null. */
+export function missingCommandIn(output: string): string | null {
+  for (const re of MISSING_COMMAND_RES) {
+    const match = re.exec(output);
+    if (match?.[1]) {
+      const base = match[1].split(/[\\/]/).pop() ?? match[1];
+      return base.replace(/\.(exe|cmd|bat|ps1)$/i, '');
+    }
+  }
+  return null;
+}
+
 export function classifyInstallCommandFailure({
   exitCode,
   output,
@@ -38,6 +60,17 @@ export function classifyInstallCommandFailure({
       exitCode,
       output: cleanOutput,
       message: 'There is not enough free disk space. Free some space and try again.',
+    };
+  }
+
+  const missingCommand = missingCommandIn(cleanOutput);
+  if (missingCommand) {
+    return {
+      type: 'command-failed',
+      exitCode,
+      output: cleanOutput,
+      message: `The install needs ${missingCommand}, which this computer does not have.`,
+      missingCommand,
     };
   }
 
