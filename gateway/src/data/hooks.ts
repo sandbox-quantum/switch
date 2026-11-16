@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import {
+  ApiError,
   type ConnectorAppScope,
   type ConnectorApps,
   fetchConnectorApps,
@@ -75,6 +76,11 @@ export interface UseQueryResult<T> {
   data: T | null;
   loading: boolean;
   error: string | null;
+  // The status the server refused the load with, so a page can tell "not
+  // found" and "not allowed" from a fault; null when it loaded, or when the
+  // server never answered. Optional only so a test's stand-in result may
+  // leave it out; both hooks here always set it.
+  errorStatus?: number | null;
   refetch: () => void;
 }
 
@@ -82,6 +88,7 @@ function useQuery<T>(fetcher: () => Promise<T | null>): UseQueryResult<T> {
   const [data, setData] = useState<T | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [errorStatus, setErrorStatus] = useState<number | null>(null);
   const [tick, setTick] = useState(0);
 
   const refetch = useCallback(() => setTick((t) => t + 1), []);
@@ -99,12 +106,14 @@ function useQuery<T>(fetcher: () => Promise<T | null>): UseQueryResult<T> {
           setData(result);
           setError(null);
         }
+        setErrorStatus(null);
         setLoading(false);
       },
       // A fetcher that raises carries the server's own reason; show that.
       (e: unknown) => {
         if (cancelled) return;
         setError(e instanceof Error ? e.message : String(e));
+        setErrorStatus(e instanceof ApiError ? e.status : null);
         setLoading(false);
       },
     );
@@ -114,7 +123,7 @@ function useQuery<T>(fetcher: () => Promise<T | null>): UseQueryResult<T> {
     };
   }, [fetcher, tick]);
 
-  return { data, loading, error, refetch };
+  return { data, loading, error, errorStatus, refetch };
 }
 
 export function useRooms(
@@ -204,6 +213,7 @@ export function useConnectorApps(scope: ConnectorAppScope): UseQueryResult<Conne
   const [data, setData] = useState<ConnectorApps | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [errorStatus, setErrorStatus] = useState<number | null>(null);
   const [tick, setTick] = useState(0);
   const refetch = useCallback(() => setTick((t) => t + 1), []);
 
@@ -215,11 +225,13 @@ export function useConnectorApps(scope: ConnectorAppScope): UseQueryResult<Conne
         if (cancelled) return;
         setData(result);
         setError(null);
+        setErrorStatus(null);
         setLoading(false);
       },
       (err: unknown) => {
         if (cancelled) return;
         setError(err instanceof Error ? err.message : String(err));
+        setErrorStatus(err instanceof ApiError ? err.status : null);
         setLoading(false);
       },
     );
@@ -228,7 +240,7 @@ export function useConnectorApps(scope: ConnectorAppScope): UseQueryResult<Conne
     };
   }, [scope, tick]);
 
-  return { data, loading, error, refetch };
+  return { data, loading, error, errorStatus, refetch };
 }
 
 export function useUsers(): UseQueryResult<ListedUser[]> {

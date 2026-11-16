@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AppRoutes } from "./App";
 import type { Session, TenantMembership } from "./data/api";
 import { AuthProvider } from "./data/AuthContext";
+import { gatewayFetch } from "./data/gatewayFetch";
 import type { FeatureFlagKey } from "./data/featureFlags";
 import { clearPendingInvite, storePendingInvite } from "./data/sessionState";
 import { keepLinkForSignIn } from "./data/workspaceLink";
@@ -1102,6 +1103,99 @@ describe("a page that falls behind the server", () => {
       expect(await menuLabels("Settings")).toContain("Usage & budget"),
     );
     expect(reload).not.toHaveBeenCalled();
+  });
+});
+
+describe("what the server's answers say about the session", () => {
+  const originalLocation = window.location;
+  const reload = vi.fn();
+
+  beforeEach(() => {
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      writable: true,
+      value: { ...originalLocation, reload },
+    });
+  });
+
+  afterEach(() => {
+    reload.mockClear();
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      writable: true,
+      value: originalLocation,
+    });
+  });
+
+  it("goes to sign-in once the session has ended, keeping the page to come back to", async () => {
+    const routes = signedInAs("member");
+    let sessionReads = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const path = String(input).replace(/^\/gateway/, "").split("?")[0];
+        if (path === "/auth/session" && sessionReads++ > 0)
+          return new Response(JSON.stringify({ detail: "Session ended" }), { status: 401 });
+        if (path === "/rooms")
+          return new Response(JSON.stringify({ detail: "Session ended" }), { status: 401 });
+        const [status, body] = routes[path] ?? [404, { detail: `unmocked ${path}` }];
+        return new Response(JSON.stringify(body), { status });
+      }),
+    );
+    renderAt("/rooms?q=ops");
+    await waitFor(() => expect(reload).toHaveBeenCalled());
+    expect(JSON.parse(window.sessionStorage.getItem("switch.workspaceLinkAfterSignIn") ?? "null")).toMatchObject({
+      path: "/rooms?q=ops",
+      workspace: "t1",
+    });
+  });
+
+  it("reads the session again when the server refuses something, and follows a change of role", async () => {
+    mockFetch(signedInAs("workspace_admin"));
+    renderAt("/settings/general");
+    expect(await menuLabels("Settings")).toContain("Usage & budget");
+
+    mockFetch({
+      ...signedInAs("member"),
+      "/tenants/t1/invitations": [403, { detail: "Workspace admin access required" }],
+    });
+    await gatewayFetch("/gateway/tenants/t1/invitations", { method: "POST" });
+
+    await waitFor(async () => expect(await menuLabels("Settings")).not.toContain("Usage & budget"));
+    expect(reload).not.toHaveBeenCalled();
+  });
+
+  it("names the workspace the page shows on its writes", async () => {
+    mockFetch(signedInAs("member"));
+    renderAt("/rooms");
+    await railLabels();
+    mockFetch({ ...signedInAs("member"), "/api-keys": [200, {}] });
+    await gatewayFetch("/gateway/api-keys", { method: "POST" });
+    const [, init] = vi.mocked(fetch).mock.calls[0];
+    expect(new Headers(init?.headers).get("X-Switch-Workspace")).toBe("t1");
+  });
+
+  it("says the tab shows another workspace, offering a reload, when a write is refused for it", async () => {
+    mockFetch(signedInAs("member"));
+    renderAt("/rooms");
+    await railLabels();
+    mockFetch({
+      ...signedInAs("member"),
+      "/api-keys": [
+        409,
+        {
+          detail: {
+            error: "workspace_mismatch",
+            message: "This tab is showing another workspace. Reload to continue.",
+          },
+        },
+      ],
+    });
+    await gatewayFetch("/gateway/api-keys", { method: "POST" });
+
+    const banner = await screen.findByText("This tab is showing another workspace. Reload to continue.");
+    fireEvent.click(within(banner.closest("[role=alert]") as HTMLElement).getByRole("button", { name: "Reload" }));
+    expect(reload).toHaveBeenCalled();
   });
 });
 

@@ -1,4 +1,4 @@
-import { Box, CircularProgress, Stack, Typography } from "@mui/material";
+import { Alert, Box, CircularProgress, Stack, Typography } from "@mui/material";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ForceGraph2D from "react-force-graph-2d";
 import {
@@ -36,8 +36,11 @@ const EXPANDED_COLOR = "#B69EE6";
 const LEAF_COLOR = "#7EB6FF";
 
 export default function RoomGraphView({ roomId }: { roomId: string }) {
-  const { data: centerRoom } = useRoom(roomId);
+  const { data: centerRoom, error: centerError } = useRoom(roomId);
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+  // Why a room's links could not be read; the graph then claims nothing
+  // about which rooms are linked.
+  const [linksError, setLinksError] = useState<string | null>(null);
   const [cache, setCache] = useState<Map<string, RoomLinks>>(new Map());
   const [loadingIds, setLoadingIds] = useState<Set<string>>(new Set());
 
@@ -60,21 +63,33 @@ export default function RoomGraphView({ roomId }: { roomId: string }) {
         ]);
         return { id, outbound: out ?? [], inbound: inb ?? [] };
       }),
-    ).then((results) => {
-      if (cancelled) return;
-      setCache((prev) => {
-        const next = new Map(prev);
-        for (const r of results) {
-          next.set(r.id, { outbound: r.outbound, inbound: r.inbound });
-        }
-        return next;
-      });
-      setLoadingIds((prev) => {
-        const next = new Set(prev);
-        toLoad.forEach((id) => next.delete(id));
-        return next;
-      });
-    });
+    ).then(
+      (results) => {
+        if (cancelled) return;
+        setLinksError(null);
+        setCache((prev) => {
+          const next = new Map(prev);
+          for (const r of results) {
+            next.set(r.id, { outbound: r.outbound, inbound: r.inbound });
+          }
+          return next;
+        });
+        setLoadingIds((prev) => {
+          const next = new Set(prev);
+          toLoad.forEach((id) => next.delete(id));
+          return next;
+        });
+      },
+      (err: unknown) => {
+        if (cancelled) return;
+        setLinksError(err instanceof Error ? err.message : String(err));
+        setLoadingIds((prev) => {
+          const next = new Set(prev);
+          toLoad.forEach((id) => next.delete(id));
+          return next;
+        });
+      },
+    );
     return () => {
       cancelled = true;
     };
@@ -252,6 +267,7 @@ export default function RoomGraphView({ roomId }: { roomId: string }) {
 
   const loading = loadingIds.size > 0;
   const isEmpty = nodes.length <= 1;
+  const loadError = centerError ?? linksError;
 
   return (
     <Box>
@@ -268,6 +284,11 @@ export default function RoomGraphView({ roomId }: { roomId: string }) {
           Click a node to expand or collapse its linked rooms.
         </Typography>
       </Stack>
+      {loadError !== null && (
+        <Alert severity="error" sx={{ mb: 1 }}>
+          Couldn't load the linked rooms: {loadError}
+        </Alert>
+      )}
       <Box
         ref={containerRef}
         sx={{
@@ -293,7 +314,7 @@ export default function RoomGraphView({ roomId }: { roomId: string }) {
             <CircularProgress size={16} />
           </Box>
         )}
-        {!loading && isEmpty && (
+        {!loading && isEmpty && loadError === null && (
           <Box
             sx={{
               position: "absolute",

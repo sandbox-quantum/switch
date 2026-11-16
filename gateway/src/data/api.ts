@@ -1,19 +1,12 @@
 import { type FeatureFlagState, type FeatureFlags, featureFlagsFrom } from "./featureFlags";
+import { LONG_REQUEST_TIMEOUT_MS, gatewayFetch } from "./gatewayFetch";
 
 const BASE = "/gateway";
 
-async function fetchJson<T>(path: string, init?: RequestInit): Promise<T | null> {
-  try {
-    const res = await fetch(`${BASE}${path}`, { ...init, credentials: "include" });
-    if (!res.ok) {
-      console.error(`${res.status} ${res.statusText}: ${path}`);
-      return null;
-    }
-    return (await res.json()) as T;
-  } catch (err) {
-    console.error(`Fetch error: ${path}`, err);
-    return null;
-  }
+async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await gatewayFetch(`${BASE}${path}`, init);
+  if (!res.ok) throw await failure(res);
+  return (await res.json()) as T;
 }
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -456,26 +449,25 @@ export function errorText(detail: unknown, fallback: string): string {
   return fallback;
 }
 
+/** The error a failed answer carries: its status, and the server's reason
+ * as text. */
+async function failure(res: Response): Promise<ApiError> {
+  const payload = await res.json().catch(() => null);
+  const detail = payload?.detail ?? null;
+  return new ApiError(res.status, detail, errorText(detail, `${res.status} ${res.statusText}`));
+}
+
 async function jsonRequest<T>(
   path: string,
   method: string,
   body?: unknown,
 ): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
+  const res = await gatewayFetch(`${BASE}${path}`, {
     method,
-    credentials: "include",
     headers: body !== undefined ? { "Content-Type": "application/json" } : undefined,
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
-  if (!res.ok) {
-    const payload = await res.json().catch(() => null);
-    const detail = payload?.detail ?? null;
-    throw new ApiError(
-      res.status,
-      detail,
-      errorText(detail, `${res.status} ${res.statusText}`),
-    );
-  }
+  if (!res.ok) throw await failure(res);
   return (await res.json()) as T;
 }
 
@@ -483,16 +475,8 @@ async function jsonRequest<T>(
 // `jsonRequest` would fail calling `.json()` on it, so this skips that parse
 // on success and only reads a body back on failure, where FastAPI puts one.
 async function noContentRequest(path: string, method: string): Promise<void> {
-  const res = await fetch(`${BASE}${path}`, { method, credentials: "include" });
-  if (!res.ok) {
-    const payload = await res.json().catch(() => null);
-    const detail = payload?.detail ?? null;
-    throw new ApiError(
-      res.status,
-      detail,
-      errorText(detail, `${res.status} ${res.statusText}`),
-    );
-  }
+  const res = await gatewayFetch(`${BASE}${path}`, { method });
+  if (!res.ok) throw await failure(res);
 }
 
 export async function fetchRooms(
@@ -554,16 +538,16 @@ export interface ExportYamlToggles {
 export async function createRoomFromYaml(
   yamlText: string,
 ): Promise<ProvisionResult> {
-  const res = await fetch(`${BASE}/rooms/from-yaml`, {
-    method: "POST",
-    credentials: "include",
-    headers: { "Content-Type": "application/x-yaml" },
-    body: yamlText,
-  });
-  if (!res.ok) {
-    const detail = await res.json().catch(() => null);
-    throw new Error(detail?.detail ?? `${res.status} ${res.statusText}`);
-  }
+  const res = await gatewayFetch(
+    `${BASE}/rooms/from-yaml`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/x-yaml" },
+      body: yamlText,
+    },
+    LONG_REQUEST_TIMEOUT_MS,
+  );
+  if (!res.ok) throw await failure(res);
   return (await res.json()) as ProvisionResult;
 }
 
@@ -576,14 +560,11 @@ export async function exportRoomYaml(
     if (toggles[key] === false) params.set(key, "false");
   }
   const q = params.toString();
-  const res = await fetch(
+  const res = await gatewayFetch(
     `${BASE}/rooms/${roomId}/yaml${q ? `?${q}` : ""}`,
     { credentials: "include" },
   );
-  if (!res.ok) {
-    const detail = await res.json().catch(() => null);
-    throw new Error(detail?.detail ?? `${res.status} ${res.statusText}`);
-  }
+  if (!res.ok) throw await failure(res);
   return res.text();
 }
 
@@ -802,14 +783,11 @@ export async function assignRoomsToGroup(
 }
 
 export async function deleteRoomGroup(groupId: string): Promise<void> {
-  const res = await fetch(`${BASE}/room-groups/${groupId}`, {
+  const res = await gatewayFetch(`${BASE}/room-groups/${groupId}`, {
     method: "DELETE",
     credentials: "include",
   });
-  if (!res.ok) {
-    const detail = await res.json().catch(() => null);
-    throw new Error(detail?.detail ?? `${res.status} ${res.statusText}`);
-  }
+  if (!res.ok) throw await failure(res);
 }
 
 export async function setRoomGroup(
@@ -857,8 +835,12 @@ export async function fetchRoomAgentCandidates(
   roomId?: string,
 ): Promise<{ agent_ids: string[] | null }> {
   const query = roomId ? `?room_id=${encodeURIComponent(roomId)}` : "";
-  const answer = await fetchJson<{ agent_ids: string[] }>(`/rooms/agent-candidates${query}`);
-  return { agent_ids: answer?.agent_ids ?? null };
+  try {
+    return await fetchJson<{ agent_ids: string[] }>(`/rooms/agent-candidates${query}`);
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 404) return { agent_ids: null };
+    throw err;
+  }
 }
 
 /** Of `agents`, the ones a picker may offer given the candidates: all when unknown. */
@@ -952,17 +934,13 @@ export async function registerKnownAgent(
   description: string,
   options: Record<string, unknown> = {},
 ): Promise<RegisterResult> {
-  const res = await fetch(`${BASE}/agents/register`, {
+  const res = await gatewayFetch(`${BASE}/agents/register`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     credentials: "include",
     body: JSON.stringify({ agent_type: agentType, name, description, options }),
   });
-  if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    const detail = body?.detail ?? `${res.status} ${res.statusText}`;
-    throw new Error(detail);
-  }
+  if (!res.ok) throw await failure(res);
   return (await res.json()) as RegisterResult;
 }
 
@@ -970,17 +948,13 @@ export async function updateAgentOptions(
   agentId: string,
   options: Record<string, unknown>,
 ): Promise<AgentSummary> {
-  const res = await fetch(`${BASE}/agents/${agentId}/options`, {
+  const res = await gatewayFetch(`${BASE}/agents/${agentId}/options`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     credentials: "include",
     body: JSON.stringify({ options }),
   });
-  if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    const detail = body?.detail ?? `${res.status} ${res.statusText}`;
-    throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
-  }
+  if (!res.ok) throw await failure(res);
   return (await res.json()) as AgentSummary;
 }
 
@@ -988,17 +962,13 @@ export async function registerOtherAgent(
   name: string,
   description: string,
 ): Promise<RegisterResult> {
-  const res = await fetch(`${BASE}/agents/register-other`, {
+  const res = await gatewayFetch(`${BASE}/agents/register-other`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     credentials: "include",
     body: JSON.stringify({ name, description }),
   });
-  if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    const detail = body?.detail ?? `${res.status} ${res.statusText}`;
-    throw new Error(detail);
-  }
+  if (!res.ok) throw await failure(res);
   return (await res.json()) as RegisterResult;
 }
 
@@ -1052,27 +1022,21 @@ export async function createApiKey(
   label: string,
   expiresInDays: ApiKeyLifetime,
 ): Promise<CreateApiKeyResult> {
-  const res = await fetch(`${BASE}/api-keys`, {
+  const res = await gatewayFetch(`${BASE}/api-keys`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     credentials: "include",
     body: JSON.stringify({ label, expires_in_days: expiresInDays }),
   });
-  if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    throw new Error(body?.detail ?? `${res.status} ${res.statusText}`);
-  }
+  if (!res.ok) throw await failure(res);
   return (await res.json()) as CreateApiKeyResult;
 }
 
 export async function revealApiKey(keyId: string): Promise<string> {
-  const res = await fetch(`${BASE}/api-keys/${keyId}/reveal`, {
+  const res = await gatewayFetch(`${BASE}/api-keys/${keyId}/reveal`, {
     credentials: "include",
   });
-  if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    throw new Error(body?.detail ?? `${res.status} ${res.statusText}`);
-  }
+  if (!res.ok) throw await failure(res);
   const data = (await res.json()) as { key: string };
   return data.key;
 }
@@ -1143,7 +1107,7 @@ export async function createBridge(
   // that doesn't support channel creation returns 400.
   channelCreationEnabled?: boolean,
 ): Promise<BridgeDetail> {
-  const res = await fetch(`${BASE}/collaborations`, {
+  const res = await gatewayFetch(`${BASE}/collaborations`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     credentials: "include",
@@ -1154,11 +1118,7 @@ export async function createBridge(
       channel_creation_enabled: channelCreationEnabled,
     }),
   });
-  if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    const detail = body?.detail ?? `${res.status} ${res.statusText}`;
-    throw new Error(detail);
-  }
+  if (!res.ok) throw await failure(res);
   return (await res.json()) as BridgeDetail;
 }
 
@@ -1481,13 +1441,10 @@ export interface DownloadedFile {
 // panel can keep the admin on the page and report a failure in place, the
 // same way `exportRoomYaml` does for a text download.
 export async function fetchTeamsAppPackage(bridgeId: string): Promise<DownloadedFile> {
-  const res = await fetch(`${BASE}/collaborations/${bridgeId}/teams-package`, {
+  const res = await gatewayFetch(`${BASE}/collaborations/${bridgeId}/teams-package`, {
     credentials: "include",
   });
-  if (!res.ok) {
-    const payload = await res.json().catch(() => null);
-    throw new Error(errorText(payload?.detail, `${res.status} ${res.statusText}`));
-  }
+  if (!res.ok) throw await failure(res);
   const match = res.headers.get("Content-Disposition")?.match(/filename="?([^"]+)"?/);
   return { blob: await res.blob(), filename: match?.[1] ?? "switch-teams-app.zip" };
 }
@@ -1538,21 +1495,19 @@ export type InstallablePlatforms = string[] & {
   claimable?: ClaimablePlatform[];
 };
 
-export async function fetchInstallablePlatforms(): Promise<InstallablePlatforms | null> {
+export async function fetchInstallablePlatforms(): Promise<InstallablePlatforms> {
   const res = await fetchJson<{
     platforms: string[];
     claimable?: ClaimablePlatform[];
   }>("/messaging-apps");
-  return res === null
-    ? null
-    : Object.assign([...res.platforms], { claimable: res.claimable ?? [] });
+  return Object.assign([...res.platforms], { claimable: res.claimable ?? [] });
 }
 
-export async function fetchInstalledApps(): Promise<InstalledApp[] | null> {
+export async function fetchInstalledApps(): Promise<InstalledApp[]> {
   const res = await fetchJson<{ installs: InstalledApp[] }>(
     "/messaging-apps/installs",
   );
-  return res === null ? null : res.installs;
+  return res.installs;
 }
 
 // Answers with a URL rather than redirecting, because the install has to begin
@@ -2862,14 +2817,11 @@ export async function detachReferenceFromRoom(
   roomId: string,
   referenceId: string,
 ): Promise<void> {
-  const res = await fetch(`${BASE}/rooms/${roomId}/references/${referenceId}`, {
+  const res = await gatewayFetch(`${BASE}/rooms/${roomId}/references/${referenceId}`, {
     method: "DELETE",
     credentials: "include",
   });
-  if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    throw new Error(errorText(body?.detail ?? null, `${res.status} ${res.statusText}`));
-  }
+  if (!res.ok) throw await failure(res);
 }
 
 // ── Linked rooms ─────────────────────────────────────────────────────────────
@@ -2978,14 +2930,11 @@ export async function detachLinkedRoom(
   roomId: string,
   targetRoomId: string,
 ): Promise<void> {
-  const res = await fetch(
+  const res = await gatewayFetch(
     `${BASE}/rooms/${roomId}/linked-rooms/${targetRoomId}`,
     { method: "DELETE", credentials: "include" },
   );
-  if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    throw new Error(body?.detail ?? `${res.status} ${res.statusText}`);
-  }
+  if (!res.ok) throw await failure(res);
 }
 
 export async function fetchDocuments(): Promise<DocumentSummary[] | null> {
@@ -3056,14 +3005,11 @@ export async function detachDocumentFromRoom(
   roomId: string,
   documentId: string,
 ): Promise<void> {
-  const res = await fetch(`${BASE}/rooms/${roomId}/documents/${documentId}`, {
+  const res = await gatewayFetch(`${BASE}/rooms/${roomId}/documents/${documentId}`, {
     method: "DELETE",
     credentials: "include",
   });
-  if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    throw new Error(errorText(body?.detail ?? null, `${res.status} ${res.statusText}`));
-  }
+  if (!res.ok) throw await failure(res);
 }
 
 // ── Packages ─────────────────────────────────────────────────────────────────
@@ -3185,14 +3131,11 @@ export async function addReferenceToPackage(
   packageId: string,
   referenceId: string,
 ): Promise<void> {
-  const res = await fetch(
+  const res = await gatewayFetch(
     `${BASE}/packages/${packageId}/references/${referenceId}`,
     { method: "POST", credentials: "include" },
   );
-  if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    throw new Error(errorText(body?.detail ?? null, `${res.status} ${res.statusText}`));
-  }
+  if (!res.ok) throw await failure(res);
 }
 
 export async function removeReferenceFromPackage(
@@ -3209,14 +3152,11 @@ export async function addDocumentToPackage(
   packageId: string,
   documentId: string,
 ): Promise<void> {
-  const res = await fetch(
+  const res = await gatewayFetch(
     `${BASE}/packages/${packageId}/documents/${documentId}`,
     { method: "POST", credentials: "include" },
   );
-  if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    throw new Error(errorText(body?.detail ?? null, `${res.status} ${res.statusText}`));
-  }
+  if (!res.ok) throw await failure(res);
 }
 
 export async function removeDocumentFromPackage(
@@ -3249,14 +3189,11 @@ export async function detachPackageFromRoom(
   roomId: string,
   packageId: string,
 ): Promise<void> {
-  const res = await fetch(`${BASE}/rooms/${roomId}/packages/${packageId}`, {
+  const res = await gatewayFetch(`${BASE}/rooms/${roomId}/packages/${packageId}`, {
     method: "DELETE",
     credentials: "include",
   });
-  if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    throw new Error(errorText(body?.detail ?? null, `${res.status} ${res.statusText}`));
-  }
+  if (!res.ok) throw await failure(res);
 }
 
 // ── Templates ────────────────────────────────────────────────────────────────
@@ -3537,14 +3474,11 @@ export async function updateBudget(
 }
 
 export async function deleteBudget(tenantId: string, budgetId: string): Promise<void> {
-  const res = await fetch(`${BASE}/tenants/${tenantId}/budgets/${budgetId}`, {
+  const res = await gatewayFetch(`${BASE}/tenants/${tenantId}/budgets/${budgetId}`, {
     method: "DELETE",
     credentials: "include",
   });
-  if (!res.ok) {
-    const detail = await res.json().catch(() => null);
-    throw new Error(errorText(detail?.detail, `${res.status} ${res.statusText}`));
-  }
+  if (!res.ok) throw await failure(res);
 }
 
 // ── Service connections and grants ───────────────────────────────────────────
@@ -3954,7 +3888,7 @@ export async function saveConnectorApp(
   service: string,
   input: SaveConnectorAppInput,
 ): Promise<SavedConnectorApp> {
-  const res = await fetch(`${BASE}${CONNECTOR_APPS_PATH[scope]}/${service}`, {
+  const res = await gatewayFetch(`${BASE}${CONNECTOR_APPS_PATH[scope]}/${service}`, {
     method: "PUT",
     credentials: "include",
     headers: { "Content-Type": "application/json" },

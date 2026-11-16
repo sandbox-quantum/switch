@@ -53,6 +53,7 @@ export default function PageShell() {
           }}
         >
           <Box sx={area === null ? undefined : { px: 3, pt: 3, "&:empty": { display: "none" } }}>
+            <WorkspaceMismatchBanner />
             <StaleSessionBanner />
             <LinkNoticeBanner />
           </Box>
@@ -79,6 +80,27 @@ function StaleSessionBanner() {
       }
     >
       Could not check your session with Switch: {staleError}. This page may be out of date.
+    </Alert>
+  );
+}
+
+/** Says so when the server refused a write because another tab moved the
+ * session to another workspace: everything this page shows is the old one's,
+ * so the way on is to reload it. */
+export function WorkspaceMismatchBanner() {
+  const { workspaceMismatch } = useAuth();
+  if (workspaceMismatch === null) return null;
+  return (
+    <Alert
+      severity="warning"
+      sx={{ mb: 2 }}
+      action={
+        <Button color="inherit" size="small" onClick={() => window.location.reload()}>
+          Reload
+        </Button>
+      }
+    >
+      {workspaceMismatch}
     </Alert>
   );
 }

@@ -27,7 +27,9 @@ export default function LoginPage() {
   const [authConfig, setAuthConfig] = useState<AuthConfig | null>(null);
 
   useEffect(() => {
-    fetchAuthConfig().then(setAuthConfig);
+    fetchAuthConfig().then(setAuthConfig, (err: unknown) =>
+      console.warn("Could not read how this server signs people in; offering password sign-in", err),
+    );
   }, []);
 
   const handleSubmit = useCallback(

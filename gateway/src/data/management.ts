@@ -4,6 +4,8 @@
 // except the provider list and advanced-configuration fields, which are always
 // served; every failure comes back as {"error": {"code", "message", "retryable"}}.
 
+import { gatewayFetch } from "./gatewayFetch";
+
 const BASE = "/gateway/management";
 
 /** A provider's id, one of those `fetchProviders` lists. */
@@ -233,7 +235,7 @@ export async function managementError(res: Response): Promise<ManagementApiError
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
+  const res = await gatewayFetch(`${BASE}${path}`, {
     ...init,
     credentials: "include",
     headers: init?.body ? { "Content-Type": "application/json" } : undefined,
@@ -429,7 +431,7 @@ async function organizationError(res: Response): Promise<ManagementApiError> {
 }
 
 async function organizationRequest<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${ORGANIZATION}${path}`, { ...init, credentials: "include" });
+  const res = await gatewayFetch(`${ORGANIZATION}${path}`, { ...init, credentials: "include" });
   if (!res.ok) throw await organizationError(res);
   return (await res.json()) as T;
 }
@@ -476,7 +478,7 @@ export type CloudMachineAction = "stop" | "start" | "retry";
 const HOSTED = "/gateway/hosted-machines";
 
 async function hostedRequest<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${HOSTED}${path}`, {
+  const res = await gatewayFetch(`${HOSTED}${path}`, {
     ...init,
     credentials: "include",
     headers: init?.body ? { "Content-Type": "application/json" } : undefined,
