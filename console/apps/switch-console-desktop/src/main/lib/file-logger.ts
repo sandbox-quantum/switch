@@ -10,6 +10,7 @@ import {
   type LogSinkEntry,
 } from '@shared/logger';
 import { resolveLogContext } from './log-context';
+import { restrictExistingFilesToOwner } from './owner-only-files';
 
 const MAX_LOG_BYTES = 5 * 1024 * 1024;
 const DIAGNOSTIC_LOG_BYTES = 500 * 1024;
@@ -294,17 +295,32 @@ function flushBuffer(): Promise<void> {
   pendingWrite = pendingWrite
     .then(async () => {
       if (!logDirReady) {
-        await mkdir(join(path, '..'), { recursive: true });
+        await mkdir(join(path, '..'), { recursive: true, mode: 0o700 });
+        restrictLogFilesToOwner(path);
         logDirReady = true;
       }
       await rotateIfNeeded(path, Buffer.byteLength(chunk));
-      await appendFile(path, chunk, 'utf8');
+      await appendFile(path, chunk, { encoding: 'utf8', mode: 0o600 });
     })
     .catch((error) => {
       recordWriteFailure(error);
     });
 
   return pendingWrite;
+}
+
+/**
+ * Logs written by earlier builds were created with the default mode. A new
+ * one is created 0600 by the append; rotation keeps each file's mode.
+ */
+function restrictLogFilesToOwner(path: string) {
+  const files = [path];
+  for (let index = 1; index <= RETAINED_LOG_FILES; index += 1) files.push(`${path}.${index}`);
+  try {
+    restrictExistingFilesToOwner(files);
+  } catch (error) {
+    console.warn('Could not make the application log readable by this user alone:', error);
+  }
 }
 
 export function flushLogWrites() {
