@@ -410,6 +410,27 @@ async def test_a_card_names_the_asker_and_prints_the_handle_it_answers_to() -> N
     assert "request `R7`" in content
 
 
+async def test_a_card_pings_the_asker_it_names_though_the_bridge_never_saw_them() -> (
+    None
+):
+    """The asker is mentioned by id, which Discord resolves itself, so no
+    message of theirs need have passed through the bridge for it to reach
+    them."""
+    adapter, _channel, _thread, webhook = _guild_setup()
+    assert int(ASKER_ID) not in adapter._username_to_id.values()
+
+    await adapter.post_rich(
+        str(CHANNEL_ID),
+        "my-agent",
+        await _card(notify_external_id=ASKER_ID),
+        f"{CHANNEL_ID}:{ROOT_MESSAGE_ID}",
+    )
+
+    mentions = webhook.sent[0]["allowed_mentions"].to_dict()
+    assert mentions["users"] == [int(ASKER_ID)]
+    assert mentions["parse"] == []
+
+
 async def test_a_card_nobody_can_be_notified_about_says_so_on_the_card() -> None:
     """A card posted with the mention simply missing reads on the channel
     exactly like one that reached someone — an agent waiting on input nobody

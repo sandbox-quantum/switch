@@ -192,6 +192,9 @@ _LIVE_JOINS_MAX = 500
 # mention: what Discord pings from a message's raw content.
 _USER_MENTION = re.compile(r"<@!?(\d+)>")
 _ROLE_MENTION = re.compile(r"<@&(\d+)>")
+# The `<` that opens either one, for breaking a mention already in the text
+# `_render_outbound` is given.
+_MENTION_OPENING = re.compile(r"<(?=@[!&]?\d+>)")
 # Discord takes at most this many ids in each list of `allowed_mentions`.
 _ALLOWED_MENTION_IDS_MAX = 100
 
@@ -3679,11 +3682,24 @@ class DiscordAdapter(PlatformAdapter):
     # ── Translation ──────────────────────────────────────────────────────────
 
     def _render_outbound(self, content: str) -> str:
-        # Discord renders markdown natively (bold, code, headers, masked
-        # links), so only @name mentions need rewriting to real Discord
-        # mentions: a resolved user, or an agent that has a role of its own so
-        # it reads as the same pill a person would have picked from the `@`
-        # menu. Unknown names stay plain text.
+        """Switch Markdown for Discord, whose only live mentions are the ones
+        this wrote.
+
+        Discord renders markdown natively (bold, code, headers, masked links),
+        so only mentions need work. A mention already in `content` came from
+        text Switch did not write — a page an agent quoted, a message pasted
+        into the room — so it is broken first, with a zero-width space after
+        its `<`, and shows as written. Then each `@name` becomes a real
+        Discord mention: a resolved user, or an agent that has a role of its
+        own so it reads as the same pill a person would have picked from the
+        `@` menu. Unknown names stay plain text. Every live mention in the
+        result is therefore one this resolved, which is what
+        `_mentions_allowed` lets notify.
+
+        The app's own mention is put back, as Slack's is: it is how a notice
+        from the bridge core names the app (`render_app_mention`), and it
+        notifies nobody."""
+
         def _replace(match: re.Match[str]) -> str:
             user_id = self._username_to_id.get(match.group(1))
             if user_id:
@@ -3691,38 +3707,36 @@ class DiscordAdapter(PlatformAdapter):
             role_id = self._agent_role_ids.get(match.group(1).casefold())
             return f"<@&{role_id}>" if role_id else match.group(0)
 
-        return re.sub(r"@([a-z0-9][a-z0-9._-]*)", _replace, content)
+        defused = _MENTION_OPENING.sub("<" + _ZERO_WIDTH_SPACE, content)
+        own = self._connection.bot_user_id if self._connection is not None else 0
+        if own:
+            defused = defused.replace(f"<{_ZERO_WIDTH_SPACE}@{own}>", f"<@{own}>")
+        return re.sub(r"@([a-z0-9][a-z0-9._-]*)", _replace, defused)
 
     def _mentions_allowed(
         self, text: str, *, everyone: bool
     ) -> discord.AllowedMentions:
-        """Who `text` may notify: the people and agent roles named in it that
-        `_render_outbound` turns a name into, and nobody else.
+        """Who `text` may notify: the people and agent roles this adapter
+        wrote a mention of for this message, and nobody else.
 
         Discord pings every `<@id>` and `<@&id>` in a message's raw content
         unless the request lists the ones that may. Text Switch did not write
         — an agent echoing a web page, or a message pasted into the room — can
-        carry one naming anybody, a role as wide as the whole server included.
-        Listed this way, such a mention is drawn but notifies nobody, while a
-        name Switch resolved notifies as it always did: a raw id this lets
-        through is one an `@name` could have reached anyway.
+        carry one naming anybody, a role as wide as the whole server included,
+        and an id the bridge has seen before is no safer than one it has not.
+        So no such mention reaches here live: `_render_outbound` breaks every
+        mention in the text it is given before it turns `@name`s into
+        mentions, and `escape_label_for_body` breaks any in a name. What is
+        left are the mentions this adapter wrote for this message — an
+        `@name` it resolved, or the person a card is for (`_mention`) — and
+        those are exactly the ones listed.
 
         `everyone` is for a message the server marked as room-wide
         (`render_room_wide_mention`), which needs `@everyone` permitted on the
         request as well as written in the text. Nothing else sets it.
         """
-        named_users = {int(found) for found in _USER_MENTION.findall(text)}
-        named_roles = {int(found) for found in _ROLE_MENTION.findall(text)}
-        users = (
-            sorted(named_users & set(self._username_to_id.values()))
-            if named_users
-            else []
-        )
-        roles = (
-            sorted(named_roles & set(self._agent_role_ids.values()))
-            if named_roles
-            else []
-        )
+        users = sorted({int(found) for found in _USER_MENTION.findall(text)})
+        roles = sorted({int(found) for found in _ROLE_MENTION.findall(text)})
         return discord.AllowedMentions(
             everyone=everyone,
             users=[
