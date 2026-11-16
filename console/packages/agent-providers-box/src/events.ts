@@ -1,0 +1,166 @@
+/**
+ * The normalized event stream every provider adapter emits.
+ *
+ * One vocabulary for all providers so orchestration, status derivation and the
+ * transcript UI never see a vendor shape. Adapters translate their native
+ * protocol (Claude Agent SDK messages, Codex app-server notifications, OpenCode
+ * SSE events) into these; `raw` keeps the native payload for debugging only.
+ */
+
+export type ProviderKind = 'opencode' | 'claude' | 'codex' | 'antigravity' | (string & {});
+
+export type SessionStatus = 'starting' | 'ready' | 'running' | 'stopped' | 'error';
+
+export type TurnOutcome = 'completed' | 'interrupted' | 'error';
+
+/**
+ * A turn the provider stopped because the account's usage or rate limit was
+ * reached. `resetsAt` (epoch ms) is when the provider says the limit lifts,
+ * or null when it did not say in a form the adapter can read.
+ */
+export interface UsageLimit {
+  resetsAt: number | null;
+}
+
+/**
+ * What an item in a turn represents, independent of how the vendor names it.
+ * `tool_call` is the fallback for a tool the vocabulary does not single out.
+ */
+export type ItemType =
+  | 'user_message'
+  | 'assistant_message'
+  | 'reasoning'
+  | 'command_execution'
+  | 'file_change'
+  | 'mcp_tool_call'
+  | 'tool_call'
+  | 'web_search'
+  | 'subagent'
+  | 'context_compaction';
+
+export type ItemStatus = 'in_progress' | 'completed' | 'failed' | 'declined';
+
+export interface ProviderItem {
+  id: string;
+  type: ItemType;
+  status: ItemStatus;
+  /** Short human-readable line for activity rows: the command, the file, the tool name. */
+  title: string;
+  /** Full text for message-shaped items; output/diff for tool-shaped ones. */
+  text?: string;
+  /** Tool name for `mcp_tool_call` / `tool_call`, agent name for `subagent`. */
+  toolName?: string;
+  /** For `subagent`: the vendor's id for the child session or thread, when it has one. */
+  nativeChildId?: string;
+  /** Vendor-specific structured payload preserved verbatim. */
+  payload?: Record<string, unknown>;
+}
+
+/** Why a provider is blocked waiting for a decision. */
+export type RequestType =
+  | 'command_execution_approval'
+  | 'file_change_approval'
+  | 'mcp_tool_approval'
+  | 'tool_approval'
+  | 'directory_access_approval';
+
+export type ApprovalDecision = 'accept' | 'acceptForSession' | 'decline' | 'cancel';
+
+export interface ApprovalOption {
+  decision: ApprovalDecision;
+  label: string;
+}
+
+export interface UserInputQuestion {
+  id: string;
+  header?: string;
+  question: string;
+  options: Array<{ label: string; description?: string; value: string }>;
+  multiSelect: boolean;
+  allowCustomAnswer: boolean;
+}
+
+/** Keyed by `UserInputQuestion.id`; a value is one option `value` or custom text. */
+export type UserInputAnswers = Record<string, string | string[]>;
+
+interface EventBase {
+  eventId: string;
+  provider: ProviderKind;
+  sessionId: string;
+  createdAt: string;
+  turnId?: string;
+  raw?: { source: string; payload: unknown };
+}
+
+/**
+ * Tokens one model consumed. `model` is the provider's own id, or empty when
+ * the provider runs its default without naming it. Cache reads and writes are
+ * counted apart from `inputTokens` because they are priced apart.
+ */
+export interface TokenUsage {
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+}
+
+export type ProviderRuntimeEvent = EventBase &
+  (
+    | { type: 'session.started'; nativeSessionId: string }
+    | { type: 'session.state.changed'; status: SessionStatus; message?: string }
+    | { type: 'session.exited'; reason: string }
+    | { type: 'turn.started'; turnId: string }
+    /**
+     * `usage` is what the turn spent, one entry per model. Empty when the
+     * provider reports nothing — not a claim that the turn was free.
+     */
+    | {
+        type: 'turn.completed';
+        turnId: string;
+        outcome: TurnOutcome;
+        message?: string;
+        /** Set when the turn failed because the provider's usage limit was reached. */
+        usageLimit?: UsageLimit;
+        usage: TokenUsage[];
+      }
+    | { type: 'item.started'; turnId: string; item: ProviderItem }
+    | { type: 'item.updated'; turnId: string; item: ProviderItem }
+    | { type: 'item.completed'; turnId: string; item: ProviderItem }
+    /** Assistant text as it streams. Only assistant-message items use this. */
+    | { type: 'content.delta'; turnId: string; itemId: string; delta: string }
+    /** Incremental output of a tool-shaped item: command stdout, reasoning text, a growing diff. */
+    | { type: 'item.delta'; turnId: string; itemId: string; delta: string }
+    | {
+        type: 'request.opened';
+        turnId: string;
+        requestId: string;
+        requestType: RequestType;
+        /** Prose: what is being asked, in a sentence a reader can skim. */
+        title: string;
+        /**
+         * The literal thing being approved — a command, a path — and nothing
+         * else. Consumers set it apart from the prose, in a code span where the
+         * surface has one, so a sentence here reads as something to type.
+         */
+        detail?: string;
+        options: ApprovalOption[];
+        /**
+         * The connector server whose tool this asks to run, one of the
+         * session's `connectorMcpServers`; absent for anything else.
+         */
+        connector?: string;
+      }
+    | { type: 'request.resolved'; requestId: string; decision: ApprovalDecision }
+    | {
+        type: 'user-input.requested';
+        turnId: string;
+        requestId: string;
+        questions: UserInputQuestion[];
+      }
+    | { type: 'user-input.resolved'; requestId: string }
+    | { type: 'runtime.warning'; message: string }
+    | { type: 'runtime.error'; message: string }
+  );
+
+export type ProviderRuntimeEventType = ProviderRuntimeEvent['type'];

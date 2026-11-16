@@ -1,0 +1,376 @@
+import type * as fs from 'node:fs/promises';
+import { beforeEach, expect, it, vi } from 'vitest';
+import { FakeAppServer } from '../codex/fake-app-server';
+import type { ProviderRuntimeEvent } from '../events';
+
+vi.mock('node:fs/promises', async (original) => ({
+  ...(await original<typeof fs>()),
+  realpath: async (path: string) => path,
+}));
+const servers: FakeAppServer[] = [];
+/** What the fake agent declares in `initialize`. */
+const acp = { http: true };
+vi.mock('node:child_process', () => ({
+  spawn: () => {
+    const server = new FakeAppServer();
+    server.replyAlways('initialize', () => ({
+      agentCapabilities: {
+        loadSession: true,
+        ...(acp.http ? { mcpCapabilities: { http: true } } : {}),
+      },
+    }));
+    server.replyAlways('authenticate', () => ({}));
+    server.replyAlways('session/new', () => ({ sessionId: 'native' }));
+    server.replyAlways('session/load', () => ({}));
+    server.replyAlways('session/set_mode', () => ({}));
+    server.replyAlways('session/set_model', () => ({}));
+    servers.push(server);
+    return server;
+  },
+}));
+const { createCursorAdapter, cursorAcp } = await import('./cursor-adapter');
+beforeEach(() => {
+  servers.length = 0;
+  acp.http = true;
+});
+async function setup(resume = false, env: Record<string, string> = {}) {
+  const adapter = createCursorAdapter();
+  const events: ProviderRuntimeEvent[] = [];
+  adapter.subscribe((e) => events.push(e));
+  const session = await adapter.startSession({
+    sessionId: 's',
+    cwd: '/work',
+    runtimeMode: 'approval-required',
+    env,
+    mcpServers: {
+      switch: { transport: 'stdio', command: 'node', args: ['server.js'], env: { MODE: 'test' } },
+    },
+    connectorMcpServers: [],
+    ...(resume ? { resume: { nativeSessionId: 'native' } } : {}),
+  });
+  const server = servers.at(-1)!;
+  return { adapter, events, server, session };
+}
+const flush = () => new Promise((resolve) => setImmediate(resolve));
+
+it('keeps Cursor in its agent workflow in every runtime mode, auto included', () => {
+  for (const mode of ['approval-required', 'auto-accept-edits', 'auto', 'full-access'] as const)
+    expect(cursorAcp.sessionMode?.(mode, undefined)).toBe('agent');
+});
+
+it('signs in with cursor_login only when it was given no API key', async () => {
+  const signedIn = await setup();
+  expect(signedIn.server.received.some((m) => m.method === 'authenticate')).toBe(true);
+  const withKey = await setup(false, { CURSOR_API_KEY: 'crsr_synthetic' });
+  expect(withKey.server.received.some((m) => m.method === 'authenticate')).toBe(false);
+  expect(withKey.session.nativeSessionId).toBe('native');
+});
+
+it('registers session MCP servers and resumes the exact native session', async () => {
+  const { server, session } = await setup(true);
+  expect(session.nativeSessionId).toBe('native');
+  expect(server.received.find((m) => m.method === 'session/load')?.params).toMatchObject({
+    sessionId: 'native',
+    mcpServers: [
+      {
+        name: 'switch',
+        command: 'node',
+        args: ['server.js'],
+        env: [{ name: 'MODE', value: 'test' }],
+      },
+    ],
+  });
+});
+
+it('preserves tool metadata through sparse updates and ignores replay and other sessions', async () => {
+  const { adapter, events, server } = await setup();
+  const update = (sessionId: string, update: Record<string, unknown>) =>
+    server.notify('session/update', { sessionId, update });
+  update('native', {
+    sessionUpdate: 'agent_message_chunk',
+    content: { type: 'text', text: 'replay' },
+  });
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'hello' });
+  update('other', {
+    sessionUpdate: 'agent_message_chunk',
+    content: { type: 'text', text: 'wrong' },
+  });
+  update('native', {
+    sessionUpdate: 'tool_call',
+    toolCallId: 'tool',
+    kind: 'execute',
+    title: 'Run build',
+    status: 'in_progress',
+  });
+  update('native', {
+    sessionUpdate: 'tool_call_update',
+    toolCallId: 'tool',
+    status: 'completed',
+    content: [{ type: 'content', content: { type: 'text', text: 'OK' } }],
+  });
+  expect(events.filter((e) => e.type === 'content.delta')).toEqual([]);
+  expect(events.find((e) => e.type === 'item.completed')).toMatchObject({
+    item: {
+      id: 'tool',
+      type: 'command_execution',
+      title: 'Run build',
+      status: 'completed',
+      text: 'OK',
+    },
+  });
+});
+
+it('answers the offered permission ID and excludes persistent permissions', async () => {
+  const { adapter, events, server } = await setup();
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'write' });
+  server.send({
+    id: 99,
+    method: 'session/request_permission',
+    params: {
+      sessionId: 'native',
+      toolCall: { kind: 'edit', title: 'Edit marker', toolCallId: 'edit' },
+      options: [
+        { optionId: 'once', name: 'Allow once', kind: 'allow_once' },
+        { optionId: 'save', name: 'Allow for future sessions', kind: 'allow_always' },
+        { optionId: 'once', name: 'Allow this session', kind: 'allow_always' },
+      ],
+    },
+  });
+  const request = events.find((e) => e.type === 'request.opened');
+  if (!request || request.type !== 'request.opened') throw new Error('missing approval');
+  expect(request.options.map((o) => o.label)).not.toContain('Allow for future sessions');
+  await adapter.respondToRequest('s', request.requestId, 'accept');
+  await flush();
+  expect(server.received.find((m) => m.id === 99)?.result).toEqual({
+    outcome: { outcome: 'selected', optionId: 'once' },
+  });
+});
+
+it('interrupts the native turn, cancels pending approvals and waits for cancellation before draining', async () => {
+  const { adapter, events, server } = await setup();
+  await adapter.sendTurn({ sessionId: 's', turnId: 'one', text: 'first' });
+  await adapter.sendTurn({ sessionId: 's', turnId: 'two', text: 'second' });
+  const prompt = await server.waitFor('session/prompt');
+  server.send({
+    id: 98,
+    method: 'session/request_permission',
+    params: { sessionId: 'native', toolCall: { title: 'Run', kind: 'execute' }, options: [] },
+  });
+  await adapter.interruptTurn('s');
+  await flush();
+  expect(server.received.find((m) => m.method === 'session/cancel')?.params).toEqual({
+    sessionId: 'native',
+  });
+  expect(server.received.find((m) => m.id === 98)?.result).toEqual({
+    outcome: { outcome: 'cancelled' },
+  });
+  expect(server.received.filter((m) => m.method === 'session/prompt')).toHaveLength(1);
+  server.send({ id: prompt.id, result: { stopReason: 'cancelled' } });
+  await flush();
+  expect(events.find((e) => e.type === 'turn.completed')).toMatchObject({
+    turnId: 'one',
+    outcome: 'interrupted',
+  });
+  expect(server.received.filter((m) => m.method === 'session/prompt')).toHaveLength(2);
+});
+
+it('settles active and queued turns on process exit without starting another prompt', async () => {
+  const { adapter, events, server } = await setup();
+  await adapter.sendTurn({ sessionId: 's', turnId: 'one', text: 'first' });
+  await adapter.sendTurn({ sessionId: 's', turnId: 'two', text: 'second' });
+  server.kill('SIGKILL');
+  await flush();
+  expect(adapter.hasSession('s')).toBe(false);
+  expect(events.filter((e) => e.type === 'turn.completed').map((e) => e.outcome)).toEqual([
+    'error',
+    'error',
+  ]);
+  expect(server.received.filter((m) => m.method === 'session/prompt')).toHaveLength(1);
+});
+
+it('finishes streamed assistant messages so the transcript stops showing writing', async () => {
+  const { adapter, events, server } = await setup();
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'hello' });
+  const prompt = await server.waitFor('session/prompt');
+  server.notify('session/update', {
+    sessionId: 'native',
+    update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Hello' } },
+  });
+  server.send({ id: prompt.id, result: { stopReason: 'end_turn' } });
+  await flush();
+  const delta = events.find((e) => e.type === 'content.delta');
+  if (!delta || delta.type !== 'content.delta') throw new Error('missing delta');
+  const started = events.findIndex(
+    (event) => event.type === 'item.started' && event.item.id === delta.itemId
+  );
+  expect(started).toBeGreaterThanOrEqual(0);
+  expect(started).toBeLessThan(events.indexOf(delta));
+  expect(events.find((e) => e.type === 'item.completed')).toMatchObject({
+    item: { id: delta.itemId, type: 'assistant_message', status: 'completed', text: 'Hello' },
+  });
+});
+
+it('answers Cursor questions using the offered IDs and rejects invalid answers', async () => {
+  const { adapter, events, server } = await setup();
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'ask' });
+  server.send({
+    id: 80,
+    method: '_cursor/ask_question',
+    params: {
+      questions: [{ id: 'color', prompt: 'Which color?', options: [{ id: 'g', label: 'Green' }] }],
+    },
+  });
+  const request = events.find((e) => e.type === 'user-input.requested');
+  if (!request || request.type !== 'user-input.requested') throw new Error('No question');
+  await expect(
+    adapter.respondToUserInput('s', request.requestId, { color: 'unknown' })
+  ).rejects.toThrow('Invalid answer');
+  await adapter.respondToUserInput('s', request.requestId, { color: 'g' });
+  await flush();
+  expect(server.received.find((m) => m.id === 80)?.result).toEqual({
+    outcome: { outcome: 'answered', answers: [{ questionId: 'color', selectedOptionIds: ['g'] }] },
+  });
+});
+
+it('requires an explicit plan decision and cancels questions on interrupt', async () => {
+  const { adapter, events, server } = await setup();
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'plan' });
+  server.send({
+    id: 81,
+    method: '_cursor/create_plan',
+    params: { name: 'Build', plan: '1. Inspect the source' },
+  });
+  const request = events.find((e) => e.type === 'request.opened');
+  if (!request || request.type !== 'request.opened') throw new Error('No plan');
+  expect(request.detail).toBe('1. Inspect the source');
+  await adapter.respondToRequest('s', request.requestId, 'decline');
+  server.send({ id: 82, method: '_cursor/ask_question', params: { questions: [] } });
+  await adapter.interruptTurn('s');
+  await flush();
+  expect(server.received.find((m) => m.id === 81)?.result).toEqual({
+    outcome: { outcome: 'rejected' },
+  });
+  expect(server.received.find((m) => m.id === 82)?.result).toEqual({
+    outcome: { outcome: 'cancelled' },
+  });
+});
+
+it('auto-approves only correlated tools from session-registered MCP servers', async () => {
+  const { adapter, events, server } = await setup();
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'connect' });
+  server.notify('session/update', {
+    sessionId: 'native',
+    update: {
+      sessionUpdate: 'tool_call',
+      toolCallId: 'mcp-call',
+      kind: 'other',
+      title: 'switch: list_rooms',
+      rawInput: { providerIdentifier: 'switch', toolName: 'list_rooms' },
+    },
+  });
+  const options = [{ optionId: 'once', name: 'Allow once', kind: 'allow_once' }];
+  server.send({
+    id: 90,
+    method: 'session/request_permission',
+    params: { sessionId: 'native', toolCall: { toolCallId: 'mcp-call', kind: 'other' }, options },
+  });
+  await flush();
+  expect(events.filter((e) => e.type === 'request.opened')).toHaveLength(0);
+  expect(server.received.find((m) => m.id === 90)?.result).toEqual({
+    outcome: { outcome: 'selected', optionId: 'once' },
+  });
+  server.send({
+    id: 91,
+    method: 'session/request_permission',
+    params: {
+      sessionId: 'native',
+      toolCall: { toolCallId: 'unregistered', kind: 'other', title: 'switch: pretend' },
+      options,
+    },
+  });
+  expect(events.filter((e) => e.type === 'request.opened')).toHaveLength(1);
+});
+
+it('shows raw tool results and marks native errors as failures', async () => {
+  const { adapter, server, events } = await setup();
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'run' });
+  for (const [id, rawOutput] of Object.entries({
+    shell: { exitCode: 1, stderr: 'build failed' },
+    mcp: { error: 'Not connected' },
+    denied: { permissionDenied: true },
+    ok: { success: true },
+  })) {
+    server.notify('session/update', {
+      sessionId: 'native',
+      update: { sessionUpdate: 'tool_call_update', toolCallId: id, status: 'completed', rawOutput },
+    });
+    expect(events.find((e) => e.type === 'item.completed' && e.item.id === id)).toMatchObject({
+      item: {
+        status: id === 'ok' ? 'completed' : 'failed',
+        text: JSON.stringify(rawOutput, null, 2),
+      },
+    });
+  }
+});
+
+it('serializes turns submitted synchronously by completion listeners', async () => {
+  const { adapter, server, events } = await setup();
+  adapter.subscribe((e) => {
+    if (e.type === 'turn.completed' && e.turnId === 'one') {
+      void adapter.sendTurn({ sessionId: 's', turnId: 'two', text: 'second' });
+      void adapter.sendTurn({ sessionId: 's', turnId: 'three', text: 'third' });
+    }
+  });
+  await adapter.sendTurn({ sessionId: 's', turnId: 'one', text: 'first' });
+  const prompt = server.received.find((m) => m.method === 'session/prompt')!;
+  server.send({ id: prompt.id, result: { stopReason: 'end_turn' } });
+  await flush();
+  expect(server.received.filter((m) => m.method === 'session/prompt')).toHaveLength(2);
+  expect(events.at(-1)).toMatchObject({ type: 'session.state.changed', status: 'running' });
+});
+
+const httpSwitch = {
+  switch: {
+    transport: 'http' as const,
+    url: 'http://127.0.0.1:4567/mcp',
+    headers: { Authorization: 'Bearer per-session' },
+  },
+};
+
+it('registers an HTTP MCP server with its headers when the agent declares HTTP', async () => {
+  const adapter = createCursorAdapter();
+  await adapter.startSession({
+    sessionId: 'http',
+    cwd: '/work',
+    runtimeMode: 'approval-required',
+    env: {},
+    mcpServers: httpSwitch,
+    connectorMcpServers: [],
+  });
+  expect(servers.at(-1)!.received.find((m) => m.method === 'session/new')?.params).toMatchObject({
+    mcpServers: [
+      {
+        name: 'switch',
+        type: 'http',
+        url: 'http://127.0.0.1:4567/mcp',
+        headers: [{ name: 'Authorization', value: 'Bearer per-session' }],
+      },
+    ],
+  });
+});
+
+it('refuses to start a session whose HTTP MCP servers the agent cannot reach', async () => {
+  acp.http = false;
+  const adapter = createCursorAdapter();
+  await expect(
+    adapter.startSession({
+      sessionId: 'no-http',
+      cwd: '/work',
+      runtimeMode: 'approval-required',
+      env: {},
+      mcpServers: httpSwitch,
+      connectorMcpServers: [],
+    })
+  ).rejects.toThrow('Cursor CLI does not declare MCP over HTTP');
+  expect(servers.at(-1)!.received.some((m) => m.method === 'session/new')).toBe(false);
+});

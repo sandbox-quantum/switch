@@ -1,0 +1,92 @@
+[
+  {
+    "sequence": 1735,
+    "occurredAt": "2026-10-26T11:06:13.919Z",
+    "body": {
+      "type": "turn.upsert",
+      "turnId": "ace44e5d-afe5-57b4-979e-3d96db3f9281",
+      "status": "running",
+      "commandId": "ace44e5d-afe5-57b4-979e-3d96db3f9281"
+    }
+  },
+  {
+    "sequence": 1736,
+    "occurredAt": "2026-10-26T11:06:13.953Z",
+    "body": {
+      "type": "session.upsert",
+      "status": "running"
+    }
+  },
+  {
+    "sequence": 1737,
+    "occurredAt": "2026-10-26T11:06:13.992Z",
+    "body": {
+      "type": "item.upsert",
+      "item": {
+        "itemId": "[\"ace44e5d-afe5-57b4-979e-3d96db3f9281\",\"msg_096236ae3a70457ab6ba5fb3#0\"]",
+        "turnId": "ace44e5d-afe5-57b4-979e-3d96db3f9281",
+        "revision": 1,
+        "kind": "assistant-message",
+        "status": "in-progress",
+        "title": "",
+        "text": "",
+        "attachments": [],
+        "origin": null
+      }
+    }
+  },
+  {
+    "sequence": 1738,
+    "occurredAt": "2026-10-26T11:06:13.998Z",
+    "body": {
+      "type": "item.upsert",
+      "item": {
+        "itemId": "[\"ace44e5d-afe5-57b4-979e-3d96db3f9281\",\"msg_096236ae3a70457ab6ba5fb3#0\"]",
+        "turnId": "ace44e5d-afe5-57b4-979e-3d96db3f9281",
+        "revision": 2,
+        "kind": "assistant-message",
+        "status": "completed",
+        "title": "Working for 90 s (0.5 CPU, 0 MB).",
+        "text": "Working for 90 s (0.5 CPU, 0 MB).",
+        "attachments": [],
+        "origin": null
+      }
+    }
+  },
+  {
+    "sequence": 1739,
+    "occurredAt": "2026-10-26T11:06:14.008Z",
+    "body": {
+      "type": "item.upsert",
+      "item": {
+        "itemId": "[\"ace44e5d-afe5-57b4-979e-3d96db3f9281\",\"toolu_43baf8ae41dd46aabae3646a\"]",
+        "turnId": "ace44e5d-afe5-57b4-979e-3d96db3f9281",
+        "revision": 1,
+        "kind": "tool-activity",
+        "status": "in-progress",
+        "title": "python3 -c 'import multiprocessing as m,time,sys S,C,M=90,0.5,0 buf=bytearray(M*1024*1024) for i in range(0,len(buf),4096): buf[i]=1 def burn(f): end=time.time\u2026",
+        "text": "",
+        "attachments": [],
+        "origin": null
+      }
+    }
+  },
+  {
+    "sequence": 1740,
+    "occurredAt": "2026-10-26T11:06:25.749Z",
+    "body": {
+      "type": "turn.upsert",
+      "turnId": "ace44e5d-afe5-57b4-979e-3d96db3f9281",
+      "status": "interrupted",
+      "commandId": "ace44e5d-afe5-57b4-979e-3d96db3f9281"
+    }
+  },
+  {
+    "sequence": 1741,
+    "occurredAt": "2026-10-26T11:06:55.405Z",
+    "body": {
+      "type": "session.upsert",
+      "status": "starting"
+    }
+  }
+]

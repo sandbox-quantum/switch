@@ -1,0 +1,201 @@
+import { createHash } from 'node:crypto';
+import { constants } from 'node:fs';
+import { lstat, mkdir, open, readFile, rm } from 'node:fs/promises';
+import { join } from 'node:path';
+import { AGY_LOGIN, isLegacyAntigravityRuntime } from '../antigravity/runtime';
+import { refreshCodexAuthentication } from '../codex/home';
+import { parseVertexLogin, VERTEX_CREDENTIALS_FILE } from '../vertex-login';
+import { importOpenCodeConsole } from './opencode-console';
+import type { HostedCredential } from './provider-login';
+import { replaceFile } from './replace-file';
+
+export type { HostedCredential } from './provider-login';
+
+const VERTEX_VARIABLES = [
+  'CLAUDE_CODE_USE_VERTEX',
+  'ANTHROPIC_VERTEX_PROJECT_ID',
+  'CLOUD_ML_REGION',
+  'GOOGLE_APPLICATION_CREDENTIALS',
+];
+
+/**
+ * Sets the variables `credential` signs in with in `env`, removing the others
+ * a provider could sign in with. For a `vertex` login, `root` is where its
+ * Google credential is written (`materializeHostedProvider`).
+ */
+export function applyHostedProvider(
+  env: Record<string, string>,
+  credential: HostedCredential,
+  root: string
+): void {
+  for (const key of [
+    'ANTHROPIC_API_KEY',
+    'CLAUDE_CODE_OAUTH_TOKEN',
+    'OPENAI_API_KEY',
+    'CURSOR_API_KEY',
+  ])
+    delete env[key];
+  if (credential.status === 'revoked')
+    throw new Error(
+      'The provider was disconnected. Reconnect it in Console before resuming this session.'
+    );
+  if (credential.provider === 'claude') for (const key of VERTEX_VARIABLES) delete env[key];
+  if (credential.kind === 'vertex') {
+    if (credential.provider !== 'claude')
+      throw new Error('Only Claude signs in through Vertex AI.');
+    const login = parseVertexLogin(credential.credential);
+    env.CLAUDE_CODE_USE_VERTEX = '1';
+    env.ANTHROPIC_VERTEX_PROJECT_ID = login.project;
+    env.CLOUD_ML_REGION = login.region;
+    env.GOOGLE_APPLICATION_CREDENTIALS = join(root, VERTEX_CREDENTIALS_FILE);
+    return;
+  }
+  if (credential.kind === 'auth-json') return;
+  if (!/^[\x21-\x7e]+$/.test(credential.credential))
+    throw new Error('Provider credential format is invalid.');
+  const variable =
+    credential.provider === 'claude'
+      ? credential.kind === 'api-key'
+        ? 'ANTHROPIC_API_KEY'
+        : 'CLAUDE_CODE_OAUTH_TOKEN'
+      : credential.provider === 'codex'
+        ? 'OPENAI_API_KEY'
+        : credential.provider === 'cursor'
+          ? 'CURSOR_API_KEY'
+          : null;
+  if (!variable) throw new Error('This provider requires its native authentication file.');
+  env[variable] = credential.credential;
+}
+
+async function writeAuthentication(root: string, relative: string, content: string): Promise<void> {
+  let directory = root;
+  for (const part of ['.', ...relative.split('/').slice(0, -1)]) {
+    directory = join(directory, part);
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+    if ((await lstat(directory)).isSymbolicLink())
+      throw new Error('Provider authentication directory must not be a symbolic link.');
+  }
+  const path = join(root, relative);
+  const fingerprint = createHash('sha256').update(content).digest('hex');
+  const marker = path + '.switch-credential';
+  try {
+    if ((await readFile(marker, 'utf8')) === fingerprint && (await lstat(path)).isFile()) return;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+  const temporary = path + '.switch-new';
+  const file = await open(
+    temporary,
+    constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW,
+    0o600
+  );
+  try {
+    await file.writeFile(content);
+    await file.sync();
+  } finally {
+    await file.close();
+  }
+  await replaceFile(temporary, path);
+  const record = await open(
+    marker,
+    constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW,
+    0o600
+  );
+  try {
+    await record.writeFile(fingerprint);
+    await record.sync();
+  } finally {
+    await record.close();
+  }
+}
+
+/**
+ * Every file `materializeHostedProvider` can write a login into under an agent
+ * host's root, whatever the provider, relative to the root.
+ */
+export const HOSTED_LOGIN_FILES = [
+  VERTEX_CREDENTIALS_FILE,
+  'provider-home/auth.json',
+  'provider-data/opencode/auth.json',
+  'provider-home/antigravity-acp/acp_token.json',
+] as const;
+
+/**
+ * Deletes the login files a given login left under an agent host's root, with
+ * the fingerprints and half-written copies beside them; the paths deleted,
+ * relative to the root. The agent host writes the login it is given again
+ * when it starts, so a login withdrawn or replaced leaves no copy behind.
+ */
+export async function removeHostedLoginFiles(root: string): Promise<string[]> {
+  const removed: string[] = [];
+  for (const relative of HOSTED_LOGIN_FILES)
+    for (const suffix of ['', '.switch-credential', '.switch-new']) {
+      const path = join(root, relative + suffix);
+      try {
+        await lstat(path);
+      } catch {
+        continue;
+      }
+      await rm(path, { force: true });
+      removed.push(relative + suffix);
+    }
+  return removed;
+}
+
+export async function materializeHostedProvider(
+  root: string,
+  env: Record<string, string>,
+  credential: HostedCredential,
+  binaryPath: string
+): Promise<void> {
+  applyHostedProvider(env, credential, root);
+  if (credential.status !== 'connected') return;
+  if (credential.kind === 'vertex') {
+    await writeAuthentication(
+      root,
+      VERTEX_CREDENTIALS_FILE,
+      JSON.stringify(parseVertexLogin(credential.credential).credentials)
+    );
+    return;
+  }
+  if (credential.kind === 'auth-json') {
+    try {
+      const value = JSON.parse(credential.credential);
+      if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error();
+    } catch {
+      throw new Error('Provider authentication file is not a JSON object.');
+    }
+  }
+  if (credential.provider === 'codex') {
+    const sourceHome = join(root, 'provider-home');
+    env.CODEX_HOME ||= sourceHome;
+    const content =
+      credential.kind === 'api-key'
+        ? JSON.stringify({ OPENAI_API_KEY: credential.credential })
+        : credential.credential;
+    await writeAuthentication(sourceHome, 'auth.json', content);
+    if (env.CODEX_HOME !== sourceHome) await refreshCodexAuthentication(env.CODEX_HOME, sourceHome);
+  } else if (credential.provider === 'opencode') {
+    env.XDG_DATA_HOME = join(root, 'provider-data');
+    if (JSON.parse(credential.credential).format === 'switch-opencode-console-v1') {
+      await importOpenCodeConsole(env.XDG_DATA_HOME, env, binaryPath, credential.credential);
+    } else {
+      await writeAuthentication(env.XDG_DATA_HOME, 'opencode/auth.json', credential.credential);
+    }
+  } else if (credential.provider === 'antigravity') {
+    // The login Switch holds is the token file of the runtime Switch Console
+    // used to install. Google's agy keeps its sign-in in the system keychain
+    // and never reads that file, so handing it the token would leave the
+    // session signed out, or signed in as whoever the machine already has.
+    if (!isLegacyAntigravityRuntime(binaryPath))
+      throw new Error(
+        `This agent's Antigravity sign-in was made for Antigravity ACP (antigravity-acp), which Google's agy CLI cannot use. Sign in on the execution machine with ${AGY_LOGIN}, or set GEMINI_API_KEY there, and disconnect the Antigravity login Switch holds for the agent.`
+      );
+    env.GEMINI_HOME = join(root, 'provider-home');
+    await writeAuthentication(
+      env.GEMINI_HOME,
+      'antigravity-acp/acp_token.json',
+      credential.credential
+    );
+  }
+}
