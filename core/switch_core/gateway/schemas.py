@@ -2315,6 +2315,9 @@ class TemplateDetail(TemplateSummary):
 class TemplateRunRecorded(BaseModel):
     template_id: str
     run_count: int
+    # False when a run of it was already counted for the caller a moment ago
+    # (`REPORTED_RUN_WINDOW`), so this report was not.
+    counted: bool
 
 
 # The document has its own budget (TEMPLATE_MAX_BYTES); these are the labels

@@ -877,6 +877,9 @@ async def run_template_document(
 
     The agents a run of a known template creates are recorded as its
     install (``template_installs``), so a later revision can update them.
+    A successful run of a template named by ``template_id`` is counted for
+    the catalogue here, for the caller, so the run Switch Console reports
+    after it is not counted again (``record_template_run``).
     """
     loaded = (
         await readable_template(
@@ -952,7 +955,24 @@ async def run_template_document(
             plans=plan.new_agents,
             created=result["created_agents"],
         )
+    if loaded is not None and isinstance(result, dict):
+        await _count_run(session, template_store, loaded.id, user.id)
     return result
+
+
+async def _count_run(
+    session: AsyncSession, store: TemplateStore, template_id: str, user_id: str
+) -> None:
+    """Count a run that has already made its agents and rooms. A failure here
+    is not the run's, so it is logged rather than answered as one: the run's
+    agents and rooms exist, and the report Switch Console sends next counts
+    the run instead, since nothing was counted for the caller."""
+    try:
+        await store.record_run(session, template_id, run_by=user_id)
+        await session.commit()
+    except Exception:
+        await session.rollback()
+        logger.exception("Could not count a run of template %s", template_id)
 
 
 async def _run_as_person(

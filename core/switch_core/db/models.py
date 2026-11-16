@@ -1829,11 +1829,18 @@ class TemplateRunRecord(TenantScoped, Base):
     """One run of a template in this workspace, counted for the catalogue.
 
     ``template_id`` is an ``official:`` id or a stored template's, so there is
-    no foreign key: an official template is not a row. A person's run is
-    reported by the client that ran it, once the whole run has succeeded; an
-    agent's is recorded by the operation that ran it. Nothing here says who
-    ran it, so the rows go with their template (``TemplateStore.delete``) or
-    their workspace, and erasing a person leaves nothing behind in them.
+    no foreign key: an official template is not a row. An agent's run is
+    recorded by the operation that ran it, and a person's by the route that
+    ran it when the run went through the server with the template's id.
+    Switch Console also reports every run of a template once the whole run
+    has succeeded, however it ran, and that report is believed at most once
+    per person and template in ``REPORTED_RUN_WINDOW``
+    (``TemplateStore.record_reported_run``), so a run the server counted is
+    not counted again and a reader cannot inflate a count by reporting.
+    ``run_by`` names the person a run was counted for, for that check alone
+    (an agent's run names nobody); it is cleared when their account goes.
+    The rows go with their template (``TemplateStore.delete``) or their
+    workspace.
     """
 
     __tablename__ = "template_run_records"
@@ -1843,6 +1850,13 @@ class TemplateRunRecord(TenantScoped, Base):
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
     template_id: Mapped[str] = mapped_column(Text, nullable=False)
+    run_by: Mapped[str | None] = mapped_column(
+        Text,
+        ForeignKey(
+            "users.id", ondelete="SET NULL", name="fk_template_run_records_run_by"
+        ),
+        nullable=True,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

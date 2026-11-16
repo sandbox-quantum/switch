@@ -612,21 +612,41 @@ class TestRunCounts:
     async def test_each_reported_run_is_counted_on_the_list_and_the_template(
         self, session_factory: async_sessionmaker[AsyncSession], users: dict[str, User]
     ) -> None:
-        client = _client(session_factory, users["alice"])
-        run = await _upload(client, name="run")
-        idle = await _upload(client, name="idle")
+        alice = _client(session_factory, users["alice"])
+        bob = _client(session_factory, users["bob"])
+        run = await _upload(alice, name="run")
+        idle = await _upload(alice, name="idle")
         assert run["run_count"] == 0
 
-        for expected in (1, 2):
+        for expected, client in ((1, alice), (2, bob)):
             recorded = await client.post(f"/templates/{run['id']}/runs")
             assert recorded.status_code == 201, recorded.text
-            assert recorded.json() == {"template_id": run["id"], "run_count": expected}
+            assert recorded.json() == {
+                "template_id": run["id"],
+                "run_count": expected,
+                "counted": True,
+            }
 
-        listed = {t["id"]: t for t in (await client.get("/templates")).json()}
+        listed = {t["id"]: t for t in (await alice.get("/templates")).json()}
         assert listed[run["id"]]["run_count"] == 2
         assert listed[idle["id"]]["run_count"] == 0
-        detail = await client.get(f"/templates/{run['id']}")
+        detail = await alice.get(f"/templates/{run['id']}")
         assert detail.json()["run_count"] == 2
+
+    async def test_a_reader_reporting_over_and_over_counts_once(
+        self, session_factory: async_sessionmaker[AsyncSession], users: dict[str, User]
+    ) -> None:
+        shared = await _upload(_client(session_factory, users["alice"]), name="shared")
+        bob = _client(session_factory, users["bob"])
+
+        answers = [
+            (await bob.post(f"/templates/{shared['id']}/runs")).json() for _ in range(5)
+        ]
+
+        assert [a["counted"] for a in answers] == [True, False, False, False, False]
+        assert {a["run_count"] for a in answers} == {1}
+        async with session_factory() as session:
+            assert await TemplateStore().run_count(session, shared["id"]) == 1
 
     async def test_a_run_of_an_official_template_is_counted(
         self, session_factory: async_sessionmaker[AsyncSession], users: dict[str, User]
@@ -923,8 +943,11 @@ class TestLastRun:
         before = datetime.now(UTC)
         await client.post(f"/templates/{created['id']}/runs")
         await client.post("/templates/official:switch-expert/runs")
-        second = await client.post(f"/templates/{created['id']}/runs")
-        assert second.status_code == 201
+        # Someone else's: alice's own again would be a repeat report.
+        second = await _client(session_factory, users["bob"]).post(
+            f"/templates/{created['id']}/runs"
+        )
+        assert (second.status_code, second.json()["counted"]) == (201, True)
 
         listing = {t["id"]: t for t in (await client.get("/templates")).json()}
         last = datetime.fromisoformat(listing[created["id"]]["last_run_at"])

@@ -1,10 +1,10 @@
 from collections.abc import Callable, Collection
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import Enum
 from typing import Literal
 
-from sqlalchemy import ColumnElement, delete, func, or_, select
+from sqlalchemy import ColumnElement, delete, exists, func, or_, select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,6 +17,13 @@ from switch_core.db.models import (
 )
 
 _LIKE_ESCAPE = "\\"
+
+
+# How long a person's own report of a run is not believed again for the same
+# template: a report is only a report, so without this a reader could count
+# as many runs as they liked. Long enough to cover the report Switch Console
+# sends straight after a run the server already counted.
+REPORTED_RUN_WINDOW = timedelta(minutes=10)
 
 
 class _Keep(Enum):
@@ -310,10 +317,43 @@ class TemplateStore:
         await session.delete(template)
         await session.flush()
 
-    async def record_run(self, session: AsyncSession, template_id: str) -> None:
-        """Count one run of a template, official or stored, in this tenant."""
-        session.add(TemplateRunRecord(template_id=template_id))
+    async def record_run(
+        self, session: AsyncSession, template_id: str, *, run_by: str | None
+    ) -> None:
+        """Count one run of a template, official or stored, in this tenant,
+        that the server made itself: an agent's (``run_by`` None) or a
+        person's. Always counted, since it happened."""
+        session.add(TemplateRunRecord(template_id=template_id, run_by=run_by))
         await session.flush()
+
+    async def record_reported_run(
+        self, session: AsyncSession, template_id: str, user_id: str
+    ) -> bool:
+        """Count a run a person's client reports, unless a run of this
+        template was counted for them in the last ``REPORTED_RUN_WINDOW``,
+        whether reported or made by the server. True when it was counted.
+
+        Two reports side by side are taken one at a time, held to the commit,
+        so both cannot find nothing and both count."""
+        tenant_id = require_tenant_id()
+        await session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+            {"key": f"template-run-report:{tenant_id}:{template_id}:{user_id}"},
+        )
+        recent = await session.scalar(
+            select(
+                exists().where(
+                    TemplateRunRecord.tenant_id == tenant_id,
+                    TemplateRunRecord.template_id == template_id,
+                    TemplateRunRecord.run_by == user_id,
+                    TemplateRunRecord.created_at > func.now() - REPORTED_RUN_WINDOW,
+                )
+            )
+        )
+        if recent:
+            return False
+        await self.record_run(session, template_id, run_by=user_id)
+        return True
 
     async def run_stats(
         self, session: AsyncSession, template_ids: Collection[str]

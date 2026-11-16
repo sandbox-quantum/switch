@@ -590,17 +590,23 @@ async def record_template_run(
 ) -> TemplateRunRecorded:
     """Count a run of a template the caller may read, as Switch Console
     reports once a whole run has succeeded, however it ran: through the
-    server or with agents it made itself. Only a count, so it does not check
-    that a run happened; it is refused, as not found, for a template the
-    caller could not have run."""
+    server or with agents it made itself. It is refused, as not found, for a
+    template the caller could not have run.
+
+    Nothing checks that a run happened, so a person's report is believed at
+    most once per template in ``REPORTED_RUN_WINDOW``, and not at all within
+    that window of a run the server counted for them itself
+    (``from-template-document`` with the template's id), which Console
+    reports as well. ``counted`` says whether this one was."""
     await readable_template(
         template_id, session, template_store, user, is_admin, config
     )
-    await template_store.record_run(session, template_id)
+    counted = await template_store.record_reported_run(session, template_id, user.id)
     await session.commit()
     return TemplateRunRecorded(
         template_id=template_id,
         run_count=await template_store.run_count(session, template_id),
+        counted=counted,
     )
 
 

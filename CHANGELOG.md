@@ -263,7 +263,11 @@ version of their own to them without also giving them a release of their own.
   not run it by hand (switch-buddy, which Switch Console sets up itself).
   `POST /templates/{id}/runs` counts a run of a template the caller may read.
   Switch Console reports each finished run there, and the agent operation
-  `run_template` counts its own. Runs from before this release are not
+  `run_template` counts its own, as does `POST /rooms/from-template-document`
+  when it is given the template's id. Nothing checks that a reported run
+  happened, so a person's report counts at most once per template in ten
+  minutes, and not at all just after a run the server counted for them; the
+  answer's `counted` says which. Runs from before this release are not
   counted.
 - **`switch-purge-organization` deletes an organization when its owner
   asks.** Run where switch-core runs, it shows what would go and what stays;

@@ -2296,7 +2296,7 @@ async def _count_run(template_id: str) -> None:
     reported as failed to an agent that might then run it again."""
     try:
         async with get_protocol().session_factory() as session:
-            await TemplateStore().record_run(session, template_id)
+            await TemplateStore().record_run(session, template_id, run_by=None)
             await session.commit()
     except Exception:
         logger.exception("Could not count a run of template %s", template_id)
