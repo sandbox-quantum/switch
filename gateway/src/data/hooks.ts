@@ -8,7 +8,6 @@ import {
   type Budget,
   type CurrentTenant,
   type UsageTotal,
-  type ApiKeyDetail,
   type BridgeDetail,
   type BridgeTypeInfo,
   type ExternalUserSummary,
@@ -35,7 +34,6 @@ import {
   fetchAgent,
   fetchAgents,
   fetchRoomAgentCandidates,
-  fetchApiKeys,
   fetchBudgets,
   fetchCurrentTenant,
   fetchUsage,
@@ -235,10 +233,6 @@ export function useConnectorApps(scope: ConnectorAppScope): UseQueryResult<Conne
 
 export function useUsers(): UseQueryResult<ListedUser[]> {
   return useQuery(fetchUsers);
-}
-
-export function useApiKeys(): UseQueryResult<ApiKeyDetail[]> {
-  return useQuery(fetchApiKeys);
 }
 
 export function useReferences(): UseQueryResult<ReferenceDetail[]> {

@@ -1,6 +1,7 @@
 import CloudOutlined from "@mui/icons-material/CloudOutlined";
 import ComputerOutlined from "@mui/icons-material/ComputerOutlined";
 import TerminalOutlined from "@mui/icons-material/TerminalOutlined";
+import WarningAmberOutlined from "@mui/icons-material/WarningAmberOutlined";
 import { Box, Chip, Stack, Tooltip, Typography } from "@mui/material";
 import { type ReactNode, useMemo } from "react";
 import DataTable, { type FilterOption, type SelectFilter, type TableColumn } from "../../components/DataTable";
@@ -8,6 +9,7 @@ import RowActionsMenu, { type RowAction } from "../../components/RowActionsMenu"
 import type { DeviceType, WorkspaceDevice } from "../../data/management";
 import { EM_DASH, MONO_SX, absoluteTitle, formatRelative } from "../../theme/format";
 import type { CloudPresentation } from "./cloudMachine";
+import { connectionDetail, deviceProblems } from "./deviceHealth";
 
 /** A device as the table shows it. `cloud` is its owner's cloud machine as
  *  they see it, shown in place of online and offline; `workspace_name` is for
@@ -23,19 +25,16 @@ export const DEVICE_TYPES: Record<DeviceType, { label: string; icon: ReactNode }
   cloud: { label: "Cloud", icon: <CloudOutlined fontSize="small" /> },
 };
 
-const STATES: Record<WorkspaceDevice["state"], { label: string; color: "success" | "default"; detail: string }> = {
-  online: { label: "Online", color: "success", detail: "Connected to Switch now." },
-  offline: { label: "Offline", color: "default", detail: "Not connected to Switch now." },
-  unknown: {
-    label: "Never connected",
-    color: "default",
-    detail: "Has never connected to Switch. Start its controller with switch-agent-controller run.",
-  },
-  revoked: { label: "Removed", color: "default", detail: "Removed from Switch." },
+const STATES: Record<WorkspaceDevice["state"], { label: string; color: "success" | "default" }> = {
+  online: { label: "Online", color: "success" },
+  offline: { label: "Offline", color: "default" },
+  unknown: { label: "Never connected", color: "default" },
+  revoked: { label: "Removed", color: "default" },
 };
 
-/** The state the row's chip says, and what it says on hover. A cloud
- *  machine that is not ready says what it is doing instead. */
+/** The state the row's chip says, and what it says on hover: when it
+ *  connected, or when and why it went. A cloud machine that is not ready
+ *  says what it is doing instead. */
 export function deviceState(row: DeviceTableRow): { label: string; color: "success" | "warning" | "default"; detail: string } {
   if (row.cloud && row.cloud.label !== "Ready") {
     return {
@@ -44,7 +43,7 @@ export function deviceState(row: DeviceTableRow): { label: string; color: "succe
       detail: row.cloud.problem ?? `Your cloud device is ${row.cloud.label.toLowerCase()}.`,
     };
   }
-  return STATES[row.state];
+  return { ...STATES[row.state], detail: connectionDetail(row) };
 }
 
 export function agentsCell(row: WorkspaceDevice): string {
@@ -63,18 +62,22 @@ const PAGE_SIZE = 10;
  * Devices, each with its owner when `showOwner`, and its workspace when
  * `showWorkspace`: Workspace › Devices shows one workspace's, and
  * Organization › Devices every workspace's. What each row offers is the
- * page's (`actionsFor`), from the row's own `can_*`.
+ * page's (`actionsFor`), from the row's own `can_*`. A device with something
+ * wrong (its controller off the release, a provider not signed in) says so
+ * beside its state; its details say the rest.
  */
 export default function DevicesTable({
   rows,
   showOwner,
   showWorkspace = false,
+  providerLabel,
   actionsFor,
   emptyState,
 }: {
   rows: DeviceTableRow[];
   showOwner: boolean;
   showWorkspace?: boolean;
+  providerLabel: (provider: string) => string;
   actionsFor: (row: DeviceTableRow) => RowAction[];
   emptyState: ReactNode;
 }) {
@@ -126,15 +129,27 @@ export default function DevicesTable({
       {
         field: "state",
         headerName: "State",
-        width: 150,
+        width: 180,
         valueGetter: (_value, row) => deviceState(row).label,
         filter: { value: (row) => deviceState(row).label, options: states },
         renderCell: ({ row }) => {
           const state = deviceState(row);
+          const problems = deviceProblems(row, providerLabel);
           return (
-            <Tooltip title={state.detail}>
-              <Chip size="small" color={state.color} label={state.label} />
-            </Tooltip>
+            <Stack direction="row" spacing={0.75} sx={{ alignItems: "center", height: "100%" }}>
+              <Tooltip title={state.detail}>
+                <Chip size="small" color={state.color} label={state.label} />
+              </Tooltip>
+              {problems.length > 0 && (
+                <Tooltip title={`Needs attention: ${problems.join(" ")}`}>
+                  <WarningAmberOutlined
+                    fontSize="small"
+                    color="warning"
+                    titleAccess={`Needs attention: ${problems.join(" ")}`}
+                  />
+                </Tooltip>
+              )}
+            </Stack>
           );
         },
       },
@@ -199,7 +214,7 @@ export default function DevicesTable({
         ),
       },
     ];
-  }, [rows, showOwner, showWorkspace, actionsFor]);
+  }, [rows, showOwner, showWorkspace, providerLabel, actionsFor]);
 
   const selectFilters = useMemo<SelectFilter[]>(
     () => [

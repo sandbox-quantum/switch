@@ -52,7 +52,18 @@ export function actualState(row: WorkspaceManagedAgent): { label: string; color:
     };
   if (row.process === null)
     return { label: "not reported yet", color: "default", detail: "Its device hasn't reported this agent yet." };
-  return { label: row.process, color: PROCESS_COLOR[row.process] ?? "default", detail: "What its device last reported." };
+  const why = [row.process_reason, row.process_detail].filter(Boolean).join(": ");
+  return {
+    label: row.process_reason ? `${row.process}: ${row.process_reason}` : row.process,
+    color: PROCESS_COLOR[row.process] ?? "default",
+    detail: why || "What its device last reported.",
+  };
+}
+
+/** Whether its device is still to apply the latest change to the agent:
+ *  only said of one whose device is connected and reporting it. */
+export function stillUpdating(row: WorkspaceManagedAgent): boolean {
+  return row.updating && row.controller_state === "online" && row.process !== null;
 }
 
 const byLabel = (a: FilterOption, b: FilterOption) => a.label.localeCompare(b.label);
@@ -157,15 +168,22 @@ export default function ManagedAgentsTable({
       {
         field: "process",
         headerName: "Actual",
-        width: 160,
+        width: 200,
         valueGetter: (_value, row) => actualState(row)?.label ?? "",
         renderCell: ({ row }) => {
           const actual = actualState(row);
           if (actual === null) return EM_DASH;
           return (
-            <Tooltip title={actual.detail}>
-              <Chip size="small" color={actual.color} label={actual.label} />
-            </Tooltip>
+            <Stack direction="row" spacing={0.5} sx={{ alignItems: "center", height: "100%", overflow: "hidden" }}>
+              <Tooltip title={actual.detail}>
+                <Chip size="small" color={actual.color} label={actual.label} />
+              </Tooltip>
+              {stillUpdating(row) && (
+                <Tooltip title="Its device hasn't applied the latest change to this agent yet.">
+                  <Chip size="small" variant="outlined" label="updating" />
+                </Tooltip>
+              )}
+            </Stack>
           );
         },
       },

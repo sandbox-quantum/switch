@@ -1,6 +1,7 @@
 import AddCircleOutline from "@mui/icons-material/AddCircleOutline";
 import DeleteOutline from "@mui/icons-material/DeleteOutline";
 import EditOutlined from "@mui/icons-material/EditOutlined";
+import InfoOutlined from "@mui/icons-material/InfoOutlined";
 import LinkOffOutlined from "@mui/icons-material/LinkOffOutlined";
 import PauseCircleOutline from "@mui/icons-material/PauseCircleOutline";
 import PlayCircleOutline from "@mui/icons-material/PlayCircleOutline";
@@ -52,6 +53,7 @@ import AddMachineDialog from "../machines/AddMachineDialog";
 import EditMachineDialog from "../machines/EditMachineDialog";
 import ManagedAgentDialog from "../machines/ManagedAgentDialog";
 import { cloudPresentation } from "./cloudMachine";
+import DeviceDetailsDialog from "./DeviceDetailsDialog";
 import DevicesTable, { type DeviceTableRow } from "./DevicesTable";
 import ManagedAgentsTable, { type ManagedAgentTableRow, managedAgentRows } from "./ManagedAgentsTable";
 
@@ -119,6 +121,11 @@ export function withCloud(
       providers: [],
       agents_total: 0,
       agents_running: 0,
+      connection: null,
+      release: null,
+      update: null,
+      updated_by_console: false,
+      provider_reports: [],
       can_edit: false,
       can_recheck: false,
       can_remove: false,
@@ -182,6 +189,8 @@ function Devices({
   // its words; the `…Open` flags alone open and close them.
   const [removing, setRemoving] = useState<DeviceTableRow | null>(null);
   const [removeOpen, setRemoveOpen] = useState(false);
+  const [detailsOf, setDetailsOf] = useState<DeviceTableRow | null>(null);
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const [unmanaging, setUnmanaging] = useState<ManagedAgentTableRow | null>(null);
   const [unmanageOpen, setUnmanageOpen] = useState(false);
   const [deleting, setDeleting] = useState<ManagedAgentTableRow | null>(null);
@@ -268,6 +277,17 @@ function Devices({
     (row: DeviceTableRow): RowAction[] => {
       const actions: RowAction[] = [];
       const cloudOfYours = row.type === "cloud" && row.owner_id === userId;
+      // A cloud device not yet enrolled here has reported nothing to show.
+      if (!row.id.startsWith("cloud:")) {
+        actions.push({
+          label: "Details",
+          icon: <InfoOutlined fontSize="small" />,
+          onClick: () => {
+            setDetailsOf(row);
+            setDetailsOpen(true);
+          },
+        });
+      }
       if (row.can_recheck) {
         actions.push({
           label: "Refresh",
@@ -492,7 +512,13 @@ function Devices({
   } else {
     body = (
       <Stack spacing={4}>
-        <DevicesTable rows={deviceRows} showOwner={showOwner} actionsFor={deviceActions} emptyState={emptyDevices} />
+        <DevicesTable
+          rows={deviceRows}
+          showOwner={showOwner}
+          providerLabel={label}
+          actionsFor={deviceActions}
+          emptyState={emptyDevices}
+        />
         <Box>
           <Stack direction="row" spacing={2} sx={{ alignItems: "center", justifyContent: "space-between", mb: 2 }}>
             <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
@@ -593,6 +619,14 @@ function Devices({
           setNotice({ severity: "success", text: `Saved ${saved.name}.` });
           void load();
         }}
+      />
+
+      <DeviceDetailsDialog
+        open={detailsOpen}
+        // The row as it is now, so the dialog follows each refresh.
+        device={deviceRows.find((row) => row.id === detailsOf?.id) ?? detailsOf}
+        providerLabel={label}
+        onClose={() => setDetailsOpen(false)}
       />
 
       <ManagedAgentDialog

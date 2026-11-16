@@ -1,4 +1,5 @@
 import DeleteOutline from "@mui/icons-material/DeleteOutline";
+import InfoOutlined from "@mui/icons-material/InfoOutlined";
 import LinkOffOutlined from "@mui/icons-material/LinkOffOutlined";
 import { Alert, Box, Button, Card, CircularProgress, Stack, Typography } from "@mui/material";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -16,6 +17,7 @@ import {
   removeOrganizationDevice,
   unmanageOrganizationAgent,
 } from "../../../data/management";
+import DeviceDetailsDialog from "../../devices/DeviceDetailsDialog";
 import DevicesTable, { type DeviceTableRow } from "../../devices/DevicesTable";
 import ManagedAgentsTable, { type ManagedAgentTableRow } from "../../devices/ManagedAgentsTable";
 
@@ -61,6 +63,8 @@ export default function OrganizationDevicesSettings({ organizationName }: { orga
   // its words; the `…Open` flags alone open and close them.
   const [removing, setRemoving] = useState<DeviceRow | null>(null);
   const [removeOpen, setRemoveOpen] = useState(false);
+  const [detailsOf, setDetailsOf] = useState<DeviceRow | null>(null);
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const [unmanaging, setUnmanaging] = useState<AgentRow | null>(null);
   const [unmanageOpen, setUnmanageOpen] = useState(false);
   const latest = useRef(0);
@@ -95,10 +99,18 @@ export default function OrganizationDevicesSettings({ organizationName }: { orga
   const agents = useMemo(() => agentRows(data), [data]);
 
   const deviceActions = useCallback((row: DeviceTableRow): RowAction[] => {
-    const cloud = row.type === "cloud";
-    if (!row.can_remove && !cloud) return [];
-    return [
+    const actions: RowAction[] = [
       {
+        label: "Details",
+        icon: <InfoOutlined fontSize="small" />,
+        onClick: () => {
+          setDetailsOf(row as DeviceRow);
+          setDetailsOpen(true);
+        },
+      },
+    ];
+    if (row.can_remove || row.type === "cloud") {
+      actions.push({
         label: "Remove",
         icon: <DeleteOutline fontSize="small" />,
         destructive: true,
@@ -107,8 +119,9 @@ export default function OrganizationDevicesSettings({ organizationName }: { orga
           setRemoving(row as DeviceRow);
           setRemoveOpen(true);
         },
-      },
-    ];
+      });
+    }
+    return actions;
   }, []);
 
   const agentActions = useCallback(
@@ -159,6 +172,7 @@ export default function OrganizationDevicesSettings({ organizationName }: { orga
           rows={devices}
           showOwner
           showWorkspace
+          providerLabel={label}
           actionsFor={deviceActions}
           emptyState={empty("No devices yet", "Devices are added from a workspace's own Devices page.")}
         />
@@ -218,6 +232,14 @@ export default function OrganizationDevicesSettings({ organizationName }: { orga
       </Stack>
 
       {body}
+
+      <DeviceDetailsDialog
+        open={detailsOpen}
+        // The row as it is now, so the dialog follows each refresh.
+        device={devices.find((row) => row.id === detailsOf?.id) ?? detailsOf}
+        providerLabel={label}
+        onClose={() => setDetailsOpen(false)}
+      />
 
       <ConfirmDialog
         open={removeOpen}

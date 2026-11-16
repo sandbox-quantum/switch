@@ -14,6 +14,7 @@ import pytest
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.config import ControllerRelease
 from switch_core.db.models import (
     TENANT_ZERO_ID,
     AgentController,
@@ -33,11 +34,18 @@ from tests.switch_core.management.harness import (
     cookies_for,
     create_managed_agent,
     enroll_console,
+    enroll_daemon,
     provider,
     report_status,
 )
 
 WORKSPACE = "/gateway/management/workspace"
+
+_RELEASE = ControllerRelease(
+    version="0.31.0",
+    url="https://example.com/switch-agent-controller-0.31.0.tgz",
+    sha256="b" * 64,
+)
 
 
 @pytest.fixture
@@ -160,6 +168,85 @@ class TestTheWorkspaceList:
         [device] = listed.json()["devices"]
         assert device["state"] == "offline"
         assert (device["agents_total"], device["agents_running"]) == (1, 0)
+
+    async def test_each_device_says_how_it_is_doing(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        # What an admin needs to tell a device that is fine from one that is
+        # not: its connection, its release, each provider's install and
+        # sign-in, and an agent's reason and whether it is still updating.
+        harness = build_harness(session_factory, controller_release=_RELEASE)
+        ada = await add_member(harness.session_factory, "ada")
+        carol = await _admin(harness.session_factory, "carol")
+        async with harness.client() as client:
+            controller, agent_id = await _device_with_agent(
+                harness, client, ada, "scout"
+            )
+            await report_status(
+                client,
+                controller,
+                3,
+                providers=[
+                    provider("claude"),
+                    provider("codex", auth="expired", auth_problem="token expired"),
+                    provider("opencode", installed=False, auth="missing"),
+                ],
+                agents=[
+                    {
+                        "agent_id": agent_id,
+                        "applied_revision": 0,
+                        "process": "crashed",
+                        "reason": "exit_code",
+                        "detail": "exited with 1",
+                        "attached": True,
+                        "sessions": {"active": 0, "ids": []},
+                        "restarts_10m": 3,
+                        "oom_kills": 0,
+                        "directory": f"{WORKSPACES_DIR}/scout",
+                        "since": "2026-01-01T00:00:00Z",
+                    }
+                ],
+            )
+            listed = await client.get(WORKSPACE, cookies=cookies_for(carol))
+
+        [device] = listed.json()["devices"]
+        assert device["connection"]["connected_at"] is not None
+        assert device["connection"]["disconnect_reason"] is None
+        # Switch Console updates its own controller, so no release is named.
+        assert (device["release"], device["updated_by_console"]) == (None, True)
+        reports = {entry["provider"]: entry for entry in device["provider_reports"]}
+        assert (reports["claude"]["installed"], reports["claude"]["auth"]) == (
+            True,
+            "ok",
+        )
+        assert reports["codex"]["auth"] == "expired"
+        assert reports["opencode"]["installed"] is False
+        assert device["providers"] == ["claude", "codex", "opencode"]
+        [agent] = listed.json()["managed_agents"]
+        assert (agent["process"], agent["process_reason"], agent["process_detail"]) == (
+            "crashed",
+            "exit_code",
+            "exited with 1",
+        )
+        assert agent["updating"] is True
+
+    async def test_a_headless_device_says_whether_it_runs_the_release(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        harness = build_harness(session_factory, controller_release=_RELEASE)
+        ada = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            await enroll_daemon(harness, client, ada)
+            listed = await client.get(WORKSPACE, cookies=cookies_for(ada))
+
+        [device] = listed.json()["devices"]
+        assert device["updated_by_console"] is False
+        assert device["release"] == {
+            "wanted": _RELEASE.version,
+            "running": device["version"],
+            "current": device["version"] == _RELEASE.version,
+        }
+        assert device["connection"] is None
 
     async def test_a_removed_device_is_left_out(self, harness: Harness) -> None:
         ada = await add_member(harness.session_factory, "ada")

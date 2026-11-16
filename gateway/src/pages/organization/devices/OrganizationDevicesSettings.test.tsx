@@ -26,6 +26,20 @@ function device(id: string, extra: Partial<WorkspaceDevice> = {}): WorkspaceDevi
     providers: ["claude"],
     agents_total: 1,
     agents_running: 1,
+    connection: { connected_at: "2026-11-12T09:00:00Z", disconnected_at: null, disconnect_reason: null },
+    release: null,
+    update: null,
+    updated_by_console: true,
+    provider_reports: [
+      {
+        provider: "claude",
+        installed: true,
+        version: "2.0.1",
+        auth: "ok",
+        auth_source: "local",
+        checked_at: "2026-11-12T10:00:00Z",
+      },
+    ],
     can_edit: false,
     can_recheck: false,
     can_remove: true,
@@ -45,6 +59,9 @@ function managed(id: string, extra: Partial<WorkspaceManagedAgent> = {}): Worksp
     controller_state: "online",
     desired_state: "running",
     process: "running",
+    process_reason: null,
+    process_detail: null,
+    updating: false,
     owner_id: "u2",
     owner_name: "Grace",
     can_edit: false,
@@ -88,7 +105,7 @@ describe("OrganizationDevicesSettings", () => {
     expect(within(screen.getByTestId("row-scout")).getByText("Lab")).toBeTruthy();
     // Only what an admin of the workspace does: what the owner does stays on
     // the workspace's own page.
-    expect(await menuOf("lab-box", "lab-box")).toEqual(["Remove"]);
+    expect(await menuOf("lab-box", "lab-box")).toEqual(["Details", "Remove"]);
   });
 
   it("removes a device in its own workspace, saying whose and where", async () => {
@@ -132,7 +149,7 @@ describe("OrganizationDevicesSettings", () => {
     });
     render(<OrganizationDevicesSettings organizationName="Acme" />);
 
-    expect(await menuOf("cloud-1", "cloud-1")).toEqual(["RemoveSwitch manages cloud devices."]);
+    expect(await menuOf("cloud-1", "cloud-1")).toEqual(["Details", "RemoveSwitch manages cloud devices."]);
   });
 
   it("shows why the list could not load, with a retry", async () => {

@@ -24,6 +24,20 @@ function device(id: string, extra: Partial<WorkspaceDevice> = {}): WorkspaceDevi
     providers: ["claude"],
     agents_total: 1,
     agents_running: 1,
+    connection: { connected_at: "2026-11-12T09:00:00Z", disconnected_at: null, disconnect_reason: null },
+    release: null,
+    update: null,
+    updated_by_console: true,
+    provider_reports: [
+      {
+        provider: "claude",
+        installed: true,
+        version: "2.0.1",
+        auth: "ok",
+        auth_source: "local",
+        checked_at: "2026-11-12T10:00:00Z",
+      },
+    ],
     can_edit: true,
     can_recheck: true,
     can_remove: true,
@@ -43,6 +57,9 @@ function managed(id: string, extra: Partial<WorkspaceManagedAgent> = {}): Worksp
     controller_state: "online",
     desired_state: "running",
     process: "running",
+    process_reason: null,
+    process_detail: null,
+    updating: false,
     owner_id: "u1",
     owner_name: "Ada",
     can_edit: true,
@@ -109,7 +126,7 @@ describe("DevicesPage", () => {
     expect(await screen.findByText("The devices that run agents in Acme.")).toBeTruthy();
     expect(within(screen.getByTestId("row-grace-laptop")).getByText("Grace")).toBeTruthy();
     expect(within(screen.getByTestId("row-laptop")).getByText("1 of 1 running")).toBeTruthy();
-    expect(await menuOf("grace-laptop", "grace-laptop")).toEqual(["Remove"]);
+    expect(await menuOf("grace-laptop", "grace-laptop")).toEqual(["Details", "Remove"]);
   });
 
   it("removes someone else's device, saying whose it is", async () => {
@@ -134,7 +151,7 @@ describe("DevicesPage", () => {
     render(<DevicesPage />);
 
     expect(await screen.findByText("Your devices that run agents in Acme.")).toBeTruthy();
-    expect(await menuOf("laptop", "laptop")).toEqual(["Refreshlaptop is offline.", "Edit", "Remove"]);
+    expect(await menuOf("laptop", "laptop")).toEqual(["Details", "Refreshlaptop is offline.", "Edit", "Remove"]);
   });
 
   it("asks an online device to report in", async () => {
@@ -165,6 +182,7 @@ describe("DevicesPage", () => {
     expect(row.getByText("Sleeping")).toBeTruthy();
     expect(row.getByText("Cloud")).toBeTruthy();
     expect(await menuOf("cloud-1", "Switch cloud")).toEqual([
+      "Details",
       "Refresh",
       "Stop",
       "EditSwitch manages cloud devices.",
@@ -172,7 +190,7 @@ describe("DevicesPage", () => {
     ]);
   });
 
-  it("offers an admin nothing to do with someone else's cloud device", async () => {
+  it("offers an admin nothing but the details of someone else's cloud device", async () => {
     signedInAs("admin");
     serve([
       device("grace-cloud", {
@@ -191,7 +209,7 @@ describe("DevicesPage", () => {
     const row = within(await screen.findByTestId("row-grace-cloud"));
     expect(row.getByText("Cloud")).toBeTruthy();
     expect(row.getByText("Online")).toBeTruthy();
-    expect(row.queryByRole("button")).toBeNull();
+    expect(await menuOf("grace-cloud", "Switch cloud")).toEqual(["Details"]);
   });
 
   it("holds the cloud device's actions while one is on its way", async () => {
@@ -303,6 +321,69 @@ describe("DevicesPage", () => {
 
     expect(await screen.findByText("Deleted theirs.")).toBeTruthy();
     expect(calls.some((call) => call.method === "DELETE" && call.path === "/agents/theirs")).toBe(true);
+  });
+
+  it("says what needs attention on a device beside its state", async () => {
+    signedInAs("member");
+    serve([
+      device("laptop", {
+        updated_by_console: false,
+        version: "0.30.0",
+        release: { wanted: "0.31.0", running: "0.30.0", current: false },
+        provider_reports: [
+          { provider: "claude", installed: true, version: "2.0.1", auth: "ok", auth_source: "local", checked_at: "2026-11-12T10:00:00Z" },
+          { provider: "codex", installed: true, version: "0.9", auth: "expired", auth_source: "local", checked_at: "2026-11-12T10:00:00Z" },
+          { provider: "opencode", installed: false, version: null, auth: "missing", auth_source: null, checked_at: "2026-11-12T10:00:00Z" },
+        ],
+      }),
+      device("desk", { name: "desk" }),
+    ]);
+    render(<DevicesPage />);
+
+    // A provider it reports missing is only absent, not a problem.
+    const flagged = within(await screen.findByTestId("row-laptop"));
+    expect(
+      await flagged.findByRole("img", { name: "Needs attention: Controller behind. codex: sign-in expired." }),
+    ).toBeTruthy();
+    expect(within(screen.getByTestId("row-desk")).queryByRole("img", { name: /Needs attention/ })).toBeNull();
+  });
+
+  it("shows a device's connection, controller and each provider in its details", async () => {
+    signedInAs("member");
+    serve([
+      device("laptop", {
+        state: "offline",
+        connection: {
+          connected_at: "2026-11-12T09:00:00Z",
+          disconnected_at: "2026-11-12T10:00:00Z",
+          disconnect_reason: "heartbeat_lapsed",
+        },
+      }),
+    ]);
+    render(<DevicesPage />);
+
+    await menuOf("laptop", "laptop");
+    fireEvent.click(screen.getByRole("menuitem", { name: /Details/ }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText(/Disconnected .*: its connection stopped responding\./)).toBeTruthy();
+    expect(within(dialog).getByText("Updates with Switch Console, which runs it.")).toBeTruthy();
+    const providers = within(dialog).getByRole("table", { name: "Agent providers on laptop" });
+    expect(within(providers).getByText("Claude Code")).toBeTruthy();
+    expect(within(providers).getByText("2.0.1")).toBeTruthy();
+    expect(within(providers).getByText("signed in")).toBeTruthy();
+  });
+
+  it("says why an agent is in its state, and that its device is still updating it", async () => {
+    signedInAs("member");
+    serve(
+      [device("laptop")],
+      [managed("helper", { process: "crashed", process_reason: "exit_code", process_detail: "exited with 1", updating: true })],
+    );
+    render(<DevicesPage />);
+
+    const row = within(await screen.findByTestId("row-helper"));
+    expect(row.getByText("crashed: exit_code")).toBeTruthy();
+    expect(row.getByText("updating")).toBeTruthy();
   });
 
   it("says when the devices can't be loaded", async () => {

@@ -1035,10 +1035,6 @@ export interface CreateApiKeyResult {
 /** Days until a new key stops working, or `"never"`. The server allows 1–365. */
 export type ApiKeyLifetime = number | "never";
 
-export async function fetchApiKeys(): Promise<ApiKeyDetail[] | null> {
-  return fetchJson<ApiKeyDetail[]>("/api-keys");
-}
-
 /** The caller's own keys. */
 export async function loadApiKeys(): Promise<ApiKeyDetail[]> {
   return jsonRequest<ApiKeyDetail[]>("/api-keys", "GET");

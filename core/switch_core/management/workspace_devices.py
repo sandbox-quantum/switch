@@ -15,16 +15,21 @@ from typing import Any, Literal
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.authz import Principal
+from switch_core.config import ControllerRelease
 from switch_core.db.models import AgentController, AgentDefinition
 from switch_core.db.stores.user_store import UserStore
 from switch_core.management.placement import is_revoked
 from switch_core.management.schemas import (
     agent_status_from,
+    connection_view,
     operation_view,
+    release_view,
+    updated_by_console,
     wire_time,
     wire_time_or_none,
 )
 from switch_core.management.service import OPERATION_LIST_LIMIT, ManagementService
+from switch_core.process_lease import ProcessLeases
 
 DeviceType = Literal["computer", "remote_ssh", "cloud"]
 
@@ -43,13 +48,21 @@ def device_type(controller: AgentController) -> DeviceType:
     return "computer"
 
 
-def _reported_providers(controller: AgentController) -> list[str]:
+def _provider_reports(controller: AgentController) -> list[dict[str, Any]]:
+    """Each provider the controller last reported: installed or not, its
+    sign-in, version and when it checked."""
     providers = (controller.status or {}).get("providers")
     return [
-        entry["provider"]
+        entry
         for entry in (providers if isinstance(providers, list) else [])
         if isinstance(entry, dict) and isinstance(entry.get("provider"), str)
     ]
+
+
+def _update_report(controller: AgentController) -> dict[str, Any] | None:
+    """Where the controller last said it stands in moving to a release."""
+    update = (controller.status or {}).get("update")
+    return update if isinstance(update, dict) else None
 
 
 def _device(
@@ -58,6 +71,8 @@ def _device(
     placed: list[AgentDefinition],
     owner_name: str,
     viewer: Principal,
+    leases: ProcessLeases,
+    release: ControllerRelease | None,
 ) -> dict[str, Any]:
     owns = controller.owner_id == viewer.id
     cloud = controller.kind == "ec2"
@@ -81,7 +96,7 @@ def _device(
         "created_at": wire_time(controller.created_at),
         "owner_id": controller.owner_id,
         "owner_name": owner_name,
-        "providers": _reported_providers(controller),
+        "providers": [entry["provider"] for entry in _provider_reports(controller)],
         "agents_total": len(placed),
         "agents_running": running,
         # Its owner renames it and asks it to re-check its providers; it is
@@ -90,6 +105,14 @@ def _device(
         "can_edit": owns and not cloud,
         "can_recheck": owns,
         "can_remove": (owns or viewer.is_admin) and not cloud,
+        # Its health, for whoever sees it: when it connected or why it went,
+        # whether it runs the release Switch names, and each provider's
+        # install and sign-in as it last reported them.
+        "connection": connection_view(controller, leases),
+        "release": release_view(controller, release),
+        "update": _update_report(controller),
+        "updated_by_console": updated_by_console(controller),
+        "provider_reports": _provider_reports(controller),
     }
 
 
@@ -115,8 +138,13 @@ def _managed_agent(
         "controller_state": state,
         "desired_state": row.desired_state,
         # What its device last reported of it: null before it has, and for
-        # one placed nowhere.
+        # one placed nowhere. `updating` while its device runs an older
+        # revision of its definition than the latest.
         "process": None if status is None else status.get("process"),
+        "process_reason": None if status is None else status.get("reason"),
+        "process_detail": None if status is None else status.get("detail"),
+        "updating": status is not None
+        and status.get("applied_revision") != row.revision,
         "owner_id": row.owner_id,
         "owner_name": owner_name,
         # Its owner starts, stops, restarts and edits it; it is stopped being
@@ -158,8 +186,17 @@ async def workspace_devices(
     for row, _agent in definitions:
         if row.controller_id is not None:
             placed.setdefault(row.controller_id, []).append(row)
+    release = management.settings.controller_release
     devices = [
-        _device(c, states[c.id], placed.get(c.id, []), owners[c.owner_id], viewer)
+        _device(
+            c,
+            states[c.id],
+            placed.get(c.id, []),
+            owners[c.owner_id],
+            viewer,
+            leases,
+            release,
+        )
         for c in controllers
         if not is_revoked(c)
     ]
