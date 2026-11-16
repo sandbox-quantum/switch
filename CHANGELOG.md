@@ -1298,8 +1298,11 @@ version of their own to them without also giving them a release of their own.
   (the owner's own included) or the platform, in any room it did not already
   admit them in. An admin may still narrow it, to stop an agent misbehaving,
   and that change is recorded in the workspace audit log as
-  `agent.addressing_changed`, with the policy before and after. An agent's
-  detail carries `can_widen_addressing`, true for its owner alone.
+  `agent.addressing_changed`, with the policy before and after. An agent
+  that acts for no person, added with the registration token or left with
+  no owner, an admin may open as well, since it lends nobody's service
+  access. An agent's detail carries `can_widen_addressing`, which says which
+  applies.
 - **Only a parent agent's owner registers subagents under it.**
   `POST /agents/register-known-bulk` let a workspace admin register
   subagents under a member's agent, which then sat under it in its working
