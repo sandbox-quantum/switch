@@ -27,7 +27,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.authz import ORGANIZATION_ADMIN_ROLE
+from switch_core.authz import ORGANIZATION_ADMIN_ROLE, administers_tenant
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.registration_bootstrap import (
     SERVICE_ACCOUNT_ADMIN_REFUSAL,
@@ -58,7 +58,7 @@ from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.organization_store import OrganizationStore
-from switch_core.db.stores.room_store import RoomStore
+from switch_core.db.stores.room_store import RoomStore, readable_by
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.auth import (
     AuthenticatedCaller,
@@ -410,7 +410,9 @@ async def list_organization_workspaces(
     each: every one for an `org_admin`, their own for a member, and every one
     for the platform operator, who may enter any. Each with what the
     Workspaces page shows of it: when it was made, its counts, and its admins
-    by membership."""
+    by membership. A workspace's agents and rooms are counted as the caller's
+    own lists there would hold them: all of them where they administer it,
+    else their own agents and the rooms they may read."""
     organization_id = await _current_organization_id(session)
     current_id = require_tenant_id()
     administers = (
@@ -440,6 +442,11 @@ async def list_organization_workspaces(
                 continue
             tenant = await bound.get(Tenant, tenant_id)
             assert tenant is not None  # `membership_in_organization` read it.
+            administers_it = administers_tenant(
+                is_operator=is_operator,
+                tenant_role=workspace.role,
+                organization_role=workspace.organization_role,
+            )
             blocked = (
                 _ARCHIVE_ADMINS_ONLY
                 if not administers
@@ -450,8 +457,14 @@ async def list_organization_workspaces(
                     **workspace.model_dump(),
                     created_at=str(tenant.created_at),
                     users=await user_store.count_people(bound, tenant),
-                    agents=await agent_store.count(bound),
-                    rooms=await room_store.count(bound),
+                    agents=(
+                        await agent_store.count(bound)
+                        if administers_it
+                        else await agent_store.count_owned_by(bound, user.id)
+                    ),
+                    rooms=await room_store.count(
+                        bound, readable_by(user.id, is_admin=administers_it)
+                    ),
                     admins=await user_store.admin_names(bound, tenant),
                     can_archive=tenant.archived_at is None and blocked is None,
                     archive_blocked_reason=(

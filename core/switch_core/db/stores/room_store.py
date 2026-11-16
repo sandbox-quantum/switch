@@ -355,15 +355,17 @@ class RoomStore:
         result = await session.execute(stmt.limit(limit))
         return [row[0] for row in result.all()]
 
-    async def count(self, session: AsyncSession) -> int:
-        """How many rooms the bound tenant has that are not archived, as the
-        rooms list shows them."""
+    async def count(self, session: AsyncSession, shown: ColumnElement[bool]) -> int:
+        """How many rooms the bound tenant has that are not archived and
+        `shown` (`readable_by`) admits, as the rooms list shows them."""
         return (
             await session.scalar(
                 select(sa_func.count())
                 .select_from(Room)
                 .where(
-                    Room.tenant_id == require_tenant_id(), Room.archived_at.is_(None)
+                    Room.tenant_id == require_tenant_id(),
+                    Room.archived_at.is_(None),
+                    shown,
                 )
             )
         ) or 0

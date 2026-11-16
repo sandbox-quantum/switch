@@ -395,6 +395,8 @@ async def workspace_counts(
     """How many people and agents each workspace the caller may enter has:
     those of `GET /tenants`, and the one the platform operator entered on the
     operator flag alone, which their session is in without being one of them.
+    Agents as the caller's agent list there holds them: every one where they
+    administer the workspace, else their own.
 
     For the dashboard's workspace switcher, which asks when it opens rather
     than on every page: each workspace is read on its own short session, as
@@ -420,11 +422,17 @@ async def workspace_counts(
                     tenant_id,
                 )
                 continue
+            caller = await session.get(User, auth.user_id)
             counts.append(
                 WorkspaceCountsResponse(
                     id=tenant_id,
                     users=await user_store.count_people(session, tenant),
-                    agents=await agent_store.count(session),
+                    agents=(
+                        await agent_store.count(session)
+                        if caller is not None
+                        and await user_store.administers(session, caller)
+                        else await agent_store.count_owned_by(session, auth.user_id)
+                    ),
                 )
             )
     return counts
