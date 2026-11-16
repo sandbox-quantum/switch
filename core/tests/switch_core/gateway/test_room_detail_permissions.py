@@ -23,6 +23,7 @@ from tests.switch_core.gateway.agent_route_harness import add_agent
 _ROOM_STORE = RoomStore()
 _NO_DECISIONS = DecisionAvailability(
     enabled=False,
+    managed_by_console=False,
     server=ServerDefault(endpoint_url=None, api_key=None, bedrock_enabled=False),
     store=DecisionSettingsStore(),
 )

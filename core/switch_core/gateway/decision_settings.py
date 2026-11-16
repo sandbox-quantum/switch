@@ -60,7 +60,7 @@ def _response(
 ) -> DecisionSettingsResponse:
     server = checks.server
     resolved = resolve(row, server)
-    applies = availability(checks.enabled, resolved)
+    applies = availability(checks.enabled, checks.flag_off_reason, resolved)
     workspace: DecisionWorkspaceSettings | None = None
     if row is not None:
         last4: str | None = None

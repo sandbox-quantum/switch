@@ -357,3 +357,21 @@ async def test_a_member_is_offered_the_visible_commands_and_no_hidden_one(
     assert commands["reset"]["usage"] == "!reset <target>"
     assert commands["help"]["usage"] == "!help"
     assert all(each["description"] for each in commands.values())
+
+
+async def test_auto_route_is_offered_only_where_the_server_offers_it(
+    chats: _Harness,
+) -> None:
+    agent = await chats.agent("helper", owner=chats.alice)
+    room_id = await chats.new_chat(chats.alice, agent, "c1")
+
+    async def names() -> set[str]:
+        listed = await chats.client.get(
+            f"/chats/{room_id}/commands", headers=chats.as_user(chats.alice)
+        )
+        assert listed.status_code == 200, listed.text
+        return {each["name"] for each in listed.json()["commands"]}
+
+    assert "auto-route" not in await names()
+    chats.config.decision_routing_enabled = True
+    assert "auto-route" in await names()

@@ -41,6 +41,9 @@ FLAG_OFF_REASON = (
     "Auto-route isn't switched on here. Whoever runs Switch turns it on "
     "with the decision_routing feature flag."
 )
+# The same, on a server Switch Console runs for the person reading it: there
+# is nobody else to ask.
+NOT_OFFERED_REASON = "This server doesn't offer auto-route."
 NO_BACKEND_REASON = (
     "Auto-route needs a decision service. A workspace admin can set one up in "
     "Switch Console → Admin → Decision routing."
@@ -155,9 +158,11 @@ class Availability:
     reason: str | None
 
 
-def availability(enabled: bool, settings: ResolvedSettings) -> Availability:
+def availability(
+    enabled: bool, flag_off_reason: str, settings: ResolvedSettings
+) -> Availability:
     if not enabled:
-        return Availability(available=False, reason=FLAG_OFF_REASON)
+        return Availability(available=False, reason=flag_off_reason)
     if not settings.has_backend:
         return Availability(available=False, reason=settings.reason)
     return Availability(available=True, reason=None)
@@ -169,6 +174,9 @@ class DecisionAvailability:
     `!auto-route`: the server's flag and default, and the workspace's row."""
 
     enabled: bool
+    # Switch Console runs this server for the person using it, who is then
+    # also whoever runs Switch.
+    managed_by_console: bool
     server: ServerDefault
     store: DecisionSettingsStore
 
@@ -176,12 +184,21 @@ class DecisionAvailability:
     def from_config(cls, config: SwitchConfig) -> DecisionAvailability:
         return cls(
             enabled=config.decision_routing_enabled,
+            managed_by_console=config.managed_by_console,
             server=ServerDefault.from_config(config),
             store=DecisionSettingsStore(),
         )
+
+    @property
+    def flag_off_reason(self) -> str:
+        """Why auto-route is unavailable with the flag off, worded for who
+        reads it: nobody else runs a server Switch Console runs."""
+        return NOT_OFFERED_REASON if self.managed_by_console else FLAG_OFF_REASON
 
     async def settings(self, session: AsyncSession, tenant_id: str) -> ResolvedSettings:
         return resolve(await self.store.get(session, tenant_id), self.server)
 
     async def check(self, session: AsyncSession, tenant_id: str) -> Availability:
-        return availability(self.enabled, await self.settings(session, tenant_id))
+        return availability(
+            self.enabled, self.flag_off_reason, await self.settings(session, tenant_id)
+        )

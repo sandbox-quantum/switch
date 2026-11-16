@@ -42,6 +42,7 @@ from switch_core.db.stores.user_store import UserStore
 from switch_core.decision.settings import (
     FLAG_OFF_REASON,
     NO_BACKEND_REASON,
+    NOT_OFFERED_REASON,
     DecisionAvailability,
     ServerDefault,
 )
@@ -71,6 +72,7 @@ def _app(
     *,
     enabled: bool = True,
     server_url: str | None = "http://decision.test/decide",
+    managed_by_console: bool = False,
 ) -> FastAPI:
     async def _session() -> AsyncIterator[AsyncSession]:
         async with session_factory() as session:
@@ -93,6 +95,7 @@ def _app(
             ),
             get_decision_availability: lambda: DecisionAvailability(
                 enabled=enabled,
+                managed_by_console=managed_by_console,
                 server=ServerDefault(
                     endpoint_url=server_url, api_key=None, bedrock_enabled=False
                 ),
@@ -226,6 +229,19 @@ class TestTheRoomDetail:
 
         assert detail["auto_route"]["available"] is False
         assert detail["auto_route"]["reason"] == FLAG_OFF_REASON
+
+    async def test_unavailable_on_a_server_console_runs_without_sending_them_elsewhere(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        owner = await _user(session_factory, "owner", "member")
+        room, _, _ = await _room(session_factory, owner)
+        app = _app(session_factory, enabled=False, managed_by_console=True)
+        async with _as(app, owner) as client:
+            detail = (await client.get(f"/rooms/{room.id}")).json()
+
+        assert detail["auto_route"]["available"] is False
+        assert detail["auto_route"]["reason"] == NOT_OFFERED_REASON
+        assert "Whoever runs Switch" not in detail["auto_route"]["reason"]
 
     async def test_unavailable_with_no_backend(
         self, session_factory: async_sessionmaker[AsyncSession]

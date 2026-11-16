@@ -401,7 +401,9 @@ def _cmd_event(command: str, args: str = "") -> CommandEvent:
     )
 
 
-def _command_host() -> tuple[SimpleNamespace, list[dict[str, object]]]:
+def _command_host(
+    decision_routing: bool = False,
+) -> tuple[SimpleNamespace, list[dict[str, object]]]:
     sent: list[dict[str, object]] = []
 
     async def _reply_command(  # type: ignore[no-untyped-def]
@@ -415,6 +417,7 @@ def _command_host() -> tuple[SimpleNamespace, list[dict[str, object]]]:
     host = SimpleNamespace(
         reply_command=_reply_command,
         _is_direct_room=_is_direct_room,
+        _decision_availability=SimpleNamespace(enabled=decision_routing),
     )
     return host, sent
 
@@ -435,6 +438,18 @@ class TestAdminCommandDispatch:
         await dispatch_admin_command(host, _room(), _cmd_event("help"))
         assert len(sent) == 1
         assert sent[0]["body"].startswith("**Available commands:**")
+
+    async def test_help_offers_auto_route_only_where_the_server_offers_it(
+        self,
+    ) -> None:
+        host, sent = _command_host(decision_routing=False)
+        await dispatch_admin_command(host, _room(), _cmd_event("help"))
+        assert "`!follow-ups`" in sent[0]["body"]
+        assert "`!auto-route`" not in sent[0]["body"]
+
+        host, sent = _command_host(decision_routing=True)
+        await dispatch_admin_command(host, _room(), _cmd_event("help"))
+        assert "`!auto-route`" in sent[0]["body"]
 
     async def test_agent_owned_command_is_ignored(self) -> None:
         # agents-greet is agent-owned — the admin client must not respond to it.

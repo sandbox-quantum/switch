@@ -72,6 +72,7 @@ def _host(
     flag: bool = True,
     endpoint: bool = True,
     sender: str | None = None,
+    managed_by_console: bool = False,
 ) -> tuple[SimpleNamespace, list[str]]:
     """A command host for `room_id`. The command's sender is the Switch user
     `sender`, or the room's owner when it is None."""
@@ -105,6 +106,7 @@ def _host(
         _fake_resolve_sender=_resolve_sender,
         _decision_availability=DecisionAvailability(
             enabled=flag,
+            managed_by_console=managed_by_console,
             server=ServerDefault(
                 endpoint_url="http://decision.test/decide" if endpoint else None,
                 api_key=None,
@@ -207,7 +209,22 @@ class TestAutoRouteCommand:
 
         await _run(host, args)
 
-        assert "Automatic routing isn't switched on in Switch" in (posted[-1])
+        assert posted[-1].startswith("This server doesn't offer automatic routing")
+        assert "Whoever runs Switch can offer it" in posted[-1]
+        assert not await _on(session_factory, room_id)
+
+    async def test_on_a_server_console_runs_it_does_not_send_them_to_whoever_runs_switch(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        room_id = await _room(session_factory)
+        host, posted = _host(
+            session_factory, room_id, flag=False, managed_by_console=True
+        )
+
+        await _run(host, "on")
+
+        assert posted[-1].startswith("This server doesn't offer automatic routing")
+        assert "Whoever runs Switch" not in posted[-1]
         assert not await _on(session_factory, room_id)
 
     async def test_on_without_a_decision_service_says_who_can_fix_it(

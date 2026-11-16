@@ -87,6 +87,7 @@ async def _add_room(
 
 _NO_DECISIONS = DecisionAvailability(
     enabled=False,
+    managed_by_console=False,
     server=ServerDefault(endpoint_url=None, api_key=None, bedrock_enabled=False),
     store=DecisionSettingsStore(),
 )

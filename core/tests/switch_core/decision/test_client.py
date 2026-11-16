@@ -161,6 +161,7 @@ def _client(
         session_factory=session_factory,
         availability=DecisionAvailability(
             enabled=enabled,
+            managed_by_console=False,
             server=ServerDefault(
                 endpoint_url=url, api_key=api_key, bedrock_enabled=bedrock
             ),

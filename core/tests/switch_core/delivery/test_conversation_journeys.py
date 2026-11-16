@@ -276,6 +276,7 @@ class Journey:
                 if self.decisions is not None
                 else DecisionAvailability(
                     enabled=False,
+                    managed_by_console=False,
                     server=ServerDefault(
                         endpoint_url=None, api_key=None, bedrock_enabled=False
                     ),

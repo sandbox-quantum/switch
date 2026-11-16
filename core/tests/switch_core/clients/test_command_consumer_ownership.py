@@ -142,6 +142,7 @@ async def _process(
         follow_the_conversation_enabled=False,
         decision_availability=DecisionAvailability(
             enabled=False,
+            managed_by_console=False,
             server=ServerDefault(
                 endpoint_url=None, api_key=None, bedrock_enabled=False
             ),

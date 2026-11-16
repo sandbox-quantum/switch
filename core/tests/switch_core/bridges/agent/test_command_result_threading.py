@@ -60,7 +60,10 @@ class TestHandlerThreads:
 
     async def test_help_result_is_threaded(self) -> None:
         send = _Recorder()
-        client = SimpleNamespace(reply_command=send)
+        client = SimpleNamespace(
+            reply_command=send,
+            _decision_availability=SimpleNamespace(enabled=False),
+        )
         await _cmd_help(client, RoomRef("!m"), _event("$cmd-root"), True)
 
         assert len(send.calls) == 1

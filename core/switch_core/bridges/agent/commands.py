@@ -456,13 +456,23 @@ async def _reply(
     )
 
 
+def offered_commands(decision_routing: bool) -> list[Command]:
+    """The commands a person is offered on this server (`!help`, Switch
+    Console's list): not the hidden ones, nor `!auto-route` where the server
+    doesn't offer automatic routing."""
+    return [
+        cmd
+        for cmd in COMMANDS
+        if not cmd.hidden and (decision_routing or cmd.name not in DECISION_COMMANDS)
+    ]
+
+
 async def _cmd_help(
     client: AgentRecipient, room: RoomRef, event: CommandEvent, _is_direct: bool
 ) -> None:
+    host = cast("CommandConsumer", client)
     lines = ["**Available commands:**"]
-    for cmd in COMMANDS:
-        if cmd.hidden:
-            continue
+    for cmd in offered_commands(host._decision_availability.enabled):
         lines.append(f"- `!{cmd.name}` — {cmd.description}")
     await _reply(client, room, event, "\n".join(lines))
 
@@ -933,10 +943,13 @@ async def _cmd_follow_ups(
     await _reply(client, room, event, _FOLLOW_UPS_ON if enabled else _FOLLOW_UPS_OFF)
 
 
-_AUTO_ROUTE_FLAG_OFF = (
-    "Automatic routing isn't switched on in Switch, so "
-    "`!auto-route` has no effect here. Agents only get messages that mention "
-    "them, follow-ups, or every message when they are the room's assigned agent."
+_AUTO_ROUTE_NOT_OFFERED = (
+    "This server doesn't offer automatic routing, so `!auto-route` has no "
+    "effect here. Agents only get messages that mention them, follow-ups, or "
+    "every message when they are the room's assigned agent."
+)
+_AUTO_ROUTE_ASK_OPERATOR = (
+    " Whoever runs Switch can offer it by turning on the decision_routing feature flag."
 )
 _AUTO_ROUTE_ON = (
     "Automatic routing is **on** in this room. When a message tags nobody and "
@@ -966,7 +979,13 @@ async def _cmd_auto_route(
     host = cast("CommandConsumer", client)
     availability = host._decision_availability
     if not availability.enabled:
-        await _reply(client, room, event, _AUTO_ROUTE_FLAG_OFF)
+        await _reply(
+            client,
+            room,
+            event,
+            _AUTO_ROUTE_NOT_OFFERED
+            + ("" if availability.managed_by_console else _AUTO_ROUTE_ASK_OPERATOR),
+        )
         return
     meta = await client._resolve_room_meta(room.room_id)
     if meta is None:
@@ -2931,6 +2950,8 @@ COMMANDS: list[Command] = [
 ]
 
 COMMANDS_BY_NAME: dict[str, Command] = {cmd.name: cmd for cmd in COMMANDS}
+# The commands that do something only where the server offers automatic routing.
+DECISION_COMMANDS = frozenset({"auto-route"})
 
 
 async def dispatch_command(

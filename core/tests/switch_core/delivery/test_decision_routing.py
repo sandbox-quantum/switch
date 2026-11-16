@@ -114,6 +114,7 @@ class DecisionService:
             session_factory=session_factory,
             availability=DecisionAvailability(
                 enabled=True,
+                managed_by_console=False,
                 server=ServerDefault(
                     endpoint_url="http://decision.test/decide",
                     api_key=None,
@@ -315,7 +316,7 @@ class TestWhichMessagesAreAsked:
 
         assert await room.reached(told) == set()
         assert await room.reached(in_thread) == {"helper"}
-        assert "isn't switched on" in reply
+        assert "doesn't offer automatic routing" in reply
 
 
 class TestWhatTheServiceIsSent:

@@ -131,6 +131,7 @@ def _app(
             gateway_tenant_choice_enabled=False,
             # The room detail says whether decision routing is offered.
             decision_routing_enabled=False,
+            managed_by_console=False,
             decision_endpoint_url=None,
             decision_api_key=None,
             decision_bedrock_enabled=False,

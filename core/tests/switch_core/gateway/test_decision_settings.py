@@ -82,6 +82,7 @@ def _app(
         session_factory=session_factory,
         availability=DecisionAvailability(
             enabled=True,
+            managed_by_console=False,
             server=ServerDefault(
                 endpoint_url=server_url,
                 api_key="server-key" if server_url else None,

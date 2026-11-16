@@ -173,6 +173,18 @@ it('explains why Haiku is missing, and why auto-route is unavailable, on a serve
   expect(button(el, 'Test').disabled).toBe(true);
 });
 
+it('says a server Console runs doesn’t offer auto-route, without sending them to whoever runs Switch', async () => {
+  const el = await render({
+    ...NO_SERVICE,
+    effective: { ...NO_SERVICE.effective, reason: "This server doesn't offer auto-route." },
+  });
+
+  expect(el.querySelector('[role="alert"]')?.textContent).toContain(
+    "This server doesn't offer auto-route."
+  );
+  expect(el.textContent).not.toMatch(/whoever runs Switch/i);
+});
+
 it('shows the workspace’s own setting and a stored key only by its last four characters', async () => {
   const el = await render(OWN_HAIKU);
 

@@ -278,6 +278,7 @@ def _config() -> SimpleNamespace:
         gateway_signup_refused_header=None,
         gateway_admin_email="admin@example.invalid",
         decision_routing_enabled=False,
+        managed_by_console=False,
         decision_endpoint_url=None,
         decision_api_key=None,
         decision_bedrock_enabled=False,
