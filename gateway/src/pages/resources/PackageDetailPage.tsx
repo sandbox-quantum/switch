@@ -35,6 +35,8 @@ import {
   DetailLoadFailed,
   DetailLoading,
   InfoLine,
+  ReadOnlyBanner,
+  ownerCanChange,
   requiredHelper,
   useAfterTransfer,
   useResourceDetail,
@@ -61,7 +63,7 @@ export default function PackageDetailPage() {
         <IconButton
           onClick={() => navigate(LIST_PATH)}
           size="small"
-          aria-label="Back"
+          aria-label="Back to resources"
         >
           <ArrowBack />
         </IconButton>
@@ -70,6 +72,7 @@ export default function PackageDetailPage() {
         </Typography>
         <AccessChip pair={pkg} />
       </Stack>
+      {!pkg.can_edit && <ReadOnlyBanner whose={ownerCanChange("package", pkg.owner_id, pkg.owner_name)} />}
 
       <Stack spacing={4}>
         <InfoSection pkg={pkg} />

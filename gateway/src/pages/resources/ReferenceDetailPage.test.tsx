@@ -93,6 +93,26 @@ describe("ReferenceDetailPage", () => {
     expect(screen.getByTestId("where").textContent).toBe("/resources?tab=references");
   });
 
+  it("says whose a reference the viewer can't change is, and leads back to the resources", async () => {
+    answerFetch({ ...PAGE_READS, "GET /references/r1": [200, { ...REF, owner_id: "u2", owner_name: "Grace", can_edit: false, can_manage: false }] });
+    show();
+
+    expect(
+      await screen.findByText("This reference belongs to Grace. Only they or a workspace admin can change it."),
+    ).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Back to resources" }));
+    expect(screen.getByTestId("where").textContent).toBe("/resources?tab=references");
+  });
+
+  it("names a former member as the owner of a reference whose owner has no name", async () => {
+    answerFetch({ ...PAGE_READS, "GET /references/r1": [200, { ...REF, owner_id: "u9", owner_name: null, can_edit: false, can_manage: false }] });
+    show();
+
+    expect(
+      await screen.findByText("This reference belongs to a former member. Only a workspace admin can change it."),
+    ).toBeTruthy();
+  });
+
   it("will not save it without a name or a URL", async () => {
     answerFetch({
       "GET /references/r1": [200, REF],
