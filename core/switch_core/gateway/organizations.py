@@ -142,6 +142,11 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
+LAST_ORGANIZATION_ADMIN_REFUSAL = (
+    "This is the organization's only org admin. Make someone else an org admin first."
+)
+
+
 def _member_detail(
     user: User,
     member: OrganizationMember,
@@ -149,11 +154,21 @@ def _member_detail(
     *,
     access: OrganizationAccess | None,
     accepts_promotion: bool,
+    admin_count: int,
 ) -> OrganizationMemberDetail:
     """`member`, with what the caller, who passes the role-change gate as
     `access` says (None: they don't), may do with them: their own row
-    included, so an `org_admin` steps down or leaves while another remains."""
+    included, so an `org_admin` steps down or leaves while another remains.
+    `admin_count` is the organization's `org_admin`s, read without a lock:
+    the last one is answered as the routes would answer now, and the routes
+    check again, locked, when asked."""
     change = access is not None
+    # Removing takes the organization's own admin; the operator restoring
+    # one is let through to change roles only.
+    remove = access is not None and not access.platform_access
+    last_admin = member.role == ORGANIZATION_ADMIN_ROLE and admin_count <= 1
+    change_refusal = LAST_ORGANIZATION_ADMIN_REFUSAL if change and last_admin else None
+    remove_refusal = LAST_ORGANIZATION_ADMIN_REFUSAL if remove and last_admin else None
     return OrganizationMemberDetail(
         user_id=user.id,
         name=user.name,
@@ -162,14 +177,14 @@ def _member_detail(
         created_at=str(member.created_at),
         warning=warning,
         service_account=is_bootstrap_owner(user),
-        can_change_role=change,
+        can_change_role=change and change_refusal is None,
+        change_role_blocked_reason=change_refusal,
         # Never the registration service account (`SERVICE_ACCOUNT_ADMIN_REFUSAL`).
         can_grant_org_admin=change
         and accepts_promotion
         and not is_bootstrap_owner(user),
-        # Removing takes the organization's own admin; the operator restoring
-        # one is let through to change roles only.
-        can_remove=access is not None and not access.platform_access,
+        can_remove=remove and remove_refusal is None,
+        remove_blocked_reason=remove_refusal,
     )
 
 
@@ -673,6 +688,9 @@ async def list_organization_members(
         organization_directory, await _organization(session, organization_id)
     )
     members = await organization_store.list_members(session, organization_id)
+    admin_count = sum(
+        1 for _, member in members if member.role == ORGANIZATION_ADMIN_ROLE
+    )
     details = [
         _member_detail(
             member_user,
@@ -680,6 +698,7 @@ async def list_organization_members(
             None,
             access=access,
             accepts_promotion=accepts_promotion,
+            admin_count=admin_count,
         )
         for member_user, member in members
     ]
@@ -1076,6 +1095,7 @@ async def update_organization_member_role(
             session, user_store, organization_store, user, operator_restores=True
         ),
         accepts_promotion=_accepts_promotion(organization_directory, organization),
+        admin_count=await organization_store.count_admins(session, organization_id),
     )
 
 

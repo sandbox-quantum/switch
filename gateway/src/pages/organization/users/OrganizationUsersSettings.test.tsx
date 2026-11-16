@@ -34,8 +34,10 @@ function member(
     warning: null,
     service_account: false,
     can_change_role: true,
+    change_role_blocked_reason: null,
     can_grant_org_admin: true,
     can_remove: true,
+    remove_blocked_reason: null,
     workspaces: [],
     ...overrides,
   };
@@ -176,6 +178,37 @@ describe("OrganizationUsersSettings", () => {
       ["Change role in a workspace", true],
       ["Remove from a workspace", true],
       ["Remove from organization", false],
+    ]);
+  });
+
+  it("tells the only org admin to make someone else one first, not to step down", async () => {
+    const reason = "This is the organization's only org admin. Make someone else an org admin first.";
+    const onlyMe = {
+      ...ME,
+      can_change_role: false,
+      change_role_blocked_reason: reason,
+      can_remove: false,
+      remove_blocked_reason: reason,
+    };
+    answerFetch({
+      "GET /organizations/current/members": [200, [onlyMe, BOB]],
+      "GET /organizations/current/workspaces": [200, WORKSPACES],
+    });
+    renderPage();
+    await screen.findByTestId("row-me");
+
+    expect(menuItems("Me")).toEqual([
+      { label: "Step down to Member", reason },
+      { label: "Add to a workspace", reason: null },
+      {
+        label: "Change role in a workspace",
+        reason: "An org admin administers every workspace already; their role in one is not changed here.",
+      },
+      {
+        label: "Leave a workspace",
+        reason: `An org admin stays in every workspace while they are one. ${reason}`,
+      },
+      { label: "Leave organization", reason },
     ]);
   });
 

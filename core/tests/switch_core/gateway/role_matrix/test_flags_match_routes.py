@@ -402,14 +402,15 @@ CHECKS: dict[str, Check] = {
                     {"role": "member"},
                 ),
                 match=("user_id", "self_id"),
-                later=frozenset({409}),  # The last organization admin stays.
+                refused=REFUSED | {409},  # The last organization admin stays.
             ),
             Check(
                 "can_remove",
                 ORG_MEMBERS,
                 _act("DELETE", f"{G}/organizations/current/members/{{self_id}}"),
                 match=("user_id", "self_id"),
-                later=frozenset({409}),  # The last one, or still in a workspace.
+                refused=REFUSED | {409},  # The last organization admin stays.
+                later=frozenset({409}),  # Still in a workspace.
             ),
         ],
         "the workspace": [

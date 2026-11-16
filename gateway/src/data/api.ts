@@ -1894,12 +1894,15 @@ export interface OrganizationMember {
   // The account agents added with the shared registration token are owned
   // by: not a person, and never made an admin.
   service_account: boolean;
-  /** What you may do with them, as the server decides it: never on your own
-   * row; making them Org Admin not where the members come from account
-   * settings Switch cannot change; removing them as an Org Admin only. */
+  /** What you may do with them, as the server decides it: making them Org
+   * Admin not where the members come from account settings Switch cannot
+   * change; removing them as an Org Admin only; neither for the
+   * organization's only Org Admin, which the `_blocked_reason` says. */
   can_change_role: boolean;
+  change_role_blocked_reason: string | null;
   can_grant_org_admin: boolean;
   can_remove: boolean;
+  remove_blocked_reason: string | null;
 }
 
 export interface OrganizationAuditEvent {

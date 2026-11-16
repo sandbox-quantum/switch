@@ -1811,11 +1811,14 @@ class OrganizationMemberDetail(BaseModel):
     # operator restoring an `org_admin` included;
     # `can_grant_org_admin` too, unless the organization's members come from
     # a directory Switch cannot change; `can_remove` for its `org_admin` only.
-    # The last `org_admin`, someone still in a workspace, and a directory that
-    # wants a sign-in first are answered when it is asked.
+    # Neither for the last `org_admin`, which the `_blocked_reason` beside
+    # each says. Someone still in a workspace, and a directory that wants a
+    # sign-in first, are answered when it is asked.
     can_change_role: bool
+    change_role_blocked_reason: str | None
     can_grant_org_admin: bool
     can_remove: bool
+    remove_blocked_reason: str | None
 
 
 class OrganizationMemberListEntry(OrganizationMemberDetail):
