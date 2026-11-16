@@ -640,3 +640,34 @@ describe("RoomDetailPage when the room can't be opened", () => {
     expect(screen.queryByText(/another workspace/)).toBeNull();
   });
 });
+
+describe("RoomDetailPage header", () => {
+  afterEach(() => {
+    cleanup();
+    vi.clearAllMocks();
+  });
+
+  it("lets a long room name wrap, so the header's actions stay on screen", () => {
+    vi.mocked(hooks.useRoomGroups).mockReturnValue({ data: [], loading: false, error: null, refetch: vi.fn() });
+    vi.mocked(hooks.useAgents).mockReturnValue({ data: [], loading: false, error: null, refetch: vi.fn() });
+    vi.mocked(hooks.useBridgeUsers).mockReturnValue({ data: [], loading: false, error: null, refetch: vi.fn() });
+    vi.mocked(hooks.useRoomAgentCandidates).mockReturnValue({
+      data: { agent_ids: null },
+      loading: false,
+      error: null,
+      refetch: vi.fn(),
+    });
+    const name = "W".repeat(200);
+    vi.mocked(hooks.useRoom).mockReturnValue({
+      data: { ...room, name },
+      loading: false,
+      error: null,
+      refetch: vi.fn(),
+    });
+    render(<RoomDetailPage />);
+
+    const title = screen.getByRole("heading", { name });
+    expect(getComputedStyle(title).minWidth).toBe("0px");
+    expect(getComputedStyle(title).overflowWrap).toBe("anywhere");
+  });
+});

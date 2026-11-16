@@ -124,7 +124,9 @@ export default function AgentDetailPage() {
         <IconButton onClick={() => navigate("/agents")} size="small" aria-label="Back to agents">
           <ArrowBack />
         </IconButton>
-        <Typography variant="h5">{agent.name}</Typography>
+        <Typography variant="h5" sx={{ minWidth: 0, overflowWrap: "anywhere" }}>
+          {agent.name}
+        </Typography>
         {agent.can_rename && (
           <Tooltip title="Rename agent">
             <IconButton

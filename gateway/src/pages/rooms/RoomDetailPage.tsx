@@ -136,7 +136,7 @@ export default function RoomDetailPage() {
         <IconButton onClick={() => navigate("/rooms")} size="small" aria-label="Back to rooms">
           <ArrowBack />
         </IconButton>
-        <Typography variant="h5" sx={{ flexGrow: 1 }}>
+        <Typography variant="h5" sx={{ flexGrow: 1, minWidth: 0, overflowWrap: "anywhere" }}>
           {room.name}
         </Typography>
         {room.archived && (
@@ -148,7 +148,12 @@ export default function RoomDetailPage() {
         {room.bridge_display_name && (
           <Chip label={room.bridge_display_name} size="small" />
         )}
-        <Button variant="outlined" size="small" onClick={() => setExportOpen(true)}>
+        <Button
+          variant="outlined"
+          size="small"
+          onClick={() => setExportOpen(true)}
+          sx={{ flexShrink: 0 }}
+        >
           Export to YAML
         </Button>
       </Stack>
