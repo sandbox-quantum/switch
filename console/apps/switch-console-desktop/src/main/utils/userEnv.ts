@@ -7,6 +7,7 @@ import {
   withWindowsAgyBinDir,
   withWindowsCodexBinDir,
   withWindowsGitBashDir,
+  withWindowsInstallerBinDirs,
 } from '@switch-console/plugins/agents';
 import { log } from '@main/lib/logger';
 import { buildExternalToolEnv } from './childProcessEnv';
@@ -106,17 +107,21 @@ export function ensureWindowsNpmGlobalBinInPath(
  * Adds the folders Windows provider installers write CLIs to without telling
  * a running app: Google's Antigravity installer puts `agy.exe` in
  * `%LOCALAPPDATA%\agy\bin`, and OpenAI's official Codex installer puts
- * `codex.exe` in `%LOCALAPPDATA%\Programs\OpenAI\Codex\bin`. Each adds its
- * folder to the user's PATH, which an app started before the install does not
- * see. Added last, in the same order as the agent controller adds them
- * (`withWindowsAgyBinDir`, then `withWindowsCodexBinDir`). Returns the folders
- * added.
+ * `codex.exe` in `%LOCALAPPDATA%\Programs\OpenAI\Codex\bin`, and Cursor's
+ * and Kiro's go to `withWindowsInstallerBinDirs`'s. Each adds its folder to the
+ * user's PATH, which an app started before the install does not see. Added
+ * last, in the same order as the agent controller adds them
+ * (`withWindowsAgyBinDir`, `withWindowsCodexBinDir`, then
+ * `withWindowsInstallerBinDirs`). Returns the folders added.
  */
 export function ensureWindowsUserBinDirsInPath(env: NodeJS.ProcessEnv = process.env): string[] {
   const pathKey = getWindowsPathEnvKey(env);
   const before = env[pathKey] ?? '';
   const localAppData = getWindowsEnvValue(env, 'LOCALAPPDATA');
-  const after = withWindowsCodexBinDir(withWindowsAgyBinDir(before, localAppData), localAppData);
+  const after = withWindowsInstallerBinDirs(
+    withWindowsCodexBinDir(withWindowsAgyBinDir(before, localAppData), localAppData),
+    localAppData
+  );
   if (after === before) return [];
   env[pathKey] = after;
   const had = new Set(before.split(path.win32.delimiter));

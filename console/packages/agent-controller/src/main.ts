@@ -14,6 +14,7 @@ import {
 import {
   withWindowsAgyBinDir,
   withWindowsCodexBinDir,
+  withWindowsInstallerBinDirs,
   withWindowsGitBashDir,
 } from '@switch-console/plugins/agents';
 import packageJson from '../package.json' with { type: 'json' };
@@ -417,8 +418,11 @@ function pathRefresher(log: Logger): () => Promise<void> {
         homedir()
       );
       process.env.PATH = withWindowsGitBashDir(
-        withWindowsCodexBinDir(
-          withWindowsAgyBinDir(current, process.env.LOCALAPPDATA),
+        withWindowsInstallerBinDirs(
+          withWindowsCodexBinDir(
+            withWindowsAgyBinDir(current, process.env.LOCALAPPDATA),
+            process.env.LOCALAPPDATA
+          ),
           process.env.LOCALAPPDATA
         ),
         {

@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { CURSOR_INSTALL_WINDOWS, plugin as cursor } from './cursor';
-import { DSH_ALLOW_SCRIPTS, plugin as deepseekHarness } from './deepseek-harness';
+import {
+  DSH_ALLOW_SCRIPTS,
+  DSH_INSTALL_VERSION,
+  plugin as deepseekHarness,
+} from './deepseek-harness';
 import { GOOSE_INSTALL_WINDOWS, plugin as goose } from './goose';
 import { KIRO_INSTALL_WINDOWS, plugin as kiro } from './kiro';
 import {
@@ -80,7 +84,7 @@ describe('deepseek-harness install', () => {
     (platform) => {
       expect(installCommands[platform]?.[0]).toMatchObject({
         method: 'npm',
-        command: `npm install -g ${DSH_ALLOW_SCRIPTS} @deepseek-ai/dsh`,
+        command: `npm install -g ${DSH_ALLOW_SCRIPTS} @deepseek-ai/dsh@${DSH_INSTALL_VERSION}`,
         uninstallCommand: 'npm uninstall -g @deepseek-ai/dsh',
         recommended: true,
       });

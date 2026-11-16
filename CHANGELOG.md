@@ -4308,6 +4308,14 @@ version of their own to them without also giving them a release of their own.
   agent"; it was the only place Console showed that name.
 
 #### Fixed
+- **Cursor, DeepSeek Harness, Goose, Kiro and Mistral Vibe can be installed
+  on Windows.** Each offers its vendor's Windows install, which works from
+  PowerShell or Command Prompt, where before it said "Not found" with nothing
+  to install. Cursor and Kiro are found straight after installing, without
+  restarting Switch Console. An agent with no install for your system now says
+  it is not available to install there and links its install docs. DeepSeek
+  Harness installs the version Switch Console's approvals are verified with,
+  with the npm install scripts it needs allowed.
 - **Workspace settings opens the web dashboard's settings in its new
   layout.** On a server with the new layout on, Settings › Workspace settings
   landed on its Users page. It now opens the settings home, on the page you

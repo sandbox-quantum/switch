@@ -4,7 +4,7 @@ import { icon } from './icon';
 // CONFIGURE=false keeps the script from starting `goose configure`, which asks
 // questions on the terminal; the person runs it as the sign-in command instead.
 const GOOSE_INSTALL_COMMAND =
-  'curl -fsSL https://github.com/block/goose/releases/download/stable/download_cli.sh | CONFIGURE=false bash';
+  'curl -fsSL https://github.com/aaif-goose/goose/releases/download/stable/download_cli.sh | CONFIGURE=false bash';
 
 /**
  * Goose's documented Windows install is its `download_cli.ps1`

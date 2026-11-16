@@ -63,6 +63,7 @@ export { cursorAcp, createCursorAdapter } from './cursor/cursor-adapter';
 export {
   createDeepseekHarnessAdapter,
   deepseekHarnessAcp,
+  DSH_GATE_VERSIONS,
 } from './deepseek-harness/deepseek-harness-acp';
 export { droidAcp, createDroidAdapter } from './droid/droid-adapter';
 export { gooseAcp, createGooseAdapter } from './goose/goose-adapter';

@@ -76,9 +76,9 @@ export const DependencyInstallationStatusCard = observer(function DependencyInst
   const selectedKey = sourceKey(selectedSource);
   const selectedRow = sourceRows.find((r) => sourceKey(r.ref) === selectedKey);
 
-  // Build a human-readable label for the currently-selected source
   const docsUrl = agentPayload?.installDocs ?? agentPayload?.websiteUrl;
 
+  // Build a human-readable label for the currently-selected source
   const selectedLabel = (() => {
     if (selectedInstall && selectedSource.kind !== 'auto') {
       const provLabel = provenanceLabel(selectedInstall.provenance);
