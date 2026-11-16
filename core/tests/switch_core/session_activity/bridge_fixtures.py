@@ -83,6 +83,7 @@ class RecordingPlatform:
     draws_session_activity: bool = True
     separate_attention_slot: bool = True
     notifies_only_by_mention: bool = False
+    broadcasts_thread_replies: bool = False
     redraws_for_elapsed_time: bool = False
     # What `activity_closes_in` answers for every message posted.
     closes_in: float | None = None

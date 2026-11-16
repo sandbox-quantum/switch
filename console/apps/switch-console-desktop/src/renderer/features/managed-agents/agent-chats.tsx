@@ -15,6 +15,7 @@ import { BuddySetupCards } from '@renderer/features/switch-buddy/buddy-setup-car
 import { buddySetupCardsEnabled } from '@renderer/features/switch-buddy/buddy-setup-step';
 import { EmbeddedRoom } from '@renderer/features/switch-rooms/view';
 import { isConsoleDirectChatSummary } from '@renderer/features/switch-servers/room-filters';
+import { roomActivityAt } from '@renderer/features/switch-servers/room-order';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
@@ -31,6 +32,7 @@ import type { ChatSummary } from '@shared/core/chats/chats';
 import { isCloudMachine, type ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
 import { AgentConnectionsTab, useAgentServiceGrants } from './agent-connections-tab';
 import { AgentProfile, managedAgentMachineLine } from './agent-profile';
+import { AgentProfileActions } from './agent-profile-actions';
 import {
   type AgentSection,
   agentSections,
@@ -132,7 +134,12 @@ function conversationsOf({ serverId, workspaceId, agentId }: ManagedAgentView) {
   return {
     agentRooms,
     archived,
-    ...agentConversations(agentChats, agentRooms ?? [], chatsStore.removed),
+    ...agentConversations(agentChats, agentRooms ?? [], chatsStore.removed, (roomId) =>
+      roomActivityAt(
+        ownServer ? chatsStore.chat(roomId) : undefined,
+        switchRoomsStore.roomSummaryById(roomId)
+      )
+    ),
   };
 }
 
@@ -243,6 +250,7 @@ export const AgentChats = observer(function AgentChats({ agent }: { agent: Manag
               ? () => navigate('machine', { serverId, machineId: machine.id, name: machine.name })
               : null
           }
+          actions={<AgentProfileActions agent={agent} />}
         />
         <Section title="Direct chats" addLabel="New chat" onAdd={newChat} addChoices={null}>
           {ownServer && chatsStore.listError && (

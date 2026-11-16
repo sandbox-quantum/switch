@@ -14,6 +14,7 @@ from typing import Any
 import httpx
 import pytest
 from fastapi import FastAPI
+from sqlalchemy import func, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.collaboration.lifecycle_service import (
@@ -44,13 +45,20 @@ class _RunningBridge:
         self.adapter = adapter
 
 
-@pytest.fixture
-async def route(
-    session_factory: async_sessionmaker[AsyncSession], graph: FakeGraph
-) -> Any:
+def _lifecycle(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> CollaborationBridgeLifecycleService:
     lifecycle: CollaborationBridgeLifecycleService = _service(session_factory)
     lifecycle._config.messaging_public_url = "https://switch.example"
     lifecycle.register_adapter("whatsapp", WhatsAppAdapter, WhatsAppConnectionConfig)
+    return lifecycle
+
+
+async def _whatsapp_bridge(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> tuple[str, str]:
+    """A WhatsApp connection's rows in a workspace of its own: the workspace's
+    id and the bridge's."""
     tenant = f"tenant-{uuid.uuid4().hex[:8]}"
     async with session_factory() as session:
         session.add(Tenant(id=tenant, slug=tenant, name=tenant))
@@ -75,6 +83,34 @@ async def route(
         await session.flush()
         bridge_id = bridge.id
         await session.commit()
+    return tenant, bridge_id
+
+
+def _client(
+    lifecycle: CollaborationBridgeLifecycleService,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> httpx.AsyncClient:
+    app = FastAPI()
+    app.include_router(
+        create_bridge_webhook_router(
+            BridgeWebhookService(
+                lifecycle=lifecycle,
+                session_factory=session_factory,
+                receipts=MessagingEventReceiptStore(),
+            )
+        )
+    )
+    return httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="https://switch.example"
+    )
+
+
+@pytest.fixture
+async def route(
+    session_factory: async_sessionmaker[AsyncSession], graph: FakeGraph
+) -> Any:
+    lifecycle = _lifecycle(session_factory)
+    _, bridge_id = await _whatsapp_bridge(session_factory)
 
     adapter = WhatsAppAdapter(config=WhatsAppConnectionConfig.model_validate(CONFIG))
     adapter.set_webhook_url(f"https://switch.example{webhook_path(bridge_id)}")
@@ -86,19 +122,7 @@ async def route(
     await adapter.start(heard.message, heard.command, ignore, ignore, ignore)
     lifecycle._bridges[bridge_id] = _RunningBridge(adapter)  # type: ignore[assignment]
 
-    app = FastAPI()
-    app.include_router(
-        create_bridge_webhook_router(
-            BridgeWebhookService(
-                lifecycle=lifecycle,
-                session_factory=session_factory,
-                receipts=MessagingEventReceiptStore(),
-            )
-        )
-    )
-    client = httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="https://switch.example"
-    )
+    client = _client(lifecycle, session_factory)
     yield client, bridge_id, heard
     await client.aclose()
     await adapter.stop()
@@ -187,3 +211,41 @@ class TestAWhatsAppWebhookEndToEnd:
         )
         assert response.status_code == 200
         assert heard.messages == []
+
+
+class TestAConnectionThatIsNotRunning:
+    """Meta is told to try again while the connection is down for a while,
+    and its events are dropped while its workspace is archived, which a
+    retry would find the same."""
+
+    async def _post(
+        self, session_factory: async_sessionmaker[AsyncSession], *, archived: bool
+    ) -> int:
+        lifecycle = _lifecycle(session_factory)
+        tenant, bridge_id = await _whatsapp_bridge(session_factory)
+        if archived:
+            async with session_factory() as session:
+                await session.execute(
+                    update(Tenant)
+                    .where(Tenant.id == tenant)
+                    .values(archived_at=func.now())
+                )
+                await session.commit()
+        body = json.dumps(text("wamid.down", "hello")).encode()
+        async with _client(lifecycle, session_factory) as client:
+            response = await client.post(
+                webhook_path(bridge_id),
+                content=body,
+                headers={SIGNATURE_HEADER: sign(CONFIG["app_secret"], body)},
+            )
+        return response.status_code
+
+    async def test_one_merely_stopped_is_a_503(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        assert await self._post(session_factory, archived=False) == 503
+
+    async def test_one_in_an_archived_workspace_is_dropped_with_a_200(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        assert await self._post(session_factory, archived=True) == 200

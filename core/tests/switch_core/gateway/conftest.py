@@ -52,11 +52,18 @@ from switch_core.session_activity.listener import (
     Change,
 )
 from switch_core.signals import SignalBus
+from switch_core.telemetry import TelemetryService
 from switch_core.transport.invites import InviteBus
+from switch_core.transport.observer import (
+    IgnoreParticipantMessages,
+    ParticipantMessage,
+    ParticipantMessageObserver,
+)
 from switch_core.trust.client import NullTrustClient
 from tests.conftest import TEST_KEYRING
 from tests.routing import router_on
 from tests.switch_core.gateway.agent_route_harness import add_agent
+from tests.telemetry_records import RecordingSink, recording_telemetry
 
 _MESSAGE_STORE = MessageStore()
 
@@ -176,6 +183,8 @@ class _Harness(SimpleNamespace):
     activity: _FakeActivityListener
     lifecycle: _FakeLifecycle
     connections: AgentConnectionRegistry
+    observer: _RecordingObserver
+    telemetry_sink: RecordingSink
     alice: User
     bob: User
     carol: User
@@ -265,6 +274,16 @@ async def _user(session: AsyncSession, name: str, role: str | None) -> User:
     return user
 
 
+class _RecordingObserver:
+    """Keeps every participant message it is told about."""
+
+    def __init__(self) -> None:
+        self.observed: list[ParticipantMessage] = []
+
+    def observe(self, message: ParticipantMessage) -> None:
+        self.observed.append(message)
+
+
 def _chat_service(
     session_factory: async_sessionmaker[AsyncSession],
     *,
@@ -272,6 +291,8 @@ def _chat_service(
     listener: _FakeListener,
     activity: _FakeActivityListener,
     connections: AgentConnectionRegistry,
+    message_observer: ParticipantMessageObserver,
+    telemetry: TelemetryService | None,
 ) -> tuple[ChatService, RoomService]:
     """A chat service and the room service it works through, built as one
     switch-core process builds them."""
@@ -315,6 +336,8 @@ def _chat_service(
         buddy_slack_handoff_enabled=True,
         connections=connections,
         trust_client=NullTrustClient(),
+        message_observer=message_observer,
+        telemetry=telemetry,
     )
     room_service.on_room_agents_changed(service.sync_room)
     return service, room_service
@@ -335,12 +358,16 @@ async def chats(
     listener = _FakeListener()
     activity = _FakeActivityListener()
     connections = AgentConnectionRegistry()
+    observer = _RecordingObserver()
+    telemetry, telemetry_sink = recording_telemetry()
     service, room_service = _chat_service(
         session_factory,
         lifecycle=lifecycle,
         listener=listener,
         activity=activity,
         connections=connections,
+        message_observer=observer,
+        telemetry=telemetry,
     )
 
     app = FastAPI()
@@ -367,6 +394,8 @@ async def chats(
             activity=activity,
             lifecycle=lifecycle,
             connections=connections,
+            observer=observer,
+            telemetry_sink=telemetry_sink,
             alice=alice,
             bob=bob,
             carol=carol,
@@ -437,6 +466,8 @@ async def two_processes(
         listener=_FakeListener(),
         activity=_FakeActivityListener(),
         connections=connections,
+        message_observer=IgnoreParticipantMessages(),
+        telemetry=None,
     )
     processes = [
         _process(chats.factory, postgres_url, chats.service, chats.connections),

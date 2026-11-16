@@ -209,7 +209,7 @@ class OtlpResource:
         values: dict[str, AttributeValue] = {
             "service.name": self.service_name,
             # The collector drops payloads without it, silently.
-            "flint.client_id": self.deployment_id,
+            "switch_trust.client_id": self.deployment_id,
         }
         if self.service_version:
             values["service.version"] = self.service_version

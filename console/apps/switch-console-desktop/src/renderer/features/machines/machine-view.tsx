@@ -22,7 +22,7 @@ const MachineTitlebar = observer(function MachineTitlebar() {
     <ServerSectionTitlebar
       serverId={params.serverId}
       icon={Server}
-      label="Your devices"
+      label="Devices"
       onSectionClick={() => navigate('settings', { tab: 'devices' })}
       item={{ label: params.name }}
     />
@@ -31,7 +31,7 @@ const MachineTitlebar = observer(function MachineTitlebar() {
 
 /**
  * One of the person's devices, with everything it last reported. Read from
- * the same list as Settings → Your devices: the server has no call for one machine.
+ * the same list as Settings → Devices: the server has no call for one machine.
  */
 const MachinePanel = observer(function MachinePanel() {
   const { params } = useParams('machine');

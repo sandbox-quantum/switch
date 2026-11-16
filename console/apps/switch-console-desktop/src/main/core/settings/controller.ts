@@ -1,6 +1,8 @@
+import { isDeepStrictEqual } from 'node:util';
 import type { TelemetrySettingKey } from '@main/core/telemetry/events';
 import { launchInstallKind } from '@main/core/telemetry/launch-history';
-import { trackEvent } from '@main/core/telemetry/telemetry-service';
+import { trackBackgroundEvent, trackEvent } from '@main/core/telemetry/telemetry-service';
+import { log } from '@main/lib/logger';
 import type { TelemetrySettings } from '@shared/core/app-settings';
 import { createRPCController } from '@shared/lib/ipc/rpc';
 import { appSettingsService, type AppSettings, type AppSettingsKey } from './settings-service';
@@ -25,8 +27,69 @@ async function reportConsent(previous: TelemetrySettings, next: TelemetrySetting
   if (!next.enabled || next.askedAt === null) return;
   if (previous.enabled && previous.askedAt !== null) return;
 
-  const source = previous.askedAt === null ? 'first_run' : 'settings';
-  trackEvent('telemetry_consent_changed', { source, install_kind: await launchInstallKind() });
+  const properties = {
+    source: previous.askedAt === null ? ('first_run' as const) : ('settings' as const),
+    install_kind: await launchInstallKind(),
+  };
+  // The first-run notice records the answer as it is shown, which nobody did;
+  // turning sharing on in Settings is someone using the app.
+  if (properties.source === 'first_run') {
+    trackBackgroundEvent('telemetry_consent_changed', properties);
+  } else {
+    trackEvent('telemetry_consent_changed', properties);
+  }
+}
+
+/**
+ * Settings the app writes as it goes rather than a person setting them, which
+ * `setting_changed` would otherwise count as people changing them: the
+ * first-run notice records the usage-data answer the moment it is shown, and
+ * the first run keeps its own progress in `onboarding`.
+ */
+const UNREPORTED_SETTINGS: ReadonlySet<AppSettingsKey> = new Set(['telemetry', 'onboarding']);
+
+function isReportedSetting(key: AppSettingsKey): key is TelemetrySettingKey {
+  return !UNREPORTED_SETTINGS.has(key);
+}
+
+/** A value that was not read: the setting is not reported, or the read failed. */
+const UNREAD = Symbol('unread');
+
+/**
+ * The value a reported setting holds before a write, to tell a change from a
+ * write of what was already there. `UNREAD` for a setting that is not reported,
+ * and for one that cannot be read: telemetry never gets to fail a write, and a
+ * value nobody read is no evidence of a change.
+ */
+async function valueBefore(key: AppSettingsKey): Promise<unknown> {
+  if (!isReportedSetting(key)) return UNREAD;
+  return appSettingsService.get(key).catch((error: unknown) => {
+    log.warn(
+      'telemetry: could not read a setting before writing it, so its change is not reported',
+      {
+        error,
+      }
+    );
+    return UNREAD;
+  });
+}
+
+/**
+ * Report a setting whose stored value a write changed. Read back rather than
+ * compared with what was asked for, since the store fills in defaults. Never
+ * rejects.
+ */
+async function reportChange(key: AppSettingsKey, before: unknown): Promise<void> {
+  if (!isReportedSetting(key) || before === UNREAD) return;
+  try {
+    if (isDeepStrictEqual(before, await appSettingsService.get(key))) return;
+  } catch (error) {
+    log.warn('telemetry: could not read a setting back, so its change is not reported', {
+      error,
+    });
+    return;
+  }
+  trackEvent('setting_changed', { setting_key: key });
 }
 
 export const appSettingsController = createRPCController({
@@ -48,10 +111,11 @@ export const appSettingsController = createRPCController({
     // turning telemetry OFF, which is the last thing reporting may ever do.
     const previousTelemetry =
       key === 'telemetry' ? await appSettingsService.get('telemetry').catch(() => null) : null;
+    const before = await valueBefore(key);
 
     await appSettingsService.update(key, value);
 
-    trackEvent('setting_changed', { setting_key: key as TelemetrySettingKey });
+    void reportChange(key, before);
     if (previousTelemetry) void reportConsent(previousTelemetry, value as TelemetrySettings);
   },
 
@@ -68,12 +132,14 @@ export const appSettingsController = createRPCController({
    * as consent.
    */
   reset: async <T extends AppSettingsKey>(key: T): Promise<void> => {
+    const before = await valueBefore(key);
     await appSettingsService.reset(key);
-    trackEvent('setting_changed', { setting_key: key as TelemetrySettingKey });
+    void reportChange(key, before);
   },
 
   resetField: async <T extends AppSettingsKey>(key: T, field: string): Promise<void> => {
+    const before = await valueBefore(key);
     await appSettingsService.resetField(key, field as keyof AppSettings[T]);
-    trackEvent('setting_changed', { setting_key: key as TelemetrySettingKey });
+    void reportChange(key, before);
   },
 });

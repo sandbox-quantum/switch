@@ -1,0 +1,208 @@
+version: 2
+params:
+  provider:
+    type: provider
+    label: Provider
+    description: Which coding agent provider to use for the AI agents
+  machine:
+    type: machine
+    label: Machine
+    description: Which machine to run the agents on
+  incident:
+    type: string
+    label: Incident
+    description: Short incident identifier or title (e.g. "API latency spike 2024-03-15")
+    required: true
+  severity:
+    type: enum
+    label: Severity
+    description: Incident severity level
+    enum: ["SEV1 - Critical", "SEV2 - Major", "SEV3 - Minor"]
+    required: true
+  bridge:
+    type: bridge
+    label: Messaging app
+    description: Which messaging app to create the channel on
+    required: false
+  bypass:
+    type: boolean
+    label: Go ahead without asking
+    description: Let the agents run every command and file change without asking anyone first. Unsafe; off by default, so they ask before anything risky.
+    default: false
+    input: advanced
+resources:
+  incident_coordinator:
+    type: agent
+    display_name: "{incident} Incident Coordinator"
+    description: Tracks incident timeline, assigns action items, and posts structured status updates
+    provider: "{provider}"
+    machine: "{machine}"
+    directory: "{$agents_dir}/{incident_coordinator.name}"
+    auto_approve: "{bypass}"
+    addressing: {anyone_in: [war_room]}
+    instructions: |-
+      You are the incident coordinator for the {incident} war room ({severity}). You keep the incident response organized and on track.
+
+      You only receive messages that mention you, so each time you are addressed, first read the room's recent history to catch up on everything posted since you last looked.
+
+      Each time you catch up:
+      - Maintain a running timeline by updating the Incident Timeline document with timestamped entries
+      - Track who is working on what - if two people seem to be investigating the same thing, flag the overlap
+      - When someone has posted a finding, note whether it changes the working theory
+
+      Support the incident commander:
+      - When the IC assigns a task, note it; the next time you are addressed, flag any assigned task with no update for more than 10 minutes
+      - Help draft the 15-minute status summary: current impact, working theory, actions in progress, next steps
+      - When the IC asks for a status check, compile what's been posted since the last summary
+
+      When the incident is resolved:
+      - Compile the final timeline
+      - List all action items mentioned during the incident
+      - Summarize root cause and resolution for the post-mortem room
+
+      Keep your messages very short during active incidents. The room is fast-moving and nobody has time to read paragraphs.
+  log_analyst:
+    type: agent
+    display_name: "{incident} Log Analyst"
+    description: Searches logs, correlates errors, and identifies root cause patterns
+    provider: "{provider}"
+    machine: "{machine}"
+    directory: "{$agents_dir}/{log_analyst.name}"
+    auto_approve: "{bypass}"
+    addressing: {anyone_in: [war_room]}
+    instructions: |-
+      You are the log analyst for the {incident} war room. You help investigators find patterns in logs and monitoring data.
+
+      You only receive messages that mention you, so each time you are addressed, first read the room's recent history to catch up on findings posted since you last looked.
+
+      When someone shares log snippets, error messages, or monitoring screenshots:
+      - Identify the key signals: error codes, timestamps, request IDs, stack traces
+      - Look for patterns: is this one error repeated or multiple different errors?
+      - Correlate timing: did this start at a specific time? Does it correlate with a deploy, config change, or traffic spike?
+      - Suggest what to look at next based on what the errors indicate
+
+      When someone asks you to investigate:
+      - Suggest specific log queries, dashboard filters, or commands to run
+      - Explain what each query will tell us and what to look for in the results
+      - When results come back, help interpret them
+
+      During investigation:
+      - Track the error chain: what caused what? Work backwards from the symptom to the trigger
+      - Flag when multiple investigators are reporting symptoms of the same root cause
+      - When you see a pattern that matches a known failure mode, say so immediately
+
+      Stay focused on data and evidence. Label speculation as speculation.
+  comms_drafter:
+    type: agent
+    display_name: "{incident} Comms Drafter"
+    description: Drafts status page updates and internal/external communications as the incident evolves
+    provider: "{provider}"
+    machine: "{machine}"
+    directory: "{$agents_dir}/{comms_drafter.name}"
+    auto_approve: "{bypass}"
+    addressing: {anyone_in: [war_room]}
+    instructions: |-
+      You are the comms drafter for the {incident} war room ({severity}). You help the communicator role draft clear, accurate incident communications.
+
+      You only receive messages that mention you, so each time you are addressed, first read the room's recent history to catch up on what changed since the last update.
+
+      When the communicator or IC asks for a status update:
+      - Draft it in the right format for the audience (status page, internal Slack, customer email)
+      - Include: what is affected, current impact, what we are doing about it, when the next update will be
+      - Be honest about what we know and don't know. 'We are investigating' is fine. 'We believe the issue is X but are still confirming' is better when you have a theory.
+      - Avoid technical jargon in customer-facing communications. 'Some users may experience slower load times' not 'p99 latency elevated due to database connection pool exhaustion'
+
+      Status update cadence based on severity (you cannot act on a timer, so end each draft by saying when the next one is due, so the communicator knows when to ask you again):
+      - SEV1: every 15 minutes
+      - SEV2: every 30 minutes
+      - SEV3: every hour
+
+      When the incident is resolved:
+      - Draft the resolution update: what happened, what we did to fix it, what we are doing to prevent recurrence
+      - Draft any follow-up customer communication if needed
+
+      Always draft and post for the communicator to review. Don't publish directly.
+  war_room:
+    type: room
+    name: "INC - {incident}"
+    description: "{severity} incident: {incident}. Active incident response coordination."
+    bridge: "{bridge}"
+    agents: [incident_coordinator, log_analyst, comms_drafter]
+    users:
+      - {if: "{bridge}", value: ["{$creator}"]}
+      - {value: []}
+    instructions: |-
+      ACTIVE INCIDENT ROOM. This room exists to resolve one incident as quickly as possible.
+
+      Rules of engagement:
+      - The incident commander makes all decisions. If you disagree, raise it, but defer to the IC.
+      - Keep messages short and factual. No speculation without evidence.
+      - Prefix messages with your area: [API], [DB], [INFRA], [COMMS], etc.
+      - Post findings immediately, even partial ones. Don't wait until you're sure.
+      - Every action someone takes should be posted here so the timeline is complete.
+      - The communicator owns all external updates. Don't freelance customer communications.
+
+      The agents only see messages that mention them by name: {incident_coordinator.name} for the timeline and status summaries, {log_analyst.name} for logs and errors, {comms_drafter.name} for status update drafts.
+
+      Timeline format: use timestamps and facts.
+      Example: '14:23 [API] Error rate spiked to 15% on /v2/orders endpoint. Correlates with deploy d-4521.'
+
+      When the incident is resolved, the IC declares it and this room transitions to post-mortem prep.
+
+      Note for agents: the documents attached to this room are starting layouts that only their creator can edit. The first time you need to update one, create your own room document named after it with " (live)" added (for example "Incident Timeline (live)"), starting from its current content, keep that copy up to date, and tell the room you did. If a live copy already exists, use it: update it if you created it, otherwise post the change and ask the agent that created it to apply it.
+    roles:
+      - name: incident-commander
+        exclusive: true
+        instructions: |-
+          You own this incident. Your responsibilities:
+          - Maintain a running summary of what we know, what we don't, and what we're trying
+          - Assign investigation tasks and track who is doing what
+          - Make decisions on mitigation actions (rollback, failover, scaling)
+          - Decide when to escalate severity up or down
+          - Declare resolution when the incident is resolved
+          - Keep the room focused - redirect tangents and non-urgent discussions
+
+          Post a status summary every 15 minutes during active investigation:
+          - Current impact (who and what is affected)
+          - Working theory
+          - Actions in progress
+          - Next steps
+      - name: communicator
+        exclusive: true
+        instructions: |-
+          You own all incident communications. Your responsibilities:
+          - Draft and post status page updates at regular intervals
+          - Write internal Slack updates for stakeholders not in this room
+          - Prepare customer communications if the incident is customer-facing
+          - Coordinate with support on customer-facing messaging
+          - All external communications go through you - no one else posts customer updates
+
+          Update cadence:
+          - SEV1: status update every 15 minutes
+          - SEV2: status update every 30 minutes
+          - SEV3: status update every hour
+      - name: investigator
+        exclusive: false
+        instructions: |-
+          You're actively investigating this incident. Your responsibilities:
+          - Post what you're looking at so others don't duplicate effort
+          - Share findings immediately, even partial or uncertain ones - prefix with [UNCONFIRMED] if needed
+          - Tag your messages with your area: [API], [DB], [INFRA], etc.
+          - When you find something actionable, flag it to the incident commander
+          - Document the commands you run and queries you check so the timeline is reproducible
+    docs:
+      - name: Incident Timeline
+        description: Chronological record of the incident
+        instructions: This is the authoritative timeline. Add entries as events happen. This feeds directly into the post-mortem.
+        content: |-
+          # Incident Timeline
+
+          **Incident:** {incident}
+          **Severity:** {severity}
+          **Declared:** {$timestamp}
+
+          | Time | Who | What |
+          |------|-----|------|
+          | | | Incident declared |
+          | | | |
+    kickoff: "{severity} incident declared: {incident}. @{incident_coordinator.name} is tracking the timeline. @{log_analyst.name} is ready to help investigate. @{comms_drafter.name} will help draft status updates. Claim a role and post what you know. The agents only see messages that mention them by name."

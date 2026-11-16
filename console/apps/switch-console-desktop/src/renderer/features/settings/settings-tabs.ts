@@ -78,7 +78,7 @@ export function settingsSections(audience: SettingsAudience): SettingsItem[][] {
     { id: 'clis-models', label: 'Agent providers' },
     ...(audience.hasServer ? [{ id: 'api-keys' as const, label: 'API keys' }] : []),
     // The devices Switch knows are yours exist only where agent management runs.
-    ...(audience.agentManagement ? [{ id: 'devices' as const, label: 'Your devices' }] : []),
+    ...(audience.agentManagement ? [{ id: 'devices' as const, label: 'Devices' }] : []),
     // The SSH hosts this Console reaches are this computer's own list.
     { id: 'remote-hosts', label: 'Remote hosts' },
     ...(audience.agentManagement

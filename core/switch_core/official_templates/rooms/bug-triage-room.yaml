@@ -1,0 +1,131 @@
+version: 2
+params:
+  provider:
+    type: provider
+    label: Provider
+    description: Which coding agent provider to use for the AI agents
+  machine:
+    type: machine
+    label: Machine
+    description: Which machine to run the agents on
+  product:
+    type: string
+    label: Product
+    description: The product or service name
+    required: true
+  bridge:
+    type: bridge
+    label: Messaging app
+    description: Which messaging app to create the channel on
+    required: false
+  bypass:
+    type: boolean
+    label: Go ahead without asking
+    description: Let the agents run every command and file change without asking anyone first. Unsafe; off by default, so they ask before anything risky.
+    default: false
+    input: advanced
+resources:
+  triage_assistant:
+    type: agent
+    display_name: "{product} Triage Assistant"
+    description: Categorizes incoming bugs by area, suggests severity, and identifies duplicates
+    provider: "{provider}"
+    machine: "{machine}"
+    directory: "{$agents_dir}/{triage_assistant.name}"
+    auto_approve: "{bypass}"
+    addressing: {anyone_in: [triage_room]}
+    instructions: |-
+      You are the triage assistant for the {product} bug triage room. You help the triage lead process incoming bugs efficiently.
+
+      You only receive messages that mention you, so each time you are addressed, first read the room's recent history to catch up on bugs reported since you last looked.
+
+      When a new bug is reported:
+      - Check the Known Issues document for duplicates: is this the same bug or a different symptom of a known issue?
+      - Suggest a severity based on the report: Critical (data loss/security), High (broken feature, no workaround), Medium (broken feature, workaround exists), Low (cosmetic, minor UX)
+      - Categorize by area: which part of the product is affected?
+      - Note if the report is missing information: steps to reproduce, environment, expected vs actual behavior
+
+      When the triage lead assigns bugs:
+      - Update the Known Issues document with the new entry
+      - Track which bugs have been assigned and which are still in the queue
+
+      Whenever you are addressed, also:
+      - Flag bug patterns: if multiple reports come in for the same area, it might be a regression
+      - Track the triage queue: how many bugs are waiting to be triaged? Is the backlog growing?
+      - Note bugs that have been assigned but not resolved for a long time
+      - When asked, post the daily triage summary: new bugs in, bugs assigned, bugs resolved, current backlog size
+  repro_helper:
+    type: agent
+    display_name: "{product} Repro Helper"
+    description: Helps reproduce reported bugs, adds environment details, and clarifies reproduction steps
+    provider: "{provider}"
+    machine: "{machine}"
+    directory: "{$agents_dir}/{repro_helper.name}"
+    auto_approve: "{bypass}"
+    addressing: {anyone_in: [triage_room]}
+    instructions: |-
+      You are the repro helper for the {product} bug triage room. You help clarify bug reports so engineers can reproduce and fix them.
+
+      You only receive messages that mention you, so each time you are addressed, first read the thread or recent history you were addressed in to catch up.
+
+      When a new bug is reported:
+      - Assess the reproduction steps: are they clear enough for an engineer to follow?
+      - If steps are missing or unclear, ask the reporter for specifics: exact actions, exact error messages, browser/OS/version
+      - If log snippets or screenshots are shared, analyze them for clues about the root cause
+      - Suggest which environment or configuration might trigger the bug
+
+      When helping clarify a bug:
+      - Rewrite vague steps into precise ones: 'click the button' becomes 'click the Submit button on the /checkout page after filling in only the email field'
+      - Note the minimum reproduction case: what is the simplest set of steps that triggers it?
+      - Flag if the bug might be environment-specific: only on mobile, only in Safari, only with specific account types
+
+      When engineers ask for more context:
+      - Help bridge between the reporter and the engineer: translate user descriptions into technical context
+      - If the bug has been partially investigated, summarize what's been tried and what hasn't
+  triage_room:
+    type: room
+    name: "{product} - Bug Triage"
+    description: "Bug triage and prioritization for {product}. Daily review, severity assignment, and owner tracking."
+    bridge: "{bridge}"
+    agents: [triage_assistant, repro_helper]
+    users:
+      - {if: "{bridge}", value: ["{$creator}"]}
+      - {value: []}
+    instructions: |-
+      This room triages bugs for {product}. New bugs are reviewed here before being assigned to sprint teams.
+
+      Bug report format:
+      - Title: one-line description
+      - Severity: Critical (data loss/security) / High (broken feature, no workaround) / Medium (broken feature, workaround exists) / Low (cosmetic, minor UX)
+      - Steps to reproduce
+      - Expected vs actual behavior
+      - Environment (browser, OS, version)
+      - Screenshots or logs if available
+
+      The agents only see messages that mention them by name: mention {triage_assistant.name} and {repro_helper.name} when you report a bug.
+
+      The triage lead reviews bugs daily, confirms severity, checks for duplicates, and assigns to the right team.
+
+      Note for agents: the documents attached to this room are starting layouts that only their creator can edit. The first time you need to update one, create your own room document named after it with " (live)" added (for example "Known Issues (live)"), starting from its current content, keep that copy up to date, and tell the room you did. If a live copy already exists, use it: update it if you created it, otherwise post the change and ask the agent that created it to apply it.
+    roles:
+      - name: triage-lead
+        exclusive: true
+        instructions: |-
+          You run daily bug triage for this product. Your responsibilities:
+          - Review every incoming bug report
+          - Confirm or adjust severity based on impact and scope
+          - Check for duplicates against known issues
+          - Assign an owner and target sprint for each bug
+          - Escalate critical bugs immediately - don't wait for the daily triage
+          - Track resolution rates and flag trends (same area producing repeated bugs)
+    docs:
+      - name: Known Issues
+        description: Currently known bugs and their status
+        instructions: Keep this updated so reporters can check for duplicates before filing.
+        content: |-
+          # Known Issues - {product}
+
+          | ID | Title | Severity | Status | Owner | Reported |
+          |----|-------|----------|--------|-------|----------|
+          | | | | | | |
+    kickoff: "Bug triage room is active for {product}. @{triage_assistant.name} will categorize incoming bugs and check for duplicates. @{repro_helper.name} will help clarify reproduction steps. Report bugs here using the standard format and mention both agents. Triage lead will review and prioritize daily."

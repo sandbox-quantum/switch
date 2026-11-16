@@ -42,6 +42,10 @@ class Settings:
     # the service's own AWS credentials).
     bedrock_enabled: bool = False
     bedrock_model: str = DEFAULT_BEDROCK_MODEL
+    # When set, a backend that scores every option picks its top agent only if
+    # it leads the next option (another agent or "none") by at least this
+    # much, instead of applying confidence_threshold. None: the threshold.
+    min_lead: float | None = None
 
 
 def load_settings() -> Settings:
@@ -55,6 +59,10 @@ def load_settings() -> Settings:
         raise ValueError(
             f"DECISION_CONFIDENCE_THRESHOLD must be between 0 and 1, got {threshold}"
         )
+    min_lead_raw = os.environ.get("DECISION_MIN_LEAD", "").strip()
+    min_lead = float(min_lead_raw) if min_lead_raw else None
+    if min_lead is not None and not 0.0 <= min_lead <= 1.0:
+        raise ValueError(f"DECISION_MIN_LEAD must be between 0 and 1, got {min_lead}")
     bedrock_model = os.environ.get("DECISION_BEDROCK_MODEL") or DEFAULT_BEDROCK_MODEL
     default_model = bedrock_model if backend == "bedrock" else DEFAULT_MODELS[backend]
     return Settings(
@@ -75,4 +83,5 @@ def load_settings() -> Settings:
         model_server_token=os.environ.get("MODEL_SERVER_TOKEN") or None,
         bedrock_enabled=_flag("DECISION_BEDROCK_ENABLED"),
         bedrock_model=bedrock_model,
+        min_lead=min_lead,
     )

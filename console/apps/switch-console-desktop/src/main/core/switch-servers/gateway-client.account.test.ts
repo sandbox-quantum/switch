@@ -21,7 +21,9 @@ const {
   changeMyPassword,
   createRegistrationKey,
   deleteApiKey,
+  deleteMyAccount,
   fetchMyApiKeys,
+  resetMyTestAccount,
   revealApiKey,
   updateMyName,
 } = await import('./gateway-client');
@@ -146,6 +148,39 @@ describe('account', () => {
     );
     await expect(changeMyPassword(SERVER, 'nope', 'new-password-1')).rejects.toThrow(
       'Current password is incorrect'
+    );
+  });
+});
+
+describe('deleting and resetting the account', () => {
+  beforeEach(() => {
+    fetchMock.mockImplementation(async () => response(200, {}));
+  });
+
+  it('confirms a delete with the email', async () => {
+    await deleteMyAccount(SERVER, 'ada@example.test');
+    expect(lastCall()).toMatchObject({
+      url: 'https://switch.example.com/gateway/auth/me',
+      method: 'DELETE',
+      body: { email: 'ada@example.test' },
+    });
+  });
+
+  it('confirms a test-account reset with the email', async () => {
+    await resetMyTestAccount(SERVER, 'ada@example.test');
+    expect(lastCall()).toMatchObject({
+      url: 'https://switch.example.com/gateway/auth/me/reset-test-account',
+      method: 'POST',
+      body: { email: 'ada@example.test' },
+    });
+  });
+
+  it('passes on the server’s reason when a reset is refused', async () => {
+    fetchMock.mockImplementationOnce(async () =>
+      response(404, { detail: 'Test-account reset is not enabled on this server.' })
+    );
+    await expect(resetMyTestAccount(SERVER, 'ada@example.test')).rejects.toThrow(
+      'Test-account reset is not enabled on this server.'
     );
   });
 });

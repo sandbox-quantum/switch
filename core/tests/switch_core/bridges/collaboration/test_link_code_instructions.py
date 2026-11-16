@@ -18,10 +18,14 @@ def test_the_default_is_the_typed_command() -> None:
     assert f"`!link-account {_CODE}`" in text
 
 
-def test_slack_uses_the_typed_command() -> None:
-    # Slack apps set up before the slash command existed do not have it.
-    assert "`!link-account" in SlackAdapter.link_code_instructions(_CODE, {})
-    assert "/link-account" not in SlackAdapter.link_code_instructions(_CODE, {})
+def test_slack_leads_with_the_slash_command_and_keeps_the_typed_one() -> None:
+    # The slash command reaches Switch from any conversation (CHOO-4121), so a
+    # new user needs no channel; apps set up before it existed still have the
+    # typed form.
+    text = SlackAdapter.link_code_instructions(_CODE, {})
+    assert text.startswith(f"Type `/link-account {_CODE}`")
+    assert "a message to yourself works" in text
+    assert f"`!link-account {_CODE}`" in text
 
 
 def test_mattermost_needs_a_channel_with_an_agent_and_says_what_to_do_without_one() -> (

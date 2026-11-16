@@ -1,8 +1,8 @@
 # The collaboration bridge
 
-_How Switch relays a messaging app into a Switch room, and the contract you implement to add one it doesn't support_
+_The adapter contract for connecting a new messaging app to Switch_
 
-Published at <https://docs.switchagents.ai/flintai/switch/internals/collaboration-bridge> — link readers there, not to this file.
+Published at <https://docs.switchagents.ai/switch-rooms/internals/collaboration-bridge> — link readers there, not to this file.
 
 The collaboration bridge relays an external chat platform into a Switch room, in both directions. One adapter per platform.
 
@@ -24,7 +24,7 @@ All are registered at startup.
 
 **Info**
 
-Microsoft Teams is the only adapter that has to be reachable from the internet. It runs an HTTP listener, port 3978 by default, that Teams posts activity to. Deploy without Teams and no part of Switch needs a public address.
+Microsoft Teams is the only adapter that has to be reachable from the internet. It runs an HTTP listener, port 3978 by default, that Teams posts activity to. A distributed Telegram app also needs a public address, because Telegram delivers every update as a webhook. Otherwise nothing has to be reachable from the public internet. The other addresses Switch asks for, such as `GATEWAY_PUBLIC_URL` for connector sign-in redirects, deeplinks and controller enrollment, only have to be reachable by your own people and machines.
 
 ## The adapter contract
 
@@ -45,7 +45,7 @@ async def start(
 async def stop(self) -> None: ...
 ```
 
-Open the platform connection in `start` and keep it open. The callbacks are the only way work reaches the bridge core — every inbound platform event ends up in one of them. `stop` tears the connection down.
+Open the platform connection in `start` and keep it open. The callbacks are the only way work reaches the bridge core . Every inbound platform event ends up in one of them. `stop` tears the connection down.
 
 ### Messaging
 
@@ -65,7 +65,7 @@ async def delete_message(self, channel_id: str, message_ref: str) -> None: ...
 async def send_typing(self, channel_id: str, sender_name: str, is_typing: bool) -> None: ...
 ```
 
-`send_message` returns the platform's own id for the post. Return it — the bridge core stores it against the Switch event id, and threading, edits and deletes all resolve through that pair.
+`send_message` returns the platform's own id for the post. Return it. The bridge core stores it against the Switch event id, and threading, edits and deletes all resolve through that pair.
 
 `sender_name` is the agent whose voice the message goes out in. Render it however the platform allows: a per-agent identity, a display-name override, a prefix.
 
@@ -118,14 +118,16 @@ Capability flags are class attributes, not runtime probes. Switch answers questi
 |---|---|
 | `supports_channel_creation` | Whether Switch may create a channel for a new room |
 | `supports_directory_search` | Whether the platform's user directory can be searched |
-| `renders_custom_url_schemes` | Whether a non-`http` deeplink linkifies, or has to go through the public redirect |
+| `renders_custom_url_schemes` | Whether a non-`http` deeplink linkifies, or has to go through the public redirect. Where it doesn't, `translate_outbound` also rewrites an agent's links to Switch Console pages |
 | `runtime_state_follows_anchor` | Runtime-state indicator behavior |
 
 ## Defaults you inherit
 
 The base class ships concrete methods with usable defaults. Override one only when the platform does better than the default.
 
-They cover attachments, admin messages, runtime-state indicators, direct-message channel creation, directory search, deeplinks, install links, agent icons, mention priming, and channel subscriptions.
+They cover attachments, admin messages, runtime-state indicators, direct-message channel creation, directory search, deeplinks, install links, agent icons, mention priming, channel subscriptions, and channel retirement.
+
+Channel retirement runs only when the person deleting a room asks for it; otherwise the channel stays. An adapter that overrides `retire_channel` sets `channel_on_delete` to match, because Switch Console reads it to decide whether to offer the option and how to word it.
 
 Direct-message channel creation raises an unsupported error by default, so an adapter that can't do it fails visibly rather than posting somewhere else.
 
@@ -135,7 +137,7 @@ Implement the abstract methods first and nothing more. Get messages flowing, the
 
 Everything an adapter hands back through the callbacks is a platform-neutral Pydantic model.
 
-| Model | Carries |
+| Model | Holds |
 |---|---|
 | `InboundMessage` | Channel, channel type, sender id and name, content, message reference, optional thread root, optional agent name, attachments, attachment failures, self-mention token |
 | `InboundCommand` | A command invoked in the channel |
@@ -187,7 +189,7 @@ A message that arrived from Slack entered the room as a puppet, so it is never r
 
 A durable table maps Switch event ids to external post ids. It is written in both directions, with a uniqueness constraint on each side, so either id resolves the other.
 
-- **Threading.** A reply carries the event id it replies to. The map turns that into the platform's thread root, and the reply lands in the thread.
+- **Threading.** A reply includes the event id it replies to. The map turns that into the platform's thread root, and the reply lands in the thread.
 - **Edits and deletes.** The bridge looks up the external post id and calls `update_message` or `delete_message` against it, however long after the fact.
 
 ```mermaid
@@ -215,7 +217,7 @@ Return a real message reference from `send_message`. Everything in this section 
 
 Room commands live in one registry. A `Command` is a frozen dataclass with a name, description, handler, argument spec, targeting, a forward-to-agent flag, a hidden flag and an admin check.
 
-Registered commands include `help`, `reset`, `compact`, `interrupt`, `list-agents`, `agents-status`, `roles`, `list-documents`, `list-references`, `list-aliases`, `set-alias`, `remove-alias`, `invite-agent`, `remove-agent` and `room-url`, most with an all-agents variant.
+Registered commands include `help`, `reset`, `compact`, `interrupt`, `list-agents`, `agents-status`, `roles`, `list-documents`, `list-references`, `list-aliases`, `set-alias`, `remove-alias`, `invite-agent` and `room-url`, most with an all-agents variant.
 
 What differs per platform is only how a person reaches them.
 

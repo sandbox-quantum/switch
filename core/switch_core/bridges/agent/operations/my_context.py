@@ -95,17 +95,24 @@ async def get_my_context() -> dict[str, Any]:
 
         `services`: what agents can be given access to (GitHub and the like),
         each {slug, name, available, unavailable_reason, unavailable_code,
-        connection, agents_using}. `available` is whether this server has it
-        set up; `unavailable_code` says why not, one of "switched_off" (its
-        operator turned it off), "needs_https" (it can't work on this
-        server), "app_not_set_up" (its operator can set it up under Admin →
-        Connector apps in Switch Console), "organization_app_unusable" (the
-        app your organization saved for it can't be used), "not_set_up",
-        "not_fully_set_up" or "key_never_expires" (it connects with a key
-        that never expires, which Switch does not hand to agents);
+        workspace_enabled, connection, agents_using}. `available` is whether
+        your owner can use it here: this server has it set up and the
+        workspace has it on. `unavailable_code` says why this server can't,
+        one of "switched_off" (its operator turned it off), "needs_https" (it
+        can't work on this server), "app_not_set_up" (its operator can set it
+        up under Admin → Connector apps in Switch Console),
+        "organization_app_unusable" (the app your organization saved for it
+        can't be used), "not_set_up", "not_fully_set_up" or
+        "key_never_expires" (it connects with a key that never expires,
+        which Switch does not hand to agents).
+        `workspace_enabled` is false where the workspace has it switched off,
+        which a workspace admin changes under Admin → Connectors in Switch
+        Console; until then nobody in it can connect it or give it to agents.
         `connection` is your owner's: "not_connected", "active",
-        "needs_reauthorization" or "error". `agents_using` names your owner's
-        agents granted it. Empty when this server has service connections off.
+        "needs_reauthorization" (including one made through an app this server
+        no longer uses) or "error"; only an "active" one can be given to an
+        agent. `agents_using` names your owner's agents granted it. Empty
+        when this server has service connections off.
 
         `agents`: your owner's agents, each {id, name, display_name,
         who_can_talk, can_manage_agents, services, managed}. `who_can_talk`
@@ -177,8 +184,15 @@ async def get_my_context() -> dict[str, Any]:
             ]
             for agent in agents
         }
+        switched_off = (
+            set()
+            if protocol.service_broker is None
+            else await protocol.service_broker.workspace_disabled(session)
+        )
         bridges = await protocol.bridge_store.get_all(session)
-        services = await _services(session, protocol, connections, agents, grants)
+        services = await _services(
+            session, protocol, connections, agents, grants, switched_off
+        )
 
     admin = role == "admin" or owner.role == "admin"
     port = management_port()
@@ -288,6 +302,7 @@ async def _services(
     connections: dict[str, ServiceConnection],
     agents: list[Agent],
     grants: dict[str, list[str]],
+    switched_off: set[str],
 ) -> list[dict[str, Any]]:
     broker = protocol.service_broker
     if broker is None:
@@ -300,15 +315,19 @@ async def _services(
             continue
         standing = await broker.standing(session, definition.slug)
         unavailable = standing.unavailable
+        workspace_enabled = definition.slug not in switched_off
         entries.append(
             {
                 "slug": definition.slug,
                 "name": definition.name,
-                "available": unavailable is None and standing.connectable,
+                "available": unavailable is None
+                and standing.connectable
+                and workspace_enabled,
                 "unavailable_reason": None
                 if unavailable is None
                 else unavailable.reason,
                 "unavailable_code": None if unavailable is None else unavailable.code,
+                "workspace_enabled": workspace_enabled,
                 "connection": broker.connection_status(
                     standing, connections.get(definition.slug)
                 ),

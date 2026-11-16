@@ -62,6 +62,7 @@ function sleepingMachine(): CloudMachine {
     state: 'stopped',
     desired_state: 'stopped',
     stop_reason: 'idle',
+    stopped_by_admin: false,
     sleeping: true,
     revision: 5,
     instance_type: 'c7i.2xlarge',

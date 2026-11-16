@@ -28,7 +28,7 @@ vi.mock('@shared/app-identity', async (importOriginal) => ({
 vi.mock('@main/lib/events', () => ({ events: { emit: m.emit } }));
 vi.mock('@main/lib/logger', () => ({ log: { warn: vi.fn(), error: vi.fn(), info: vi.fn() } }));
 vi.mock('@main/core/telemetry/managed-server', () => ({
-  reportManagedServerOutcome: vi.fn(),
+  reportManagedServerOutcome: telemetry.outcome,
   reportManagedServerStart: vi.fn(),
   reportManagedServerStartThrew: vi.fn(),
 }));
@@ -70,6 +70,15 @@ vi.mock('./deployed-version', () => ({
       : { deployedVersion: null, drift: null },
 }));
 vi.mock('./telemetry-consent', () => ({ readDeployedTelemetry: vi.fn() }));
+const launch = vi.hoisted(() => ({
+  read: vi.fn(async () => false),
+  write: vi.fn(async () => {}),
+}));
+vi.mock('./start-at-launch', () => ({
+  readStartAtLaunch: launch.read,
+  writeStartAtLaunch: launch.write,
+}));
+const telemetry = vi.hoisted(() => ({ outcome: vi.fn() }));
 vi.mock('./managed-upgrade', async (importOriginal) => ({
   ...(await importOriginal<typeof ManagedUpgrade>()),
   readUpgradeJournal: m.journal,
@@ -187,6 +196,130 @@ beforeEach(() => {
   watch.health.mockResolvedValue(true);
   // Docker servers stay on Docker unless a test is about moving them.
   move.blocked.mockResolvedValue('not moved in this test');
+  // Most tests are about a server the boot finds as it is; starting it at
+  // launch has tests of its own.
+  launch.read.mockResolvedValue(false);
+});
+
+it('starts a server the last quit stopped when the app opens, without switching to it', async () => {
+  m.running.mockResolvedValue(false);
+  launch.read.mockResolvedValue(true);
+  const service = new LocalServerService();
+  await boot(service);
+
+  expect(launch.read).toHaveBeenCalledWith('/data/local-switch-server');
+  expect(m.start).toHaveBeenCalledOnce();
+  expect(m.start).toHaveBeenCalledWith(expect.objectContaining({ activate: false }));
+  expect(service.getStatus()).toMatchObject({ phase: 'running', upgrade: null });
+  await expect(service.ensureReady('Local')).resolves.toBeUndefined();
+});
+
+it('leaves a server stopped from the app stopped when the app opens', async () => {
+  m.running.mockResolvedValue(false);
+  m.version.mockResolvedValue({ deployedVersion: '0.11.0', drift: null });
+  launch.read.mockResolvedValue(false);
+  const service = new LocalServerService();
+  await boot(service);
+
+  expect(m.start).not.toHaveBeenCalled();
+  expect(service.getStatus().phase).toBe('stopped');
+});
+
+it('leaves the server stopped, and says why in the log, when it cannot tell whether to start it', async () => {
+  m.running.mockResolvedValue(false);
+  m.version.mockResolvedValue({ deployedVersion: '0.11.0', drift: null });
+  launch.read.mockRejectedValue(new Error('start-at-launch.json is not JSON'));
+  const { log } = await import('@main/lib/logger');
+  const service = new LocalServerService();
+  await boot(service);
+
+  expect(m.start).not.toHaveBeenCalled();
+  expect(service.getStatus()).toMatchObject({ phase: 'stopped', checked: true });
+  expect(log.error).toHaveBeenCalledWith(
+    expect.stringContaining('could not read whether to start at launch'),
+    { error: 'start-at-launch.json is not JSON' }
+  );
+});
+
+it('remembers a Stop across launches, and the next start undoes it', async () => {
+  m.version.mockResolvedValue({ deployedVersion: '0.11.0', drift: null });
+  m.start.mockResolvedValue(started);
+  const service = new LocalServerService();
+  await boot(service);
+
+  await service.stop();
+  expect(launch.write).toHaveBeenLastCalledWith('/data/local-switch-server', false);
+  expect(telemetry.outcome).toHaveBeenCalledWith('stop', 'local', 'success');
+
+  await service.start();
+  expect(launch.write).toHaveBeenLastCalledWith('/data/local-switch-server', true);
+});
+
+it('stops the server at quit, to start again at the next launch, without counting it as a stop', async () => {
+  m.version.mockResolvedValue({ deployedVersion: '0.11.0', drift: null });
+  const service = new LocalServerService();
+  await boot(service);
+  expect(service.getStatus().phase).toBe('running');
+
+  await service.stopForQuit();
+
+  expect(m.stop).toHaveBeenCalledOnce();
+  expect(service.getStatus().phase).toBe('stopped');
+  expect(launch.write).not.toHaveBeenCalled();
+  expect(telemetry.outcome).not.toHaveBeenCalled();
+  expect(m.record).toHaveBeenCalledWith('stopped', null);
+});
+
+it('stops a native server at quit through its own stop', async () => {
+  runtime.read.mockResolvedValue('native');
+  native.running.mockResolvedValue(true);
+  native.deployed.mockResolvedValue({ kind: 'deployed', version: '0.11.0' });
+  const service = new LocalServerService();
+  await boot(service);
+
+  await service.stopForQuit();
+
+  expect(native.stop).toHaveBeenCalledOnce();
+  expect(m.stop).not.toHaveBeenCalled();
+});
+
+it('waits out a start in flight at quit, then stops what it brought up', async () => {
+  m.running.mockResolvedValue(false);
+  m.version.mockResolvedValue({ deployedVersion: '0.11.0', drift: null });
+  let finish: (result: StartLocalServerResult) => void = () => {};
+  let signal: AbortSignal | null = null;
+  m.start.mockImplementationOnce(
+    (opts) =>
+      new Promise((resolve) => {
+        signal = opts.signal;
+        finish = resolve;
+      })
+  );
+  const service = new LocalServerService();
+  await service.initialize();
+  void service.start();
+  await vi.waitFor(() => expect(m.start).toHaveBeenCalledOnce());
+
+  const quit = service.stopForQuit();
+  expect(signal!.aborted).toBe(true);
+  expect(m.stop).not.toHaveBeenCalled();
+  finish(started);
+  await quit;
+
+  expect(m.stop).toHaveBeenCalledOnce();
+  expect(service.getStatus().phase).toBe('stopped');
+});
+
+it('leaves a stopped server alone at quit', async () => {
+  m.running.mockResolvedValue(false);
+  m.version.mockResolvedValue({ deployedVersion: '0.11.0', drift: null });
+  const service = new LocalServerService();
+  await boot(service);
+
+  await service.stopForQuit();
+
+  expect(m.stop).not.toHaveBeenCalled();
+  expect(native.stop).not.toHaveBeenCalled();
 });
 
 it('upgrades a running server that is behind at boot, without switching to it', async () => {

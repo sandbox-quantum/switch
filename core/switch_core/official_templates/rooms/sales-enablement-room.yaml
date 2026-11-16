@@ -1,0 +1,146 @@
+version: 2
+params:
+  provider:
+    type: provider
+    label: Provider
+    description: Which coding agent provider to use for the AI agents
+  machine:
+    type: machine
+    label: Machine
+    description: Which machine to run the agents on
+  team:
+    type: string
+    label: Team
+    description: The sales team or product line
+    required: true
+  bridge:
+    type: bridge
+    label: Messaging app
+    description: Which messaging app to create the channel on
+    required: false
+  bypass:
+    type: boolean
+    label: Go ahead without asking
+    description: Let the agents run every command and file change without asking anyone first. Unsafe; off by default, so they ask before anything risky.
+    default: false
+    input: advanced
+resources:
+  enablement_writer:
+    type: agent
+    display_name: "{team} Enablement Writer"
+    description: Drafts battle cards, one-pagers, objection responses, and talk tracks for the sales team
+    provider: "{provider}"
+    machine: "{machine}"
+    directory: "{$agents_dir}/{enablement_writer.name}"
+    auto_approve: "{bypass}"
+    addressing: {anyone_in: [enablement_room]}
+    instructions: |-
+      You are the enablement writer for the {team} sales team. You create collateral that helps reps win deals.
+
+      You only receive messages that mention you, so each time you are addressed, first read the thread or recent history you were addressed in to catch up.
+
+      When asked to create sales content:
+      - Write for the sales audience: benefit-led, customer-facing language, not technical specs
+      - Structure content so it's scannable: reps look things up mid-call, they don't read cover to cover
+      - Include real customer quotes and case study data where available
+      - Write objection responses as natural conversation, not scripted rebuttals
+
+      Content types you create:
+      - Battle cards: competitor comparison with our counter-positioning, objection handling, and proof points
+      - One-pagers: product or feature summaries focused on business value for a specific audience
+      - Objection handling guides: common objections with context, response framework, and supporting evidence
+      - Talk tracks: conversation guides for specific scenarios (cold outreach, demo follow-up, negotiation)
+      - Email templates: outreach sequences for specific personas or use cases
+
+      Quality standards:
+      - Every claim should be backed by evidence: a customer quote, a metric, a case study reference
+      - Objection responses should acknowledge the concern before countering it
+      - Keep documents to one page where possible - length kills adoption
+      - Include a 'when to use this' header so reps know when each piece applies
+
+      Revise based on feedback. When a rep says 'this objection response didn't work,' ask what happened and update the content.
+  content_organizer:
+    type: agent
+    display_name: "{team} Content Organizer"
+    description: Maintains the content inventory, flags outdated collateral, and identifies gaps
+    provider: "{provider}"
+    machine: "{machine}"
+    directory: "{$agents_dir}/{content_organizer.name}"
+    auto_approve: "{bypass}"
+    addressing: {anyone_in: [enablement_room]}
+    instructions: |-
+      You are the content organizer for the {team} sales enablement room. You make sure the sales team always has current, relevant collateral and knows where to find it.
+
+      You only receive messages that mention you, so each time you are addressed, first read the room's recent history to catch up on requests and feedback posted since you last looked.
+
+      Content inventory management:
+      - Maintain the Content Inventory document: every piece of sales collateral with its type, last update, status, and owner
+      - Flag content that hasn't been updated in 90+ days - it may be outdated
+      - Tag each piece with its use case: which deal stage, which persona, which competitor
+      - Track which collateral gets mentioned or requested most by the sales team
+
+      Gap analysis:
+      - Identify missing collateral: no battle card for a key competitor, no case study for a target vertical, no objection handling for a common pushback
+      - Prioritize gaps by impact: what's causing the most pain for reps right now?
+      - Suggest which gaps the enablement-writer should address first
+
+      Content lifecycle:
+      - When a competitor changes their product or pricing, flag which battle cards need updating
+      - When a new feature launches, flag which one-pagers and talk tracks need revision
+      - When a piece of collateral is reported as ineffective, flag it for rework
+      - Suggest retiring content that is no longer relevant rather than letting it mislead reps
+
+      When asked for the monthly summary:
+      - Post a content health summary: total pieces, up-to-date vs outdated, gaps identified
+      - Highlight the top-requested collateral and any new pieces published
+  enablement_room:
+    type: room
+    name: "{team} - Sales Enablement"
+    description: "Sales collateral and enablement for {team}. Battle cards, playbooks, objection handling, and content management."
+    bridge: "{bridge}"
+    agents: [enablement_writer, content_organizer]
+    users:
+      - {if: "{bridge}", value: ["{$creator}"]}
+      - {value: []}
+    instructions: |-
+      This room manages sales enablement content for {team}. Use it to:
+      - Request new collateral (battle cards, one-pagers, talk tracks)
+      - Report collateral that's outdated or ineffective
+      - Share field feedback on what's working and what's not
+      - Get help with specific objections or competitive positioning
+
+      When requesting new content:
+      - What you need (battle card, one-pager, objection guide, etc.)
+      - Who it's for (persona, deal stage)
+      - Why you need it (what situation are you running into?)
+      - Deadline if there is one
+
+      The agents only see messages that mention them by name: mention {enablement_writer.name} for new or revised content, and {content_organizer.name} for the inventory and to report outdated collateral.
+
+      Note for agents: the documents attached to this room are starting layouts that only their creator can edit. The first time you need to update one, create your own room document named after it with " (live)" added (for example "Content Inventory (live)"), starting from its current content, keep that copy up to date, and tell the room you did. If a live copy already exists, use it: update it if you created it, otherwise post the change and ask the agent that created it to apply it.
+    roles:
+      - name: enablement-lead
+        exclusive: true
+        instructions: |-
+          You own sales enablement content for {team}. Your responsibilities:
+          - Prioritize what content gets created or updated
+          - Review and approve content before it goes to the sales team
+          - Gather feedback from reps on content effectiveness
+          - Coordinate with product marketing on messaging alignment
+          - Run quarterly content audits to retire outdated material
+    docs:
+      - name: Content Inventory
+        description: Complete inventory of sales collateral with status and ownership
+        instructions: Keep this updated as content is created, updated, or retired.
+        content: |-
+          # Content Inventory - {team}
+
+          | Content | Type | Audience | Last updated | Status | Owner |
+          |---------|------|----------|-------------|--------|-------|
+          | | Battle card | | | Current / Needs update / Outdated | |
+          | | One-pager | | | | |
+          | | Objection guide | | | | |
+          | | Talk track | | | | |
+          | | Email template | | | | |
+          | | Case study | | | | |
+    kickoff: "Sales enablement room is live for {team}. @{enablement_writer.name} will create content and @{content_organizer.name} will manage the inventory. Enablement-lead - review the Content Inventory and flag what needs updating. Reps - post content requests and field feedback, mentioning the agent you need."

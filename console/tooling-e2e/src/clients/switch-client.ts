@@ -253,6 +253,19 @@ export interface WorkspaceMembership {
   role: string;
   organization_role: string | null;
   organization_id: string | null;
+  archived_at: string | null;
+}
+
+/** One of the organization's workspaces, as its Workspaces page lists it. */
+export interface OrganizationWorkspace extends WorkspaceMembership {
+  created_at: string;
+  users: number;
+  agents: number;
+  rooms: number;
+  admins: string[];
+  can_archive: boolean;
+  archive_blocked_reason: string | null;
+  can_restore: boolean;
 }
 
 /** A workspace's message retention window; `message_retention_days: null` keeps messages forever. */
@@ -260,6 +273,18 @@ export interface RetentionPolicy {
   message_retention_days: number | null;
   updated_at: string | null;
   updated_by_user_id: string | null;
+}
+
+/** One row of `GET /gateway/tenants/{tenant_id}/private-channel-rooms`. */
+export interface PrivateChannelRoom {
+  room_id: string;
+  name: string;
+  bridge_id: string;
+  channel_type: string | null;
+  people: number;
+  members_listed: boolean | null;
+  cautions: string[];
+  recommended: boolean;
 }
 
 /** One row of `GET /gateway/tenants/{tenant_id}/people`. `kind: 'member'` is someone taking part from Switch Console. */
@@ -474,13 +499,17 @@ export class SwitchClient {
     return other;
   }
 
-  /** `POST /gateway/users` — a user in the signed-in admin's workspace. `role: 'admin'` makes a deployment operator. */
+  /**
+   * `POST /gateway/users` — a user in the signed-in admin's workspace. `role: 'admin'` makes a deployment operator.
+   * The account signs in with `password` for as long as it lasts, so it goes to the run's issued secrets.
+   */
   async createUser(params: {
     name: string;
     email: string;
     password: string;
     role: "user" | "admin";
   }): Promise<{ id: string }> {
+    this.issued.record(params.password);
     return this.gateway<{ id: string }>("POST", "/users", params);
   }
 
@@ -558,6 +587,20 @@ export class SwitchClient {
     return this.gateway("GET", "/organizations/current/issues");
   }
 
+  /** `GET /gateway/organizations/current/guardrails` — the Switch Trust policy the organization connected; organization admin only. */
+  async organizationGuardrails(): Promise<{
+    connected: boolean;
+    policy_id: string | null;
+    policy_name: string | null;
+  }> {
+    return this.gateway("GET", "/organizations/current/guardrails");
+  }
+
+  /** `DELETE /gateway/organizations/current/guardrails` — disconnect the organization's Switch Trust policy. */
+  async disconnectOrganizationGuardrails(): Promise<{ connected: boolean }> {
+    return this.gateway("DELETE", "/organizations/current/guardrails");
+  }
+
   /** `GET /gateway/organizations/current` — the current workspace's organization and the caller's role there. */
   async currentOrganization(): Promise<{
     id: string;
@@ -577,11 +620,126 @@ export class SwitchClient {
     return this.gateway("GET", "/tenants/counts");
   }
 
-  /** `GET /gateway/organizations/current/workspaces` — the current organization's workspaces the caller may enter. */
-  async organizationWorkspaces(): Promise<WorkspaceMembership[]> {
-    return this.gateway<WorkspaceMembership[]>(
+  /** `GET /gateway/organizations/current/workspaces` — the current organization's workspaces the caller may enter, as its Workspaces page lists them. */
+  async organizationWorkspaces(): Promise<OrganizationWorkspace[]> {
+    return this.gateway<OrganizationWorkspace[]>(
       "GET",
       "/organizations/current/workspaces",
+    );
+  }
+
+  /** `POST /gateway/organizations/current/workspaces/{id}/archive` — close one of the organization's workspaces; organization admin only. */
+  async archiveOrganizationWorkspace(
+    workspaceId: string,
+  ): Promise<{ id: string; name: string; archived_at: string | null }> {
+    return this.gateway(
+      "POST",
+      `/organizations/current/workspaces/${encodeURIComponent(workspaceId)}/archive`,
+    );
+  }
+
+  /** `POST /gateway/organizations/current/workspaces/{id}/members` — add someone already in the organization to one of its workspaces. */
+  async addToOrganizationWorkspace(
+    workspaceId: string,
+    userId: string,
+    role: "admin" | "member",
+  ): Promise<{ id: string; name: string; role: string; archived: boolean }> {
+    return this.gateway(
+      "POST",
+      `/organizations/current/workspaces/${encodeURIComponent(workspaceId)}/members`,
+      { user_id: userId, role },
+    );
+  }
+
+  /** `PATCH /gateway/organizations/current` — rename the organization; its admins only. */
+  async renameOrganization(name: string): Promise<{ id: string; name: string }> {
+    return this.gateway("PATCH", "/organizations/current", { name });
+  }
+
+  /** `PATCH /gateway/organizations/current/workspaces/{id}` — rename one of the organization's workspaces. */
+  async renameOrganizationWorkspace(
+    workspaceId: string,
+    name: string,
+  ): Promise<{ id: string; name: string }> {
+    return this.gateway(
+      "PATCH",
+      `/organizations/current/workspaces/${encodeURIComponent(workspaceId)}`,
+      { name },
+    );
+  }
+
+  /** `PUT /gateway/organizations/current/workspaces/{id}/admins` — choose a workspace's admins among its members who are not organization admins. */
+  async setOrganizationWorkspaceAdmins(
+    workspaceId: string,
+    userIds: string[],
+  ): Promise<{ id: string; name: string; admins: string[] }> {
+    return this.gateway(
+      "PUT",
+      `/organizations/current/workspaces/${encodeURIComponent(workspaceId)}/admins`,
+      { user_ids: userIds },
+    );
+  }
+
+  /** `PATCH /gateway/organizations/current/workspaces/{id}/members/{user_id}` — change someone's role in one of the organization's workspaces. */
+  async changeOrganizationWorkspaceRole(
+    workspaceId: string,
+    userId: string,
+    role: "admin" | "member",
+  ): Promise<{ id: string; name: string; role: string; archived: boolean }> {
+    return this.gateway(
+      "PATCH",
+      `/organizations/current/workspaces/${encodeURIComponent(workspaceId)}/members/${encodeURIComponent(userId)}`,
+      { role },
+    );
+  }
+
+  /** `GET /gateway/organizations/current/workspaces/{id}/members/{user_id}/removal` — who would receive what they own there. */
+  async previewOrganizationWorkspaceRemoval(
+    workspaceId: string,
+    userId: string,
+  ): Promise<{ handed_over_to: { user_id: string } | null }> {
+    return this.gateway(
+      "GET",
+      `/organizations/current/workspaces/${encodeURIComponent(workspaceId)}/members/${encodeURIComponent(userId)}/removal`,
+    );
+  }
+
+  /** `DELETE /gateway/organizations/current/workspaces/{id}/members/{user_id}` — remove someone from one of the organization's workspaces. */
+  async removeFromOrganizationWorkspace(
+    workspaceId: string,
+    userId: string,
+  ): Promise<{ ok: boolean }> {
+    return this.gateway(
+      "DELETE",
+      `/organizations/current/workspaces/${encodeURIComponent(workspaceId)}/members/${encodeURIComponent(userId)}`,
+    );
+  }
+
+  /**
+   * `POST /gateway/organizations/current/workspaces/{id}/invitations` — an
+   * invite link to one of the organization's workspaces. The token is a
+   * bearer credential, so it goes to the run's issued secrets.
+   */
+  async inviteToOrganizationWorkspace(
+    workspaceId: string,
+    role: "admin" | "member",
+  ): Promise<string> {
+    const { token } = await this.gateway<{ token: string }>(
+      "POST",
+      `/organizations/current/workspaces/${encodeURIComponent(workspaceId)}/invitations`,
+      { role },
+    );
+    this.issued.record(token);
+    return token;
+  }
+
+  /** `POST /gateway/organizations/current/workspaces/{id}/restore` — open an archived workspace again. */
+  async restoreOrganizationWorkspace(
+    workspaceId: string,
+  ): Promise<{ id: string; name: string; archived_at: string | null }> {
+    return this.gateway(
+      "POST",
+      `/organizations/current/workspaces/${encodeURIComponent(workspaceId)}/restore`,
     );
   }
 
@@ -592,6 +750,51 @@ export class SwitchClient {
       "/organizations/current/workspaces",
       { name },
     );
+  }
+
+  /**
+   * `POST /gateway/tenants/{tenant_id}/invitations` — a single-use invitation
+   * link to the bound workspace, granting `role`; its admins only. The token
+   * is a bearer credential, so it goes to the run's issued secrets.
+   */
+  async createInvitation(tenantId: string, role: "admin" | "member"): Promise<string> {
+    const { token } = await this.gateway<{ token: string }>(
+      "POST",
+      `/tenants/${encodeURIComponent(tenantId)}/invitations`,
+      { role },
+    );
+    this.issued.record(token);
+    return token;
+  }
+
+  /**
+   * `POST /gateway/invitations/accept` — join the invitation's workspace. The
+   * server re-mints the session into it, so from here on this client acts
+   * there, and signing in again selects it.
+   */
+  async acceptInvitation(token: string): Promise<void> {
+    await this.rebinding("POST", "/gateway/invitations/accept", { token });
+  }
+
+  /**
+   * `POST /gateway/tenants/{tenant_id}/switch` — select a workspace this
+   * account may enter. As with accepting an invitation, this client acts
+   * there from here on, and signing in again selects it.
+   */
+  async switchTenant(tenantId: string): Promise<void> {
+    await this.rebinding("POST", `/gateway/tenants/${encodeURIComponent(tenantId)}/switch`);
+  }
+
+  /** A request the server answers by re-minting the session; the new cookie replaces this client's. */
+  private async rebinding(method: string, path: string, body?: unknown): Promise<void> {
+    const { response } = await this.rawRequest(method, path, {
+      cookie: await this.gatewayLogin(),
+      body,
+    });
+    const cookie = sessionCookieFrom(response);
+    if (!cookie) throw new Error(`${method} ${path} returned no switch_auth cookie.`);
+    this.issued.record(cookie.slice("switch_auth=".length));
+    this.gatewayCookie = cookie;
   }
 
   /** `POST /gateway/agents/register` — an agent owned by the signed-in user, in their current workspace. */
@@ -714,6 +917,10 @@ export class SwitchClient {
     bridgeId: string | null;
     agentNames: string[];
     userNames: string[];
+    /** The new channel's type; a public channel unless given. */
+    channelType?: string;
+    /** Overrides the visibility the room would take from its channel. */
+    readVisibility?: "public" | "private";
   }): Promise<RoomDetail> {
     const row = await this.gateway<RawRoom>("POST", "/rooms", {
       name: params.name,
@@ -723,8 +930,9 @@ export class SwitchClient {
         : {
             bridge_id: params.bridgeId,
             internal_only: false,
-            channel_type: "channel_public",
+            channel_type: params.channelType ?? "channel_public",
           }),
+      ...(params.readVisibility ? { read_visibility: params.readVisibility } : {}),
       agent_names: params.agentNames,
       user_names: params.userNames,
     });
@@ -785,6 +993,61 @@ export class SwitchClient {
 
   async deletePackage(packageId: string): Promise<void> {
     await this.gateway("DELETE", `/packages/${packageId}`);
+  }
+
+  /** `POST /gateway/references` — a private GitHub reference owned by the signed-in user. */
+  async createReference(params: {
+    name: string;
+    description: string;
+    url: string;
+  }): Promise<{ id: string }> {
+    return this.gateway<{ id: string }>("POST", "/references", {
+      type: "github",
+      name: params.name,
+      description: params.description,
+      instructions: "",
+      value: { urls: [params.url] },
+    });
+  }
+
+  async deleteReference(referenceId: string): Promise<void> {
+    await this.gateway("DELETE", `/references/${referenceId}`);
+  }
+
+  /** `POST /gateway/documents` — a private document in the library, owned by the signed-in user. */
+  async createDocument(params: {
+    name: string;
+    description: string;
+    content: string;
+  }): Promise<{ id: string }> {
+    return this.gateway<{ id: string }>("POST", "/documents", {
+      name: params.name,
+      description: params.description,
+      instructions: "",
+      content: params.content,
+    });
+  }
+
+  async deleteDocument(documentId: string): Promise<void> {
+    await this.gateway("DELETE", `/documents/${documentId}`);
+  }
+
+  /** `POST /gateway/rooms/{room_id}/documents/{document_id}` — attach a library document to a room. */
+  async attachDocumentToRoom(roomId: string, documentId: string): Promise<void> {
+    await this.gateway("POST", `/rooms/${roomId}/documents/${documentId}`);
+  }
+
+  /** `POST /gateway/templates` — a room template, owned by the signed-in user. */
+  async createTemplate(params: {
+    name: string;
+    description: string;
+    content: string;
+  }): Promise<{ id: string }> {
+    return this.gateway<{ id: string }>("POST", "/templates", params);
+  }
+
+  async deleteTemplate(templateId: string): Promise<void> {
+    await this.gateway("DELETE", `/templates/${templateId}`);
   }
 
   /** `GET /gateway/rooms/{id}/packages` — the packages attached to a room. */
@@ -1192,6 +1455,14 @@ export class SwitchClient {
   }
 
   /**
+   * `PATCH /gateway/tenants/{tenant_id}` — rename the bound workspace. Whoever
+   * administers it: its admins, its organization's admin and the operator.
+   */
+  async renameTenant(tenantId: string, name: string): Promise<{ id: string; name: string }> {
+    return this.gateway("PATCH", `/tenants/${encodeURIComponent(tenantId)}`, { name });
+  }
+
+  /**
    * `DELETE /gateway/tenants/{tenant_id}` — delete the bound workspace, once it
    * is empty, by typing its name. Its own admins only. The server re-mints the
    * session onto the caller's only other workspace, if there is exactly one,
@@ -1221,6 +1492,15 @@ export class SwitchClient {
       id: params.id,
       new_owner_id: params.newOwnerId,
     });
+  }
+
+  /**
+   * `GET /gateway/auth/me/deletion` — what deleting the signed-in account
+   * would be refused with now, or null when it would go ahead.
+   */
+  async accountDeletionRefusal(): Promise<string | null> {
+    const check = await this.gateway<{ refusal: string | null }>("GET", "/auth/me/deletion");
+    return check.refusal;
   }
 
   /** `DELETE /gateway/users/{user_id}` — the deployment operator deletes someone's whole account. */
@@ -1265,6 +1545,53 @@ export class SwitchClient {
     return this.gateway("PUT", `/tenants/${encodeURIComponent(tenantId)}/retention`, {
       message_retention_days: days,
     });
+  }
+
+  /** `GET /gateway/tenants/{tenant_id}/private-channel-rooms/count` — how many Public rooms sit on private channels. */
+  async countPrivateChannelRooms(tenantId: string): Promise<number> {
+    const result = await this.gateway<{ count: number }>(
+      "GET",
+      `/tenants/${encodeURIComponent(tenantId)}/private-channel-rooms/count`,
+    );
+    return result.count;
+  }
+
+  /** `GET /gateway/tenants/{tenant_id}/private-channel-rooms` — those rooms, to review; changes nothing. */
+  async previewPrivateChannelRooms(tenantId: string): Promise<PrivateChannelRoom[]> {
+    const result = await this.gateway<{ rooms: PrivateChannelRoom[] }>(
+      "GET",
+      `/tenants/${encodeURIComponent(tenantId)}/private-channel-rooms`,
+    );
+    return result.rooms;
+  }
+
+  /** `POST /gateway/tenants/{tenant_id}/private-channel-rooms/ask-platform` — ask the apps about rooms of unrecorded channel type. */
+  async askPlatformAboutRooms(
+    tenantId: string,
+    roomIds?: string[],
+  ): Promise<{
+    answered: { room_id: string; channel_type: string }[];
+    unanswered: { room_id: string; reason: string }[];
+    stopped: string | null;
+    remaining: number;
+  }> {
+    return this.gateway(
+      "POST",
+      `/tenants/${encodeURIComponent(tenantId)}/private-channel-rooms/ask-platform`,
+      roomIds === undefined ? {} : { room_ids: roomIds },
+    );
+  }
+
+  /** `POST /gateway/tenants/{tenant_id}/private-channel-rooms/make-private` — make the confirmed rooms Private. */
+  async makeRoomsPrivate(
+    tenantId: string,
+    roomIds: string[],
+  ): Promise<{ changed: string[]; skipped: { room_id: string; reason: string }[] }> {
+    return this.gateway(
+      "POST",
+      `/tenants/${encodeURIComponent(tenantId)}/private-channel-rooms/make-private`,
+      { room_ids: roomIds },
+    );
   }
 
   /** `DELETE /gateway/tenants/{tenant_id}/retention` — keep messages forever again. */
@@ -1312,6 +1639,12 @@ export class SwitchClient {
   /** `GET /gateway/operator/workspaces` — every workspace on the server, platform operator only. */
   async operatorWorkspaces(): Promise<{ id: string; name: string }[]> {
     return this.gateway<{ id: string; name: string }[]>("GET", "/operator/workspaces");
+  }
+
+  /** `GET /gateway/auth/session` — the signed-in account's own id. */
+  async userId(): Promise<string> {
+    const state = await this.gateway<{ user: { id: string } }>("GET", "/auth/session");
+    return state.user.id;
   }
 
   /** `GET /gateway/auth/session` — the workspace this admin session is bound to. */
@@ -1367,7 +1700,10 @@ export class SwitchClient {
   ): Promise<{ id: string; displayName: string }> {
     const rows = await this.gateway<
       {
-        id: string;
+        // `GET /gateway/collaborations` names it `bridge_id`; `id` is kept
+        // for servers that answered with that.
+        bridge_id?: string;
+        id?: string;
         bridge_type: string;
         display_name: string;
         is_default?: boolean;
@@ -1380,7 +1716,9 @@ export class SwitchClient {
       );
     }
     const row = ofType.find((candidate) => candidate.is_default) ?? ofType[0]!;
-    return { id: row.id, displayName: row.display_name };
+    const id = row.bridge_id ?? row.id;
+    if (!id) throw new Error(`The ${type} collaboration bridge came back without an id`);
+    return { id, displayName: row.display_name };
   }
 
   /**

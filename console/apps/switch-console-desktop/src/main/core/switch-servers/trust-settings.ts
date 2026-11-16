@@ -16,7 +16,8 @@ import type {
  * Load Switch Trust's one server-global settings row, mapping recoverable
  * gateway failures the same way the write paths below do — a non-operator
  * gets `forbidden` rather than a thrown error, so the settings page can say
- * why rather than showing a generic failure banner.
+ * why rather than showing a generic failure banner. A server where each
+ * organization sets its own answers 410, which is `moved`.
  */
 export async function fetchTrustSettingsFromServer(
   server: SwitchServer
@@ -24,6 +25,9 @@ export async function fetchTrustSettingsFromServer(
   try {
     return { kind: 'loaded', settings: await fetchTrustSettings(server) };
   } catch (cause) {
+    if (cause instanceof GatewayError && cause.kind === 'http' && cause.status === 410) {
+      return { kind: 'moved', message: cause.detail ?? cause.message };
+    }
     const result = recoverableResult(cause);
     if (result) return result;
     throw cause;

@@ -43,7 +43,7 @@ def _summarise_metrics(payload: dict[str, Any]) -> list[str]:
             f"  resource: service={attributes.get('service.name')} "
             f"version={attributes.get('service.version')} "
             f"env={attributes.get('deployment.environment')} "
-            f"deployment={attributes.get('flint.client_id')}"
+            f"deployment={attributes.get('switch_trust.client_id')}"
         )
         for scope in resource.get("scopeMetrics", []):
             for metric in scope.get("metrics", []):

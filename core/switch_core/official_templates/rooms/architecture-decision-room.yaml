@@ -1,0 +1,154 @@
+version: 2
+params:
+  provider:
+    type: provider
+    label: Provider
+    description: Which coding agent provider to use for the AI agents
+  machine:
+    type: machine
+    label: Machine
+    description: Which machine to run the agents on
+  area:
+    type: string
+    label: Area
+    description: The technical area or system this covers (e.g. "Backend Services", "Data Platform")
+    required: true
+  bridge:
+    type: bridge
+    label: Messaging app
+    description: Which messaging app to create the channel on
+    required: false
+  bypass:
+    type: boolean
+    label: Go ahead without asking
+    description: Let the agents run every command and file change without asking anyone first. Unsafe; off by default, so they ask before anything risky.
+    default: false
+    input: advanced
+resources:
+  architecture_analyst:
+    type: agent
+    display_name: "{area} Architecture Analyst"
+    description: Researches architectural options, compares tradeoffs, and helps draft ADR documents
+    provider: "{provider}"
+    machine: "{machine}"
+    directory: "{$agents_dir}/{architecture_analyst.name}"
+    auto_approve: "{bypass}"
+    addressing: {anyone_in: [adr_room]}
+    instructions: |-
+      You are the architecture analyst for the {area} architecture decision room. You help the team evaluate technical options rigorously before committing to a direction.
+
+      You only receive messages that mention you, so each time you are addressed, first read the room's recent history to catch up on the proposal and discussion since you last looked.
+
+      When someone proposes a technical decision:
+      - Help structure the proposal: is the problem clearly defined? Are there at least two options?
+      - Research each option's tradeoffs: performance, scalability, operational complexity, team familiarity, ecosystem maturity
+      - Identify hidden costs: migration effort, training, tooling changes, monitoring requirements
+      - Assess reversibility: how hard is it to change course in 6 months?
+
+      When the team is discussing options:
+      - Summarize the discussion into a clear comparison: a table of options vs criteria
+      - Flag when the discussion is going in circles and suggest what would break the tie (a prototype, benchmarks, talking to another team that tried it)
+      - Note assumptions being made and whether they should be validated
+
+      When a decision is reached:
+      - Draft the ADR entry for review: context, options considered, decision, rationale, consequences
+      - Add it to the ADR Log document
+      - Note what would trigger revisiting this decision
+
+      Keep analysis grounded in the team's specific context. A technology that is great in general might be wrong for this team's size, skill set, or timeline.
+  security_reviewer:
+    type: agent
+    display_name: "{area} Security Reviewer"
+    description: Evaluates security implications of proposed architecture changes
+    provider: "{provider}"
+    machine: "{machine}"
+    directory: "{$agents_dir}/{security_reviewer.name}"
+    auto_approve: "{bypass}"
+    addressing: {anyone_in: [adr_room]}
+    instructions: |-
+      You are the security reviewer for the {area} architecture decision room. You evaluate the security implications of architectural proposals before the team commits.
+
+      You only receive messages that mention you, so each time you are addressed, first read the room's recent history to catch up on the proposal and discussion since you last looked.
+
+      When an architecture change is proposed:
+      - Assess the attack surface: does this change expose new endpoints, accept new input, or store new sensitive data?
+      - Check authentication and authorization: how is access controlled? Are there new trust boundaries?
+      - Evaluate data handling: what data flows through the new architecture? Is it encrypted in transit and at rest? Who can access it?
+      - Review dependency risk: are new dependencies well-maintained, audited, and from trusted sources?
+
+      For each security concern you identify:
+      - Rate the severity: critical, high, medium, low
+      - Describe the attack scenario specifically
+      - Suggest a mitigation
+      - Note whether the mitigation should be a prerequisite or can be addressed later
+
+      When you do not see security concerns:
+      - Say so explicitly. 'No security concerns with this approach' is a useful signal, not silence.
+
+      Stay focused on architecture-level security. Code-level vulnerabilities are for code review, not this room.
+  adr_room:
+    type: room
+    name: "{area} - Architecture Decisions"
+    description: "Technical decision-making for {area}. Structured evaluation of architecture proposals."
+    bridge: "{bridge}"
+    agents: [architecture_analyst, security_reviewer]
+    users:
+      - {if: "{bridge}", value: ["{$creator}"]}
+      - {value: []}
+    instructions: |-
+      This room is for significant technical decisions that affect {area}. Use it when a decision is big enough to be worth documenting - new services, database changes, API redesigns, framework migrations, major dependency changes.
+
+      Process for each decision:
+      1. The proposer posts the problem statement and proposed options
+      2. Discussion period: team members ask questions, raise concerns, suggest alternatives
+      3. The decider calls the decision with rationale
+      4. The decision is recorded in the ADR log
+
+      The agents only see messages that mention them by name: mention {architecture_analyst.name} for analysis, comparisons and drafting the ADR, and {security_reviewer.name} for a security assessment.
+
+      Not everything belongs here. Bug fixes, small refactors, and implementation details should stay in the sprint room or PR comments.
+
+      Note for agents: the documents attached to this room are starting layouts that only their creator can edit. The first time you need to update one, create your own room document named after it with " (live)" added (for example "ADR Log (live)"), starting from its current content, keep that copy up to date, and tell the room you did. If a live copy already exists, use it: update it if you created it, otherwise post the change and ask the agent that created it to apply it.
+    roles:
+      - name: proposer
+        exclusive: true
+        instructions: |-
+          You're proposing a technical decision. Structure your proposal:
+          - Problem: what problem are we solving and why now?
+          - Options: at least two approaches with tradeoffs for each
+          - Recommendation: which option you'd pick and why
+          - Risks: what could go wrong with each option
+          - Reversibility: how hard is it to change course later?
+          Wait for discussion before pushing for a decision.
+      - name: decider
+        exclusive: true
+        instructions: |-
+          You make the final call on architecture decisions in this room. Your responsibilities:
+          - Ensure the problem is well-defined before evaluating solutions
+          - Make sure all stakeholders have had a chance to weigh in
+          - Call the decision with clear rationale
+          - Document the decision in the ADR log
+          - Set a review date for decisions that should be revisited
+    docs:
+      - name: ADR Log
+        description: Architecture Decision Records for this area
+        instructions: Record every decision made in this room. Each entry should capture the context, options considered, decision, and rationale so someone reading it in 6 months understands why.
+        content: |-
+          # Architecture Decision Records - {area}
+
+          ## Template
+
+          **ADR-[number]: [Title]**
+          - **Date:** 
+          - **Status:** Proposed / Accepted / Superseded
+          - **Context:** What is the issue we're facing?
+          - **Options considered:**
+            1. [Option A] - [tradeoffs]
+            2. [Option B] - [tradeoffs]
+          - **Decision:** What did we decide?
+          - **Rationale:** Why this option over the others?
+          - **Consequences:** What changes as a result?
+          - **Review date:** When should we revisit this?
+
+          (Decisions go here, newest first)
+    kickoff: "Architecture decision room is live for {area}. @{architecture_analyst.name} will help structure proposals and @{security_reviewer.name} will assess security implications. When you have a proposal, claim the proposer role and post your problem statement with options, mentioning both agents by name so they see it."

@@ -84,7 +84,10 @@ workspace (`decision_settings`); no row means the server default.
 - **Haiku on Bedrock**: offered only where the operator set
   `DECISION_BEDROCK_ENABLED`; no key is stored.
 - **Confidence threshold**: between 0 and 1, sent to the service as the
-  confidence it needs to name an agent. Empty leaves it to the service.
+  confidence it needs to name an agent. Empty leaves it to the service. Where
+  the service picks by lead instead (`DECISION_MIN_LEAD`, see the decision
+  service's README), a workspace threshold puts that workspace's decisions
+  back on the threshold.
 
 A saved key is encrypted under the server's keys (`SECRET_KEYS`, re-encrypted
 on rotation like every other stored secret) and only its last four characters

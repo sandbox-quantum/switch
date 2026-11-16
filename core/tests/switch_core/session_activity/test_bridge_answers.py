@@ -90,6 +90,7 @@ def _press(bridged, action_id, token=TOKEN, message_ref=CARD_POST):
         channel_id=bridged.channel_id,
         sender_id="U1",
         sender_name="person",
+        sender_display_name="person",
         action_id=action_id,
         value=token,
         message_ref=message_ref,

@@ -40,23 +40,46 @@ export interface RoomSummary {
   // The viewer takes part in it: owns it, is in it (in Switch Console or
   // through a platform account they claimed), or owns an agent in it.
   viewer_is_member: boolean;
+  // The viewer is one of the room's room admins: its owner, or a workspace
+  // admin, made them one. Absent from servers that predate room admins.
+  viewer_is_room_admin?: boolean;
   // Made in Switch Console as a chat: its people are its members, named by
   // their Switch name, rather than accounts on a messaging app. Absent from
   // servers that predate it.
   is_console_chat?: boolean;
-  // What the viewer may do, as the server decides it. `can_write` covers the
-  // room's settings, roles, links and attaching resources;
-  // `can_change_members` covers adding and removing its agents and people,
-  // which a direct or group chat takes from its platform instead;
-  // `can_manage` (owner or workspace admin) covers its access and deleting it;
-  // `can_unlink` (taking part in it, or workspace admin) covers unlinking a
-  // reference, document or package from it; `can_transfer` (managing it,
-  // and never for a chat) covers handing it to someone else.
+  // What the viewer may do, as the server's room policy decides it.
+  // `can_write` (owner, room admin or workspace admin) covers the room's
+  // settings, roles, group and linked rooms; `can_manage` (owner or workspace
+  // admin) covers its access and deleting it; `can_archive` (owner, room
+  // admin or workspace admin) covers archiving it, and is absent from servers
+  // that predate room admins, which read it from `can_manage`;
+  // `can_manage_admins` (owner or workspace admin) covers choosing its room
+  // admins. `can_attach`, `can_invite_agents` and
+  // `can_add_people` (anyone in the room) cover attaching resources and
+  // adding agents and people, though each agent's own "who can address me"
+  // setting can still refuse a particular one;
+  // `can_remove_members` (owner, room admin or workspace admin) covers taking
+  // them out, and neither membership flag is set on a direct or group chat. A
+  // person may also take out their own agent. `can_unlink` (owner, room admin
+  // or workspace admin) covers unlinking a reference, document or package; a resource's
+  // own owner may also unlink theirs while in the room. `can_transfer`
+  // (managing it, and never for a chat) covers handing it to someone else.
   can_write: boolean;
-  can_change_members: boolean;
   can_manage: boolean;
+  can_archive?: boolean;
+  can_manage_admins?: boolean;
+  can_attach: boolean;
+  can_invite_agents: boolean;
+  can_add_people: boolean;
+  can_remove_members: boolean;
   can_unlink: boolean;
   can_transfer: boolean;
+}
+
+/** Whether the viewer may archive or unarchive the room. Servers that
+ * predate room admins send no `can_archive`, and archiving took managing it. */
+export function canArchiveRoom(room: RoomSummary): boolean {
+  return room.can_archive ?? room.can_manage;
 }
 
 export interface AgentSummary {
@@ -90,6 +113,28 @@ export interface AgentSummary {
   // Why it cannot be handed to someone else, for whoever manages it; null
   // when it can, or when they could not anyway.
   transfer_blocked_reason: string | null;
+}
+
+/** A row of the agent list: the summary, with where the agent stands now.
+ * Only the list sends these. */
+export interface AgentListEntry extends AgentSummary {
+  // `not_tracked`: an agent that only polls, which holds nothing Switch can
+  // see between polls.
+  status: "online" | "offline" | "not_tracked";
+  // The device a managed agent is placed on, named to its owner and to
+  // workspace admins; null when it is placed on none, and for anyone else.
+  device: AgentDevice | null;
+}
+
+export interface AgentDevice {
+  id: string;
+  name: string;
+  // Whose device it is: two people's devices can share a name, as every
+  // Switch Cloud device does.
+  owner_name: string;
+  // Removed from Switch: the agent stays placed on it, and runs nowhere,
+  // until its owner moves it.
+  removed: boolean;
 }
 
 export interface AgentToolSummary {
@@ -137,6 +182,12 @@ export interface AgentDetail extends AgentSummary {
    * Only the owner changes it.
    */
   can_manage_agents: boolean;
+  /**
+   * What a message sent while the agent works does: "steer" hands it to the
+   * running turn where its sender may, "queue" always waits. Absent from a
+   * server that predates it.
+   */
+  mid_turn_delivery?: "steer" | "queue";
   // Its owner's alone: letting it manage their agents, and granting it their
   // service connections (only where the server runs them, and only to an
   // agent run from a known agent type). Seeing and removing the grants it
@@ -189,6 +240,9 @@ export interface BridgeDetail {
   // Whether this operator has allowed this connection to create channels.
   // Only meaningful when channel_creation_supported is true.
   channel_creation_enabled: boolean;
+  // Why a new channel cannot be made here yet even so — a Teams connection
+  // with no default team — or null. Absent on an older server.
+  channel_creation_blocker?: string | null;
   // Why no existing channel can be linked by id on this connection, or null
   // when one can — the Switch Telegram app, whose chats come from connecting.
   channel_ids_refused?: string | null;
@@ -197,6 +251,7 @@ export interface BridgeDetail {
   // owner). Absent on an older server.
   private_channels_supported?: boolean;
   private_channel_needs_linked_account?: boolean;
+  public_channel_adds_creator?: boolean;
   room_count: number;
   created_at: string;
   // Empty for platforms whose app is installed through their own admin UI.
@@ -216,6 +271,20 @@ export interface BridgeDetail {
   // connection an install holds is refused at the time, with the reason.
   can_manage: boolean;
   can_delete: boolean;
+  // The app new rooms use when none is named.
+  is_default: boolean;
+  // Opens the app's workspace in the platform itself. Null when the bridge is
+  // not running or the platform has no such link.
+  home_url: string | null;
+  // Whether the platform delivers this app's events to an address of its
+  // own, and that address. Null where Switch's configuration has no public
+  // address to give it.
+  receives_webhooks: boolean;
+  webhook_url: string | null;
+  // Whether the platform's user directory can be searched. Where it cannot
+  // (Telegram), only people who have written in a connected chat can be
+  // found.
+  directory_search_supported: boolean;
 }
 
 export interface ExternalUserSummary {
@@ -239,6 +308,21 @@ export interface RoomRoleDetail extends RoomRoleSpec {
   held_by: string[];
 }
 
+/** One of a room's room admins. `name` is null when the account has no name
+ * to show; `granted_by` is who made them one, null once that account is gone. */
+export interface RoomAdminEntry {
+  user_id: string;
+  name: string | null;
+  granted_by: string | null;
+  granted_at: string;
+}
+
+/** A Switch user who takes part in a room. */
+export interface RoomPerson {
+  user_id: string;
+  name: string;
+}
+
 export interface RoomDetail extends RoomSummary {
   transport_room_id: string;
   /** @deprecated Alias of `transport_room_id`, carried for the compatibility window. */
@@ -250,11 +334,34 @@ export interface RoomDetail extends RoomSummary {
   agent_ids: string[];
   agent_statuses: Record<string, string>;
   roles: RoomRoleDetail[];
-  // Agent ids configured to receive room_join events in this room.
+  // Agent ids configured to receive room_join and room_leave events in this room.
   join_event_listeners: string[];
   archived_at: string | null;
+  // What deleting the room can do to its platform channel, as that platform's
+  // bridge declares it; null when the room has no channel.
+  channel_on_delete: ChannelRetirement | null;
   /** Absent on servers that predate decision routing. */
   auto_route?: RoomAutoRoute;
+  /** The room's room admins, longest-standing first. Absent on servers that
+   * predate room admins. */
+  room_admins?: RoomAdminEntry[];
+  /** Who the viewer could make a room admin: the workspace members in the
+   * room other than its owner and its room admins. Filled only when
+   * `can_manage_admins`; absent on servers that predate it. */
+  room_admin_candidates?: RoomPerson[];
+}
+
+/** What deleting a room does to its platform channel when asked to: archived
+ * on Slack and Mattermost, deleted on Discord, left by the bot on Telegram,
+ * and kept on Teams, where Switch may not remove it. */
+export type ChannelRetirement = "archived" | "deleted" | "left" | "kept";
+
+/** What deleting a room did to its platform channel. `failed` means the
+ * channel is still there and someone has to remove it by hand; `reason`
+ * says why. */
+export interface RetireOutcome {
+  outcome: ChannelRetirement | "failed";
+  reason: string | null;
 }
 
 /**
@@ -287,7 +394,7 @@ export interface CreateRoomInput {
   agent_names?: string[];
   // Per-agent opt-in: ids (subset of agent_ids) whose subagents to also add.
   include_subagents_for?: string[];
-  // Per-agent opt-in: ids (subset of agent_ids) that should receive room_join
+  // Per-agent opt-in: ids (subset of agent_ids) that should receive room_join and room_leave
   // events in this room.
   join_event_listeners?: string[];
   user_names?: string[];
@@ -297,8 +404,9 @@ export interface CreateRoomInput {
   internal_only?: boolean;
   external_channel_id?: string | null;
   group_id?: string | null;
+  // Left out, the room takes it from its channel: a private channel makes a
+  // private room, anything else a public one.
   read_visibility?: "public" | "private";
-  write_visibility?: "public" | "private";
   roles?: RoomRoleSpec[];
 }
 
@@ -308,7 +416,6 @@ export interface UpdateRoomInput {
   instructions?: string | null;
   admin_mode?: boolean;
   read_visibility?: "public" | "private";
-  write_visibility?: "public" | "private";
 }
 
 /** A failed gateway call that keeps what the server said: the status, for
@@ -400,6 +507,12 @@ export async function fetchRooms(
  * rather than answering null so a failure can say why. */
 export async function loadRooms(): Promise<RoomSummary[]> {
   return jsonRequest<RoomSummary[]>("/rooms", "GET");
+}
+
+/** Every room the viewer may read, archived ones included, throwing rather
+ * than answering null so a failure can say why. */
+export async function loadRoomsWithArchived(): Promise<RoomSummary[]> {
+  return jsonRequest<RoomSummary[]>("/rooms?include_archived=true", "GET");
 }
 
 export async function fetchRoom(roomId: string): Promise<RoomDetail | null> {
@@ -521,6 +634,27 @@ export async function unarchiveRoom(roomId: string): Promise<RoomDetail> {
   return jsonRequest<RoomDetail>(`/rooms/${roomId}/unarchive`, "POST");
 }
 
+export async function fetchRoomAdmins(roomId: string): Promise<RoomAdminEntry[] | null> {
+  return fetchJson<RoomAdminEntry[]>(`/rooms/${roomId}/admins`);
+}
+
+/** Make a person in the room one of its room admins. The server refuses
+ * (400, with its reason) anyone who can't be one. */
+export async function addRoomAdmin(roomId: string, userId: string): Promise<RoomDetail> {
+  return jsonRequest<RoomDetail>(
+    `/rooms/${roomId}/admins/${encodeURIComponent(userId)}`,
+    "PUT",
+  );
+}
+
+/** Take someone off the room's room admins, or step down as one. */
+export async function removeRoomAdmin(roomId: string, userId: string): Promise<RoomDetail> {
+  return jsonRequest<RoomDetail>(
+    `/rooms/${roomId}/admins/${encodeURIComponent(userId)}`,
+    "DELETE",
+  );
+}
+
 export async function updateRoomProtection(
   roomId: string,
   config: Record<string, unknown>,
@@ -586,31 +720,25 @@ export async function addRoomUsers(
   });
 }
 
-export async function deleteRoom(roomId: string): Promise<boolean> {
-  const res = await fetchJson<{ ok: boolean }>(`/rooms/${roomId}`, {
-    method: "DELETE",
-  });
-  return res?.ok ?? false;
+/** Delete the room. Its platform channel is kept unless `retireChannel`
+ * asks for what `channel_on_delete` says; `channel` reports how that went. */
+export async function deleteRoom(
+  roomId: string,
+  retireChannel: boolean,
+): Promise<{ ok: boolean; channel: RetireOutcome | null }> {
+  return jsonRequest(`/rooms/${roomId}?retire_channel=${retireChannel}`, "DELETE");
 }
 
-export async function bulkDeleteRooms(
-  roomIds: string[],
-): Promise<{ deleted: number } | null> {
-  return fetchJson<{ deleted: number }>("/rooms/bulk-delete", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ room_ids: roomIds }),
-  });
-}
-
+/** Archive or unarchive many rooms. The server skips, without failing, any
+ * room the viewer may not change or that is gone, and says how many it did
+ * change. */
 export async function bulkArchiveRooms(
   roomIds: string[],
   archived: boolean,
-): Promise<{ updated: number } | null> {
-  return fetchJson<{ updated: number }>("/rooms/bulk-archive", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ room_ids: roomIds, archived }),
+): Promise<{ updated: number }> {
+  return jsonRequest<{ updated: number }>("/rooms/bulk-archive", "POST", {
+    room_ids: roomIds,
+    archived,
   });
 }
 
@@ -712,8 +840,32 @@ export async function fetchAgents(): Promise<AgentSummary[] | null> {
 
 /** The agents the Agents list shows, throwing rather than answering null so
  * a failure can say why. */
-export async function loadAgents(): Promise<AgentSummary[]> {
-  return jsonRequest<AgentSummary[]>("/agents", "GET");
+export async function loadAgents(): Promise<AgentListEntry[]> {
+  return jsonRequest<AgentListEntry[]>("/agents", "GET");
+}
+
+/**
+ * The agents the viewer may bring in, as the server's invite rule decides: into
+ * `roomId`, less those already in it, or into a new room when it is absent.
+ * `agent_ids` is null when the server cannot say (one from before the route),
+ * where a picker offers every agent and leaves the refusal to the invite.
+ */
+export async function fetchRoomAgentCandidates(
+  roomId?: string,
+): Promise<{ agent_ids: string[] | null }> {
+  const query = roomId ? `?room_id=${encodeURIComponent(roomId)}` : "";
+  const answer = await fetchJson<{ agent_ids: string[] }>(`/rooms/agent-candidates${query}`);
+  return { agent_ids: answer?.agent_ids ?? null };
+}
+
+/** Of `agents`, the ones a picker may offer given the candidates: all when unknown. */
+export function invitableAgents<T extends { id: string }>(
+  agents: readonly T[],
+  candidateIds: readonly string[] | null | undefined,
+): T[] {
+  if (!candidateIds) return [...agents];
+  const allowed = new Set(candidateIds);
+  return agents.filter((agent) => allowed.has(agent.id));
 }
 
 export async function fetchAgent(agentId: string): Promise<AgentDetail | null> {
@@ -727,10 +879,9 @@ export interface DeleteAgentResult {
   bridge_cleanup_failures: string[];
 }
 
-export async function deleteAgent(agentId: string): Promise<DeleteAgentResult | null> {
-  return fetchJson<DeleteAgentResult>(`/agents/${agentId}`, {
-    method: "DELETE",
-  });
+/** Throws `ApiError` with the server's reason when it refuses. */
+export async function deleteAgent(agentId: string): Promise<DeleteAgentResult> {
+  return jsonRequest<DeleteAgentResult>(`/agents/${agentId}`, "DELETE");
 }
 
 export interface RenameAgentResult {
@@ -763,6 +914,17 @@ export async function updateAgentAddressingPolicy(
     `/agents/${agentId}/addressing-policy`,
     "PUT",
     { policy },
+  );
+}
+
+export async function updateAgentMidTurnDelivery(
+  agentId: string,
+  mode: "steer" | "queue",
+): Promise<AgentDetail> {
+  return jsonRequest<AgentDetail>(
+    `/agents/${agentId}/mid-turn-delivery`,
+    "PUT",
+    { mid_turn_delivery: mode },
   );
 }
 
@@ -843,12 +1005,21 @@ export interface ApiKeyDetail {
   id: string;
   label: string;
   type: string;
+  /** The start of the key's hash, not of the key: tells keys apart without
+   *  giving any of the secret away. */
   key_prefix: string;
   created_at: string;
   /** `null` for a key that never expires. */
   expires_at: string | null;
-  // Copying the key, and deleting it: never a key an agent still signs in
-  // with, though one a deleted agent left behind can go.
+  owner_id: string;
+  owner_name: string;
+  /** The agent that signs in with it, by its name now; null for any other
+   *  key, and for an agent key whose agent is gone. */
+  agent_id: string | null;
+  agent_name: string | null;
+  // Copying the key, its owner's alone; and deleting it, its owner's or an
+  // admin's for a key that adds agents, and never one an agent still signs
+  // in with, though one a deleted agent left behind can go.
   can_reveal: boolean;
   can_delete: boolean;
 }
@@ -866,6 +1037,16 @@ export type ApiKeyLifetime = number | "never";
 
 export async function fetchApiKeys(): Promise<ApiKeyDetail[] | null> {
   return fetchJson<ApiKeyDetail[]>("/api-keys");
+}
+
+/** The caller's own keys. */
+export async function loadApiKeys(): Promise<ApiKeyDetail[]> {
+  return jsonRequest<ApiKeyDetail[]>("/api-keys", "GET");
+}
+
+/** Every key in the workspace, for its admins. */
+export async function loadWorkspaceApiKeys(): Promise<ApiKeyDetail[]> {
+  return jsonRequest<ApiKeyDetail[]>("/api-keys/workspace", "GET");
 }
 
 export async function createApiKey(
@@ -897,11 +1078,25 @@ export async function revealApiKey(keyId: string): Promise<string> {
   return data.key;
 }
 
-export async function deleteApiKey(keyId: string): Promise<boolean> {
-  const res = await fetchJson<{ ok: boolean }>(`/api-keys/${keyId}`, {
-    method: "DELETE",
-  });
-  return res?.ok ?? false;
+export async function deleteApiKey(keyId: string): Promise<void> {
+  await jsonRequest<{ ok: boolean }>(`/api-keys/${encodeURIComponent(keyId)}`, "DELETE");
+}
+
+// ── Guardrails ───────────────────────────────────────────────────────────────
+
+/** The Switch Trust policy that checks the workspace's messages, its
+ *  organization's: null `policy_id` when nothing checks them, `policy_name`
+ *  when Switch Trust gave none, and null `policy_url` when the policy is on a
+ *  Switch Trust Switch can't link into. */
+export interface WorkspaceGuardrails {
+  checking: boolean;
+  policy_id: string | null;
+  policy_name: string | null;
+  policy_url: string | null;
+}
+
+export async function loadWorkspaceGuardrails(): Promise<WorkspaceGuardrails> {
+  return jsonRequest<WorkspaceGuardrails>("/workspace/guardrails", "GET");
 }
 
 // ── Collaborations ───────────────────────────────────────────────────────────
@@ -923,6 +1118,11 @@ export interface BridgeConfigSchema {
 
 export interface BridgeTypeInfo {
   key: string;
+  // How a person names the platform ("Microsoft Teams").
+  display_name: string;
+  // The platform's logo as SVG markup, or null where Switch ships none. Drawn
+  // as an image from a data: URL, never inlined into the page.
+  icon_svg: string | null;
   config_schema: BridgeConfigSchema;
   // Whether this platform can create channels at all. Fixed per platform.
   channel_creation_supported: boolean;
@@ -1005,15 +1205,207 @@ export interface BridgeUpdateInput {
   connection_config?: Record<string, unknown>;
 }
 
+// Throws with the server's reason, so a refused switch says why rather than
+// flicking back as if nothing had been asked.
 export async function updateBridge(
   bridgeId: string,
   update: BridgeUpdateInput,
-): Promise<BridgeDetail | null> {
-  return fetchJson<BridgeDetail>(`/collaborations/${bridgeId}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(update),
+): Promise<BridgeDetail> {
+  return jsonRequest<BridgeDetail>(`/collaborations/${bridgeId}`, "PATCH", update);
+}
+
+// ── Your chat accounts ───────────────────────────────────────────────────────
+//
+// Which account in each messaging app is the signed-in person. A link waits
+// until the account itself confirms it, by posting a one-time code from it,
+// and counts for nothing before then. Every call here throws `ApiError` with
+// the server's words: they say what to do next (the app is not running, the
+// account is a bot nobody can link, the code has already been used).
+
+/** An account linked to the signed-in person, from `GET /auth/me/identities`. */
+export interface LinkedIdentity {
+  /** The account's row id, which the calls below take. */
+  id: string;
+  bridge_id: string;
+  bridge_display_name: string;
+  bridge_type: string;
+  external_user_id: string;
+  external_username: string;
+  /** False for a link made before links had to be confirmed: it counts, and
+   *  its owner is asked to confirm it. */
+  verified: boolean;
+  /** When the link started counting. */
+  linked_at: string;
+  /** For an older link: whether a request to confirm it is waiting for the
+   *  account. It ending while the link stays means the confirmation was
+   *  cancelled (a wrong number tapped, say), not the link. */
+  awaiting_confirmation: boolean;
+}
+
+/** An account waiting to confirm a link to the signed-in person. It counts
+ *  for nothing yet. */
+export interface PendingIdentity {
+  id: string;
+  bridge_id: string;
+  bridge_display_name: string;
+  bridge_type: string;
+  external_user_id: string;
+  external_username: string;
+  /** Who started it, when that was an admin rather than the person. */
+  requested_by_name: string | null;
+  /** When the last code stops working; null when none has been issued. */
+  code_expires_at: string | null;
+}
+
+/** A one-time code that confirms a link when posted from the account. The
+ *  server keeps no copy: asking again issues a new one and retires this. */
+export interface LinkCode {
+  code: string;
+  expires_at: string;
+  /** Its lifetime when issued, to count down on this machine's clock rather
+   *  than compare `expires_at` with a clock that may be wrong. */
+  expires_in_seconds: number;
+  /** How to post it on this platform, in Markdown whose only markup is the
+   *  command in backticks. */
+  instructions: string;
+  /** The message Switch sent the account with numbers to tap, the quicker way
+   *  to confirm; absent from a server that sends none. */
+  prompt?: LinkPrompt | null;
+}
+
+/** The direct message offering numbers to tap: tapping `number` confirms
+ *  the link, the same proof as posting the code. */
+export interface LinkPrompt {
+  number: number;
+  sent: boolean;
+  /** Why no message went out, when `sent` is false. */
+  unavailable_reason: string | null;
+  /** Opens the message on the platform, where it can link to one. */
+  link: string | null;
+}
+
+export interface IdentityClaimant {
+  user_id: string;
+  user_name: string;
+  verified: boolean;
+  can_unlink: boolean;
+}
+
+/** The account a claim was made on, with everyone recognised on it and, when
+ *  the link now waits for the account, the code that confirms it. */
+export interface ClaimedAccount extends ExternalUserSummary {
+  claimed_by: IdentityClaimant[];
+  link_request: { user_id: string; code: LinkCode | null } | null;
+}
+
+export interface DirectoryPerson {
+  /** The platform's own id for the account, which a claim names. */
+  external_user_id: string;
+  username: string;
+  display_name: string;
+  email: string | null;
+  /** The account's row id when Switch has seen it, else null. */
+  known_external_user_id: string | null;
+  claimed_by: IdentityClaimant[];
+}
+
+/** Who a search found. `known` means the platform has no directory and the
+ *  answer is only the accounts Switch has seen, which `note` explains. */
+export interface DirectorySearch {
+  source: "directory" | "known";
+  note: string | null;
+  users: DirectoryPerson[];
+}
+
+/** A link made before links had to be confirmed, as an admin reviews them. */
+export interface UnconfirmedLink {
+  id: string;
+  external_user_id: string;
+  external_username: string;
+  user_id: string;
+  user_name: string;
+}
+
+export async function fetchMyIdentities(): Promise<LinkedIdentity[]> {
+  return jsonRequest<LinkedIdentity[]>("/auth/me/identities", "GET");
+}
+
+export async function fetchMyPendingIdentities(): Promise<PendingIdentity[]> {
+  return jsonRequest<PendingIdentity[]>("/auth/me/identities/pending", "GET");
+}
+
+export async function searchBridgeDirectory(
+  bridgeId: string,
+  query: string,
+): Promise<DirectorySearch> {
+  return jsonRequest<DirectorySearch>(
+    `/collaborations/${bridgeId}/directory?query=${encodeURIComponent(query)}`,
+    "GET",
+  );
+}
+
+/** Start linking an account to the signed-in person. */
+export async function claimBridgeIdentity(
+  bridgeId: string,
+  person: { external_user_id: string; username: string },
+): Promise<ClaimedAccount> {
+  return jsonRequest<ClaimedAccount>(`/collaborations/${bridgeId}/identities`, "POST", {
+    external_user_id: person.external_user_id,
+    username: person.username,
+    expects_confirmation: true,
+    // Asks Switch to message the account a number to tap as well; a server
+    // that sends none ignores it and the code is the way.
+    wants_prompt: true,
   });
+}
+
+/** A fresh code for the signed-in person's link to this account, and a new
+ *  message to tap, replacing any issued before. */
+export async function issueLinkCode(bridgeId: string, identityId: string): Promise<LinkCode> {
+  return jsonRequest<LinkCode>(
+    `/collaborations/${bridgeId}/identities/${identityId}/code`,
+    "POST",
+    { wants_prompt: true },
+  );
+}
+
+/** Stop waiting for the account to confirm. Never unlinks: an older link
+ *  being confirmed keeps counting. */
+export async function cancelLinkRequest(bridgeId: string, identityId: string): Promise<void> {
+  await jsonRequest<ClaimedAccount>(
+    `/collaborations/${bridgeId}/identities/${identityId}/request`,
+    "DELETE",
+  );
+}
+
+/** Unlink the signed-in person from this account, and drop any link to it
+ *  still waiting. Anyone else linked to it stays linked. */
+export async function releaseBridgeIdentity(bridgeId: string, identityId: string): Promise<void> {
+  await jsonRequest<ClaimedAccount>(
+    `/collaborations/${bridgeId}/identities/${identityId}`,
+    "DELETE",
+  );
+}
+
+export async function fetchUnconfirmedLinks(bridgeId: string): Promise<UnconfirmedLink[]> {
+  return jsonRequest<UnconfirmedLink[]>(
+    `/collaborations/${bridgeId}/identities/unconfirmed`,
+    "GET",
+  );
+}
+
+/** Stop trusting these older links until each owner confirms theirs. Returns
+ *  how many stopped counting. */
+export async function requireLinkConfirmation(
+  bridgeId: string,
+  links: readonly UnconfirmedLink[],
+): Promise<number> {
+  const result = await jsonRequest<{ moved: number }>(
+    `/collaborations/${bridgeId}/identities/require-confirmation`,
+    "POST",
+    { links: links.map((link) => ({ id: link.id, user_id: link.user_id })) },
+  );
+  return result.moved;
 }
 
 /** Make a team the connection's default for new channels, which also turns
@@ -1218,11 +1610,10 @@ export async function login(email: string, password: string): Promise<UserInfo> 
   return jsonRequest<UserInfo>("/auth/login", "POST", { email, password });
 }
 
+// Throws when the cookie wasn't cleared, so a failed sign-out never looks
+// like a signed-out browser that a reload would sign straight back in.
 export async function logout(): Promise<void> {
-  await fetch(`${BASE}/auth/logout`, {
-    method: "POST",
-    credentials: "include",
-  });
+  await jsonRequest("/auth/logout", "POST");
 }
 
 // Ends every session the account holds, this one included: a copied cookie or
@@ -1231,8 +1622,31 @@ export async function signOutEverywhere(): Promise<void> {
   await jsonRequest("/auth/sessions/revoke", "POST");
 }
 
-export async function fetchMe(): Promise<UserInfo | null> {
-  return fetchJson<UserInfo>("/auth/me");
+/** The signed-in account, as Your account shows it. */
+export interface Me extends UserInfo {
+  // False for an account made through single sign-on, which has no password
+  // of its own to change.
+  has_password: boolean;
+}
+
+export async function fetchMe(): Promise<Me> {
+  return jsonRequest<Me>("/auth/me", "GET");
+}
+
+export async function changeMyName(name: string): Promise<Me> {
+  return jsonRequest<Me>("/auth/me", "PATCH", { name });
+}
+
+/** What deleting the account would be refused with now, saying what to do
+ * first, or null when it would go ahead. */
+export async function accountDeletionRefusal(): Promise<string | null> {
+  const check = await jsonRequest<{ refusal: string | null }>("/auth/me/deletion", "GET");
+  return check.refusal;
+}
+
+/** Deletes the account everywhere, confirmed by its email typed out. */
+export async function deleteMyAccount(email: string): Promise<void> {
+  await jsonRequest("/auth/me", "DELETE", { email });
 }
 
 export type SignupMode = "default_tenant" | "invite_only" | "open";
@@ -1257,6 +1671,10 @@ export interface TenantMembership {
   role: TenantRole;
   organization_role: OrganizationRole | null;
   organization_id: string | null;
+  /** When it was archived; null while it is not. Only its organization's
+   * admins, and the operator, are ever told of an archived one: nobody else
+   * may enter it. */
+  archived_at: string | null;
 }
 
 export interface SessionUser {
@@ -1336,15 +1754,22 @@ export interface Member {
   email: string;
   role: TenantRole;
   created_at: string;
+  // The account agents added with the shared registration token are owned
+  // by: not a person.
+  service_account: boolean;
   organization_role: OrganizationRole | null;
   // An organization admin with no membership of their own here, listed
   // because the organization makes them an admin of every workspace.
   via_organization: boolean;
   // What you may do with this member, as the server decides it: change their
-  // role or remove them (an admin, never on your own row or an organization
-  // admin's), and hand them something you own.
+  // role or remove them (an admin, your own row included, never an
+  // organization admin's), and hand them something you own. The reasons are
+  // set when you administer the workspace but the flag is still false: the
+  // last admin, or making the service account an admin.
   can_change_role: boolean;
+  change_role_blocked_reason: string | null;
   can_remove: boolean;
+  remove_blocked_reason: string | null;
   can_receive_transfer: boolean;
 }
 
@@ -1356,6 +1781,18 @@ export async function fetchMembers(tenantId: string): Promise<Member[]> {
 // otherwise, listing what is left.
 export async function deleteWorkspace(tenantId: string, name: string): Promise<void> {
   await jsonRequest(`/tenants/${encodeURIComponent(tenantId)}`, "DELETE", { name });
+}
+
+/** The longest name the server takes for a workspace. */
+export const WORKSPACE_NAME_MAX = 255;
+
+/** Rename the bound workspace. The server trims the name and answers with
+ * it as stored. */
+export async function renameWorkspace(
+  tenantId: string,
+  name: string,
+): Promise<{ id: string; name: string }> {
+  return jsonRequest(`/tenants/${encodeURIComponent(tenantId)}`, "PATCH", { name });
 }
 
 export type OwnershipKind =
@@ -1453,6 +1890,9 @@ export interface OrganizationMember {
    * taking away what they held in workspaces they were in only as an
    * organization admin. */
   warning: string | null;
+  // The account agents added with the shared registration token are owned
+  // by: not a person, and never made an admin.
+  service_account: boolean;
   /** What you may do with them, as the server decides it: never on your own
    * row; making them Org Admin not where the members come from account
    * settings Switch cannot change; removing them as an Org Admin only. */
@@ -1500,14 +1940,173 @@ export interface OperatorWorkspace {
   name: string;
   organization_id: string | null;
   organization_name: string | null;
+  archived_at: string | null;
 }
 
 export async function fetchCurrentOrganization(): Promise<CurrentOrganization> {
   return jsonRequest<CurrentOrganization>("/organizations/current", "GET");
 }
 
-export async function fetchOrganizationWorkspaces(): Promise<TenantMembership[]> {
-  return jsonRequest<TenantMembership[]>("/organizations/current/workspaces", "GET");
+/** The Switch Trust policy the organization connected, as its admins see
+ * it: never the API key, only its last four characters. */
+export interface OrganizationGuardrails {
+  connected: boolean;
+  policy_id: string | null;
+  /** Switch Trust's name for the policy, from its answer when connected. */
+  policy_name: string | null;
+  /** Where Switch Trust shows the policy; null when Switch can't link there. */
+  policy_url: string | null;
+  api_key_last4: string | null;
+  connected_by_name: string | null;
+  connected_at: string | null;
+}
+
+export async function fetchOrganizationGuardrails(): Promise<OrganizationGuardrails> {
+  return jsonRequest("/organizations/current/guardrails", "GET");
+}
+
+/** Connect a policy, checked with Switch Trust first; refused when it
+ * refuses the policy ID or the key. */
+export async function connectOrganizationGuardrails(
+  policyId: string,
+  apiKey: string,
+): Promise<OrganizationGuardrails> {
+  return jsonRequest("/organizations/current/guardrails", "PUT", {
+    policy_id: policyId,
+    api_key: apiKey,
+  });
+}
+
+export async function disconnectOrganizationGuardrails(): Promise<OrganizationGuardrails> {
+  return jsonRequest("/organizations/current/guardrails", "DELETE");
+}
+
+/** The longest organization name the server takes. */
+export const ORGANIZATION_NAME_MAX = 255;
+
+/** Rename the organization; its admins only. */
+export async function renameOrganization(name: string): Promise<{ id: string; name: string }> {
+  return jsonRequest("/organizations/current", "PATCH", { name });
+}
+
+/** One of the organization's workspaces, as its Workspaces page lists it.
+ * The counts are what each list shows: people (org admins included),
+ * agents, and rooms not archived. `admins` names its admins by membership,
+ * the organization's admins left out. */
+export interface OrganizationWorkspace extends TenantMembership {
+  created_at: string;
+  users: number;
+  agents: number;
+  rooms: number;
+  admins: string[];
+  can_archive: boolean;
+  archive_blocked_reason: string | null;
+  can_restore: boolean;
+}
+
+export async function fetchOrganizationWorkspaces(): Promise<OrganizationWorkspace[]> {
+  return jsonRequest<OrganizationWorkspace[]>("/organizations/current/workspaces", "GET");
+}
+
+function organizationWorkspacePath(workspaceId: string, rest = ""): string {
+  return `/organizations/current/workspaces/${encodeURIComponent(workspaceId)}${rest}`;
+}
+
+/** Rename one of the organization's workspaces, from the organization. */
+export async function renameOrganizationWorkspace(
+  workspaceId: string,
+  name: string,
+): Promise<{ id: string; name: string }> {
+  return jsonRequest(organizationWorkspacePath(workspaceId), "PATCH", { name });
+}
+
+/** Make exactly `userIds` the workspace's admins among its members who are
+ * not organization admins; the rest become members. All or nothing. */
+export async function setOrganizationWorkspaceAdmins(
+  workspaceId: string,
+  userIds: string[],
+): Promise<{ id: string; name: string; admins: string[] }> {
+  return jsonRequest(organizationWorkspacePath(workspaceId, "/admins"), "PUT", {
+    user_ids: userIds,
+  });
+}
+
+export interface WorkspaceArchiveState {
+  id: string;
+  name: string;
+  archived_at: string | null;
+}
+
+export async function archiveOrganizationWorkspace(
+  workspaceId: string,
+): Promise<WorkspaceArchiveState> {
+  return jsonRequest(organizationWorkspacePath(workspaceId, "/archive"), "POST");
+}
+
+export async function restoreOrganizationWorkspace(
+  workspaceId: string,
+): Promise<WorkspaceArchiveState> {
+  return jsonRequest(organizationWorkspacePath(workspaceId, "/restore"), "POST");
+}
+
+/** One of the organization's workspaces someone holds a membership in. */
+export interface OrganizationMemberWorkspace {
+  id: string;
+  name: string;
+  role: TenantRole;
+  archived: boolean;
+}
+
+/** Add someone already in the organization to one of its workspaces. */
+export async function addToOrganizationWorkspace(
+  workspaceId: string,
+  userId: string,
+  role: TenantRole,
+): Promise<OrganizationMemberWorkspace> {
+  return jsonRequest(organizationWorkspacePath(workspaceId, "/members"), "POST", {
+    user_id: userId,
+    role,
+  });
+}
+
+export async function changeOrganizationWorkspaceRole(
+  workspaceId: string,
+  userId: string,
+  role: TenantRole,
+): Promise<OrganizationMemberWorkspace> {
+  return jsonRequest(
+    organizationWorkspacePath(workspaceId, `/members/${encodeURIComponent(userId)}`),
+    "PATCH",
+    { role },
+  );
+}
+
+export async function previewOrganizationWorkspaceRemoval(
+  workspaceId: string,
+  userId: string,
+): Promise<MemberRemovalPreview> {
+  return jsonRequest(
+    organizationWorkspacePath(workspaceId, `/members/${encodeURIComponent(userId)}/removal`),
+    "GET",
+  );
+}
+
+export async function removeFromOrganizationWorkspace(
+  workspaceId: string,
+  userId: string,
+): Promise<MemberRemovalResult> {
+  return jsonRequest(
+    organizationWorkspacePath(workspaceId, `/members/${encodeURIComponent(userId)}`),
+    "DELETE",
+  );
+}
+
+/** An invite link to one of the organization's workspaces. */
+export async function inviteToOrganizationWorkspace(
+  workspaceId: string,
+  input: CreateInvitationInput,
+): Promise<CreatedInvitation> {
+  return jsonRequest(organizationWorkspacePath(workspaceId, "/invitations"), "POST", input);
 }
 
 /** Add a workspace to the current organization. The session stays where it is. */
@@ -1526,6 +2125,8 @@ export interface OrganizationServiceSetting {
 export interface OrganizationService {
   slug: string;
   name: string;
+  category: string;
+  description: string;
   /** Null: the organization has no say, and each workspace decides. */
   setting: OrganizationServiceSetting | null;
   updated_by_name: string | null;
@@ -1565,8 +2166,15 @@ export async function clearOrganizationService(
   return jsonRequest(`/organizations/current/services/${service}`, "DELETE");
 }
 
-export async function fetchOrganizationMembers(): Promise<OrganizationMember[]> {
-  return jsonRequest<OrganizationMember[]>("/organizations/current/members", "GET");
+/** An organization member as its Users page lists them: with the
+ * organization's workspaces they hold a membership in. An org admin in none
+ * is in the organization as a whole. */
+export interface OrganizationMemberEntry extends OrganizationMember {
+  workspaces: OrganizationMemberWorkspace[];
+}
+
+export async function fetchOrganizationMembers(): Promise<OrganizationMemberEntry[]> {
+  return jsonRequest<OrganizationMemberEntry[]>("/organizations/current/members", "GET");
 }
 
 export async function updateOrganizationRole(
@@ -1709,6 +2317,91 @@ export async function clearRetentionPolicy(tenantId: string): Promise<RetentionP
   );
 }
 
+// ── Public rooms on private channels ──────────────────────────────────────
+
+/** Why a listed room starts unticked. */
+export type PrivateChannelRoomCaution =
+  | "members_not_listed"
+  | "channel_type_not_recorded"
+  | "channel_type_unknown"
+  | "many_people"
+  | "bridge_not_connected";
+
+export interface PrivateChannelRoom {
+  room_id: string;
+  name: string;
+  bridge_id: string;
+  bridge_name: string | null;
+  bridge_type: string | null;
+  // The recorded type; null when none was recorded.
+  channel_type: string | null;
+  people: number;
+  // Null when the room's messaging app is not running.
+  members_listed: boolean | null;
+  cautions: PrivateChannelRoomCaution[];
+  recommended: boolean;
+}
+
+export interface MakeRoomsPrivateResult {
+  changed: string[];
+  skipped: { room_id: string; reason: string }[];
+}
+
+export interface AskPlatformResult {
+  answered: { room_id: string; channel_type: string }[];
+  unanswered: { room_id: string; reason: "bridge_not_connected" | "could_not_tell" }[];
+  // Set when the batch stopped early.
+  stopped: "rate_limited" | "timed_out" | null;
+  // Listed rooms still to ask about: no recorded type, not already found
+  // unplaceable.
+  remaining: number;
+}
+
+/** The most rooms one apply changes. */
+export const MAKE_PRIVATE_MAX = 200;
+
+/** How many rooms the review page would list. One query; no platform. */
+export async function countPrivateChannelRooms(tenantId: string): Promise<number> {
+  const result = await jsonRequest<{ count: number }>(
+    `/tenants/${encodeURIComponent(tenantId)}/private-channel-rooms/count`,
+    "GET",
+  );
+  return result.count;
+}
+
+/** Ask the messaging apps about a batch of rooms of unrecorded type; the
+ * answers are saved on the rooms. */
+export async function askPlatformAboutRooms(tenantId: string): Promise<AskPlatformResult> {
+  return jsonRequest<AskPlatformResult>(
+    `/tenants/${encodeURIComponent(tenantId)}/private-channel-rooms/ask-platform`,
+    "POST",
+    {},
+  );
+}
+
+/** The Public rooms bound to a private channel, a group, a DM or a channel
+ * of unrecorded type. A dry run: changes nothing, calls no platform. */
+export async function previewPrivateChannelRooms(
+  tenantId: string,
+): Promise<PrivateChannelRoom[]> {
+  const result = await jsonRequest<{ rooms: PrivateChannelRoom[] }>(
+    `/tenants/${encodeURIComponent(tenantId)}/private-channel-rooms`,
+    "GET",
+  );
+  return result.rooms;
+}
+
+export async function makeRoomsPrivate(
+  tenantId: string,
+  roomIds: string[],
+): Promise<MakeRoomsPrivateResult> {
+  return jsonRequest<MakeRoomsPrivateResult>(
+    `/tenants/${encodeURIComponent(tenantId)}/private-channel-rooms/make-private`,
+    "POST",
+    { room_ids: roomIds },
+  );
+}
+
 // ── Erasing a person ───────────────────────────────────────────────────────
 
 export interface PersonClaimant {
@@ -1842,8 +2535,8 @@ export async function changePassword(
   });
 }
 
-export async function fetchUsers(): Promise<ListedUser[] | null> {
-  return fetchJson<ListedUser[]>("/users");
+export async function fetchUsers(): Promise<ListedUser[]> {
+  return jsonRequest<ListedUser[]>("/users", "GET");
 }
 
 // The roles `POST /users` accepts; `admin` makes a deployment operator.
@@ -1856,6 +2549,12 @@ export async function createUser(
   role: UserRole,
 ): Promise<UserInfo> {
   return jsonRequest<UserInfo>("/users", "POST", { name, email, password, role });
+}
+
+// Deployment operator only. Ends every session the account holds, as the
+// person's own "Sign out of all devices" would; recorded in the audit log.
+export async function endUserSessions(userId: string): Promise<void> {
+  await jsonRequest(`/users/${encodeURIComponent(userId)}/sessions/revoke`, "POST");
 }
 
 // Deployment operator only. Deletes the whole account, as the person
@@ -2060,6 +2759,19 @@ export async function fetchOwnedReferenceTypes(): Promise<
   return fetchJson<ReferenceTypeDetail[]>("/references/reference-types/owned");
 }
 
+// The `load*` calls below throw the server's reason, where their `fetch*`
+// twins answer null: a list or page that failed to load says why rather than
+// passing for an empty one.
+
+export async function loadReferenceTypes(): Promise<ReferenceTypeInfo[]> {
+  return jsonRequest<ReferenceTypeInfo[]>("/references/reference-types", "GET");
+}
+
+/** Every stored type the caller may read, with what they may do to each. */
+export async function loadOwnedReferenceTypes(): Promise<ReferenceTypeDetail[]> {
+  return jsonRequest<ReferenceTypeDetail[]>("/references/reference-types/owned", "GET");
+}
+
 export async function createReferenceType(
   input: ReferenceTypeCreateInput,
 ): Promise<ReferenceTypeDetail> {
@@ -2098,6 +2810,14 @@ export async function fetchReference(id: string): Promise<ReferenceDetail | null
   return fetchJson<ReferenceDetail>(`/references/${id}`);
 }
 
+export async function loadReferences(): Promise<ReferenceDetail[]> {
+  return jsonRequest<ReferenceDetail[]>("/references", "GET");
+}
+
+export async function loadReference(id: string): Promise<ReferenceDetail> {
+  return jsonRequest<ReferenceDetail>(`/references/${id}`, "GET");
+}
+
 export async function createReference(
   input: ReferenceCreateInput,
 ): Promise<ReferenceDetail> {
@@ -2117,6 +2837,10 @@ export async function deleteReference(id: string): Promise<ResourceDeleteResult>
 
 export async function fetchReferenceRooms(id: string): Promise<ResourceRoom[] | null> {
   return fetchJson<ResourceRoom[]>(`/references/${id}/rooms`);
+}
+
+export async function loadReferenceRooms(id: string): Promise<ResourceRoom[]> {
+  return jsonRequest<ResourceRoom[]>(`/references/${id}/rooms`, "GET");
 }
 
 export async function fetchRoomReferences(
@@ -2145,7 +2869,7 @@ export async function detachReferenceFromRoom(
   });
   if (!res.ok) {
     const body = await res.json().catch(() => null);
-    throw new Error(body?.detail ?? `${res.status} ${res.statusText}`);
+    throw new Error(errorText(body?.detail ?? null, `${res.status} ${res.statusText}`));
   }
 }
 
@@ -2273,6 +2997,14 @@ export async function fetchDocument(id: string): Promise<DocumentDetail | null> 
   return fetchJson<DocumentDetail>(`/documents/${id}`);
 }
 
+export async function loadDocuments(): Promise<DocumentSummary[]> {
+  return jsonRequest<DocumentSummary[]>("/documents", "GET");
+}
+
+export async function loadDocument(id: string): Promise<DocumentDetail> {
+  return jsonRequest<DocumentDetail>(`/documents/${id}`, "GET");
+}
+
 export async function createDocument(
   input: DocumentCreateInput,
 ): Promise<DocumentDetail> {
@@ -2292,6 +3024,10 @@ export async function deleteDocument(id: string): Promise<ResourceDeleteResult> 
 
 export async function fetchDocumentRooms(id: string): Promise<ResourceRoom[] | null> {
   return fetchJson<ResourceRoom[]>(`/documents/${id}/rooms`);
+}
+
+export async function loadDocumentRooms(id: string): Promise<ResourceRoom[]> {
+  return jsonRequest<ResourceRoom[]>(`/documents/${id}/rooms`, "GET");
 }
 
 export async function fetchRoomDocuments(
@@ -2327,7 +3063,7 @@ export async function detachDocumentFromRoom(
   });
   if (!res.ok) {
     const body = await res.json().catch(() => null);
-    throw new Error(body?.detail ?? `${res.status} ${res.statusText}`);
+    throw new Error(errorText(body?.detail ?? null, `${res.status} ${res.statusText}`));
   }
 }
 
@@ -2393,6 +3129,14 @@ export async function fetchPackage(id: string): Promise<PackageDetail | null> {
   return fetchJson<PackageDetail>(`/packages/${id}`);
 }
 
+export async function loadPackages(): Promise<PackageDetail[]> {
+  return jsonRequest<PackageDetail[]>("/packages", "GET");
+}
+
+export async function loadPackage(id: string): Promise<PackageDetail> {
+  return jsonRequest<PackageDetail>(`/packages/${id}`, "GET");
+}
+
 export async function createPackage(
   input: PackageCreateInput,
 ): Promise<PackageDetail> {
@@ -2414,6 +3158,10 @@ export async function fetchPackageRooms(id: string): Promise<ResourceRoom[] | nu
   return fetchJson<ResourceRoom[]>(`/packages/${id}/rooms`);
 }
 
+export async function loadPackageRooms(id: string): Promise<ResourceRoom[]> {
+  return jsonRequest<ResourceRoom[]>(`/packages/${id}/rooms`, "GET");
+}
+
 export async function fetchPackageReferences(
   id: string,
 ): Promise<ReferenceDetail[] | null> {
@@ -2426,6 +3174,14 @@ export async function fetchPackageDocuments(
   return fetchJson<DocumentSummary[]>(`/packages/${id}/documents`);
 }
 
+export async function loadPackageReferences(id: string): Promise<ReferenceDetail[]> {
+  return jsonRequest<ReferenceDetail[]>(`/packages/${id}/references`, "GET");
+}
+
+export async function loadPackageDocuments(id: string): Promise<DocumentSummary[]> {
+  return jsonRequest<DocumentSummary[]>(`/packages/${id}/documents`, "GET");
+}
+
 export async function addReferenceToPackage(
   packageId: string,
   referenceId: string,
@@ -2436,7 +3192,7 @@ export async function addReferenceToPackage(
   );
   if (!res.ok) {
     const body = await res.json().catch(() => null);
-    throw new Error(body?.detail ?? `${res.status} ${res.statusText}`);
+    throw new Error(errorText(body?.detail ?? null, `${res.status} ${res.statusText}`));
   }
 }
 
@@ -2460,7 +3216,7 @@ export async function addDocumentToPackage(
   );
   if (!res.ok) {
     const body = await res.json().catch(() => null);
-    throw new Error(body?.detail ?? `${res.status} ${res.statusText}`);
+    throw new Error(errorText(body?.detail ?? null, `${res.status} ${res.statusText}`));
   }
 }
 
@@ -2500,7 +3256,7 @@ export async function detachPackageFromRoom(
   });
   if (!res.ok) {
     const body = await res.json().catch(() => null);
-    throw new Error(body?.detail ?? `${res.status} ${res.statusText}`);
+    throw new Error(errorText(body?.detail ?? null, `${res.status} ${res.statusText}`));
   }
 }
 
@@ -2521,6 +3277,12 @@ export interface TemplateSummary {
   /** What the signed-in user may do with it, as the server judges it. */
   can_edit: boolean;
   can_manage: boolean;
+  /** Why a person should not run it by hand (switch-buddy, which Switch
+   * Console sets up itself); null when nothing stands in the way. */
+  run_blocked_reason: string | null;
+  /** How many times it has been run in this workspace, since runs were
+   * first counted. */
+  run_count: number;
   version: number;
   size_bytes: number;
   created_at: string;
@@ -2560,17 +3322,18 @@ export interface TemplateFilter {
   owner_id?: string;
 }
 
-/** The templates the signed-in user may see, narrowed on the server. */
+/** The templates the signed-in user may see, narrowed on the server, or an
+ * error carrying the server's reason. */
 export async function fetchTemplates(
   filter: TemplateFilter = {},
-): Promise<TemplateSummary[] | null> {
+): Promise<TemplateSummary[]> {
   const params = new URLSearchParams();
   const q = filter.q?.trim();
   if (q) params.set("q", q);
   if (filter.kind) params.set("kind", filter.kind);
   if (filter.owner_id) params.set("owner_id", filter.owner_id);
   const qs = params.toString();
-  return fetchJson<TemplateSummary[]>(`/templates${qs ? `?${qs}` : ""}`);
+  return jsonRequest<TemplateSummary[]>(`/templates${qs ? `?${qs}` : ""}`, "GET");
 }
 
 /** One template, or an error carrying the server's reason (403, 404, or the
@@ -2839,16 +3602,72 @@ export interface ServiceConnection {
   server_setup_needed: boolean;
   /** Whose app it signs in through here: the workspace's organization's own, or the server's. */
   app_source: "organization" | "server";
-  status: "not_connected" | "active" | "needs_reauthorization" | "error";
+  /**
+   * Why it can be granted for reading only here (its GitHub App lacks the
+   * write permissions), said beside the write choice it disables; null where
+   * writing can be granted too.
+   */
+  read_only_reason: string | null;
+  status: "not_connected" | "active" | "needs_reauthorization";
   /** Whether a grant hands the agent the owner's own token: on or off, at the connection's level. */
   pass_through: boolean;
   /** The longest a token handed out lives, in seconds; null when the catalog does not say. */
   token_lifetime: number | null;
-  /**
-   * What a person pastes to connect a service connected with a key, and where
-   * they make one; null for any other. A key is connected from Switch Console.
-   */
+  /** What a person pastes to connect a service connected with a key, and
+   * where they make one; null for any other. */
   key: ServiceKeyForm | null;
+  auth_type: "oauth" | "api_key";
+  /** Whether the server can grant it here; `unavailable_reason` says why not. */
+  configured: boolean;
+  unavailable_code: string | null;
+  /** Who makes it, and its own pages; null for one not built yet. */
+  publisher: string | null;
+  links: { documentation: string; support: string; privacy: string } | null;
+  /** The vendor's MCP servers its agents' sessions call, if any. */
+  mcp_urls: string[];
+  /** Whether it is on in this workspace. */
+  workspace_enabled: boolean;
+  /** The workspace's organization locked it on or off, out of the workspace admin's reach. */
+  organization_locked: boolean;
+  /** Which setting `workspace_enabled` comes from; null where workspaces have no switch. */
+  decided_by: WorkspaceServiceDecider | null;
+  /** Whether a sign-in can start and finish here in the browser; false where
+   * it returns only to Switch Console, and for a key. */
+  web_sign_in: boolean;
+  /** What a person picks before signing in or pasting (a vendor's site),
+   * each from its fixed list; null where nothing is asked. */
+  sign_in_choices: ServiceKeyField[] | null;
+  /** What a person may paste in place of signing in (a token, or keys);
+   * empty where the service takes none here. */
+  paste: ServicePasteMethod[];
+  /** Why the connection must be reconnected, where it must: `token_refused`
+   * asks for a new pasted credential. */
+  reconnect_code: string | null;
+  reconnect_reason: string | null;
+  /** The level the person allowed when connecting; null while not connected. */
+  consent: "read" | "write" | null;
+  /** The account connected, as the vendor names it. */
+  external_identity: string | null;
+  /** Whether the person may disconnect it: their own, while they have one. */
+  can_revoke: boolean;
+  /** How the person connected, and what they picked (a site); null while
+   * not connected. */
+  method: "oauth" | "token" | "keys" | null;
+  choices: Record<string, string> | null;
+  /** What a pasted credential reaches, said in place of an access level;
+   * null for a sign-in. */
+  access_note: string | null;
+}
+
+/** A credential a person may paste in place of signing in: its fields, and
+ * whether it ends on a date the vendor holds or only when revoked. */
+export interface ServicePasteMethod {
+  method: "token" | "keys";
+  label: string;
+  fields: ServiceKeyField[];
+  help_url: string | null;
+  expires: "vendor" | "never";
+  access_note: string;
 }
 
 /** One value a person pastes (a key: secret) or picks (a site, among `choices`) to connect. */
@@ -2869,6 +3688,83 @@ export interface ServiceKeyForm {
 export async function fetchServiceConnections(): Promise<ServiceConnection[]> {
   return (await jsonRequest<{ connections: ServiceConnection[] }>("/service-connections", "GET"))
     .connections;
+}
+
+/** Why nobody in a workspace can use a service: `UnavailableCode` in
+ * `core/switch_core/connections/broker.py`. A server newer than this
+ * dashboard may send one it doesn't know yet. */
+export type UnavailableCode =
+  | "coming_soon"
+  | "switched_off"
+  | "needs_https"
+  | "needs_public_url"
+  | "app_not_set_up"
+  | "not_set_up"
+  | "organization_app_unusable"
+  | "not_fully_set_up"
+  | "key_never_expires";
+
+/** Which setting decides whether a service is on in the workspace. */
+export type WorkspaceServiceDecider =
+  | "organization_locked"
+  | "workspace"
+  | "organization_default"
+  | "workspace_default";
+
+/** A catalog service as the workspace's settings show it: on or off here, and why. */
+export interface WorkspaceService {
+  slug: string;
+  name: string;
+  category: string;
+  description: string;
+  auth_type: "oauth" | "api_key";
+  enabled: boolean;
+  decided_by: WorkspaceServiceDecider;
+  organization_locked: boolean;
+  /** The organization's unlocked setting, which applies once the workspace drops its own; null where it has none. */
+  organization_default: boolean | null;
+  /** Whether the caller may switch it here: an admin, on a service the organization has not locked. */
+  can_change: boolean;
+  /** Who made the setting that decides it; null for the workspace's default or a deleted account. */
+  updated_by_name: string | null;
+  updated_at: string | null;
+  /** Whether the workspace's admin set it themselves. */
+  workspace_set: boolean;
+  /** Whose app it signs in through here: the workspace's organization's own, or the server's. */
+  app_source: "organization" | "server";
+  /** Why nobody here can use it whatever the switch says; null when they can. */
+  unavailable_reason: string | null;
+  unavailable_code: string | null;
+  /** How many people have connected it and agents are granted it; null for anyone but an admin. */
+  connected_members: number | null;
+  granted_agents: number | null;
+}
+
+export interface WorkspaceServices {
+  /** Whether the caller administers the workspace, and so may switch what isn't locked. */
+  can_change: boolean;
+  /** Whether a service nobody has set is on here. */
+  on_by_default: boolean;
+  /** The workspace's organization, where it has a say in connectors; null where it has none. */
+  organization_name: string | null;
+  services: WorkspaceService[];
+}
+
+export async function fetchWorkspaceServices(): Promise<WorkspaceServices> {
+  return jsonRequest<WorkspaceServices>("/workspace/services", "GET");
+}
+
+/** Switch a service on or off for the workspace; `warning` says what could not be revoked yet. */
+export async function setWorkspaceService(
+  service: string,
+  enabled: boolean,
+): Promise<{ warning: string | null }> {
+  return jsonRequest(`/workspace/services/${service}`, "PUT", { enabled });
+}
+
+/** Drop the workspace's own setting, so its organization's default applies. */
+export async function clearWorkspaceService(service: string): Promise<{ warning: string | null }> {
+  return jsonRequest(`/workspace/services/${service}`, "DELETE");
 }
 
 export async function removeServiceGrant(
@@ -2904,8 +3800,10 @@ export async function fetchGitHubConnection(): Promise<GitHubConnection> {
 }
 
 /**
- * Owner-only addressing: the owner, and agents the owner runs. What the grant
- * screens offer when anyone can address an agent with grants.
+ * Owner-only addressing: the owner alone, none of the owner's agents, as
+ * Switch Console sends it. What the grant screens offer when others can
+ * address an agent with grants: an agent the owner runs could pass on a
+ * request someone else gave it.
  */
 export const OWNER_ONLY_POLICY: AddressingPolicy = {
   rules: [
@@ -2915,7 +3813,7 @@ export const OWNER_ONLY_POLICY: AddressingPolicy = {
       users: [],
       agents: [],
       owner: true,
-      owner_agents: true,
+      owner_agents: false,
     },
   ],
 };
@@ -2965,11 +3863,22 @@ export interface ConnectorApp {
   scopes: string[];
   /** Why it can't be set up here, before any vendor is asked; null when nothing stops it. */
   setup_blocked: string | null;
+  /**
+   * A GitHub App short of the write permissions, as GitHub last answered:
+   * agents can only read through it, and a write grant is refused.
+   */
+  read_only: boolean;
+  /** The permissions it lacks to write, as the App's settings page names them. */
+  lacks_write: string[];
   install_url: string | null;
+  /** When the app saved here was first saved; null with none saved. */
+  created_at: string | null;
   updated_by_name: string | null;
   updated_at: string | null;
   connected_members: number;
   workspaces: number;
+  /** Agents' grants on the connections made through the app in use. */
+  agent_grants: number;
   /** Connections made through an app this server no longer uses. */
   stale_connections: number;
   /** An organization's page only: whether the server has an app its
@@ -3003,6 +3912,7 @@ export interface SaveConnectorAppInput {
 export interface ConnectorAppImpact {
   connected_members: number;
   workspaces: number;
+  agent_grants: number;
 }
 
 /** A save the vendor refused: what it said, and the value to look at again. */
@@ -3092,4 +4002,120 @@ export async function removeConnectorApp(
   service: string,
 ): Promise<ConnectorAppImpact> {
   return jsonRequest<ConnectorAppImpact>(`${CONNECTOR_APPS_PATH[scope]}/${service}`, "DELETE");
+}
+
+// ── Who uses a connector, from its page ──────────────────────────────────
+
+/** One of the signed-in person's own agents, and its grant on a connector. */
+export interface ServiceAgent {
+  agent_id: string;
+  name: string;
+  granted: boolean;
+  grant: ServiceGrant | null;
+  /** Whether Switch Console runs it, so it can be granted a connector at all. */
+  grantable: boolean;
+  /** Others can address it, so they could have it act as its owner. */
+  addressing_open: boolean;
+}
+
+export async function fetchServiceAgents(service: string): Promise<ServiceAgent[]> {
+  return jsonRequest<ServiceAgent[]>(`/service-connections/${service}/agents`, "GET");
+}
+
+/** Someone connected to a connector in this workspace, as its admins see them. */
+export interface ConnectedPerson {
+  user_id: string;
+  name: string;
+  status: Exclude<ServiceConnection["status"], "not_connected">;
+  connected_at: string;
+  /** How many of their agents are granted it. */
+  agents: number;
+  /** Someone else's: an admin's own is disconnected, not revoked. */
+  can_revoke: boolean;
+}
+
+/** An agent granted a connector in this workspace, whoever owns it. */
+export interface GrantedAgent {
+  agent_id: string;
+  name: string;
+  owner_id: string;
+  owner_name: string;
+  grant: ServiceGrant;
+  /** Others than its owner can address it, and so have it act as its owner. */
+  addressing_open: boolean;
+}
+
+export interface ServiceInWorkspace {
+  people: ConnectedPerson[];
+  agents: GrantedAgent[];
+}
+
+/** Who uses a connector in this workspace: its admins only. */
+export async function fetchServiceInWorkspace(service: string): Promise<ServiceInWorkspace> {
+  return jsonRequest<ServiceInWorkspace>(`/service-connections/${service}/workspace`, "GET");
+}
+
+/** End someone else's connection, as a workspace admin. */
+export async function revokeServiceConnection(
+  service: string,
+  userId: string,
+): Promise<{ warning: string | null }> {
+  return jsonRequest(`/service-connections/${service}/people/${userId}`, "DELETE");
+}
+
+/** End your own connection; `warning` names what could not be revoked. */
+export async function disconnectService(service: string): Promise<{ warning: string | null }> {
+  return jsonRequest(`/service-connections/${service}`, "DELETE");
+}
+
+/** Where a sign-in started here sends the browser, and the id the
+ * connector's page reads its outcome by when the browser comes back. GitHub
+ * signs in through its own App, so its flows have their own routes. */
+function signInFlows(service: string): string {
+  return service === "github" ? "/provider-connections/github/flows" : `/service-connections/${service}/flows`;
+}
+
+export async function startWebSignIn(service: string): Promise<{ id: string; url: string }> {
+  return jsonRequest(`${signInFlows(service)}/web`, "POST");
+}
+
+/** How a sign-in ended, as the connector's page reads it on the way back:
+ * `pending` while it never got back from the vendor. */
+export interface SignInOutcome {
+  status: "pending" | "checking" | "connected" | "failed";
+  account: string | null;
+  error: string | null;
+  warning: string | null;
+}
+
+export async function fetchSignInOutcome(service: string, id: string): Promise<SignInOutcome> {
+  const answer = await jsonRequest<SignInOutcome & { login?: string }>(`${signInFlows(service)}/${id}`, "GET");
+  return {
+    status: answer.status,
+    account: answer.account ?? (answer.login || null),
+    error: answer.error,
+    warning: answer.warning,
+  };
+}
+
+/** Done with a sign-in's outcome: it is dropped rather than left to expire. */
+export async function dropSignIn(service: string, id: string): Promise<void> {
+  return noContentRequest(`${signInFlows(service)}/${id}`, "DELETE");
+}
+
+/** Connect a service by pasting a token or keys in place of signing in, at
+ * the site picked, once its vendor accepts them; pasting again replaces them. */
+export async function connectServiceWithPaste(
+  service: string,
+  paste: { method: ServicePasteMethod["method"]; fields: Record<string, string>; choices: Record<string, string> },
+): Promise<{ warning: string | null; external_identity: string }> {
+  return jsonRequest(`/service-connections/${service}/paste`, "PUT", paste);
+}
+
+/** Connect a key-based connector, or replace its key, once the vendor accepts it. */
+export async function connectServiceWithKey(
+  service: string,
+  fields: Record<string, string>,
+): Promise<{ warning: string | null; external_identity: string }> {
+  return jsonRequest(`/service-connections/${service}/key`, "PUT", { fields });
 }

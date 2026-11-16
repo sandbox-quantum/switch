@@ -43,6 +43,7 @@ import { RenameServerModal } from '@renderer/features/switch-servers/RenameServe
 import { ReplaceTokenModal } from '@renderer/features/switch-servers/ReplaceTokenModal';
 import { RequireLinkConfirmationModal } from '@renderer/features/switch-servers/RequireLinkConfirmationModal';
 import { TeamsPlacementModal } from '@renderer/features/switch-servers/TeamsPlacementModal';
+import { PickRoomToCaptureModal } from '@renderer/features/templates/pick-room-to-capture-modal';
 import { SaveTemplateModal } from '@renderer/features/templates/save-template-modal';
 import { CreateWorkspaceModal } from '@renderer/features/workspaces/create-workspace-modal';
 import { InvitePeopleModal } from '@renderer/features/workspaces/invite-people-modal';
@@ -85,6 +86,7 @@ export const modalRegistry = {
     dismissOnOutsideClick: false,
   }),
   saveTemplateModal: createModal(SaveTemplateModal, { size: 'sm', dismissOnOutsideClick: false }),
+  pickRoomToCaptureModal: createModal(PickRoomToCaptureModal, { size: 'sm' }),
   confirmActionModal: createModal(ConfirmActionDialog, { size: 'xs' }),
   newLibraryItemModal: createModal(NewLibraryItemModal, {
     size: 'md',

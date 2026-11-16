@@ -206,8 +206,8 @@ export async function clusterRunning(
 
 /**
  * Start the cluster in the background. `pg_ctl` detaches the server into its
- * own session, so it outlives Switch Console like the Docker stack's
- * containers do, and returns once the server accepts connections.
+ * own session, so only an explicit stop ends it (Console stops it as it quits),
+ * and returns once the server accepts connections.
  */
 export async function startCluster(
   binaries: PostgresBinaries,

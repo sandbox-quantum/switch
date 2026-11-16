@@ -20,7 +20,7 @@ which controllers the other processes hold, before the bridge serves.
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -53,6 +53,9 @@ from switch_core.management.controller_routes import router as controller_router
 from switch_core.management.dependencies import init_management_dependencies
 from switch_core.management.gateway_routes import router as gateway_router
 from switch_core.management.notifier import ControllerNotifier
+from switch_core.management.organization_devices import (
+    router as organization_devices_router,
+)
 from switch_core.management.service import ManagementService, ManagementSettings
 from switch_core.management.signals import ControllerSignals
 from switch_core.process_lease import ProcessLease
@@ -134,6 +137,7 @@ def build_management(
     status_interval_seconds: int,
     server_url: str | None,
     third_party_avatars: bool,
+    feature_flags: Mapping[str, bool],
     controller_release: ControllerRelease | None,
     session_factory: async_sessionmaker[AsyncSession],
     presence: ControllerPresence,
@@ -182,6 +186,7 @@ def build_management(
             status_interval_seconds=status_interval_seconds,
             server_url=server_url,
             third_party_avatars=third_party_avatars,
+            feature_flags=feature_flags,
             controller_release=controller_release,
         ),
         signals=signals,
@@ -195,7 +200,7 @@ def build_management(
         presence=presence,
         clock=clock,
     )
-    # Switch cloud machines that run the controller enroll with codes it mints.
+    # Switch Cloud machines that run the controller enroll with codes it mints.
     set_cloud_enrollment(service)
     authenticator = ManagementAuthenticator(
         session_factory=session_factory,
@@ -224,6 +229,7 @@ def mount_gateway_routes(gateway_app: FastAPI) -> None:
     route added here reaches the coverage gate.
     """
     gateway_app.include_router(gateway_router, prefix=GATEWAY_PREFIX)
+    gateway_app.include_router(organization_devices_router)
 
 
 def create_management(
@@ -246,6 +252,7 @@ def create_management(
         status_interval_seconds=config.controller_status_interval_seconds,
         server_url=config.gateway_public_url,
         third_party_avatars=config.third_party_avatars_enabled,
+        feature_flags=config.feature_flags,
         controller_release=config.controller_release,
         session_factory=session_factory,
         presence=presence,

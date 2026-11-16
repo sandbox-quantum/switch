@@ -27,6 +27,7 @@ const workspaces = vi.hoisted(() => ({
   updateAgentIcon: vi.fn(),
 }));
 const modelCatalogue = vi.hoisted(() => vi.fn());
+const showModal = vi.hoisted(() => vi.fn());
 
 vi.hoisted(() => {
   window.electronAPI ??= {
@@ -73,7 +74,9 @@ vi.mock('@renderer/lib/hooks/useFeatureFlags', () => ({
   useFeatureFlags: () => ({ agent_chats: false, service_connections: false }),
 }));
 vi.mock('@renderer/lib/components/agent-icon-picker', () => ({ AgentIconPicker: () => null }));
-vi.mock('@renderer/lib/modal/modal-provider', () => ({ useShowModal: () => vi.fn() }));
+vi.mock('@renderer/lib/modal/modal-provider', () => ({
+  useShowModal: (id: string) => (args: unknown) => showModal(id, args),
+}));
 
 import '@renderer/index.css';
 import { ManagedAgentPage } from '@renderer/features/managed-agents/managed-agent-page';
@@ -211,6 +214,15 @@ it('lays out the agent the way a Console agent’s page does', () => {
   expect(text).not.toContain('Unsaved changes');
 });
 
+it('says which device the agent runs on, and changes it with the move dialog', async () => {
+  expect(container.textContent).toContain('Runs on laptop (this computer).');
+  await act(async () => button(/^Change…$/)?.click());
+  expect(showModal).toHaveBeenCalledWith(
+    'moveAgentModal',
+    expect.objectContaining({ agent: expect.objectContaining({ agentId: 'agent-1' }) })
+  );
+});
+
 it('shows the model first, then the server’s fields for the provider', async () => {
   await act(async () => disclosure().click());
   const labels = [...container.querySelectorAll('label')].map((label) => label.textContent);
@@ -282,11 +294,11 @@ it('shows where the machine will make the agent’s directory when nothing names
   );
 });
 
-it('gives an agent on the Switch cloud machine the cloud agent’s service access', async () => {
+it('gives an agent on the Switch Cloud machine the cloud agent’s service access', async () => {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
   const machine: ManagedMachine = {
     id: 'controller-2',
-    name: 'Switch cloud',
+    name: 'Switch Cloud',
     kind: 'ec2',
     state: 'online',
   };

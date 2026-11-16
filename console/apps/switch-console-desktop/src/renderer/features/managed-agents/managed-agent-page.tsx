@@ -24,6 +24,7 @@ import {
   summariseValues,
 } from '@renderer/features/locations/components/settings-view/sections/advanced-config-disclosure';
 import { CanManageAgentsRow } from '@renderer/features/locations/components/settings-view/sections/can-manage-agents-settings-section';
+import { MidTurnDeliveryRow } from '@renderer/features/locations/components/settings-view/sections/mid-turn-delivery-section';
 import {
   AutoApproveRow,
   AutoModeRow,
@@ -115,6 +116,7 @@ function ManagedAgentPageContent({
   const queryClient = useQueryClient();
   const showAddToRoom = useShowModal('addAgentToRoomModal');
   const showRename = useShowModal('renameAgentModal');
+  const showMove = useShowModal('moveAgentModal');
   const schemaQuery = useAdvancedConfigSchema(agent.serverId);
   const machines = useManagedMachines(agent.serverId);
   const schema = schemaQuery.data?.[agent.definition.provider] ?? NO_FIELDS;
@@ -344,6 +346,7 @@ function ManagedAgentPageContent({
                 agentId={agent.agentId}
                 agentName={null}
               />
+              <MidTurnDeliveryRow workspaceId={agent.workspaceId} agentId={agent.agentId} />
               <AddressingPolicyRow
                 workspaceId={agent.workspaceId}
                 serverId={agent.serverId}
@@ -360,6 +363,20 @@ function ManagedAgentPageContent({
                   cloud={agent.machine !== null && isCloudMachine(agent.machine)}
                 />
               )}
+              <SettingRow
+                title="Device"
+                info={null}
+                description={
+                  agent.machine
+                    ? `Runs on ${agent.machine.name}${machine?.local?.kind === 'this-computer' ? ' (this computer)' : ''}.`
+                    : 'Runs on no device.'
+                }
+                control={
+                  <Button variant="outline" size="sm" onClick={() => showMove({ agent })}>
+                    Change…
+                  </Button>
+                }
+              />
               <SettingRow
                 title="Directory"
                 info={{
@@ -394,7 +411,7 @@ function ManagedAgentPageContent({
                 <SettingRow
                   title="Runs in its own process"
                   info={null}
-                  description="Switch cloud runs every agent as a user of its own, apart from the other agents and the machine's controller."
+                  description="Switch Cloud runs every agent as a user of its own, apart from the other agents and the machine's controller."
                   control={null}
                 />
               ) : (

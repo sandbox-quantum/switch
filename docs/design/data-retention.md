@@ -276,6 +276,53 @@ transaction, including its retention policy and erasure requests, and the
 deletion is recorded in the server's audit log. The workspace's own audit
 history stays for two years, then goes (below).
 
+### Purging an organization on request (built)
+
+When a customer asks for everything to be deleted, the operator runs
+`switch-purge-organization ORGANIZATION` where switch-core runs, with its
+configuration (`accounts/organization_purge.py`). Without `--execute` it only
+reports what would go and what stays; with `--execute --request REFERENCE` it
+purges, and the reference to the request goes in the server's audit log.
+Nothing waits for the customer to empty anything first.
+
+1. **Outside Switch first.** Every service sign-in is removed and revoked at
+   its vendor with the tokens issued on it, and each cloud machine of an
+   account the purge deletes is set to be deleted. While a machine is still
+   being torn down or a token is still live at its vendor, the purge says so,
+   deletes nothing and exits 3; the same command, run again, carries on.
+2. **A record of the run**, in the server's audit log
+   (`organization.purge_started`), naming the accounts it is to delete.
+3. **Every workspace**, in its own transaction, with everything in it. Just
+   before, its live messaging installs are ended as disconnecting them does
+   (Slack's bot token revoked, a Teams organization withdrawn from, a Telegram
+   chat left). After, the processes running its agents, clients, bridges and
+   machines are told: agents' connections close and their cached keys go at
+   once, as when an agent is deleted.
+4. **The organization's own rows**, except its audit log, which outlives it
+   as a workspace's does. The server's audit log records the purge.
+5. **Every account that belonged to nothing else**: no membership of another
+   workspace or organization and no rows left in one. Others keep their
+   account and lose only what was here; the server's administrator account is
+   always kept. Each deletion, or failure, is recorded on its own.
+
+A run that stops part-way is finished by running the command again. The
+record of each started run brings back the accounts found through workspaces
+already deleted, and finds the organization by its id, slug or WorkOS id once
+its own rows are gone, for the accounts still to delete.
+
+A cloud machine whose owner keeps their account is not torn down: it loses
+the organization's workspaces and is prepared again without them.
+
+The workspaces' audit history stays for two years, as for any deleted
+workspace. Nothing at WorkOS is changed, because the WorkOS environment may be
+shared with other products: the command prints the WorkOS organization and
+users to remove there, for whoever owns it. Copies on chat platforms stay, as
+always.
+
+The server's default workspace refuses the purge. The command refuses a
+database connection that row-level security does not bind, since the service
+broker finds a workspace's sign-ins through it.
+
 ### The audit log
 
 Audit entries keep the acting account's id, including after the account is
@@ -297,7 +344,7 @@ setting, because the log protects the operator as well as the customer.
 - **Kept:** the server's `workspace.deleted` row, which proves when the
   workspace went and so why its history did; and the organization's audit log
   (`organization_audit_events`), which is the organization's history rather
-  than the workspace's and is bounded by the organization's own lifetime.
+  than the workspace's and outlives the organization: nothing purges it.
 
 The runtime role has `UPDATE` and `DELETE` revoked on the audit tables, so a
 compromised process cannot erase its tracks. The purge therefore runs on the

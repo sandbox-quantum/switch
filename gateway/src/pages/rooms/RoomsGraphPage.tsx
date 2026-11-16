@@ -10,7 +10,12 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ForceGraph2D from "react-force-graph-2d";
 import { useNavigate } from "react-router";
-import { useRoomGraph, useRoomGroups, useRooms } from "../../data/hooks";
+import { useAuth } from "../../data/AuthContext";
+import { loadRoomsWithArchived } from "../../data/api";
+import { GATEWAY_V2 } from "../../data/featureFlags";
+import { useRoomGraph, useRoomGroups } from "../../data/hooks";
+import { type ListScope, listScopeOf, roomsInScope } from "../../data/listScope";
+import { useLoad } from "../workspace/useLoad";
 import { branchColor, buildGroupIndex, topAncestor } from "./groupTree";
 import { RoomFilters, filterRooms, useRoomFilterState } from "./roomFilters";
 import { useGraphCanvasTheme } from "../graphCanvasTheme";
@@ -43,16 +48,16 @@ const UNGROUPED_COLOR = "#5A5F66";
 
 export default function RoomsGraphPage() {
   const navigate = useNavigate();
+  const { capabilities } = useAuth();
   const filters = useRoomFilterState();
 
-  // Nodes come from the same room list the table uses (so the filters apply
-  // identically); the link edges come from the link graph. Group colouring
-  // uses the group tree.
-  const {
-    data: rooms,
-    loading: roomsLoading,
-    error: roomsError,
-  } = useRooms(filters.debouncedSearch || undefined, filters.showArchived);
+  // Nodes come from the same rooms the list shows, narrowed the same way for
+  // a member in the new layout, so the graph never shows a room the list
+  // hides; the link edges come from the link graph. Group colouring uses the
+  // group tree.
+  const scope: ListScope = capabilities.features[GATEWAY_V2] ? listScopeOf(capabilities) : "workspace";
+  const { data: allRooms, loading: roomsLoading, error: roomsError } = useLoad(loadRoomsWithArchived);
+  const rooms = useMemo(() => (allRooms ? roomsInScope(allRooms, scope) : null), [allRooms, scope]);
   const { data: groups } = useRoomGroups();
   const { data: graph, loading: graphLoading, error: graphError } = useRoomGraph();
 
@@ -78,17 +83,22 @@ export default function RoomsGraphPage() {
   }, []);
 
   const groupList = useMemo(() => groups ?? [], [groups]);
+  const groupIndex = useMemo(() => buildGroupIndex(groupList), [groupList]);
 
+  // Listed field by field: the filter state is a new object every render, and
+  // new graph data restarts the layout.
   const filteredRooms = useMemo(
-    () => filterRooms(rooms ?? [], groupList, filters),
+    () => filterRooms(rooms ?? [], groupIndex, filters),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [
       rooms,
-      groupList,
+      groupIndex,
+      filters.search,
       filters.showArchived,
-      filters.bridgeFilter,
-      filters.userFilter,
-      filters.groupFilter,
-      filters.ownerFilter,
+      filters.group,
+      filters.owner,
+      filters.bridge,
+      filters.user,
     ],
   );
 
@@ -110,7 +120,7 @@ export default function RoomsGraphPage() {
       degree.set(l.target_room_id, (degree.get(l.target_room_id) ?? 0) + 1);
     }
 
-    const byId = buildGroupIndex(groupList);
+    const byId = groupIndex;
     // Legend: one entry per top-level group actually used by some visible room.
     const usedTopIds = new Set<string>();
     const nodeList: GraphNode[] = filteredRooms.map((r) => {
@@ -138,7 +148,12 @@ export default function RoomsGraphPage() {
       legendList.push({ id: "__ungrouped", name: "Ungrouped", color: UNGROUPED_COLOR });
     }
     return { nodes: nodeList, links: linkList, legend: legendList };
-  }, [filteredRooms, graph, groupList]);
+  }, [filteredRooms, graph, groupList, groupIndex]);
+
+  // Kept stable: the graph restarts its layout whenever it is handed a new
+  // object, so a redraw for any other reason (a resize, the session read
+  // again) would shuffle it.
+  const graphData = useMemo(() => ({ nodes, links }), [nodes, links]);
 
   useEffect(() => {
     if (!fgRef.current) return;
@@ -203,7 +218,7 @@ export default function RoomsGraphPage() {
         </Typography>
       </Stack>
 
-      <RoomFilters rooms={rooms ?? []} groups={groupList} state={filters} />
+      <RoomFilters rooms={rooms ?? []} groups={groupList} byId={groupIndex} state={filters} />
 
       {error && (
         <Alert severity="error" sx={{ mb: 2 }}>
@@ -304,7 +319,7 @@ export default function RoomsGraphPage() {
         )}
         <ForceGraph2D
           ref={fgRef}
-          graphData={{ nodes, links }}
+          graphData={graphData}
           width={dimensions.width}
           height={dimensions.height}
           backgroundColor={canvas.background}

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
@@ -12,6 +13,7 @@ from switch_core.bridges.collaboration.adapter import MessagePartlySent
 from switch_core.bridges.collaboration.models import (
     InboundCommand,
     InboundMessage,
+    InboundUserLeave,
     OutboundAttachment,
 )
 from switch_core.bridges.collaboration.telegram import adapter as adapter_module
@@ -1861,7 +1863,8 @@ def test_service_messages_are_not_bridged_as_empty_messages(field: str) -> None:
     seen: list[InboundMessage] = []
     adapter._on_message = lambda m: _collect(seen, m)
 
-    _run(adapter._handle_message(_FakeInbound(text=None, **{field: object()})))
+    value: Any = _FakeUser(user_id=9) if field == "left_chat_member" else object()
+    _run(adapter._handle_message(_FakeInbound(text=None, **{field: value})))
 
     assert seen == []
 
@@ -1925,6 +1928,58 @@ def test_a_private_chat_has_no_title_to_report() -> None:
     )
 
     assert reported == []
+
+
+def test_someone_leaving_is_reported_as_a_departure() -> None:
+    adapter = _adapter()
+    left: list[InboundUserLeave] = []
+    adapter.set_user_left_handler(lambda leave: _collect(left, leave))
+    bob = _FakeUser(user_id=9, username="bob")
+
+    _run(
+        adapter._handle_message(
+            _FakeInbound(text=None, from_user=bob, left_chat_member=bob)
+        )
+    )
+
+    assert len(left) == 1
+    assert left[0].external_user_id == "9"
+    assert left[0].channel_id == str(CHAT_ID)
+    assert left[0].removed_by_name is None
+
+
+def test_someone_removed_names_who_removed_them() -> None:
+    adapter = _adapter()
+    left: list[InboundUserLeave] = []
+    adapter.set_user_left_handler(lambda leave: _collect(left, leave))
+
+    _run(
+        adapter._handle_message(
+            _FakeInbound(
+                text=None,
+                from_user=_FakeUser(user_id=7, username="alice"),
+                left_chat_member=_FakeUser(user_id=9, username="bob"),
+            )
+        )
+    )
+
+    assert [leave.external_user_id for leave in left] == ["9"]
+    assert left[0].removed_by_name is not None
+    assert "alice" in left[0].removed_by_name
+
+
+def test_the_bot_leaving_is_not_a_person_leaving() -> None:
+    adapter = _adapter()
+    left: list[InboundUserLeave] = []
+    adapter.set_user_left_handler(lambda leave: _collect(left, leave))
+
+    _run(
+        adapter._handle_message(
+            _FakeInbound(text=None, left_chat_member=_FakeUser(user_id=BOT_USER_ID))
+        )
+    )
+
+    assert left == []
 
 
 def test_a_photo_with_no_caption_is_still_bridged() -> None:
@@ -2781,3 +2836,39 @@ def test_a_command_given_its_argument_is_not_interrupted() -> None:
 
     assert [(c.command, c.args) for c in commands] == [("invite-agent", "@scout")]
     assert _bot(adapter).messages == []
+
+
+def test_members_gone_names_those_who_left_and_trusts_no_refusal() -> None:
+    """Telegram cannot list a group, but says whether one person is in it,
+    which is how a restart finds people who left while Switch was down."""
+    adapter = _adapter()
+    adapter._MEMBER_CHECK_PAUSE = 0  # type: ignore[misc]
+
+    class _Bot:
+        async def get_chat_member(self, *, chat_id: int, user_id: int) -> Any:
+            if user_id == 3:
+                raise RuntimeError("not allowed")
+            return _FakeMember({1: "member", 2: "left", 4: "kicked"}[user_id])
+
+    adapter._bot = _Bot()  # type: ignore[assignment]
+
+    gone = _run(adapter.members_gone(str(CHAT_ID), ["1", "2", "3", "4"]))
+
+    assert gone == {"2", "4"}
+
+
+def test_a_restricted_person_who_left_is_gone_and_one_still_in_stays() -> None:
+    """A restricted person keeps the status `restricted` after leaving; only
+    `is_member` says they went."""
+    adapter = _adapter()
+    adapter._MEMBER_CHECK_PAUSE = 0  # type: ignore[misc]
+
+    class _Bot:
+        async def get_chat_member(self, *, chat_id: int, user_id: int) -> Any:
+            return SimpleNamespace(status="restricted", is_member=user_id == 1)
+
+    adapter._bot = _Bot()  # type: ignore[assignment]
+
+    gone = _run(adapter.members_gone(str(CHAT_ID), ["1", "2"]))
+
+    assert gone == {"2"}

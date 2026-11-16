@@ -38,6 +38,7 @@ const BRIDGE = {
   channelIdsRefused: null,
   privateChannels: null,
   privateChannelNeedsLinkedAccount: false,
+  publicChannelAddsCreator: false,
 } as RemoteBridge;
 
 let container: HTMLDivElement | null = null;
@@ -108,17 +109,23 @@ describe('creating a room on a messaging app', () => {
 
   it('says what More options holds while shut: no group, open to the workspace', async () => {
     const el = await render();
-    expect(el.textContent).toContain(
-      'Group: none · Everyone in the workspace can see and change it'
-    );
+    expect(el.textContent).toContain('Group: none · Public');
     expect(el.querySelector('[aria-label="Group"]')).toBeNull();
   });
 
-  it('picks a private channel without changing who can see the room in Switch', async () => {
+  it('shows a private channel making a private room, and leaves it to the server', async () => {
     const el = await render();
     await click(radio(el, 'New private channel')!);
     expect(latest.channel).toEqual({ kind: 'new', private: true });
     expect(latest.access).toBeNull();
+    expect(el.textContent).toContain('Group: none · Private');
+  });
+
+  it('says an existing channel decides who can see the room', async () => {
+    const el = await render();
+    await click(radio(el, 'Existing channel')!);
+    expect(latest.access).toBeNull();
+    expect(el.textContent).toContain('Group: none · The same as the channel');
   });
 
   it('takes an existing channel by its id', async () => {
@@ -133,19 +140,26 @@ describe('creating a room on a messaging app', () => {
     expect(radio(el, 'Existing channel')).toBeUndefined();
   });
 
-  it('opens More options on the group and access', async () => {
+  it('opens More options on the group, with no access to pick: the channel decides', async () => {
     const el = await render();
     await click(el.querySelector<HTMLButtonElement>('button[aria-expanded]')!);
     expect(el.querySelector('[aria-label="Group"]')).not.toBeNull();
-    expect(el.querySelector('[aria-label="Who can see and change it"]')).not.toBeNull();
+    expect(el.querySelector('[aria-label="Access"]')).toBeNull();
   });
 
-  it('offers the group only to a workspace admin, who alone puts rooms in groups', async () => {
+  it('follows the channel after switching between public and private', async () => {
+    const el = await render();
+    await click(radio(el, 'New private channel')!);
+    await click(radio(el, 'New public channel')!);
+    expect(latest.access).toBeNull();
+    expect(el.textContent).toContain('Group: none · Public');
+  });
+
+  it('offers no More options to someone who is not a workspace admin, only what access will be', async () => {
     const el = await render(BRIDGE, false);
     expect(el.textContent).not.toContain('Group:');
-    await click(el.querySelector<HTMLButtonElement>('button[aria-expanded]')!);
-    expect(el.querySelector('[aria-label="Group"]')).toBeNull();
-    expect(el.querySelector('[aria-label="Who can see and change it"]')).not.toBeNull();
+    expect(el.querySelector('button[aria-expanded]')).toBeNull();
+    expect(el.textContent).toContain('Access: Public');
   });
 });
 
@@ -153,12 +167,10 @@ describe('creating a Switch Console chat', () => {
   it('has no channel, and says the chat is private to those taking part until changed', async () => {
     const el = await render(null);
     expect(radio(el, 'New public channel')).toBeUndefined();
-    expect(el.textContent).toContain(
-      'Group: none · Only those taking part and admins see it; owner and admins change it'
-    );
+    expect(el.textContent).toContain('Group: none · Private');
     await click(el.querySelector<HTMLButtonElement>('button[aria-expanded]')!);
     expect(el.querySelector('[aria-label="Group"]')).not.toBeNull();
-    expect(el.textContent).not.toContain('who can read or post in the channel');
+    expect(el.querySelector('[aria-label="Access"]')).not.toBeNull();
     expect(latest.access).toBeNull();
   });
 });

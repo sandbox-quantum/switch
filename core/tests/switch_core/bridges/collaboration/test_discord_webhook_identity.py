@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock
 import discord
 import pytest
 
+from switch_core.bridges.collaboration.adapter import CardRejectedError
 from switch_core.bridges.collaboration.discord.adapter import _WebhookIdentity
 
 
@@ -79,7 +80,7 @@ async def test_safe_fallback_names_distinguish_agents() -> None:
 async def test_disclosure_refuses_existing_embeds_before_sending(key: str) -> None:
     webhook = SimpleNamespace(send=AsyncMock())
     payload = {"content": "hello", key: [discord.Embed(description="x" * 6000)]}
-    with pytest.raises(ValueError, match="requires a payload without embeds"):
+    with pytest.raises(CardRejectedError, match="requires a payload without embeds"):
         await _WebhookIdentity("discord-worker", "discord-worker").send(
             webhook, payload
         )

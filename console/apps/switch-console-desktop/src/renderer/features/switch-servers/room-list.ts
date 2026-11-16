@@ -40,8 +40,7 @@ export type RoomCard = {
 
 /** The short word a card shows for a room's access; the full sentence is its tooltip. */
 export const ACCESS_SHORT: Record<RoomAccess, string> = {
-  public: 'Open',
-  read_only: 'Read-only',
+  public: 'Public',
   private: 'Private',
 };
 
@@ -78,8 +77,8 @@ export function roomCard(
     // A Console chat is made readable only by its members.
     access: isConsoleChat
       ? 'private'
-      : room.readVisibility && room.writeVisibility
-        ? roomAccessOf(room.readVisibility, room.writeVisibility)
+      : room.readVisibility
+        ? roomAccessOf(room.readVisibility)
         : null,
     agentCount: room.agentCount,
     peopleCount: peopleCount(room, bridged, isConsoleChat),

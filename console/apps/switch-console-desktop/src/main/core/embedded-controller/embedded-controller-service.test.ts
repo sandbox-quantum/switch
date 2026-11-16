@@ -85,7 +85,6 @@ function service(overrides: Partial<EmbeddedControllerDeps> = {}): EmbeddedContr
     emit: (event) => events.push(event),
     log: { info: () => {}, warn: () => {}, error: () => {} },
     controllerLine: () => {},
-    sessionStarted: () => {},
     now: () => NOW,
     backoff: { initialMs: 10, maxMs: 40, stableMs: 10_000 },
     revokeGraceMs: 200,

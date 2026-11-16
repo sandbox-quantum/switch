@@ -260,13 +260,28 @@ def can_delete_workspace(*, tenant_role: str | None, is_default: bool) -> bool:
     return admin_by_own_membership(tenant_role) and not is_default
 
 
+# The keys a workspace's admins may delete whoever holds them: the ones that
+# add agents to it, and a retired one left on the page for someone to remove.
+# An agent's own key stays with its owner, and the deployment's bootstrap key
+# with the operator it was seeded for.
+ADMIN_REMOVABLE_KEY_TYPES = ("registration", "retired")
+
+
 def can_delete_api_key(
-    principal: Principal, owner_id: str | None, *, an_agent_signs_in_with_it: bool
+    principal: Principal,
+    owner_id: str | None,
+    key_type: str,
+    *,
+    an_agent_signs_in_with_it: bool,
 ) -> bool:
-    """Whether `principal` may delete an API key: their own, unless an agent
-    still signs in with it. That key goes with its agent; once the agent is
-    deleted, what is left of it may go too."""
-    return owns(principal, owner_id) and not an_agent_signs_in_with_it
+    """Whether `principal` may delete an API key: their own, or, administering
+    the workspace, anyone's key for adding agents; never one an agent still
+    signs in with. That key goes with its agent; once the agent is deleted,
+    what is left of it may go too."""
+    reaches = owns(principal, owner_id) or (
+        principal.is_admin and key_type in ADMIN_REMOVABLE_KEY_TYPES
+    )
+    return reaches and not an_agent_signs_in_with_it
 
 
 def require_group_filing(is_admin: bool) -> None:

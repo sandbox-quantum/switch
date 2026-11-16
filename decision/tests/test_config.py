@@ -12,6 +12,7 @@ def test_defaults(monkeypatch):
         "DECISION_SERVICE_TOKEN",
         "DECISION_BEDROCK_ENABLED",
         "MODEL_SERVER_TOKEN",
+        "DECISION_MIN_LEAD",
     ):
         monkeypatch.delenv(k, raising=False)
     s = load_settings()
@@ -23,6 +24,7 @@ def test_defaults(monkeypatch):
     assert s.llamacpp_url == "http://127.0.0.1:8300"
     assert (s.service_token, s.bedrock_enabled) == (None, False)
     assert s.model_server_token is None
+    assert s.min_lead is None
 
 
 def test_ollama_backend_default_model(monkeypatch):
@@ -81,3 +83,18 @@ def test_model_server_token(monkeypatch):
     assert load_settings().model_server_token == "s3cret"
     monkeypatch.setenv("MODEL_SERVER_TOKEN", "")
     assert load_settings().model_server_token is None
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"), [("0.05", 0.05), ("0", 0.0), ("", None), (" ", None)]
+)
+def test_min_lead(monkeypatch, value, expected):
+    monkeypatch.setenv("DECISION_MIN_LEAD", value)
+    assert load_settings().min_lead == expected
+
+
+@pytest.mark.parametrize("value", ["-0.01", "1.5"])
+def test_min_lead_out_of_range_refused(monkeypatch, value):
+    monkeypatch.setenv("DECISION_MIN_LEAD", value)
+    with pytest.raises(ValueError, match="DECISION_MIN_LEAD must be between 0 and 1"):
+        load_settings()

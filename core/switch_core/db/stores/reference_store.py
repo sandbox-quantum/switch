@@ -178,14 +178,16 @@ class ReferenceStore:
 
     async def detach_from_room(
         self, session: AsyncSession, room_id: str, reference_id: str
-    ) -> None:
-        await session.execute(
+    ) -> bool:
+        """Detach it from a room, saying whether it was attached."""
+        result = await session.execute(
             delete(room_references).where(
                 room_references.c.room_id == room_id,
                 room_references.c.reference_id == reference_id,
             )
         )
         await session.flush()
+        return cast("CursorResult[Any]", result).rowcount == 1
 
     async def list_for_room(
         self, session: AsyncSession, room_id: str

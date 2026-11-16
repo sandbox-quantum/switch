@@ -5,7 +5,8 @@ import * as api from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
 import { ALL_OFF } from "../../data/featureFlags";
 import * as hooks from "../../data/hooks";
-import AgentDetailPage, { labelFromName } from "./AgentDetailPage";
+import AgentDetailPage from "./AgentDetailPage";
+import { labelFromName } from "./RenameAgentDialog";
 
 vi.mock("react-router", () => ({
   useNavigate: () => vi.fn(),

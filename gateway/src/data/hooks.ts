@@ -34,6 +34,7 @@ import {
   type ListedUser,
   fetchAgent,
   fetchAgents,
+  fetchRoomAgentCandidates,
   fetchApiKeys,
   fetchBudgets,
   fetchCurrentTenant,
@@ -91,16 +92,24 @@ function useQuery<T>(fetcher: () => Promise<T | null>): UseQueryResult<T> {
     let cancelled = false;
     setLoading(true);
 
-    fetcher().then((result) => {
-      if (cancelled) return;
-      if (result === null) {
-        setError("Failed to fetch data");
-      } else {
-        setData(result);
-        setError(null);
-      }
-      setLoading(false);
-    });
+    fetcher().then(
+      (result) => {
+        if (cancelled) return;
+        if (result === null) {
+          setError("Failed to fetch data");
+        } else {
+          setData(result);
+          setError(null);
+        }
+        setLoading(false);
+      },
+      // A fetcher that raises carries the server's own reason; show that.
+      (e: unknown) => {
+        if (cancelled) return;
+        setError(e instanceof Error ? e.message : String(e));
+        setLoading(false);
+      },
+    );
 
     return () => {
       cancelled = true;
@@ -126,6 +135,14 @@ export function useRoom(roomId: string | undefined): UseQueryResult<RoomDetail> 
     () => (roomId ? fetchRoom(roomId) : Promise.resolve(null)),
     [roomId],
   );
+  return useQuery(fetcher);
+}
+
+/** The agents the viewer may invite into `roomId`, or into a new room when it is absent. */
+export function useRoomAgentCandidates(
+  roomId?: string,
+): UseQueryResult<{ agent_ids: string[] | null }> {
+  const fetcher = useCallback(() => fetchRoomAgentCandidates(roomId), [roomId]);
   return useQuery(fetcher);
 }
 

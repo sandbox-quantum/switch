@@ -27,8 +27,9 @@ const {
   createRoomRole,
   deleteRoomRole,
   fetchArchivedRooms,
-  fetchBridgeUserNames,
+  fetchRoomAgentCandidates,
   fetchRoomDetail,
+  setRoomAdmin,
   setRoomAgentJoinEvents,
   setRoomArchived,
   setRoomGroup,
@@ -149,7 +150,29 @@ describe('fetchRoomDetail', () => {
       groupId: null,
       roles: [],
       agentStatuses: {},
+      viewerIsRoomAdmin: false,
+      roomAdmins: [],
+      roomAdminCandidates: [],
     });
+  });
+
+  it('maps the room’s room admins and who could be one', async () => {
+    fetchMock.mockImplementation(async () =>
+      jsonResponse({
+        ...ROOM,
+        room_admins: [
+          { user_id: 'u2', name: 'Bob', granted_by: 'u1', granted_at: '2026-11-01' },
+          { user_id: 'u3', name: null, granted_by: null, granted_at: '2026-11-02' },
+        ],
+        room_admin_candidates: [{ user_id: 'u4', name: 'Cy' }],
+      })
+    );
+    const room = await fetchRoomDetail(SERVER, 'room-1');
+    expect(room.roomAdmins).toEqual([
+      { userId: 'u2', name: 'Bob', grantedBy: 'u1', grantedAt: '2026-11-01' },
+      { userId: 'u3', name: null, grantedBy: null, grantedAt: '2026-11-02' },
+    ]);
+    expect(room.roomAdminCandidates).toEqual([{ userId: 'u4', name: 'Cy' }]);
   });
 });
 
@@ -164,7 +187,13 @@ describe('what the server says the caller may do', () => {
     expect(room.serverPermissions).toEqual({
       canWrite: true,
       canChangeMembers: true,
+      canInviteAgents: true,
+      canAddPeople: true,
+      canAttach: true,
+      canRemoveMembers: true,
       canManage: false,
+      canArchive: false,
+      canManageAdmins: false,
       canUnlink: true,
     });
   });
@@ -183,8 +212,67 @@ describe('what the server says the caller may do', () => {
     expect((await fetchRoomDetail(SERVER, 'room-1')).serverPermissions).toEqual({
       canWrite: true,
       canChangeMembers: false,
+      canInviteAgents: false,
+      canAddPeople: false,
+      canAttach: true,
+      canRemoveMembers: false,
       canManage: true,
+      canArchive: true,
+      canManageAdmins: false,
       canUnlink: true,
+    });
+  });
+
+  it('carries who may bring agents in when the server says, apart from write access', async () => {
+    fetchMock.mockImplementation(async () =>
+      jsonResponse({
+        ...ROOM,
+        can_write: false,
+        can_change_members: false,
+        can_invite_agents: true,
+        can_manage: false,
+        can_unlink: true,
+      })
+    );
+    expect((await fetchRoomDetail(SERVER, 'room-1')).serverPermissions).toEqual({
+      canWrite: false,
+      canChangeMembers: false,
+      canInviteAgents: true,
+      canAddPeople: false,
+      canAttach: false,
+      canRemoveMembers: false,
+      canManage: false,
+      canArchive: false,
+      canManageAdmins: false,
+      canUnlink: true,
+    });
+  });
+
+  it('carries the room policy’s separate flags for adding, attaching and removing', async () => {
+    fetchMock.mockImplementation(async () =>
+      jsonResponse({
+        ...ROOM,
+        can_write: false,
+        can_change_members: false,
+        can_invite_agents: true,
+        can_add_people: true,
+        can_attach: true,
+        can_remove_members: false,
+        can_manage: false,
+        can_unlink: false,
+      })
+    );
+    expect((await fetchRoomDetail(SERVER, 'room-1')).serverPermissions).toEqual({
+      canWrite: false,
+      canChangeMembers: false,
+      canInviteAgents: true,
+      canAddPeople: true,
+      canAttach: true,
+      canRemoveMembers: false,
+      canManage: false,
+      canArchive: false,
+      canManageAdmins: false,
+      canUnlink: false,
     });
   });
 
@@ -195,7 +283,13 @@ describe('what the server says the caller may do', () => {
     expect((await fetchRoomDetail(SERVER, 'room-1')).serverPermissions).toEqual({
       canWrite: true,
       canChangeMembers: true,
+      canInviteAgents: true,
+      canAddPeople: true,
+      canAttach: true,
+      canRemoveMembers: true,
       canManage: false,
+      canArchive: false,
+      canManageAdmins: false,
       canUnlink: false,
     });
     fetchMock.mockImplementation(async () =>
@@ -206,6 +300,27 @@ describe('what the server says the caller may do', () => {
     expect((await fetchRoomResources(SERVER, 'room-1', 'documents'))[0]!.canRemove).toBe(false);
   });
 
+  it('carries room admins’ flags apart from managing the room', async () => {
+    fetchMock.mockImplementation(async () =>
+      jsonResponse({
+        ...ROOM,
+        viewer_is_room_admin: true,
+        can_write: true,
+        can_manage: false,
+        can_archive: true,
+        can_manage_admins: false,
+      })
+    );
+    const room = await fetchRoomDetail(SERVER, 'room-1');
+    expect(room.viewerIsRoomAdmin).toBe(true);
+    expect(room.serverPermissions).toMatchObject({
+      canWrite: true,
+      canManage: false,
+      canArchive: true,
+      canManageAdmins: false,
+    });
+  });
+
   it('leaves it out for a server that does not say, so Console works it out', async () => {
     const room = await fetchRoomDetail(SERVER, 'room-1');
     expect(room.serverPermissions).toBeUndefined();
@@ -214,11 +329,15 @@ describe('what the server says the caller may do', () => {
 
 describe('room writes', () => {
   it('sends a visibility change in the server’s field names', async () => {
-    await updateRoom(SERVER, 'room-1', { readVisibility: 'private', writeVisibility: 'private' });
+    await updateRoom(SERVER, 'room-1', { readVisibility: 'private' });
+    // Private write too: an older server refuses private-read, public-write.
     expect(lastCall()).toMatchObject({
       method: 'PATCH',
       body: { read_visibility: 'private', write_visibility: 'private' },
     });
+
+    await updateRoom(SERVER, 'room-1', { readVisibility: 'public' });
+    expect(lastCall().body).toEqual({ read_visibility: 'public' });
     expect(lastCall().url).toMatch(/\/rooms\/room-1$/);
   });
 
@@ -245,6 +364,14 @@ describe('room writes', () => {
     await addRoomUsers(SERVER, 'room-1', ['carol']);
     expect(lastCall()).toMatchObject({ method: 'POST', body: { user_names: ['carol'] } });
     expect(lastCall().url).toMatch(/\/rooms\/room-1\/users$/);
+  });
+
+  it('makes someone a room admin and takes them off, reading back the room', async () => {
+    await setRoomAdmin(SERVER, 'room-1', 'u 2', true);
+    expect(lastCall()).toMatchObject({ method: 'PUT' });
+    expect(lastCall().url).toMatch(/\/rooms\/room-1\/admins\/u%202$/);
+    await setRoomAdmin(SERVER, 'room-1', 'u 2', false);
+    expect(lastCall()).toMatchObject({ method: 'DELETE' });
   });
 
   it('archives and unarchives through their own routes', async () => {
@@ -295,18 +422,6 @@ describe('room lists', () => {
     const rooms = await fetchArchivedRooms(SERVER);
     expect(lastCall().url).toMatch(/\/rooms\?include_archived=true$/);
     expect(rooms.map((room) => room.id)).toEqual(['old']);
-  });
-
-  it('lists a bridge’s usernames once each, sorted', async () => {
-    fetchMock.mockImplementation(async () =>
-      jsonResponse([
-        { id: '1', external_username: 'carol' },
-        { id: '2', external_username: 'ada' },
-        { id: '3', external_username: 'carol' },
-      ])
-    );
-    await expect(fetchBridgeUserNames(SERVER, 'bridge-1')).resolves.toEqual(['ada', 'carol']);
-    expect(lastCall().url).toMatch(/\/collaborations\/bridge-1\/users$/);
   });
 });
 
@@ -413,5 +528,31 @@ describe('linked rooms', () => {
     await removeLinkedRoom(SERVER, 'room-1', 'room-2');
     expect(lastCall()).toMatchObject({ method: 'DELETE' });
     expect(lastCall().url).toMatch(/\/rooms\/room-1\/linked-rooms\/room-2$/);
+  });
+});
+
+describe('the agents a person may bring in', () => {
+  it('asks for a room, or for a new room, and reads the ids', async () => {
+    fetchMock.mockImplementation(async () => jsonResponse({ agent_ids: ['a-1', 'a-2'] }));
+    expect(await fetchRoomAgentCandidates(SERVER, 'room 1')).toEqual(['a-1', 'a-2']);
+    expect(String(fetchMock.mock.calls.at(-1)?.[0])).toContain(
+      '/rooms/agent-candidates?room_id=room%201'
+    );
+    await fetchRoomAgentCandidates(SERVER, null);
+    expect(String(fetchMock.mock.calls.at(-1)?.[0])).toMatch(/\/rooms\/agent-candidates$/);
+  });
+
+  it('answers null from a server from before the list, so every agent is offered', async () => {
+    fetchMock.mockImplementation(
+      async () =>
+        ({
+          status: 404,
+          ok: false,
+          json: async () => ({ detail: 'Room not found' }),
+          headers: { get: () => null, getSetCookie: () => [] },
+          text: async () => JSON.stringify({ detail: 'Room not found' }),
+        }) as unknown as Response
+    );
+    expect(await fetchRoomAgentCandidates(SERVER, null)).toBeNull();
   });
 });

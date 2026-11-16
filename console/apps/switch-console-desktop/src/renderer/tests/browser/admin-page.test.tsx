@@ -133,6 +133,10 @@ function service(overrides: Partial<WorkspaceService>): WorkspaceService {
     updated_at: null,
     connected_members: 0,
     granted_agents: 0,
+    unavailable_code: null,
+    unavailable_reason: null,
+    can_change: true,
+    organization_locked: false,
     ...overrides,
   };
 }
@@ -255,6 +259,40 @@ it('switches a service nobody uses without asking, and leaves it as it was on a 
   expect(switchFor(page, 'Figma')!.getAttribute('aria-checked')).toBe('true');
 });
 
+it("says under a tile why the server can't serve the service, and keeps its switch", async () => {
+  workspaces.getWorkspaceServices.mockResolvedValue([
+    service({
+      slug: 'atlassian',
+      name: 'Atlassian',
+      unavailable_code: 'app_not_set_up',
+      unavailable_reason: 'Atlassian is not set up on this server.',
+    }),
+    service({ slug: 'figma', name: 'Figma' }),
+  ]);
+  const page = await render();
+  await vi.waitFor(() => expect(tiles(page)).not.toBeNull());
+
+  const [atlassian, figma] = [...tiles(page)!.children];
+  expect(atlassian!.textContent).toContain('Atlassian is not set up on this server.');
+  expect(switchFor(page, 'Atlassian')!.hasAttribute('data-disabled')).toBe(false);
+  expect(figma!.textContent).not.toContain('not set up');
+});
+
+it('holds a switch the organization locked, and says so', async () => {
+  workspaces.getWorkspaceServices.mockResolvedValue([
+    service({ slug: 'atlassian', name: 'Atlassian', can_change: false, organization_locked: true }),
+    service({ slug: 'figma', name: 'Figma' }),
+  ]);
+  const page = await render();
+  await vi.waitFor(() => expect(tiles(page)).not.toBeNull());
+
+  const [atlassian, figma] = [...tiles(page)!.children];
+  expect(atlassian!.textContent).toContain('Set by your organization.');
+  expect(switchFor(page, 'Atlassian')!.hasAttribute('data-disabled')).toBe(true);
+  expect(figma!.textContent).not.toContain('Set by your organization.');
+  expect(switchFor(page, 'Figma')!.hasAttribute('data-disabled')).toBe(false);
+});
+
 it('searches the tiles by name', async () => {
   workspaces.getWorkspaceServices.mockResolvedValue(SERVICES);
   const page = await render();
@@ -369,6 +407,8 @@ function connectorApp(overrides: Partial<ConnectorApp>): ConnectorApp {
     needs_public_url: true,
     scopes: [],
     setup_blocked: null,
+    read_only: false,
+    lacks_write: [],
     install_url: null,
     updated_by_name: 'Ada',
     updated_at: '2026-10-15T10:00:00Z',

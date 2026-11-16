@@ -2,8 +2,9 @@ import { makeAutoObservable, runInAction } from 'mobx';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
+import { agentPagePath, roomPagePath } from '@shared/core/switch-servers/dashboard-pages';
 import {
-  dashboardOrigin,
+  dashboardPageUrl,
   type RemoteAgentRoom,
   type RemoteRoomSummary,
   type RetireOutcome,
@@ -150,29 +151,23 @@ export class SwitchRoomsStore {
   }
 
   /**
-   * URL of a room's detail page in the gateway web app, or null if the room's
-   * owning server isn't known yet (names/workspaces are loaded by loadRoomNames)
-   * or serves no web gateway (a native local server started without its pages).
+   * URL of a room's detail page in the gateway web app, opened in the room's
+   * workspace, or null if the room's workspace isn't known yet (names and
+   * workspaces are loaded by loadRoomNames) or its server serves no web
+   * gateway (a native local server started without its pages).
    */
   gatewayRoomUrl(roomId: string): string | null {
-    const serverId = this.roomServerId(roomId);
-    if (!serverId) return null;
-    const server = switchServersStore.servers.find((s) => s.id === serverId);
-    if (!server || !servesWebGateway(server)) return null;
-    const base = dashboardOrigin(server).replace(/\/+$/, '');
-    return `${base}/rooms/${roomId}`;
+    const workspaceId = this.roomWorkspaceById.get(roomId);
+    return workspaceId ? workspaceGatewayUrl(workspaceId, roomPagePath(roomId)) : null;
   }
 
   /**
-   * URL of an agent's detail page in the gateway web app, or null if the server
-   * isn't known or serves no web gateway. Unlike rooms, the caller supplies
-   * the server id directly (an agent carries its owning server on its config).
+   * URL of an agent's detail page in the gateway web app, opened in the
+   * agent's workspace (which it carries on its config), or null if that
+   * workspace isn't known or its server serves no web gateway.
    */
-  gatewayAgentUrl(serverId: string, switchAgentId: string): string | null {
-    const server = switchServersStore.servers.find((s) => s.id === serverId);
-    if (!server || !servesWebGateway(server)) return null;
-    const base = dashboardOrigin(server).replace(/\/+$/, '');
-    return `${base}/agents/${switchAgentId}`;
+  gatewayAgentUrl(workspaceId: string, switchAgentId: string): string | null {
+    return workspaceGatewayUrl(workspaceId, agentPagePath(switchAgentId));
   }
 
   /**
@@ -613,6 +608,16 @@ export class SwitchRoomsStore {
       });
     }
   }
+}
+
+/** A gateway page in a workspace, on the server hosting it, or null where
+ * there is no such page to open. */
+function workspaceGatewayUrl(workspaceId: string, path: string): string | null {
+  const workspace = workspacesStore.byId(workspaceId);
+  if (!workspace) return null;
+  const server = switchServersStore.servers.find((s) => s.id === workspace.serverId);
+  if (!server || !servesWebGateway(server)) return null;
+  return dashboardPageUrl(server, path, workspace.tenantId);
 }
 
 export const switchRoomsStore = new SwitchRoomsStore();

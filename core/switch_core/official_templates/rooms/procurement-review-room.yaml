@@ -1,0 +1,135 @@
+version: 2
+params:
+  provider:
+    type: provider
+    label: Provider
+    description: Which coding agent provider to use for the AI agents
+  machine:
+    type: machine
+    label: Machine
+    description: Which machine to run the agents on
+  team:
+    type: string
+    label: Team
+    description: The team or department this procurement covers
+    required: true
+  bridge:
+    type: bridge
+    label: Messaging app
+    description: Which messaging app to create the channel on
+    required: false
+  bypass:
+    type: boolean
+    label: Go ahead without asking
+    description: Let the agents run every command and file change without asking anyone first. Unsafe; off by default, so they ask before anything risky.
+    default: false
+    input: advanced
+resources:
+  vendor_analyst:
+    type: agent
+    display_name: "{team} Vendor Analyst"
+    description: Structures vendor comparisons, flags contract risks, and standardizes evaluations
+    provider: "{provider}"
+    machine: "{machine}"
+    directory: "{$agents_dir}/{vendor_analyst.name}"
+    auto_approve: "{bypass}"
+    addressing: {anyone_in: [procurement_room]}
+    instructions: |-
+      You are the vendor analyst for {team} procurement. You help the team make informed vendor decisions by structuring comparisons and flagging risks.
+
+      You only receive messages that mention you, so each time you are addressed, first read the room's recent history to catch up on requests posted since you last looked.
+
+      When vendor options are presented for evaluation:
+      - Structure a side-by-side comparison using the Evaluation Criteria framework: price, features, contract terms, risk factors, references
+      - Normalize pricing so options are comparable (monthly vs annual, per-seat vs flat rate, what's included vs add-on)
+      - Flag concerning contract terms: auto-renewal clauses, price escalation schedules, data ownership and portability, termination penalties, SLA gaps
+      - Note vendor stability indicators: funding, customer base size, support responsiveness
+
+      When reviewing a specific contract:
+      - Highlight non-standard terms that differ from the vendor's published pricing
+      - Flag data handling and privacy clauses, especially for vendors handling customer data
+      - Note lock-in risks: proprietary formats, migration difficulty, minimum commitment periods
+      - Compare against previous contracts with the same vendor (if the room has history)
+
+      Keep evaluations objective and structured. Present the comparison so the approver can make an informed decision without needing to read every page of every contract.
+  spend_tracker:
+    type: agent
+    display_name: "{team} Spend Tracker"
+    description: Tracks committed spend against budget and maintains a log of procurement decisions
+    provider: "{provider}"
+    machine: "{machine}"
+    directory: "{$agents_dir}/{spend_tracker.name}"
+    auto_approve: "{bypass}"
+    addressing: {anyone_in: [procurement_room]}
+    instructions: |-
+      You are the spend tracker for {team} procurement. You keep the team aware of how procurement decisions affect the budget.
+
+      You only receive messages that mention you, so each time you are addressed, first read the room's recent history to catch up on requests and decisions posted since you last looked. You work from the budget figures people share here.
+
+      When a new procurement request is posted:
+      - Check the proposed spend against the remaining budget for that category
+      - Flag if approving this would put the category over budget
+      - Note the total committed spend in this category year-to-date
+
+      After each approval:
+      - Update the running spend total
+      - Track the contract details: vendor, annual cost, start date, renewal date, owner
+
+      When asked for the monthly summary:
+      - Post total committed by category, remaining budget, upcoming renewals
+      - Flag renewals coming up in the next 60 days so the team can evaluate whether to continue
+      - Note any spend trends: are we spending more on a category than planned?
+
+      Maintain the historical record. Every approved and rejected procurement request should be logged in a room document so the team can reference past decisions.
+  procurement_room:
+    type: room
+    name: "{team} - Procurement"
+    description: "Procurement review and approval for {team}. Vendor evaluation, contract review, and spend tracking."
+    bridge: "{bridge}"
+    agents: [vendor_analyst, spend_tracker]
+    users:
+      - {if: "{bridge}", value: ["{$creator}"]}
+      - {value: []}
+    instructions: |-
+      This room handles procurement requests for {team}. Post vendor evaluations, contract reviews, and purchase requests here for structured review and approval.
+
+      To submit a procurement request:
+      - What you need and why
+      - Options you've evaluated (at least two for purchases over $5K)
+      - Proposed vendor and pricing
+      - Contract term and renewal structure
+      - Budget category this falls under
+
+      The approver reviews using the Evaluation Criteria framework and makes the call.
+
+      The agents only see messages that mention them by name: mention {vendor_analyst.name} and {spend_tracker.name} in each request, and {spend_tracker.name} when a request is approved or rejected.
+
+      Note for agents: the documents attached to this room are starting layouts that only their creator can edit. If you need to change one, create your own room document named after it with " (live)" added, starting from its current content, keep that copy up to date, and tell the room you did. If a live copy already exists, use it: update it if you created it, otherwise post the change and ask the agent that created it to apply it.
+    roles:
+      - name: approver
+        exclusive: true
+        instructions: |-
+          You approve procurement decisions for {team}. Your responsibilities:
+          - Review vendor comparisons and contract terms
+          - Ensure purchases fit within budget
+          - Approve or reject with clear rationale
+          - Set spending thresholds (what needs full review vs what can be auto-approved)
+          - Review upcoming renewals and decide whether to continue, renegotiate, or switch
+    docs:
+      - name: Evaluation Criteria
+        description: Standard framework for evaluating vendors
+        instructions: Use this framework for every vendor evaluation to ensure consistency.
+        content: |-
+          # Vendor Evaluation Criteria
+
+          | Dimension | Weight | Questions to answer |
+          |-----------|--------|--------------------|
+          | **Functionality** | | Does it meet our requirements? What gaps exist? |
+          | **Price** | | Total cost of ownership over contract term? Per-seat or flat? What's extra? |
+          | **Contract terms** | | Length, auto-renewal, termination, price escalation? |
+          | **Security & compliance** | | SOC2, data handling, encryption, data residency? |
+          | **Integration** | | API availability, existing integrations, migration effort? |
+          | **Support** | | SLA, support hours, dedicated rep, community? |
+          | **Vendor stability** | | Funding, customer base, track record, references? |
+          | **Lock-in risk** | | Data portability, proprietary formats, switching cost? |
+    kickoff: "Procurement room is active for {team}. @{vendor_analyst.name} will structure vendor comparisons and @{spend_tracker.name} will track spend against budget. Post procurement requests here for review, mentioning both agents."

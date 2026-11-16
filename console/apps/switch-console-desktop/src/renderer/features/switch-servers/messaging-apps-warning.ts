@@ -1,8 +1,4 @@
-import type {
-  LinkedIdentity,
-  PendingIdentity,
-  RemoteBridge,
-} from '@shared/core/switch-servers/switch-servers';
+import type { LinkedIdentity, RemoteBridge } from '@shared/core/switch-servers/switch-servers';
 
 /**
  * When the "Messaging apps" card should warn that owner-only agents cannot
@@ -52,52 +48,10 @@ export function hasUnlinkedMessagingApp(
 }
 
 /**
- * What the server home asks of the signed-in user about each active app's
- * account, one prompt per app that needs one:
- *
- * - `link` — nothing is linked there. The reminder for a link step skipped
- *   after adding the app; it stays until the account is linked.
- * - `pending` — a link is waiting for its code to be posted from the account,
- *   and counts for nothing until it is (CHOO-3881).
- * - `unverified` — the link predates confirming links. It counts, and the
- *   prompt asks for it to be confirmed.
- *
- * Unlike the warning above it does not wait for an owner-addressed agent.
- * Nothing is prompted while the linked accounts are unknown, for the same
- * reason as there. The pending list is not waited on: one that is still loading
- * or failed to load reads as empty, so an app with nothing linked is asked to
- * link rather than left with no prompt at all — the worst case is offering a
- * fresh link where one is already waiting, which re-claiming it handles. A
- * connection that is down is left out: nobody reaches an agent through it until
- * it is back.
- */
-export type AccountLinkPrompt =
-  | { kind: 'link'; bridge: RemoteBridge }
-  | { kind: 'pending'; bridge: RemoteBridge; link: PendingIdentity }
-  | { kind: 'unverified'; bridge: RemoteBridge; identity: LinkedIdentity };
-
-export function accountLinkPrompts(
-  bridges: RemoteBridge[],
-  identities: LinkedIdentity[] | null,
-  pending: PendingIdentity[] | null
-): AccountLinkPrompt[] {
-  if (identities === null) return [];
-  return bridges
-    .filter((bridge) => bridge.status === 'active')
-    .flatMap((bridge): AccountLinkPrompt[] => {
-      const linked = linkedIdentityOn(bridge.id, identities);
-      if (linked?.verified) return [];
-      if (linked !== null) return [{ kind: 'unverified', bridge, identity: linked }];
-      const waiting = pending?.find((p) => p.bridgeId === bridge.id);
-      return [waiting ? { kind: 'pending', bridge, link: waiting } : { kind: 'link', bridge }];
-    });
-}
-
-/**
  * The account to show for an app when several are linked there: a confirmed
  * one if there is any, else any link that counts. Every surface that names one
  * account per app reads it from here, so a row never shows an unconfirmed link
- * while the prompt above it is satisfied by a confirmed one.
+ * while a confirmed one exists.
  */
 export function linkedIdentityOn(
   bridgeId: string,

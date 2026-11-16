@@ -1,0 +1,139 @@
+version: 2
+params:
+  provider:
+    type: provider
+    label: Provider
+    description: Which coding agent provider to use for the AI agents
+  machine:
+    type: machine
+    label: Machine
+    description: Which machine to run the agents on
+  quarter:
+    type: string
+    label: Quarter
+    description: The quarter being tracked (e.g. "Q1 2025")
+    required: true
+  org:
+    type: string
+    label: Organization
+    description: The organization or team name
+    required: true
+  bridge:
+    type: bridge
+    label: Messaging app
+    description: Which messaging app to create the channel on
+    required: false
+  bypass:
+    type: boolean
+    label: Go ahead without asking
+    description: Let the agents run every command and file change without asking anyone first. Unsafe; off by default, so they ask before anything risky.
+    default: false
+    input: advanced
+resources:
+  okr_analyst:
+    type: agent
+    display_name: "{org} {quarter} OKR Analyst"
+    description: Tracks OKR progress, calculates confidence trends, and flags at-risk key results
+    provider: "{provider}"
+    machine: "{machine}"
+    directory: "{$agents_dir}/{okr_analyst.name}"
+    auto_approve: "{bypass}"
+    addressing: {anyone_in: [okr_room]}
+    instructions: |-
+      You are the OKR analyst for {org} in {quarter}. You help the team track progress and spot risks early.
+
+      You only receive messages that mention you, so each time you are addressed, first read the room's recent history to catch up on updates posted since you last looked.
+
+      When key result owners post their weekly updates:
+      - Note the current value vs target and confidence score
+      - Track the trend: is confidence going up, down, or flat?
+      - If confidence dropped by 2+ points since last week, flag it and ask what changed
+      - Update the OKR Scorecard document with latest values
+
+      When asked for the weekly analysis:
+      - Post a summary of all key results: which are on track, at risk, or off track
+      - Calculate the percentage of key results at confidence 7+ vs below 5
+      - Highlight the biggest movers (positive and negative) since last week
+      - Flag any key result that has been below 5 for two consecutive weeks - it may need scope change or escalation
+
+      End of quarter:
+      - Compile final scores for all key results
+      - Analyze which objectives were hit, which were missed, and patterns in why
+      - Identify lessons for next quarter's goal-setting: were targets realistic? Were dependencies identified early enough?
+  dependency_mapper:
+    type: agent
+    display_name: "{org} {quarter} Dependency Mapper"
+    description: Identifies cross-team dependencies affecting OKRs and tracks their status
+    provider: "{provider}"
+    machine: "{machine}"
+    directory: "{$agents_dir}/{dependency_mapper.name}"
+    auto_approve: "{bypass}"
+    addressing: {anyone_in: [okr_room]}
+    instructions: |-
+      You are the dependency mapper for {org}'s OKRs in {quarter}. You track the cross-team dependencies that put OKRs at risk.
+
+      You only receive messages that mention you, so each time you are addressed, first read the room's recent history to catch up on updates posted since you last looked.
+
+      When someone mentions a dependency or blocker:
+      - Record it: which key result depends on what, from which team, and by when
+      - Check if the dependency is acknowledged by the other team
+      - Flag unacknowledged dependencies - they are the highest risk
+
+      Whenever you are addressed, also:
+      - Review OKR updates for hidden dependencies: if a key result requires work from another team but doesn't list it as a dependency, flag it
+      - Track dependency resolution: when a dependency is met, note it. When it slips, flag the impact on the dependent key result.
+      - When asked before the mid-quarter check-in, compile a dependency health report: which are resolved, which are on track, which are at risk
+
+      When a dependency is at risk:
+      - Assess the blast radius: which key results are affected?
+      - Suggest mitigation: can the team work around it? Is there a different path to the same outcome?
+      - Recommend escalation if the dependency needs leadership attention to resolve
+  okr_room:
+    type: room
+    name: "{org} - OKRs {quarter}"
+    description: "OKR tracking for {org} in {quarter}. Progress updates, at-risk flagging, and dependency coordination."
+    bridge: "{bridge}"
+    agents: [okr_analyst, dependency_mapper]
+    users:
+      - {if: "{bridge}", value: ["{$creator}"]}
+      - {value: []}
+    instructions: |-
+      This room tracks OKR progress for {org} in {quarter}. Every key result owner posts a weekly update:
+      - Current value vs target
+      - Confidence score (1-10) that we'll hit it by end of quarter
+      - What's driving the score up or down
+      - Any blockers or dependencies on other teams
+
+      Confidence scoring:
+      - 8-10: On track, no concerns
+      - 5-7: At risk, needs attention or intervention
+      - 1-4: Off track, needs escalation or scope change
+
+      If your confidence drops below 5, post a recovery plan or escalate for help.
+
+      The agents only see messages that mention them by name: mention {okr_analyst.name} in your weekly update, and {dependency_mapper.name} when it involves another team.
+
+      Note for agents: the documents attached to this room are starting layouts that only their creator can edit. The first time you need to update one, create your own room document named after it with " (live)" added (for example "OKR Scorecard (live)"), starting from its current content, keep that copy up to date, and tell the room you did. If a live copy already exists, use it: update it if you created it, otherwise post the change and ask the agent that created it to apply it.
+    docs:
+      - name: OKR Scorecard
+        description: Current OKR status and confidence scores
+        instructions: Update weekly. This is the source of truth for quarterly progress.
+        content: |-
+          # OKR Scorecard - {org} {quarter}
+
+          ## Objective 1: [Name]
+
+          | Key Result | Target | Current | Confidence | Owner |
+          |-----------|--------|---------|------------|-------|
+          | KR1: | | | /10 | |
+          | KR2: | | | /10 | |
+          | KR3: | | | /10 | |
+
+          ## Objective 2: [Name]
+
+          | Key Result | Target | Current | Confidence | Owner |
+          |-----------|--------|---------|------------|-------|
+          | KR1: | | | /10 | |
+          | KR2: | | | /10 | |
+          | KR3: | | | /10 | |
+    kickoff: "OKR tracking room is live for {org} in {quarter}. @{okr_analyst.name} will track progress and flag risks. @{dependency_mapper.name} will monitor cross-team dependencies. Key result owners - post your first update with current values and confidence scores, mentioning the OKR analyst so it sees it."

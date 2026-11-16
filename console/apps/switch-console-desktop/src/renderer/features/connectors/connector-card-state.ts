@@ -10,9 +10,9 @@ export type ConnectorCardKind =
   | 'connect';
 
 /**
- * What the person looking may fix, and where: the server's operator sets up
- * the apps connectors sign in through (Admin → Connector apps); a workspace
- * admin, or the operator, turns a service on for the workspace.
+ * What the person looking may fix: the server's operator sets up the apps
+ * connectors sign in through; a workspace admin, or the operator, turns a
+ * service on for the workspace.
  */
 export type ConnectorViewer = {
   operator: boolean;
@@ -71,8 +71,8 @@ function unavailableState(
         ...unavailable,
         detail:
           entry.slug === 'github' && viewer.onThisComputer
-            ? "GitHub needs a server with an https address, so it can't work on this one. Agents can use this computer's own GitHub sign-in (gh or git) instead."
-            : `${entry.name} needs a server with an https address, so it can't work on this one.`,
+            ? "GitHub needs this server's address to be https, or http at localhost or 127.0.0.1, so it can't work on this one. Agents can use this computer's own GitHub sign-in (gh or git) instead."
+            : `${entry.name} needs a server with an https address, or one on this computer, so it can't work on this one.`,
         fix: null,
       };
     case 'needs_public_url':
@@ -94,7 +94,8 @@ function unavailableState(
  * workspace, needing a fresh sign-in, connected, and otherwise ready to
  * connect. A server without the workspace switch sends no
  * `workspace_enabled`, which reads as on. Where the person looking can fix
- * it themselves, the state names the fix.
+ * it themselves, the state names the fix. A connection to reconnect says why
+ * in the server's words, where it gives them.
  */
 export function connectorCardState(
   entry: ConnectionCatalogEntry,
@@ -105,26 +106,36 @@ export function connectorCardState(
   if (entry.unavailable_reason !== null)
     return unavailableState(entry, entry.unavailable_reason, viewer);
   if (entry.workspace_enabled === false)
-    return viewer.administers
+    return entry.organization_locked
       ? {
           kind: 'workspace_off',
           label: 'Off in this workspace',
-          detail: 'Turn it on so people in this workspace can connect it.',
-          tone: 'muted',
-          fix: 'turn_on',
-        }
-      : {
-          kind: 'workspace_off',
-          label: 'Off in this workspace',
-          detail: 'Ask a workspace admin to turn it on.',
+          detail: 'Set by your organization.',
           tone: 'muted',
           fix: null,
-        };
-  if (entry.status === 'needs_reauthorization' || entry.status === 'error')
+        }
+      : viewer.administers
+        ? {
+            kind: 'workspace_off',
+            label: 'Off in this workspace',
+            detail: 'Turn it on so people in this workspace can connect it.',
+            tone: 'muted',
+            fix: 'turn_on',
+          }
+        : {
+            kind: 'workspace_off',
+            label: 'Off in this workspace',
+            detail: 'Ask a workspace admin to turn it on.',
+            tone: 'muted',
+            fix: null,
+          };
+  if (entry.status === 'needs_reauthorization')
     return {
       kind: 'reconnect',
-      label: entry.status === 'error' ? 'Connection failed' : 'Reconnect needed',
-      detail: `Switch can no longer use your ${entry.name} connection. Connect again.`,
+      label: 'Reconnect needed',
+      detail:
+        entry.reconnect_reason ??
+        `Switch can no longer use your ${entry.name} connection. Connect again.`,
       tone: 'problem',
       fix: null,
     };

@@ -13,7 +13,8 @@ one-colour black or white version on the theme where the colour would not
 stand out from the tile.
 
 All files fetched 2026-09-29, except `airtable.svg`, fetched 2026-10-14, and
-`atlassian.svg` and `google-workspace.svg`, fetched 2026-11-10.
+`atlassian.svg` and `google-workspace.svg`, fetched 2026-11-10, and
+`sentry.svg`, fetched 2026-11-05.
 
 | File | Brand | Source | License / terms | Colour |
 |---|---|---|---|---|
@@ -23,6 +24,7 @@ All files fetched 2026-09-29, except `airtable.svg`, fetched 2026-10-14, and
 | `asana.svg` | Asana | Simple Icons 16.33.0, `asana` | CC0-1.0; guidelines https://asana.com/brand | `#F06A6A` |
 | `gitlab.svg` | GitLab | Simple Icons 16.33.0, `gitlab` | CC0-1.0; guidelines https://about.gitlab.com/press/press-kit/ | `#FC6D26` |
 | `datadog.svg` | Datadog | Simple Icons 16.33.0, `datadog` | CC0-1.0; guidelines https://www.datadoghq.com/about/resources/ | `#632CA6`, white in dark theme |
+| `sentry.svg` | Sentry | Simple Icons 16.33.0, `sentry` | CC0-1.0; guidelines https://sentry.io/branding/ | `#362D59`, white in dark theme |
 | `new-relic.svg` | New Relic | Simple Icons 16.33.0, `newrelic` | CC0-1.0; guidelines https://newrelic.com/about/media-assets | black in light theme, `#1CE783` in dark theme |
 | `notion.svg` | Notion | Simple Icons 16.33.0, `notion` | CC0-1.0 | theme foreground |
 | `linear.svg` | Linear | Simple Icons 16.33.0, `linear` | CC0-1.0 | `#5E6AD2` |

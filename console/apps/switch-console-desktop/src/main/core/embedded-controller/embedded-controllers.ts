@@ -12,7 +12,6 @@ import {
 import { getAgentById } from '@main/core/agents/getAgentById';
 import { encryptedAppSecretsStore } from '@main/core/secrets/encrypted-app-secrets-store';
 import { getServer } from '@main/core/switch-servers/servers-store';
-import { reportManagedSessionStarted } from '@main/core/telemetry/managed-session';
 import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
 import { embeddedControllerStateChannel } from '@shared/events/embeddedControllerEvents';
@@ -140,7 +139,6 @@ export const embeddedControllerService = new EmbeddedControllerService({
     error: (message, fields) => log.error(message, { event: 'embedded_controller', ...fields }),
   },
   controllerLine: (serverId, level, line) => controllerLog[level](line, { serverId }),
-  sessionStarted: reportManagedSessionStarted,
   now: Date.now,
   backoff: DEFAULT_BACKOFF,
   revokeGraceMs: 20_000,

@@ -233,6 +233,7 @@ export function AgentIdentityFields({
           recognised by. */}
       <div className="flex flex-col items-center gap-1.5 pb-1">
         <AgentIconPicker
+          forNewAgent
           serverId={serverId}
           name={form.agentName}
           iconUrl={form.iconUrl}

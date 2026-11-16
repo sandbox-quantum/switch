@@ -26,9 +26,9 @@ const NO_TRIAGE = '';
  * Shows what the server says: the switch and picker move only once the
  * server has answered, and a refusal leaves them as they were with the
  * reason beside them. Anyone who may write to the room may turn it on or
- * off; naming the triage agent takes the room's owner or a workspace admin.
- * Both come from the server (`can_write`, `can_manage`), and whatever the
- * viewer may not change is shown but held, with the reason.
+ * off; naming the triage agent takes the room's owner, a room admin or a
+ * workspace admin. Whatever the viewer may not change is shown but held,
+ * with the reason.
  */
 export function RoomAutoRouteSection({
   workspaceId,
@@ -36,7 +36,7 @@ export function RoomAutoRouteSection({
   autoRoute,
   agents,
   canWrite,
-  canManage,
+  canChooseTriage,
   detailKey,
 }: {
   workspaceId: string;
@@ -46,8 +46,8 @@ export function RoomAutoRouteSection({
   agents: { id: string; name: string }[];
   /** Whether the signed-in account may write to the room, and so turn auto-route on or off. */
   canWrite: boolean;
-  /** Whether the signed-in account manages the room, and so may name its triage agent. */
-  canManage: boolean;
+  /** Whether the signed-in account may name the room's triage agent. */
+  canChooseTriage: boolean;
   /** The query the room's detail is read under, written back from each answer. */
   detailKey: readonly unknown[];
 }) {
@@ -112,7 +112,7 @@ export function RoomAutoRouteSection({
 
       {!canWrite && (
         <p className="text-xs text-foreground-muted" role="note">
-          Turning auto-route on or off needs write access to this room.
+          Only the room's owner, a room admin or a workspace admin can turn auto-route on or off.
         </p>
       )}
 
@@ -135,7 +135,7 @@ export function RoomAutoRouteSection({
         </div>
         <Select
           value={autoRoute.fallbackAgent ?? NO_TRIAGE}
-          disabled={!canManage || pending !== null}
+          disabled={!canChooseTriage || pending !== null}
           onValueChange={(next) =>
             void change('fallback', {
               fallbackAgent: next === NO_TRIAGE || next === null ? null : next,
@@ -156,9 +156,9 @@ export function RoomAutoRouteSection({
         </Select>
       </div>
 
-      {!canManage && (
+      {!canChooseTriage && (
         <p className="text-xs text-foreground-muted" role="note">
-          Only the room’s owner or a workspace admin can change this.
+          Only the room’s owner, a room admin or a workspace admin can change this.
         </p>
       )}
       {pending !== null && <span className="text-xs text-foreground-muted">Saving…</span>}

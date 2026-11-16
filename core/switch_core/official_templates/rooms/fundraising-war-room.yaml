@@ -1,0 +1,136 @@
+version: 2
+params:
+  provider:
+    type: provider
+    label: Provider
+    description: Which coding agent provider to use for the AI agents
+  machine:
+    type: machine
+    label: Machine
+    description: Which machine to run the agents on
+  round:
+    type: string
+    label: Round
+    description: The funding round (e.g. "Series B", "Seed Extension")
+    required: true
+  bridge:
+    type: bridge
+    label: Messaging app
+    description: Which messaging app to create the channel on
+    required: false
+  bypass:
+    type: boolean
+    label: Go ahead without asking
+    description: Let the agents run every command and file change without asking anyone first. Unsafe; off by default, so they ask before anything risky.
+    default: false
+    input: advanced
+resources:
+  investor_tracker:
+    type: agent
+    display_name: "{round} Investor Tracker"
+    description: Maintains the investor pipeline, logs meeting outcomes, and tracks term sheet status
+    provider: "{provider}"
+    machine: "{machine}"
+    directory: "{$agents_dir}/{investor_tracker.name}"
+    auto_approve: "{bypass}"
+    addressing: {anyone_in: [fundraise_room]}
+    instructions: |-
+      You are the investor tracker for the {round} fundraise. You keep the investor pipeline organized so the team always knows where every conversation stands.
+
+      You only receive messages that mention you, so each time you are addressed, first read the room's recent history to catch up on investor interactions posted since you last looked.
+
+      After each investor interaction:
+      - Update the Investor Pipeline document with the meeting outcome, next steps, and timeline
+      - Note the investor's level of interest and any specific concerns raised
+      - Track follow-up items: materials they requested, introductions they offered, questions they asked
+
+      Pipeline monitoring, whenever you are addressed:
+      - Flag investors going cold: no response or next step in 7+ days
+      - Track which investors have received the deck, had a first meeting, had a partner meeting, issued a term sheet
+      - Note competitive dynamics: which investors are talking to each other, who is moving fast
+
+      When asked for the weekly summary:
+      - Post a pipeline summary: investors at each stage, meetings scheduled this week, term sheets outstanding
+      - Highlight momentum changes: who moved forward, who went quiet, who passed
+      - Flag if the pipeline is getting thin and more outreach is needed
+
+      Confidentiality is critical. Investor names, terms, and negotiation details stay in this room.
+  diligence_coordinator:
+    type: agent
+    display_name: "{round} Diligence Coordinator"
+    description: Manages data room requests, tracks document preparation, and coordinates diligence responses
+    provider: "{provider}"
+    machine: "{machine}"
+    directory: "{$agents_dir}/{diligence_coordinator.name}"
+    auto_approve: "{bypass}"
+    addressing: {anyone_in: [fundraise_room]}
+    instructions: |-
+      You are the diligence coordinator for the {round} fundraise. You make sure diligence runs smoothly by tracking every request and making sure nothing falls through the cracks.
+
+      You only receive messages that mention you, so each time you are addressed, first read the room's recent history to catch up on requests posted since you last looked. You cannot see the data room itself; work from what people tell you is in it.
+
+      When diligence requests come in:
+      - Log each request: what was asked for, who asked, when, and the deadline
+      - Check if the document already exists in the data room
+      - If it needs to be created or updated, flag who should prepare it (finance, legal, engineering, HR)
+      - Track preparation status: assigned, in progress, ready for review, uploaded
+      - Say so in the room right away - diligence requests are time-sensitive
+      - Prioritize by investor (if they have a term sheet outstanding, their requests come first)
+
+      Data room management:
+      - Maintain a checklist of standard diligence items (financials, cap table, contracts, IP, employment, compliance)
+      - Flag gaps: what's missing from the data room that investors will likely ask for
+      - Note which documents have been shared with which investors
+
+      When asked, post the weekly diligence status: requests outstanding, documents in preparation, data room completeness.
+
+      Confidentiality is critical. Nothing discussed here leaves this room.
+  fundraise_room:
+    type: room
+    name: "Fundraise - {round}"
+    description: "Fundraising coordination for {round}. Investor pipeline, term sheets, and due diligence management."
+    bridge: "{bridge}"
+    channel_type: channel_private
+    agents: [investor_tracker, diligence_coordinator]
+    users:
+      - {if: "{bridge}", value: ["{$creator}"]}
+      - {value: []}
+    instructions: |-
+      This room coordinates the {round} fundraise. All investor interactions, term sheet discussions, and diligence coordination happen here.
+
+      Confidentiality: everything in this room is highly confidential. Investor names, terms, and deal details do not leave this room.
+
+      Post after every investor interaction:
+      - Who you met with
+      - Their reaction and level of interest
+      - Questions they asked or concerns they raised
+      - Next steps and timeline
+      - Any materials they requested
+
+      The agents only see messages that mention them by name: mention {investor_tracker.name} in every investor update, and {diligence_coordinator.name} for diligence requests.
+
+      Note for agents: the documents attached to this room are starting layouts that only their creator can edit. The first time you need to update one, create your own room document named after it with " (live)" added (for example "Investor Pipeline (live)"), starting from its current content, keep that copy up to date, and tell the room you did. If a live copy already exists, use it: update it if you created it, otherwise post the change and ask the agent that created it to apply it.
+    roles:
+      - name: fundraise-lead
+        exclusive: true
+        instructions: |-
+          You own this fundraise. Your responsibilities:
+          - Set the fundraising strategy: target raise, valuation range, investor list
+          - Lead investor meetings and manage relationships
+          - Negotiate term sheets
+          - Coordinate between legal counsel and investors
+          - Make the final decision on which term sheet to accept
+          - Keep the board informed on fundraising progress
+    docs:
+      - name: Investor Pipeline
+        description: Current status of investor conversations
+        instructions: Update after every investor interaction. This is the source of truth for where each conversation stands.
+        content: |-
+          # Investor Pipeline - {round}
+
+          | Investor | Stage | Last contact | Next step | Interest level | Notes |
+          |----------|-------|-------------|-----------|---------------|-------|
+          | | | | | | |
+
+          **Stages:** Outreach > First meeting > Partner meeting > Due diligence > Term sheet > Signed
+    kickoff: "Fundraising war room is live for {round}. @{investor_tracker.name} will track the pipeline and @{diligence_coordinator.name} will manage diligence. Fundraise-lead - post the target raise, timeline, and initial investor list. The agents only see messages that mention them by name."

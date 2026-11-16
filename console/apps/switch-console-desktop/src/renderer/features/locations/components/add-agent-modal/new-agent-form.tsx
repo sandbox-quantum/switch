@@ -89,7 +89,7 @@ export type NewAgentFormProps = {
   onBack: (() => void) | null;
   entryPoint: UiEntryPoint;
   serverId: string | null;
-  /** Where the agent runs at first: this computer, Switch cloud, or one of the server's machines. */
+  /** Where the agent runs at first: this computer, Switch Cloud, or one of the server's machines. */
   initialRunLocation: 'local' | 'cloud' | MachineRunLocation;
 };
 
@@ -156,12 +156,12 @@ export const NewAgentForm = observer(function NewAgentForm({
   const cloudAvailable = cloudOffered && Array.isArray(cloudMachines.data);
   const cloudNotSetUp = cloudOffered && cloudMachines.data === null;
   // A sleeping machine is not listed as a machine of its own, so the Switch
-  // cloud entry says it is there: choosing it wakes it.
+  // Cloud entry says it is there: choosing it wakes it.
   const cloudAsleep =
     Array.isArray(cloudMachines.data) &&
     cloudMachines.data.some((machine) => isMachineAsleep(machine, Date.now()));
   const isCloudRun = runHost === 'cloud';
-  // Why the form moved off Switch cloud by itself, said under the picker.
+  // Why the form moved off Switch Cloud by itself, said under the picker.
   const [cloudFallback, setCloudFallback] = useState<string | null>(null);
 
   // On a server with agent management the server lists where agents can run:
@@ -183,7 +183,7 @@ export const NewAgentForm = observer(function NewAgentForm({
   });
   const serverMachines = askForMachines ? (machinesQuery.data ?? null) : null;
   const management = serverMachines !== null;
-  // Choosing Switch cloud claims the owner's cloud machine and starts it. Once
+  // Choosing Switch Cloud claims the owner's cloud machine and starts it. Once
   // its agent controller has enrolled and is online, the agent is placed on it
   // like on any machine.
   const cloudMachineQuery = useQuery({
@@ -198,7 +198,7 @@ export const NewAgentForm = observer(function NewAgentForm({
         (candidate) => candidate.id === cloudMachineQuery.data?.controller_id
       ) ?? null)
     : null;
-  // An online cloud machine is listed as a machine of its own; the Switch cloud
+  // An online cloud machine is listed as a machine of its own; the Switch Cloud
   // entry is what claims or starts one.
   const cloudMachineListed = !!serverMachines?.some(
     (candidate) => candidate.cloud && candidate.state === 'online'
@@ -212,7 +212,7 @@ export const NewAgentForm = observer(function NewAgentForm({
   // The trigger has to say the host's name, not the value behind it: the value
   // for this machine is the sentinel "local", which is not what it is called.
   const runLocationLabel = isCloudRun
-    ? 'Switch cloud'
+    ? 'Switch Cloud'
     : isMachineRun
       ? serverMachine
         ? machineLabel(serverMachine)
@@ -280,7 +280,7 @@ export const NewAgentForm = observer(function NewAgentForm({
     }
   }, [allowedHosts, runHost]);
 
-  // Switch cloud was chosen (or preset) on a server that turns out not to run
+  // Switch Cloud was chosen (or preset) on a server that turns out not to run
   // cloud machines: run here instead, and say why rather than leave the form
   // unable to add the agent.
   useEffect(() => {
@@ -600,7 +600,7 @@ export const NewAgentForm = observer(function NewAgentForm({
           dir: trimmedRemoteDir || null,
           model: managedSettingsRef.current.model,
           advancedConfig: managedSettingsRef.current.advancedConfig,
-          // A Switch cloud machine runs every agent as a user of its own.
+          // A Switch Cloud machine runs every agent as a user of its own.
           isolation: serverMachine.cloud ? 'isolated' : 'shared',
         });
         if (created.kind !== 'created') {
@@ -805,7 +805,7 @@ export const NewAgentForm = observer(function NewAgentForm({
               {cloudOffered && !cloudMachineListed && (
                 <SelectItem value="cloud" disabled={!cloudAvailable}>
                   <Cloud className="size-4 text-foreground-muted" />
-                  <span className="flex-1">Switch cloud</span>
+                  <span className="flex-1">Switch Cloud</span>
                   <span className="text-xs text-foreground-muted">
                     {cloudAvailable
                       ? cloudAsleep

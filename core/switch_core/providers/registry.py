@@ -4,7 +4,11 @@ Everything else that depends on which providers exist — definition
 validation, the known-agent specs agents register through, advanced
 configuration, the gateway's provider list — reads this table through the
 functions below. Adding a provider is adding an entry; one with no advanced
-settings or tools needs only an `id` and a `label`.
+settings or tools needs only an `id`, a `label`, its sign-in command and the
+feature flag that offers it (None for none). What a client is offered and what
+a new agent may name are the providers whose flag is on
+(`offered_providers()`); everything that reads an agent already defined sees
+them all.
 
 Read the table through `agent_providers()` / `agent_provider()` rather than
 importing `AGENT_PROVIDERS`, so every reader sees the same table.
@@ -12,12 +16,14 @@ importing `AGENT_PROVIDERS`, so every reader sees the same table.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Annotated
 
 from pydantic import AfterValidator
 
 from switch_core.bridges.agent.protocol.types import ToolSpec
+from switch_core.feature_flags import ADDITIONAL_AGENT_PROVIDERS
 from switch_core.providers.advanced_fields import (
     CLAUDE_FIELDS,
     CODEX_FIELDS,
@@ -42,6 +48,11 @@ class AgentProvider:
     """What its owner runs, on the machine an agent runs on, to sign the CLI
     in: Switch Console's `loginCommand` for the provider, which a test holds
     this to."""
+
+    flag: str | None
+    """The feature flag that offers it, or None when every deployment does.
+    Off, it is left out of what clients are offered and no new agent may name
+    it, but an agent already defined on it keeps running."""
 
     known_agent_type: str = ""
     """The known-agent spec its agents register through, stored on each agent
@@ -69,6 +80,7 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
         id="claude",
         label="Claude Code",
         sign_in_command="claude auth login",
+        flag=None,
         known_agent_type="claude-code",
         advanced_fields=CLAUDE_FIELDS,
         tools=(
@@ -92,6 +104,7 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
         id="codex",
         label="Codex",
         sign_in_command="codex login",
+        flag=None,
         connector_type="Codex CLI",
         advanced_fields=CODEX_FIELDS,
         tools=(
@@ -104,6 +117,7 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
         id="opencode",
         label="OpenCode",
         sign_in_command="opencode auth login",
+        flag=None,
         connector_type="OpenCode CLI",
         advanced_fields=OPENCODE_FIELDS,
         tools=(
@@ -122,6 +136,7 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
         id="antigravity",
         label="Antigravity",
         sign_in_command="agy acp --login",
+        flag=None,
         connector_type="Antigravity CLI",
         tools=(
             ToolSpec(name="run_command", description="Executes shell commands"),
@@ -145,6 +160,7 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
         id="cursor",
         label="Cursor CLI",
         sign_in_command="agent login",
+        flag=None,
         tools=(
             ToolSpec(name="shell", description="Executes shell commands"),
             ToolSpec(name="read_file", description="Reads file contents"),
@@ -158,6 +174,7 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
         id="deepseek-harness",
         label="DeepSeek Harness",
         sign_in_command="dsh web",
+        flag=ADDITIONAL_AGENT_PROVIDERS,
         tools=(
             ToolSpec(name="bash", description="Executes shell commands"),
             ToolSpec(name="pwsh", description="Executes PowerShell commands"),
@@ -176,6 +193,7 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
         id="pi",
         label="Pi",
         sign_in_command="pi",
+        flag=ADDITIONAL_AGENT_PROVIDERS,
         tools=(
             ToolSpec(name="read", description="Reads file contents"),
             ToolSpec(name="bash", description="Executes shell commands"),
@@ -187,6 +205,7 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
         id="copilot",
         label="GitHub Copilot",
         sign_in_command="copilot login",
+        flag=ADDITIONAL_AGENT_PROVIDERS,
         connector_type="GitHub Copilot CLI",
         tools=(
             ToolSpec(name="bash", description="Executes shell commands"),
@@ -202,16 +221,19 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
         id="kiro",
         label="Kiro CLI",
         sign_in_command="kiro-cli login",
+        flag=ADDITIONAL_AGENT_PROVIDERS,
     ),
     AgentProvider(
         id="mistral-vibe",
         label="Mistral Vibe",
         sign_in_command="vibe-acp --setup",
+        flag=ADDITIONAL_AGENT_PROVIDERS,
     ),
     AgentProvider(
         id="goose",
         label="Goose",
         sign_in_command="goose configure",
+        flag=ADDITIONAL_AGENT_PROVIDERS,
         connector_type="Goose CLI",
         tools=(
             ToolSpec(name="shell", description="Executes shell commands"),
@@ -224,6 +246,7 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
         id="qwen",
         label="Qwen Code",
         sign_in_command="qwen",
+        flag=ADDITIONAL_AGENT_PROVIDERS,
         tools=(
             ToolSpec(name="run_shell_command", description="Executes shell commands"),
             ToolSpec(name="write_file", description="Writes files"),
@@ -239,12 +262,14 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
         id="droid",
         label="Factory Droid",
         sign_in_command="droid",
+        flag=ADDITIONAL_AGENT_PROVIDERS,
         connector_type="Droid CLI",
     ),
     AgentProvider(
         id="cline",
         label="Cline CLI",
         sign_in_command="cline auth",
+        flag=ADDITIONAL_AGENT_PROVIDERS,
         tools=(
             ToolSpec(name="run_commands", description="Executes shell commands"),
             ToolSpec(name="read_files", description="Reads file contents"),
@@ -259,6 +284,7 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
         id="junie",
         label="Junie",
         sign_in_command="junie",
+        flag=ADDITIONAL_AGENT_PROVIDERS,
         connector_type="Junie CLI",
         tools=(
             ToolSpec(name="Bash", description="Executes shell commands"),
@@ -280,6 +306,35 @@ def agent_providers() -> tuple[AgentProvider, ...]:
 
 def provider_ids() -> list[str]:
     return [provider.id for provider in agent_providers()]
+
+
+def offered_providers(flags: Mapping[str, bool]) -> tuple[AgentProvider, ...]:
+    """The providers whose flag is on in `flags`, in the order a client
+    offers them."""
+    return tuple(
+        provider
+        for provider in agent_providers()
+        if provider.flag is None or flags[provider.flag]
+    )
+
+
+def offered_provider_ids(flags: Mapping[str, bool]) -> frozenset[str]:
+    return frozenset(provider.id for provider in offered_providers(flags))
+
+
+class ProviderNotOffered(ValueError):
+    pass
+
+
+def require_offered_provider(provider_id: str, flags: Mapping[str, bool]) -> None:
+    """Raises UnknownProvider for a provider Switch does not run, and
+    ProviderNotOffered, naming its flag, for one this deployment has off."""
+    provider = agent_provider(provider_id)
+    if provider.flag is not None and not flags[provider.flag]:
+        raise ProviderNotOffered(
+            f"{provider.label} is not offered on this server: it needs the "
+            f"{provider.flag!r} feature flag."
+        )
 
 
 def agent_provider(provider_id: str) -> AgentProvider:

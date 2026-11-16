@@ -13,7 +13,7 @@ exists is never touched, whatever its log says. Kept:
 - the server's own row recording the deletion, which is what proves when the
   workspace went and so why its history did;
 - the organization's audit log, which is the organization's history rather
-  than the workspace's, and goes with the organization.
+  than the workspace's, and outlives the organization too.
 
 The runtime role may not delete audit rows (`db/runtime_role.grant_runtime_role`
 takes `DELETE` back), so this runs on the schema owner's connection where one

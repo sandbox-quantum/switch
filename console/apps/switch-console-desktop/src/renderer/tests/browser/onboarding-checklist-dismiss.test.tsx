@@ -40,7 +40,6 @@ vi.mock('@renderer/lib/ipc', () => ({
     },
   },
 }));
-vi.mock('@renderer/lib/telemetry/report', () => ({ report: vi.fn() }));
 
 import { useOnboardingChecklist } from '@renderer/features/onboarding/use-onboarding-checklist';
 import { appSettingsMetaQueryKey } from '@renderer/features/settings/app-settings-client';

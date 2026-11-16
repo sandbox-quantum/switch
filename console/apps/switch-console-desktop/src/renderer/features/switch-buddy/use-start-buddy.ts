@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { failureText } from '@renderer/lib/errors/describe-failure';
-import type { UiEntryPoint } from '@shared/core/telemetry/reporting';
 import { buddyPerson } from './buddy-person';
 import { reportBuddyStep } from './buddy-telemetry';
 import { createBuddy } from './create-buddy';
@@ -19,14 +18,11 @@ export function useStartBuddy({
   serverId,
   workspaceId,
   computer,
-  entryPoint,
   onCreated,
 }: {
   serverId: string;
   workspaceId: string;
   computer: ThisComputer;
-  /** Where the person set the buddy up: the first run, or the buddy's chat later. */
-  entryPoint: UiEntryPoint;
   onCreated: (agent: { agentId: string; name: string }) => void;
 }) {
   const [starting, setStarting] = useState<string | null>(null);
@@ -49,7 +45,6 @@ export function useStartBuddy({
           machineId: computer.machine.id,
           provider: providerId,
           person: buddyPerson(serverId),
-          entryPoint,
         })
       );
     } catch (cause) {

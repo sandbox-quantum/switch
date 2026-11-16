@@ -54,6 +54,12 @@ choices are load-bearing rather than incidental:
   and as an `event.name` attribute. The relay filters on the attribute and the
   exporter reads the field. Sending only one is dropped silently, with a 200 at
   every hop.
+- **A random id on every record**, the `flint.insert_id` attribute: a fresh
+  UUID per event, meaning nothing and joining nothing. The relay derives
+  Amplitude's dedup key from the record's attributes, so without it two
+  identical events from one deployment in the same millisecond (a message
+  addressed to two agents of the same runtime, a template attaching two
+  documents) would arrive as one.
 - **A name prefix per product**, because one Amplitude project holds several.
   The Console sends `switch_console.<event>`; the server sends
   `switch_core.<event>`.
@@ -75,13 +81,16 @@ choices are load-bearing rather than incidental:
 ### Which Amplitude project
 
 The relay keeps one Amplitude project per environment and files each event
-under the one its `flint_env` resource attribute names: `prod`, `staging`,
+under the one its `switch_trust.env` resource attribute names: `prod`, `staging`,
 `dev` or `local`. An event naming none goes to production, and one naming
 anything else is dropped and counted. So every event says where it belongs,
 even `prod`:
 
-- **The server** sends `TELEMETRY_ENVIRONMENT`, which defaults to `prod`
-  because every customer's deployment is production. Flint's own development
+- **The server** sends `TELEMETRY_ENVIRONMENT`. Unset, a released version
+  sends `prod`, because every customer's deployment is production, and a
+  version that is not a release (one containing `.dev`, as every build of main
+  does) sends `dev`, so a development server nobody configured never reports
+  as production. A value that is set always wins. Flint's own development
   deployment sets `dev`; `.env.example`, which `just init-env` copies for a
   developer's machine, sets `local`. Any other value stops the server at
   startup. It is set by the Helm chart's `switchCore.telemetry.environment`,
@@ -93,7 +102,7 @@ even `prod`:
   a test holds every build step to it. A server Console runs for the user is
   given Console's.
 
-`flint_env` rides on the resource, beside the client id. It describes where
+`switch_trust.env` rides on the resource, beside the client id. It describes where
 the reporting process runs, not anything inside the deployment, so it is not
 an identifier in the sense of the rule above.
 
@@ -102,7 +111,7 @@ an identifier in the sense of the rule above.
 Staff use the product too, and their usage is real but is not adoption. Three
 signals tell it apart, none of them an identifier:
 
-- **`flint_internal`** on the resource: `"true"` or `"false"` from the server,
+- **`switch_trust.internal`** on the resource: `"true"` or `"false"` from the server,
   set by `TELEMETRY_INTERNAL` (Helm `switchCore.telemetry.internal`) on the
   company's own deployments and never on a customer's. Switch Console sends
   `"true"` when any account it is signed in to a Switch server with is on
@@ -113,7 +122,7 @@ signals tell it apart, none of them an identifier:
   so a deployment that serves both staff and customers can be split.
   `user_internal_active_1d` / `_7d` do the same for the active counts, so
   customer activity is `user_active_*` minus them.
-- Each deployment's `flint.client_id`, for the company's own deployments by
+- Each deployment's `switch_trust.client_id`, for the company's own deployments by
   name.
 
 `tenant_id` is deliberately not one of them: no identifier for anything inside
@@ -174,7 +183,7 @@ The relay admits a sender on a client id and nothing else, so the server needs
 one. It does not have one today.
 
 **A per-deployment id**: a random UUID generated once on first use and stored in
-the database, sent as the `flint.client_id` resource attribute. It identifies
+the database, sent as the `switch_trust.client_id` resource attribute. It identifies
 the installation, and nothing else — it is not derived from a hostname, a
 licence, a tenant, an account or any customer value, and it survives restarts
 and redeploys so that a deployment is one Amplitude subject over its whole life
@@ -218,9 +227,9 @@ On every event:
 |---|---|
 | `service.name` | `switch-core`, always |
 | `service.version` | the running version, as `/version` reports it; omitted when unknown |
-| `flint.client_id` | the per-deployment id |
-| `flint_env` | `prod` \| `staging` \| `dev` \| `local`, from `TELEMETRY_ENVIRONMENT` |
-| `flint_internal` | `true` \| `false`, from `TELEMETRY_INTERNAL` |
+| `switch_trust.client_id` | the per-deployment id |
+| `switch_trust.env` | `prod` \| `staging` \| `dev` \| `local`, from `TELEMETRY_ENVIRONMENT`; unset, `dev` for a `.dev` version and `prod` for a release |
+| `switch_trust.internal` | `true` \| `false`, from `TELEMETRY_INTERNAL` |
 
 And one event property on every event, added by the service rather than
 declared by any event (no event may declare it):
@@ -241,14 +250,15 @@ pipeline, and either could name their company. The operational OTLP export
 collector. A test sets both to a company name and checks the whole request body
 the relay receives for it.
 
-## Four kinds of event
+## Kinds of event
 
 **A daily snapshot**, one per deployment, carrying the counts that describe the
 installation. This answers "how much".
 
-**Period counts**, one per deployment per finished day, week and month, each
-counting distinct rooms and people over exactly that period. This answers "how
-many this week" in a way that adds up across deployments.
+**Period counts**, one per deployment per finished day, week and month
+(`usage_day_counted`, `usage_week_counted`, `usage_month_counted`), each
+counting distinct rooms, people and agents over exactly that period. This
+answers "how many this week" in a way that adds up across deployments.
 
 **Milestone events**, emitted at most once per deployment, each carrying the
 seconds elapsed since install. This answers "how fast to value".
@@ -287,8 +297,10 @@ reasons. Each is now answered rather than ignored:
 **They count messages, not people.** No user id is ever sent, so in Amplitude
 every event from a deployment belongs to one subject — the deployment — and
 Amplitude's own "active users" counts deployments. How many *people* are active
-comes only from the snapshot, which counts distinct people locally and reports
-the total: `chat_identity_in_room_count` (seen in a room at all),
+comes only from the counts the server makes locally and reports as totals: the
+period events' `person_identity_active` (people who said something in a room
+with an agent, on a platform or in Switch Console, per day, week and month),
+and the snapshot's `chat_identity_in_room_count` (seen in a room at all),
 `chat_identity_posted_*` (said anything) and `chat_identity_active_*` (said
 something in a room with an agent), with `user_active_*` counting the same
 last tier as Switch accounts. The message events say how much those people
@@ -301,9 +313,14 @@ written down because most of them have a plausible alternative reading, and a
 metric whose definition drifts is worse than no metric.
 
 **Interaction** — a human sent a message in a room that has at least one agent
-in it, or an agent replied to one. This is the unit "active" is built on
+in it, or an agent replied to one. A post the platform marked as an
+integration's (an alerting or CI app, another Switch server's agent) is not a
+human's. This is the unit "active" is built on
 throughout: mere membership is not activity, and two agents talking to each
-other is not a human using the product.
+other is not a human using the product. Who counts as a human differs in one
+place: the snapshot's figures count people on messaging platforms only, as they
+always have, while the period counts, `room_became_active`, `first_room_active`
+and `was_ever_active` count a person in Switch Console chat too.
 
 **Active user** — a human user with at least one interaction in the window.
 Counted distinctly per window, so one person in six rooms is one active user.
@@ -322,8 +339,12 @@ spins up ten scratch rooms is not ten rooms of customer value, and letting the
 two share a number would make adoption look like whatever the agents happened to
 be doing that week.
 
-**Session** — an agent session as the connection registry knows it: opened when
-an agent connects, closed when it disconnects or its heartbeat lapses.
+**Session** — a coding-agent session: one run of an agent's runtime (Claude
+Code, Codex, OpenCode) doing work, started by Switch Console, its sidecar or
+an agent controller and reported once, when it is new, by the host that runs
+it (`session_started`). Not a connection: an agent coming online and going
+offline is `agent_connected` and `agent_disconnected`, several sessions share
+one connection, and the snapshot's `session_live_count` counts connections.
 
 **Connector** — a collaboration platform bridge (Slack, Mattermost, Discord,
 Teams, Telegram). A connector is *added* when a bridge for that platform first
@@ -345,7 +366,10 @@ person created" read as "channels this workspace happens to have".
 Event names are `snake_case`, past tense, prefixed `switch_core.` on the wire.
 Every event of a given name always carries exactly the same property keys —
 where a property does not apply, it carries an explicit `none` rather than being
-omitted, so a missing key always means a bug rather than a case.
+omitted, so a missing key always means a bug rather than a case. The one
+exception is a number that cannot be known, such as an age whose timestamp
+could not be read: the catalogue declares those properties optional, and they
+are left off the event (see the end of [Closed value sets](#closed-value-sets)).
 
 Every event that can fail carries `outcome`, so that the failure population is
 never invisible.
@@ -359,29 +383,26 @@ never invisible.
 | `duration_ms` | number | wall time to collect the pass, on a monotonic clock. Roughly twenty queries per tenant against the database that is also serving rooms, and a background task is invisible to `switch.http.request.duration` — so this is the only place "what does the snapshot cost at scale" can be answered from |
 | `user_count` | number | user accounts that exist |
 | `user_internal_count` | number | of those, accounts on the company's own email domains — see "Internal usage" |
-| `user_active_1d` | number | distinct Switch **accounts** that used a room with an agent in 24h: an account counts when a chat account it has claimed spoke. One person on two platforms is one account. Superseded by `account_active_1d`, the same figure; sent for one more stable release |
-| `user_active_7d` | number | same over 7 days. Superseded by `account_active_7d` |
+| `user_active_1d` | number | distinct Switch **accounts** that used a room with an agent in 24h: an account counts when a chat account it has claimed spoke. One person on two platforms is one account. The period events' `account_active` counts the same per period, plus accounts that used Switch Console chat |
+| `user_active_7d` | number | same over 7 days |
 | `user_internal_active_1d` | number | of `user_active_1d`, accounts on the company's own email domains |
 | `user_internal_active_7d` | number | same over 7 days |
 | `chat_identity_count` | number | chat identities — Slack, Mattermost and other platform accounts — that exist, claimed by an account or not |
-| `chat_identity_active_1d` | number | distinct chat identities that used a room with an agent in 24h. Most belong to no Switch account and one person may have several, which is why this runs above `user_active_1d`. Servers released before this change reported this figure as `user_active_1d`. Counts integrations as well as people; superseded by `person_identity_active_1d` plus `bot_identity_active_1d`, and sent for one more stable release |
-| `chat_identity_active_7d` | number | same over 7 days. Superseded likewise |
-| `person_identity_active_1d` | number | **the headline count of people** — distinct chat identities that used a room with an agent in 24h and never posted as an app in that window, linked to a Switch account or not. One person on two platforms is two identities. See "People, bots and accounts" |
-| `person_identity_active_7d` | number | same over 7 days |
-| `bot_identity_active_1d` | number | distinct chat identities that posted as an app in a room with an agent in 24h: an integration such as an alerting or CI app, or another Switch server's agent. See "People, bots and accounts" |
-| `bot_identity_active_7d` | number | same over 7 days |
-| `account_active_1d` | number | distinct Switch **accounts** that used a room with an agent in 24h, the same figure as `user_active_1d` under the name it keeps. The floor of the people count: an account exists only for someone who linked one |
-| `account_active_7d` | number | same over 7 days |
+| `chat_identity_active_1d` | number | distinct chat identities that used a room with an agent in 24h. Most belong to no Switch account and one person may have several, which is why this runs above `user_active_1d`. Servers released before 0.30 reported this figure as `user_active_1d`. Counts integrations as well as people; the period events split the two (see "People, bots and accounts") |
+| `chat_identity_active_7d` | number | same over 7 days |
 | `chat_identity_posted_1d` | number | distinct chat identities that said anything in any room in 24h, agent or no agent |
 | `chat_identity_posted_7d` | number | same over 7 days |
 | `chat_identity_in_room_count` | number | distinct chat identities Switch has seen in a room: a member of at least one unarchived room of any origin, or anyone who said anything in the last 7 days. Not a channel's whole audience — see "Tiers of activity" |
 | `room_count` | number | **the headline figure** — unarchived rooms a *person* created |
 | `room_agent_created_count` | number | unarchived rooms an agent created for itself |
 | `room_system_created_count` | number | unarchived channels Switch adopted after being invited to them on a platform |
-| `room_active_1d` | number | rooms of any origin with an interaction in 24h |
+| `room_active_1d` | number | rooms of any origin with an interaction in 24h. A post the bridge marked as an integration's is not one |
 | `room_active_7d` | number | same over 7 days |
 | `room_archived_count` | number | archived rooms, both kinds |
 | `room_internal_only_count` | number | rooms with no external channel |
+| `room_console_chat_direct_count` | number | unarchived Switch Console chats with one person in them (`direct`), of any origin. Already counted in `room_count` and its siblings |
+| `room_console_chat_group_count` | number | unarchived Switch Console chats that are groups: a direct chat becomes one when a second person joins it |
+| `room_console_chat_active_7d` | number | of those Console chats, the ones a person (on a platform or in Console) used with an agent in 7 days, so never more than direct plus group |
 | `room_membership_total` | number | user–room memberships summed over rooms |
 | `room_users_mean` | number | mean human members per room |
 | `room_users_max` | number | largest human membership of any one room |
@@ -419,17 +440,20 @@ whether or not each is currently connected — which is up is process state, and
 than people: an alerting or CI integration, a workflow, and another Switch
 server's agents sharing the channel all post there. Switch relays them into
 the room like any post, through the same kind of chat identity a person gets,
-so `chat_identity_active_*` counted them as people. Where the platform says a
+so `chat_identity_active_*` counts them as people. Where the platform says a
 post came from an app (a Slack app, a Discord bot or a webhook that is not
 Switch's own, a Mattermost bot account or incoming webhook), the bridge marks
-it, and that identity counts in `bot_identity_active_*` rather than
-`person_identity_active_*` for the whole window. Telegram never delivers
-another bot's posts and Teams does not mark them, so nothing there is counted
-as a bot. A post relayed before its bridge marked app posts carries no mark,
-so for the first week after upgrading, an integration that has not posted
-since can still count as a person. `account_active_*` is the floor:
-integrations never link a Switch account, and most people never link one
-either.
+it. On the period events that identity counts in `bot_identity_active` rather
+than `person_identity_active` for the whole period, and in every count a
+marked post does not make a room active: `room_active_*`, `room_active`,
+`room_became_active`, `first_room_active` and `was_ever_active` leave it out.
+Telegram never delivers another bot's posts and Teams does not mark them, so
+nothing there is counted as a bot. A post relayed before its bridge marked app
+posts carries no mark, so for the first week after upgrading, an integration
+that has not posted since can still count as a person. `user_active_*` is the
+floor: integrations never link a Switch account, and most people on a platform
+never link one either. `account_active` adds the accounts that used Switch
+Console chat, where a person speaks as their account and has nothing to link.
 
 **What counts as a message.** Every durable event is a row in the message log:
 arrivals, tool- and LLM-call reports and task transitions sit beside the
@@ -472,7 +496,7 @@ bridge relay or the admin client.
 **No count of sessions started.** Nothing durable records a session opening, so
 the snapshot could only report an in-process tally that a restart silently
 resets — a number that looks like a count and is not one.
-`agent_session_started` is emitted per occurrence instead.
+`session_started` is emitted per occurrence instead.
 
 The three `message_*_1d` figures come from the message table, which is
 deliberately a *parallel* record of the bus rather than the authoritative one: a
@@ -482,30 +506,44 @@ near-complete, not exact. That is fine for "how much, and is it growing", and it
 should be said plainly wherever the number is presented rather than discovered
 later.
 
-### `usage_period` — once per finished day, week and month
+### `usage_day_counted`, `usage_week_counted`, `usage_month_counted` — once per finished period
 
 The snapshot's `*_7d` counts are a trailing week, sent every day. A chart that
 adds them up at a weekly interval counts a room once for every day it was in
 the window, up to seven times. A daily interval avoids that, but a server that
-is off on a given day, as laptops often are, sends nothing for it. `usage_period` is counted over a fixed
-calendar period instead, and sent once per period, so at the matching interval
-the sum across deployments is the real figure.
+is off on a given day, as laptops often are, sends nothing for it. These three
+are counted over a fixed calendar period instead, and sent once per period, so
+at the matching interval the sum across deployments is the real figure:
+`usage_day_counted` for a UTC day, `usage_week_counted` for an ISO week
+(Monday to Monday, UTC), `usage_month_counted` for a calendar month. Three
+events rather than one with a property naming the period, because no chart can
+add two kinds of period together correctly. All three carry the same
+properties.
 
 | Property | Type | Meaning |
 |---|---|---|
-| `period` | `day` / `week` / `month` | a UTC day, an ISO week (Monday to Monday, UTC), or a calendar month |
-| `room_active` | number | distinct rooms a person used with an agent in the period: `room_active_*`'s definition |
-| `person_identity_active` | number | distinct people who did, bots excluded: `person_identity_active_*`'s definition |
-| `account_active` | number | distinct Switch accounts among them: `account_active_*`'s definition, deduplicated across tenants |
-| `tenant_failed_count` | number | tenants whose counts could not be read, left out of the three above, as on the snapshot |
+| `room_active` | number | distinct rooms a person used with an agent in the period: `room_active_*`'s definition, with a person in Switch Console counted too |
+| `person_identity_active` | number | distinct people who did, integrations excluded: a chat identity that never posted as an app in the period, or a person in Switch Console. One person on two platforms, or on a platform and in Console, is two. See "People, bots and accounts" |
+| `bot_identity_active` | number | distinct chat identities that posted as an app in a room with an agent in the period: an integration such as an alerting or CI app, or another Switch server's agent |
+| `account_active` | number | distinct Switch accounts that used a room with an agent: one whose claimed chat identity did (`user_active_*`'s definition), or one that did in Switch Console chat, where the person is their account. An account that did both, or did so in two tenants, counts once |
+| `agent_active` | number | distinct agents that said something in the period: `agent_active_7d`'s definition |
+| `message_count` | number | messages participants said in the period, read from the message table: `message_count_1d`'s definition. The check on the message events: set it against `message_sent` received for the same period to see how many were lost on the way |
+| `turn_human_to_agent` | number | agent messages answering a person, as `turn_human_to_agent_1d`, with a person in Switch Console counted as a person |
+| `turn_agent_to_human` | number | person messages answering an agent, likewise |
+| `turn_agent_to_agent` | number | agent messages answering another agent |
+| `console_account_active` | number | of `account_active`, accounts that used Switch Console chat, whether or not they also used a platform |
+| `console_only_account_active` | number | of `console_account_active`, accounts no claimed platform identity of theirs used a room for in the period, in any tenant: people Switch reached only through Console. `account_active - console_account_active` is those it reached only through a platform; the rest used both |
+| `is_partial` | boolean | the period began before the deployment was installed or before telemetry was last switched on. Its counts still cover the whole period, read from the database; it is the deployment's first period of that length, dated no earlier than that moment |
+| `tenant_failed_count` | number | tenants whose counts could not be read, left out of every count above, as on the snapshot |
 
-**Chart it at its own interval.** Filter on one `period`, set the interval to
-match, and sum each property: weekly active rooms is the sum of
-`room_active` over `usage_period` where `period = week`, at a weekly interval.
-At any other interval the sum is wrong again — weeks summed into a month count a
-room once per week — so each interval has its own chart. Across deployments the
-sum counts a person who uses two servers twice, as every per-deployment figure
-does.
+**Chart each at its own interval.** Set the interval to match the event and
+sum each property: weekly active rooms is the sum of `room_active` over
+`usage_week_counted`, at a weekly interval. At any other interval the sum is
+wrong again — weeks summed into a month count a room once per week — so each
+interval has its own chart. Across deployments the sum counts a person who uses
+two servers twice, as every per-deployment figure does. Don't segment these by
+user properties: an event dated in the past takes the user's properties as
+they are when it arrives.
 
 **Dated to the middle of the period**, not to when it was sent: noon for a day,
 Thursday noon for a week, the middle of the month. A server that was off sends
@@ -515,13 +553,27 @@ month whichever day a chart starts its weeks on and in any timezone it is drawn
 in. Datadog's log intake refuses records dated more than 18 hours back, so its
 copy of the relay's events has few of these; Amplitude takes them.
 
+**Never dated before the install or the moment telemetry was switched on.**
+Amplitude counts a deployment as new from its earliest event, so a period dated
+before either would make it new before it existed or agreed to report. The
+moment telemetry was switched on is recorded at the first boot with it on and
+forgotten at a boot with it off, so it is always the start of the current run
+of reporting. An upgraded server starts from the best evidence its database
+holds of when it began reporting: when it claimed `deployment_installed`, which
+it did at its first boot with telemetry on; else, if it has sent a snapshot,
+its install, or failing that its last snapshot. A period that
+began before that moment carries `is_partial = true` and, when its middle is
+earlier still, is dated at that moment instead, which is inside the period, so
+it stays in its bucket at UTC (a chart drawn in a timezone east of UTC can
+place a late one in the next day). A period that ended before it is not sent
+at all.
+
 **Sent with the snapshot**, for every period that ended since the previous
 snapshot, so each is sent once. Not on a deployment's first pass, which has no
 previous snapshot to measure from. A server back after a long time off sends
 only the periods that ended in the last 35 days, which still covers the month
-before for a laptop that was off for most of the month after. Like
-`room_became_active`, a server whose telemetry was switched off and on again
-sends the periods that ended in between, within those 35 days.
+before for a laptop that was off for most of the month after. A recent week or
+month is therefore not final until 35 days on.
 
 ### Accounts, workspaces and cloud machines
 
@@ -537,10 +589,17 @@ then rolls back is never reported.
 | `signup_refused` | `reason`: `disabled` / `rate_limited` (the hourly cap) / `email_taken` / `country` (the request came from a country without sign-up; also a first OIDC sign-in) | a sign-up was refused |
 | `workspace_created` | `new_organization` (boolean): an organization was created with it | a workspace and its owner's membership exist |
 | `cloud_machine_requested` | `change`: `new` / `joined_workspace` (the owner's machine now serves another workspace) / `unretained` (a machine kept after its agents left, running again) / `restarted` (a stopped machine started by a claim) | a claim changed something; a claim on a machine already running is not reported. One event per claim, naming the first of these that applies, so a retained machine joined from another workspace is `joined_workspace` though it also runs again |
-| `cloud_machine_ready` | `new_machine` (boolean) · `provisioning_seconds`: from the claim to the first controller report for a new machine, `-1` for a later start | the machine's controller reported at its current revision |
+| `cloud_machine_ready` | `new_machine` (boolean): the machine has never been ready before, however many attempts that took · `provisioning_seconds`: from the claim to the first controller report for a new machine, left out for a later start | the machine's controller reported at its current revision |
 | `cloud_machine_failed` | `reason`: `not_scheduled` / `never_started` / `never_connected` (each after 10 minutes) / `owner_left` (its owner is in none of its workspaces) / `needs_attention` / `reported` (any other error the machine reported) | the machine went into error; not again while it stays there |
-| `cloud_machine_woken` | `trigger`: `message` (its agent was addressed) / `agent_placed` / `owner` · `stopped_by`: `idle` / `owner` / `unknown` | a stopped machine was started again |
-| `cloud_machine_stopped` | `reason`: `idle` / `owner` | a running machine was told to stop |
+| `cloud_machine_woken` | `trigger`: `message` (its agent was addressed) / `agent_placed` | Switch started a machine it had put to sleep when idle |
+| `cloud_machine_idle_stopped` | — | Switch put a running machine to sleep because it was idle |
+| `cloud_machine_started` | `stopped_by`: `idle` / `owner` / `unknown` (how it came to be stopped) | its owner started a stopped machine |
+| `cloud_machine_stopped` | — | its owner stopped a running machine |
+
+What Switch does to a machine on its own (`cloud_machine_woken`,
+`cloud_machine_idle_stopped`) has its own events, apart from what a person does
+(`cloud_machine_started`, `cloud_machine_stopped`), so the two can be told apart
+by name.
 
 ### Milestone events — at most once per deployment
 
@@ -551,14 +610,17 @@ deployments installed after this ships — see
 
 | Event | Emitted when | Extra properties |
 |---|---|---|
-| `deployment_installed` | the deployment id is generated on an empty database | — |
+| `deployment_installed` | the deployment id is generated on an empty database; sent at the first boot with telemetry on, dated to the install itself, with `seconds_since_install` saying how long after the install it was sent | — |
 | `first_connector_added` | the first bridge a **person** added reaches connected | `bridge_platform` |
 | `first_room_created` | the first **user-created** room is created | `channel_type`, `bridge_platform` |
-| `first_room_active` | that room sees its first interaction | `bridge_platform`, `seconds_since_room_created` |
+| `first_room_active` | that room sees its first interaction; dated to the interaction, not to the snapshot pass that noticed it | `bridge_platform`, `seconds_since_room_created` |
 | `first_agent_registered` | the first agent registers | `known_agent_type` |
-| `first_session_started` | the first agent comes online: its first live connection. Superseded by `first_agent_connected`, the same moment; sent for one more stable release | `known_agent_type` |
 | `first_agent_connected` | the first agent comes online | `known_agent_type` |
 | `first_agent_session` | a host reports the first coding-agent session (`session_started`): an agent doing work | `known_agent_type`, `start_source` |
+
+Released servers also sent `first_session_started` for the first agent coming
+online, the moment `first_agent_connected` now reports. It is no longer sent;
+on a deployment that sent it, `first_agent_connected` is claimed in its place.
 
 `first_agent_connected` and `first_agent_session` were added after deployments
 were already running. One that had already passed them claims them without
@@ -580,8 +642,21 @@ of that journey — whether the time went on getting a room set up, or on gettin
 anyone to use it once it existed.
 
 Emitted once *ever*, not once per process. Each needs a persisted marker, so a
-restart cannot re-emit one and a deployment that passes a milestone while
-telemetry is switched off does not emit it later as though it had just happened.
+restart cannot re-emit one. The marker is taken whether telemetry is on or not,
+so a deployment that passes a milestone while telemetry is switched off does not
+emit it later as though it had just happened; the one exception is
+`deployment_installed`, which waits for telemetry and is then dated to the
+install. What a deployment did before markers were taken while off is claimed,
+without reporting, from what the database shows: once, at the first boot of a
+version that does this, and again at every boot that switches telemetry on,
+because a room first used while telemetry was off is noticed only by the
+snapshot pass, which does not run then. The evidence is a room a person made
+(`first_room_created`), one a person used with an agent in it
+(`first_room_active`, and `first_agent_session` as above), an agent
+(`first_agent_registered`), an agent having said something
+(`first_agent_connected`), and a connector a person added having connected
+(`first_connector_added`). A process remembers the milestones it has found
+claimed, so asking again costs nothing.
 
 ### Lifecycle events
 
@@ -590,8 +665,8 @@ telemetry is switched off does not emit it later as though it had just happened.
 | Property | Type |
 |---|---|
 | `bridge_platform` | platform |
-| `seconds_since_install` | number |
-| `seconds_since_configured` | number — configuration saved to first connect |
+| `seconds_since_install` | number — left out where the deployment has no install clock |
+| `seconds_since_configured` | number — configuration saved to first connect; left out if the configuration time could not be read |
 | `is_preconfigured` | boolean — registered by the deployment's setup step, not a person |
 | `is_first_connector` | boolean — the first connector a person added |
 | `failed_attempts_before_success` | number |
@@ -636,8 +711,14 @@ when Switch is first told about the bridge.
 | `has_instructions` | boolean |
 | `created_by_kind` | `user` \| `agent` \| `system` |
 | `from_template` | boolean |
+| `console_chat` | boolean — Switch Console made the room as a chat (1-1 or group) |
 
-**`room_became_active`** — the first interaction in a room, once per room.
+**`room_became_active`** — the first interaction in a room, once per room,
+dated to that interaction rather than to the snapshot pass that noticed it. A
+room that went live while telemetry was off is not reported. A person in
+Switch Console counts, so a room used only from Console chat becomes active;
+the snapshot's `room_active_*` leave such a room out (see
+[Definitions](#definitions)).
 
 | Property | Type |
 |---|---|
@@ -646,6 +727,7 @@ when Switch is first told about the bridge.
 | `channel_type` | channel type |
 | `agent_count` | number |
 | `created_by_kind` | `user` \| `agent` \| `system` |
+| `console_chat` | boolean — as for `room_created` |
 
 `created_by_kind` rides along rather than agent-created rooms being dropped, so
 the headline chart can filter to user-created rooms while the question "do
@@ -657,12 +739,17 @@ minutes and rooms created in week six never do, that is a different problem from
 a slow average.
 
 **`room_archived`** — `bridge_platform`, `age_days` (number), `was_ever_active`
-(tri-state: `true` | `false` | `unknown` — `unknown` when the activity count
-itself could not be run, which is not evidence the room was never used).
+(tri-state: `true` | `false` | `unknown` — whether a person, on a messaging
+platform or in Switch Console, ever used it with an agent in it; `unknown` when
+the activity count itself could not be run, which is not evidence the room was
+never used), `console_chat` (boolean, as for `room_created`). Not sent for a
+room that was already archived.
 
 **`room_agents_added`** — `agent_count` (number), `added_by_kind` (`user` | `agent` | `system`).
 
-**`room_agents_removed`** — `agent_count` (number), `removed_by_kind` (as above).
+**`room_agents_removed`** — `agent_count` (number): the agents that were in
+the room and are now out of it, not the number asked for; `removed_by_kind` (as
+above). Not sent when none was in it.
 
 ### Removals
 
@@ -678,7 +765,7 @@ experiment, the second a deliberate clean-up.
 
 **`room_deleted`** — `bridge_platform`, `channel_type`, `created_by_kind`,
 `age_days`, `was_ever_active` (tri-state, see `room_archived` above),
-`agent_count`. The activity flag is read before the delete, because the
+`agent_count`, `console_chat` (boolean). The activity flag is read before the delete, because the
 cascade takes the room's messages with it and afterwards every room looks like
 it was never used.
 
@@ -702,17 +789,14 @@ that as `false` would misfile a lookup failure as a failed setup.
 | `registration_path` | `bootstrap` \| `personal_key` \| `gateway` \| `other` |
 | `has_parent` | boolean — a subagent rather than a top-level agent |
 
-**`agent_connected`** — `known_agent_type`, and **`agent_disconnected`** —
-the properties of `agent_session_ended` below. The same two events as
-`agent_session_started` and `agent_session_ended`, under names that say what
-they measure. Both pairs are sent for one more stable release.
-
-**`agent_session_started`** — `known_agent_type`. An agent *coming online*: its
+**`agent_connected`** — `known_agent_type`. An agent *coming online*: its
 first live connection, not a session a person began. Sessions share their
 agent's one connection, held by Switch Console or a remote host's sidecar, so
 this fires when that connection opens and not again when a session starts on
 it. Deliberately nothing about *how*: the server cannot tell, and a property
-that takes the same value on every emission cannot segment anything.
+that takes the same value on every emission cannot segment anything. Released
+servers sent it as `agent_session_started`. An agent run by an agent
+controller, which holds no connection of its own, does not send it.
 
 **`session_started`** — `start_source` (`user` \| `room` \| `automation` \|
 `unknown`), `known_agent_type`. A coding-agent session starting, reported once
@@ -731,12 +815,23 @@ retried report count once is a row in `telemetry_milestones`, pruned after 7
 days by the daily snapshot pass; a report retried later than that, whose first
 attempt did arrive, counts twice.
 
-**`agent_session_ended`** — `duration_seconds` (number), `reason` (`normal` \|
-`heartbeat_lapsed` \| `replaced` \| `room_claimed` \| `error`). No runtime: the
-connection registry is the only thing that knows a session ended and it holds
-none, the client's self-declared artifact is free text and may not be sent, and
-looking the agent up would put a query on the connection sweep. Session starts
-carry the runtime, so the mix is available from those.
+**`agent_disconnected`** — `duration_seconds` (number), `reason` (`normal` \|
+`heartbeat_lapsed` \| `replaced` \| `room_claimed` \| `error`). An agent going
+offline: its last connection closed and it did not come back within two
+minutes. It is dated to that last close, and `duration_seconds` runs from
+coming online to it, so the two minutes of waiting are in neither. `normal` is
+a close Switch made on purpose (the agent deleted, its key re-issued, the agent
+moved onto an agent controller, the controller revoked); `room_claimed` a
+stream closed because a room it declared could not be served to it; `replaced`
+another stream taking the connection over; `heartbeat_lapsed` a client that
+stopped beating; `error` a connection that could not be recorded. Released
+servers sent it as `agent_session_ended`, which reported every deliberate close
+as `error` and was dated, with its duration counted, to the end of the two
+minutes. No runtime: the connection registry is the only thing that
+knows a session ended and it holds none, the client's self-declared artifact is
+free text and may not be sent, and looking the agent up would put a query on
+the connection sweep. Starts carry the runtime, so the mix is available from
+those.
 
 The connection registry already records a reason on every close, which is where
 these values come from; the set is closed here so a new reason string added in
@@ -757,8 +852,8 @@ monotonic clock, spanning both halves of it: the synchronous setup and the task
 that actually reaches the platform. Nothing else times this — a bridge comes up
 on a background task rather than inside a request the server serves — and the
 failure half is the more interesting one, because a timeout and a refusal carry
-the same `failure_reason` and nothing alike in the time. `-1` if no reading was
-taken, following the convention below.
+the same `failure_reason` and nothing alike in the time. Left out if no reading
+was taken, following the convention below.
 
 **`bridge_disconnected`** — `bridge` (as above), `bridge_platform`, `reason`
 (`shutdown` \| `restart` \| `auth_failed` \| `network` \| `platform_error` \|
@@ -778,7 +873,7 @@ rather than something the product wants to know.
 
 ### Message events — one per message
 
-All three come from `telemetry/messages.py`, reported off the sender's path as
+Both come from `telemetry/messages.py`, reported off the sender's path as
 described [above](#message-events-and-what-they-cannot-tell-you). A post with
 several files is one message. Room facts are cached for fifteen minutes, so a
 member count can be that far behind; who a sender is and an agent's runtime,
@@ -789,36 +884,43 @@ with no lookup succeeding between them, pause every lookup for five seconds.
 Either way a database incident shows in the charts as a burst of `unknown`
 rather than as missing messages.
 
-**`room_message_sent`** — everything a participant chose to say in a room: the
-population the tenant is metered for, reported by the transport after the
-write commits. What Switch posts on a participant's behalf — greetings, command
-replies, offline and refusal notices, a template's kickoff — is not in it.
-Neither is a command a person types (`!reset`, a slash command): commands are
-not metered, although the snapshot's activity counts treat one as something
-the person said.
+**`message_sent`** — everything a participant chose to say in a room, on a
+messaging platform or in Switch Console: the population the tenant is metered
+for, reported after the write commits, by the transport or, for a Switch
+Console chat, by the chat service. What Switch posts on a participant's behalf
+— greetings, command replies, offline and refusal notices, a template's
+kickoff — is not in it. Neither is a command a person types (`!reset`, a slash
+command): commands are not metered, although the snapshot's activity counts
+treat one as something the person said. Released servers sent this as
+`room_message_sent`, beside an `agent_message_sent` for every agent's message
+carrying its runtime, and did not count Switch Console chat at all.
 
 | Property | Type |
 |---|---|
-| `sender_kind` | `user` \| `bot` \| `agent` — only participants are metered, so `platform` does not occur here. `bot` is an integration's post (see "People, bots and accounts"); before that value existed those were `user` |
+| `sender_kind` | `user` \| `member` \| `bot` \| `agent` — only participants are metered, so `platform` does not occur here. `member` is a person in Switch Console; `bot` is an integration's post on a platform (see "People, bots and accounts") |
+| `known_agent_type` | the sending agent's runtime, or `unknown` if the agent could not be looked up; only on an agent's message, left out otherwise |
 | `bridge_platform` | platform, `none` for an internal room, `unknown` if the room could not be read |
 | `channel_type` | channel type, or `unknown` if the room could not be read |
-| `room_user_count` | number — human members of the room, `-1` if it could not be read |
-| `room_agent_count` | number — agent members, `-1` if it could not be read |
+| `console_chat` | tri-state — Switch Console made the room as a chat; `unknown` if the room could not be read. A person can write in Console in a room that is not one, such as a Slack-bridged room they joined there |
+| `room_user_count` | number — the room's people, on a messaging platform and in Switch Console (someone who is both counts twice); left out if the room could not be read |
+| `room_agent_count` | number — agent members; left out if the room could not be read |
 | `has_attachment` | boolean |
 | `in_thread` | boolean |
 
 The average of `room_user_count` over these events is the room size a typical
-message is said to — weighted by messages, not by rooms. **Filter out
-`bridge_platform = unknown` before averaging**: those are rooms that could not
-be read, and their `-1` would pull the mean down. Every property is required on
-every event and the catalogue has no empty value, so `-1` is the marker. The
-snapshot's `room_users_mean` is the per-room figure.
+message is said to — weighted by messages, not by rooms. A room that could not
+be read leaves both sizes out, so an average skips it. On an agent's message,
+`room_user_count` separates an agent answering people from agents talking
+among themselves. The snapshot's `room_users_mean` is the per-room figure, and
+each period event's `message_count` is the same messages counted in the
+database, so the two set side by side show how many events were lost on the
+way.
 
 **`agent_message_received`** — a message an agent was asked to act on:
 addressed to it (by name, alias, role, or a direct room) *and* let through its
 addressing policy and budget, whether or not the agent was there to take it.
 Reported by the agent's consumer, where that is decided, so a message naming
-two agents is two of these and one `room_message_sent`. Switch's own
+two agents is two of these and one `message_sent`. Switch's own
 auto-replies are excluded; a request Switch carries on a person's behalf is
 included, as `platform`. A message a hosted agent's mailbox already holds — the
 same message seen again — is not counted twice, and nor is a multi-file post
@@ -829,26 +931,37 @@ the requests an agent could act on as they arrived.
 
 | Property | Type |
 |---|---|
-| `sender_kind` | `user` \| `bot` \| `agent` \| `platform` \| `unknown` — `bot` as for `room_message_sent` |
+| `sender_kind` | `user` \| `member` \| `bot` \| `agent` \| `platform` \| `unknown` — as for `message_sent` |
 | `known_agent_type` | the receiving agent's runtime |
 | `bridge_platform` | platform |
 | `channel_type` | channel type |
+| `console_chat` | tri-state, as for `message_sent` |
 | `has_attachment` | boolean |
 | `agent_live` | boolean — the agent had a live session for the room when the message arrived. False when it was offline, still starting, or its cloud worker refused the message (stopped, broken, or a full mailbox); always false for a `session_passive` agent, which reads its messages later rather than live |
 
-**`agent_message_sent`** — a message an agent posted: its replies, status
-updates, anything it chose to say. Every one is also a `room_message_sent` with
-`sender_kind = agent`; this one carries the runtime as well. `room_user_count`
-separates an agent answering people from agents talking among themselves.
+### Switch Console chats
 
-| Property | Type |
-|---|---|
-| `known_agent_type` | the sending agent's runtime, or `unknown` if the agent could not be looked up |
-| `bridge_platform` | platform |
-| `channel_type` | channel type |
-| `room_user_count` | number, `-1` if the room could not be read |
-| `has_attachment` | boolean |
-| `in_thread` | boolean |
+What people do to their chats in Switch Console, reported by the chat service
+once the change commits, so a change that rolls back is never reported. A chat
+being made is `room_created` with `console_chat = true`; it is not reported
+again here. Console lets a person manage any room they are in, not only the
+chats it made, so the membership and list events carry `console_chat` too.
+Each reports a change only: adding someone already in, or hiding a room that is
+already hidden, reports nothing.
+
+| Event | Properties | Sent when |
+|---|---|---|
+| `console_chat_became_group` | `trigger`: `person_added` / `agent_added` · `age_days` (number, left out if unknown) | a direct chat turned group, for good, because a second person or a second agent joined it. The creator rejoining is not a second person |
+| `console_member_added` | `member_kind`: `person` / `agent` · `channel_type` (the room's after the add) · `console_chat` (boolean) | a manager added someone to a room from Console. Not the owner of an agent being put in a chat with it, which Switch does itself. A person added is also a `room_users_added`, which counts adds from everywhere; this one says it was Console and what kind of room |
+| `console_member_removed` | `member_kind` · `left` (boolean): a person taking themselves out rather than a manager removing them, always `false` for an agent · `channel_type` · `console_chat` | someone was taken out of a room from Console |
+| `console_room_hidden` | `channel_type` · `age_days` (number, left out if unknown) · `console_chat` | a person took a room off their own list |
+| `console_room_shown` | as `console_room_hidden` | a person put a hidden room back. Not a room that came back on its own because something new was said in it, which is not reported at all |
+
+`trigger` says which kind of chat people grow into groups: one shared with
+colleagues, or one given more agents. `age_days` on `console_chat_became_group`
+is how long a chat stayed 1-1 before it did. Hidden and shown, with their ages,
+separate tidying a list from abandoning a chat; a chat that is archived is
+`room_archived` with `console_chat`.
 
 ### Decision routing — one per decision
 
@@ -879,19 +992,21 @@ to nobody or to the room's triage agent.
 
 What each one is for, and how to make it fire, is under
 [Every event, and how to make it fire](#every-event-and-how-to-make-it-fire).
-This is what each carries.
+This is what each carries. The resource and role events are sent once the
+change is committed, never for one that rolled back, and a detach or a removal
+only when there was something to detach or remove.
 
 | Event | Properties |
 |---|---|
-| `reference_created` | `reference_type`; `read_visibility` (`private` \| `public`); `created_by_kind` (`user` \| `agent` \| `system`) |
+| `reference_created` | `reference_type`; `read_visibility` (`private` \| `public`); `created_by_kind` (`user` \| `agent` \| `system`): `agent` for an agent's tool, or a template an agent ran; `system` for a template a person ran, which asked for the room rather than for each reference in it. Released servers sent `user` for all three |
 | `reference_attached_to_room` | `reference_type` |
-| `reference_detached_from_room` | `reference_type` |
+| `reference_detached_from_room` | `reference_type`. Only when it was attached; likewise the other detaches and `room_link_removed` |
 | `reference_deleted` | `reference_type`; `age_days` (number) |
 | `document_created` | `scope` (`library` \| `room`); `created_by_kind` (`user` \| `agent` \| `system`); `has_instructions` (boolean) |
 | `document_attached_to_room` | none |
 | `document_detached_from_room` | none |
 | `document_deleted` | `scope` (`library` \| `room`); `age_days` (number) |
-| `package_created` | `created_by_kind` (`user` \| `agent` \| `system`) |
+| `package_created` | none. Only a person can make one, so it does not say who did; released servers sent `created_by_kind`, always `user` |
 | `package_attached_to_room` | `reference_count` (number); `document_count` (number) |
 | `package_detached_from_room` | none |
 | `package_deleted` | `age_days` (number) |
@@ -908,7 +1023,8 @@ This is what each carries.
 | `room_link_removed` | none |
 | `room_role_defined` | `exclusive` (boolean) |
 | `room_role_deleted` | none |
-| `room_users_added` | `user_count` (number) |
+| `room_users_added` | `user_count` (number): people added to a bridged room who are now in it; the one person added to a Switch Console chat, including an owner an agent puts in a room it made; or the people a Console chat is created with, not counting the person who created it. Not sent when nobody was added |
+| `room_users_removed` | `user_count` (number); `removed_by_kind` (`user` \| `platform`) |
 | `connector_configured` | `bridge_platform`; `is_preconfigured` (boolean) |
 | `invitation_sent` | `delivery` (`sent` \| `not_configured` \| `failed` \| `not_requested`) |
 | `invitation_accepted` | `age_hours` (number) |
@@ -934,10 +1050,11 @@ it today; the room events read the type from a row they already hold.
 four built-in types; a user-defined type's slug is free text, so it reports as
 `other`.
 
-`sender_kind`: `user` | `bot` | `agent` | `platform` | `unknown`. `user` is a
-person on a messaging platform and `bot` an integration posting there (see
-"People, bots and accounts"); `platform` is Switch itself speaking; `unknown` a
-sender whose client could not be looked up.
+`sender_kind`: `user` | `member` | `bot` | `agent` | `platform` | `unknown`.
+`user` is a person on a messaging platform, `member` a person in Switch
+Console, and `bot` an integration posting on a platform (see "People, bots and
+accounts"); `platform` is Switch itself speaking; `unknown` a sender whose
+client could not be looked up.
 
 `outcome`: `success` | `failure`. `failure_reason` is an enumerated code per
 event, `none` on success — never an exception message.
@@ -952,15 +1069,24 @@ not losing.
 
 **Tri-state facts**: `true` | `false` | `unknown`, for a yes/no property the
 server can fail to establish (`room_archived`/`room_deleted`.`was_ever_active`,
-`connector_removed`.`was_ever_connected`). Not a boolean, deliberately — a
+`connector_removed`.`was_ever_connected`, and `console_chat` on the message
+events, which read the room through a lookup that can fail; the room events
+hold the row, so theirs is a boolean). Not a boolean, deliberately — a
 property that can be unknown is a three-valued fact, and collapsing the failed
 case into `false` reports a guess as a claim the code has no evidence for.
 
-Where a duration or an age cannot be known — a deployment with no install
-clock, a bridge whose configuration timestamp is unreadable, a row whose
-`created_at` could not be read — the property carries `-1` rather than `0`, so
-"we could not tell" is distinguishable from "it happened instantly" or
-"created just now".
+Where a duration, an age or a size cannot be known — a deployment with no
+install clock, a bridge whose configuration timestamp is unreadable, a row
+whose `created_at` could not be read, a room that could not be looked up — the
+property is left off the event rather than sent as `0` or `-1`. `0` would read
+as "it happened instantly" or "created just now", and a sentinel such as `-1`
+is summed and averaged like any other value unless every chart filters it,
+where an absent property is skipped by every aggregation. These are the only
+properties that may be missing: `age_days`, `age_hours`,
+`seconds_since_install` and `seconds_since_configured` on `connector_added`,
+`duration_ms` on `bridge_connected`, `provisioning_seconds`, the room sizes on
+`message_sent`, and `known_agent_type` on `message_sent`, which only an agent's
+message carries. Servers released before this sent `-1` instead.
 
 Any property whose value is not in its declared set is a bug. It should raise
 where the event is built rather than be coerced, dropped, or silently widened
@@ -975,10 +1101,12 @@ A Switch server reporting its usage to a vendor relay is a different question
 from a desktop app doing it, because the deployment may be a customer's and the
 usage may be theirs.
 
-The Console's answer is opt-in, defaulting to off, gated on an explicit choice
-having been made, and re-read on every event so revoking takes effect
-immediately. **The server takes the same position**: telemetry is off unless
-switched on, it is one setting, and when it is off no request is made at all.
+The Console's answer is opt-out: sharing is on by default, a first-run notice
+says what is shared and carries the switch to turn it off, and the setting is
+re-read before every event, so turning it off takes effect immediately
+(`docs/TELEMETRY.md`). **The server is off unless switched on**: it is one
+setting, and when it is off no request is made at all. A server Switch Console
+runs for its user is given the Console's answer, as below.
 
 Who sets that one setting depends on who deployed the server. On a stack an
 operator brought up themselves, they set `TELEMETRY_ENABLED` — in the `.env` for
@@ -992,10 +1120,12 @@ and offers the restart rather than taking it.
 
 This interacts with the milestone events in a way worth stating: a deployment
 that enables telemetry three months in has already passed most of its
-activation funnel. Milestones are emitted only when they actually occur, never
-retroactively, so such a deployment simply contributes nothing to time-to-value
-— which is correct, and better than a backfilled figure that would read as an
-instant activation.
+activation funnel. Milestones are claimed while telemetry is off and never
+reported retroactively, so such a deployment sends `deployment_installed`,
+dated to its install, and nothing else of the funnel it already passed — which
+is correct, and better than a backfilled figure that would read as an instant
+activation. Nothing about the time it was off is reported: the period counts
+and room activations start from the moment telemetry was switched on.
 
 This is a setting an operator controls, and it must be documented where they
 will see it before they deploy — not only in this note. What is sent, where it
@@ -1092,18 +1222,53 @@ Two things to set up first, or a third of the list cannot fire at all:
 
 **At boot, with no action at all**
 
-- `deployment_installed` — fires once, on the first boot of a fresh install.
-  `main.py`, after the migration. Absent on an upgraded database, by design.
+- `deployment_installed` — fires once, at the first boot with telemetry on,
+  dated to the install. `main.py`, after the migration. Absent on an upgraded
+  database, by design.
 - `deployment_started` — every boot. Same place.
 - `usage_snapshot` — 60s after boot, then each interval.
   `telemetry/reporter.py` → `run_once`.
+- `usage_day_counted`, `usage_week_counted`, `usage_month_counted` — with the
+  snapshot, from its second pass, for each day, week and month that ended
+  since the pass before.
+
+**Accounts, workspaces and cloud machines** — `gateway/auth_routes.py`,
+`gateway/oidc_routes.py` and `gateway/workspace_creation.py`; the machines in
+`gateway/hosted_machines.py`, `gateway/cloud_controllers.py` and
+`gateway/hosted_controller.py`. The machine events need a server offering
+cloud machines, with a controller that reports; a plain local server sends
+none of them.
+
+- `account_created` — sign up on the sign-up page (`POST /gateway/auth/signup`,
+  `method: signup`), sign in with single sign-on as someone with no account
+  yet (`oidc`), or create a user as an admin (`POST /gateway/users`, `admin`).
+  A single sign-on sign-in that links an existing account sends nothing.
+- `signup_refused` — sign up while sign-up is switched off (`disabled`), with
+  an email that already has an account (`email_taken`), or past the hourly cap
+  (`rate_limited`).
+- `workspace_created` — create a workspace; `new_organization` is true when an
+  organization is created with it.
+- `cloud_machine_requested` — `POST /gateway/hosted-machines/ensure` for a
+  workspace whose owner has no machine (`new`), or whose owner's machine is
+  stopped, retained or serving another workspace. Asking for one already
+  running sends nothing.
+- `cloud_machine_ready` — the machine's controller reporting at its current
+  revision. `provisioning_seconds` only the first time it is ever ready.
+- `cloud_machine_failed` — a machine that has not come up 10 minutes after it
+  was asked for, whose owner has left all its workspaces, or that reports an
+  error. Not again while it stays in error.
+- `cloud_machine_woken` / `cloud_machine_idle_stopped` — leave a machine idle
+  until Switch puts it to sleep, then address its agent.
+- `cloud_machine_started` / `cloud_machine_stopped` — its owner starting or
+  stopping it (`POST /gateway/hosted-machines/{id}/lifecycle`).
 
 **Rooms** — `room_service.py` throughout; gateway routes under `/gateway/rooms`
 
 - `room_created` — `POST /gateway/rooms`. Check `created_by_kind` is `user`
-  here, `agent` when an agent creates one through its MCP tool, and `system`
-  when Switch is invited to a channel on a bridged platform. Those three paths
-  are the whole point of the property; test at least the first two.
+  here, `agent` when an agent creates one through its MCP tool or a template
+  it runs, and `system` when Switch is invited to a channel on a bridged
+  platform. Those three paths are the whole point of the property; test at
+  least the first two.
 - `first_room_created` — the same call, first time only, and only for a
   user-created room.
 - `room_agents_added` — `POST /gateway/rooms/{id}/agents`. Adding an agent
@@ -1120,7 +1285,7 @@ Two things to set up first, or a third of the list cannot fire at all:
   time.
 - `first_room_active` — the same pass, once ever, user-created rooms only.
 
-**Agents** — `bridges/agent/protocol/service.py`
+**Agents** — `bridges/agent/protocol/agent_core.py`
 
 - `agent_registered` — registering a new agent. `registration_path` should be
   `gateway` from the dashboard or Console, `personal_key` from a user's own
@@ -1130,16 +1295,16 @@ Two things to set up first, or a third of the list cannot fire at all:
 - `agent_deleted` — `DELETE /gateway/agents/{id}`. Carries how old it was and
   how many rooms it was in, both read before the row goes.
 
-**Sessions** — `bridges/agent/api/handlers.py`, and the connection registry
+**Connections and sessions** — `bridges/agent/api/handlers.py`, and the
+connection registry
 
-- `agent_session_started` and `agent_connected` — an agent opening its event
-  stream; both are sent. A supervisor reattaching to a connection it already
-  had correctly emits nothing.
-- `first_session_started` and `first_agent_connected` — the same, once ever.
-  On a deployment that claimed `first_session_started` before this release,
-  `first_agent_connected` is claimed at boot and never sent.
-- `agent_session_ended` and `agent_disconnected` — kill an agent and wait for
-  the heartbeat sweep (a few seconds). Reported through a listener on the
+- `agent_connected` — an agent opening its event stream. A supervisor
+  reattaching to a connection it already had correctly emits nothing.
+- `first_agent_connected` — the same, once ever. On a deployment that claimed
+  `first_session_started` before this release, it is claimed at boot and never
+  sent.
+- `agent_disconnected` — kill an agent and wait for the heartbeat sweep (a few
+  seconds) and then the two-minute grace. Reported through a listener on the
   registry, so every path that closes a connection reports, not just the sweep.
 - `session_started` — `POST /agent-sessions/{id}/started` from a session host
   (`bridges/agent/api/activity_routes.py`), with a UUID id. A repeat for the
@@ -1151,10 +1316,10 @@ Two things to set up first, or a third of the list cannot fire at all:
 **Messages** — `telemetry/messages.py`, fed by `transport/postgres.py` and
 `delivery/recipient.py`
 
-- `room_message_sent` — any person or agent posting in any room. A post with
-  three files is one event. A command reply or an offline notice is none.
-- `agent_message_sent` — an agent posting, through its MCP tool or the HTTP
-  API. Arrives beside a `room_message_sent` for the same message.
+- `message_sent` — any person or agent posting in any room, Switch Console
+  chats included. A post with three files is one event. A command reply or an
+  offline notice is none. An agent posting, through its MCP tool or the HTTP
+  API, carries its runtime.
 - `agent_message_received` — tag an agent, or write in a direct room with one.
   Tag two agents and there are two. Tag an agent whose policy refuses you and
   there are none.
@@ -1196,7 +1361,8 @@ gateway routes under `/gateway`
 - `api_key_created` / `api_key_revoked` — mint and delete a key. The label is
   never sent, only what the key is *for*.
 - `room_group_created` / `room_group_deleted` — the delete carries how many
-  rooms were filed under it, read before the delete.
+  rooms were filed under it, read before the delete. A group an agent makes
+  with its tool, or a group template makes, is created too.
 - `invitation_sent` / `invitation_accepted` — invite someone to a tenant and
   accept it. Accepting an invitation you already hold reports nothing, because
   nobody joined.
@@ -1212,13 +1378,17 @@ reason.
 - `reference_type_created` / `reference_type_deleted` — registering a *type*,
   which is an owner extending what Switch can point at, not making a reference.
 - `template_created` / `template_deleted` — `template_kind` names the three the
-  product uses and reports anything an operator invents as `other`.
+  product uses and reports anything an operator invents as `other`. Saved or
+  deleted in the gateway or by an agent's `save_template` / `delete_template`.
 - `agent_request_refused`: an agent asked for something a rule says no to:
   a template it did not save, a run that would need a new agent, a room in a
   paused or stopped run. `operation` and `reason` are fixed lists; which agent
   and which template stay in the server log.
 - `room_link_created` / `room_link_removed`, `room_role_defined` /
-  `room_role_deleted`, `room_users_added`.
+  `room_role_deleted`, `room_users_added` / `room_users_removed`. A role is
+  defined in the gateway, by an agent's `define_role`, or with the room it
+  belongs to (an agent's `create_room`, or a template); one per role. An
+  agent's `delete_role` is a `room_role_deleted` too.
 - `reference_detached_from_room` / `document_detached_from_room` /
   `package_detached_from_room` — the inverse of the attach events, so a
   resource tried and dropped is distinguishable from one never used.

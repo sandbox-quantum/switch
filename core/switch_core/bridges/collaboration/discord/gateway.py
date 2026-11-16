@@ -20,7 +20,8 @@ stays attached when this process takes the socket over or hands it on.
 It opens the shared socket with the right intents, routes each guild message,
 each global slash invocation and each press on a card's button to the bridge its
 guild resolves to (fresh per event, no tenant cached — guards G1/G3), and
-registers the command set globally once for the application. Removal / out-of-band-join handling lands after.
+registers the command set globally once for the application. Member and
+permission changes are gathered per guild and routed the same way (`members.py`).
 """
 
 from __future__ import annotations
@@ -39,8 +40,14 @@ from switch_core.bridges.collaboration.discord.adapter import (
     DISCORD_GATEWAY,
     DISCORD_GATEWAY_KEY,
     DiscordAdapter,
+    prompt_guild,
 )
 from switch_core.bridges.collaboration.discord.connection import DiscordConnection
+from switch_core.bridges.collaboration.discord.members import (
+    GuildChangeBatcher,
+    GuildMemberChange,
+    PermissionChangeBatcher,
+)
 from switch_core.bridges.collaboration.discord.slash import build_app_commands
 from switch_core.bridges.collaboration.install_service import (
     MessagingInstallService,
@@ -97,6 +104,16 @@ class DiscordGatewayClient:
             bot_token=bot_token,
             intents=self._build_intents(message_content, members),
             command_guild_id=None,
+            # Every tenant's guild is on this socket: no guild's member list
+            # is fetched at start or kept in memory.
+            cache_members=False,
+        )
+        # A guild's member changes, and its permission changes, are gathered
+        # for a moment and resolved to its bridge once per burst, rather than
+        # once per event.
+        self._member_changes = GuildChangeBatcher(self._route_member_changes)
+        self._permission_changes = PermissionChangeBatcher(
+            self._route_permission_changes
         )
 
     @staticmethod
@@ -147,6 +164,8 @@ class DiscordGatewayClient:
         self._connection.set_guild_message_handler(self._on_guild_message)
         self._connection.set_interaction_handler(self._on_interaction)
         self._connection.set_channel_update_handler(self._on_channel_update)
+        self._connection.set_member_change_handler(self._member_changes.add)
+        self._connection.set_permission_change_handler(self._permission_changes.add)
         self._connection.set_guild_lifecycle_handlers(
             on_remove=self._on_guild_remove,
             on_join=self._on_guild_join,
@@ -155,8 +174,10 @@ class DiscordGatewayClient:
         # invocation is routed to a bridge by the guild it carries (decision #7).
         await self._connection.connect(commands=build_app_commands(self._on_slash))
         logger.info(
-            "Discord shared Gateway connection started (message_content=%s)",
+            "Discord shared Gateway connection started (message_content=%s, "
+            "members=%s)",
             self._message_content,
+            self._members,
         )
 
     async def start_with_retry(self) -> None:
@@ -263,7 +284,44 @@ class DiscordGatewayClient:
             await self._connection.close()
 
     async def stop(self) -> None:
+        self._member_changes.close()
+        self._permission_changes.close()
         await self._close()
+
+    async def _guild_adapter(self, guild_id: int) -> DiscordAdapter | None:
+        """The bridge a guild resolves to, attached, or None. Fresh and with
+        no tenant bound, as for a message (G1/G3)."""
+        try:
+            target = await self._install_service.resolve_by_workspace(
+                platform=_PLATFORM, workspace_id=str(guild_id)
+            )
+        except (WebhookWorkspaceUnknown, WebhookBridgeUnavailable):
+            return None
+        adapter = target.adapter
+        if not isinstance(adapter, DiscordAdapter):
+            return None
+        adapter.attach_shared_connection(self._connection)
+        return adapter
+
+    async def _route_member_changes(
+        self, guild_id: int, changes: list[GuildMemberChange]
+    ) -> None:
+        """Hand one guild's gathered member changes to its bridge: one
+        tenant lookup for the burst. A guild with no install is dropped."""
+        with no_tenant():
+            adapter = await self._guild_adapter(guild_id)
+            if adapter is not None:
+                await adapter.dispatch_member_changes(changes)
+
+    async def _route_permission_changes(
+        self, guild_id: int, channel_ids: set[int] | None
+    ) -> None:
+        """Hand one guild's permission changes to its bridge, which re-checks
+        the rooms of the channels affected."""
+        with no_tenant():
+            adapter = await self._guild_adapter(guild_id)
+            if adapter is not None:
+                adapter.dispatch_permission_change(channel_ids)
 
     async def _on_guild_message(self, message: discord.Message) -> None:
         """Route one guild message to the bridge its guild resolves to.
@@ -352,6 +410,7 @@ class DiscordGatewayClient:
         with no_tenant():
             adapter = await self._interaction_adapter(
                 interaction,
+                interaction.guild_id,
                 outside_a_server="This command only works inside a server.",
             )
             if adapter is not None:
@@ -364,28 +423,41 @@ class DiscordGatewayClient:
         included; those reach `_on_slash` through the command tree instead, so
         only presses are taken. A press from a guild no longer installed (a
         card left behind after a disconnect) is refused like a slash command.
+
+        A press on a link prompt arrives from a direct message, with no guild,
+        and is routed by the guild its button names (`prompt_guild`) instead.
+        That is only which bridge is asked: the bridge resolves the prompt in
+        its own tenant, from the account Discord says pressed it.
         """
         if interaction.type is not discord.InteractionType.component:
             return
+        guild_id = interaction.guild_id
+        if guild_id is None:
+            data: dict[str, Any] = dict(interaction.data or {})
+            guild_id = prompt_guild(str(data.get("custom_id") or ""))
         with no_tenant():
             adapter = await self._interaction_adapter(
                 interaction,
+                guild_id,
                 outside_a_server="This button only works inside a server.",
             )
             if adapter is not None:
                 await adapter.dispatch_interaction(interaction)
 
     async def _interaction_adapter(
-        self, interaction: discord.Interaction, *, outside_a_server: str
+        self,
+        interaction: discord.Interaction,
+        guild_id: int | None,
+        *,
+        outside_a_server: str,
     ) -> DiscordAdapter | None:
-        """The bridge an interaction's guild resolves to, attached, or None.
+        """The bridge `guild_id` resolves to, attached, or None.
 
         Resolved fresh per event, and called with no tenant bound, like the
         message path (G1). An interaction that resolves to no bridge is
         answered with an ephemeral refusal rather than dropped: Discord shows
         "interaction failed" for one left unacknowledged.
         """
-        guild_id = interaction.guild_id
         if guild_id is None:
             await self._refuse(interaction, outside_a_server)
             return None

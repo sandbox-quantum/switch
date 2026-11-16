@@ -103,6 +103,11 @@ class RoomDescriptor(BaseModel):
     bridge_id: str | None = None
 
 
+# Whether an agent is up at all, outside any one room: `not_tracked` for an
+# agent that only polls, which holds nothing Switch can see between polls.
+OverallStatus = Literal["online", "offline", "not_tracked"]
+
+
 class AgentStatus(StrEnum):
     LIVE = "live"
     DISCONNECTED = "disconnected"
@@ -152,13 +157,16 @@ class TrustFeedback(BaseModel):
     so the redaction does not hide it. `note` is the notice posted in the
     room under the message, when one was posted. When a notice was due but
     could not be posted, `note` is unset and `notice_error` says why, so the
-    agent is not told the room was warned when it was not."""
+    agent is not told the room was warned when it was not. `card` is
+    `dropped` when Switch Trust redacted the message's card, which was then
+    not sent: only `delivered` reached the room."""
 
     outcome: Literal["redacted", "alerted", "errored"]
     delivered: str | None
     alert: Literal["alerted", "errored"] | None = None
     note: str | None
     notice_error: str | None
+    card: Literal["dropped"] | None = None
 
     def to_result(self) -> dict[str, str]:
         """The tool-result form: the fields that are set, and no others."""
@@ -215,7 +223,8 @@ class RoomDetailDescriptor(BaseModel):
     agent_names: list[str]
     agent_statuses: dict[str, str]
     connected_user_names: list[str]
-    # Names of agents configured to receive `room_join` events in this room.
+    # Names of agents configured to receive `room_join` and `room_leave`
+    # events in this room.
     join_event_listeners: list[str] = []
     # Per-room agent aliases, keyed by agent name → alias (only agents that
     # have an alias in this room appear).
@@ -231,6 +240,7 @@ EventType = Literal[
     "message",
     "command",
     "room_join",
+    "room_leave",
 ]
 
 
@@ -275,6 +285,9 @@ class MessagePayload(BaseModel):
     # arrived: "admin" or "member". None for an agent, the platform,
     # or a person no Switch user has claimed.
     sender_role: str | None = None
+    # The receiving agent's setting for messages sent while it works: "steer"
+    # into the running turn, or "queue" behind it.
+    mid_turn_delivery: Literal["steer", "queue"] = "steer"
     # What Switch has to tell the agent before this message, such as that
     # its template has a new revision it was not brought fully up to; told
     # with every message until the agent reads about it. None for nothing.
@@ -321,12 +334,28 @@ class RoomJoinPayload(BaseModel):
     listening: bool
 
 
-Payload = MessagePayload | CommandPayload | RoomJoinPayload
+class RoomLeavePayload(BaseModel):
+    # The member who left (their participant id) and display name, as on
+    # `RoomJoinPayload`. room_id / bridge_id / channel_type live on the
+    # enclosing AgentEvent.
+    member: str
+    member_name: str
+    timestamp: int
+    # Whether the receiving agent is set to hear about members coming and
+    # going in this room: the same per-room, per-agent setting as join events.
+    listening: bool
+    # Who took them out, when someone did; None when they left on their own
+    # (or their platform did not say).
+    removed_by: str | None = None
+
+
+Payload = MessagePayload | CommandPayload | RoomJoinPayload | RoomLeavePayload
 
 _PAYLOAD_TYPE: dict[str, type[BaseModel]] = {
     "message": MessagePayload,
     "command": CommandPayload,
     "room_join": RoomJoinPayload,
+    "room_leave": RoomLeavePayload,
 }
 
 

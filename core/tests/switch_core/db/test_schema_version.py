@@ -239,15 +239,17 @@ async def test_subagent_expand_only_upgrade_is_accepted_by_the_previous_pod(
 ) -> None:
     script = ScriptDirectory.from_config(alembic_cfg)
     revision = script.get_revision("ab802e19c401")
-    assert script.get_heads() == [revision.revision]
     assert isinstance(revision.down_revision, str)
-    assert revision.module.expand_only is True
+    # The previous build lacks this revision and everything chained after it.
+    newer = list(script.iterate_revisions("heads", revision.down_revision))
+    assert all(r.module.expand_only is True for r in newer)
+    newer_files = {Path(r.path).name for r in newer}
 
     old_scripts = tmp_path / "previous-build"
     old_versions = old_scripts / "versions"
     old_versions.mkdir(parents=True)
     for source in (Path(script.dir) / "versions").glob("*.py"):
-        if source.name != Path(revision.path).name:
+        if source.name not in newer_files:
             copyfile(source, old_versions / source.name)
     old_config = AlembicConfig()
     old_config.set_main_option("script_location", str(old_scripts))
