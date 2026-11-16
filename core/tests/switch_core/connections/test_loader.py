@@ -104,6 +104,8 @@ def test_the_microsoft_365_draft_stays_disabled_and_names_entras_endpoints():
         "offline_access",
         "api://workiq.svc.cloud.microsoft/WorkIQ.Read",
     ]
+
+
 # Identity arguments are fixed self-references that the vendor documents as
 # the caller. A value that names a person would make every sign-in resolve to
 # that person, so a new value needs a deliberate review here.
