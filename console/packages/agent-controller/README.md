@@ -234,8 +234,10 @@ user's default one):
 - the controller as a system service of that user,
   `switch-agent-controller-<uid>.service`, run with
   `--agent-runtime separate-user` and the agents' group as a supplementary group,
-  so it can read what its agents write. It replaces the user service, which must
-  be uninstalled first;
+  so it can read what its agents write. Like its agents, it cannot reach the
+  cloud instance metadata address, gain privileges or change the kernel's
+  settings or the clock. It replaces the user service, which must be
+  uninstalled first;
 - a releases directory, `/var/lib/switch-agent-controller-<uid>/releases`
   (`--releases-dir`), owned by the controller's user and readable by everyone,
   where the controller installs the releases Switch names (see
