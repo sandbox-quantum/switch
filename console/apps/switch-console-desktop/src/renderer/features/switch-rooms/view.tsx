@@ -150,7 +150,7 @@ const RoomTitlebar = observer(function RoomTitlebar() {
         </div>
       }
       rightSlot={
-        <div className="flex shrink-0 items-center gap-1.5">
+        <div className="mr-1 flex shrink-0 items-center gap-1.5">
           <RoomTabs roomId={roomId} fallback="chat" />
           <OpenInMessagingApp roomId={roomId} />
         </div>
