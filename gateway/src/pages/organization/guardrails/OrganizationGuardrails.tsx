@@ -1,8 +1,11 @@
+import LinkOffOutlined from "@mui/icons-material/LinkOffOutlined";
+import SwapHoriz from "@mui/icons-material/SwapHoriz";
 import { Alert, Box, Button, CircularProgress, Stack, TextField, Typography } from "@mui/material";
 import { useCallback, useState } from "react";
 import ConfirmDialog from "../../../components/ConfirmDialog";
 import InfoTip from "../../../components/InfoTip";
 import RowActionsMenu from "../../../components/RowActionsMenu";
+import SuccessSnackbar from "../../../components/SuccessSnackbar";
 import {
   type OrganizationGuardrails as Guardrails,
   connectOrganizationGuardrails,
@@ -64,11 +67,6 @@ export default function OrganizationGuardrails({ organizationName }: { organizat
         )}
       </Stack>
       {error && <Alert severity="error">{error}</Alert>}
-      {notice !== null && (
-        <Alert severity="info" onClose={() => setNotice(null)} sx={{ mb: 2 }}>
-          {notice}
-        </Alert>
-      )}
       {loading ? (
         <CircularProgress />
       ) : data === null ? null : setting ? (
@@ -88,8 +86,17 @@ export default function OrganizationGuardrails({ organizationName }: { organizat
                 label="Policy actions"
                 tabIndex={0}
                 actions={[
-                  { label: "Connect another policy", onClick: () => setSetting(true) },
-                  { label: "Disconnect", onClick: () => setDisconnecting(true), destructive: true },
+                  {
+                    label: "Connect another policy",
+                    icon: <SwapHoriz fontSize="small" />,
+                    onClick: () => setSetting(true),
+                  },
+                  {
+                    label: "Disconnect",
+                    icon: <LinkOffOutlined fontSize="small" />,
+                    onClick: () => setDisconnecting(true),
+                    destructive: true,
+                  },
                 ]}
               />
             }
@@ -123,6 +130,7 @@ export default function OrganizationGuardrails({ organizationName }: { organizat
         onConfirm={disconnect}
         onClose={() => setDisconnecting(false)}
       />
+      <SuccessSnackbar message={notice} onClose={() => setNotice(null)} />
     </Box>
   );
 }

@@ -1,8 +1,6 @@
-import ShieldOutlined from "@mui/icons-material/ShieldOutlined";
-import { Alert, Box, Button, Card, CircularProgress, Link, Stack, Typography } from "@mui/material";
+import { Alert, Box, Button, CircularProgress, Link, Typography } from "@mui/material";
 import type { ReactNode } from "react";
 import { Link as RouterLink } from "react-router";
-import { TableEmptyState } from "../../components/DataTable";
 import { useAuth } from "../../data/AuthContext";
 import { loadWorkspaceGuardrails } from "../../data/api";
 import { useLoad } from "../workspace/useLoad";
@@ -44,31 +42,26 @@ export default function WorkspaceGuardrailsPage() {
         Couldn't load the guardrails: {error}
       </Alert>
     );
-  } else if (!data.checking || data.policy_id === null) {
-    body = (
-      <Card variant="outlined" sx={{ borderRadius: "16px", maxWidth: 640 }}>
-        <Stack spacing={2} sx={{ alignItems: "center", px: 3, py: 6 }}>
-          <ShieldOutlined aria-hidden sx={{ color: "text.secondary" }} />
-          <TableEmptyState title="No guardrails configured">
-            <>Guardrails are set up at the {editLink("organization level")}.</>
-          </TableEmptyState>
-        </Stack>
-      </Card>
-    );
-  } else {
+  } else if (data.checking && data.policy_id !== null) {
     body = <GuardrailPolicyCard policyId={data.policy_id} policyName={data.policy_name} policyUrl={data.policy_url} />;
   }
 
-  const checking = data?.checking === true;
+  const configured = data?.checking === true && data.policy_id !== null;
   return (
     <Box>
       <Box sx={{ mb: 3 }}>
         <Typography variant="h5">Guardrails</Typography>
-        {checking && (
+        {configured ? (
           <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
             Switch Trust checks every message in {workspace}.
-            {capabilities.administersOrganization && <> {editLink("Edit in organization settings")}.</>}
+            {capabilities.administersOrganization && <> Edit in {editLink("organization settings")}.</>}
           </Typography>
+        ) : (
+          data !== null && (
+            <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+              No guardrails configured. Guardrails are configured at the {editLink("organization level")}.
+            </Typography>
+          )
         )}
       </Box>
       {body}
