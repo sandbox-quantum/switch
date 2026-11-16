@@ -85,6 +85,17 @@ describe('main', () => {
     ]);
     vi.unstubAllGlobals();
     expect(code).toBe(EXIT_OK);
+    const output = vi
+      .mocked(process.stdout.write)
+      .mock.calls.map(([chunk]) => String(chunk))
+      .join('');
+    expect(output).toContain('Enrollment');
+    expect(output).toContain('Enrolled as controller controller-1');
+    expect(/Enrolled as controller (\S+)/.exec(output)?.[1]).toBe('controller-1');
+    expect(output).toContain('build-box');
+    expect(output).toContain('Next steps');
+    expect(output).toContain(`switch-agent-controller install-service --data-dir '${dir}'`);
+    expect(output).not.toContain('swcc_test');
     expect(bodies).toHaveLength(1);
     expect(bodies[0]).toMatchObject({
       controller: { kind: 'daemon', name: 'build-box', description: 'The build box in the office' },
