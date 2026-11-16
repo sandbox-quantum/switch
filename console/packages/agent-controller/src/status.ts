@@ -169,6 +169,24 @@ async function readVersion(
   }
 }
 
+/**
+ * Why the sign-in check's process failed, from how it ended and the last line
+ * it printed, rather than the command line, which names the user's home.
+ */
+function probeFailure(error: unknown): string {
+  const failed = error as {
+    killed?: boolean;
+    code?: number | string | null;
+    signal?: string | null;
+    stderr?: string;
+  };
+  const said = typeof failed.stderr === 'string' ? `: ${lastLine(failed.stderr)}` : '';
+  if (failed.killed) return 'it took too long and was stopped.';
+  if (typeof failed.code === 'number') return `it exited ${failed.code}${said}`;
+  if (failed.signal) return `it was stopped by ${failed.signal}${said}`;
+  return errorMessage(error);
+}
+
 function lastLine(output: string): string {
   return (
     output
@@ -471,7 +489,7 @@ export class ProviderStatuses {
       });
       return {
         status: 'unknown',
-        message: `The sign-in check failed: ${errorMessage(error)}`,
+        message: `The sign-in check failed: ${probeFailure(error)}`,
         models: [],
       };
     }

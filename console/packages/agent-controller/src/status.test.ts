@@ -302,7 +302,13 @@ describe('ProviderStatuses when a sign-in check fails', () => {
     const providers = new ProviderStatuses({
       locator: new FakeLocator(),
       runtime: {
-        probe: () => Promise.reject(new Error('the probe exited 1: cannot read the config')),
+        probe: () =>
+          Promise.reject(
+            Object.assign(new Error('Command failed: /Users/someone/bundle.mjs --probe claude'), {
+              code: 3,
+              stderr: 'starting\ncannot read the config\n',
+            })
+          ),
       },
       sealed: null,
       probeCwd: '/tmp',
@@ -314,7 +320,7 @@ describe('ProviderStatuses when a sign-in check fails', () => {
       installed: true,
       auth: 'unknown',
       auth_source: null,
-      auth_problem: 'The sign-in check failed: the probe exited 1: cannot read the config',
+      auth_problem: 'The sign-in check failed: it exited 3: cannot read the config',
     });
   });
 });
