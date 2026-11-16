@@ -313,7 +313,7 @@ export class AgentMigrationService {
     { state: MigrationControllerState; checkedAt: string }
   >();
   private readonly leftAlone = new Set<string>();
-  private readonly unasked = new Set<string>();
+  private readonly unasked = new Map<string, { serverId: string; error: string }>();
   private lastPassAt: string | null = null;
   /** When an agent, or a machine and server, is tried again, and the delay that set it. */
   private readonly retryAt = new Map<string, { at: number; delay: number }>();
@@ -414,7 +414,7 @@ export class AgentMigrationService {
     return {
       machines,
       leftAlone: this.leftAlone.size,
-      unasked: this.unasked.size,
+      unasked: this.unaskedByServer(),
       running: this.migrating !== null,
       lastPassAt: this.lastPassAt,
     };
@@ -473,7 +473,7 @@ export class AgentMigrationService {
           error: message(error),
         });
         this.backOff(`ask:${agent.id}`, now);
-        this.unasked.add(agent.id);
+        this.unasked.set(agent.id, { serverId: agent.serverId, error: message(error) });
         continue;
       }
       this.unasked.delete(agent.id);
@@ -493,7 +493,7 @@ export class AgentMigrationService {
       this.leftAlone.delete(agent.id);
       candidates.push(agent);
     }
-    for (const agentId of [...this.leftAlone, ...this.unasked])
+    for (const agentId of [...this.leftAlone, ...this.unasked.keys()])
       if (!present.has(agentId)) {
         this.leftAlone.delete(agentId);
         this.unasked.delete(agentId);
@@ -501,6 +501,17 @@ export class AgentMigrationService {
     this.groups = groupByController(candidates);
     for (const group of this.groups) await this.migrateGroup(group, now);
     this.lastPassAt = new Date(this.deps.now()).toISOString();
+  }
+
+  private unaskedByServer(): MigrationOverview['unasked'] {
+    const byServer = new Map<string, MigrationOverview['unasked'][number]>();
+    for (const { serverId, error } of this.unasked.values())
+      byServer.set(serverId, {
+        serverId,
+        agents: (byServer.get(serverId)?.agents ?? 0) + 1,
+        error,
+      });
+    return [...byServer.values()];
   }
 
   private controllerState(key: string, state: MigrationControllerState): void {

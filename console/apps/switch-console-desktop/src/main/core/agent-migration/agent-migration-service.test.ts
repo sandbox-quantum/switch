@@ -928,7 +928,7 @@ describe('moving every agent automatically', () => {
     expect(adopted()).toHaveLength(0);
     const overview = await migration.overview();
     expect(overview.leftAlone).toBe(0);
-    expect(overview.unasked).toBe(0);
+    expect(overview.unasked).toEqual([]);
   });
 
   it('counts what it left alone and what it could not ask about', async () => {
@@ -945,7 +945,11 @@ describe('moving every agent automatically', () => {
       },
     });
     await migration.migrateEverything();
-    expect(await migration.overview()).toMatchObject({ leftAlone: 1, unasked: 1, running: false });
+    expect(await migration.overview()).toMatchObject({
+      leftAlone: 1,
+      unasked: [{ serverId: 'server-1', agents: 1, error: 'Agent not found' }],
+      running: false,
+    });
   });
 
   it('does what happens on a machine once for all its agents, not once per agent', async () => {

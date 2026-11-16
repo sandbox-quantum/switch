@@ -94,7 +94,7 @@ export const MigrationSettingsPage = observer(function MigrationSettingsPage() {
           ))}
         </ul>
       )}
-      {data && (data.leftAlone > 0 || data.unasked > 0) && (
+      {data && (data.leftAlone > 0 || data.unasked.length > 0) && (
         <div className="space-y-1 text-xs text-foreground-muted">
           {data.leftAlone > 0 && (
             <p>
@@ -102,13 +102,13 @@ export const MigrationSettingsPage = observer(function MigrationSettingsPage() {
               someone else owns them, or their server has no agent management.
             </p>
           )}
-          {data.unasked > 0 && (
-            <p>
-              Switch could not be asked about {data.unasked}{' '}
-              {data.unasked === 1 ? 'agent' : 'agents'}: the server is stopped or unreachable, or no
-              longer knows the agent. Tried again later.
+          {data.unasked.map(({ serverId, agents, error }) => (
+            <p key={serverId} className="break-words">
+              Switch could not be asked about {agents} {agents === 1 ? 'agent' : 'agents'} on{' '}
+              {serverName(serverId)}: {/[.!?]$/.test(error) ? error : `${error}.`} Tried again
+              later.
             </p>
-          )}
+          ))}
         </div>
       )}
     </div>

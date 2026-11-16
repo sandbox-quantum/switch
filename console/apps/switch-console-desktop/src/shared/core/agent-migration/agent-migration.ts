@@ -124,8 +124,11 @@ export type MigrationOverview = {
   machines: MigrationMachine[];
   /** Agents left as they are: someone else's, or on a server without agent management. */
   leftAlone: number;
-  /** Agents whose server could not be asked whether they can move; tried again later. */
-  unasked: number;
+  /**
+   * Agents whose server could not be asked whether they can move, one entry per
+   * server with the latest error it gave; tried again later.
+   */
+  unasked: { serverId: string; agents: number; error: string }[];
   running: boolean;
   lastPassAt: string | null;
 };
