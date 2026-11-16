@@ -349,7 +349,8 @@ export function sanitiseName(name: string): string {
  * Room files are private to this user: the directory is 0700, tightened if an
  * earlier build left it open, and each file is written 0600 beside its name
  * and renamed onto it, so a link planted at that name is replaced rather than
- * written through.
+ * written through. The file is recorded as downloaded for `mediaDir`, which
+ * `send_attachment` sends even once it has other hard links.
  */
 export async function fetchMediaToFile(
   identity: SwitchIdentity,
@@ -373,14 +374,44 @@ export async function fetchMediaToFile(
     fs.chmodSync(mediaDir, 0o700);
   const dest = path.join(mediaDir, destName);
   const partial = `${dest}.${randomUUID()}.partial`;
-  fs.writeFileSync(partial, bytes, { mode: 0o600, flag: 'wx' });
+  const fd = fs.openSync(partial, 'wx', 0o600);
+  let written: fs.Stats;
+  try {
+    fs.writeFileSync(fd, bytes);
+    written = fs.fstatSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
   try {
     fs.renameSync(partial, dest);
   } catch (err) {
     fs.rmSync(partial, { force: true });
     throw err;
   }
+  downloadsIn(mediaDir).add(fileKey(written));
   return dest;
+}
+
+/**
+ * The files this process downloaded into each media directory, by device and
+ * inode rather than by name, so a file stays one of them whatever it is
+ * renamed or linked to, and no other file becomes one by taking its name.
+ * Kept in memory: after a restart, earlier downloads are files like any other.
+ */
+const downloads = new Map<string, Set<string>>();
+
+function downloadsIn(mediaDir: string): Set<string> {
+  const key = path.resolve(mediaDir);
+  let files = downloads.get(key);
+  if (!files) {
+    files = new Set();
+    downloads.set(key, files);
+  }
+  return files;
+}
+
+function fileKey(stats: fs.Stats): string {
+  return `${stats.dev}:${stats.ino}`;
 }
 
 const NOT_CONNECTED: ToolResult = {
@@ -458,19 +489,31 @@ const MIME_BY_EXT: Record<string, string> = {
 };
 
 /**
- * Where `send_attachment` reads `filePath` from, or why it will not.
+ * Opens a file without following a link at its last component, and without
+ * waiting on a FIFO for a writer. The flags that do not exist on Windows are 0.
+ */
+const READ_FLAGS =
+  fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0);
+
+/**
+ * The bytes `send_attachment` posts for `filePath`, or why it will not.
+ * Throws when the file cannot be read.
  *
  * The tool reads in the session host, outside any provider's sandbox, and
  * runs without asking in every runtime mode, so it sends only a file inside
  * the session's working directory or the directory `download_attachment`
  * writes to. Symbolic links are followed first, so a link inside either to a
- * file elsewhere is refused too. Anything else would let the agent post a
- * file its own tools would have had to ask to read.
+ * file elsewhere is refused too. So is a file with more than one hard link,
+ * unless this process downloaded it for the session: its other names could
+ * be anywhere, and nothing says where. The link count is read from the file
+ * as opened, so it cannot change between the check and the read. Anything
+ * else would let the agent post a file its own tools would have had to ask
+ * to read.
  */
-export function sendableAttachment(
+function attachmentToSend(
   ctx: CallerContext,
   filePath: string
-): { path: string } | { refused: string } {
+): { bytes: Buffer } | { refused: string } {
   const real = fs.realpathSync(path.resolve(ctx.cwd, filePath));
   const roots = [ctx.cwd, ctx.mediaDir].flatMap((root) => {
     try {
@@ -479,18 +522,37 @@ export function sendableAttachment(
       return [];
     }
   });
-  if (roots.some((root) => isWithin(root, real))) return { path: real };
-  return {
-    refused:
-      `Refused to send ${filePath}: it is ${real}, which is outside this session's working ` +
-      `directory (${ctx.cwd}) and its downloaded attachments (${ctx.mediaDir}). ` +
-      'send_attachment sends files from those two places only. Copy the file into the ' +
-      'working directory, then send the copy.',
-  };
+  if (!roots.some((root) => isWithin(root, real)))
+    return {
+      refused:
+        `Refused to send ${filePath}: it is ${real}, which is outside this session's working ` +
+        `directory (${ctx.cwd}) and its downloaded attachments (${ctx.mediaDir}). ` +
+        'send_attachment sends files from those two places only. Copy the file into the ' +
+        'working directory, then send the copy.',
+    };
+  const fd = fs.openSync(real, READ_FLAGS);
+  try {
+    const stats = fs.fstatSync(fd);
+    if (!stats.isFile()) throw new Error(`${real} is not a regular file`);
+    if (stats.nlink > 1 && !downloadsIn(ctx.mediaDir).has(fileKey(stats)))
+      return {
+        refused:
+          `Refused to send ${filePath}: it has ${stats.nlink} hard links, so the same file ` +
+          `may also be somewhere outside this session's working directory (${ctx.cwd}), and ` +
+          'send_attachment cannot tell where. Copy it into the working directory (a copy is ' +
+          'a file of its own), then send the copy.',
+      };
+    return { bytes: fs.readFileSync(fd) };
+  } finally {
+    fs.closeSync(fd);
+  }
 }
 
+/** `target` is inside `root`, ignoring case where the file system does (macOS and Windows). */
 function isWithin(root: string, target: string): boolean {
-  const relative = path.relative(root, target);
+  const fold = (value: string) =>
+    process.platform === 'darwin' || process.platform === 'win32' ? value.toLowerCase() : value;
+  const relative = path.relative(fold(root), fold(target));
   return (
     relative !== '' &&
     relative !== '..' &&
@@ -528,10 +590,10 @@ async function sendAttachmentTool(
     const resolved = path.resolve(ctx.cwd, filePath);
     let bytes: Buffer;
     try {
-      const source = sendableAttachment(ctx, filePath);
+      const source = attachmentToSend(ctx, filePath);
       if ('refused' in source)
         return { isError: true, content: [{ type: 'text', text: source.refused }] };
-      bytes = fs.readFileSync(source.path);
+      bytes = source.bytes;
     } catch (err) {
       return {
         isError: true,
