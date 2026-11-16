@@ -268,6 +268,36 @@ async def revoke_box_controllers(
     return revoked
 
 
+async def box_deleted(
+    session: AsyncSession, machine: CloudMachine, now: datetime
+) -> None:
+    """A box machine wanted deleted whose box is at 0 counts as deleted: the
+    box scaler never deletes a box, so this is the box's equivalent of a v1
+    machine's terminate. Its disk is still in the cluster, so a durable
+    `hosted.box_to_remove` entry names it for the removal step: the machine
+    id and the owner's keyed id only. The caller holds the machine's lock and
+    commits."""
+    from switch_core.visibility.dependencies import process_keyed_id_key
+    from switch_core.visibility.keyed_id import KeyedIdKind
+
+    machine.state = "deleted"
+    machine.error = None
+    machine.error_code = None
+    machine.updated_at = now
+    key = process_keyed_id_key()
+    details: dict[str, str] = {"machine_id": machine.id}
+    if key is not None:
+        details["user"] = key.keyed_id(KeyedIdKind.USER, machine.owner_id)
+    await record_server_audit_event(
+        session,
+        actor_user_id=None,
+        action=ServerAuditAction.HOSTED_BOX_TO_REMOVE,
+        target_type="box",
+        target_id=_keyed_box(machine.id),
+        details=details,
+    )
+
+
 class CloudMachineStore:
     async def get(self, session: AsyncSession, machine_id: str) -> CloudMachine | None:
         return await session.get(CloudMachine, machine_id, populate_existing=True)

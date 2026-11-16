@@ -613,3 +613,71 @@ async def test_a_box_revoke_that_fails_never_stops_a_purge(
     assert not [n for n, _ in signals.published if n == "controller.revoked"]
     (line,) = [r for r in caplog.records if "box controllers" in r.getMessage()]
     assert "secret" not in line.getMessage() and "(RuntimeError)" in line.getMessage()
+
+
+@pytest.mark.parametrize("backend", ["box", "vm"])
+async def test_a_purge_with_a_box_machine_finishes_once_its_box_is_at_zero(
+    session_factory: async_sessionmaker[AsyncSession], backend: str
+) -> None:
+    """A box is never deleted by the scaler, only scaled to 0 and reported
+    `stopped`, which Core counts as deleted: the purge then finishes, and a
+    durable entry naming the box's disk for removal outlives it. A v1
+    machine's `stopped` is not its deletion, and it writes no entry."""
+    from switch_core.db.audit import ServerAuditAction
+    from switch_core.db.models import ServerAuditEvent
+    from switch_core.gateway.hosted_controller import Observation, observe
+
+    organization_id, (workspace,) = await _organization(session_factory, 1)
+    alice = await _person(session_factory, "alice", [workspace], organization_id)
+    async with tenant_session(session_factory, workspace) as session:
+        machine = await seed_machine(
+            session,
+            owner_id=alice,
+            state="ready",
+            desired_state="running",
+            stop_reason=None,
+            revision=3,
+        )
+        machine.backend = backend
+        await session.commit()
+        machine_id = machine.id
+    purge, _installer, _ = _purge(session_factory)
+
+    first = await purge.run(await purge.plan(organization_id), "TICKET-4")
+    assert not first.finished
+    # The controller's `stopped` report, as the box scaler sends it at 0.
+    async with session_factory() as session:
+        wanted = await session.get(CloudMachine, machine_id)
+        assert wanted is not None and wanted.desired_state == "deleted"
+        revision = wanted.revision
+    async with session_factory() as session:
+        await observe(
+            machine_id, Observation(state="stopped", revision=revision), session
+        )
+
+    second = await purge.run(await purge.plan(organization_id), "TICKET-4")
+    entries = await _count(
+        session_factory,
+        ServerAuditEvent,
+        ServerAuditEvent.action == ServerAuditAction.HOSTED_BOX_TO_REMOVE,
+    )
+    purged = [
+        details
+        for action, details in (await _server_audit(session_factory)).values()
+        if action == ServerAuditAction.ORGANIZATION_PURGED
+    ]
+    if backend == "box":
+        assert second.finished
+        assert await _count(session_factory, Tenant, Tenant.id == workspace) == 0
+        assert entries == 1  # once for the box, and it outlives the purge
+        # Finished, but never silently: the disk left behind is counted.
+        assert second.warnings == [
+            "1 box disk(s) await manual removal, listed in the operator audit "
+            "log as hosted.box_to_remove."
+        ]
+        [details] = purged
+        assert details["boxes_awaiting_removal"] == 1
+    else:
+        assert not second.finished  # waits for its real `deleted` report
+        assert entries == 0
+        assert purged == []

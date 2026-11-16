@@ -191,6 +191,11 @@ class ServerAuditAction(StrEnum):
     HOSTED_BOX_PROVISION = "hosted.box_provision"
     # A user's cleaned-up machine row brought back, same id, for a new box.
     HOSTED_BOX_REVIVED = "hosted.box_revived"
+    # A deleted machine's box was scaled to 0, so Core counts the machine
+    # deleted, but its disk (the person's files and saved logins) is still in
+    # the cluster until it's removed. Server-wide, so it outlives a workspace
+    # purge; the box removal runbook lists these.
+    HOSTED_BOX_TO_REMOVE = "hosted.box_to_remove"
     # Operator alerts: one row per raise and per clear, with no actor.
     # `alert.` is one of the operators' log's prefixes; it leaves them out
     # unless asked for.

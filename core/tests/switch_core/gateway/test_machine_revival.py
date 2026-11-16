@@ -468,3 +468,72 @@ async def test_a_v1_machine_deleted_at_retention_keeps_its_controller_as_before(
             AgentController, controller_id, populate_existing=True
         )
         assert controller is not None and controller.revoked_at is None
+
+    # Its `stopped` is not its deletion, and it lists no disk for removal.
+    await _report_stopped(factory, machine_id)
+    async with factory() as session:
+        machine = await session.get(CloudMachine, machine_id)
+        assert machine is not None and machine.state == "stopped"
+    assert await _box_to_remove(factory) == []
+
+
+@pytest.mark.usefixtures("hosted_v2_on")
+async def test_a_box_deleted_at_retention_and_at_zero_is_revived_on_the_next_claim(
+    harness: Harness,
+) -> None:
+    """The real path, not a hand-set `deleted`: retention marks it deleted, the
+    box scaler's `stopped` at 0 makes Core count it deleted and list its disk
+    for removal, and the owner's next claim brings the same row back, the
+    removal entry kept."""
+    factory = harness.session_factory
+    owner = await add_member(factory, "ada")
+    machine_id, _controller_id = await _enrolled_machine(harness, owner)
+    await _expire_retention(harness, machine_id)
+    async with factory() as session:
+        machine = await session.get(CloudMachine, machine_id)
+        assert machine is not None and machine.desired_state == "deleted"
+        assert machine.state != "deleted"  # the box scaler never reports it
+
+    await _report_stopped(factory, machine_id)
+
+    async with factory() as session:
+        machine = await session.get(CloudMachine, machine_id)
+        assert machine is not None and machine.state == "deleted"
+    [entry] = await _box_to_remove(factory)
+    assert entry.details is not None and entry.details["machine_id"] == machine_id
+
+    revived = await _claim(factory, owner)
+
+    assert revived.id == machine_id
+    assert revived.state == "queued" and revived.desired_state == "running"
+    assert len(await _box_to_remove(factory)) == 1  # still to be removed
+
+
+async def _report_stopped(
+    factory: async_sessionmaker[AsyncSession], machine_id: str
+) -> None:
+    """The controller's `stopped` report for the machine's current revision,
+    as the box scaler sends it once a box is at 0."""
+    from switch_core.gateway.hosted_controller import Observation, observe
+
+    async with factory() as session:
+        machine = await session.get(CloudMachine, machine_id)
+        assert machine is not None
+        revision = machine.revision
+    async with factory() as session:
+        await observe(
+            machine_id, Observation(state="stopped", revision=revision), session
+        )
+
+
+async def _box_to_remove(
+    factory: async_sessionmaker[AsyncSession],
+) -> list[ServerAuditEvent]:
+    async with factory() as session:
+        return list(
+            await session.scalars(
+                select(ServerAuditEvent).where(
+                    ServerAuditEvent.action == ServerAuditAction.HOSTED_BOX_TO_REMOVE
+                )
+            )
+        )

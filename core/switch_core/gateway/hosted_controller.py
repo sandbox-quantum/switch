@@ -24,6 +24,7 @@ from switch_core.db.stores.hosted_machine_store import (
     CloudMachineStore,
     WorkspaceOnMachine,
     admin_stopped,
+    box_deleted,
     bump_revision,
     ever_hosted,
     idle_sleeping,
@@ -832,6 +833,19 @@ async def observe(
             machine.updated_at = now
         # Commits even with nothing changed, so the error counts above count,
         # and box facts are kept whichever branch ran, an ignored observation too.
+        await session.commit()
+        return machine_item(machine)
+    if (
+        body.state == "stopped"
+        and machine.backend == "box"
+        and machine.desired_state == "deleted"
+        and machine.state != "deleted"
+    ):
+        # The box scaler never deletes a box: at 0 it reports `stopped`, so
+        # that's when a box machine wanted deleted counts as deleted, whatever
+        # state (an error included) it was in. Its disk is still there, and
+        # `box_deleted` records that it needs removing.
+        await box_deleted(session, machine, now)
         await session.commit()
         return machine_item(machine)
     if machine.state == "deleted" or (

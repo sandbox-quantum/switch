@@ -15,8 +15,10 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.db.audit import ServerAuditAction
 from switch_core.db.models import CloudMachine, ServerAuditEvent
 from switch_core.db.stores.hosted_machine_store import CloudMachineStore
 from switch_core.db.stores.ownership_lease_store import OwnershipLeaseStore
@@ -575,3 +577,74 @@ async def test_of_two_processes_only_one_runs_the_sweep(
     assert len(sweeping) == 1
     for ownership, _ in processes:
         await ownership.stop()
+
+
+async def _box_to_remove(app) -> list[ServerAuditEvent]:
+    async with app.factory() as session:
+        rows = await session.scalars(
+            select(ServerAuditEvent).where(
+                ServerAuditEvent.action == ServerAuditAction.HOSTED_BOX_TO_REMOVE
+            )
+        )
+        return list(rows)
+
+
+async def _want_deleted(app, *, state: str, backend: str = "box") -> int:
+    async with app.factory() as session:
+        machine = await CloudMachineStore().locked(session, app.machine_id)
+        assert machine is not None
+        machine.backend = backend
+        machine.state = state
+        machine.desired_state = "deleted"
+        machine.revision += 1
+        await session.commit()
+        return machine.revision
+
+
+async def _report(app, state: str, revision: int) -> None:
+    reported = await app.client.post(
+        f"/hosted-controller/machines/{app.machine_id}/observation",
+        headers=_bearer(TOKEN),
+        json={"state": state, "revision": revision},
+    )
+    assert reported.status_code == 200, reported.text
+
+
+@pytest.mark.usefixtures("hosted_v2_on")
+@pytest.mark.parametrize("state", ["stopped", "stopping", "error"])
+async def test_a_deleted_box_at_zero_counts_as_deleted_and_is_listed_for_removal(
+    provisioner_app,  # noqa: F811
+    state: str,
+) -> None:
+    """The box scaler reports a deleted box as `stopped` once it's at 0, never
+    `deleted`: that's when Core counts the machine deleted, from any state,
+    and records once that its disk still needs removing."""
+    app = provisioner_app
+    revision = await _want_deleted(app, state=state)
+    await _report(app, "stopped", revision)
+    machine = await _machine(app)
+    assert machine.state == "deleted"
+    [entry] = await _box_to_remove(app)
+    assert entry.actor_user_id is None and entry.target_type == "box"
+    assert entry.target_id == KEY.keyed_id(KeyedIdKind.BOX, app.machine_id)
+    assert entry.details == {
+        "machine_id": app.machine_id,
+        "user": KEY.keyed_id(KeyedIdKind.USER, app.owner.id),
+    }
+    assert app.owner.email not in repr(entry.details)
+
+    await _report(app, "stopped", revision)  # reported again: nothing more
+    assert len(await _box_to_remove(app)) == 1
+
+
+@pytest.mark.usefixtures("hosted_v2_on")
+async def test_a_v1_machine_reported_stopped_waits_for_its_real_deleted_report(
+    provisioner_app,  # noqa: F811
+) -> None:
+    app = provisioner_app
+    revision = await _want_deleted(app, state="stopping", backend="vm")
+    await _report(app, "stopped", revision)
+    assert (await _machine(app)).state == "stopped"
+    await _report(app, "deleted", revision)
+    assert (await _machine(app)).state == "deleted"
+    assert await _box_to_remove(app) == []

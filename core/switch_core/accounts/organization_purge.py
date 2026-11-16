@@ -364,6 +364,14 @@ class OrganizationPurge:
         await self._tear_down_machines(plan.machines, outcome)
         if outcome.waiting:
             return outcome
+        boxes = await self._boxes_awaiting_removal(plan.machines)
+        if boxes:
+            # Gone from Switch, but each box's disk is still in the cluster
+            # until the runbook's manual step: never a silent "finished".
+            outcome.warnings.append(
+                f"{boxes} box disk(s) await manual removal, listed in the "
+                "operator audit log as hosted.box_to_remove."
+            )
 
         await self._record_start(plan, request)
         for workspace in plan.workspaces:
@@ -373,7 +381,7 @@ class OrganizationPurge:
             await self._purge_workspace(workspace, members, request)
         await self._detach_machines(plan.detached_machines)
         if not plan.resuming:
-            await self._delete_organization(plan, request)
+            await self._delete_organization(plan, request, boxes)
         for account in plan.deleted_accounts:
             await self._delete_account(account, plan, request, outcome)
         outcome.finished = True
@@ -731,7 +739,28 @@ class OrganizationPurge:
                 "Took cloud machine %s off the organization's workspaces", machine_id
             )
 
-    async def _delete_organization(self, plan: PurgePlan, request: str) -> None:
+    async def _boxes_awaiting_removal(self, machine_ids: list[str]) -> int:
+        """The purge's box machines counted deleted (`box_deleted`), each with
+        a disk left in the cluster for the manual removal step."""
+        if not machine_ids:
+            return 0
+        async with self.session_factory() as session:
+            return (
+                await session.scalar(
+                    select(func.count())
+                    .select_from(CloudMachine)
+                    .where(
+                        CloudMachine.id.in_(machine_ids),
+                        CloudMachine.backend == "box",
+                        CloudMachine.state == "deleted",
+                    )
+                )
+                or 0
+            )
+
+    async def _delete_organization(
+        self, plan: PurgePlan, request: str, boxes_awaiting_removal: int
+    ) -> None:
         scoped = organization_scoped_tables(Base.metadata)
         async with organization_session(
             self.session_factory, plan.organization_id
@@ -786,6 +815,7 @@ class OrganizationPurge:
                     "customer_id": plan.customer_id,
                     "workspaces": [workspace.id for workspace in plan.workspaces],
                     "request": request,
+                    "boxes_awaiting_removal": boxes_awaiting_removal,
                 },
             )
             await session.commit()
