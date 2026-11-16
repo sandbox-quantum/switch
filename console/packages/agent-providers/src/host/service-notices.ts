@@ -51,7 +51,7 @@ export function ungrantedRepositoryNotice(
 
 /** The notice for a service the session could not get through Switch; `fallback` as above. */
 export function serviceFallbackNotice(service: string, reason: string, fallback: boolean): string {
-  const name = service === 'github' ? 'GitHub' : service;
+  const name = serviceName(service);
   const why = `${name} through Switch is unavailable in this session (${reason.replace(/\.$/, '')})`;
   return fallback
     ? `${why}, so ${service === 'github' ? 'git and gh use' : 'it uses'} this machine's own ${name} sign-in instead, if it has one.`
@@ -72,6 +72,7 @@ export function serviceName(service: string): string {
     datadog: 'Datadog',
     github: 'GitHub',
     'google-workspace': 'Google Workspace',
+    notion: 'Notion',
     sentry: 'Sentry',
   };
   return names[service] ?? service;
@@ -85,15 +86,17 @@ function listed(names: string[]): string {
 
 /**
  * What a session restarted for a change to its agent's grants is told: the
- * services that went and came. The host cannot tell a service switched off
- * for the workspace from a grant removed, so a removal names both.
+ * services that went and came. Switch leaves a grant out once no token for
+ * it would be handed out, and the host cannot tell why, so a removal names
+ * each cause: the workspace switched it off, the server can no longer hand it
+ * out (switched off there, or its app removed), or the grant was removed.
  */
 export function servicesChangedNotice(removed: string[], added: string[]): string | null {
   const sentences: string[] = [];
   if (removed.length > 0) {
     const one = removed.length === 1;
     sentences.push(
-      `${listed(removed.map(serviceName))} ${one ? 'was' : 'were'} removed from this agent's tools: ${one ? 'it was' : 'each was'} switched off for the workspace, or its grant was removed.`
+      `${listed(removed.map(serviceName))} ${one ? 'was' : 'were'} removed from this agent's tools: ${one ? 'it was' : 'each was'} switched off for the workspace, can no longer be used on this Switch server, or ${one ? 'its grant was' : 'had its grant'} removed.`
     );
   }
   if (added.length > 0)

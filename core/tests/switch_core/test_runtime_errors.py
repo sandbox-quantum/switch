@@ -189,10 +189,16 @@ def _uvicorn_like(app: Any) -> Any:
 
 
 async def test_one_unhandled_exception_is_one_error_line(
-    registry: MetricsRegistry, caplog: pytest.LogCaptureFixture
+    registry: MetricsRegistry,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The server's own ERROR line stays the only one, so an error-count alert
     counts each exception once; ours is a WARNING beside it."""
+    # A `uvicorn.Config` built earlier in the run (as the signal tests build
+    # one) stops the `uvicorn` logger propagating, which would hide the
+    # server's line from caplog.
+    monkeypatch.setattr(logging.getLogger("uvicorn"), "propagate", True)
     transport = httpx.ASGITransport(
         app=_uvicorn_like(_app()), raise_app_exceptions=False
     )

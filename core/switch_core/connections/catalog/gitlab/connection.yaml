@@ -40,6 +40,12 @@ auth:
     authorization_url: https://gitlab.com/oauth/authorize
     token_url: https://gitlab.com/oauth/token
     revocation_url: https://gitlab.com/oauth/revoke
+    # Revoking the refresh token also ends the current access token and the
+    # one before it (both then answer 401 invalid_token). Agents hold those
+    # same tokens, so a disconnect ends their access too. No older one is
+    # still valid: Switch renews a token 15 minutes before its two hours end
+    # (PASS_THROUGH_REFRESH_BEFORE), so at most two are live at once.
+    revocation_ends_tokens: true
   # GET /api/v4/user needs read_user, which both levels carry and which a
   # dynamically registered client could never be given.
   identity:

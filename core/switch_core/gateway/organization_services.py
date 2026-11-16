@@ -125,14 +125,16 @@ def _setting_body(setting: OrganizationSetting | None) -> dict[str, bool] | None
 
 async def _reach(
     session_factory: async_sessionmaker[AsyncSession],
+    broker: ServiceBroker,
     workspaces: list[Tenant],
     settings: dict[str, OrganizationSetting],
 ) -> tuple[dict[str, int], dict[str, int], dict[str, int]]:
     """For each service: in how many of the workspaces it is on, in how many
     their admin set it themselves, and how many people, each once, have it
-    connected across them. A workspace's rows are readable only bound to it,
-    so each is read on its own short session, in two queries, a few at a time,
-    after the request's has let its connection go."""
+    connected across them, counted as the workspace's own page counts them.
+    A workspace's rows are readable only bound to it, so each is read on its
+    own short session, a few at a time, after the request's has let its
+    connection go."""
     services = _services()
 
     async def visit(
@@ -140,15 +142,24 @@ async def _reach(
     ) -> tuple[dict[str, tuple[ServiceSwitch, bool]], list[tuple[str, str]]]:
         async with tenant_session(session_factory, workspace.id) as session:
             switches = await WORKSPACES.switches_under(session, services, settings)
-            connected = await session.execute(
-                select(ServiceConnection.service, ServiceConnection.user_id)
-                .where(
-                    ServiceConnection.tenant_id == workspace.id,
-                    ServiceConnection.status == "active",
+            connections = list(
+                await session.scalars(
+                    select(ServiceConnection).where(
+                        ServiceConnection.tenant_id == workspace.id
+                    )
                 )
-                .distinct()
             )
-            return switches, list(connected.tuples())
+            standings = {
+                service: await broker.standing(session, service)
+                for service in {connection.service for connection in connections}
+            }
+            connected = [
+                (connection.service, connection.user_id)
+                for connection in connections
+                if broker.connection_status(standings[connection.service], connection)
+                == "active"
+            ]
+            return switches, connected
 
     on: dict[str, int] = {}
     own: dict[str, int] = {}
@@ -317,6 +328,7 @@ async def list_organization_services(
     )
     on, own, connected = await _reach(
         session_factory,
+        broker,
         workspaces,
         {service: _setting_of(row) for service, row in settings.items()},
     )

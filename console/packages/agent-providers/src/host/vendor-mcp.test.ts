@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { HttpMcpServerSpec } from '../adapter';
 import { Redactions } from './redaction';
 import { type ServiceGrant, serviceGrantSchema, type ServiceTokenAnswer } from './service-access';
+import { ServiceNotices } from './service-notices';
 import type { HostAsk } from './session-channel';
 import { startVendorServers, textResult, type VendorServers } from './vendor-mcp';
 
@@ -94,19 +95,23 @@ async function started(
   answers: ServiceTokenAnswer[],
   fetchImpl: typeof fetch,
   listTimeoutMs = 5_000
-): Promise<VendorServers & { asked: HostAsk[]; redactions: Redactions }> {
+): Promise<VendorServers & { asked: HostAsk[]; redactions: Redactions; shown: string[] }> {
   const parent = host(answers);
   const redactions = new Redactions();
+  const notices = new ServiceNotices();
+  const shown: string[] = [];
+  notices.attach(async (message) => void shown.push(message));
   const vendors = await startVendorServers({
     grants,
     ask: parent.ask,
     redactions,
+    notices,
     listTimeoutMs,
     callTimeoutMs: 5_000,
     fetch: fetchImpl,
   });
   servers.push(vendors);
-  return { ...vendors, asked: parent.asked, redactions };
+  return { ...vendors, asked: parent.asked, redactions, shown };
 }
 
 const token = (value: string): ServiceTokenAnswer => ({
@@ -194,6 +199,81 @@ describe('a granted vendor’s MCP servers', () => {
     );
   });
 
+  it('tells the session why, once, when Switch refuses the token', async () => {
+    const { server } = await vendor();
+    const refused: ServiceTokenAnswer = {
+      kind: 'refused',
+      code: 'unavailable',
+      message: 'Notion is held back for now.',
+      final: false,
+    };
+    const vendors = await started(
+      [grant('notion', [{ name: 'notion', url: VENDOR_URL }])],
+      [refused, refused],
+      routedTo(server.url, [])
+    );
+    const tool = await client(vendors.specs.notion!);
+    await expect(tool.listTools()).rejects.toThrow('Notion is held back for now.');
+    await expect(tool.listTools()).rejects.toThrow('Notion is held back for now.');
+    expect(vendors.asked).toHaveLength(2);
+    expect(vendors.shown).toEqual([
+      'Notion through Switch is unavailable in this session (Notion is held back for now).',
+    ]);
+  });
+
+  it('tells the session each different reason Switch refuses the token', async () => {
+    const { server } = await vendor();
+    const refused = (message: string): ServiceTokenAnswer => ({
+      kind: 'refused',
+      code: 'unavailable',
+      message,
+      final: false,
+    });
+    const vendors = await started(
+      [grant('example', [{ name: 'example', url: VENDOR_URL }])],
+      [refused('Held back.'), refused('Reconnect it.')],
+      routedTo(server.url, [])
+    );
+    const tool = await client(vendors.specs.example!);
+    await expect(tool.listTools()).rejects.toThrow('Held back.');
+    await expect(tool.listTools()).rejects.toThrow('Reconnect it.');
+    expect(vendors.shown).toEqual([
+      'example through Switch is unavailable in this session (Held back).',
+      'example through Switch is unavailable in this session (Reconnect it).',
+    ]);
+  });
+
+  it('tells the session why when Switch refuses the token for a tool call', async () => {
+    const { server } = await vendor();
+    const vendors = await started(
+      [grant('example', [{ name: 'example', url: VENDOR_URL }])],
+      [token(GOOD), { kind: 'refused', code: 'unavailable', message: 'Held back.', final: false }],
+      routedTo(server.url, [])
+    );
+    const tool = await client(vendors.specs.example!);
+    await tool.listTools();
+    const called = await tool.callTool({ name: 'search_items', arguments: {} });
+    expect(called).toEqual({
+      isError: true,
+      content: [{ type: 'text', text: 'search_items failed: Held back.' }],
+    });
+    expect(vendors.asked).toHaveLength(2);
+    expect(vendors.shown).toEqual([
+      'example through Switch is unavailable in this session (Held back).',
+    ]);
+  });
+
+  it('raises no notice when the token works', async () => {
+    const { server } = await vendor();
+    const vendors = await started(
+      [grant('example', [{ name: 'example', url: VENDOR_URL }])],
+      [token(GOOD)],
+      routedTo(server.url, [])
+    );
+    await (await client(vendors.specs.example!)).listTools();
+    expect(vendors.shown).toEqual([]);
+  });
+
   it('keeps one vendor’s failure to itself, and gives up on one that does not answer', async () => {
     const { server } = await vendor();
     const hanging: typeof fetch = (_url, init) =>
@@ -222,6 +302,7 @@ describe('a granted vendor’s MCP servers', () => {
       grants: [grant('example', [{ name: 'example', url: VENDOR_URL }])],
       ask: () => new Promise(() => {}),
       redactions: new Redactions(),
+      notices: new ServiceNotices(),
       listTimeoutMs: 300,
       callTimeoutMs: 300,
       fetch: () => Promise.reject(new Error('the vendor is not reached')),
@@ -321,6 +402,7 @@ describe('a granted vendor’s MCP servers', () => {
         grants: [grant('example', [{ name: 'example', url: 'http://mcp.example.test/mcp' }])],
         ask: async () => null,
         redactions: new Redactions(),
+        notices: new ServiceNotices(),
         listTimeoutMs: 1_000,
         callTimeoutMs: 1_000,
         fetch,

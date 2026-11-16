@@ -14,7 +14,7 @@ from types import SimpleNamespace
 from typing import cast
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.connections.app_credentials import ConnectorApps
@@ -31,6 +31,7 @@ from switch_core.db.models import (
     Organization,
     OrganizationAuditEvent,
     OrganizationMember,
+    ServiceConnection,
     Tenant,
     User,
     require_tenant_id,
@@ -400,6 +401,8 @@ async def _connected_in(session_factory, user: User, tenant_id: str) -> None:
             external_identity=user.name,
             encrypted_secret=TEST_KEYRING.encrypt("{}"),
             oauth_client_id=None,
+            method="oauth",
+            choices={},
         )
         await session.commit()
 
@@ -512,6 +515,27 @@ class TestWhatThePagesSay:
         ada = await add_member(session_factory, "ada")
         await _connected_in(session_factory, ada, TENANT_ZERO_ID)
         await _connected_in(session_factory, ada, SIBLING)
+        organization = _by_slug(await _call(harness, admin, "GET", ORGANIZATION))
+        assert organization["github"]["connected_members"] == 1
+
+    async def test_a_connection_that_needs_reconnecting_is_not_counted(
+        self, harness: Harness, vendor: FakeVendor, session_factory
+    ) -> None:
+        """Counted as the workspace page counts: one made through an app since
+        replaced reaches nothing until reconnected."""
+        admin = await _org_admin(session_factory)
+        ada = await add_member(session_factory, "ada")
+        bob = await add_member(session_factory, "bob")
+        await _connected_in(session_factory, ada, TENANT_ZERO_ID)
+        await _connected_in(session_factory, bob, SIBLING)
+        async with tenant_session(session_factory, TENANT_ZERO_ID) as session:
+            await session.execute(
+                update(ServiceConnection)
+                .where(ServiceConnection.user_id == ada.id)
+                .values(oauth_client_id="old-client")
+            )
+            await session.commit()
+        vendor.client_id = "new-client"
         organization = _by_slug(await _call(harness, admin, "GET", ORGANIZATION))
         assert organization["github"]["connected_members"] == 1
 

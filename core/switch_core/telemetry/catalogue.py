@@ -748,6 +748,12 @@ CATALOGUE: Mapping[str, Mapping[str, PropertyType]] = {
     "room_role_defined": {"exclusive": BOOLEAN},
     "room_role_deleted": {},
     "room_users_added": {"user_count": NUMBER},
+    # People taken out of a room: by someone through Switch ("user"), or
+    # because their platform said they left the channel ("platform").
+    "room_users_removed": {
+        "user_count": NUMBER,
+        "removed_by_kind": one_of("user", "platform"),
+    },
     # The inverse of the attaches: tried and dropped, as against never used.
     "reference_detached_from_room": {"reference_type": REFERENCE_TYPE},
     "document_detached_from_room": {},

@@ -14,13 +14,12 @@ from fastapi import Depends, HTTPException, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from starlette.requests import HTTPConnection
 
+from switch_core import room_admins, room_policy
+from switch_core.archived_workspace import WORKSPACE_ARCHIVED, archived_since
 from switch_core.authz import (
     ORGANIZATION_ADMIN_ROLE,
     ORGANIZATION_ADMIN_TENANT_ROLE,
-    Action,
     Principal,
-    can_unlink_from_room,
-    require,
     require_group_filing,
 )
 from switch_core.config import SwitchConfig
@@ -52,6 +51,7 @@ from switch_core.gateway.schemas import (
 )
 from switch_core.keys import Keyring, KeyringError, Purpose
 from switch_core.logging_context import log_context
+from switch_core.room_policy import RoomAction, RoomCaller, RoomDecision
 from switch_core.tenant_context import tenant_scope
 
 logger = logging.getLogger(__name__)
@@ -81,6 +81,8 @@ SESSION_MAX_AGE = datetime.timedelta(days=14)
 TENANT_SELECTION_REQUIRED = "tenant_selection_required"
 TENANT_SELECTION_INVALID = "tenant_selection_invalid"
 TENANT_MEMBERSHIP_UNRESOLVED = "tenant_membership_unresolved"
+# The workspace a member's session names, or their only one, was archived.
+TENANT_ARCHIVED = "tenant_archived"
 
 
 SIGNUP_REFUSED_DETAIL = "New Switch accounts are not available in your country."
@@ -343,6 +345,21 @@ async def session_is_current(
     return current == session_version
 
 
+async def session_still_enters(
+    session_factory: async_sessionmaker[AsyncSession],
+    user_store: UserStore,
+    user_id: str,
+    session_version: int,
+    tenant_id: str,
+) -> bool:
+    """`session_is_current`, and the session's workspace still one the person
+    may enter: not left, removed from or archived since the socket or stream
+    asking was opened (`may_bind_tenant`)."""
+    return await session_is_current(
+        session_factory, user_store, user_id, session_version
+    ) and await may_bind_tenant(session_factory, user_store, user_id, tenant_id)
+
+
 async def _require_user_exists(
     session_factory: async_sessionmaker[AsyncSession],
     user_store: UserStore,
@@ -401,6 +418,37 @@ async def get_authenticated_session(
     return AuthenticatedSession(
         user_id=payload["sub"], tenant_claim=payload.get("tenant_id")
     )
+
+
+async def session_belongs_to(
+    request: Request,
+    session_factory: async_sessionmaker[AsyncSession],
+    user_store: UserStore,
+    config: SwitchConfig,
+    *,
+    user_id: str,
+    tenant_id: str,
+) -> bool:
+    """Whether the request carries `user_id`'s current session, and they may
+    still bind `tenant_id`, as `get_current_user` would let them: a member, an
+    organization admin over it, or the platform operator.
+
+    For a route a browser reaches with or without a session, which acts for a
+    person and workspace it already knows rather than for whoever is signed
+    in: a sign-in's return from a vendor (`gateway/service_flows.py`). A
+    missing, expired or ended session is False, not an error.
+    """
+    try:
+        caller = await get_authenticated_session(
+            request, session_factory, user_store, config
+        )
+    except HTTPException:
+        return False
+    if caller.user_id != user_id:
+        return False
+    if tenant_id in await tenants_bindable_by(session_factory, user_id):
+        return True
+    return await _operator_may_enter(session_factory, user_store, user_id, tenant_id)
 
 
 @dataclass(frozen=True)
@@ -495,10 +543,54 @@ async def tenants_open_to(
 async def tenants_bindable_by(
     session_factory: async_sessionmaker[AsyncSession], user_id: str
 ) -> list[str]:
-    """Every tenant `user_id` may bind: those they are a member of, and those
-    they administer as their organization's `org_admin`. Sorted, each once.
-    One lookup, read on every authenticated request."""
+    """Every tenant `user_id` may bind: those they are a member of, unless
+    archived, and those they administer as their organization's `org_admin`,
+    archived or not. Sorted, each once. One lookup, read on every
+    authenticated request."""
     return await tenants_bindable_by_user(session_factory, user_id)
+
+
+async def tenants_held_by(
+    session_factory: async_sessionmaker[AsyncSession], user_id: str
+) -> list[str]:
+    """`tenants_bindable_by`, and the archived workspaces `user_id` holds a
+    membership in, which they may not enter: for what acts on everything a
+    person holds rather than where they may go, such as deleting their
+    account."""
+    return sorted(
+        set(await tenants_bindable_by(session_factory, user_id))
+        | set(await tenants_of_user(session_factory, user_id))
+    )
+
+
+async def _archived_memberships(
+    session_factory: async_sessionmaker[AsyncSession],
+    user_id: str,
+    bindable: list[str],
+) -> list[str]:
+    """The workspaces `user_id` holds a membership in and may not enter
+    because they are archived."""
+    return [
+        tenant_id
+        for tenant_id in await tenants_of_user(session_factory, user_id)
+        if tenant_id not in bindable
+    ]
+
+
+async def holds_membership_in(
+    session_factory: async_sessionmaker[AsyncSession], user_id: str, tenant_id: str
+) -> bool:
+    """Whether `user_id` holds a membership row in `tenant_id`, whether or not
+    they may enter it: asked once `may_bind_tenant` has said they may not, to
+    tell a workspace archived under them from one they never belonged to."""
+    return tenant_id in await tenants_of_user(session_factory, user_id)
+
+
+def _archived_refusal() -> HTTPException:
+    return HTTPException(
+        status_code=403,
+        detail={"error": TENANT_ARCHIVED, "message": WORKSPACE_ARCHIVED},
+    )
 
 
 async def _in_organization(
@@ -534,6 +626,19 @@ async def organization_candidates(
     if is_operator:
         return await tenants_of_organization(session_factory, organization_id)
     return await tenants_bindable_by(session_factory, user_id)
+
+
+async def every_workspace_of(
+    session_factory: async_sessionmaker[AsyncSession], organization_id: str
+) -> list[Tenant]:
+    """Every workspace of `organization_id`, whoever asks, each read on its
+    own short session: for a check across all of them, such as whether a
+    name is taken (`workspace_creation.refuse_a_workspace_name_taken`)."""
+    return await _in_organization(
+        session_factory,
+        await tenants_of_organization(session_factory, organization_id),
+        organization_id,
+    )
 
 
 async def workspaces_in_organization(
@@ -656,40 +761,62 @@ async def organization_workspaces_bindable_by(
     The platform operator may bind any workspace, and is shown every one of
     the organization's, as `admin` where they hold no role, the standing
     `platform_access` gives them. Each candidate is read on its own short
-    session, and only those in the organization are described further.
+    session, one after another.
     """
-    candidates = await organization_candidates(
-        session_factory, user_id, organization_id, is_operator=is_operator
-    )
     found: list[TenantMembershipResponse] = []
-    for tenant in await _in_organization(session_factory, candidates, organization_id):
-        tenant_id = tenant.id
+    for tenant_id in await organization_candidates(
+        session_factory, user_id, organization_id, is_operator=is_operator
+    ):
         async with tenant_session(session_factory, tenant_id) as session:
-            role = await user_store.effective_tenant_role(session, tenant_id, user_id)
-            organization_role = await user_store.organization_role(
-                session, tenant_id, user_id
-            )
-        if role is None and is_operator:
-            role = ORGANIZATION_ADMIN_TENANT_ROLE
-        if role is None:
-            logger.warning(
-                "tenants_bindable_by named tenant %s for user %s, but their "
-                "role there was gone by the time it was read",
+            membership = await membership_in_organization(
+                session,
+                user_store,
                 tenant_id,
                 user_id,
+                organization_id,
+                is_operator=is_operator,
             )
-            continue
-        found.append(
-            TenantMembershipResponse(
-                id=tenant.id,
-                slug=tenant.slug,
-                name=tenant.name,
-                role=role,
-                organization_role=organization_role,
-                organization_id=tenant.organization_id,
-            )
-        )
+        if membership is not None:
+            found.append(membership)
     return found
+
+
+async def membership_in_organization(
+    session: AsyncSession,
+    user_store: UserStore,
+    tenant_id: str,
+    user_id: str,
+    organization_id: str,
+    *,
+    is_operator: bool,
+) -> TenantMembershipResponse | None:
+    """`user_id`'s standing in `tenant_id`, on a session bound to it, as
+    `organization_workspaces_bindable_by` lists it; None when the workspace
+    is not in `organization_id` or they hold no role there any more."""
+    tenant = await session.get(Tenant, tenant_id)
+    if tenant is None or tenant.organization_id != organization_id:
+        return None
+    role = await user_store.effective_tenant_role(session, tenant_id, user_id)
+    organization_role = await user_store.organization_role(session, tenant_id, user_id)
+    if role is None and is_operator:
+        role = ORGANIZATION_ADMIN_TENANT_ROLE
+    if role is None:
+        logger.warning(
+            "tenants_bindable_by named tenant %s for user %s, but their "
+            "role there was gone by the time it was read",
+            tenant_id,
+            user_id,
+        )
+        return None
+    return TenantMembershipResponse(
+        id=tenant.id,
+        slug=tenant.slug,
+        name=tenant.name,
+        role=role,
+        organization_role=organization_role,
+        organization_id=tenant.organization_id,
+        archived_at=archived_since(tenant),
+    )
 
 
 async def _operator_may_enter(
@@ -734,6 +861,7 @@ async def operator_entered_workspace(
         role="admin",
         organization_role=None,
         organization_id=tenant.organization_id,
+        archived_at=archived_since(tenant),
     )
 
 
@@ -849,9 +977,25 @@ async def _describe_memberships(
                 role=role,
                 organization_role=organization_role,
                 organization_id=tenant.organization_id,
+                archived_at=archived_since(tenant),
             )
         )
     return memberships
+
+
+async def list_held_memberships(
+    session_factory: async_sessionmaker[AsyncSession],
+    user_store: UserStore,
+    user_id: str,
+) -> list[TenantMembershipResponse]:
+    """`list_tenant_memberships`, with the archived workspaces `user_id` holds
+    a membership in (`tenants_held_by`)."""
+    return await _describe_memberships(
+        session_factory,
+        user_store,
+        user_id,
+        await tenants_held_by(session_factory, user_id),
+    )
 
 
 async def list_tenant_memberships(
@@ -1079,6 +1223,12 @@ async def _resolve_tenant_id(
             session_factory, user_store, user_id, tenant_claim
         ):
             return tenant_claim
+        # Said apart from a claim to nothing, so the member of a workspace
+        # archived under them is told why it is gone.
+        if tenant_claim in await _archived_memberships(
+            session_factory, user_id, memberships
+        ):
+            raise _archived_refusal()
         logger.warning(
             "Tenant claim %s for user %s names no membership", tenant_claim, user_id
         )
@@ -1108,6 +1258,10 @@ async def _resolve_tenant_id(
             },
         )
 
+    if not memberships and await _archived_memberships(
+        session_factory, user_id, memberships
+    ):
+        raise _archived_refusal()
     logger.error(
         "Cannot resolve a tenant for user %s: %d memberships and no selection",
         user_id,
@@ -1329,7 +1483,7 @@ async def require_tenant_admin(
     itself.
     """
     if not is_admin:
-        raise HTTPException(status_code=403, detail="Tenant admin access required")
+        raise HTTPException(status_code=403, detail="Workspace admin access required")
     return user
 
 
@@ -1338,28 +1492,31 @@ async def require_room_access(
     room_store: RoomStore,
     room_id: str,
     user: User,
-    action: Action,
+    action: RoomAction,
     is_admin: bool,
+    *,
+    owns_target: bool = False,
 ) -> Room:
-    """Load a room (404 if missing) and authorize `action` for `user`,
-    raising HTTP 403 if denied.
+    """Load a room (404 if missing) and authorize `action` for `user` by the
+    room policy (`room_policy`), raising HTTP 403 with its reason if denied.
 
-    Shared chokepoint for gateway routers that mutate a room they receive by
+    Shared chokepoint for gateway routers that act on a room they receive by
     id (attaching references, linking rooms, …) so they cannot operate on a
-    room the caller lacks access to. Mirrors the protocol layer's
-    ``_require_room_action``.
+    room the caller lacks access to.
 
     `is_admin` comes from ``get_tenant_is_admin``; it is a parameter rather
     than a read of its own so that a route cannot end up authorizing against
-    a different admin bit than the one its own dependencies resolved.
-
-    This is the widest of the tenant-admin gates: `authz.can` short-circuits
-    on the admin bit, so a workspace admin passes it for every room
-    in their workspace, private ones included. See the phase 2 design note on
-    what that grant covers.
+    a different admin bit than the one its own dependencies resolved. A
+    workspace admin is in the owner tier of every room in their workspace,
+    private ones included.
     """
     return await authorize_room(
-        session, room_store, room_id, Principal(user.id, is_admin), action
+        session,
+        room_store,
+        room_id,
+        Principal(user.id, is_admin),
+        action,
+        owns_target=owns_target,
     )
 
 
@@ -1368,22 +1525,65 @@ async def authorize_room(
     room_store: RoomStore,
     room_id: str,
     principal: Principal,
-    action: Action,
+    action: RoomAction,
+    *,
+    owns_target: bool = False,
 ) -> Room:
     """`require_room_access` for a caller who already holds a `Principal`: the
     one place a room's access rule is applied, for every gateway route."""
     room = await room_store.get(session, room_id)
     if room is None:
         raise HTTPException(status_code=404, detail="Room not found")
-    try:
-        require(principal, action, room)
-    except PermissionError as e:
-        # Whoever takes part in a room may read it, as its listing shows them.
-        if action != "read" or not await takes_part_in_room(
-            session, room_store, room.id, principal.id
-        ):
-            raise HTTPException(status_code=403, detail=str(e)) from e
+    await ensure_room_action(
+        session, room_store, room, principal, action, owns_target=owns_target
+    )
     return room
+
+
+async def ensure_room_action(
+    session: AsyncSession,
+    room_store: RoomStore,
+    room: Room,
+    principal: Principal,
+    action: RoomAction,
+    *,
+    owns_target: bool = False,
+) -> None:
+    """Raise HTTP 403 with the policy's reason unless `principal` may do
+    `action` to `room`."""
+    decision = await decide_room_action(
+        session, room_store, room, principal, action, owns_target=owns_target
+    )
+    if not decision.allowed:
+        raise HTTPException(status_code=403, detail=decision.reason)
+
+
+async def decide_room_action(
+    session: AsyncSession,
+    room_store: RoomStore,
+    room: Room,
+    principal: Principal,
+    action: RoomAction,
+    *,
+    owns_target: bool = False,
+) -> RoomDecision:
+    """`room_policy.decide` for a gateway caller. Whether they are in the room,
+    and one of its room admins, is asked only when the answer could change the
+    outcome."""
+    outside = room_policy.decide(
+        RoomCaller(principal, in_room=False), room, action, owns_target=owns_target
+    )
+    if outside.allowed:
+        return outside
+    where = await room_admins.standing(session, room_store, room.id, principal.id)
+    if not where.in_room:
+        return outside
+    return room_policy.decide(
+        RoomCaller(principal, in_room=True, room_admin=where.room_admin),
+        room,
+        action,
+        owns_target=owns_target,
+    )
 
 
 async def require_room_unlink(
@@ -1392,31 +1592,16 @@ async def require_room_unlink(
     room_id: str,
     user: User,
     is_admin: bool,
+    *,
+    owns_target: bool,
 ) -> Room:
     """Load a room and authorize unlinking a reference, document or package
-    from it (`authz.can_unlink_from_room`): raise HTTP 403 unless `user`
-    takes part in it or is a tenant admin. Both may read it, so there is no
-    separate read check."""
-    room = await room_store.get(session, room_id)
-    if room is None:
-        raise HTTPException(status_code=404, detail="Room not found")
-    await ensure_may_unlink(session, room_store, room, Principal(user.id, is_admin))
-    return room
-
-
-async def ensure_may_unlink(
-    session: AsyncSession, room_store: RoomStore, room: Room, principal: Principal
-) -> None:
-    """Raise HTTP 403 unless `principal` may unlink from `room`."""
-    # An admin may whether or not they take part, so is spared the query.
-    takes_part = not principal.is_admin and await takes_part_in_room(
-        session, room_store, room.id, principal.id
+    from it: raise HTTP 403 unless `user` is its owner or a tenant admin, or
+    owns what is unlinked and is in the room. `owns_target` is whether `user`
+    owns it."""
+    return await require_room_access(
+        session, room_store, room_id, user, "unlink", is_admin, owns_target=owns_target
     )
-    if not can_unlink_from_room(principal, takes_part=takes_part):
-        raise HTTPException(
-            status_code=403,
-            detail="Only those taking part in the room and admins can unlink from it",
-        )
 
 
 async def takes_part_in_room(

@@ -8,7 +8,7 @@
  * adding it here fails the build rather than reporting a screen nobody named.
  */
 export const VIEW_IDS = [
-  'home',
+  'noServer',
   'location',
   'session',
   'chat',

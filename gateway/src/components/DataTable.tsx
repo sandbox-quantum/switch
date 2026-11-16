@@ -133,6 +133,10 @@ const GRID_SX: SxProps<Theme> = {
     letterSpacing: "-0.01em",
   },
   "& .MuiDataGrid-columnHeaderTitle": { fontWeight: 500, opacity: 0.7 },
+  // A column's menu button sits in a box the grid narrows to nothing until
+  // the header is hovered. Unclipped, it pokes out past the column, and in
+  // the last column past the table, which then scrolls sideways by its width.
+  "& .MuiDataGrid-menuIcon": { overflow: "hidden" },
   // The sort and menu buttons paint the grid's own header fill, which shows
   // as a solid square on the cream band.
   "& .MuiDataGrid-sortButton:not(:hover), & .MuiDataGrid-menuIconButton:not(:hover)": {

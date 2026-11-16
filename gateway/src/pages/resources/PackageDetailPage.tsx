@@ -1,6 +1,4 @@
 import ArrowBack from "@mui/icons-material/ArrowBack";
-import TransferOwnershipSection from "../../components/TransferOwnershipSection";
-import DeleteOutline from "@mui/icons-material/DeleteOutline";
 import {
   Alert,
   Box,
@@ -12,11 +10,12 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router";
+import TransferOwnershipSection from "../../components/TransferOwnershipSection";
 import {
   type PackageDetail,
-  fetchPackage,
+  loadPackage,
   updatePackage,
 } from "../../data/api";
 import { AccessChip, AccessSelect } from "../../components/AccessControls";
@@ -26,60 +25,40 @@ import {
   fromAccessLevel,
   toAccessLevel,
 } from "../../data/visibility";
-import { EM_DASH, MONO_SX, formatDateTime } from "../../theme/format";
+import { formatDateTime } from "../../theme/format";
 import DeleteResourceDialog from "./DeleteResourceDialog";
 import PackageMembersSection from "./PackageMembersSection";
 import ResourceAttachmentsSection from "./ResourceAttachmentsSection";
+import {
+  DangerSection,
+  DetailLoadFailed,
+  DetailLoading,
+  InfoLine,
+  requiredHelper,
+  useAfterTransfer,
+  useResourceDetail,
+} from "./detailParts";
+
+const LIST_PATH = "/resources?tab=packages";
 
 export default function PackageDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const [pkg, setPkg] = useState<PackageDetail | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [fetchError, setFetchError] = useState<string | null>(null);
+  const { data: pkg, setData: setPkg, error, loading, reload } = useResourceDetail(id, loadPackage);
+  const { afterTransfer, refreshNotice } = useAfterTransfer(id, loadPackage, setPkg, LIST_PATH);
   const [deleteOpen, setDeleteOpen] = useState(false);
 
-  useEffect(() => {
-    if (!id) return;
-    let cancelled = false;
-    setLoading(true);
-    fetchPackage(id).then((p) => {
-      if (cancelled) return;
-      if (p) setPkg(p);
-      else setFetchError("Package not found");
-      setLoading(false);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [id]);
-
-  if (loading) {
-    return (
-      <Box sx={{ display: "flex", justifyContent: "center", py: 8 }}>
-        <CircularProgress />
-      </Box>
-    );
-  }
-
-  if (fetchError || !pkg || !id) {
-    return (
-      <Box>
-        <Button startIcon={<ArrowBack />} onClick={() => navigate("/resources")}>
-          Back to resources
-        </Button>
-        <Alert severity="error" sx={{ mt: 2 }}>
-          {fetchError ?? "Package not found"}
-        </Alert>
-      </Box>
-    );
+  if (pkg === null && loading) return <DetailLoading />;
+  if (pkg === null || !id) {
+    return <DetailLoadFailed what="package" listPath={LIST_PATH} error={error} onRetry={reload} />;
   }
 
   return (
     <Box>
+      {refreshNotice}
       <Stack direction="row" alignItems="center" spacing={1} mb={2}>
         <IconButton
-          onClick={() => navigate("/resources?tab=packages")}
+          onClick={() => navigate(LIST_PATH)}
           size="small"
           aria-label="Back"
         >
@@ -106,7 +85,9 @@ export default function PackageDetailPage() {
         <ResourceAttachmentsSection
           kind="package"
           resourceId={id}
+          resourceLabel={pkg.name || id}
           hiddenRoomsCount={pkg.hidden_rooms_count}
+          canAttach
         />
         {pkg.can_manage && (
           <>
@@ -117,27 +98,29 @@ export default function PackageDetailPage() {
               resourceLabel={pkg.name || id}
               ownerId={pkg.owner_id}
               blockedReason={null}
-              onTransferred={() => navigate(0)}
+              onTransferred={() => void afterTransfer()}
             />
           </>
         )}
         {pkg.can_manage && (
           <>
             <Divider />
-            <DangerSection onDelete={() => setDeleteOpen(true)} />
+            <DangerSection what="package" onDelete={() => setDeleteOpen(true)} />
           </>
         )}
       </Stack>
 
-      <DeleteResourceDialog
-        open={deleteOpen}
-        kind="package"
-        resourceId={id}
-        resourceLabel={pkg.name || id}
-        hiddenRoomsCount={pkg.hidden_rooms_count}
-        onClose={() => setDeleteOpen(false)}
-        onDeleted={() => navigate("/resources?tab=packages")}
-      />
+      {deleteOpen && (
+        <DeleteResourceDialog
+          kind="package"
+          resourceId={id}
+          resourceLabel={pkg.name || id}
+          hiddenRoomsCount={pkg.hidden_rooms_count}
+          packageCount={0}
+          onClose={() => setDeleteOpen(false)}
+          onDeleted={() => navigate(LIST_PATH)}
+        />
+      )}
     </Box>
   );
 }
@@ -148,23 +131,12 @@ function InfoSection({ pkg }: { pkg: PackageDetail }) {
       <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
         Info
       </Typography>
-      <Typography variant="body2" color="text.secondary">
-        <strong>Owner:</strong>{" "}
-        {pkg.owner_name ? (
-          pkg.owner_name
-        ) : pkg.owner_id ? (
-          <Box component="span" sx={MONO_SX}>
-            {pkg.owner_id}
-          </Box>
-        ) : (
-          <Box component="span" sx={{ color: "text.secondary" }}>
-            {EM_DASH}
-          </Box>
-        )}
-      </Typography>
-      <Typography variant="body2" color="text.secondary">
-        <strong>Created:</strong> {formatDateTime(pkg.created_at)}
-      </Typography>
+      {pkg.owner_name ? (
+        <InfoLine label="Owner" value={pkg.owner_name} />
+      ) : (
+        <InfoLine label="Owner" value={pkg.owner_id} mono />
+      )}
+      <InfoLine label="Created" value={formatDateTime(pkg.created_at)} />
     </Stack>
   );
 }
@@ -196,6 +168,9 @@ function EditFieldsSection({
     [name, description, instructions, access, pkg],
   );
 
+  // What creating one requires, kept on an edit.
+  const complete = name.trim() !== "" && description.trim() !== "";
+
   const handleSave = async () => {
     setSaving(true);
     setError(null);
@@ -225,6 +200,7 @@ function EditFieldsSection({
         value={name}
         onChange={(e) => setName(e.target.value)}
         disabled={!canEdit || saving}
+        {...requiredHelper(name)}
       />
       <TextField
         label="Description"
@@ -233,7 +209,7 @@ function EditFieldsSection({
         disabled={!canEdit || saving}
         multiline
         minRows={2}
-        helperText="Short summary. Shown in lists."
+        {...requiredHelper(description, "Short summary. Shown in lists.")}
       />
       <TextField
         label="Instructions"
@@ -256,31 +232,12 @@ function EditFieldsSection({
         <Button
           variant="contained"
           onClick={handleSave}
-          disabled={!(canEdit || canChangeAccess) || !dirty || saving}
+          disabled={!(canEdit || canChangeAccess) || !dirty || !complete || saving}
           startIcon={saving ? <CircularProgress size={16} /> : undefined}
         >
           Save
         </Button>
       </Box>
-    </Stack>
-  );
-}
-
-function DangerSection({ onDelete }: { onDelete: () => void }) {
-  return (
-    <Stack spacing={1}>
-      <Typography variant="overline" sx={{ color: "error.main", display: "block" }}>
-        Danger zone
-      </Typography>
-      <Button
-        variant="outlined"
-        color="error"
-        startIcon={<DeleteOutline />}
-        onClick={onDelete}
-        sx={{ alignSelf: "flex-start" }}
-      >
-        Delete package
-      </Button>
     </Stack>
   );
 }

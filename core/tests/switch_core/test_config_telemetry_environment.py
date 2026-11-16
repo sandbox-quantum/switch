@@ -1,6 +1,6 @@
 """TELEMETRY_ENVIRONMENT picks the Amplitude project a deployment's usage lands in.
 
-The relay files an event under the project its `flint_env` names, and drops one
+The relay files an event under the project its `switch_trust.env` names, and drops one
 naming an environment it has no project for — answering 200 either way. So the
 setting is held to the four the relay knows, and an unknown value stops the
 server at startup rather than quietly losing its usage.

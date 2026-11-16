@@ -259,12 +259,6 @@ _RAW_SESSION_FACTORY_MODULES = {
     # (`rls_ddl.GLOBAL_TABLES`) that a per-tenant loop would otherwise sweep
     # once per tenant for no reason.
     "switch_core.db.key_rotation",
-    # `DynamicTrustClient` reads `trust_settings` on every check, including
-    # from agent- and bridge-originated sends that have no request to inherit
-    # a tenant from. A table with no tenant and no policy
-    # (`rls_ddl.GLOBAL_TABLES`): one guardrails policy covers the whole
-    # deployment, so there is no tenant for a policy to narrow on.
-    "switch_core.trust.client",
     # The operator's account linking reads `users` and writes
     # `oidc_identities`, both global (`rls_ddl.GLOBAL_TABLES`): a person and
     # their sign-in identities belong to no tenant. Its organization linking

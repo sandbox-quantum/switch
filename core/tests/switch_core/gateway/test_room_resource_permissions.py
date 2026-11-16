@@ -5,9 +5,10 @@ room's own documents.
   caller may read. So do a room's links and the room graph. A tenant admin
   sees every one. Whoever may manage a resource is still told how many rooms
   they cannot read it is in, though never their names.
-- Unlinking a reference, document or package from a room is for those taking
-  part in the room and tenant admins. Write access is not enough: on a
-  publicly writable room it is everyone's.
+- Unlinking a reference, document or package from a room is for the room's
+  owner and tenant admins (`room_policy`), and for the resource's own owner
+  while they take part in the room. Taking part is not enough on its own, and
+  a room's write visibility grants nothing.
 - A room-scoped document is deleted by its creator (an agent's document is
   recorded under the agent's owner), the room's owner, or a tenant admin.
 - Whoever takes part in a private room may read its resources.
@@ -113,7 +114,8 @@ class _World:
     """`owner` owns every room. `member` takes part in `theirs` through an
     agent they own, and in nothing else; `stranger` takes part in nothing.
 
-    - `public`: publicly writable, so `member` and `stranger` may write to it.
+    - `public`: publicly readable, and once publicly writable, which no
+      longer lets `member` or `stranger` change it.
     - `theirs`: private, but `member` takes part in it, so may read it.
     - `hidden`: private, and only `owner` takes part in it.
     """
@@ -201,9 +203,10 @@ async def test_a_resource_lists_only_the_rooms_its_viewer_may_read(
         await session.commit()
 
         # `member` reads `public` and `theirs`; `hidden` is left out, count too.
+        # Taking part in `theirs` does not let them unlink `owner`'s document.
         assert await _rooms_of(session, svc, doc, world.member, False) == {
             "public": False,
-            "theirs": True,
+            "theirs": False,
         }
         assert await _count_of(session, svc, doc, world.member, False) == 2
         assert await _rooms_of(session, svc, doc, world.stranger, False) == {
@@ -219,7 +222,7 @@ async def test_a_resource_lists_only_the_rooms_its_viewer_may_read(
         assert await _count_of(session, svc, doc, world.stranger, True) == 3
 
 
-async def test_unlinking_is_for_those_taking_part_in_the_room_and_admins(
+async def test_unlinking_is_for_the_room_owner_admins_and_the_resource_owner(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     svc = _svc(session_factory)
@@ -251,11 +254,11 @@ async def test_unlinking_is_for_those_taking_part_in_the_room_and_admins(
             False,
         )
         assert {r.name: (r.can_write, r.can_unlink) for r in summaries} == {
-            "public": (True, False),
-            "theirs": (False, True),
+            "public": (False, False),
+            "theirs": (False, False),
         }
 
-        # May write to `public`, but takes part in it no more than anyone does.
+        # `public` was publicly writable, which grants nothing any more.
         with pytest.raises(HTTPException) as refused:
             await _detach(session, svc, world.public, doc.id, world.member, False)
         assert refused.value.status_code == 403
@@ -265,14 +268,50 @@ async def test_unlinking_is_for_those_taking_part_in_the_room_and_admins(
             )
         assert refused.value.status_code == 403
 
-        # Takes part in `theirs` without write access to it, and may unlink.
-        await _detach(session, svc, world.theirs, doc.id, world.member, False)
-        # So may an admin, from a room they are not in.
+        # Taking part in `theirs` is not enough to unlink `owner`'s document.
+        with pytest.raises(HTTPException) as refused:
+            await _detach(session, svc, world.theirs, doc.id, world.member, False)
+        assert refused.value.status_code == 403
+        # The room's owner may, and so may an admin, from a room they are not in.
+        await _detach(session, svc, world.theirs, doc.id, world.owner, False)
         await _detach(session, svc, world.hidden, doc.id, world.stranger, True)
 
         assert await _rooms_of(session, svc, doc, world.owner, False) == {
             "public": True
         }
+
+
+async def test_a_resource_owner_unlinks_theirs_from_a_room_they_take_part_in(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    svc = _svc(session_factory)
+    async with session_factory() as session:
+        world = await _world(session)
+        doc = await svc.create_document(
+            session,
+            owner_id=world.member.id,
+            read_visibility="public",
+            write_visibility="private",
+            name="members-notes",
+            description="",
+            instructions="",
+            content="",
+        )
+        for room in (world.public, world.theirs):
+            await svc.attach_document_to_room(
+                session, room.id, doc.id, user_id=world.owner.id
+            )
+        await session.commit()
+
+        assert await _rooms_of(session, svc, doc, world.member, False) == {
+            "public": False,
+            "theirs": True,
+        }
+        # Not in `public`, so not theirs to take it out of.
+        with pytest.raises(HTTPException) as refused:
+            await _detach(session, svc, world.public, doc.id, world.member, False)
+        assert refused.value.status_code == 403
+        await _detach(session, svc, world.theirs, doc.id, world.member, False)
 
 
 async def test_a_room_document_is_deleted_by_its_creator_the_room_owner_or_an_admin(
@@ -324,8 +363,7 @@ async def test_a_room_document_is_deleted_by_its_creator_the_room_owner_or_an_ad
             assert from_list == detail.can_remove
             return detail.can_remove
 
-        # `stranger` may write to the room, and so change the document, but
-        # did not make it and does not own the room.
+        # `stranger` did not make the document and does not own the room.
         assert await can_remove(by_creator, world.stranger, False) is False
         with pytest.raises(HTTPException) as refused:
             await _detach(
@@ -399,18 +437,19 @@ async def test_a_reference_follows_the_same_rules(
         )
         assert {r.room_name: r.can_unlink for r in rooms} == {
             "public": False,
-            "theirs": True,
+            "theirs": False,
         }
         listed = await list_references(session, svc, _USER_STORE, world.member, False)
         assert next(r.attached_rooms_count for r in listed if r.id == ref.id) == 2
 
-        with pytest.raises(HTTPException) as refused:
-            await detach_reference_from_room(
-                world.public.id, ref.id, session, svc, _ROOM_STORE, world.member, False
-            )
-        assert refused.value.status_code == 403
+        for room in (world.public, world.theirs):
+            with pytest.raises(HTTPException) as refused:
+                await detach_reference_from_room(
+                    room.id, ref.id, session, svc, _ROOM_STORE, world.member, False
+                )
+            assert refused.value.status_code == 403
         await detach_reference_from_room(
-            world.theirs.id, ref.id, session, svc, _ROOM_STORE, world.member, False
+            world.theirs.id, ref.id, session, svc, _ROOM_STORE, world.owner, False
         )
 
 
@@ -507,6 +546,9 @@ async def test_a_link_reply_names_only_a_room_its_maker_may_read(
     svc = _svc(session_factory)
     async with session_factory() as session:
         world = await _world(session)
+        strangers = await _room(
+            session, "strangers", world.stranger, read="private", write="private"
+        )
         await session.commit()
 
         async def link(target: Room) -> str:
@@ -516,14 +558,14 @@ async def test_a_link_reply_names_only_a_room_its_maker_may_read(
                 session,
                 svc,
                 _ROOM_STORE,
-                world.member,
+                world.owner,
                 False,
             )
             return created.target_room_name
 
-        # `member` may write to `public`, but not read `hidden`.
+        # `owner` may change `public`, but not read `strangers`.
         with pytest.raises(HTTPException) as refused:
-            await link(world.hidden)
+            await link(strangers)
         assert refused.value.status_code == 403
         assert await link(world.theirs) == "theirs"
 

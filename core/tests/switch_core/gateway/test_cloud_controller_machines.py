@@ -1,8 +1,8 @@
-"""Switch cloud machines that run the agent controller, end to end against Postgres.
+"""Switch Cloud machines that run the agent controller, end to end against Postgres.
 
 The hosted controller prepares a cloud machine; Core hands it a
 one-time enrollment code (the same one on every retry of a revision); the
-controller enrolls with it and becomes the machine's, as a Switch cloud
+controller enrolls with it and becomes the machine's, as a Switch Cloud
 controller; its status reports make the machine ready; and the managed agents
 placed on it are the machine's agents.
 """
@@ -32,6 +32,7 @@ from switch_core.db.models import (
     User,
     require_tenant_id,
 )
+from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.hosted_machine_store import (
     CloudMachineStore,
     bump_revision,
@@ -324,7 +325,7 @@ class TestControllerMachines:
                 )
                 assert controller is not None
                 assert controller.kind == "ec2"
-                assert controller.name == "Switch cloud"
+                assert controller.name == "Switch Cloud"
             assert (
                 await _workspace(harness.session_factory, machine.id)
             ).controller_id == (enrolled["controller_id"])
@@ -526,6 +527,8 @@ class TestControllerMachines:
     async def test_a_revoked_controller_is_replaced_by_enrolling_again(
         self, harness: Harness
     ) -> None:
+        """Revoked as deleting its owner's account does: nobody removes a
+        cloud device through the routes (`service.refuse_cloud`)."""
         owner = await add_member(harness.session_factory, "ada")
         machine = await _claim(harness.session_factory, owner)
         async with _hosted_app(harness.session_factory, owner) as hosted:
@@ -540,11 +543,18 @@ class TestControllerMachines:
                 )
                 assert created.status_code == 201, created.text
                 before = (await _machine(harness.session_factory, machine.id)).revision
-                revoked = await client.delete(
+                refused = await client.delete(
                     f"/gateway/management/controllers/{first['controller_id']}",
                     cookies=cookies_for(owner),
                 )
-                assert revoked.status_code == 200, revoked.text
+                assert refused.status_code == 409, refused.text
+                assert refused.json()["error"]["code"] == "cloud_managed"
+                async with tenant_session(
+                    harness.session_factory, TENANT_ZERO_ID
+                ) as session:
+                    await harness.management.service.revoke_controller(
+                        session, TENANT_ZERO_ID, owner.id, first["controller_id"]
+                    )
                 assert (
                     await _machine(harness.session_factory, machine.id)
                 ).revision == before + 1
@@ -1021,7 +1031,7 @@ def test_a_waking_machine_is_judged_by_its_last_report() -> None:
     now = datetime.now(UTC)
     controller = AgentController(
         owner_id="owner",
-        name="Switch cloud",
+        name="Switch Cloud",
         kind="ec2",
         api_key_id="key",
         connected_at=now - timedelta(hours=3),

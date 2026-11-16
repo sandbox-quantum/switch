@@ -14,6 +14,7 @@ import {
 import { observer } from 'mobx-react-lite';
 import { useEffect, useState } from 'react';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
+import { homeRedirect } from '@renderer/features/switch-servers/home-target';
 import { ServerSectionTitlebar } from '@renderer/features/switch-servers/server-section-titlebar';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
@@ -29,6 +30,7 @@ import { Button } from '@renderer/lib/ui/button';
 import { DisclosureRow } from '@renderer/lib/ui/disclosure-row';
 import { cn } from '@renderer/utils/utils';
 import { type LoadedTemplate, loadTemplateById } from './agent-template-data';
+import { recordTemplateOpened } from './recent-templates';
 import { accessLine, accessOf } from './template-visibility';
 import { isRequired, paramLabel, typeLabel } from './use/use-template-model';
 
@@ -196,6 +198,13 @@ const TemplateDetailPanel = observer(function TemplateDetailPanel() {
       setCurrentName(null);
     };
   }, [workspaceId, templateId]);
+
+  const meId = me?.id ?? null;
+  useEffect(() => {
+    if (loaded !== null && workspaceId !== null) {
+      recordTemplateOpened({ workspaceId, userId: meId }, templateId);
+    }
+  }, [loaded, workspaceId, meId, templateId]);
 
   const back = (
     <Button
@@ -568,7 +577,7 @@ export const templateDetailView = {
     const p =
       typeof params === 'object' && params !== null ? (params as Record<string, unknown>) : {};
     if (typeof p.serverId !== 'string' || typeof p.templateId !== 'string') {
-      return { ok: false, redirect: 'home' };
+      return homeRedirect();
     }
     return { ok: true };
   },

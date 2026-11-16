@@ -66,7 +66,10 @@ class _Service:
         default_factory=lambda: [_install("s1", "slack"), _install("t1", "telegram")]
     )
     disconnected: list[str] = field(default_factory=list)
-    rooms: dict[str, SimpleNamespace] = field(default_factory=lambda: {"t1": _room()})
+    # The chat's room is the member's own, who may change it.
+    rooms: dict[str, SimpleNamespace] = field(
+        default_factory=lambda: {"t1": _room(owner_id="u-user")}
+    )
 
     def platforms(self) -> list[str]:
         return ["slack", "telegram"]
@@ -347,12 +350,14 @@ class TestWhatTheCallerMayDisconnect:
     @pytest.mark.parametrize(
         ("rooms", "admin", "expected"),
         [
-            # A chat whose room the caller may change; an OAuth install is an
+            # A chat whose room the caller owns; an OAuth install is an
             # admin's alone.
-            ({"t1": _room()}, False, {"t1": True}),
+            ({"t1": _room(owner_id="u-user")}, False, {"t1": True}),
             ({"t1": _room()}, True, {"s1": True, "t1": True}),
-            # Readable, but not theirs to change.
+            # Readable, but not theirs to change, even when everyone could
+            # once write to it.
             ({"t1": _room(write="private")}, False, {"t1": False}),
+            ({"t1": _room(write="public")}, False, {"t1": False}),
             # Its room is gone, so it is the tenant's admins' again.
             ({}, False, {"t1": False}),
             ({}, True, {"s1": True, "t1": True}),

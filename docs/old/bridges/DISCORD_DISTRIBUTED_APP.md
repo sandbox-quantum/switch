@@ -137,7 +137,7 @@ scope. Editing and deleting the bot's own webhook messages needs no Manage
 Messages. If you build the URL by hand in **OAuth2 → URL Generator**, selecting
 these boxes produces the same integer.
 
-## Three things left out on purpose
+## Privileged intents, and what is left out on purpose
 
 **The Message Content intent.** Reading arbitrary message text is a *privileged*
 gateway intent, and requesting it while unapproved does not degrade gracefully —
@@ -150,6 +150,46 @@ see all message content. Verification is *per application*, not per tenant, and
 its ~100-guild threshold counts the total guilds across **every** tenant, so in
 the distributed model the app crosses it quickly and verification is worth
 starting early rather than deferring.
+
+**The Server Members intent.** Discord has no channel membership: someone is
+in a channel when they are in the server and allowed to see it. Rooms follow
+that, and how closely depends on this intent, privileged like message content
+and controlled the same way by `DISCORD_APP_MEMBERS`, **defaulting off**. Turn
+it on in the Developer Portal (**Bot → Privileged Gateway Intents**) *before*
+the flag, or the connection closes with 4014.
+
+- **On:** people joining or leaving the server, and role changes, move them in
+  or out of each bridged channel's room as they happen, and at each start a
+  room is lined up with everyone who can see its channel.
+- **Off:** at each start, a room's existing people are checked in batches of
+  100, and anyone who left the server or can no longer see the channel is
+  taken out. People who never posted are not found; they join when they first
+  post, as before.
+- **Either way:** a change to a channel's or a role's permissions re-checks the
+  rooms it affects, as that needs no privileged intent.
+
+"Can see the channel" follows Discord's own rule, so server **administrators**,
+and anyone whose role may manage the channel's permissions, count as in every
+channel, private ones included. Discord lists them in a private channel's
+members too. A room shows only what is in its channel, so they read nothing
+there they could not read on Discord; they do get the rights that being in a
+room gives.
+
+Someone joining the server joins the rooms of the bridged channels they can see
+quietly: it is written to the room's history, and no agent is woken for it.
+Someone given a role that lets them see a channel is announced, as someone added
+to it would be. One batch of member changes puts at most 500 people in rooms;
+anyone beyond that joins when they first post or at the next start.
+
+Kept cheap on the shared connection: no guild's member list is cached or
+fetched at start, member updates that change no roles are dropped, a guild's
+changes are gathered for a few seconds before its tenant is resolved, one read
+of a guild's members answers for all its bridged channels for two minutes
+(kept up to date as people change rather than read again), and
+background reads queue two at a time, leaving 20 of the minute's member searches
+for people. A server over 25,000 members is never read whole; only its rooms'
+existing people are checked, as with the intent off. A self-created app always
+asks for the intent, and keeps discord.py's member cache for its one server.
 
 **Direct messages.** A Discord DM carries no guild id, so it cannot be
 attributed to a tenant. DM events are dropped explicitly — never silently — and

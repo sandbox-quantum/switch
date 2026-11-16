@@ -8,7 +8,7 @@ import re
 import secrets
 import time
 from collections import OrderedDict
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Mapping
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
@@ -39,6 +39,7 @@ from switch_core.bridges.collaboration.models import (
     BridgeConnectionConfig,
     BridgeCredentialError,
     BridgeOperationError,
+    ChannelMembers,
     ChannelType,
     CreatedChannel,
     DirectoryUser,
@@ -48,6 +49,7 @@ from switch_core.bridges.collaboration.models import (
     InboundInteraction,
     InboundMessage,
     InboundUserJoin,
+    InboundUserLeave,
     PrivateNoticeDelivery,
 )
 from switch_core.bridges.collaboration.session.renderers import (
@@ -562,6 +564,14 @@ _REPAIR_MAX_INTERVAL_SECONDS = 5 * 60
 # How long an answer to "is Switch in this team" stands before it is asked
 # again: Teams says when the app joins or leaves a team, but not reliably.
 _TEAM_RECHECK_SECONDS = 15 * 60
+
+# Why a channel cannot be created on a connection with no default team.
+_NO_DEFAULT_TEAM = (
+    "No default team is set for this Teams messaging app, so Switch does not "
+    "know which team to create the channel in. Choose one in the messaging "
+    "app's Microsoft Teams settings, or add Switch to a team there: a team it "
+    "joins with no default set becomes the default."
+)
 # The least time between readings of Graph's subscriptions prompted by a
 # notification for one the bridge does not know.
 _ADOPT_ON_DEMAND_COOLDOWN_SECONDS = 10
@@ -941,6 +951,17 @@ class TeamsAdapter(PlatformAdapter):
         return None
 
     @classmethod
+    def channel_creation_blocker(
+        cls, connection_config: Mapping[str, object]
+    ) -> str | None:
+        """A new channel is made in the default team, which a connection on the
+        distributed app has none of until Switch joins a team. A bring-your-own
+        connection names its team at registration."""
+        if connection_config.get("team_id"):
+            return None
+        return _NO_DEFAULT_TEAM
+
+    @classmethod
     async def verify_credentials(cls, connection_config: dict[str, object]) -> None:
         """Ask Azure AD for both tokens the bridge will need.
 
@@ -1078,6 +1099,14 @@ class TeamsAdapter(PlatformAdapter):
         self._team_of_channel: dict[str, str] = dict(config.channel_teams)
         # Installed by the bridge to persist a newly-learned channel/team pair.
         self._persist_channel_team: Callable[[str, str], Awaitable[None]] | None = None
+        # Installed by the bridge to store the default team as Switch joins
+        # and leaves teams; see `_adopt_first_team` and `_release_default_team`.
+        self._default_team_writer: (
+            Callable[[str | None, str | None], Awaitable[bool]] | None
+        ) = None
+        # One change to the default team at a time, each deciding from what the
+        # one before it left.
+        self._default_team_lock = asyncio.Lock()
         self._sub_lock = asyncio.Lock()
         # Whether the subscriptions Graph already holds for this bridge have
         # been read since it started; see `_adopt_existing_subscriptions`.
@@ -1630,6 +1659,11 @@ class TeamsAdapter(PlatformAdapter):
         self, persist: Callable[[str, str], Awaitable[None]]
     ) -> None:
         self._persist_channel_team = persist
+
+    def set_default_team_writer(
+        self, write: Callable[[str | None, str | None], Awaitable[bool]]
+    ) -> None:
+        self._default_team_writer = write
 
     async def _learn_channel_team(self, channel_id: str, team_id: str) -> None:
         """Record which team a channel belongs to, and persist it.
@@ -2799,11 +2833,7 @@ class TeamsAdapter(PlatformAdapter):
 
         team_id = self._config.team_id
         if not team_id:
-            raise BridgeOperationError(
-                "No default team is set for this Teams messaging app, so Switch "
-                "does not know which team to create the channel in. Choose one "
-                "in the messaging app's Microsoft Teams settings."
-            )
+            raise BridgeOperationError(_NO_DEFAULT_TEAM)
         is_private = channel_type == "channel_private"
         if is_private and (
             owner_external_id is None or not self.can_own_channel(owner_external_id)
@@ -2974,6 +3004,104 @@ class TeamsAdapter(PlatformAdapter):
             except Exception:
                 logger.exception(
                     "Failed to add user %s to Teams channel %s", user_id, channel_id
+                )
+                failed.append(user_id)
+        return failed
+
+    def can_list_channel_members(
+        self, channel_id: str, channel_type: str | None
+    ) -> bool:
+        """A channel of a team Switch knows, as `list_channel_members` reads
+        one; not a chat, whose members Graph is not asked for. Decided by the
+        recorded type, so one of unrecorded type is not counted as listable."""
+        if not (self._team_of_channel.get(channel_id) or self._config.team_id):
+            return False
+        return channel_type in ("channel_public", "channel_private")
+
+    async def list_channel_members(
+        self, channel_id: str, *, known_people: Collection[str] = ()
+    ) -> ChannelMembers | None:
+        """The people in a channel, from Graph, by Entra object id: a standard
+        channel's are its team's. None for a chat, whose membership its
+        platform fixes, and for a channel whose team Switch does not know.
+        A failed read raises nothing and lists nobody, marked incomplete."""
+        if self._graph is None:
+            raise RuntimeError("Teams adapter not started")
+        team_id = self._team_of_channel.get(channel_id) or self._config.team_id
+        if not team_id:
+            return None
+        try:
+            channel_type = await self.get_channel_type(channel_id)
+        except Exception:
+            logger.warning("Could not read Teams channel %s's type", channel_id)
+            return ChannelMembers(members={}, complete=False)
+        if channel_type not in ("channel_public", "channel_private"):
+            return None
+        try:
+            entries = await self._graph.list_channel_members(
+                team_id=team_id, channel_id=channel_id
+            )
+        except Exception:
+            logger.warning(
+                "Could not list the members of Teams channel %s",
+                channel_id,
+                exc_info=True,
+            )
+            return ChannelMembers(members={}, complete=False)
+        members: dict[str, str] = {}
+        for entry in entries:
+            user_id = str(entry.get("userId") or "")
+            if user_id:
+                members[user_id] = await self._sender_handle(
+                    user_id, str(entry.get("displayName") or "")
+                )
+        return ChannelMembers(members=members, complete=True)
+
+    async def remove_users_from_channel(
+        self, channel_id: str, user_external_ids: list[str]
+    ) -> list[str]:
+        """Take people out of a private or shared channel.
+
+        A standard channel's members are its team's, and taking someone out
+        of the team would take them out of every channel in it, so nobody is
+        removed from one: they come back failed, as on a chat, for the caller
+        to say so.
+        """
+        if self._graph is None:
+            raise RuntimeError("Teams adapter not started")
+        team_id = self._team_of_channel.get(channel_id) or self._config.team_id
+        try:
+            channel_type = await self.get_channel_type(channel_id)
+        except Exception:
+            logger.exception("Could not read Teams channel %s's type", channel_id)
+            return list(user_external_ids)
+        if not team_id or channel_type != "channel_private":
+            return list(user_external_ids)
+        try:
+            entries = await self._graph.list_channel_members(
+                team_id=team_id, channel_id=channel_id
+            )
+        except Exception:
+            logger.exception("Could not list Teams channel %s's members", channel_id)
+            return list(user_external_ids)
+        membership = {
+            str(entry.get("userId") or ""): str(entry.get("id") or "")
+            for entry in entries
+        }
+        failed: list[str] = []
+        for user_id in user_external_ids:
+            membership_id = membership.get(user_id)
+            if not membership_id:
+                continue
+            try:
+                await self._graph.remove_channel_member(
+                    team_id=team_id, channel_id=channel_id, membership_id=membership_id
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to remove user %s from Teams channel %s",
+                    user_id,
+                    channel_id,
                 )
                 failed.append(user_id)
         return failed
@@ -3375,7 +3503,7 @@ class TeamsAdapter(PlatformAdapter):
             "known channels",
             team_id,
         )
-        await self._switch_left_team(team_id)
+        await self._switch_left_team(team_id, release_default=True)
 
     async def _switch_in_team(self, team_id: str) -> bool | None:
         """On the distributed app, whether Switch is in a team; None if unknown.
@@ -3431,20 +3559,85 @@ class TeamsAdapter(PlatformAdapter):
             )
 
     async def _switch_joined_team(self, team_id: str) -> None:
-        """Switch is in a team now: capture the channels waiting on that."""
+        """Switch is in a team now: capture the channels waiting on that, and
+        make it the default team if there is none."""
         if not self._listening:
             self._hand_to_holder({"action": "team_joined", "team_id": team_id})
             return
         self._team_has_switch[team_id] = (True, time.monotonic())
+        await self._adopt_first_team(team_id)
         waiting = [c for c, t in self._capture_parked.items() if t == team_id]
         for channel_id in waiting:
             del self._capture_parked[channel_id]
             await self._ensure_channel_subscription(channel_id)
 
-    async def _switch_left_team(self, team_id: str) -> None:
-        """Switch is out of a team: stop capturing it, ready to resume on return."""
+    async def _adopt_first_team(self, team_id: str) -> None:
+        """Make a team Switch just joined the default team, if none is set.
+
+        A connection on the distributed app is approved before Switch is in
+        any team, so it starts with no default team, and every channel Switch
+        is asked to create fails until an admin picks one. The first team it
+        joins is the one an admin just put it in, from Switch or from Teams.
+        A default team already set is never replaced. Joins that arrive
+        together are taken in turn, so when the first cannot be stored the
+        next one is tried, and a later join tries again.
+        """
+        await self._write_default_team(expected=None, team_id=team_id)
+
+    async def _release_default_team(self, team_id: str) -> None:
+        """Clear the default team when Switch has been taken out of it.
+
+        A channel created in a team Switch is not in is one it can neither post
+        in nor capture, and a default left pointing there would keep the next
+        team Switch joins from becoming the default. Channel creation is left
+        as it is: the next team Switch joins becomes the default.
+        """
+        await self._write_default_team(expected=team_id, team_id=None)
+
+    async def _write_default_team(
+        self, *, expected: str | None, team_id: str | None
+    ) -> None:
+        if not self.serves_shared_app or self._default_team_writer is None:
+            return
+        async with self._default_team_lock:
+            if (self._config.team_id or None) != expected:
+                return
+            try:
+                written = await self._default_team_writer(expected, team_id)
+            except Exception:
+                # Not raised: Switch did join or leave the team, and failing
+                # that would report an add or removal that happened as one that
+                # did not. The default is left as it was, which room creation
+                # and the Teams panel both show, and the next join or removal
+                # tries again.
+                logger.error(
+                    "Failed to change the Teams default team from %s to %s",
+                    expected,
+                    team_id,
+                    exc_info=True,
+                )
+                return
+            if written:
+                self._config = self._config.model_copy(update={"team_id": team_id})
+
+    async def _switch_left_team(self, team_id: str, *, release_default: bool) -> None:
+        """Switch is out of a team: stop capturing it, ready to resume on
+        return, and, when `release_default`, clear it as the default team if
+        it was that.
+
+        Only an explicit removal releases the default team: one Switch was
+        told of, by Teams or by an admin in Switch. A removal noticed only by
+        the recheck may be Graph answering wrongly once, and clearing the
+        default on it would lose the team an admin chose, to be replaced by
+        whichever team Switch is next seen in."""
         if not self._listening:
-            self._hand_to_holder({"action": "team_left", "team_id": team_id})
+            self._hand_to_holder(
+                {
+                    "action": "team_left",
+                    "team_id": team_id,
+                    "release_default": "1" if release_default else "",
+                }
+            )
             return
         self._team_has_switch[team_id] = (False, time.monotonic())
         known = (
@@ -3457,6 +3650,15 @@ class TeamsAdapter(PlatformAdapter):
             await self._stop_capture(channel_id)
             if captured:
                 self._capture_parked[channel_id] = team_id
+        if release_default:
+            await self._release_default_team(team_id)
+        elif self.serves_shared_app and self._config.team_id == team_id:
+            logger.warning(
+                "Switch no longer appears to be in Teams team %s, the default "
+                "team; new channels made there cannot be captured until it is "
+                "added back or another default team is chosen",
+                team_id,
+            )
 
     async def _recheck_teams(self) -> None:
         """Ask again whether Switch is in each team whose answer is old.
@@ -3482,7 +3684,7 @@ class TeamsAdapter(PlatformAdapter):
             elif current and not previous:
                 await self._switch_joined_team(team_id)
             elif previous and not current:
-                await self._switch_left_team(team_id)
+                await self._switch_left_team(team_id, release_default=False)
 
     async def _stop_capture(self, channel_id: str) -> None:
         self._capture_wanted.discard(channel_id)
@@ -3592,7 +3794,7 @@ class TeamsAdapter(PlatformAdapter):
             await graph.uninstall_app(
                 team_id=team_id, installation_id=installation.installation_id
             )
-        await self._switch_left_team(team_id)
+        await self._switch_left_team(team_id, release_default=True)
 
     async def check_config_edit(self, connection_config: Mapping[str, object]) -> None:
         """On the distributed app, a default team must be one Switch is in.
@@ -4038,9 +4240,12 @@ class TeamsAdapter(PlatformAdapter):
         self, activity: dict[str, Any], channel_id: str, chat_type: ChannelType | None
     ) -> None:
         await self._report_rename(activity, channel_id, chat_type)
+        members_removed = activity.get("membersRemoved") or []
+        if members_removed:
+            await self._dispatch_members_removed(activity, channel_id, members_removed)
         members_added = activity.get("membersAdded") or []
         if not members_added:
-            # Deletions, renames and departures don't need the type; skip the read.
+            # Deletions and renames don't need the type; skip the read.
             return
         channel_type = await self._inbound_channel_type(channel_id, chat_type)
         recipient = activity.get("recipient") or {}
@@ -4059,11 +4264,16 @@ class TeamsAdapter(PlatformAdapter):
                 if channel_type in ("channel_public", "channel_private"):
                     await self._ensure_channel_subscription(channel_id)
                 if self._on_app_joined is not None:
+                    # Who added the bot, keyed as Teams people are elsewhere
+                    # (their Entra object id).
+                    actor = activity.get("from") or {}
+                    added_by = str(actor.get("aadObjectId") or "") or None
                     await self._on_app_joined(
                         InboundAppJoin(
                             channel_id=channel_id,
                             channel_type=channel_type,
                             channel_name=channel_name,
+                            added_by_external_user_id=added_by,
                         )
                     )
             elif self._on_user_joined is not None:
@@ -4127,6 +4337,57 @@ class TeamsAdapter(PlatformAdapter):
         self._channel_names[renamed_id] = new_name
         if self._on_channel_named is not None:
             await self._on_channel_named(renamed_id, old_name, new_name)
+
+    async def _dispatch_members_removed(
+        self,
+        activity: dict[str, Any],
+        channel_id: str,
+        members_removed: list[dict[str, Any]],
+    ) -> None:
+        """People left a chat, a channel or a team, or were taken out of it.
+
+        A chat or a private or shared channel names its own conversation.
+        Leaving a team (`teamMemberRemoved`) takes someone out of every
+        channel in it, while the activity names only the team's own
+        conversation, so each channel known to be in that team is told too;
+        one the person was never in is nothing to the core.
+
+        The bot itself being removed is the app leaving, handled as an
+        installation change, not a person leaving. `from` is whoever did it,
+        named as the remover only when it is someone else.
+        """
+        recipient = activity.get("recipient") or {}
+        bot_id = str(recipient.get("id", ""))
+        channel_data = activity.get("channelData") or {}
+        channels = [channel_id]
+        if channel_data.get("eventType") == "teamMemberRemoved":
+            team_id = self._known_team(channel_id)
+            if team_id:
+                channels.extend(
+                    other
+                    for other, team in self._team_of_channel.items()
+                    if team == team_id and other != channel_id
+                )
+        actor = activity.get("from") or {}
+        actor_id = str(actor.get("aadObjectId") or actor.get("id") or "")
+        for member in members_removed:
+            member_id = str(member.get("id", ""))
+            if not member_id or member_id == bot_id:
+                continue
+            person_id = str(member.get("aadObjectId") or member_id)
+            removed_by = (
+                str(actor.get("name") or "") or None
+                if actor_id and actor_id not in (person_id, member_id)
+                else None
+            )
+            for channel in channels:
+                await self._user_left(
+                    InboundUserLeave(
+                        channel_id=channel,
+                        external_user_id=person_id,
+                        removed_by_name=removed_by,
+                    )
+                )
 
     @staticmethod
     def _channel_name(activity: dict[str, Any]) -> str | None:
@@ -4644,7 +4905,10 @@ class TeamsAdapter(PlatformAdapter):
         elif action == "team_joined":
             await self._switch_joined_team(request["team_id"])
         elif action == "team_left":
-            await self._switch_left_team(request["team_id"])
+            await self._switch_left_team(
+                request["team_id"],
+                release_default=request.get("release_default") == "1",
+            )
         elif action == "lifecycle":
             await self._handle_lifecycle_event(
                 {

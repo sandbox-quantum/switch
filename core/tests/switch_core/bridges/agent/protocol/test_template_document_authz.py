@@ -2,7 +2,9 @@
 
 A template document's instructions reach every agent in the room, so taking
 part in the room is not enough to change them: the agent's owner must be able
-to write the room, the rule room roles already follow. `_owner_writes_room`
+to change the room's settings (`room_policy`'s owner tier), the rule room roles
+already follow. A room's write visibility grants nothing, and an agent anyone
+may address doesn't use its owner's rights. `_owner_writes_room`
 is what `request_room_document_update` / `request_room_document_delete` hand
 the resource service for that.
 """
@@ -11,7 +13,7 @@ from __future__ import annotations
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.db.models import Room
+from switch_core.db.models import Agent, Room
 from tests.switch_core.bridges.agent.protocol.test_room_roster_authz import (
     _make_user,
     _register,
@@ -39,7 +41,7 @@ async def _room(
         return room.id
 
 
-async def test_only_an_owner_who_writes_the_room_may_maintain_its_template_documents(
+async def test_only_the_rooms_owner_tier_may_maintain_its_template_documents(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     svc = _service(session_factory)
@@ -54,7 +56,16 @@ async def test_only_an_owner_who_writes_the_room_may_maintain_its_template_docum
         session_factory, owner_id=room_owner, write_visibility="public"
     )
 
+    open_agent = await _register(svc, "owners-open-agent", room_owner)
+    async with session_factory() as session:
+        agent = await session.get(Agent, open_agent)
+        assert agent is not None
+        agent.addressing_policy = None
+        await session.commit()
+
     async with session_factory() as session:
         assert await svc._owner_writes_room(session, owners_agent, private)
+        assert await svc._owner_writes_room(session, owners_agent, public)
         assert not await svc._owner_writes_room(session, strangers_agent, private)
-        assert await svc._owner_writes_room(session, strangers_agent, public)
+        assert not await svc._owner_writes_room(session, strangers_agent, public)
+        assert not await svc._owner_writes_room(session, open_agent, private)

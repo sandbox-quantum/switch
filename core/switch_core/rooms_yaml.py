@@ -460,8 +460,11 @@ class RoomSpec(BaseModel):
     # Collaboration bridge display name; omit for an internal-only room.
     bridge: str | None = None
     channel_type: Literal["channel_public", "channel_private"] = "channel_public"
-    read_visibility: str = "public"
-    write_visibility: str = "public"
+    # Omitted, the room follows its channel (`room_policy.visibility_for_channel`).
+    read_visibility: str | None = None
+    # Accepted from older templates and ignored: a room has no write
+    # visibility of its own.
+    write_visibility: str | None = None
     agents: list[str] = []
     users: list[str] = []
     roles: list[RoleSpec] = []
@@ -1101,8 +1104,13 @@ class RoomYamlService:
         group_id: str | None = None,
         origin: AgentOrigin | None = None,
         template_name: str | None = None,
+        on_room_made: Callable[[str, str], Awaitable[None]] | None = None,
     ) -> ProvisionResult:
         """Create the room and everything the spec attaches to it.
+
+        ``on_room_made`` is called with the room's name and id as soon as it
+        exists, before its kickoff: a template run opens its agents to the room
+        there, so the kickoff reaches them.
 
         ``kickoff`` is posted once the room exists, by the platform on the
         creator's behalf (see ``_send_kickoff``); ``creator_name`` is how the
@@ -1169,7 +1177,6 @@ class RoomYamlService:
             acting_user_id=user_id,
             acting_is_admin=is_admin,
             read_visibility=spec.read_visibility,
-            write_visibility=spec.write_visibility,
             roles=spec.roles or None,
             reference_ids=attached_ref_ids or None,
             package_ids=attached_package_ids or None,
@@ -1180,6 +1187,8 @@ class RoomYamlService:
         if console:
             assert owner is not None and self._console_rooms is not None
             await self._add_console_owner(result.room, owner, self._console_rooms)
+        if on_room_made is not None:
+            await on_room_made(result.room.name, room_id)
         failures: list[dict[str, Any]] = list(result.failed_attachments)
 
         created_ref_ids = await self._create_inline_references(
@@ -1234,6 +1243,7 @@ class RoomYamlService:
         creator_name: str | None = None,
         origin: AgentOrigin | None = None,
         template_name: str | None = None,
+        on_room_made: Callable[[str, str], Awaitable[None]] | None = None,
     ) -> GroupProvisionResult:
         """Provision a room group, its rooms, and the links between them.
 
@@ -1276,6 +1286,7 @@ class RoomYamlService:
                     origin=origin,
                     template_name=template_name,
                     group_id=group_id,
+                    on_room_made=on_room_made,
                 )
             except Exception as e:  # noqa: BLE001 - reported, not swallowed
                 errors.append(
@@ -1691,7 +1702,6 @@ class RoomYamlService:
                 data["bridge"] = bridge_display_name
             data["channel_type"] = room.channel_type
             data["read_visibility"] = room.read_visibility
-            data["write_visibility"] = room.write_visibility
 
             if agents:
                 agent_ids = await self._room_store.get_agent_ids(session, room.id)

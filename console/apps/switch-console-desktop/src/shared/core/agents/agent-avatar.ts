@@ -14,6 +14,8 @@
  *    "use the one from the name" reset is a value rather than a coin flip.
  */
 
+import { sha256Hex } from './sha256';
+
 /** DiceBear's major version. Pinned in the URL because the drawing changes
  * between majors: unpinned, every stored icon would quietly become a different
  * face the day the service moved on. */
@@ -47,11 +49,33 @@ export function agentAvatarUrlForSeed(seed: string): string {
 }
 
 /**
- * The avatar an agent gets from its own name — the one the picker offers first
- * and the one the ✕ reset returns to.
+ * The avatar drawn from an agent's name itself. Only for agents that already
+ * wear it (one with no icon stored, which the server draws the same way), so
+ * their face does not change: an icon generated from now on uses
+ * `agentAvatarUrlForNewAgent`, which keeps the name out of the URL.
  */
 export function agentAvatarUrlForName(agentName: string): string {
   return agentAvatarUrlForSeed(agentName);
+}
+
+/** Hex digits of a name's SHA-256 used as a new avatar's seed. */
+const NAME_SEED_LENGTH = 32;
+
+/**
+ * The seed a new avatar for `name` is drawn from: a digest, not the name, so
+ * DiceBear and everyone who loads the image never see the name. The Switch
+ * server builds the same digest (`name_seed` in `core/switch_core/agent_icon.py`).
+ */
+export function agentNameSeed(name: string): string {
+  return sha256Hex(name).slice(0, NAME_SEED_LENGTH);
+}
+
+/**
+ * The avatar a new agent called `agentName` gets when nobody picks one — the
+ * same one the server generates for it (`new_icon_url`).
+ */
+export function agentAvatarUrlForNewAgent(agentName: string): string {
+  return agentAvatarUrlForSeed(agentNameSeed(agentName));
 }
 
 /**
@@ -67,9 +91,9 @@ export function randomAgentAvatarUrl(): string {
 }
 
 /**
- * One page of choices for the picker. `round` 0 leads with the agent's own
- * name, so the first tile is the avatar it already has; later rounds are
- * different faces.
+ * One page of choices for the picker. `round` 0 leads with the avatar a new
+ * agent of this name gets; later rounds are different faces. Every choice is
+ * drawn from a digest, so none carries the name.
  *
  * Rounds are derived from the name rather than drawn at random so that the
  * same agent offers the same choices every time the picker is opened — a grid
@@ -81,7 +105,7 @@ export function agentAvatarChoices(agentName: string, round: number): string[] {
     round === 0
       ? [agentName, ...sequentialSeeds(agentName, 0, AVATAR_CHOICE_COUNT - 1)]
       : sequentialSeeds(agentName, round, AVATAR_CHOICE_COUNT);
-  return seeds.map(agentAvatarUrlForSeed);
+  return seeds.map(agentAvatarUrlForNewAgent);
 }
 
 function sequentialSeeds(agentName: string, round: number, count: number): string[] {

@@ -9,7 +9,7 @@ export function MessagingAppsSettingsPage() {
       <PageHeader
         sticky
         title="Messaging apps"
-        description="Link your account in each app so your agents recognise you there."
+        description="Link your account for your agents to identify you in each messaging app."
       />
       <OnSignedInServer>
         {({ server }) => <MessagingAppsCard serverId={server.id} personal />}

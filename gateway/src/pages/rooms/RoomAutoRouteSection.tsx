@@ -21,20 +21,18 @@ import { useAgents } from "../../data/hooks";
  * gets undecided messages while the decision service is failing. Shows what
  * the server says: the toggle never flips before the server has answered,
  * and where auto-route cannot work here it says why, in the server's words.
- * Anyone who may write to the room may turn it on or off (`can_write`);
- * naming the triage agent takes the room's owner or a workspace admin
- * (`can_manage`). What the viewer may not change is held, with the reason.
+ * Both are room settings: anyone who may write to the room (`can_write`: its
+ * owner, its room admins or a workspace admin) may change them. What the
+ * viewer may not change is held, with the reason.
  */
 export default function RoomAutoRouteSection({
   room,
   autoRoute,
   canWrite,
-  canManage,
 }: {
   room: RoomDetail;
   autoRoute: RoomAutoRoute;
   canWrite: boolean;
-  canManage: boolean;
 }) {
   const { data: allAgents } = useAgents();
   const [state, setState] = useState(autoRoute);
@@ -94,7 +92,7 @@ export default function RoomAutoRouteSection({
       />
       {!canWrite && (
         <Typography variant="caption" color="text.secondary">
-          Turning auto-route on or off needs write access to this room.
+          Only the room's owner, its room admins or a workspace admin can change auto-route.
         </Typography>
       )}
       <TextField
@@ -103,13 +101,9 @@ export default function RoomAutoRouteSection({
         label="Triage agent while auto-route is unavailable"
         value={state.fallback_agent ?? ""}
         onChange={(e) => save({ fallback_agent: e.target.value || null })}
-        disabled={!canManage || saving}
+        disabled={!canWrite || saving}
         sx={{ width: 360 }}
-        helperText={
-          canManage
-            ? "Gets the messages auto-route could not decide while the decision service is failing. Off by default."
-            : "Only the room's owner or a workspace admin can change this."
-        }
+        helperText="Gets the messages auto-route could not decide while the decision service is failing. Off by default."
       >
         <MenuItem value="">None</MenuItem>
         {triageChoices.map((choice) => (

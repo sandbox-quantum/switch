@@ -107,6 +107,11 @@ class _Lifecycle:
     def get(self, bridge_id: str) -> Any:
         return self._bridges.get(bridge_id)
 
+    def channel_creation_blocker(
+        self, bridge_type: str, connection_config: object
+    ) -> str | None:
+        return None
+
 
 class _StopAtTransportRoom:
     async def create_room(self, name: str, description: str) -> str:

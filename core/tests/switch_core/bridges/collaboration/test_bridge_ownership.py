@@ -868,6 +868,117 @@ class TestChangesMadeElsewhere:
 
         assert [p.bridges.get(bridge.bridge_id) for p in (holder, quiet)] == running
 
+    async def test_a_default_team_a_bridge_changed_rebuilds_only_the_quiet_copy(
+        self,
+        postgres_url: str,
+        session_factory: async_sessionmaker[AsyncSession],
+        processes: list[_Process],
+        platform: _Platform,
+        bridge: _Bridge,
+    ) -> None:
+        """A Teams bridge on the distributed app stores the first team it
+        joins as its default team, and clears one it leaves. That is an edit:
+        a copy still built from the old row would create channels in the wrong
+        team, or none. The copy that made the change already runs with it, so
+        it is left running."""
+        holder, quiet = _holder(
+            await _boot_two(postgres_url, session_factory, processes),
+            bridge.bridge_id,
+        )
+        await _eventually(lambda: quiet.bridges.is_connected(bridge.bridge_id))
+        held = holder.bridges.get(bridge.bridge_id)
+
+        async def change(expected: str | None, team_id: str | None) -> bool:
+            copy = quiet.bridges.get(bridge.bridge_id)
+            changed = await holder.bridges._write_default_team(
+                bridge.bridge_id, TENANT_ZERO_ID, expected, team_id
+            )
+            for process in (holder, quiet):
+                await process.bridges.reconcile_all()
+            if changed:
+                await _eventually(
+                    lambda: quiet.bridges.get(bridge.bridge_id) is not copy
+                )
+                await _eventually(lambda: quiet.bridges.is_connected(bridge.bridge_id))
+            assert holder.bridges.get(bridge.bridge_id) is held
+            return changed
+
+        async def stored_team() -> object:
+            async with session_factory() as session:
+                stored = await session.get(CollaborationBridge, bridge.bridge_id)
+            assert stored is not None
+            return stored.connection_config.get("team_id")
+
+        assert await change(None, "team-9")
+        assert await stored_team() == "team-9"
+
+        # A team joined later is not the default: the first one is kept.
+        assert not await change(None, "team-10")
+        assert await stored_team() == "team-9"
+
+        assert await change("team-9", None)
+        assert await stored_team() is None
+
+    async def test_a_recheck_while_a_default_team_is_being_written_restarts_nothing(
+        self,
+        postgres_url: str,
+        session_factory: async_sessionmaker[AsyncSession],
+        processes: list[_Process],
+        platform: _Platform,
+        bridge: _Bridge,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A re-check in the holder's own process can read the row after the
+        write has committed and before it has been recorded as the one the
+        holder runs from. It is the holder's own write, so it restarts
+        nothing."""
+        holder, quiet = _holder(
+            await _boot_two(postgres_url, session_factory, processes),
+            bridge.bridge_id,
+        )
+        await _eventually(lambda: quiet.bridges.is_connected(bridge.bridge_id))
+        held = holder.bridges.get(bridge.bridge_id)
+        committed = asyncio.Event()
+        release = asyncio.Event()
+        store = holder.bridges._bridge_store
+        replace_team = store.replace_team
+
+        async def replace_then_pause_after_commit(
+            session: AsyncSession,
+            bridge_id: str,
+            *,
+            expected: str | None,
+            team_id: str | None,
+        ) -> CollaborationBridge | None:
+            written = await replace_team(
+                session, bridge_id, expected=expected, team_id=team_id
+            )
+            commit = session.commit
+
+            async def commit_then_pause() -> None:
+                await commit()
+                committed.set()
+                await release.wait()
+
+            session.commit = commit_then_pause  # type: ignore[method-assign]
+            return written
+
+        monkeypatch.setattr(store, "replace_team", replace_then_pause_after_commit)
+
+        writing = asyncio.create_task(
+            holder.bridges._write_default_team(
+                bridge.bridge_id, TENANT_ZERO_ID, None, "team-9"
+            )
+        )
+        await committed.wait()
+        await holder.bridges.reconcile_bridge(bridge.bridge_id)
+        assert holder.bridges.get(bridge.bridge_id) is held
+
+        release.set()
+        assert await writing
+        await holder.bridges.reconcile_bridge(bridge.bridge_id)
+        assert holder.bridges.get(bridge.bridge_id) is held
+
     async def test_a_bridge_removed_through_the_quiet_process_stops_listening(
         self,
         postgres_url: str,

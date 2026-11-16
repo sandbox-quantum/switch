@@ -65,7 +65,7 @@ export type ManagedMachine = {
   state: 'online' | 'offline' | 'unknown' | 'revoked';
 };
 
-/** Whether the machine is the owner's Switch cloud machine: Switch enrolls its controller as kind `ec2`. */
+/** Whether the machine is the owner's Switch Cloud machine: Switch enrolls its controller as kind `ec2`. */
 export function isCloudMachine(machine: Pick<ManagedMachine, 'kind'>): boolean {
   return machine.kind === 'ec2';
 }
@@ -122,7 +122,7 @@ export type OwnedMachine = ManagedMachine & {
   providers: MachineProvider[];
   /** It can be given a provider login sealed to its key: its controller registered one. */
   acceptsLogins: boolean;
-  /** The owner's Switch cloud machine, offered as "Switch cloud" rather than by name. */
+  /** The owner's Switch Cloud machine, offered as "Switch Cloud" rather than by name. */
   cloud: boolean;
   /**
    * Where the machine makes agents' workspaces (an agent's is `<workspacesDir>/<name>`);

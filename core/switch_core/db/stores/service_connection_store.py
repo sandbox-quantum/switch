@@ -22,6 +22,7 @@ from switch_core.db.models import (
     ServiceGrant,
     ServiceTokenIssuance,
     require_tenant_id,
+    service_grant_revision_sequence,
 )
 from switch_core.db.standing import stands_in_tenant
 
@@ -102,6 +103,8 @@ class ServiceConnectionStore:
         external_identity: str,
         encrypted_secret: str,
         oauth_client_id: str | None,
+        method: str,
+        choices: dict[str, str],
     ) -> None:
         """Connect, or re-link in place: the grants on it are kept.
 
@@ -116,6 +119,8 @@ class ServiceConnectionStore:
             "external_identity": external_identity,
             "encrypted_secret": encrypted_secret,
             "oauth_client_id": oauth_client_id,
+            "method": method,
+            "choices": choices,
             "error_code": None,
         }
         await session.execute(
@@ -246,7 +251,27 @@ class ServiceConnectionStore:
                 ServiceGrant.agent_id == agent_id,
                 ServiceGrant.service == service,
             )
-            .values(revision=ServiceGrant.revision + 1, updated_at=func.now())
+            .values(
+                revision=service_grant_revision_sequence.next_value(),
+                updated_at=func.now(),
+            )
+        )
+
+    async def bump_grants(
+        self, session: AsyncSession, owner_id: str, service: str
+    ) -> None:
+        """Move every grant on the owner's connection to `service` on."""
+        await session.execute(
+            update(ServiceGrant)
+            .where(
+                ServiceGrant.tenant_id == require_tenant_id(),
+                ServiceGrant.owner_id == owner_id,
+                ServiceGrant.service == service,
+            )
+            .values(
+                revision=service_grant_revision_sequence.next_value(),
+                updated_at=func.now(),
+            )
         )
 
     async def list_grants(
@@ -299,7 +324,7 @@ class ServiceConnectionStore:
                 index_elements=["tenant_id", "agent_id", "service"],
                 set_={
                     **values,
-                    "revision": ServiceGrant.revision + 1,
+                    "revision": service_grant_revision_sequence.next_value(),
                     "updated_at": func.now(),
                 },
             )

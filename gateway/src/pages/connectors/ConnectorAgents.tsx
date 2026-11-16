@@ -293,9 +293,8 @@ export default function ConnectorAgents({
               <GitHubGrantForm
                 github={github}
                 githubError={githubError}
-                notSetUp={null}
-                canSetUp={false}
                 current={null}
+                readOnlyReason={connection.read_only_reason}
                 busy={busy}
                 onCancel={null}
                 onSave={grantGitHub(chosen.agent_id)}
@@ -330,9 +329,8 @@ export default function ConnectorAgents({
               <GitHubGrantForm
                 github={github}
                 githubError={githubError}
-                notSetUp={null}
-                canSetUp={false}
                 current={managing.grant}
+                readOnlyReason={connection.read_only_reason}
                 busy={busy}
                 onCancel={() => setManaging(null)}
                 onSave={grantGitHub(managing.agentId)}

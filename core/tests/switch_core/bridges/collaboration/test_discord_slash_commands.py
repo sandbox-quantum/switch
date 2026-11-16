@@ -297,7 +297,10 @@ def test_registered_descriptions_never_teach_the_bang_form() -> None:
 def test_usage_clause_dropped_from_registered_description() -> None:
     full = COMMANDS_BY_NAME["set-alias"].description
     assert "Usage:" in full  # the registry still carries it for `!help`
-    assert summarise_description(full) == "Give an agent a room alias."
+    assert summarise_description(full) == (
+        "Give an agent a room alias: the room's owner or an admin, or the "
+        "agent's own owner."
+    )
 
 
 def test_summarise_falls_back_rather_than_registering_nothing() -> None:

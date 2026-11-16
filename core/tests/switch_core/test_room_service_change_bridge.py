@@ -193,9 +193,16 @@ class _FakeLifecycle:
         self._bridges = bridges
         # Bridges whose rooms changed, announced for the other processes.
         self.rooms_changed_for: list[str] = []
+        # What the target connection still lacks before it can make a channel.
+        self.channel_creation_blocked_by: str | None = None
 
     def get(self, bridge_id: str) -> Any:
         return self._bridges.get(bridge_id)
+
+    def channel_creation_blocker(
+        self, bridge_type: str, connection_config: Any
+    ) -> str | None:
+        return self.channel_creation_blocked_by
 
     def rooms_changed(self, bridge_id: str) -> None:
         self.rooms_changed_for.append(bridge_id)
@@ -215,7 +222,9 @@ class _FakeProvisioning:
     ) -> None:
         self._events.append(("invite", transport_user_id))
 
-    async def kick_user(self, transport_room_id: str, transport_user_id: str) -> None:
+    async def kick_user(
+        self, transport_room_id: str, transport_user_id: str, **_kwargs: object
+    ) -> None:
         self._events.append(("kick", transport_user_id))
 
 
@@ -231,8 +240,10 @@ class _FakeBridgeStore:
     async def get(self, session: Any, bridge_id: str) -> Any:
         return SimpleNamespace(
             id=bridge_id,
+            type="fake",
             display_name=bridge_id,
             channel_creation_enabled=self._enabled,
+            connection_config={},
         )
 
 
@@ -908,6 +919,47 @@ class TestChangeBridge:
         )
 
         with pytest.raises(ChannelCreationUnsupported, match="turned off"):
+            await svc.change_bridge("room-1", bridge_id="bridge-new")
+
+        assert room_store.update_bridge_calls == []
+        assert events == []
+
+    async def test_move_refused_when_the_target_lacks_what_a_channel_needs(
+        self,
+    ) -> None:
+        # A Teams connection with no default team does not know which team to
+        # make the channel in: refused, saying so, before anything is touched.
+        events: list[Any] = []
+        room = SimpleNamespace(
+            owner_id=None,
+            id="room-1",
+            tenant_id="room-tenant",
+            name="Work",
+            description="d",
+            transport_room_id="!mx:switch.local",
+            bridge_id="bridge-old",
+            channel_type="channel_public",
+            external_channel_id="chan-old",
+        )
+        svc, room_store = _build_service(
+            room=room,
+            agent_ids=[],
+            agent_names={},
+            bridges={
+                "bridge-new": _FakeCollaborationCore(
+                    events,
+                    transport_user_id="@bot-new:switch.local",
+                    new_channel_id="chan-new",
+                ),
+                "bridge-old": _FakeCollaborationCore(
+                    events, transport_user_id="@bot-old:s"
+                ),
+            },
+            events=events,
+        )
+        svc._collab_lifecycle.channel_creation_blocked_by = "No default team is set"  # type: ignore[attr-defined]
+
+        with pytest.raises(ChannelCreationUnsupported, match="No default team"):
             await svc.change_bridge("room-1", bridge_id="bridge-new")
 
         assert room_store.update_bridge_calls == []

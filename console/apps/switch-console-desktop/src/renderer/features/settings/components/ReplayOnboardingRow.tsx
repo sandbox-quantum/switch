@@ -36,7 +36,7 @@ export function useConfirmFreshInstall(): () => void {
  * only. "Pages only" replays them over this install; "Fresh install" restarts
  * the app on an empty data folder.
  *
- * "Pages only" leaves Settings for the home view on the way, because Settings
+ * "Pages only" leaves Settings for the home on the way, because Settings
  * is drawn even when there is no server and so would stay on screen over the flow.
  */
 export function ReplayOnboardingRow() {
@@ -60,7 +60,7 @@ export function ReplayOnboardingRow() {
             size="sm"
             onClick={() => {
               onboardingStore.rehearse();
-              navigate('home');
+              navigate('noServer');
             }}
           >
             Pages only

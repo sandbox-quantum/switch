@@ -48,10 +48,15 @@ from tests.switch_core.connections.fake_vendor import (
     STATIC_CLIENT_ID,
     STATIC_CLIENT_SECRET,
     FakeOAuthServer,
+    FakeSites,
     s256,
 )
 from tests.switch_core.connections.test_broker import _user, pass_through_catalog
-from tests.switch_core.connections.test_loader import CLI_ENTRY, OAUTH_ENTRY
+from tests.switch_core.connections.test_loader import (
+    CHOICES_ENTRY,
+    CLI_ENTRY,
+    OAUTH_ENTRY,
+)
 from tests.switch_core.gateway.agent_route_harness import add_agent
 
 STATIC = OAUTH_ENTRY.replace(
@@ -94,6 +99,7 @@ async def _sign_in(adapter: OAuthAdapter, vendor: FakeOAuthServer) -> Connection
         state="state-1",
         code_challenge=s256(verifier),
         scopes=["read:items", "write:items"],
+        choices={},
     )
     back = parse_qs(urlsplit(vendor.authorize(url)).query)
     signed_in = await adapter.exchange_code(
@@ -101,6 +107,7 @@ async def _sign_in(adapter: OAuthAdapter, vendor: FakeOAuthServer) -> Connection
         verifier=verifier,
         redirect_uri=REDIRECT,
         scopes=["read:items", "write:items"],
+        choices={},
     )
     return signed_in.secret
 
@@ -115,12 +122,12 @@ class TestDiscovery:
         self, vendor
     ) -> None:
         adapter, _ = _adapter(vendor)
-        endpoints = await adapter.endpoints()
+        endpoints = await adapter.endpoints({})
         assert endpoints.authorization == f"{ISSUER}/authorize"
         assert endpoints.token == f"{ISSUER}/token"
         assert endpoints.registration == f"{ISSUER}/register"
         assert endpoints.resource == MCP_URL
-        await adapter.endpoints()
+        await adapter.endpoints({})
         assert (
             vendor.paths.count(f"{ISSUER}/.well-known/oauth-authorization-server") == 1
         )
@@ -135,27 +142,33 @@ class TestDiscovery:
                 f"    token_url: {ISSUER}/token\n",
             ),
         )
-        endpoints = await adapter.endpoints()
+        endpoints = await adapter.endpoints({})
         assert (endpoints.token, endpoints.resource) == (f"{ISSUER}/token", None)
         assert vendor.paths == []
+
+    async def test_refuses_metadata_over_64_kib(self, vendor) -> None:
+        vendor.metadata["padding"] = "x" * (64 * 1024)
+        adapter, _ = _adapter(vendor)
+        with pytest.raises(ServiceAdapterError, match="too large"):
+            await adapter.endpoints({})
 
     async def test_refuses_a_server_without_pkce(self, vendor) -> None:
         vendor.metadata["code_challenge_methods_supported"] = ["plain"]
         adapter, _ = _adapter(vendor)
         with pytest.raises(ServiceAdapterError, match="S256"):
-            await adapter.endpoints()
+            await adapter.endpoints({})
 
     async def test_refuses_an_endpoint_that_is_not_https(self, vendor) -> None:
         vendor.metadata["token_endpoint"] = "http://auth.example.test/token"
         adapter, _ = _adapter(vendor)
         with pytest.raises(ServiceAdapterError, match="token endpoint is not an https"):
-            await adapter.endpoints()
+            await adapter.endpoints({})
 
     async def test_a_vendor_that_is_down_is_unavailable(self, vendor) -> None:
         vendor.fail[f"{ISSUER}/.well-known/oauth-authorization-server"] = (503, {})
         adapter, _ = _adapter(vendor)
         with pytest.raises(ServiceUnavailableError):
-            await adapter.endpoints()
+            await adapter.endpoints({})
 
 
 class TestSignIn:
@@ -167,6 +180,7 @@ class TestSignIn:
             state="state-1",
             code_challenge=s256(verifier),
             scopes=["read:items", "write:items"],
+            choices={},
         )
         query = parse_qs(urlsplit(url).query)
         assert query["client_id"] == [STATIC_CLIENT_ID]
@@ -183,6 +197,7 @@ class TestSignIn:
             verifier=verifier,
             redirect_uri=REDIRECT,
             scopes=["read:items", "write:items"],
+            choices={},
         )
         secret = signed_in.secret
         assert secret.access_token in vendor.live_access
@@ -197,6 +212,7 @@ class TestSignIn:
             state="s",
             code_challenge=s256("the-real-verifier"),
             scopes=["read:items"],
+            choices={},
         )
         back = parse_qs(urlsplit(vendor.authorize(url)).query)
         with pytest.raises(ReauthorizationRequiredError):
@@ -205,19 +221,20 @@ class TestSignIn:
                 verifier="another-verifier",
                 redirect_uri=REDIRECT,
                 scopes=["read:items"],
+                choices={},
             )
 
     async def test_reads_the_accounts_id_and_label(self, vendor) -> None:
         adapter, _ = _adapter(vendor)
         secret = await _sign_in(adapter, vendor)
-        identity = await adapter.identify(secret.access_token or "")
+        identity = await adapter.identify(secret.access_token or "", {})
         assert (identity.account_id, identity.label) == ("acct-1", "ada@example.test")
 
     async def test_a_numeric_account_id_is_read_as_text(self, vendor) -> None:
         vendor.account = {"id": 1001}
         adapter, _ = _adapter(vendor)
         secret = await _sign_in(adapter, vendor)
-        identity = await adapter.identify(secret.access_token or "")
+        identity = await adapter.identify(secret.access_token or "", {})
         assert (identity.account_id, identity.label) == ("1001", "1001")
 
     async def test_an_account_without_an_id_is_refused(self, vendor) -> None:
@@ -225,7 +242,7 @@ class TestSignIn:
         adapter, _ = _adapter(vendor)
         secret = await _sign_in(adapter, vendor)
         with pytest.raises(ServiceAdapterError, match="did not name the account"):
-            await adapter.identify(secret.access_token or "")
+            await adapter.identify(secret.access_token or "", {})
 
 
 INTROSPECTED = STATIC.replace(
@@ -245,7 +262,7 @@ class TestIntrospection:
         vendor.introspected["username"] = "Ada"
         adapter, _ = _adapter(vendor, INTROSPECTED)
         secret = await _sign_in(adapter, vendor)
-        identity = await adapter.identify(secret.access_token or "")
+        identity = await adapter.identify(secret.access_token or "", {})
         assert (identity.account_id, identity.label) == ("ws-1:user-1", "Ada")
         assert vendor.paths.count(f"{ISSUER}/introspect") == 1
         assert IDENTITY_URL not in vendor.paths
@@ -253,7 +270,7 @@ class TestIntrospection:
     async def test_asks_as_the_client_does_at_the_token_endpoint(self, vendor) -> None:
         adapter, _ = _adapter(vendor, INTROSPECTED)
         secret = await _sign_in(adapter, vendor)
-        await adapter.identify(secret.access_token or "")
+        await adapter.identify(secret.access_token or "", {})
         [asked] = vendor.introspections
         assert asked == {
             "token": secret.access_token,
@@ -273,7 +290,7 @@ class TestIntrospection:
             http,
         )
         secret = await _sign_in(adapter, vendor)
-        identity = await adapter.identify(secret.access_token or "")
+        identity = await adapter.identify(secret.access_token or "", {})
         assert identity.account_id == "ws-1:user-1"
         [asked] = vendor.introspections
         assert set(asked) == {"token", "token_type_hint", "client_id"}
@@ -283,7 +300,7 @@ class TestIntrospection:
         secret = await _sign_in(adapter, vendor)
         vendor.live_access.clear()
         with pytest.raises(ReauthorizationRequiredError, match="not active"):
-            await adapter.identify(secret.access_token or "")
+            await adapter.identify(secret.access_token or "", {})
 
     @pytest.mark.parametrize("active", ["missing", "true", 1, None])
     async def test_only_active_true_names_an_account(self, vendor, active) -> None:
@@ -294,14 +311,14 @@ class TestIntrospection:
         adapter, _ = _adapter(vendor, INTROSPECTED)
         secret = await _sign_in(adapter, vendor)
         with pytest.raises(ReauthorizationRequiredError, match="not active"):
-            await adapter.identify(secret.access_token or "")
+            await adapter.identify(secret.access_token or "", {})
 
     async def test_the_ids_in_the_token_response_are_never_read(self, vendor) -> None:
         vendor.token_extras = {"workspace_id": "from-token", "user_id": "from-token"}
         adapter, _ = _adapter(vendor, INTROSPECTED)
         secret = await _sign_in(adapter, vendor)
         assert "workspace_id" not in secret.values
-        identity = await adapter.identify(secret.access_token or "")
+        identity = await adapter.identify(secret.access_token or "", {})
         assert identity.account_id == "ws-1:user-1"
 
     async def test_asks_with_basic_where_the_vendor_takes_only_that(
@@ -324,7 +341,7 @@ class TestIntrospection:
         )
         adapter = OAuthAdapter(_definition(INTROSPECTED), client, http)
         secret = await _sign_in(adapter, vendor)
-        identity = await adapter.identify(secret.access_token or "")
+        identity = await adapter.identify(secret.access_token or "", {})
         assert identity.account_id == "ws-1:user-1"
         [asked] = [r for r in sent if r.url.path == "/introspect"]
         assert asked.headers["authorization"].startswith("Basic ")
@@ -337,7 +354,7 @@ class TestIntrospection:
         adapter, _ = _adapter(vendor, INTROSPECTED)
         secret = await _sign_in(adapter, vendor)
         with pytest.raises(ServiceAdapterError, match="did not name the account"):
-            await adapter.identify(secret.access_token or "")
+            await adapter.identify(secret.access_token or "", {})
 
     @pytest.mark.parametrize("value", ["", "   ", True, None, ["ws-1"], {"id": "ws-1"}])
     async def test_an_id_that_is_not_one_value_is_refused(self, vendor, value) -> None:
@@ -345,7 +362,7 @@ class TestIntrospection:
         adapter, _ = _adapter(vendor, INTROSPECTED)
         secret = await _sign_in(adapter, vendor)
         with pytest.raises(ServiceAdapterError, match="did not name the account"):
-            await adapter.identify(secret.access_token or "")
+            await adapter.identify(secret.access_token or "", {})
 
     async def test_a_separator_inside_an_id_names_no_other_account(
         self, vendor
@@ -353,9 +370,9 @@ class TestIntrospection:
         adapter, _ = _adapter(vendor, INTROSPECTED)
         secret = await _sign_in(adapter, vendor)
         vendor.introspected.update(workspace_id="a:b", user_id="c")
-        first = await adapter.identify(secret.access_token or "")
+        first = await adapter.identify(secret.access_token or "", {})
         vendor.introspected.update(workspace_id="a", user_id="b:c")
-        second = await adapter.identify(secret.access_token or "")
+        second = await adapter.identify(secret.access_token or "", {})
         assert (first.account_id, second.account_id) == ("a%3Ab:c", "a:b%3Ac")
 
     async def test_without_an_advertised_endpoint_no_account_is_named(
@@ -365,7 +382,7 @@ class TestIntrospection:
         del vendor.metadata["introspection_endpoint"]
         adapter, _ = _adapter(vendor, INTROSPECTED)
         with pytest.raises(ServiceAdapterError, match="offers no token introspection"):
-            await adapter.identify(secret.access_token or "")
+            await adapter.identify(secret.access_token or "", {})
         assert vendor.introspections == []
 
     async def test_a_sign_in_without_introspection_is_refused_before_consent(
@@ -384,17 +401,18 @@ class TestIntrospection:
                 state="state-1",
                 code_challenge=s256(secrets.token_urlsafe(48)),
                 scopes=["read:items", "write:items"],
+                choices={},
             )
         renewed = await adapter.refresh(secret)
         assert renewed.access_token in vendor.live_access
-        await adapter.revoke_connection(renewed)
+        await adapter.revoke_connection(renewed, "oauth")
         assert renewed.values["refresh_token"] not in vendor.live_refresh
 
     async def test_an_endpoint_that_is_not_https_is_refused(self, vendor) -> None:
         vendor.metadata["introspection_endpoint"] = "http://auth.example.test/x"
         adapter, _ = _adapter(vendor, INTROSPECTED)
         with pytest.raises(ServiceAdapterError, match="introspection endpoint"):
-            await adapter.endpoints()
+            await adapter.endpoints({})
 
     async def test_a_refused_client_is_an_error_not_a_lapsed_sign_in(
         self, vendor
@@ -403,7 +421,7 @@ class TestIntrospection:
         secret = await _sign_in(adapter, vendor)
         vendor.clients[STATIC_CLIENT_ID] = "SYNTHETIC-ROTATED-SECRET"
         with pytest.raises(ServiceAdapterError, match="HTTP 401") as raised:
-            await adapter.identify(secret.access_token or "")
+            await adapter.identify(secret.access_token or "", {})
         assert not isinstance(raised.value, ReauthorizationRequiredError)
 
     async def test_a_get_identity_reads_several_paths_too(self, vendor) -> None:
@@ -416,7 +434,7 @@ class TestIntrospection:
             ),
         )
         secret = await _sign_in(adapter, vendor)
-        identity = await adapter.identify(secret.access_token or "")
+        identity = await adapter.identify(secret.access_token or "", {})
         assert (identity.account_id, identity.label) == ("org-1:7", "ada@example.test")
         assert vendor.introspections == []
 
@@ -566,7 +584,7 @@ class TestCommandLineTool:
         [authorization] = vendor.authorizations
         assert "resource" not in authorization
         assert "resource" not in vendor.token_requests[0]
-        await adapter.revoke_connection(secret)
+        await adapter.revoke_connection(secret, "oauth")
         assert [r["token"] for r in vendor.revoked] == [secret.values["refresh_token"]]
         assert not any("mcp.example.test" in path for path in vendor.paths)
 
@@ -583,6 +601,77 @@ class TestCommandLineTool:
         assert issued.revocable is False
 
 
+class TestChoices:
+    """An entry whose URLs name a choice calls the vendor where each sign-in,
+    and each connection made with it, chose."""
+
+    def _adapter(self, text: str = CHOICES_ENTRY) -> tuple[OAuthAdapter, FakeSites]:
+        sites = FakeSites("example.test", "eu.example.test")
+        client = StaticClient(
+            OAuthClientCredentials(
+                STATIC_CLIENT_ID, STATIC_CLIENT_SECRET, authentication=None
+            )
+        )
+        definition = _definition(
+            text.replace(
+                "    registration: dynamic\n",
+                "    registration: static\n    client_settings: EXAMPLE\n",
+            )
+        )
+        return OAuthAdapter(definition, client, sites.client()), sites
+
+    async def test_discovers_each_sites_endpoints_once(self) -> None:
+        adapter, sites = self._adapter()
+        here = await adapter.endpoints({"site": "example.test"})
+        there = await adapter.endpoints({"site": "eu.example.test"})
+        assert (here.token, here.resource) == (
+            "https://auth.example.test/token",
+            "https://mcp.example.test/v1/mcp",
+        )
+        assert (there.token, there.resource) == (
+            "https://auth.eu.example.test/token",
+            "https://mcp.eu.example.test/v1/mcp",
+        )
+        await adapter.endpoints({"site": "eu.example.test"})
+        metadata = "https://auth.eu.example.test/.well-known/oauth-authorization-server"
+        assert sites["eu.example.test"].paths.count(metadata) == 1
+
+    async def test_names_the_catalogs_endpoints_for_the_choice(self) -> None:
+        adapter, sites = self._adapter(
+            CHOICES_ENTRY.replace(
+                "    redirect: [loopback, core]\n",
+                "    redirect: [loopback, core]\n"
+                "    authorization_url: https://auth.{site}/authorize\n"
+                "    token_url: https://auth.{site}/token\n",
+            )
+        )
+        endpoints = await adapter.endpoints({"site": "eu.example.test"})
+        assert (endpoints.authorization, endpoints.token) == (
+            "https://auth.eu.example.test/authorize",
+            "https://auth.eu.example.test/token",
+        )
+        assert all(sites[site].paths == [] for site in sites.sites)
+
+    async def test_a_sign_in_needs_a_choice_the_entry_offers(self) -> None:
+        adapter, sites = self._adapter()
+        with pytest.raises(ServiceAdapterError, match="Example site is required"):
+            await adapter.endpoints({})
+        with pytest.raises(ServiceAdapterError, match="must be one of"):
+            await adapter.client_id({"site": "elsewhere.test"})
+        assert all(sites[site].paths == [] for site in sites.sites)
+
+    async def test_a_connection_for_a_choice_no_longer_offered_must_reconnect(
+        self,
+    ) -> None:
+        adapter, sites = self._adapter()
+        secret = ConnectionSecret(
+            {"refresh_token": "kept", "choices": {"site": "gone.example.test"}}
+        )
+        with pytest.raises(ReauthorizationRequiredError, match="no longer offers"):
+            await adapter.refresh(secret)
+        assert all(sites[site].paths == [] for site in sites.sites)
+
+
 class TestDisconnect:
     async def test_revokes_the_sign_in_where_the_catalog_names_how(
         self, vendor
@@ -595,10 +684,35 @@ class TestDisconnect:
             ),
         )
         secret = await _sign_in(adapter, vendor)
-        await adapter.revoke_connection(secret)
+        assert await adapter.revoke_connection(secret, "oauth") is True
         [revoked] = vendor.revoked
         assert revoked["token"] == secret.values["refresh_token"]
         assert revoked["token_type_hint"] == "refresh_token"
+
+    async def test_says_it_ended_nothing_where_the_vendor_knew_no_such_token(
+        self, vendor
+    ) -> None:
+        adapter, _ = _adapter(
+            vendor,
+            STATIC.replace(
+                "    client_settings: EXAMPLE\n",
+                f"    client_settings: EXAMPLE\n    revocation_url: {ISSUER}/revoke\n",
+            ),
+        )
+        secret = await _sign_in(adapter, vendor)
+        vendor.fail[f"{ISSUER}/revoke"] = (400, {"error": "invalid_token"})
+        assert await adapter.revoke_connection(secret, "oauth") is False
+
+    async def test_says_it_ended_nothing_where_there_was_no_token(self, vendor) -> None:
+        adapter, _ = _adapter(
+            vendor,
+            STATIC.replace(
+                "    client_settings: EXAMPLE\n",
+                f"    client_settings: EXAMPLE\n    revocation_url: {ISSUER}/revoke\n",
+            ),
+        )
+        assert await adapter.revoke_connection(ConnectionSecret({}), "oauth") is False
+        assert not any(path == f"{ISSUER}/revoke" for path in vendor.paths)
 
     async def test_says_it_cannot_revoke_where_the_vendor_offers_no_revocation(
         self, vendor
@@ -609,7 +723,7 @@ class TestDisconnect:
             ConnectionNotRevocable,
             match="so it still works. Remove Switch under Connected apps in Example.",
         ):
-            await adapter.revoke_connection(secret)
+            await adapter.revoke_connection(secret, "oauth")
         assert vendor.revoked == []
 
     async def test_revokes_at_the_advertised_endpoint_where_the_catalog_says_to(
@@ -624,7 +738,7 @@ class TestDisconnect:
             ),
         )
         secret = await _sign_in(adapter, vendor)
-        await adapter.revoke_connection(secret)
+        await adapter.revoke_connection(secret, "oauth")
         [revoked] = vendor.revoked
         assert revoked["token"] == secret.values["refresh_token"]
         assert secret.values["refresh_token"] not in vendor.live_refresh
@@ -642,7 +756,7 @@ class TestDisconnect:
         )
         secret = await _sign_in(adapter, vendor)
         with pytest.raises(ServiceAdapterError, match="no way to revoke") as raised:
-            await adapter.revoke_connection(secret)
+            await adapter.revoke_connection(secret, "oauth")
         assert not isinstance(raised.value, ConnectionNotRevocable)
 
 
@@ -650,7 +764,7 @@ class TestWhereTheMetadataIs:
     async def test_follows_the_metadata_the_servers_401_names(self, vendor) -> None:
         vendor.resource_metadata_path = "/resource-metadata/v1"
         adapter, _ = _adapter(vendor)
-        endpoints = await adapter.endpoints()
+        endpoints = await adapter.endpoints({})
         assert endpoints.token == f"{ISSUER}/token"
         assert "https://mcp.example.test/resource-metadata/v1" in vendor.paths
         # Never the host's root metadata, which describes another server.
@@ -662,7 +776,7 @@ class TestWhereTheMetadataIs:
     async def test_falls_back_to_the_well_known_address(self, vendor) -> None:
         vendor.advertise = False
         adapter, _ = _adapter(vendor)
-        endpoints = await adapter.endpoints()
+        endpoints = await adapter.endpoints({})
         assert endpoints.token == f"{ISSUER}/token"
         assert (
             "https://mcp.example.test/.well-known/oauth-protected-resource/v1/mcp"
@@ -749,7 +863,7 @@ class TestAdvertisedResource:
     async def test_accepts_a_resource_that_covers_the_server(
         self, vendor, advertised
     ) -> None:
-        endpoints = await _advertising_adapter(vendor, advertised).endpoints()
+        endpoints = await _advertising_adapter(vendor, advertised).endpoints({})
         assert endpoints.resource == advertised
 
     @pytest.mark.parametrize(
@@ -775,7 +889,7 @@ class TestAdvertisedResource:
         with pytest.raises(
             ServiceAdapterError, match="names another server as its resource"
         ) as raised:
-            await adapter.endpoints()
+            await adapter.endpoints({})
         assert advertised not in str(raised.value)
         assert f"{ISSUER}/.well-known/oauth-authorization-server" not in vendor.paths
 
@@ -794,7 +908,7 @@ class TestAdvertisedResource:
     ) -> None:
         adapter = _advertising_adapter(vendor, advertised)
         with pytest.raises(ServiceAdapterError, match="resource identifier"):
-            await adapter.endpoints()
+            await adapter.endpoints({})
 
     async def test_refuses_the_hosts_root_metadata_for_another_server(
         self, vendor
@@ -807,7 +921,7 @@ class TestAdvertisedResource:
         with pytest.raises(
             ServiceAdapterError, match="names another server as its resource"
         ):
-            await adapter.endpoints()
+            await adapter.endpoints({})
         assert (
             "https://mcp.example.test/.well-known/oauth-protected-resource"
             in vendor.paths
@@ -828,7 +942,7 @@ class TestAdvertisedResource:
     async def test_uses_the_mcp_url_where_no_resource_is_advertised(
         self, vendor
     ) -> None:
-        endpoints = await _advertising_adapter(vendor, _UNSET).endpoints()
+        endpoints = await _advertising_adapter(vendor, _UNSET).endpoints({})
         assert endpoints.resource == MCP_URL
 
 
@@ -852,6 +966,7 @@ class TestThroughTheBroker:
             workspace_services=WorkspaceServiceStore(),
             workspace_gate=False,
             public_url=None,
+            allow_non_expiring_keys=False,
         )
         secret = await _sign_in(adapter, vendor)
         # Due for renewal: inside the fifteen minutes a pass-through keeps.
@@ -872,6 +987,8 @@ class TestThroughTheBroker:
                 external_identity="ada@example.test",
                 encrypted_secret=TEST_KEYRING.encrypt(json.dumps(values)),
                 oauth_client_id=None,
+                method="oauth",
+                choices={},
             )
             for agent in agents:
                 await STORE.save_grant(
@@ -934,6 +1051,7 @@ class TestThroughTheBroker:
             workspace_services=WorkspaceServiceStore(),
             workspace_gate=False,
             public_url=None,
+            allow_non_expiring_keys=False,
         )
         secret = await _sign_in(adapter, vendor)
         async with session_factory() as session:
@@ -948,6 +1066,8 @@ class TestThroughTheBroker:
                 external_identity="ada@example.test",
                 encrypted_secret=TEST_KEYRING.encrypt(json.dumps(secret.values)),
                 oauth_client_id=None,
+                method="oauth",
+                choices={},
             )
             await session.commit()
 
@@ -1003,6 +1123,7 @@ class TestTheShippedGitLabEntry:
                 state="s",
                 code_challenge=s256("verifier"),
                 scopes=level.scopes,
+                choices={},
             )
             query = parse_qs(urlsplit(url).query)
             assert url.startswith("https://gitlab.com/oauth/authorize?")
@@ -1013,6 +1134,7 @@ class TestTheShippedGitLabEntry:
             verifier="verifier",
             redirect_uri=REDIRECT,
             scopes=definition.access.read.scopes,
+            choices={},
         )
         await adapter.refresh(signed_in.secret)
         assert [str(request.url) for request in sent] == [

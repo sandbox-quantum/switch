@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
 from switch_core.bridges.collaboration.models import InboundMessage
@@ -82,16 +83,22 @@ class _FixedTrustClient:
     def __init__(self, result: TrustCheckResult) -> None:
         self._result = result
         self.room_ids: list[str] = []
+        self.tenant_ids: list[str] = []
 
-    async def check(self, *, role: str, content: str, room_id: str) -> TrustCheckResult:
+    async def check(
+        self, *, tenant_id: str, role: str, content: str, room_id: str
+    ) -> TrustCheckResult:
         self.room_ids.append(room_id)
+        self.tenant_ids.append(tenant_id)
         return self._result
 
 
 class _FailingTrustClient:
     """A Switch Trust outage: every check raises, never answers an outcome."""
 
-    async def check(self, *, role: str, content: str, room_id: str) -> TrustCheckResult:
+    async def check(
+        self, *, tenant_id: str, role: str, content: str, room_id: str
+    ) -> TrustCheckResult:
         raise GuardrailsCheckError("boom")
 
 
@@ -117,6 +124,7 @@ def _bridge(
         _channel_to_room={"chan-1": ("room-uuid", TRANSPORT_ROOM_ID)},
         _channel_locks={},
         _trust_client=trust_client,
+        _room_tenant=AsyncMock(return_value="tenant-1"),
     )
     # The real implementation, not a re-fake of it: exercises its try/except
     # around a failing platform notify, same as production.
@@ -256,8 +264,11 @@ async def test_allowed_message_is_relayed_unaffected() -> None:
 
     assert human_actor.sent == [(TRANSPORT_ROOM_ID, "hello there")]
     assert adapter.admin_messages == []
-    # The check is scoped to the room it happened in.
+    # The check is scoped to the room it happened in, and made against the
+    # policy of the room's own workspace's organization.
     assert trust_client.room_ids == ["room-uuid"]
+    assert trust_client.tenant_ids == ["tenant-1"]
+    bridge._room_tenant.assert_awaited_once_with("room-uuid")
 
 
 async def test_alerted_message_reaches_the_room_and_sender_is_notified() -> None:

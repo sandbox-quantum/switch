@@ -15,6 +15,7 @@ import {
   peopleIn,
   primaryAction,
   notSetUpSentence,
+  readOnlySentence,
   removeImpact,
   setUpLine,
   secretSummary,
@@ -107,7 +108,7 @@ describe("card state", () => {
 });
 
 describe("set-up blocked by the server", () => {
-  const BLOCKED = "GitHub needs GATEWAY_PUBLIC_URL to be an https address, to send people back to Switch.";
+  const BLOCKED = "GitHub needs GATEWAY_PUBLIC_URL to be an https address, or a loopback http one (localhost, 127.0.0.1 or ::1), to send people back to Switch.";
 
   it("is the card's one sentence, with Set up as the fix", () => {
     const github = { ...GITHUB, source: "none" as const, client_id: null, redirect_uri: null, setup_blocked: BLOCKED };
@@ -370,6 +371,19 @@ describe("Airtable, and an app that sends people back to Switch Console", () => 
     );
   });
 
+  it("names GitLab's Helm value when moving off configuration", () => {
+    const gitlab = app({
+      ...AIRTABLE,
+      slug: "gitlab",
+      name: "GitLab",
+      source: "configuration",
+      configuration_variables: ["GITLAB_CLIENT_CONFIG_PATH"],
+    });
+    expect(moveChecklist(gitlab)[1]!.text).toBe(
+      "Remove GITLAB_CLIENT_CONFIG_PATH from Switch's configuration. For Helm, that is switchCore.gitlabClientSecret.",
+    );
+  });
+
   it("lists every redirect for another vendor that has several", () => {
     const steps = setupInstructions(LOOPBACK, "internal", null);
     expect(steps[0]!.text).toBe("Register an OAuth client for Switch at Example, with these redirect URIs:");
@@ -430,5 +444,19 @@ describe("an organization's apps", () => {
     expect(removeImpact(app({ server_app: false, connected_members: 0 }), "organization").lead).toBe(
       "Nobody in your organization can connect Google Workspace until your organization sets up an app again.",
     );
+  });
+});
+
+describe("a GitHub App that lets agents read only", () => {
+  it("names what it lacks to write, and that write grants are refused", () => {
+    expect(
+      readOnlySentence({ ...GITHUB, read_only: true, lacks_write: ["Contents", "Pull requests"] }),
+    ).toBe(
+      "Agents can read only: the App lacks Contents and Pull requests write. Write grants are refused.",
+    );
+    expect(readOnlySentence({ ...GITHUB, read_only: true, lacks_write: ["Contents"] })).toBe(
+      "Agents can read only: the App lacks Contents write. Write grants are refused.",
+    );
+    expect(readOnlySentence(GITHUB)).toBeNull();
   });
 });

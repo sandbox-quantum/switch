@@ -115,6 +115,13 @@ class AgentStore:
         result = await session.execute(select(Agent).where(Agent.name.in_(names)))
         return list(result.scalars().all())
 
+    async def get_in_tenant(self, session: AsyncSession, tenant_id: str) -> list[Agent]:
+        """Every agent in one tenant, by name."""
+        result = await session.execute(
+            select(Agent).where(Agent.tenant_id == tenant_id).order_by(Agent.name)
+        )
+        return list(result.scalars().all())
+
     async def get_all(self, session: AsyncSession) -> list[Agent]:
         result = await session.execute(select(Agent))
         return list(result.scalars().all())

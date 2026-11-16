@@ -6,12 +6,15 @@ from typing import Any
 
 import pytest
 
+from switch_core.addressing import owner_and_owner_agents_policy
 from switch_core.bridges.agent import commands
 from switch_core.bridges.agent.commands import COMMANDS_BY_NAME, _cmd_remove_agent
+from switch_core.db.models import Room
 from switch_core.delivery.addressing import AddressingDecision, SenderPrincipal
 
 _ALICE = "user-alice"
 _BOB = "user-bob"
+_CAROL = "user-carol"  # owns the room
 
 
 def _agent(
@@ -20,6 +23,7 @@ def _agent(
     *,
     owner_id: str | None,
     can_manage_agents: bool = False,
+    open_to_anyone: bool = False,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         id=agent_id,
@@ -27,6 +31,9 @@ def _agent(
         display_name=None,
         owner_id=owner_id,
         can_manage_agents=can_manage_agents,
+        addressing_policy=(
+            None if open_to_anyone else owner_and_owner_agents_policy().model_dump()
+        ),
     )
 
 
@@ -51,17 +58,25 @@ class _Harness:
         room_agent_ids: list[str],
         admins: set[str] = frozenset(),  # type: ignore[assignment]
         aliases: dict[str, str] | None = None,
+        channel_type: str = "channel_public",
     ) -> None:
         self.posted: list[str] = []
         self.removed: list[tuple[str, list[str]]] = []
-        users = {uid: SimpleNamespace(id=uid) for uid in (_ALICE, _BOB)}
+        users = {uid: SimpleNamespace(id=uid) for uid in (_ALICE, _BOB, _CAROL)}
+        room = Room(
+            id="room-1",
+            owner_id=_CAROL,
+            read_visibility="public",
+            write_visibility="public",
+            channel_type=channel_type,
+        )
 
         @asynccontextmanager
         async def _tenant_session(_factory: Any, _tenant_id: str):  # type: ignore[no-untyped-def]
             yield SimpleNamespace(get=_session_get)
 
-        async def _session_get(_model: Any, user_id: str) -> Any:
-            return users.get(user_id)
+        async def _session_get(model: Any, key: str) -> Any:
+            return room if model is Room else users.get(key)
 
         class _Resolver:
             def __init__(self, **_kw: Any) -> None:
@@ -99,6 +114,9 @@ class _Harness:
         async def _remove_agents_from_room(room_id, agent_ids, **_kw):  # type: ignore[no-untyped-def]
             self.removed.append((room_id, list(agent_ids)))
 
+        async def _admin_room_ids(*_a: object, **_kw: object) -> set[str]:
+            return set()
+
         self.client = SimpleNamespace(
             session_factory=None,
             tenant_id="tenant-1",
@@ -109,6 +127,7 @@ class _Harness:
             _room_store=SimpleNamespace(
                 get_agent_ids=_get_agent_ids,
                 get_agent_id_by_alias=_get_agent_id_by_alias,
+                admin_room_ids=_admin_room_ids,
             ),
             _room_role_store=None,
             _external_user_store=None,
@@ -121,7 +140,11 @@ class _Harness:
 
     async def run(self, args: str) -> None:
         event = SimpleNamespace(
-            command="remove-agent", args=args, thread_id=None, user_id="@sender:x"
+            command="remove-agent",
+            args=args,
+            thread_id=None,
+            user_id="@sender:x",
+            user_name="sender",
         )
         await _cmd_remove_agent(
             self.client,  # type: ignore[arg-type]
@@ -145,12 +168,12 @@ class TestRemoveAgentCommand:
         assert cmd.admin_owned
         assert [arg.required for arg in cmd.args_spec] == [True]
 
-    async def test_sender_who_may_address_the_agent_removes_it(
+    async def test_the_agents_owner_removes_it(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         h = _Harness(
             monkeypatch,
-            allowed=True,
+            allowed=False,
             principal=_person(_ALICE),
             agents={"a1": _TARGET},
             room_agent_ids=["a1"],
@@ -171,19 +194,36 @@ class TestRemoveAgentCommand:
         await h.run("@coder")
         assert h.removed == [("room-1", ["a1"])]
 
-    async def test_sender_who_may_not_address_it_is_refused(
+    async def test_the_rooms_owner_removes_anyones_agent(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         h = _Harness(
             monkeypatch,
             allowed=False,
+            principal=_person(_CAROL),
+            agents={"a1": _TARGET},
+            room_agent_ids=["a1"],
+        )
+        await h.run("@alice-agent")
+        assert h.removed == [("room-1", ["a1"])]
+
+    async def test_being_allowed_to_address_it_is_not_enough(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        h = _Harness(
+            monkeypatch,
+            allowed=True,
             principal=_person(_BOB),
             agents={"a1": _TARGET},
             room_agent_ids=["a1"],
         )
         await h.run("@alice-agent")
         assert h.removed == []
-        assert "You can't remove **alice-agent**" in h.posted[0]
+        assert h.posted == [
+            "Only the room's owner, a room admin or a workspace admin, or the agent's own owner "
+            "for their agent, can remove agents or people from this room. "
+            "Nothing was changed."
+        ]
 
     async def test_workspace_admin_removes_an_agent_they_may_not_address(
         self, monkeypatch: pytest.MonkeyPatch
@@ -212,8 +252,23 @@ class TestRemoveAgentCommand:
         )
         await h.run("@alice-agent")
         assert h.removed == []
+        assert "link this chat account" in h.posted[0]
 
-    async def test_managing_agent_removes_its_owners_agent(
+    async def test_an_agent_its_owners_agent_does_not_take_requests_from_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        buddy = _agent("b1", "alice-buddy", owner_id=_ALICE)
+        h = _Harness(
+            monkeypatch,
+            allowed=False,
+            principal=_agent_sender(buddy),
+            agents={"a1": _TARGET, "b1": buddy},
+            room_agent_ids=["a1"],
+        )
+        await h.run("@alice-agent")
+        assert h.removed == []
+
+    async def test_an_agent_that_manages_agents_removes_its_owners_agent(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         buddy = _agent("b1", "alice-buddy", owner_id=_ALICE, can_manage_agents=True)
@@ -227,7 +282,21 @@ class TestRemoveAgentCommand:
         await h.run("@alice-agent")
         assert h.removed == [("room-1", ["a1"])]
 
-    async def test_managing_agent_of_another_owner_is_refused(
+    async def test_an_agent_removes_its_owners_agent_that_takes_its_requests(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        buddy = _agent("b1", "alice-buddy", owner_id=_ALICE)
+        h = _Harness(
+            monkeypatch,
+            allowed=True,
+            principal=_agent_sender(buddy),
+            agents={"a1": _TARGET, "b1": buddy},
+            room_agent_ids=["a1"],
+        )
+        await h.run("@alice-agent")
+        assert h.removed == [("room-1", ["a1"])]
+
+    async def test_an_agent_of_another_owner_is_refused(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         buddy = _agent("b1", "bob-buddy", owner_id=_BOB, can_manage_agents=True)
@@ -268,3 +337,70 @@ class TestRemoveAgentCommand:
         await h.run("")
         assert h.removed == []
         assert "Usage" in h.posted[0]
+
+
+class TestInsideADirectOrGroupConversation:
+    """The command is posted in the conversation, so the platform fixing its
+    members doesn't stop it."""
+
+    @pytest.mark.parametrize("channel_type", ["direct", "group"])
+    async def test_the_agents_owner_removes_it(
+        self, monkeypatch: pytest.MonkeyPatch, channel_type: str
+    ) -> None:
+        h = _Harness(
+            monkeypatch,
+            allowed=False,
+            principal=_person(_ALICE),
+            agents={"a1": _TARGET},
+            room_agent_ids=["a1"],
+            channel_type=channel_type,
+        )
+        await h.run("@alice-agent")
+        assert h.removed == [("room-1", ["a1"])]
+
+    async def test_the_rooms_owner_removes_it(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        h = _Harness(
+            monkeypatch,
+            allowed=False,
+            principal=_person(_CAROL),
+            agents={"a1": _TARGET},
+            room_agent_ids=["a1"],
+            channel_type="group",
+        )
+        await h.run("@alice-agent")
+        assert h.removed == [("room-1", ["a1"])]
+
+
+class TestAnAgentOpenToOthers:
+    async def test_does_not_use_its_owners_room_owner_rights(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The room owner's agent takes requests from anyone, so whoever asked
+        it could otherwise remove other people's agents with her rights."""
+        helper = _agent("h1", "carol-helper", owner_id=_CAROL, open_to_anyone=True)
+        h = _Harness(
+            monkeypatch,
+            allowed=False,
+            principal=_agent_sender(helper),
+            agents={"a1": _TARGET, "h1": helper},
+            room_agent_ids=["a1", "h1"],
+        )
+        await h.run("@alice-agent")
+        assert h.removed == []
+        assert "takes requests from people other than its owner" in h.posted[0]
+
+    async def test_the_owners_closed_agent_still_does(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        helper = _agent("h1", "carol-helper", owner_id=_CAROL)
+        h = _Harness(
+            monkeypatch,
+            allowed=False,
+            principal=_agent_sender(helper),
+            agents={"a1": _TARGET, "h1": helper},
+            room_agent_ids=["a1", "h1"],
+        )
+        await h.run("@alice-agent")
+        assert h.removed == [("room-1", ["a1"])]

@@ -98,6 +98,15 @@ BOOTSTRAP_LAST_SEEDED_HASH_META_KEY = "agent_bootstrap_key_last_hash"
 BOOTSTRAP_REVOKED_HASHES_META_KEY = "agent_bootstrap_revoked_hashes"
 
 
+SERVICE_ACCOUNT_ADMIN_REFUSAL = (
+    "Agents added with the shared registration token act with this account's "
+    "role, so it can't be made an admin."
+)
+"""Why the bootstrap owner is never made a workspace or organization admin:
+the agents it owns act with its role (`AgentCore._resolve_acting_identity`),
+so an admin's would hand every one of them what an admin may do."""
+
+
 def is_bootstrap_owner(owner: User) -> bool:
     """Whether `owner` is the account bootstrap-registered agents are owned
     by: a service account, not a person."""

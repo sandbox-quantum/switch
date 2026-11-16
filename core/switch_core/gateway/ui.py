@@ -62,6 +62,7 @@ PAGE_PATHS: tuple[str, ...] = (
     "/users",
     "/connectors",
     "/workspace",
+    "/workspace/private-channel-rooms",
     "/organization",
     "/operator/workspaces",
     # The new layout's (`gateway_v2`). With it off they redirect to today's.

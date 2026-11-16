@@ -8,6 +8,7 @@ import {
   opensAsConsoleChat,
 } from '@renderer/features/chats/console-chat-redirect';
 import { chatsStore } from '@renderer/features/chats/stores/chats';
+import { homeRedirect } from '@renderer/features/switch-servers/home-target';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon';
 import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
@@ -263,7 +264,7 @@ export const roomView = {
         ? (params as { roomId?: unknown }).roomId
         : undefined;
     if (typeof roomId !== 'string') {
-      return { ok: false, redirect: 'home' };
+      return homeRedirect();
     }
     return { ok: true };
   },

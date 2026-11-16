@@ -54,6 +54,7 @@ export interface SecretField {
 
 const GOOGLE = "google-workspace";
 const AIRTABLE = "airtable";
+const GITLAB = "gitlab";
 
 export function vendorName(app: Pick<ConnectorApp, "slug" | "kind" | "name">): string {
   if (app.kind === "github_app") return "GitHub";
@@ -241,6 +242,18 @@ export function secretSummary(app: ConnectorApp): string | null {
 
 export function usedBy(app: ConnectorApp): string {
   return `Used by ${peopleIn(app)}`;
+}
+
+/** "Contents", "Contents and Pull requests", "A, B and C". */
+function joined(names: string[]): string {
+  if (names.length <= 1) return names.join("");
+  return `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
+}
+
+/** What a GitHub App short of the write permissions means; null for any other app. */
+export function readOnlySentence(app: Pick<ConnectorApp, "read_only" | "lacks_write">): string | null {
+  if (!app.read_only) return null;
+  return `Agents can read only: the App lacks ${joined(app.lacks_write)} write. Write grants are refused.`;
 }
 
 /** Google's choice of who may connect; it changes only the instructions. */
@@ -501,6 +514,7 @@ const HELM_VALUES: Record<string, string> = {
   github: "switchCore.githubConnectionsSecret and switchCore.githubAppPrivateKeyPath",
   [GOOGLE]: "switchCore.googleWorkspaceClientSecret",
   [AIRTABLE]: "switchCore.airtableClientSecret",
+  [GITLAB]: "switchCore.gitlabClientSecret",
 };
 
 /** Moving off configuration: copy in, remove the configuration, restart. */

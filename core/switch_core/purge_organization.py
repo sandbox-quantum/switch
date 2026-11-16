@@ -245,6 +245,7 @@ async def _run(config: SwitchConfig, arguments: argparse.Namespace) -> int:
                 keyring=config.keyring,
                 public_url=config.gateway_public_url,
                 server_name=config.id_server_name,
+                redirects=config.service_sign_in_redirect,
             )
             connector_apps = build_connector_apps(
                 config,

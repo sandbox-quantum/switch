@@ -74,6 +74,23 @@ export const chatMentionSpanSchema = z.object({
 });
 export type ChatMentionSpan = z.infer<typeof chatMentionSpanSchema>;
 
+/**
+ * A template's kickoff: the request Switch posts for whoever ran the template.
+ * `agentId` is set when an agent ran it, and `name` is then the agent's name.
+ * `agentNote` is the run history appended for the agents, kept apart from the
+ * body so a person need not read it.
+ */
+export const chatKickoffSchema = z.object({
+  name: z.string(),
+  agentId: z.string().nullable(),
+  userId: z.string(),
+  agentNote: z.string().nullable(),
+  /** The agent's own label and picture, which it keeps though it is not in the room. */
+  displayName: z.string().nullable().default(null),
+  iconUrl: z.string().nullable().default(null),
+});
+export type ChatKickoff = z.infer<typeof chatKickoffSchema>;
+
 export const chatMessageSchema = z.object({
   messageId: z.string(),
   seq: z.number().int(),
@@ -95,6 +112,8 @@ export const chatMessageSchema = z.object({
   /** 0 and null from a server older than group chats. */
   threadReplyCount: z.number().int().default(0),
   threadLastReplySeq: z.number().int().nullable().default(null),
+  /** Set on a template kickoff's request; null on everything else and from older servers. */
+  kickoff: chatKickoffSchema.nullable().default(null),
 });
 export type ChatMessage = z.infer<typeof chatMessageSchema>;
 

@@ -18,7 +18,6 @@ import {
 import type { GridRowId } from "@mui/x-data-grid";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router";
-import { AccessChip } from "../../components/AccessControls";
 import ConfirmDialog from "../../components/ConfirmDialog";
 import DataTable, { type TableColumn, TableEmptyState } from "../../components/DataTable";
 import RowActionsMenu, { type RowAction } from "../../components/RowActionsMenu";
@@ -27,6 +26,7 @@ import {
   type RoomSummary,
   archiveRoom,
   bulkArchiveRooms,
+  canArchiveRoom,
   deleteRoom,
   loadRoomsWithArchived,
   unarchiveRoom,
@@ -37,6 +37,7 @@ import { type ListScope, listScopeOf, roomsInScope } from "../../data/listScope"
 import { EM_DASH, MONO_SX, channelTypeLabel, formatDate } from "../../theme/format";
 import { useLoad } from "../workspace/useLoad";
 import { buildGroupIndex, effectiveColor } from "./groupTree";
+import { RoomAccessChip } from "./RoomAccessChip";
 import {
   bridgeOptions,
   connectedUserOptions,
@@ -264,7 +265,7 @@ export default function RoomsPage() {
         field: "read_visibility",
         headerName: "Access",
         width: 108,
-        renderCell: ({ row }) => <AccessChip pair={row} />,
+        renderCell: ({ row }) => <RoomAccessChip room={row} />,
       },
       {
         field: "channel_type",
@@ -308,9 +309,9 @@ export default function RoomsPage() {
         // it, and would push the table past its edge.
         disableColumnMenu: true,
         renderCell: ({ row, tabIndex }) => {
-          // Archiving takes write access to the room, deleting it managing it.
+          // Archiving takes `can_archive`, deleting it managing it.
           const actions: RowAction[] = [];
-          if (row.can_write) {
+          if (canArchiveRoom(row)) {
             actions.push(
               row.archived
                 ? {
@@ -459,7 +460,7 @@ export default function RoomsPage() {
             pinnedRight={["actions"]}
             emptyState={emptyState}
             checkboxSelection
-            isRowSelectable={(room) => room.can_write}
+            isRowSelectable={(room) => canArchiveRoom(room)}
             onRowSelectionModelChange={setSelected}
             onRowClick={(params) => navigate(`/rooms/${params.id}`)}
             sx={{ "& .MuiDataGrid-row": { cursor: "pointer" } }}

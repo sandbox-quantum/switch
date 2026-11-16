@@ -62,6 +62,7 @@ from switch_core.gateway.connector_apps import (
     checked_save,
     checks_body,
     entry_body,
+    fields_changed,
     get_connector_apps,
     refuse_while_blocked,
     saved_app,
@@ -130,6 +131,8 @@ class _OrganizationApp:
     values: AppValues | None
     load_error: str | None
     unreadable: bool
+    # The write level's permissions its GitHub App is short of.
+    lacks_write: tuple[str, ...]
 
     @property
     def current(self) -> str | None:
@@ -148,18 +151,23 @@ async def _read(
 ) -> _OrganizationApp:
     row = await store.get(session, organization_id, spec.service)
     if row is None:
-        return _OrganizationApp(None, None, None, False)
+        return _OrganizationApp(None, None, None, False, ())
     values: AppValues | None = None
     load_error: str | None = None
     unreadable = False
+    lacks_write: tuple[str, ...] = ()
     try:
-        values = load_saved_app(
+        loaded = load_saved_app(
             spec,
+            definition=apps.definition(spec.service),
             client_id=row.client_id,
             settings=row.settings,
             secrets=lambda: store.secrets(row),
             public_url=apps.public_url,
-        ).values
+        )
+        values = loaded.values
+        if loaded.github_app is not None:
+            lacks_write = loaded.github_app.lacks_write
     except UnreadableAppError as error:
         load_error, unreadable = str(error), True
     except AppLoadError as error:
@@ -169,6 +177,7 @@ async def _read(
         values=values,
         load_error=load_error,
         unreadable=unreadable,
+        lacks_write=lacks_write,
     )
 
 
@@ -194,6 +203,7 @@ def _entry(
             load_error=read.load_error,
             redirects=saved_app_redirects(apps, spec),
             usage=usage,
+            lacks_write=read.lacks_write,
         ),
         # Whether the server's app serves the organization's workspaces while
         # it saves none of its own.
@@ -338,6 +348,7 @@ async def check_organization_connector_app(
     service: str,
     session: Annotated[AsyncSession, Depends(get_session)],
     apps: Annotated[ConnectorApps, Depends(get_connector_apps)],
+    organization_apps: Annotated[OrganizationApps, Depends(get_organization_apps)],
     store: Annotated[
         OrganizationAppCredentialStore, Depends(get_organization_app_store)
     ],
@@ -345,7 +356,9 @@ async def check_organization_connector_app(
     organization_store: Annotated[OrganizationStore, Depends(get_organization_store)],
     user: Annotated[User, Depends(get_current_user)],
 ) -> dict[str, Any]:
-    """Ask the vendor about the organization's app; nothing is stored."""
+    """Ask the vendor about the organization's app. What it says of an app
+    that passes the check is stored again where it changed, audited as a
+    save, and in use at once, as the server's check does."""
     organization_id = await _admin_of(session, user_store, organization_store, user)
     spec = app_spec(apps, service)
     refuse_while_blocked(spec, apps.public_url)
@@ -357,9 +370,43 @@ async def check_organization_connector_app(
         raise HTTPException(
             409, read.load_error or f"{spec.name}'s app cannot be read."
         )
-    result = await check_values(
-        apps, spec, read.values, saved_app_redirects(apps, spec)
-    )
+    values = read.values
+    result = await check_values(apps, spec, values, saved_app_redirects(apps, spec))
+    if result.ok and result.settings and result.settings != values.settings:
+        recorded = await store.record_settings(
+            session,
+            organization_id=organization_id,
+            service=service,
+            client_id=values.client_id,
+            settings=result.settings,
+            updated_by=user.id,
+        )
+        changed = fields_changed(values, values.client_id, result.settings, {})
+        if recorded is not None:
+            await record_organization_audit_event(
+                session,
+                organization_id=organization_id,
+                actor_user_id=user.id,
+                action=OrganizationAuditAction.CONNECTOR_APP_SAVED,
+                target_type="service",
+                target_id=service,
+                details={
+                    "service": service,
+                    "fields_changed": changed,
+                    "client_id": values.client_id,
+                },
+            )
+        await session.commit()
+        if recorded is not None:
+            organization_apps.changed(organization_id, service)
+            logger.warning(
+                "Checking an organization's %s app stored what the vendor now "
+                "says of it: organization=%s user=%s fields=%s",
+                spec.name,
+                organization_id,
+                user.id,
+                changed,
+            )
     return {"ok": result.ok, "checks": checks_body(result)}
 
 

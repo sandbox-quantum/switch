@@ -13,7 +13,7 @@ const setRoomResourceAttached = vi.hoisted(() => vi.fn());
 const listLinkedRooms = vi.hoisted(() => vi.fn());
 const navigate = vi.hoisted(() => vi.fn());
 const permissions = vi.hoisted(() => ({
-  value: { canWrite: true, canManage: false, canUnlink: true },
+  value: { canWrite: true, canAttach: true, canManage: false, canUnlink: true },
 }));
 
 vi.hoisted(() => {
@@ -114,7 +114,7 @@ beforeEach(() => {
   listLinkedRooms.mockResolvedValue([
     { roomId: 'room-2', name: 'support', description: '', label: 'escalate to' },
   ]);
-  permissions.value = { canWrite: true, canManage: false, canUnlink: true };
+  permissions.value = { canWrite: true, canAttach: true, canManage: false, canUnlink: true };
 });
 
 afterEach(async () => {
@@ -211,7 +211,7 @@ describe('the Resources tab', () => {
   });
 
   it('lets someone attach without detaching, as the server keeps detaching for those taking part', async () => {
-    permissions.value = { canWrite: true, canManage: false, canUnlink: false };
+    permissions.value = { canWrite: true, canAttach: true, canManage: false, canUnlink: false };
     const el = await renderPanel();
     expect(el.textContent).toContain('Attach reference');
     expect(el.querySelector('[aria-label^="Detach"]')).toBeNull();
@@ -229,7 +229,7 @@ describe('the Resources tab', () => {
   });
 
   it('only lists for someone who may not change the room', async () => {
-    permissions.value = { canWrite: false, canManage: false, canUnlink: false };
+    permissions.value = { canWrite: false, canAttach: false, canManage: false, canUnlink: false };
     const el = await renderPanel();
     expect(el.textContent).toContain('Repo');
     expect(el.textContent).not.toContain('Attach reference');

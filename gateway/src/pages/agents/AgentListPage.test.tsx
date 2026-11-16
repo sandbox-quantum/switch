@@ -305,14 +305,14 @@ describe("AgentListPage", () => {
 
   it("tells apart devices that share a name by their owner, and marks a removed one", () => {
     const labels = deviceLabels([
-      agent("a", "u1", { device: { id: "d1", name: "Switch cloud", owner_name: "Ada", removed: false } }),
+      agent("a", "u1", { device: { id: "d1", name: "Switch Cloud", owner_name: "Ada", removed: false } }),
       // Placed on Grace's device, though Ada owns the agent: the device says whose it is.
-      agent("b", "u1", { device: { id: "d2", name: "Switch cloud", owner_name: "Grace", removed: false } }),
+      agent("b", "u1", { device: { id: "d2", name: "Switch Cloud", owner_name: "Grace", removed: false } }),
       agent("c", "u1", { device: { id: "d3", name: "Old laptop", owner_name: "Ada", removed: true } }),
     ]);
 
-    expect(labels.get("d1")).toBe("Switch cloud · Ada");
-    expect(labels.get("d2")).toBe("Switch cloud · Grace");
+    expect(labels.get("d1")).toBe("Switch Cloud · Ada");
+    expect(labels.get("d2")).toBe("Switch Cloud · Grace");
     expect(labels.get("d3")).toBe("Old laptop (removed)");
   });
 

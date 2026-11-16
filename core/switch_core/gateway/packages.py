@@ -5,7 +5,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.authz import Principal, can, can_manage
+from switch_core.authz import Principal, can, can_manage, owns
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.db.models import Package, User
 from switch_core.db.stores.agent_store import AgentStore
@@ -248,7 +248,7 @@ async def list_rooms_for_package(
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> list[ResourceRoom]:
     try:
-        await resource_service.get_package_for_user(
+        resource = await resource_service.get_package_for_user(
             session,
             package_id,
             user.id,
@@ -262,7 +262,11 @@ async def list_rooms_for_package(
         session, package_id, reader_id=user.id, reader_is_admin=is_admin
     )
     return await resource_rooms(
-        session, room_store, rooms, Principal(user.id, is_admin)
+        session,
+        room_store,
+        rooms,
+        Principal(user.id, is_admin),
+        resource_owner_id=resource.owner_id,
     )
 
 
@@ -462,7 +466,7 @@ async def attach_package_to_room(
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> PackageDetail:
-    await require_room_access(session, room_store, room_id, user, "write", is_admin)
+    await require_room_access(session, room_store, room_id, user, "attach", is_admin)
     try:
         await resource_service.attach_package_to_room(
             session,
@@ -497,7 +501,15 @@ async def detach_package_from_room(
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> None:
-    await require_room_unlink(session, room_store, room_id, user, is_admin)
+    pkg = await session.get(Package, package_id)
+    await require_room_unlink(
+        session,
+        room_store,
+        room_id,
+        user,
+        is_admin,
+        owns_target=pkg is not None and owns(Principal(user.id, False), pkg.owner_id),
+    )
     await resource_service.detach_package_from_room(session, room_id, package_id)
     await session.commit()
 

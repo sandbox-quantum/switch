@@ -13,23 +13,26 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
-import { type ReactNode, useCallback, useEffect, useState } from "react";
-import { Link as RouterLink, useLocation, useNavigate, useParams } from "react-router";
+import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { Link as RouterLink, useLocation, useNavigate, useParams, useSearchParams } from "react-router";
 import BrandTile from "../../components/connectors/BrandTile";
 import ConfirmDialog from "../../components/ConfirmDialog";
 import InfoTip from "../../components/InfoTip";
 import PageBanner from "../../components/PageBanner";
 import {
+  ApiError,
   type ConnectedPerson,
   type GitHubConnection,
   type ServiceAgent,
   type ServiceConnection,
   type ServiceInWorkspace,
   disconnectService,
+  dropSignIn,
   fetchGitHubConnection,
   fetchServiceAgents,
   fetchServiceConnections,
   fetchServiceInWorkspace,
+  fetchSignInOutcome,
   revokeServiceConnection,
 } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
@@ -38,15 +41,20 @@ import ConnectorAgents from "./ConnectorAgents";
 import {
   CONSOLE_CONNECT_NOTE,
   accessLastsLabel,
+  brokenLine,
   connectWay,
   connectedAsLine,
   isConnected,
+  isPasted,
   offNotice,
   personLine,
   revokeConfirmation,
   signInLabel,
+  signInOutcomeMessage,
 } from "./connectorProfile";
 import KeyDialog from "./KeyDialog";
+import PasteDialog from "./PasteDialog";
+import { useLeaveToSignIn } from "./signIn";
 
 /** Where the back button goes: the page that opened this one, when it said,
  * else the connector catalogue. */
@@ -225,9 +233,12 @@ function ConnectedPeople({
  * with Revoke. Opened from the catalogue and from Settings; Back returns to
  * whichever opened it.
  *
- * A key is pasted here. A sign-in at the vendor finishes in Switch Console,
- * which holds the listener the vendor sends people back to; the page says so
- * rather than offering a button that can't finish.
+ * A key is pasted here, and so is a token (or keys) in place of a sign-in
+ * that only Switch Console can finish. A sign-in at the vendor that returns to Switch
+ * leaves from here and comes back here with `?sign_in=<id>`, which the page
+ * reads to say how it ended. One that can only return to Switch Console's
+ * listener finishes there; the page says so rather than offering a button
+ * that can't finish.
  */
 export default function ConnectorPage() {
   const { connectorId = "" } = useParams();
@@ -253,8 +264,20 @@ export default function ConnectorPage() {
   const [toast, setToast] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [keyDialog, setKeyDialog] = useState<"add" | "replace" | null>(null);
+  const [pasteDialog, setPasteDialog] = useState<"add" | "replace" | null>(null);
   const [disconnecting, setDisconnecting] = useState(false);
   const [revoking, setRevoking] = useState<ConnectedPerson | null>(null);
+  const { leaving, leave } = useLeaveToSignIn();
+  const [signInError, setSignInError] = useState<string | null>(null);
+  const [params, setParams] = useSearchParams();
+  const returnedFrom = params.get("sign_in");
+  // The sign-in already read: its outcome is dropped once read, so reading
+  // it twice (a re-render, or React's development double effect) would say
+  // it had expired.
+  const read = useRef<string | null>(null);
+  // The connector shown now, for an outcome read for one the page has since
+  // moved on from, which then changes nothing.
+  const shown = useRef(connectorId);
 
   const load = useCallback(async () => {
     try {
@@ -286,6 +309,56 @@ export default function ConnectorPage() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    shown.current = connectorId;
+  }, [connectorId]);
+
+  useEffect(() => {
+    // Read once this connector is, so what is said names it.
+    if (!returnedFrom || connection?.slug !== connectorId || read.current === returnedFrom) return;
+    read.current = returnedFrom;
+    const forId = connectorId;
+    const name = connection.name;
+    const stillHere = () => shown.current === forId;
+    fetchSignInOutcome(forId, returnedFrom)
+      .then((outcome) => {
+        if (stillHere()) {
+          const said = signInOutcomeMessage(outcome, name);
+          if (said.toast) setToast(said.toast);
+          setSignInError(said.error);
+          setNotice(outcome.warning);
+        }
+        return dropSignIn(forId, returnedFrom).catch((err: unknown) =>
+          // Left to expire on its own in minutes; nothing is lost.
+          console.warn("Could not drop the finished sign-in", err),
+        );
+      })
+      .catch((err: unknown) => {
+        if (!stillHere()) return;
+        setSignInError(
+          err instanceof ApiError && err.status === 410
+            ? `That ${name} sign-in has expired. Connect again.`
+            : err instanceof Error
+              ? err.message
+              : String(err),
+        );
+      })
+      .finally(() => {
+        if (!stillHere()) return;
+        void load();
+        const rest = new URLSearchParams(params);
+        rest.delete("sign_in");
+        setParams(rest, { replace: true, state: location.state });
+      });
+  }, [returnedFrom, connectorId, connection, load, params, setParams, location.state]);
+
+  const connect = () => {
+    setSignInError(null);
+    leave(connectorId).catch((err: unknown) =>
+      setSignInError(err instanceof Error ? err.message : String(err)),
+    );
+  };
 
   const changed = (message: string | null, warning: string | null) => {
     if (message) setToast(message);
@@ -324,6 +397,12 @@ export default function ConnectorPage() {
   const way = connectWay(connection);
   const off = offNotice(connection, workspaceName);
   const connected = isConnected(connection);
+  const broken = brokenLine(connection);
+  // What a pasted connection is replaced with: pasted the same way where
+  // that is still offered here, else the first way that is.
+  const replaceWith = isPasted(connection)
+    ? (connection.paste.find((way) => way.method === connection.method) ?? connection.paste[0] ?? null)
+    : null;
 
   return (
     <Stack spacing={4}>
@@ -349,11 +428,9 @@ export default function ConnectorPage() {
                 {connectedAs}
               </Typography>
             )}
-            {connected && connection.status !== "active" && (
+            {broken && (
               <Typography variant="body2" color="warning.main" sx={{ mt: 0.5 }}>
-                {connection.auth_type === "api_key"
-                  ? "Its key needs replacing before agents can use it again."
-                  : "It needs a fresh sign-in, from Switch Console, before agents can use it again."}
+                {broken}
               </Typography>
             )}
           </Box>
@@ -361,6 +438,26 @@ export default function ConnectorPage() {
             {!connected && way === "key" && (
               <Button variant="contained" onClick={() => setKeyDialog("add")}>
                 Add keys
+              </Button>
+            )}
+            {way === "web" && (!connected || broken) && (
+              <Button
+                variant={connected ? "outlined" : "contained"}
+                onClick={connect}
+                disabled={leaving !== null}
+                startIcon={leaving !== null ? <CircularProgress size={16} color="inherit" /> : undefined}
+              >
+                {connected ? "Reconnect" : "Connect"}
+              </Button>
+            )}
+            {!connected && way === "paste" && (
+              <Button variant="contained" onClick={() => setPasteDialog("add")}>
+                Connect
+              </Button>
+            )}
+            {connected && replaceWith && (
+              <Button variant={broken ? "contained" : "outlined"} onClick={() => setPasteDialog("replace")}>
+                {replaceWith.method === "token" ? "Replace token" : "Replace keys"}
               </Button>
             )}
             {!connected && way === "console" && (
@@ -399,6 +496,11 @@ export default function ConnectorPage() {
         <PageBanner tone="warning">{connection.unavailable_reason}</PageBanner>
       )}
       {error && <Alert severity="error">{error}</Alert>}
+      {signInError && (
+        <Alert severity="error" onClose={() => setSignInError(null)}>
+          {signInError}
+        </Alert>
+      )}
       {notice && (
         <Alert severity="info" onClose={() => setNotice(null)}>
           {notice}
@@ -441,6 +543,17 @@ export default function ConnectorPage() {
           onSaved={(warning) => {
             setKeyDialog(null);
             changed(keyDialog === "replace" ? "Keys replaced." : `${connection.name} is connected.`, warning);
+          }}
+        />
+      )}
+      {pasteDialog && (
+        <PasteDialog
+          connection={connection}
+          replacing={pasteDialog === "replace"}
+          onClose={() => setPasteDialog(null)}
+          onSaved={(warning) => {
+            setPasteDialog(null);
+            changed(pasteDialog === "replace" ? `${connection.name} is reconnected.` : `${connection.name} is connected.`, warning);
           }}
         />
       )}

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Boot a Switch cloud machine that runs one agent controller per workspace.
+"""Boot a Switch Cloud machine that runs one agent controller per workspace.
 
 Runs as root, once per boot, before the controllers' services
 (`switch-machine-boot.service`). It reads the bundle the hosted controller
@@ -245,7 +245,7 @@ def parse_bundle(raw: str) -> Bundle:
     except ValueError:
         raise NoBundle(
             "This instance's user data is not a machine bundle: only an instance the "
-            "hosted controller launched can boot as a Switch cloud machine."
+            "hosted controller launched can boot as a Switch Cloud machine."
         ) from None
     if isinstance(value, dict) and value.get("version") != 5:
         raise BootError("The machine bundle's version is not one this image reads.")
@@ -331,7 +331,7 @@ def _user_data(opener: OpenerDirector) -> str:
         if error.code == 404:
             raise NoBundle(
                 "This instance has no user data: only an instance the hosted controller "
-                "launched can boot as a Switch cloud machine."
+                "launched can boot as a Switch Cloud machine."
             ) from None
         raise
     if len(raw) > MAX_JSON_BYTES:
@@ -769,7 +769,7 @@ def start_controller(
                     "--code",
                     code,
                     "--name",
-                    "Switch cloud",
+                    "Switch Cloud",
                     "--data-dir",
                     str(data_dir),
                     "--secret-store",

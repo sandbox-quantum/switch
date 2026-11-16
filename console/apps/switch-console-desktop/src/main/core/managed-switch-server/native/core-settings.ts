@@ -1,4 +1,4 @@
-import type { TelemetryFlintEnv } from '../../telemetry/config';
+import type { TelemetryEnv } from '../../telemetry/config';
 import { LOCAL_SERVER_ADMIN_EMAIL, LOCAL_SERVER_BIND_ADDR } from '../constants';
 import {
   MANAGED_SERVER_FEATURE_FLAGS,
@@ -19,7 +19,7 @@ export type NativeCoreSettingsParams = {
   callbackPort: number;
   secrets: LocalServerSecrets;
   telemetryEnabled: boolean;
-  telemetryEnvironment: TelemetryFlintEnv;
+  telemetryEnvironment: TelemetryEnv;
   telemetryInternal: boolean;
   /** The relay the server sends its usage to: the one the app reports to. */
   telemetryEndpoint: string;

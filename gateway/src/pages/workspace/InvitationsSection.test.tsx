@@ -42,7 +42,7 @@ describe("InvitationsSection", () => {
       "/organizations/current": [200, organization(true)],
     });
 
-    render(<InvitationsSection tenantId="t1" inOrganization emailEnabled={false} />);
+    render(<InvitationsSection tenantId="t1" workspaceName="Acme" inOrganization emailEnabled={false} />);
 
     expect(await screen.findByText(/only people already in the organization can accept/)).toBeTruthy();
   });
@@ -53,7 +53,7 @@ describe("InvitationsSection", () => {
       "/organizations/current": [200, organization(false)],
     });
 
-    render(<InvitationsSection tenantId="t1" inOrganization emailEnabled={false} />);
+    render(<InvitationsSection tenantId="t1" workspaceName="Acme" inOrganization emailEnabled={false} />);
 
     expect(await screen.findByRole("button", { name: "Invite" })).toBeTruthy();
     expect(screen.queryByText(/already in the organization/)).toBeNull();
@@ -62,7 +62,7 @@ describe("InvitationsSection", () => {
   it("asks nothing about an organization for a workspace in none", async () => {
     const asked = answer({ "/tenants/t1/invitations": [200, []] });
 
-    render(<InvitationsSection tenantId="t1" inOrganization={false} emailEnabled={false} />);
+    render(<InvitationsSection tenantId="t1" workspaceName="Acme" inOrganization={false} emailEnabled={false} />);
 
     expect(await screen.findByRole("button", { name: "Invite" })).toBeTruthy();
     expect(asked).not.toContain("/organizations/current");
@@ -75,7 +75,7 @@ describe("InvitationsSection", () => {
       "/organizations/current": [500, { detail: "The database is unavailable" }],
     });
 
-    render(<InvitationsSection tenantId="t1" inOrganization emailEnabled={false} />);
+    render(<InvitationsSection tenantId="t1" workspaceName="Acme" inOrganization emailEnabled={false} />);
 
     expect(await screen.findByText(/Could not check who can accept an invitation here/)).toBeTruthy();
   });

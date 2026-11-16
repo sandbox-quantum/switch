@@ -118,7 +118,8 @@ function roomOptionsParams(options: RoomCreateOptions, bridgeType: string) {
   return {
     channel,
     groupId: options.groupId,
-    access: options.access,
+    // A room on a messaging app takes its access from its channel.
+    access: null,
   };
 }
 

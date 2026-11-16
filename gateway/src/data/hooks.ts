@@ -34,6 +34,7 @@ import {
   type ListedUser,
   fetchAgent,
   fetchAgents,
+  fetchRoomAgentCandidates,
   fetchApiKeys,
   fetchBudgets,
   fetchCurrentTenant,
@@ -134,6 +135,14 @@ export function useRoom(roomId: string | undefined): UseQueryResult<RoomDetail> 
     () => (roomId ? fetchRoom(roomId) : Promise.resolve(null)),
     [roomId],
   );
+  return useQuery(fetcher);
+}
+
+/** The agents the viewer may invite into `roomId`, or into a new room when it is absent. */
+export function useRoomAgentCandidates(
+  roomId?: string,
+): UseQueryResult<{ agent_ids: string[] | null }> {
+  const fetcher = useCallback(() => fetchRoomAgentCandidates(roomId), [roomId]);
   return useQuery(fetcher);
 }
 

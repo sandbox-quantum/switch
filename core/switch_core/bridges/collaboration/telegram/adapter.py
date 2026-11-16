@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import html
 import logging
 import re
 import time
 from collections import OrderedDict
-from collections.abc import Awaitable, Callable, Coroutine, Mapping
+from collections.abc import Awaitable, Callable, Collection, Coroutine, Mapping
 from contextvars import ContextVar
 from dataclasses import replace
 from typing import Any, ClassVar, Literal, NamedTuple
@@ -74,6 +75,7 @@ from switch_core.bridges.collaboration.models import (
     InboundInteraction,
     InboundMessage,
     InboundUserJoin,
+    InboundUserLeave,
     OutboundAttachment,
     PrivateNoticeDelivery,
     RetireOutcome,
@@ -3030,6 +3032,11 @@ class TelegramAdapter(PlatformAdapter):
             )
             return
 
+        left = getattr(message, "left_chat_member", None)
+        if left is not None:
+            await self._handle_member_left(left, author, chat_id)
+            return
+
         if author is None:
             # A channel post names a person only when the channel shows its
             # authors' profiles, and then it arrives with a sender and is
@@ -3238,6 +3245,70 @@ class TelegramAdapter(PlatformAdapter):
                     channel_name=channel_name,
                 )
             )
+
+    #: Pause between membership checks, well inside Telegram's limits.
+    _MEMBER_CHECK_PAUSE = 0.1
+
+    async def members_gone(
+        self, channel_id: str, external_user_ids: Collection[str]
+    ) -> set[str] | None:
+        """Who of these has left the group, or been removed, by asking
+        Telegram about each person.
+
+        Telegram cannot list a group's members, but answers for one person,
+        which catches anyone who left while Switch was not running. Its docs
+        only promise that answer to a bot that administers the group; where
+        it is refused, nobody is counted as gone.
+        """
+        if self._bot is None:
+            return None
+        gone: set[str] = set()
+        for index, external_user_id in enumerate(external_user_ids):
+            if index:
+                await asyncio.sleep(self._MEMBER_CHECK_PAUSE)
+            try:
+                member = await self._bot.get_chat_member(
+                    chat_id=self._chat_id(channel_id), user_id=int(external_user_id)
+                )
+            except Exception:
+                logger.debug(
+                    "Could not read %s's membership of Telegram chat %s",
+                    external_user_id,
+                    channel_id,
+                    exc_info=True,
+                )
+                continue
+            if _no_longer_a_member(member):
+                gone.add(external_user_id)
+        return gone
+
+    async def _handle_member_left(self, member: Any, author: Any, chat_id: str) -> None:
+        """Someone left the group, or was taken out of it.
+
+        Telegram says so with a service message naming who went
+        (`left_chat_member`), sent by whoever removed them, or by the person
+        themselves when they left. It reaches the bot wherever it sees the
+        chat's messages, which is the only way Switch hears of a departure
+        here: Telegram cannot list a group's members, and tells only an admin
+        bot of other people's status changes.
+
+        The bot itself leaving is told by `my_chat_member`, not here.
+        """
+        if member.id == self._bot_user_id:
+            return
+        removed_by = (
+            self._display_name(author)
+            if author is not None and author.id != member.id
+            else None
+        )
+        await self._user_left(
+            InboundUserLeave(
+                channel_id=chat_id,
+                external_user_id=str(member.id),
+                external_username=self._display_name(member),
+                removed_by_name=removed_by,
+            )
+        )
 
     async def _handle_start(
         self, text: str, chat_id: str, channel_type: ChannelType
@@ -4001,3 +4072,14 @@ class TelegramAdapter(PlatformAdapter):
                 "Failed to send message to Telegram chat %s: %s", channel_id, e
             )
             return None
+
+
+def _no_longer_a_member(member: Any) -> bool:
+    """Whether Telegram's answer for one person says they are out of the
+    group: they left, were removed, or are restricted and no longer in it.
+    A restricted person keeps the status `restricted` after leaving, and
+    only `is_member` says they went (Bot API, ChatMemberRestricted)."""
+    status = getattr(member, "status", None)
+    if status in ("left", "kicked"):
+        return True
+    return status == "restricted" and getattr(member, "is_member", True) is False

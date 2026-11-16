@@ -29,6 +29,12 @@ class _FakeAdapter:
     def set_channel_rename_handler(self, handler: Any) -> None:
         pass
 
+    def set_user_left_handler(self, handler: Any) -> None:
+        pass
+
+    def set_member_sync_hooks(self, **hooks: Any) -> None:
+        pass
+
     def set_agent_presentation_resolver(self, resolver: Any) -> None:
         pass
 
@@ -56,6 +62,7 @@ def _core(provision: Any) -> tuple[CollaborationCore, _FakeAdapter]:
     core._identities_owed = set()  # type: ignore[attr-defined]
     core._agent_view = None  # type: ignore[attr-defined]
     core._channel_type_refresh_task = None  # type: ignore[attr-defined]
+    core._member_sync_tasks = set()  # type: ignore[attr-defined]
 
     async def _noop() -> None:
         return None
