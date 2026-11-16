@@ -1124,9 +1124,11 @@ class RoomYamlService:
 
         With ``origin`` an agent is creating the room: it is recorded in that
         agent's run (see ``agent_runs``), and the kickoff carries the agent's
-        authority, not its owner's, with the run so far appended. The checks
-        that can refuse an agent's room have run before this is called.
-        ``template_name`` is what the room's run is listed under.
+        authority, not its owner's, with the run so far appended. The run's
+        guards that can refuse an agent's room have run before this is
+        called; the invite rule is asked here, of every caller
+        (``_require_invitable``). ``template_name`` is what the room's run is
+        listed under.
         """
         console = is_console_room(spec.bridge)
         owner: User | None = None
