@@ -2,14 +2,14 @@ import { definePlugin, registerPluginBehavior } from '@switch-console/core/agent
 import { npmDependency } from '@switch-console/core/agents/plugins/helpers';
 import { icon } from './icon';
 
-// Not offered on Windows until it is verified there (see the runtime's
-// unsupportedPlatforms).
-function macAndLinux(
-  descriptor: ReturnType<typeof npmDependency>
-): ReturnType<typeof npmDependency> {
-  const { macos, linux } = descriptor.installCommands;
-  return { ...descriptor, installCommands: { macos, linux } };
-}
+/**
+ * The packages whose install scripts dsh needs: its spawn helper, node-pty and koffi (which
+ * its Windows sandbox calls the OS through) among them. Recent npm skips install scripts a
+ * package has not been allowed to run, and dsh then installs but cannot run commands.
+ * Older npm, which runs them anyway, accepts the flag.
+ */
+export const DSH_ALLOW_SCRIPTS =
+  '--allow-scripts=@deepseek-ai/dsh-subprocess-local,koffi,node-pty,@google/genai,protobufjs';
 
 export const plugin = definePlugin(
   {
@@ -26,14 +26,13 @@ export const plugin = definePlugin(
     effort: {
       kind: 'none',
     },
-    hostDependency: macAndLinux(
-      npmDependency({
-        id: 'deepseek-harness',
-        package: '@deepseek-ai/dsh',
-        binaryNames: ['dsh'],
-        installDocs: 'https://github.com/deepseek-ai/deepseek-harness#run-from-npm',
-      })
-    ),
+    hostDependency: npmDependency({
+      id: 'deepseek-harness',
+      package: '@deepseek-ai/dsh',
+      binaryNames: ['dsh'],
+      installFlags: DSH_ALLOW_SCRIPTS,
+      installDocs: 'https://github.com/deepseek-ai/deepseek-harness#run-from-npm',
+    }),
     mcp: {
       kind: 'none',
     },

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { CURSOR_INSTALL_WINDOWS, plugin as cursor } from './cursor';
+import { DSH_ALLOW_SCRIPTS, plugin as deepseekHarness } from './deepseek-harness';
 import { GOOSE_INSTALL_WINDOWS, plugin as goose } from './goose';
 import { KIRO_INSTALL_WINDOWS, plugin as kiro } from './kiro';
 import {
@@ -68,5 +69,27 @@ describe('mistral-vibe Windows install', () => {
     expect(MISTRAL_VIBE_UPDATE_WINDOWS).toContain('uv tool upgrade mistral-vibe');
     expect(MISTRAL_VIBE_UPDATE_WINDOWS).not.toMatch(/[$%]/);
     expect(MISTRAL_VIBE_UPDATE_WINDOWS.split('"')).toHaveLength(3);
+  });
+});
+
+describe('deepseek-harness install', () => {
+  const { installCommands } = deepseekHarness.capabilities.hostDependency;
+
+  it.each(['macos', 'linux', 'windows'] as const)(
+    'installs from npm with its install scripts allowed on %s',
+    (platform) => {
+      expect(installCommands[platform]?.[0]).toMatchObject({
+        method: 'npm',
+        command: `npm install -g ${DSH_ALLOW_SCRIPTS} @deepseek-ai/dsh`,
+        uninstallCommand: 'npm uninstall -g @deepseek-ai/dsh',
+        recommended: true,
+      });
+    }
+  );
+
+  it('allows the scripts the sandbox and shell need, without `$` or `%`', () => {
+    for (const pkg of ['@deepseek-ai/dsh-subprocess-local', 'koffi', 'node-pty'])
+      expect(DSH_ALLOW_SCRIPTS.split('=')[1]?.split(',')).toContain(pkg);
+    expect(installCommands.windows?.[0]?.command).not.toMatch(/[$%"]/);
   });
 });
