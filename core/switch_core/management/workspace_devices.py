@@ -53,6 +53,11 @@ def device_type(controller: AgentController) -> DeviceType:
 _REPORTED_TEXT_MAX = 500
 
 
+# The most providers a device's report is read for: more than Switch Console
+# offers, so a real report is never cut short.
+_REPORTED_PROVIDERS_MAX = 32
+
+
 def _reported_text(value: object) -> str | None:
     return value[:_REPORTED_TEXT_MAX] if isinstance(value, str) else None
 
@@ -67,7 +72,7 @@ def _provider_reports(controller: AgentController) -> list[dict[str, Any]]:
     providers = (controller.status or {}).get("providers")
     return [
         {
-            "provider": entry["provider"],
+            "provider": entry["provider"][:_REPORTED_TEXT_MAX],
             "installed": entry.get("installed") is True,
             "version": _reported_text(entry.get("version")),
             "auth": _reported_text(entry.get("auth")),
@@ -76,7 +81,9 @@ def _provider_reports(controller: AgentController) -> list[dict[str, Any]]:
             "reason": _reported_text(entry.get("reason")),
             "auth_problem": _reported_text(entry.get("auth_problem")),
         }
-        for entry in (providers if isinstance(providers, list) else [])
+        for entry in (providers if isinstance(providers, list) else [])[
+            :_REPORTED_PROVIDERS_MAX
+        ]
         if isinstance(entry, dict) and isinstance(entry.get("provider"), str)
     ]
 

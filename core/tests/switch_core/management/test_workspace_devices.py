@@ -24,7 +24,10 @@ from switch_core.db.models import (
 )
 from switch_core.db.session_scope import tenant_session
 from switch_core.management.notifier import CREDENTIAL_REVOKED
-from switch_core.management.workspace_devices import device_type
+from switch_core.management.workspace_devices import (
+    _provider_reports,
+    device_type,
+)
 from tests.switch_core.management.harness import (
     WORKSPACES_DIR,
     EnrolledController,
@@ -529,3 +532,17 @@ def test_a_device_is_typed_by_what_it_is(
     )
 
     assert device_type(controller) == expected
+
+
+def test_a_report_cannot_name_a_provider_at_any_length_or_list_them_without_end() -> (
+    None
+):
+    controller = AgentController(
+        kind="daemon",
+        status={"providers": [{"provider": "x" * 5000, "installed": True}] * 100},
+    )
+
+    reports = _provider_reports(controller)
+
+    assert len(reports) == 32
+    assert {len(report["provider"]) for report in reports} == {500}
