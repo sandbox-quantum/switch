@@ -19,7 +19,7 @@ vi.hoisted(() => {
 const state = vi.hoisted(() => ({
   flags: { switch_buddy: true, agent_management: true },
   agents: [] as { name: string }[] | undefined,
-  viewId: 'home',
+  viewId: 'noServer',
   workspaceId: 'ws-1' as string | null,
   serverId: 'srv-1' as string | null,
   answered: new Set<string>(),
@@ -67,7 +67,7 @@ let root: Root | null = null;
 beforeEach(() => {
   state.flags = { switch_buddy: true, agent_management: true };
   state.agents = [];
-  state.viewId = 'home';
+  state.viewId = 'noServer';
   state.workspaceId = 'ws-1';
   state.serverId = 'srv-1';
   state.answered = new Set();
