@@ -16,7 +16,8 @@ export const AGY_INSTALL_WINDOWS_CMD =
 export const plugin = definePlugin(
   {
     id: 'antigravity',
-    name: 'Antigravity',
+    name: 'Google Antigravity',
+    shortName: 'Antigravity',
     description:
       'Google Antigravity CLI over ACP, with its own sign-in, approvals and persistent conversations.',
     websiteUrl: 'https://antigravity.google/docs/ide/extensions/acp/',

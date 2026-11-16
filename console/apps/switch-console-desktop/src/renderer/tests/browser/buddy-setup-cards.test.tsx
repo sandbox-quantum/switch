@@ -30,7 +30,7 @@ const administersWorkspaceInScope = vi.hoisted(() => vi.fn());
 const timeline = vi.hoisted(() => ({
   messages: [] as { sender: { kind: string }; body: string }[],
   pending: [] as { body: string }[],
-  send: () => {},
+  send: vi.fn(),
 }));
 
 vi.hoisted(() => {
@@ -182,6 +182,7 @@ beforeEach(async () => {
   shown.length = 0;
   timeline.messages = [];
   timeline.pending = [];
+  timeline.send.mockReset();
   await page.viewport(760, 900);
 });
 
@@ -369,7 +370,7 @@ describe('switch-buddy setup cards', () => {
     expect(el.textContent).toContain('Slack connected');
     expect(el.textContent).toContain('Link your Slack account');
     expect(findButton(el, 'Link account')).toBeDefined();
-    expect(findButton(el, 'Continue here in Switch Console')).toBeDefined();
+    expect(findButton(el, 'Switch Console')).toBeDefined();
     await shot(el, 'c-linking-skipped');
   });
 
@@ -595,6 +596,16 @@ describe('switch-buddy setup cards', () => {
     expect(el.textContent).toContain('#buddy-ada ready');
     expect(findButton(el, 'Open Slack')).toBeDefined();
     await shot(el, 'i-retry-done');
+  });
+
+  it('(k) the Switch Console tile says in the chat that the person is staying', async () => {
+    const el = await render();
+
+    await click(el, 'Switch Console');
+
+    expect(timeline.send).toHaveBeenCalledWith(
+      expect.objectContaining({ body: 'I’ll stay in Switch Console for now.' })
+    );
   });
 
   it('(k) Console only: setup cards are hidden after staying', async () => {

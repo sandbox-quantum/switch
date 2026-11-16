@@ -367,6 +367,7 @@ const TemplatesPanel = observer(function TemplatesPanel() {
     <ServerPage
       width={LIST_PAGE_WIDTH}
       title="Templates"
+      term="template"
       description="Templates create a complete room setup - agents, roles, documents - from a single configuration."
       action={
         <CreateTemplateMenu
