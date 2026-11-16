@@ -1896,7 +1896,9 @@ async def create_room_from_yaml(
 
     A ``kickoff:`` is posted with your authority, not your owner's, and with
     the run so far appended: the rooms that led here and who made them. The
-    call is refused, with nothing created, when the kickoff mentions an agent
+    call is refused, with nothing created, when a room names an agent that
+    takes requests from neither your owner nor you (as `create_room` is),
+    when the kickoff mentions an agent
     that does not accept messages from you, when you ask for a room with the
     same kickoff as one you already made further up the same path (the run is
     then paused until your owner lets it continue), when the run was paused
@@ -2040,6 +2042,7 @@ async def _provision_as_agent(
     await _require_agents_exist(
         [n for spec, _ in room_specs for n in spec.agents if n not in created_names]
     )
+    await rooms_yaml.check_invites(parsed, user_id=owner.id, agent_id=agent.id)
     kickoffs = [
         (text, list(spec.agents), dict(spec.aliases or {}))
         for spec, text in room_specs
