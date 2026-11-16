@@ -61,15 +61,14 @@ export function createsLine(template: TemplateSummary): string | null {
   return parts.length > 0 ? parts.join(" · ") : null;
 }
 
-/** "Ada · used 2 days ago", or just the owner for a template never run,
- * with the exact time of the last run for a hover title. */
-export function ownerLine(template: TemplateSummary): { text: string; title: string | undefined } {
-  const owner = ownerLabel(template);
-  if (template.last_run_at === null) return { text: owner, title: undefined };
+/** "used 2 days ago", with the exact time for a hover title; null for a
+ * template never run. */
+export function lastUsed(template: TemplateSummary): { text: string; title: string } | null {
+  if (template.last_run_at === null) return null;
   const relative = formatRelative(template.last_run_at);
   // Past a week the recency ladder gives a date, which reads as "used on".
-  const used = /^\d{4}-/.test(relative) ? `used on ${relative}` : `used ${relative.toLowerCase()}`;
-  return { text: `${owner} · ${used}`, title: `Last used ${absoluteTitle(template.last_run_at)}` };
+  const text = /^\d{4}-/.test(relative) ? `used on ${relative}` : `used ${relative.toLowerCase()}`;
+  return { text, title: `Last used ${absoluteTitle(template.last_run_at)}` };
 }
 
 /** Why the viewer may not change or delete someone else's template, beside

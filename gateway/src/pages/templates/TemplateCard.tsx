@@ -6,7 +6,15 @@ import { Box, Button, ButtonBase, Chip, Stack, Tooltip, Typography } from "@mui/
 import type { ReactElement } from "react";
 import RowActionsMenu, { type RowAction } from "../../components/RowActionsMenu";
 import type { TemplateSummary } from "../../data/api";
-import { type TemplateKind, createsLine, kindLabel, kindOf, ownerLine, useCaseLabel } from "./templateRows";
+import {
+  type TemplateKind,
+  createsLine,
+  kindLabel,
+  kindOf,
+  lastUsed,
+  ownerLabel,
+  useCaseLabel,
+} from "./templateRows";
 
 /** One glyph per kind, wherever a template's kind is shown: the rail's
  * for agents and rooms. */
@@ -93,7 +101,7 @@ export default function TemplateCard({
   onUse: () => void;
 }) {
   const creates = createsLine(template);
-  const owner = template.official ? null : ownerLine(template);
+  const used = lastUsed(template);
 
   return (
     <Box
@@ -168,9 +176,25 @@ export default function TemplateCard({
               {creates}
             </Typography>
           )}
-          {owner && (
-            <Typography variant="caption" color="text.secondary" noWrap component="p" title={owner.title}>
-              {owner.text}
+          {/* Whose it is, for the workspace's own: the official ones are
+              Switch's, as their section already says. */}
+          {!template.official && (
+            <Typography variant="caption" color="text.secondary" noWrap component="p">
+              {ownerLabel(template)}
+              {used && (
+                <>
+                  {" · "}
+                  {/* Above the card's hit area, so its hover title shows. */}
+                  <Box
+                    component="time"
+                    dateTime={template.last_run_at ?? undefined}
+                    title={used.title}
+                    sx={{ position: "relative", zIndex: 1 }}
+                  >
+                    {used.text}
+                  </Box>
+                </>
+              )}
             </Typography>
           )}
         </Stack>

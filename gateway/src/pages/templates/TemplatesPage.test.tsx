@@ -167,7 +167,7 @@ describe("TemplatesPage", () => {
       expect(card.getByText("Operations")).toBeTruthy();
       expect(card.getByText("Private")).toBeTruthy();
       expect(card.getByText("2 agents · 1 room")).toBeTruthy();
-      expect(card.getByText("Ada · used 2 days ago")).toBeTruthy();
+      expect(card.getByText("used 2 days ago").closest("p")?.textContent).toBe("Ada · used 2 days ago");
 
       const unread = within(screen.getByRole("article", { name: "Unread" }));
       expect(unread.getByText("Former member")).toBeTruthy();
