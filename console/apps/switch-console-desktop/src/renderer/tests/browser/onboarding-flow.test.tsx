@@ -90,6 +90,7 @@ const localServer = vi.hoisted(() => ({
   init: vi.fn(() => Promise.resolve()),
   checkDocker: vi.fn(() => Promise.resolve()),
   start: vi.fn(() => Promise.resolve()),
+  useAnotherPort: vi.fn((_port: number) => Promise.resolve()),
   reset: vi.fn(() => Promise.resolve()),
 }));
 
@@ -371,6 +372,42 @@ describe('the first-run flow', () => {
     expect(el.textContent).toContain('Set up a server on this computer');
     expect(el.textContent).toContain('PostgreSQL did not start.');
     expect(labels(el).some((l) => l?.startsWith('Retry'))).toBe(true);
+  });
+
+  it('says which port is busy and what to do, and moves the server off it when asked', async () => {
+    localServer.useAnotherPort.mockClear();
+    localServer.start.mockImplementationOnce(() => {
+      Object.assign(localServer, {
+        phase: 'error',
+        error: 'bind 127.0.0.1:57440: address already in use',
+      });
+      return Promise.resolve();
+    });
+    const el = await renderFlow();
+    await act(async () => button(el, 'Get started').click());
+
+    await act(async () => button(el, 'Continue').click());
+
+    expect(el.textContent).toContain('bind 127.0.0.1:57440: address already in use');
+    expect(el.textContent).toContain(
+      'Another program is using port 57440. Quit it, or use another port, then try again.'
+    );
+    await act(async () => button(el, 'Use another port').click());
+    expect(localServer.useAnotherPort).toHaveBeenCalledWith(57440);
+  });
+
+  it('offers no port to move for a failure that is not a busy port', async () => {
+    localServer.start.mockImplementationOnce(() => {
+      Object.assign(localServer, { phase: 'error', error: 'PostgreSQL did not start.' });
+      return Promise.resolve();
+    });
+    const el = await renderFlow();
+    await act(async () => button(el, 'Get started').click());
+
+    await act(async () => button(el, 'Continue').click());
+
+    expect(el.textContent).toContain('PostgreSQL did not start.');
+    expect(labels(el)).not.toContain('Use another port');
   });
 
   it('offers no Back while it sets the server up', async () => {

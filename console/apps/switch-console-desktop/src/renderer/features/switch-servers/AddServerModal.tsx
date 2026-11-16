@@ -22,6 +22,7 @@ import {
   lockHolderSentence,
   othersRecentlySeen,
 } from '@shared/core/managed-switch-server/managed-switch-server';
+import { explainStartFailure } from '@shared/core/managed-switch-server/start-failure';
 import type {
   AddServerChoiceName,
   AddServerStepName,
@@ -638,10 +639,12 @@ export const LocalSetupStep = observer(function LocalSetupStep({
         )}
 
         {store.error && !(needsDocker && dockerUnavailable) && !running && (
-          <Alert variant="destructive">
-            <AlertTitle>{store.error}</AlertTitle>
-            {store.errorDetail && <AlertDescription>{store.errorDetail}</AlertDescription>}
-          </Alert>
+          <StartFailureAlert
+            error={store.error}
+            detail={store.errorDetail}
+            busy={starting}
+            onUseAnotherPort={(port) => void store.useAnotherPort(port)}
+          />
         )}
 
         {store.phase === 'error' && !starting && (
@@ -679,6 +682,40 @@ export const LocalSetupStep = observer(function LocalSetupStep({
     </WizardFrame>
   );
 });
+
+/**
+ * Why the start failed, said as the server page says it: the line that tells
+ * what happened, what to do about it, and — for a port another program holds
+ * — the way to move the server off it.
+ */
+function StartFailureAlert({
+  error,
+  detail,
+  busy,
+  onUseAnotherPort,
+}: {
+  error: string;
+  detail: string | null;
+  busy: boolean;
+  onUseAnotherPort: (port: number) => void;
+}) {
+  const failure = explainStartFailure(error);
+  const port = failure.port;
+  return (
+    <div className="space-y-2">
+      <Alert variant="destructive">
+        <AlertTitle>{failure.line}</AlertTitle>
+        {failure.hint && <AlertDescription>{failure.hint}</AlertDescription>}
+        {detail && <AlertDescription>{detail}</AlertDescription>}
+      </Alert>
+      {port !== null && (
+        <Button variant="outline" size="sm" disabled={busy} onClick={() => onUseAnotherPort(port)}>
+          Use another port
+        </Button>
+      )}
+    </div>
+  );
+}
 
 /**
  * The way out of a setup that failed partway: delete what it made and begin
