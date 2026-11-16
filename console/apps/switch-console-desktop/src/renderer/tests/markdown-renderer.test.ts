@@ -31,16 +31,18 @@ vi.mock('@renderer/lib/ipc', () => ({
   },
 }));
 
+const PIXEL = 'screenshots/one.png';
+
 describe('MarkdownRenderer', () => {
   it('constrains markdown images in compact rendering', () => {
     const html = renderToStaticMarkup(
       React.createElement(MarkdownRenderer, {
-        content: '![Screenshot](https://example.com/screenshot.png)',
+        content: `![Screenshot](${PIXEL})`,
         variant: 'compact',
       })
     );
 
-    expect(html).toContain('src="https://example.com/screenshot.png"');
+    expect(html).toContain(`src="${PIXEL}"`);
     expect(html).toContain('alt="Screenshot"');
     expect(html).toContain('aria-label="Expand image"');
     expect(html).toContain('max-w-full');
@@ -52,17 +54,32 @@ describe('MarkdownRenderer', () => {
     const html = renderToStaticMarkup(
       React.createElement(MarkdownRenderer, {
         allowHtml: true,
-        content: '<img src="https://example.com/preview.png" alt="Preview">',
+        content: `<img src="${PIXEL}" alt="Preview">`,
         variant: 'compact',
       })
     );
 
-    expect(html).toContain('src="https://example.com/preview.png"');
+    expect(html).toContain(`src="${PIXEL}"`);
     expect(html).toContain('alt="Preview"');
     expect(html).toContain('aria-label="Expand image"');
     expect(html).toContain('max-w-full');
     expect(html).toContain('max-h-80');
     expect(html).toContain('object-contain');
+  });
+
+  it('holds back an image from another computer until the reader asks for it', () => {
+    for (const variant of ['compact', 'full'] as const)
+      for (const src of [
+        'https://tracker.example/pixel.png?viewer=1',
+        '//tracker.example/pixel.png',
+      ]) {
+        const html = renderToStaticMarkup(
+          React.createElement(MarkdownRenderer, { content: `![Pixel](${src})`, variant })
+        );
+        expect(html).not.toContain('<img');
+        expect(html).toContain('Image from tracker.example');
+        expect(html).toContain('Load image');
+      }
   });
 
   it('renders compact markdown tables with visible structure', () => {

@@ -1,4 +1,7 @@
 import {
+  DEVICE_CONSENT_NEEDED_KIND,
+  DEVICE_POLICY_CHANGED_KIND,
+  type DeviceConsentNeed,
   isProviderRecheckRequest,
   PROVIDER_RECHECKED_KIND,
   STOP_MESSAGE,
@@ -19,16 +22,18 @@ function harness(launch: () => Promise<ControllerLaunch> = async () => LAUNCH) {
   const phases: EmbeddedControllerPhase[] = [];
   const finals: string[] = [];
   const lines: [ControllerLogLevel, string][] = [];
+  const needs: DeviceConsentNeed[][] = [];
   const supervisor = new ControllerSupervisor({
     spawn,
     launch,
     onPhase: (phase) => phases.push(phase),
     onFinal: (exit) => finals.push(exit),
     onLine: (level, line) => lines.push([level, line]),
+    onConsentNeeded: (asked) => needs.push(asked),
     now: () => NOW,
     backoff: { initialMs: 10, maxMs: 40, stableMs: 10_000 },
   });
-  return { supervisor, calls, phases, finals, lines };
+  return { supervisor, calls, phases, finals, lines, needs };
 }
 
 const LAUNCH: ControllerLaunch = {
@@ -48,6 +53,28 @@ describe('ControllerSupervisor', () => {
     expect(child.received).toBe('swcc_placeholder');
     expect(calls[0]!.args).not.toContain('swcc_placeholder');
     expect(phases.at(-1)).toEqual({ kind: 'running', since: '2026-01-01T00:00:00.000Z' });
+    await supervisor.stop(1_000);
+  });
+
+  it('passes on what the controller says agents ask of this device, and tells it of policy changes', async () => {
+    const { supervisor, calls, needs } = harness();
+    supervisor.policyChanged();
+    supervisor.start();
+    await waitFor(() => calls.length === 1, 'the spawn');
+    const child = calls[0]!.child;
+    const need = {
+      agentId: 'agent-1',
+      name: 'scout',
+      displayName: null,
+      bypass: true,
+      directory: '/srv/repo',
+    };
+    child.emit('message', { kind: DEVICE_CONSENT_NEEDED_KIND, needs: [need] });
+    child.emit('message', { kind: DEVICE_CONSENT_NEEDED_KIND, needs: 'not a list' });
+    expect(needs).toEqual([[need]]);
+
+    supervisor.policyChanged();
+    expect(child.sent).toContainEqual({ kind: DEVICE_POLICY_CHANGED_KIND });
     await supervisor.stop(1_000);
   });
 

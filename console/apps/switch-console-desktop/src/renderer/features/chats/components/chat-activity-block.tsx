@@ -17,7 +17,7 @@ import {
 import type { AgentActivity } from '../stores/chat-activity-store';
 import { Reasoning } from '../ui/reasoning';
 import { FailedIcon, ThinkingIcon, ToolKindIcon, WorkLogDetails, WorkLogRow } from '../ui/work-log';
-import { ChatApprovalCard } from './chat-approval-card';
+import { ChatApprovalCard, type RequestAsker } from './chat-approval-card';
 import { ToolRow } from './tool-row';
 
 function ToolRows({
@@ -104,7 +104,7 @@ export function AgentRow({
   children,
   ...props
 }: ComponentProps<'div'> & {
-  agent: { name: string; iconUrl: string | null };
+  agent: { id: string | null; name: string; iconUrl: string | null };
   serverId: string;
   head: boolean;
   trailing?: ReactNode;
@@ -112,7 +112,13 @@ export function AgentRow({
   return (
     <div className={cn('flex gap-3', className)} {...props}>
       {head ? (
-        <AgentAvatar name={agent.name} iconUrl={agent.iconUrl} serverId={serverId} size={28} />
+        <AgentAvatar
+          agentId={agent.id}
+          name={agent.name}
+          iconUrl={agent.iconUrl}
+          serverId={serverId}
+          size={28}
+        />
       ) : (
         <span className="w-7 shrink-0" aria-hidden />
       )}
@@ -175,6 +181,7 @@ export const ChatActivityBlock = observer(function ChatActivityBlock({
   activity,
   turn,
   agent,
+  asker,
   head,
   endReason,
   serverId,
@@ -182,7 +189,9 @@ export const ChatActivityBlock = observer(function ChatActivityBlock({
 }: {
   activity: AgentActivity;
   turn: TurnActivity;
-  agent: { name: string; iconUrl: string | null };
+  agent: { id: string | null; name: string; iconUrl: string | null };
+  /** Who the turn's requests come from, as their cards name them. */
+  asker: RequestAsker;
   /** Whether this turn starts the agent's block, so shows its avatar and name. */
   head: boolean;
   /** Why the turn ended, from the host's notice in the room; null when it posted none. */
@@ -273,7 +282,9 @@ export const ChatActivityBlock = observer(function ChatActivityBlock({
           )}
         </div>
       )}
-      {requests.length > 0 && <ChatRequests activity={activity} requests={requests} />}
+      {requests.length > 0 && (
+        <ChatRequests activity={activity} requests={requests} asker={asker} />
+      )}
     </AgentRow>
   );
 });
@@ -282,9 +293,11 @@ export const ChatActivityBlock = observer(function ChatActivityBlock({
 export const ChatRequests = observer(function ChatRequests({
   activity,
   requests,
+  asker,
 }: {
   activity: AgentActivity;
   requests: ChatApproval[];
+  asker: RequestAsker;
 }) {
   return (
     <WorkLogDetails>
@@ -292,6 +305,7 @@ export const ChatRequests = observer(function ChatRequests({
         <ChatApprovalCard
           key={request.requestId}
           request={request}
+          asker={asker}
           onAnswer={(answer) => activity.answer(request, answer)}
         />
       ))}

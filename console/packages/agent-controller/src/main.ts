@@ -4,8 +4,17 @@ import { homedir, hostname } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import {
+  allowInPolicy,
   cliToolsBase,
+  DEVICE_CONSENT_NEEDED_KIND,
+  type DeviceConsentNeededMessage,
+  type DevicePolicy,
+  disallowInPolicy,
+  EVERY_AGENT,
   generateSealingKeyPair,
+  isDevicePolicyChangedMessage,
+  readDevicePolicy,
+  writeDevicePolicy,
   isProviderRecheckRequest,
   isStopMessage,
   PROVIDER_RECHECKED_KIND,
@@ -30,6 +39,7 @@ import {
 } from './api';
 import { type ControllerExit, DEFAULT_TIMING, runController } from './controller';
 import { DetachedRuntime } from './detached-runtime';
+import { type DefinitionContext, DevicePolicySource } from './device-policy';
 import { formatChecks, runDoctor } from './doctor';
 import { readEnvFile } from './env-file';
 import { ConfigurationError, UsageError } from './errors';
@@ -63,6 +73,8 @@ import {
   DATA_DIR_ENV,
   dataLayout,
   ensureDataDir,
+  expandHome,
+  isSafeSegment,
   resolveDataDir,
   serverWorkspacesDir,
 } from './paths';
@@ -178,6 +190,19 @@ Commands:
       clears the description. The same limits as at enrollment.
   status [--data-dir <dir>] [--shared-host-bundle <path>]
       Show this controller's identity and its agents, from local state only.
+  allow <agent-id> | --every-agent [--bypass] [--directory <dir>] [--data-dir <dir>]
+      Let an agent Switch assigns this machine run without asking for
+      approval (--bypass), or work in <dir> or anything inside it, outside
+      the workspaces folder. Neither is applied, whatever the agent's
+      definition asks, until it is allowed here: an agent asking for bypass
+      runs and asks, and one asking for another directory is refused. Kept in
+      the data directory, never sent to Switch; a running controller applies
+      it within seconds. Agents run as users of their own are contained by
+      their units instead, and need neither.
+  disallow <agent-id> | --every-agent [--bypass] [--directory <dir>] [--data-dir <dir>]
+      Take back what allow gave; with neither flag, everything it gave the agent.
+  policy [--data-dir <dir>]
+      Show what this machine allows its agents.
   sealing-key [--data-dir <dir>]
       Print the public key provider logins given to this machine are sealed
       to, and its fingerprint, as one line of JSON (both null without one).
@@ -357,6 +382,76 @@ export function infoChange(values: { name?: string; description?: string }): Con
     change.description = description || null;
   }
   return change;
+}
+
+/**
+ * `allow` and `disallow`: what this device lets an agent Switch assigns it do,
+ * whatever its definition asks (`device-policy.ts`). Written to the data
+ * directory, where a running controller picks it up within seconds.
+ */
+async function devicePolicyCommand(change: 'allow' | 'disallow', args: string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args,
+    options: {
+      bypass: { type: 'boolean' },
+      directory: { type: 'string' },
+      'every-agent': { type: 'boolean' },
+      'data-dir': { type: 'string' },
+    },
+    allowPositionals: true,
+    strict: true,
+  });
+  const everyAgent = values['every-agent'] === true;
+  if (positionals.length !== (everyAgent ? 0 : 1))
+    throw new UsageError(`${change} takes one agent id, or --every-agent.`);
+  const agentId = everyAgent ? EVERY_AGENT : positionals[0]!;
+  if (!everyAgent && !isSafeSegment(agentId))
+    throw new UsageError(`'${agentId}' is not an agent id.`);
+  const directory = values.directory === undefined ? null : resolve(expandHome(values.directory));
+  const bypass = values.bypass === true;
+  if (change === 'allow' && !bypass && directory === null)
+    throw new UsageError('allow needs --bypass, --directory <dir>, or both.');
+  const dataDir = resolveDataDir(values['data-dir']);
+  await ensureDataDir(dataDir);
+  const before = await readDevicePolicy(dataDir);
+  const after =
+    change === 'allow'
+      ? allowInPolicy(before, agentId, { bypass, directory })
+      : disallowInPolicy(
+          before,
+          agentId,
+          !bypass && directory === null ? 'all' : { bypass, directory }
+        );
+  await writeDevicePolicy(dataDir, after);
+  process.stdout.write(describeDevicePolicy(after));
+  return EXIT_OK;
+}
+
+/** The device policy as `policy` and the policy commands print it. */
+function describeDevicePolicy(policy: DevicePolicy): string {
+  const lines = Object.entries(policy.agents).map(([agentId, grant]) => {
+    const who = agentId === EVERY_AGENT ? 'every agent' : agentId;
+    const what = [
+      ...(grant.bypass ? ['runs without asking for approval'] : []),
+      ...(grant.directories ?? []).map((directory) => `works in ${directory}`),
+    ];
+    return `  ${who}: ${what.join('; ')}`;
+  });
+  return lines.length
+    ? `This device allows:\n${lines.join('\n')}\n`
+    : 'This device allows no agent to run without approvals or outside its workspaces folder.\n';
+}
+
+async function showDevicePolicyCommand(args: string[]): Promise<number> {
+  const { values } = parseArgs({
+    args,
+    options: { 'data-dir': { type: 'string' } },
+    strict: true,
+  });
+  process.stdout.write(
+    describeDevicePolicy(await readDevicePolicy(resolveDataDir(values['data-dir'])))
+  );
+  return EXIT_OK;
 }
 
 async function setInfoCommand(args: string[]): Promise<number> {
@@ -589,8 +684,18 @@ async function runCommand(args: string[]): Promise<number> {
   // Windows has no signal a parent can send that is caught here, so Console
   // asks over the IPC channel it starts this controller with.
   const rechecks = new ProviderRechecks();
+  // Agents running as users of their own are contained by their units; the
+  // device policy is for agents that run as this controller's user.
+  const devicePolicy = separateUsers ? null : new DevicePolicySource(dataDir, log);
+  await devicePolicy?.refresh();
   const onMessage = (message: unknown) => {
     if (isStopMessage(message)) onSignal('a stop request');
+    if (isDevicePolicyChangedMessage(message))
+      void devicePolicy?.refresh().catch((error: unknown) =>
+        log.error('Could not read what this device allows its agents', {
+          error: errorMessage(error),
+        })
+      );
     if (isProviderRecheckRequest(message)) {
       const reply = (error: string | null) => {
         const answer: ProviderRecheckReply = {
@@ -730,6 +835,16 @@ async function runCommand(args: string[]): Promise<number> {
         // Each agent sees its own directory at the same path: an agent named
         // no directory works in a folder of its own there.
         workspacesFor: separateUsers ? () => unitAgentRoot(separateUsers) : serverWorkspacesDir,
+        devicePolicy,
+        tellConsentNeeds: process.send
+          ? (needs) => {
+              const message: DeviceConsentNeededMessage = {
+                kind: DEVICE_CONSENT_NEEDED_KIND,
+                needs,
+              };
+              process.send?.(message);
+            }
+          : undefined,
         version: VERSION,
         updatedBy,
         selfUpdate,
@@ -841,11 +956,18 @@ async function statusCommand(args: string[]): Promise<number> {
     out.push(
       `Assignment:     revision ${cached.assignment.revision}, ${cached.assignment.agents.length} agent(s)`
     );
+    const context: DefinitionContext = {
+      dataDir,
+      workspaces: separateUsers
+        ? unitAgentRoot(separateUsers)
+        : serverWorkspacesDir(identity.server),
+      policy: separateUsers ? null : await readDevicePolicy(dataDir),
+    };
     for (const entry of cached.assignment.agents) {
       const row = store.agent(entry.agent_id);
       let observation = emptyObservation();
       let unreadable: string | null = null;
-      if (!definitionProblem(entry)) {
+      if (!definitionProblem(entry, context)) {
         if (separateRuntime)
           observation = await separateRuntime.observe(entry.agent_id).catch((error: unknown) => {
             unreadable = errorMessage(error);
@@ -1282,6 +1404,11 @@ export async function main(argv: string[]): Promise<number> {
       }
       case 'set-info':
         return await setInfoCommand(rest);
+      case 'allow':
+      case 'disallow':
+        return await devicePolicyCommand(command, rest);
+      case 'policy':
+        return await showDevicePolicyCommand(rest);
       case 'status':
         return await statusCommand(rest);
       case 'sealing-key':

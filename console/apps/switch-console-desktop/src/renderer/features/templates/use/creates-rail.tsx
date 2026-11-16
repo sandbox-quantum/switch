@@ -294,7 +294,13 @@ export function AgentSlotCard({
   return (
     <Card className={cn(slot.status === 'failed' && 'border-destructive/50')}>
       <div className="flex items-center gap-3">
-        <AgentAvatar name={shownName || 'agent'} iconUrl={null} serverId={serverId} size={28} />
+        <AgentAvatar
+          agentId={null}
+          name={shownName || 'agent'}
+          iconUrl={null}
+          serverId={serverId}
+          size={28}
+        />
         <div className="min-w-0 flex-1">
           <div
             className={cn(

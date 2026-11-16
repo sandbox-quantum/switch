@@ -5,6 +5,7 @@ import { AppMenuEvents } from './app/app-menu-events';
 import { HostSetupEvents } from './app/host-setup-events';
 import { Workspace } from './app/workspace';
 import { ConsoleLinkListener } from './features/deeplinks/console-link-listener';
+import { DeviceConsentPrompts } from './features/machines/device-consent-prompts';
 import { SessionDeeplinkListener } from './features/switch-rooms/session-deeplink-listener';
 import { BridgePlatformsLoader } from './features/switch-servers/bridge-platforms-loader';
 import { LocalMattermostListener } from './features/switch-servers/local-mattermost-listener';
@@ -29,6 +30,7 @@ function AppContent() {
           <ConsoleLinkListener />
           <BridgePlatformsLoader />
           <LocalMattermostListener />
+          <DeviceConsentPrompts />
           <RightSidebarProvider>
             <ThemeProvider>
               <ModalRenderer />

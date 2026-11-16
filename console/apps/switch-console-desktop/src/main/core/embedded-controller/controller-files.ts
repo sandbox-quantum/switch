@@ -1,7 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, open, readdir, readFile, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { replaceFile, WATCH_FLAGS_FILE, watchFlagsSchema } from '@switch-console/agent-providers';
+import {
+  type DevicePolicy,
+  replaceFile,
+  WATCH_FLAGS_FILE,
+  watchFlagsSchema,
+  writeDevicePolicy,
+} from '@switch-console/agent-providers';
 import { z } from 'zod';
 
 /**
@@ -12,7 +18,12 @@ import { z } from 'zod';
  *   server, name, workspace) or the record that the server removed it. No
  *   credential: that is in the encrypted app secrets store.
  * - `servers/<serverId>/`: the embedded controller's data directory, laid out
- *   as the agent-controller package lays it out.
+ *   as the agent-controller package lays it out. Its `device-policy.json` is
+ *   what this computer allows each agent, written by Console and read by the
+ *   controller.
+ * - `device-consent-denials.json`: what the person said no to when an agent
+ *   asked, so the same ask is not put to them again. Console's alone: the
+ *   controller refuses anything the policy does not allow either way.
  */
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
@@ -180,4 +191,114 @@ export async function wipeControllerIdentity(dataDir: string): Promise<void> {
     await rm(join(dataDir, name), { force: true });
   await rm(join(dataDir, 'agents'), { recursive: true, force: true });
   await rm(join(dataDir, 'secrets'), { recursive: true, force: true });
+}
+
+/** One thing the person said no to when an agent of a server asked for it. */
+export type DeviceConsentDenial = { serverId: string; agentId: string } & (
+  | { ask: 'bypass' }
+  | { ask: 'directory'; directory: string }
+);
+
+const denialSchema = z.union([
+  z.object({ serverId: z.string().min(1), agentId: z.string().min(1), ask: z.literal('bypass') }),
+  z.object({
+    serverId: z.string().min(1),
+    agentId: z.string().min(1),
+    ask: z.literal('directory'),
+    directory: z.string().min(1),
+  }),
+]);
+
+const denialsSchema = z.object({ version: z.literal(1), denials: z.array(denialSchema) });
+
+export interface DeviceConsentDenials {
+  all(): Promise<DeviceConsentDenial[]>;
+  add(denials: DeviceConsentDenial[]): Promise<void>;
+  remove(denials: DeviceConsentDenial[]): Promise<void>;
+  /** Everything said no to for a server's agents, as the server is turned off here. */
+  forgetServer(serverId: string): Promise<void>;
+}
+
+function sameDenial(a: DeviceConsentDenial, b: DeviceConsentDenial): boolean {
+  return (
+    a.serverId === b.serverId &&
+    a.agentId === b.agentId &&
+    a.ask === b.ask &&
+    (a.ask !== 'directory' || (b.ask === 'directory' && a.directory === b.directory))
+  );
+}
+
+/** `device-consent-denials.json`, read whole and written whole; every change goes through one queue. */
+export class DeviceConsentDenialFile implements DeviceConsentDenials {
+  private tail: Promise<unknown> = Promise.resolve();
+
+  /** `path` is resolved on first use: the user-data directory is not settled at import time. */
+  constructor(private readonly path: () => string) {}
+
+  async all(): Promise<DeviceConsentDenial[]> {
+    await this.tail.catch(() => {});
+    return this.read();
+  }
+
+  add(denials: DeviceConsentDenial[]): Promise<void> {
+    return this.change((current) => [
+      ...current,
+      ...denials.filter((denial) => !current.some((kept) => sameDenial(kept, denial))),
+    ]);
+  }
+
+  remove(denials: DeviceConsentDenial[]): Promise<void> {
+    return this.change((current) =>
+      current.filter((kept) => !denials.some((denial) => sameDenial(kept, denial)))
+    );
+  }
+
+  forgetServer(serverId: string): Promise<void> {
+    return this.change((current) => current.filter((kept) => kept.serverId !== serverId));
+  }
+
+  private change(update: (current: DeviceConsentDenial[]) => DeviceConsentDenial[]): Promise<void> {
+    const next = this.tail
+      .catch(() => {})
+      .then(async () => {
+        const denials = update(await this.read());
+        await writeAtomic(this.path(), JSON.stringify({ version: 1, denials }, null, 2));
+      });
+    this.tail = next;
+    return next;
+  }
+
+  private async read(): Promise<DeviceConsentDenial[]> {
+    let text: string;
+    try {
+      text = await readFile(this.path(), 'utf8');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      throw error;
+    }
+    return denialsSchema.parse(JSON.parse(text)).denials;
+  }
+}
+
+/** The parts of `asked` for one agent, each as what saying no to it records. */
+export function denialsFor(
+  serverId: string,
+  agentId: string,
+  asked: { bypass: boolean; directory: string | null }
+): DeviceConsentDenial[] {
+  return [
+    ...(asked.bypass ? [{ serverId, agentId, ask: 'bypass' as const }] : []),
+    ...(asked.directory !== null
+      ? [{ serverId, agentId, ask: 'directory' as const, directory: asked.directory }]
+      : []),
+  ];
+}
+
+/**
+ * Writes the device policy into a controller's data directory, made
+ * owner-only first when the controller has not run yet to make it.
+ */
+export async function writeControllerPolicy(dataDir: string, policy: DevicePolicy): Promise<void> {
+  await mkdir(dataDir, { recursive: true, mode: 0o700 });
+  await writeDevicePolicy(dataDir, policy);
 }

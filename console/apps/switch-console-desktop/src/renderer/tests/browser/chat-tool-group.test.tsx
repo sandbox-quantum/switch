@@ -75,7 +75,8 @@ async function render(items: ChatActivityItem[]): Promise<HTMLDivElement> {
         <ChatActivityBlock
           activity={activity}
           turn={turn}
-          agent={{ name: 'helper', iconUrl: null }}
+          agent={{ id: 'agent-1', name: 'helper', iconUrl: null }}
+          asker={{ name: 'helper', ownerName: null, ownedByViewer: true }}
           head
           endReason={null}
           serverId="server"

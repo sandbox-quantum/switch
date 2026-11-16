@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { hostname, release } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
+import { readDevicePolicy } from '@switch-console/agent-providers';
 import { app } from 'electron';
 import { listManagedAgentRecords } from '@main/core/agent-migration/managed-agents-store';
 import {
@@ -14,12 +15,17 @@ import { encryptedAppSecretsStore } from '@main/core/secrets/encrypted-app-secre
 import { getServer } from '@main/core/switch-servers/servers-store';
 import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
-import { embeddedControllerStateChannel } from '@shared/events/embeddedControllerEvents';
+import {
+  embeddedControllerConsentChannel,
+  embeddedControllerStateChannel,
+} from '@shared/events/embeddedControllerEvents';
 import {
   controllerDataDir,
+  DeviceConsentDenialFile,
   EnrollmentFile,
   turnOffWatchers,
   wipeControllerIdentity,
+  writeControllerPolicy,
 } from './controller-files';
 import { DEFAULT_BACKOFF } from './controller-supervisor';
 import { EmbeddedControllerService } from './embedded-controller-service';
@@ -123,6 +129,8 @@ export const embeddedControllerService = new EmbeddedControllerService({
     dataDir: (serverId) => controllerDataDir(base(), serverId),
     turnOffWatchers,
     wipeIdentity: wipeControllerIdentity,
+    readPolicy: readDevicePolicy,
+    writePolicy: writeControllerPolicy,
   },
   bundles: {
     controller: resolveAgentControllerBundlePath,
@@ -133,6 +141,8 @@ export const embeddedControllerService = new EmbeddedControllerService({
   execPath: process.execPath,
   env: () => process.env,
   emit: (event) => events.emit(embeddedControllerStateChannel, event),
+  emitConsent: (event) => events.emit(embeddedControllerConsentChannel, event),
+  denials: new DeviceConsentDenialFile(() => join(base(), 'device-consent-denials.json')),
   log: {
     info: (message, fields) => log.info(message, { event: 'embedded_controller', ...fields }),
     warn: (message, fields) => log.warn(message, { event: 'embedded_controller', ...fields }),

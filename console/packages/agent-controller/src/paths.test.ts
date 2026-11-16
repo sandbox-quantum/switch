@@ -9,6 +9,7 @@ import {
   defaultDataDir,
   agentWorkspace,
   ensureDataDir,
+  insideDataDir,
   isSafeSegment,
   serverWorkspacesDir,
 } from './paths';
@@ -65,6 +66,27 @@ describe('ensureDataDir', () => {
       }
     },
     30_000
+  );
+});
+
+describe('insideDataDir', () => {
+  const root = join('/state', 'switch', 'agent-controller');
+
+  it('is the data directory and everything below it but its workspaces folder', () => {
+    expect(insideDataDir(root, root)).toBe(true);
+    expect(insideDataDir(root, join(root, 'secrets'))).toBe(true);
+    expect(insideDataDir(root, join(root, 'workspaces', '..', 'secrets'))).toBe(true);
+    expect(insideDataDir(root, join(root, 'workspaces'))).toBe(false);
+    expect(insideDataDir(root, join(root, 'workspaces', 'scout'))).toBe(false);
+    expect(insideDataDir(root, `${root}-other`)).toBe(false);
+    expect(insideDataDir(root, join('/state', 'switch'))).toBe(false);
+  });
+
+  it.runIf(process.platform === 'darwin' || process.platform === 'win32')(
+    'ignores case where the file system does',
+    () => {
+      expect(insideDataDir(root, join(root, 'secrets').toUpperCase())).toBe(true);
+    }
   );
 });
 

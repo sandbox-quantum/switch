@@ -1,7 +1,11 @@
 import { mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { SDK_SESSIONS_DIR_ENV, sealingKeyFingerprint } from '@switch-console/agent-providers';
+import { join, resolve } from 'node:path';
+import {
+  readDevicePolicy,
+  SDK_SESSIONS_DIR_ENV,
+  sealingKeyFingerprint,
+} from '@switch-console/agent-providers';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EXIT_CONFIGURATION, EXIT_FAILURE, EXIT_OK } from './exit-codes';
 import { infoChange, installerFor, isSupervised, main, planServiceReleases } from './main';
@@ -56,6 +60,35 @@ describe('main', () => {
     );
     expect(await main([])).toBe(EXIT_CONFIGURATION);
     expect(await main(['--help'])).toBe(EXIT_OK);
+  });
+
+  it('allows an agent bypass or a directory on this device, and takes it back', async () => {
+    const data = join(dir, 'data');
+    expect(await main(['allow', 'agent-1', '--data-dir', data])).toBe(EXIT_CONFIGURATION);
+    expect(lastLine()).toMatch(/allow needs --bypass, --directory <dir>, or both/);
+    expect(await main(['allow', '../agent', '--bypass', '--data-dir', data])).toBe(
+      EXIT_CONFIGURATION
+    );
+    expect(
+      await main(['allow', 'agent-1', '--bypass', '--directory', '/srv/repos', '--data-dir', data])
+    ).toBe(EXIT_OK);
+    expect(
+      await main(['allow', '--every-agent', '--directory', '/srv/shared', '--data-dir', data])
+    ).toBe(EXIT_OK);
+    expect(await readDevicePolicy(data)).toEqual({
+      version: 1,
+      agents: {
+        'agent-1': { bypass: true, directories: [resolve('/srv/repos')] },
+        '*': { directories: [resolve('/srv/shared')] },
+      },
+    });
+    expect(await main(['disallow', 'agent-1', '--bypass', '--data-dir', data])).toBe(EXIT_OK);
+    expect((await readDevicePolicy(data)).agents['agent-1']).toEqual({
+      directories: [resolve('/srv/repos')],
+    });
+    expect(await main(['disallow', 'agent-1', '--data-dir', data])).toBe(EXIT_OK);
+    expect(await main(['policy', '--data-dir', data])).toBe(EXIT_OK);
+    expect((await readDevicePolicy(data)).agents['agent-1']).toBeUndefined();
   });
 
   it('enrolls with the name and description it is given', async () => {

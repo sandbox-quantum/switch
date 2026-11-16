@@ -18,6 +18,7 @@ import { depthIndent } from './sidebar-store';
  * the one warning the status slot shows, and the row's own buttons.
  */
 export const SidebarAgentRow = observer(function SidebarAgentRow({
+  agentId,
   label,
   iconUrl,
   serverId,
@@ -33,6 +34,8 @@ export const SidebarAgentRow = observer(function SidebarAgentRow({
   showProviderMark = true,
   title,
 }: {
+  /** The agent's id on its Switch server, or null when it has none there. */
+  agentId: string | null;
   label: string;
   iconUrl: string | null;
   /** The Switch server this agent belongs to, or null when it has none. */
@@ -75,6 +78,7 @@ export const SidebarAgentRow = observer(function SidebarAgentRow({
         <span className="relative flex size-[20px] shrink-0 items-center justify-center">
           <span className="-mx-[2px] flex shrink-0" style={presence ? PRESENCE_NOTCH : undefined}>
             <AgentAvatar
+              agentId={agentId}
               name={label}
               iconUrl={iconUrl}
               serverId={serverId}

@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { chmod, mkdir, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { isAbsolute, join, resolve } from 'node:path';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import { ConfigurationError } from './errors';
 
@@ -157,6 +157,35 @@ export function serverWorkspacesDir(server: string): string {
 /** An agent's working directory under `workspaces`, when its definition names none. */
 export function agentWorkspace(workspaces: string, name: string): string {
   return join(workspaces, safeSegment(name, 'agent name'));
+}
+
+/** A directory from an agent's definition with a leading `~` read as this user's home. */
+export function expandHome(directory: string): string {
+  return directory === '~' ||
+    directory.startsWith('~/') ||
+    (process.platform === 'win32' && directory.startsWith('~\\'))
+    ? join(homedir(), directory.slice(1))
+    : directory;
+}
+
+/**
+ * Whether an agent working in `path` would be working in the controller's
+ * data directory `root`, which holds its credential, its sealing key, every
+ * agent's relay token and every agent host's state. Its `workspaces` folder
+ * is not: agents defined before their default folder moved to the home
+ * directory were given directories there by the server, and it holds nothing
+ * of the controller's. Both paths are compared as given; the caller resolves
+ * links. Case is ignored on macOS and Windows, whose file systems ignore it.
+ */
+export function insideDataDir(root: string, path: string): boolean {
+  const fold = (value: string) =>
+    process.platform === 'darwin' || process.platform === 'win32' ? value.toLowerCase() : value;
+  const target = fold(resolve(path));
+  const within = (dir: string) => {
+    const rest = relative(fold(resolve(dir)), target);
+    return rest === '' || (rest !== '..' && !rest.startsWith(`..${sep}`) && !isAbsolute(rest));
+  };
+  return within(root) && !within(join(root, 'workspaces'));
 }
 
 export function dataLayout(root: string): DataLayout {

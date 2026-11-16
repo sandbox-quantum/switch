@@ -1,7 +1,8 @@
 /**
  * The create form's word on where a new agent runs, on a server with agent
  * management: managed on the chosen machine, a button to turn that machine on
- * when it cannot take one yet, and the providers the machine reports ready.
+ * when it cannot take one yet (never turned on without the person confirming),
+ * and the providers the machine reports ready.
  */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act } from 'react';
@@ -144,15 +145,23 @@ describe('where a new agent runs', () => {
     expect(el.querySelector('button')).toBeNull();
   });
 
-  it('sets this computer up for managed agents as soon as it is chosen, without asking', async () => {
+  it('never sets this computer up by itself: only the button and its confirmation do', async () => {
     const onEnabled = vi.fn();
-    await render(
+    const el = await render(
       notice(
         { management: true, target: null, blocker: 'Turn it on first.', canEnable: true },
         null,
         onEnabled
       )
     );
+    expect(embeddedEnable).not.toHaveBeenCalled();
+    const button = el.querySelector('button')!;
+    expect(button.textContent).toBe('Run managed agents on this computer');
+    await act(async () => button.click());
+    expect(embeddedEnable).not.toHaveBeenCalled();
+    expect(el.textContent).toMatch(/can then start, change and stop agents on this computer/);
+    const confirm = [...el.querySelectorAll('button')].find((b) => b.textContent === 'Turn on')!;
+    await act(async () => confirm.click());
     expect(embeddedEnable).toHaveBeenCalledTimes(1);
     expect(embeddedEnable).toHaveBeenCalledWith({
       serverId: 'server-1',
@@ -162,13 +171,17 @@ describe('where a new agent runs', () => {
     expect(onEnabled).toHaveBeenCalled();
   });
 
-  it('sets an SSH host up as a machine as soon as it is chosen', async () => {
-    await render(
+  it('makes an SSH host a machine only once the person confirms', async () => {
+    const el = await render(
       notice(
         { management: true, target: null, blocker: 'Make it a machine.', canEnable: true },
         'box'
       )
     );
+    expect(hostEnable).not.toHaveBeenCalled();
+    await act(async () => el.querySelector('button')!.click());
+    const confirm = [...el.querySelectorAll('button')].find((b) => b.textContent === 'Turn on')!;
+    await act(async () => confirm.click());
     expect(hostEnable).toHaveBeenCalledWith({
       sshHost: 'box',
       serverId: 'server-1',
@@ -184,10 +197,15 @@ describe('where a new agent runs', () => {
         null
       )
     );
+    const turnOn = async () => {
+      await act(async () => el.querySelector('button')!.click());
+      const confirm = [...el.querySelectorAll('button')].find((b) => b.textContent === 'Turn on')!;
+      await act(async () => confirm.click());
+    };
+    await turnOn();
     expect(embeddedEnable).toHaveBeenCalledTimes(1);
-    const button = el.querySelector('button')!;
-    expect(button.textContent).toBe('Run managed agents on this computer');
-    await act(async () => button.click());
+    expect(el.querySelector('button')!.textContent).toBe('Run managed agents on this computer');
+    await turnOn();
     expect(embeddedEnable).toHaveBeenCalledTimes(2);
   });
 

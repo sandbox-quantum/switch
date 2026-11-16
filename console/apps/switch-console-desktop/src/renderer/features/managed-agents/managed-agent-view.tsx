@@ -74,6 +74,7 @@ const ManagedAgentTitlebar = observer(function ManagedAgentTitlebar() {
     // would be replaced by its own picture a moment later.
     icon: agent ? (
       <AgentAvatar
+        agentId={agent.agentId}
         name={label}
         iconUrl={agent.iconUrl}
         serverId={params.serverId}

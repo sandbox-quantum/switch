@@ -183,6 +183,31 @@ cannot see your bridges, so it cannot infer that you need port 3978 published.
 switch-core restarts. If a bridge is missing after a configuration change,
 restart the deployment.
 
+## Upgrading a server with a long message history
+
+An upgrade's migrations run before the new pods serve: in the pre-upgrade Job
+(`switchCore.migrations.preUpgradeJob`), or in switch-core at boot. With more
+than one replica the old pods keep serving while they run, so a migration that
+locks a table pauses everything that writes to it.
+
+Two migrations build an index on `messages` that way. Every send waits until
+the build finishes, and the more history the table holds, the longer that is.
+
+- **From before Switch 0.24.0:** revision `c71a4f9d2b83` adds
+  `ix_messages_room_sent_at`. Build it by hand first, as the schema owner and
+  outside a transaction, and the migration skips it:
+
+  ```sql
+  CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_messages_room_sent_at
+      ON messages (room_id, sent_at);
+  ```
+
+  If `\d messages` already lists the index, there is nothing to do.
+- **From before Switch 0.31.0:** revision `d8b4f2a6c1e9` adds a column to
+  `messages` and a unique index on it, so the index can't be built ahead. The
+  column starts empty, so the pause is one read of the whole table, not a full
+  index build. Plan the upgrade for a quiet time.
+
 ---
 
 ## Secrets

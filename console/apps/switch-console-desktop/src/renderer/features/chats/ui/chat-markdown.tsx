@@ -12,6 +12,7 @@ import type { PluggableList } from 'unified';
 import { followConsoleLink } from '@renderer/features/deeplinks/console-link-handler';
 import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon';
 import { contentLinkHandlers, openContentLink } from '@renderer/lib/content-link';
+import { AskBeforeLoading, loadsFromElsewhere } from '@renderer/lib/ui/ask-before-loading';
 import { cn } from '@renderer/utils/utils';
 import { CONSOLE_LINK_PREFIX, CONSOLE_LINK_SCHEME } from '@shared/core/deeplinks/console-links';
 import { CodeBlock } from './code-block';
@@ -100,13 +101,19 @@ function ChatCode({
 
 /**
  * A messaging app where the message names one with its logo: the logo and the
- * app's name (the image's alt text) in bold, inline and on one line; any other
- * image as usual.
+ * app's name (the image's alt text) in bold, inline and on one line; an image
+ * from another computer once the reader asks for it; any other image as usual.
  */
 function ChatImage(props: React.ComponentProps<'img'> & ExtraProps) {
   const platform = platformOfLogoUrl(props.src);
   if (platform === null) {
     const DefaultImage = defaultComponents.img;
+    if (typeof props.src === 'string' && loadsFromElsewhere(props.src))
+      return (
+        <AskBeforeLoading src={props.src} alt={props.alt ?? ''}>
+          <DefaultImage {...props} referrerPolicy="no-referrer" />
+        </AskBeforeLoading>
+      );
     return <DefaultImage {...props} />;
   }
   return (
