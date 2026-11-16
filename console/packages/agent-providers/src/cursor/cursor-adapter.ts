@@ -1,9 +1,17 @@
 import { randomUUID } from 'node:crypto';
+import { existsSync } from 'node:fs';
+import { win32 } from 'node:path';
 import { createAcpAdapter, type AcpAdapter } from '../acp/acp-adapter';
 import type { AcpAdapterOptions, AcpProviderHooks, AcpSessionContext } from '../acp/hooks';
 import type { ItemType } from '../events';
 import { execProvider } from '../provider-process';
-import { commandOutput, readiness, signInWith, type ProviderReadiness } from '../readiness';
+import {
+  commandOutput,
+  loginWontHelp,
+  readiness,
+  signInWith,
+  type ProviderReadiness,
+} from '../readiness';
 
 const CURSOR_LOGIN = 'agent login';
 const SIGNED_OUT = /not logged in|login required|authentication required/i;
@@ -25,6 +33,25 @@ export function parseCursorAbout(output: string): ProviderReadiness {
   return SIGNED_OUT.test(email)
     ? readiness('unauthenticated', signInWith(CURSOR_LOGIN))
     : readiness('authenticated', 'Signed in.');
+}
+
+export const CURSOR_NEEDS_GIT_BASH =
+  'Cursor runs commands through Git Bash, which isn’t installed on this computer. Install Git for Windows (https://git-scm.com/download/win), then check again.';
+
+/**
+ * Whether Git for Windows' Bash is on `path`: a `bash.exe` in a Git `bin` or
+ * `usr\\bin` folder. Switch Console and the agent controller put Git's `bin`
+ * on PATH when Git is installed anywhere they know, so its absence here means
+ * there is no Git Bash to run. The `bash.exe` in System32 is WSL's, not it.
+ */
+export function hasWindowsGitBash(
+  path: string,
+  fileExists: (file: string) => boolean = existsSync
+): boolean {
+  return path
+    .split(';')
+    .map((entry) => entry.replace(/[\\/]+$/, ''))
+    .some((dir) => /\\git\\(?:usr\\)?bin$/i.test(dir) && fileExists(win32.join(dir, 'bash.exe')));
 }
 
 interface CursorQuestion {
@@ -126,7 +153,16 @@ export const cursorAcp: AcpProviderHooks = {
     } catch (error) {
       output = commandOutput(error);
     }
-    return parseCursorAbout(output);
+    const result = parseCursorAbout(output);
+    // Its installer says so and finishes anyway: signed in, Cursor would still
+    // fail every command it runs.
+    if (
+      process.platform === 'win32' &&
+      result.status === 'authenticated' &&
+      !hasWindowsGitBash(env.Path ?? env.PATH ?? '')
+    )
+      return loginWontHelp(readiness('unconfigured', CURSOR_NEEDS_GIT_BASH));
+    return result;
   },
   // With an API key the CLI is signed in already; `cursor_login` would ignore
   // the key and start a browser sign-in, which a host cannot finish.

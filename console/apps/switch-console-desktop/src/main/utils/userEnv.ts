@@ -181,6 +181,7 @@ export async function refreshWindowsPath(env: NodeJS.ProcessEnv = process.env): 
   }
   ensureWindowsNpmGlobalBinInPath(env);
   ensureWindowsUserBinDirsInPath(env);
+  ensureWindowsGitBashInPath(env, fs.existsSync);
 }
 
 /**
