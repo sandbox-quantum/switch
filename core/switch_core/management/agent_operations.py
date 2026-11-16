@@ -421,6 +421,110 @@ class ManagementAgentOperations:
             row, agent, controller, await self._service.leases(session)
         )
 
+    async def _patch_request(
+        self,
+        session: AsyncSession,
+        tenant_id: str,
+        owner_id: str,
+        agent_id: str,
+        changes: ManagedAgentChanges,
+    ) -> tuple[PatchManagedAgentRequest, AgentController | None, str]:
+        """The gateway PATCH body `changes` amount to, the machine the agent
+        would be on, and the provider it would run; refused for an agent that
+        is not one of the owner's managed agents, a machine that is not
+        theirs, or a definition that does not validate."""
+        agent = await self._service.agents.get(session, agent_id)
+        row = await self._service.definitions.get_for_agent(
+            session, tenant_id, agent_id
+        )
+        if agent is None or agent.owner_id != owner_id or row is None:
+            raise AgentManagementRefused(
+                reason_codes.NOT_FOUND,
+                f"{NOTHING_CHANGED}: agent {agent_id} is not one of your "
+                "owner's managed agents, so it has no provider, model, "
+                "machine or run state Switch can set. Only its name-level "
+                "settings (description, display name, icon, addressing) "
+                "can be changed here.",
+            )
+        controller: AgentController | None = None
+        if changes.machine is not None:
+            controller = await self._resolve_machine(
+                session, tenant_id, owner_id, changes.machine, NOTHING_CHANGED
+            )
+        elif row.controller_id is not None:
+            controller = await self._service.controllers.get(
+                session, tenant_id, row.controller_id
+            )
+        definition_changes = changes.definition_changes()
+        body: dict[str, Any] = {}
+        if definition_changes:
+            body["definition"] = {
+                **stored_definition(row.definition),
+                **definition_changes,
+            }
+        if changes.desired_state is not None:
+            body["desired_state"] = changes.desired_state
+        if changes.machine is not None:
+            assert controller is not None
+            body["controller_id"] = controller.id
+        try:
+            request = PatchManagedAgentRequest.model_validate(body)
+        except ValidationError as exc:
+            raise AgentManagementRefused(
+                reason_codes.VALIDATION_ERROR,
+                f"{NOTHING_CHANGED}: {_validation_message(exc)}.",
+            ) from exc
+        provider = (
+            request.definition.provider
+            if request.definition is not None
+            else str(row.definition.get("provider"))
+        )
+        return request, controller, provider
+
+    @staticmethod
+    def _change_refusal(
+        exc: ManagementError, controller: AgentController | None, provider: str
+    ) -> AgentManagementRefused:
+        machine = controller.name if controller is not None else "(none)"
+        sentence = _placement_sentence(
+            exc.code, machine, provider, _provider_problem(controller, provider)
+        )
+        return AgentManagementRefused(
+            exc.code,
+            f"{NOTHING_CHANGED}: {sentence or exc.message} ({exc.code}).",
+        )
+
+    async def check_managed_agent_changes(
+        self,
+        tenant_id: str,
+        owner_id: str,
+        agent_id: str,
+        changes: ManagedAgentChanges,
+    ) -> dict[str, Any]:
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            request, controller, provider = await self._patch_request(
+                session, tenant_id, owner_id, agent_id, changes
+            )
+            try:
+                await self._service.check_managed_agent_patch(
+                    session,
+                    tenant_id,
+                    owner_id,
+                    agent_id,
+                    definition=request.definition,
+                    desired_state=request.desired_state,
+                    controller_id=request.controller_id,
+                    controller_id_given="controller_id" in request.model_fields_set,
+                )
+            except ManagementError as exc:
+                raise self._change_refusal(exc, controller, provider) from exc
+            entry = await self._owned_entry(session, tenant_id, owner_id, agent_id)
+            # Checking can wake a sleeping cloud machine, as creating does.
+            await session.commit()
+        if entry is None:
+            raise RuntimeError(f"managed agent {agent_id} vanished while checking it")
+        return entry
+
     async def update_managed_agent(
         self,
         tenant_id: str,
@@ -430,51 +534,8 @@ class ManagementAgentOperations:
         protocol: AgentCore,
     ) -> dict[str, Any]:
         async with tenant_session(self._session_factory, tenant_id) as session:
-            agent = await self._service.agents.get(session, agent_id)
-            row = await self._service.definitions.get_for_agent(
-                session, tenant_id, agent_id
-            )
-            if agent is None or agent.owner_id != owner_id or row is None:
-                raise AgentManagementRefused(
-                    reason_codes.NOT_FOUND,
-                    f"{NOTHING_CHANGED}: agent {agent_id} is not one of your "
-                    "owner's managed agents, so it has no provider, model, "
-                    "machine or run state Switch can set. Only its name-level "
-                    "settings (description, display name, icon, addressing) "
-                    "can be changed here.",
-                )
-            controller: AgentController | None = None
-            if changes.machine is not None:
-                controller = await self._resolve_machine(
-                    session, tenant_id, owner_id, changes.machine, NOTHING_CHANGED
-                )
-            elif row.controller_id is not None:
-                controller = await self._service.controllers.get(
-                    session, tenant_id, row.controller_id
-                )
-            definition_changes = changes.definition_changes()
-            body: dict[str, Any] = {}
-            if definition_changes:
-                body["definition"] = {
-                    **stored_definition(row.definition),
-                    **definition_changes,
-                }
-            if changes.desired_state is not None:
-                body["desired_state"] = changes.desired_state
-            if changes.machine is not None:
-                assert controller is not None
-                body["controller_id"] = controller.id
-            try:
-                request = PatchManagedAgentRequest.model_validate(body)
-            except ValidationError as exc:
-                raise AgentManagementRefused(
-                    reason_codes.VALIDATION_ERROR,
-                    f"{NOTHING_CHANGED}: {_validation_message(exc)}.",
-                ) from exc
-            provider = (
-                request.definition.provider
-                if request.definition is not None
-                else str(row.definition.get("provider"))
+            request, controller, provider = await self._patch_request(
+                session, tenant_id, owner_id, agent_id, changes
             )
             try:
                 await self._service.patch_managed_agent(
@@ -490,14 +551,7 @@ class ManagementAgentOperations:
                     expected_revision=None,
                 )
             except ManagementError as exc:
-                machine = controller.name if controller is not None else "(none)"
-                sentence = _placement_sentence(
-                    exc.code, machine, provider, _provider_problem(controller, provider)
-                )
-                raise AgentManagementRefused(
-                    exc.code,
-                    f"{NOTHING_CHANGED}: {sentence or exc.message} ({exc.code}).",
-                ) from exc
+                raise self._change_refusal(exc, controller, provider) from exc
             entry = await self._owned_entry(session, tenant_id, owner_id, agent_id)
         if entry is None:
             raise RuntimeError(f"managed agent {agent_id} vanished while updating it")

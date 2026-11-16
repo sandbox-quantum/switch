@@ -31,6 +31,7 @@ from switch_core.management.advanced_config import validate_advanced_config
 from switch_core.management.sealed_logins import PublicKey, key_id
 from switch_core.process_lease import ProcessLeases
 from switch_core.providers.registry import AgentProviderId
+from switch_core.working_directory import check_directory
 
 Provider = AgentProviderId
 ControllerKind = Literal["console", "daemon", "ec2"]
@@ -105,6 +106,11 @@ class DefinitionV1(_GatewayBody):
                 f"instructions must be at most {MAX_INSTRUCTIONS_BYTES} bytes"
             )
         return value
+
+    @field_validator("directory")
+    @classmethod
+    def _directory_is_a_place_to_work(cls, value: str | None) -> str | None:
+        return None if value is None else check_directory(value)
 
     @model_validator(mode="after")
     def _advanced_config_fits_the_provider(self) -> DefinitionV1:

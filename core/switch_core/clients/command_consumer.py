@@ -11,7 +11,7 @@ from switch_core.clients.admin_messages import (
     AdminMessageType,
     admin_extra_content,
 )
-from switch_core.clients.agent_admin import AgentAdministration, AgentDeletionRequests
+from switch_core.clients.agent_admin import AgentAdministration, AgentRequests
 from switch_core.clients.consumer import Consumer
 from switch_core.clients.room_meta import RoomMeta
 from switch_core.db.session_scope import tenant_session
@@ -70,7 +70,7 @@ class CommandConsumer(Consumer[SystemActor]):
         room_service: RoomService,
         user_store: UserStore,
         agent_admin: AgentAdministration,
-        deletion_requests: AgentDeletionRequests,
+        agent_requests: AgentRequests,
         frontend_base_url: str | None,
         follow_the_conversation_enabled: bool,
         decision_availability: DecisionAvailability,
@@ -88,7 +88,7 @@ class CommandConsumer(Consumer[SystemActor]):
         self._room_service = room_service
         self._user_store = user_store
         self._agent_admin = agent_admin
-        self._deletion_requests = deletion_requests
+        self._agent_requests = agent_requests
         # (room id, sender, agent id) -> when an unconfirmed `!delete-agent`
         # lapses. In memory: a restart drops a pending deletion, which errs on
         # the side of not deleting.
