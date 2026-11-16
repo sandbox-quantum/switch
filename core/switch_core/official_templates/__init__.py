@@ -68,7 +68,7 @@ class OfficialTemplate:
     description: str
     kind: str
     content: str
-    use_case: UseCase | None
+    use_case: UseCase
     # Why a person should not run it by hand, for a client to give beside a
     # greyed Run. Advice, not a refusal: Switch Console still runs it.
     run_blocked_reason: str | None
