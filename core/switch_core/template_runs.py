@@ -38,6 +38,7 @@ from switch_core.connections.broker import CheckedGrant, ServiceBroker, ServiceE
 from switch_core.db.models import Agent
 from switch_core.db.session_scope import tenant_session
 from switch_core.room_service import FIXED_MEMBERSHIP
+from switch_core.working_directory import check_directory
 
 if TYPE_CHECKING:
     from switch_core.bridges.agent.protocol.agent_core import AgentCore
@@ -321,9 +322,16 @@ class TemplateAgents:
                     )
                 )
                 continue
+            # A directory under the machine's workspaces is only a path once
+            # the check says where they are, so it is checked after that.
+            written = (
+                None
+                if plan.directory is None or AGENTS_DIR in plan.directory
+                else plan.directory
+            )
             try:
                 placement = await self._management.check_new_agent(
-                    tenant_id, owner_id, self._spec(plan, plan.machine, plan.directory)
+                    tenant_id, owner_id, self._spec(plan, plan.machine, written)
                 )
             except AgentManagementRefused as refused:
                 problems.append(
@@ -331,6 +339,11 @@ class TemplateAgents:
                 )
                 continue
             directory, problem = _directory(plan, placement)
+            if problem is None and directory is not None:
+                try:
+                    check_directory(directory)
+                except ValueError as invalid:
+                    problem = Problem(plan.slot, "invalid_directory", str(invalid))
             if problem is not None:
                 problems.append(problem)
                 continue

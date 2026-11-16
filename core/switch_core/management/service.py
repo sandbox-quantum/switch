@@ -27,6 +27,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Any
 
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -1612,7 +1613,20 @@ class ManagementService:
         """Write `target` over `existing`. With `expected_revision`, only
         while the definition is still at that revision (`DefinitionChanged`
         otherwise), for a change worked out from what it was."""
-        definition = DefinitionV1.model_validate(target.definition)
+        try:
+            definition = DefinitionV1.model_validate(target.definition)
+        except ValidationError as exc:
+            # A definition stored before a rule it now breaks (a directory
+            # with a `..` in it, say) is the person's to correct.
+            raise ManagementError(
+                422,
+                reason_codes.VALIDATION_ERROR,
+                "The agent's definition is not valid: "
+                + "; ".join(
+                    f"{'.'.join(str(p) for p in e['loc'])}: {e['msg']}"
+                    for e in exc.errors()
+                ),
+            ) from exc
         if (
             existing is None
             or existing.definition.get("provider") != definition.provider

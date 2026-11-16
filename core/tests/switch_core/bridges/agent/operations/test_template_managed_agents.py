@@ -364,6 +364,33 @@ async def test_each_placement_refusal_carries_managements_reason(managed):
 
 
 @pytest.mark.asyncio
+async def test_a_directory_that_climbs_out_of_the_workspaces_is_refused(managed):
+    """`{$agents_dir}` becomes a path only once the machine is known, so the
+    directory it makes is checked then, as any other directory is."""
+    template_id = await _stored(
+        managed,
+        """\
+agent:
+  name: solo
+  instructions: Work alone.
+  provider: claude
+  machine: laptop
+  directory: "{$agents_dir}/../../etc"
+""",
+        kind="agent",
+    )
+
+    with pytest.raises(AgentsNotCreated) as e:
+        await _as(managed["agent_id"], run_template, template_id=template_id)
+
+    assert {(p.slot, p.code) for p in e.value.problems} == {
+        ("solo", "invalid_directory")
+    }
+    assert "'..' segment" in str(e.value)
+    assert managed["management"].created == []
+
+
+@pytest.mark.asyncio
 async def test_a_name_already_taken_refuses_the_run(managed):
     template_id = await _stored(
         managed, TEAM.replace('name: "{team}-lead"', "name: claude-code.bob")
