@@ -713,13 +713,16 @@ describe("the layout", () => {
       expect(within(menu).getByText("Beta Co")).toBeTruthy();
     });
 
-    it("switches to the workspace chosen", async () => {
+    it.each([
+      ["a list, staying on it", "/rooms", "/rooms"],
+      ["one room, going to the landing page", "/rooms/r1", "/"],
+    ])("switches to the workspace chosen from %s", async (_, from, to) => {
       const assign = vi.fn();
       const originalLocation = window.location;
       Object.defineProperty(window, "location", {
         configurable: true,
         writable: true,
-        value: { ...originalLocation, assign, pathname: "/rooms" },
+        value: { ...originalLocation, assign, pathname: from },
       });
       try {
         mockFetch({
@@ -729,7 +732,7 @@ describe("the layout", () => {
         renderAt("/rooms");
         const menu = await openSwitcher();
         fireEvent.click(within(menu).getByText("Beta Co"));
-        await waitFor(() => expect(assign).toHaveBeenCalledWith("/"));
+        await waitFor(() => expect(assign).toHaveBeenCalledWith(to));
         expect(
           vi.mocked(fetch).mock.calls.some(([input]) => String(input).endsWith("/tenants/t2/switch")),
         ).toBe(true);
@@ -767,7 +770,13 @@ describe("the layout", () => {
       expect(help.getAttribute("href")).toBe(
         "https://docs.switchagents.ai/switch-rooms/resources/troubleshooting",
       );
-      expect(screen.getByRole("link", { name: "Docs" })).toBeTruthy();
+      const docs = screen.getByRole("link", { name: "Documentation" });
+      expect(docs.getAttribute("href")).toBe(
+        "https://docs.switchagents.ai/switch-rooms/getting-started",
+      );
+      // Glyphs alone: the names are for assistive technology and the tooltip.
+      expect(help.textContent).toBe("");
+      expect(docs.textContent).toBe("");
       expect(screen.queryByText("System healthy")).toBeNull();
     });
   });
@@ -796,6 +805,22 @@ describe("the layout", () => {
       expect(screen.queryByRole("button", { name: /Acme Group/ })).toBeNull();
     });
 
+    it("shows someone it refuses, or a page that is not there, in the workspace's own chrome", async () => {
+      for (const [role, path] of [
+        ["member", "/settings/org"],
+        ["workspace_admin", "/settings/org/users"],
+        ["org_admin", "/settings/org/billing"],
+      ] as const) {
+        mockFetch(signedInAs(role));
+        renderAt(path);
+        expect(await screen.findByRole("navigation", { name: "Main" })).toBeTruthy();
+        expect(await screen.findByRole("button", { name: /Acme Group\s*\/\s*Acme/ })).toBeTruthy();
+        expect(screen.queryByRole("link", { name: "Back to workspace" })).toBeNull();
+        expect(screen.queryByText("Organization settings")).toBeNull();
+        cleanup();
+      }
+    });
+
     it("keeps the rail everywhere else in settings", async () => {
       mockFetch(signedInAs("org_admin"));
       renderAt("/settings/general");
@@ -804,6 +829,14 @@ describe("the layout", () => {
   });
 
   describe("in the Platform area", () => {
+    it("shows anyone but the operator its refusal in the workspace's own chrome", async () => {
+      mockFetch(signedInAs("org_admin"));
+      renderAt("/platform/users");
+      expect(await screen.findByText("Only the platform operator can open this page.")).toBeTruthy();
+      expect(screen.getByRole("navigation", { name: "Main" })).toBeTruthy();
+      expect(screen.queryByRole("link", { name: "Back to workspace" })).toBeNull();
+    });
+
     it("hides the rail and leads back to the workspace, as it spans every one", async () => {
       mockFetch({ ...signedInAs("operator"), "/users": [200, []] });
       renderAt("/platform/users");

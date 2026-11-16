@@ -315,10 +315,30 @@ export function areaOf(pathname: string): SettingsArea | null {
   return null;
 }
 
-/** Whether `pathname` is in an area outside the workspace. */
-export function outsideWorkspace(pathname: string): boolean {
+/** The settings area `pathname` (a page's own URL) is in, where `caps` may
+ * enter it, or null. A refused area, or a URL that is no page, is shown in
+ * the workspace's own chrome rather than the area's. */
+export function enteredArea(pathname: string, caps: Capabilities): SettingsArea | null {
   const area = areaOf(pathname);
+  return area !== null && AREAS[area].access(caps).allowed ? area : null;
+}
+
+/** Whether `pathname` is shown, to someone with `caps`, as a place outside
+ * the workspace. */
+export function outsideWorkspace(pathname: string, caps: Capabilities): boolean {
+  const area = enteredArea(pathname, caps);
   return area !== null && AREAS[area].outsideWorkspace;
+}
+
+/** Whether `pathname` is under the URL of an area outside the workspace,
+ * whether or not there is a page at it. */
+export function underAreaOutsideWorkspace(pathname: string): boolean {
+  return ROUTES.some(
+    (route) =>
+      route.kind === "area" &&
+      AREAS[route.area].outsideWorkspace &&
+      (pathname === route.path || pathname.startsWith(`${route.path}/`)),
+  );
 }
 
 /** The pages of `area`'s menu that `caps` may open, in order. */

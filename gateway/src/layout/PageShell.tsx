@@ -1,7 +1,7 @@
 import { Alert, Box, Button, Stack } from "@mui/material";
 import { Outlet, useLocation } from "react-router";
 import { useAuth } from "../data/AuthContext";
-import { outsideWorkspace } from "../routes/routeTable";
+import { AREAS, enteredArea } from "../routes/routeTable";
 import LinkNoticeBanner from "./LinkNoticeBanner";
 import NavRail from "./NavRail";
 import TopBar from "./TopBar";
@@ -13,7 +13,9 @@ import TopBar from "./TopBar";
  *  outside the workspace: no rail there, and the top bar leads back. */
 export default function PageShell() {
   const { pathname } = useLocation();
-  const withRail = !outsideWorkspace(pathname);
+  const { capabilities } = useAuth();
+  const area = enteredArea(pathname, capabilities);
+  const withRail = area === null || !AREAS[area].outsideWorkspace;
   return (
     <Box
       sx={{
