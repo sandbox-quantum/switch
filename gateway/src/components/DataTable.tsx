@@ -97,6 +97,9 @@ interface DataTableProps<T extends { id: string | number }> {
    *  role: "No agents in this workspace yet" for someone who administers
    *  the workspace, "You don't own any agents" for anyone else. */
   emptyState?: ReactNode;
+  /** The rows are the viewer's own, as a member's list is, so a search or
+   *  filter that matches none says "None of your agents match…". */
+  yours?: boolean;
 }
 
 /** A hovered or selected row takes the muted fill. A grey chip shares that
@@ -373,6 +376,7 @@ export default function DataTable<T extends { id: string | number }>({
   initialSort,
   pinnedRight = NOT_PINNED,
   emptyState,
+  yours = false,
 }: DataTableProps<T>) {
   const apiRef = useGridApiRef();
   const [storedSelection, setSelectionState] = useState<FilterSelection>({});
@@ -448,7 +452,9 @@ export default function DataTable<T extends { id: string | number }>({
     ) : (
       <>
         <Typography variant="body2" color="text.secondary">
-          {noun ? `No ${noun.other} match the current filters.` : "Nothing matches the current filters."}
+          {noun
+            ? `${yours ? "None of your" : "No"} ${noun.other} match the current filters.`
+            : "Nothing matches the current filters."}
         </Typography>
         <Button size="small" onClick={clearFilters} sx={{ mt: 1 }}>
           {searching && picking ? "Clear search and filters" : searching ? "Clear search" : "Clear filters"}
@@ -589,7 +595,7 @@ export default function DataTable<T extends { id: string | number }>({
           Only a table that fills its parent is laid out as one. */}
       <Box sx={fillHeight ? { flex: 1, minHeight: 0, width: "100%", display: "flex", flexDirection: "column" } : { width: "100%" }}>
         {selectFilters.length > 0 && rows.length > 0 && (
-          <Stack direction="row" spacing={1.5} useFlexGap sx={{ alignItems: "flex-end", flexWrap: "wrap", mb: 2.5 }}>
+          <Stack direction="row" spacing={1.5} useFlexGap sx={{ alignItems: "center", flexWrap: "wrap", mb: 2.5 }}>
             {selectFilters.map((select) => {
               const column = filterable.find((c) => c.field === select.field) as TableColumn<T>;
               const picked = selection[select.field] ?? [];
@@ -598,7 +604,6 @@ export default function DataTable<T extends { id: string | number }>({
                 <TextField
                   key={select.field}
                   select
-                  label={select.label}
                   value={value}
                   onChange={(event) =>
                     setSelection((current) =>
@@ -606,9 +611,17 @@ export default function DataTable<T extends { id: string | number }>({
                     )
                   }
                   fullWidth={false}
-                  // A column's value may be "", which a select otherwise shows as nothing.
-                  slotProps={{ select: { displayEmpty: true } }}
-                  sx={{ width: 180 }}
+                  slotProps={{
+                    select: {
+                      // A column's value may be "", which a select otherwise shows as nothing.
+                      displayEmpty: true,
+                      // No label on screen: "All owners" already says what the
+                      // dropdown is. The select would otherwise be named by
+                      // its own value alone.
+                      SelectDisplayProps: { "aria-label": select.label, "aria-labelledby": undefined },
+                    },
+                  }}
+                  sx={{ width: 208 }}
                 >
                   <MenuItem value={ALL_VALUES}>{select.allLabel}</MenuItem>
                   {/* Picked from the header menu, where several values may be. */}
@@ -666,7 +679,10 @@ export default function DataTable<T extends { id: string | number }>({
                     ),
                   },
                 }}
-                sx={{ width: 224 }}
+                // Wide enough for its placeholder, which some lists use to
+                // say what the search reaches ("Search by name, description
+                // or owner"): `ch` is a little wider than an average letter.
+                sx={{ width: `max(224px, calc(${search.label.length}ch + 56px))` }}
               />
             )}
           </Stack>
