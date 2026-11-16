@@ -1,5 +1,13 @@
 import { randomBytes } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -111,6 +119,130 @@ describe('the tool catalog', () => {
     });
     expect(result.content[0]!.text).toContain(`Switch Trust: ${JSON.stringify(trust)}`);
   });
+
+  describe('send_attachment', () => {
+    /** A file outside the session's directories, and the session whose cwd is `work`. */
+    function outsideFile(): { ctx: CallerContext; secret: string } {
+      const elsewhere = mkdtempSync(join(tmpdir(), 'hosted-elsewhere-'));
+      dirs.push(elsewhere);
+      const secret = join(elsewhere, 'id_ed25519');
+      writeFileSync(secret, 'PRIVATE KEY');
+      const ctx = context();
+      mkdirSync(join(ctx.cwd, 'work'));
+      return { ctx: { ...ctx, cwd: join(ctx.cwd, 'work') }, secret };
+    }
+
+    async function send(ctx: CallerContext, args: Record<string, unknown>) {
+      const fetchMock = vi.fn(async (_url: string) => Response.json({ event_id: 'event' }));
+      vi.stubGlobal('fetch', fetchMock);
+      const result = await catalog.call(ctx, 'send_attachment', args);
+      return { result, uploads: fetchMock.mock.calls.length };
+    }
+
+    it('refuses a file outside the working directory, and uploads nothing', async () => {
+      const { ctx, secret } = outsideFile();
+      const { result, uploads } = await send(ctx, { path: secret });
+      expect(result.isError).toBe(true);
+      expect(result.content[0]!.text).toContain(`Refused to send ${secret}`);
+      expect(result.content[0]!.text).toContain('Copy the file into the working directory');
+      expect(uploads).toBe(0);
+    });
+
+    it('refuses a path that climbs out of the working directory', async () => {
+      const { ctx } = outsideFile();
+      writeFileSync(join(ctx.cwd, '..', 'beside.txt'), 'not in the workspace');
+      const { result, uploads } = await send(ctx, { path: '../beside.txt' });
+      expect(result.isError).toBe(true);
+      expect(result.content[0]!.text).toContain('Refused to send ../beside.txt');
+      expect(uploads).toBe(0);
+    });
+
+    it('refuses a symbolic link inside the working directory to a file outside it', async () => {
+      const { ctx, secret } = outsideFile();
+      symlinkSync(secret, join(ctx.cwd, 'innocent.txt'));
+      const { result, uploads } = await send(ctx, { path: 'innocent.txt' });
+      expect(result.isError).toBe(true);
+      expect(result.content[0]!.text).toContain('Refused to send innocent.txt');
+      expect(uploads).toBe(0);
+    });
+
+    it('sends nothing when one of several files is refused', async () => {
+      const { ctx, secret } = outsideFile();
+      writeFileSync(join(ctx.cwd, 'notes.md'), 'hello');
+      const { result, uploads } = await send(ctx, { paths: ['notes.md', secret] });
+      expect(result.isError).toBe(true);
+      expect(uploads).toBe(0);
+    });
+
+    it('sends a file inside the working directory, and one it downloaded', async () => {
+      const { ctx } = outsideFile();
+      mkdirSync(join(ctx.cwd, 'src'));
+      writeFileSync(join(ctx.cwd, 'src', 'a.ts'), 'export {};');
+      mkdirSync(ctx.mediaDir);
+      writeFileSync(join(ctx.mediaDir, 'media-id-a.png'), 'png');
+      const { result, uploads } = await send(ctx, {
+        paths: [join(ctx.cwd, 'src', 'a.ts'), join(ctx.mediaDir, 'media-id-a.png')],
+      });
+      expect(result.isError).toBeUndefined();
+      expect(result.content[0]!.text).toContain('Sent 2 files (a.ts, media-id-a.png)');
+      expect(uploads).toBe(1);
+    });
+  });
+
+  it('writes a download into the media directory, replacing a link planted at its name', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('downloaded'))
+    );
+    const ctx = context();
+    const target = join(ctx.cwd, 'outside.txt');
+    writeFileSync(target, 'left alone');
+    mkdirSync(ctx.mediaDir);
+    symlinkSync(target, join(ctx.mediaDir, 'media-id-a.txt'));
+    const result = await catalog.call(ctx, 'download_attachment', {
+      mxc: 'mxc://server/media-id',
+      filename: 'a.txt',
+    });
+    expect(result.content[0]!.text).toBe(join(ctx.mediaDir, 'media-id-a.txt'));
+    expect(readFileSync(target, 'utf8')).toBe('left alone');
+    expect(readFileSync(join(ctx.mediaDir, 'media-id-a.txt'), 'utf8')).toBe('downloaded');
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'keeps downloads to this user: the directory 0700 and each file 0600',
+    async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => new Response('bytes'))
+      );
+      const ctx = context();
+      const umask = process.umask(0o022);
+      try {
+        const result = await catalog.call(ctx, 'download_attachment', {
+          mxc: 'mxc://server/media-id',
+          filename: 'a.txt',
+        });
+        expect(statSync(ctx.mediaDir).mode & 0o777).toBe(0o700);
+        expect(statSync(result.content[0]!.text).mode & 0o777).toBe(0o600);
+      } finally {
+        process.umask(umask);
+      }
+    }
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'tightens a media directory an earlier build left open',
+    async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => new Response('bytes'))
+      );
+      const ctx = context();
+      mkdirSync(ctx.mediaDir, { mode: 0o755 });
+      await catalog.call(ctx, 'download_attachment', { mxc: 'mxc://server/media-id' });
+      expect(statSync(ctx.mediaDir).mode & 0o777).toBe(0o700);
+    }
+  );
 
   it('downloads into the caller’s media directory', async () => {
     vi.stubGlobal(
