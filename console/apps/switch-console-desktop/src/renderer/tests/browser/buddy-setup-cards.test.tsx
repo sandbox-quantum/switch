@@ -651,11 +651,29 @@ describe('switch-buddy setup cards', () => {
     const el = await render();
 
     expect(el.textContent).toContain('Continue in Telegram');
+    expect(el.textContent).toContain('Your account is linked.');
     expect(el.textContent).toContain('/invite_agent @switch-buddy');
-    expect(el.textContent).toContain("reply to the bot's message");
-    expect(el.textContent).toContain('mention switch-buddy in that reply');
+    expect(el.textContent).toContain(
+      "Then mention switch-buddy with a short note on what you work on, or say it as a reply to the bot's message."
+    );
     expect(el.textContent).not.toContain('I’ll answer');
     await shot(el, 'x-telegram-guide');
+  });
+
+  it('(n) Telegram not linked yet: link first, with Group Privacy off, and no invite yet', async () => {
+    // An invite before the link is refused, and with Group Privacy on (the
+    // default) the bot hears nothing but commands and replies to it.
+    listBridges.mockResolvedValue([telegram]);
+    const el = await render();
+
+    expect(el.textContent).toContain('Link your Telegram account');
+    const text = el.textContent ?? '';
+    expect(text).toContain('send /setprivacy, pick the example_bot bot and choose Disable');
+    expect(text).toContain('remove it and add it back, or make it an admin');
+    expect(text.indexOf('Disable')).toBeLessThan(text.indexOf('Then link your account here'));
+    expect(text).not.toContain('/invite_agent');
+    expect(findButton(el, 'Link account')).toBeDefined();
+    await shot(el, 'x-telegram-link-first');
   });
 
   it('(o) Discord linked: continues in a private Discord channel, then opens it', async () => {

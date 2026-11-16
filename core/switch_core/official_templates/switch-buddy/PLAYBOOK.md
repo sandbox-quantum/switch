@@ -6,13 +6,15 @@ section stands on its own: read the one you were pointed at, then act.
 
 ## Telegram private channel
 
-Bots can't create chats on Telegram. They make a group with the bot and send
-`/invite_agent @<agent-name>` and `/invite_agent @<your-name>` in it (the bot
-sees only commands and replies to its messages, due to privacy mode). If
-`your_account_link` is `none`, they link from
+Bots can't create chats on Telegram. They make a group with the bot. With the
+bot's Group Privacy on (BotFather's default) it sees only commands and replies to
+its own messages; they can turn it off in BotFather (`/setprivacy`, Disable)
+before adding the bot, or, if it is already in, remove it and add it back or make
+it an admin. Linking comes first: if `your_account_link` is `none`, they link from
 [Messaging apps in Settings](switchdash://open/settings?tab=messaging-apps) and send `/link_account CODE` in that
-group; until then owner-only agents ignore them. Then they reply to the bot's
-message, mentioning the agent's name.
+group, since `/invite_agent` is refused and owner-only agents ignore them until
+then. Then they send `/invite_agent @<agent-name>` and `/invite_agent @<your-name>`
+in it, and talk to an agent by mentioning its name or by replying to its message.
 
 ## Teams private channel
 

@@ -356,9 +356,10 @@ const Cards = observer(function Cards({
             title={`Link your ${label} account`}
             description={
               // The bot can find only people who have written where it can hear them, and
-              // privacy mode lets it hear only slash commands.
+              // Group Privacy, on by default, lets it hear only commands and replies to it.
+              // An invite before the link is refused, so linking comes first.
               step.bridge.type === 'telegram'
-                ? `I answer only accounts I recognise. Make a Telegram group with just you and the ${step.bridge.displayName} bot, and send this in it. Then link your account here: Switch shows a code to send in that group. Once it's linked, I'll answer when you reply to the bot's message there.`
+                ? `I answer only accounts I recognise. First, in BotFather, send /setprivacy, pick the ${step.bridge.displayName} bot and choose Disable, so it sees more than commands (if it's already in a group, remove it and add it back, or make it an admin). Then make a Telegram group with just you and the bot, and say hello in it. Then link your account here: Switch shows a code to send in that group.`
                 : `So I recognise you in ${step.bridge.displayName}.`
             }
             footer={
@@ -371,9 +372,6 @@ const Cards = observer(function Cards({
                   onChoose={setChosenBridgeId}
                 />
                 <div className="flex flex-wrap items-center gap-3">
-                  {step.bridge.type === 'telegram' && (
-                    <InviteCommand platform="telegram" agentName={agentName} />
-                  )}
                   <Button
                     onClick={() => showClaimIdentity({ workspaceId, bridgeId: step.bridge.id })}
                   >
@@ -450,7 +448,7 @@ const Cards = observer(function Cards({
             title={`Continue in ${label}`}
             description={
               step.bridge.type === 'telegram'
-                ? `In a Telegram group with you and the ${step.bridge.displayName} bot, send this if you haven't yet. Then reply to the bot's message, mention ${agentName} in that reply, and say what you work on.`
+                ? `Your account is linked. In your Telegram group with the ${step.bridge.displayName} bot, send this to bring me in. Then mention ${agentName} with a short note on what you work on, or say it as a reply to the bot's message.`
                 : `Add the Switch app to a Teams chat or channel and send this there. Then mention ${agentName} with a short note on what you work on.`
             }
             footer={
