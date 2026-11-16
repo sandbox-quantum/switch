@@ -18,6 +18,7 @@ const rpcMock = vi.hoisted(() => ({
 }));
 const showModal = vi.hoisted(() => vi.fn());
 const openExternalUrl = vi.hoisted(() => vi.fn(async () => true));
+const toast = vi.hoisted(() => vi.fn());
 
 vi.mock('@renderer/lib/ipc', () => ({
   events: { on: () => () => {} },
@@ -35,7 +36,7 @@ vi.mock('@renderer/lib/layout/navigation-provider', () => ({
 vi.mock('@renderer/lib/hooks/useTheme', () => ({
   useTheme: () => ({ effectiveTheme: 'emlight' }),
 }));
-vi.mock('@renderer/lib/hooks/use-toast', () => ({ toast: () => {} }));
+vi.mock('@renderer/lib/hooks/use-toast', () => ({ toast }));
 vi.mock('@renderer/features/switch-rooms/open-room', () => ({ openRoom: async () => {} }));
 vi.mock('@renderer/features/switch-servers/switch-rooms-store', () => ({
   switchRoomsStore: {
@@ -99,6 +100,7 @@ let root: Root;
 beforeEach(() => {
   showModal.mockReset();
   openExternalUrl.mockClear();
+  toast.mockClear();
   rpcMock.listRoomResources.mockImplementation(async ({ kind }: { kind: string }) =>
     kind === 'references' ? [REFERENCE] : []
   );
@@ -134,6 +136,22 @@ async function clickable(text: string): Promise<HTMLButtonElement> {
   }
 }
 
+const APP_LINK = 'slack://open?team=T0&id=C0';
+
+/** A reference whose link is not a web link: refused with a notice, never offered. */
+function linkingTo(url: string) {
+  rpcMock.listRoomResources.mockImplementation(async ({ kind }: { kind: string }) =>
+    kind === 'references' ? [{ ...REFERENCE, urls: [url] }] : []
+  );
+  rpcMock.getLibraryItem.mockResolvedValue({ ...REFERENCE, urls: [url] });
+}
+
+function expectRefused() {
+  expect(showModal).not.toHaveBeenCalled();
+  expect(openExternalUrl).not.toHaveBeenCalled();
+  expect(toast).toHaveBeenCalledWith(expect.objectContaining({ title: 'Link not opened' }));
+}
+
 async function expectConfirmationFirst() {
   expect(openExternalUrl).not.toHaveBeenCalled();
   expect(showModal).toHaveBeenCalledTimes(1);
@@ -156,6 +174,14 @@ describe('a reference attached to a room', () => {
     await act(async () => row.click());
     await expectConfirmationFirst();
   });
+
+  it('does not offer to open a link that is not a web link', async () => {
+    linkingTo(APP_LINK);
+    await render(() => createElement(RoomResourcesPanel, { roomId: 'room-1' }));
+    const row = await clickable(REFERENCE.name);
+    await act(async () => row.click());
+    expectRefused();
+  });
 });
 
 describe('a link on a reference’s own page', () => {
@@ -164,5 +190,13 @@ describe('a link on a reference’s own page', () => {
     const link = await clickable(PHISH);
     await act(async () => link.click());
     await expectConfirmationFirst();
+  });
+
+  it('does not offer to open a link that is not a web link', async () => {
+    linkingTo(APP_LINK);
+    await render(libraryItemView.MainPanel);
+    const link = await clickable(APP_LINK);
+    await act(async () => link.click());
+    expectRefused();
   });
 });

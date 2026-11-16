@@ -9,10 +9,10 @@ import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { administersWorkspaceById } from '@renderer/features/switch-servers/workspace-admin';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
+import { openContentLink } from '@renderer/lib/content-link';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
-import { confirmOpenLink } from '@renderer/lib/open-external-link';
 import { Button } from '@renderer/lib/ui/button';
 import {
   Dialog,
@@ -226,7 +226,7 @@ const ResourceSection = observer(function ResourceSection({
                   via={resource.packageIds.flatMap((id) => packageNames.get(id) ?? [])}
                   onOpen={
                     resource.urls[0]
-                      ? () => confirmOpenLink(resource.urls[0]!)
+                      ? () => openContentLink(resource.urls[0])
                       : kind === 'documents'
                         ? () => setReading(resource)
                         : // A package has nothing to read here: its page shows what it holds,
