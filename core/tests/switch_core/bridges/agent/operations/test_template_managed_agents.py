@@ -364,6 +364,33 @@ async def test_each_placement_refusal_carries_managements_reason(managed):
 
 
 @pytest.mark.asyncio
+async def test_a_directory_that_climbs_out_of_the_workspaces_is_refused(managed):
+    """`{$agents_dir}` becomes a path only once the machine is known, so the
+    directory it makes is checked then, as any other directory is."""
+    template_id = await _stored(
+        managed,
+        """\
+agent:
+  name: solo
+  instructions: Work alone.
+  provider: claude
+  machine: laptop
+  directory: "{$agents_dir}/../../etc"
+""",
+        kind="agent",
+    )
+
+    with pytest.raises(AgentsNotCreated) as e:
+        await _as(managed["agent_id"], run_template, template_id=template_id)
+
+    assert {(p.slot, p.code) for p in e.value.problems} == {
+        ("solo", "invalid_directory")
+    }
+    assert "'..' segment" in str(e.value)
+    assert managed["management"].created == []
+
+
+@pytest.mark.asyncio
 async def test_a_name_already_taken_refuses_the_run(managed):
     template_id = await _stored(
         managed, TEAM.replace('name: "{team}-lead"', "name: claude-code.bob")
@@ -483,6 +510,38 @@ agent:
     assert [a["name"] for a in result["created_agents"]] == ["solo"]
     assert managed["management"].created[0].directory == "/srv/solo"
     assert await _rooms(managed) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "line",
+    [
+        "  auto_approve: true\n",
+        "  advanced_config:\n    permissionMode: bypassPermissions\n",
+    ],
+)
+async def test_an_agent_cannot_make_a_bypass_agent_through_a_template(managed, line):
+    """Bypass waits for the owner when an agent asks for it with create_agent;
+    a template an agent runs is refused it rather than let it skip that."""
+    template_id = await _stored(
+        managed,
+        "agent:\n"
+        "  name: solo\n"
+        "  instructions: Work alone.\n"
+        "  provider: claude\n"
+        "  machine: laptop\n"
+        "  directory: /srv/solo\n" + line,
+        kind="agent",
+    )
+
+    with pytest.raises(AgentsNotCreated) as e:
+        await _as(managed["agent_id"], run_template, template_id=template_id)
+
+    assert {(p.slot, p.code) for p in e.value.problems} == {
+        ("solo", "needs_owner_confirmation")
+    }
+    assert "create_agent" in str(e.value)
+    assert managed["management"].created == []
 
 
 @pytest.mark.asyncio

@@ -76,6 +76,14 @@ class AuditAction(StrEnum):
     SERVICE_GRANT_SET = "service_grant.set"
     SERVICE_GRANT_REMOVED = "service_grant.removed"
     AGENT_DELETION_REQUESTED = "agent.deletion_requested"
+    # An agent changed another of its owner's agents, or created one, with
+    # nobody confirming (`bridges/agent/agent_change_requests.py`).
+    AGENT_CHANGED_BY_AGENT = "agent.changed_by_agent"
+    AGENT_CREATED_BY_AGENT = "agent.created_by_agent"
+    # An agent asked for a change its owner has to confirm, and the owner
+    # confirmed one, which was then made.
+    AGENT_CHANGE_REQUESTED = "agent.change_requested"
+    AGENT_CHANGE_CONFIRMED = "agent.change_confirmed"
     AGENT_DELETED = "agent.deleted"
     WORKSPACE_SERVICE_ENABLED = "workspace_service.enabled"
     WORKSPACE_SERVICE_DISABLED = "workspace_service.disabled"

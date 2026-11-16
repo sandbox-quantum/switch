@@ -38,6 +38,7 @@ from switch_core.connections.broker import CheckedGrant, ServiceBroker, ServiceE
 from switch_core.db.models import Agent
 from switch_core.db.session_scope import tenant_session
 from switch_core.room_service import FIXED_MEMBERSHIP
+from switch_core.working_directory import check_directory
 
 if TYPE_CHECKING:
     from switch_core.bridges.agent.protocol.agent_core import AgentCore
@@ -178,6 +179,26 @@ def _directory(
         )
     root = placement.workspaces_dir.rstrip("/\\")
     return plan.directory.replace(AGENTS_DIR, root), None
+
+
+def owner_confirmation_problems(plans: Sequence[NewAgentPlan]) -> list[Problem]:
+    """The agents of a run that would have bypass mode on, or the provider's
+    own permission mode set to bypass, which its owner confirms when an agent
+    asks for them with `create_agent` (`agent_change_requests`). A run an
+    agent asks for is refused for them rather than held, since its rooms are
+    made with its agents; a person runs such a template themselves."""
+    return [
+        Problem(
+            plan.slot,
+            "needs_owner_confirmation",
+            "it would be created with bypass mode on, which your owner has to "
+            "confirm. Create it with create_agent, which asks them, or ask "
+            "them to run the template themselves.",
+        )
+        for plan in plans
+        if plan.auto_approve
+        or plan.advanced_config.get("permissionMode") == "bypassPermissions"
+    ]
 
 
 def pending_addressing(
@@ -321,9 +342,16 @@ class TemplateAgents:
                     )
                 )
                 continue
+            # A directory under the machine's workspaces is only a path once
+            # the check says where they are, so it is checked after that.
+            written = (
+                None
+                if plan.directory is None or AGENTS_DIR in plan.directory
+                else plan.directory
+            )
             try:
                 placement = await self._management.check_new_agent(
-                    tenant_id, owner_id, self._spec(plan, plan.machine, plan.directory)
+                    tenant_id, owner_id, self._spec(plan, plan.machine, written)
                 )
             except AgentManagementRefused as refused:
                 problems.append(
@@ -331,6 +359,11 @@ class TemplateAgents:
                 )
                 continue
             directory, problem = _directory(plan, placement)
+            if problem is None and directory is not None:
+                try:
+                    check_directory(directory)
+                except ValueError as invalid:
+                    problem = Problem(plan.slot, "invalid_directory", str(invalid))
             if problem is not None:
                 problems.append(problem)
                 continue
