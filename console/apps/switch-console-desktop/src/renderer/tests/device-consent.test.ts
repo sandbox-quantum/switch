@@ -77,7 +77,8 @@ afterEach(async () => {
 async function render(node: ReactElement) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   await act(async () => root.render(createElement(QueryClientProvider, { client }, node)));
-  for (let i = 0; i < 5; i++) await act(async () => await Promise.resolve());
+  // react-query delivers results on setTimeout(0), so flush macrotasks, not microtasks.
+  for (let i = 0; i < 5; i++) await act(async () => await new Promise((r) => setTimeout(r, 0)));
 }
 
 function button(text: string): HTMLButtonElement {
