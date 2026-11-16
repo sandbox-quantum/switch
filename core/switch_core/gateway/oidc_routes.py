@@ -370,9 +370,7 @@ async def oidc_callback(
         _warned_unverified_claim = True
     name = claims.get("name") or email.split("@")[0]
 
-    # A returning identity is looked up on the immutable issuer+subject, never
-    # the mutable email; email only decides which account a *new* identity
-    # lands in, and only once it's verified (see get_or_create_oidc_user).
+    # A verified email can be reassigned; only a bound issuer and subject prove account ownership.
     iss = claims.get("iss") or config.gateway_oidc_issuer_url
     if not iss:
         raise HTTPException(status_code=401, detail="OIDC token missing issuer")
@@ -420,7 +418,7 @@ async def oidc_callback(
                 sub=sub,
                 email_verified=verified,
                 join_tenant=join_tenant,
-                link_by_email=config.organization_directory == "local",
+                link_by_email=False,
                 create_allowed=not signup_refused_by_edge(request, config),
             )
         except SignupRefusedError as exc:

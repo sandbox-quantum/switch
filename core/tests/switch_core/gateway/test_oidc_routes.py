@@ -435,58 +435,40 @@ class TestOidcCallback:
                 )
             assert exc.value.status_code == 409
 
-    async def test_verified_email_links_to_existing_account(
+    @pytest.mark.parametrize("role", ["user", "admin"])
+    async def test_verified_email_cannot_link_an_unbound_identity(
         self,
+        role: str,
         session_factory: async_sessionmaker[AsyncSession],
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        # A verified token whose email matches an existing (password) account
-        # but whose subject does not must land the login in that account,
-        # rather than being refused: accounts are keyed on verified email, not
-        # on login method.
         async with session_factory() as session:
-            admin = User(
-                name="Admin",
-                email="admin@example.com",
-                role="admin",
-                password_hash=hash_password("pw"),
-            )
-            await UserStore().create(session, admin)
+            existing = User(name="Existing", email="account@example.test", role=role)
+            await UserStore().create(session, existing)
             await session.commit()
-            admin_id = admin.id
+            account_id = existing.id
 
-        token = {
-            "userinfo": {
-                "email": "admin@example.com",
-                "email_verified": True,
-                "sub": "okta|second-device",
-                "name": "Admin",
-            }
-        }
+        token = _verified_token("account@example.test", "different-subject")
         monkeypatch.setattr(oidc_routes, "_client", lambda: _FakeClient(token))
-
         async with session_factory() as session:
-            response = await oidc_routes.oidc_callback(
-                request=SimpleNamespace(session={}),  # type: ignore[arg-type]
-                config=_config(),
-                session=session,
-                session_factory=session_factory,
-                user_store=UserStore(),
-                organization_directory=LocalDirectory(),
+            with pytest.raises(HTTPException) as refused:
+                await oidc_routes.oidc_callback(
+                    request=SimpleNamespace(session={}),  # type: ignore[arg-type]
+                    config=_config(),
+                    session=session,
+                    session_factory=session_factory,
+                    user_store=UserStore(),
+                    organization_directory=LocalDirectory(),
+                )
+            assert refused.value.status_code == 409
+            assert (
+                await UserStore().get_by_oidc_identity(
+                    session, iss="https://idp.example", sub="different-subject"
+                )
+                is None
             )
-            assert response.status_code == 303
-
-            user = await UserStore().get_by_email(session, "admin@example.com")
-            assert user is not None
-            assert user.id == admin_id
-            # The link must not weaken password login on the account.
-            assert user.password_hash is not None
-            assert user.role == "admin"
-
-            linked = await UserStore().get_by_oidc_identity(
-                session, iss="https://idp.example", sub="okta|second-device"
-            )
-            assert linked is not None and linked.id == admin_id
+            existing = await UserStore().get(session, account_id)
+            assert existing is not None and existing.role == role
 
     async def test_bound_identity_is_not_relinked_by_a_different_claimed_email(
         self,
@@ -676,7 +658,7 @@ class TestOidcCallback:
         assert stored is None
         assert identity is None
 
-    async def test_a_verified_email_still_links_where_new_accounts_are_refused(
+    async def test_a_bound_identity_still_signs_in_where_new_accounts_are_refused(
         self,
         session_factory: async_sessionmaker[AsyncSession],
         monkeypatch: pytest.MonkeyPatch,
@@ -691,6 +673,14 @@ class TestOidcCallback:
             await UserStore().create(session, existing)
             await session.commit()
             existing_id = existing.id
+            session.add(
+                OidcIdentity(
+                    user_id=existing.id,
+                    iss="https://idp.example",
+                    sub="okta|member-abroad",
+                )
+            )
+            await session.commit()
 
         token = {
             "userinfo": {
@@ -920,14 +910,11 @@ class TestTheCallbackPlacesTheUserInATenant:
         assert [m.tenant_id for m in memberships] == [TENANT_ZERO_ID]
         assert memberships[0].role == "member"
 
-    async def test_linking_to_an_account_with_no_membership_repairs_it(
+    async def test_an_unbound_identity_does_not_repair_or_join_an_account(
         self,
         session_factory: async_sessionmaker[AsyncSession],
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        # An account that predates memberships: inserted directly, so it has
-        # none. Linking is the only thing that reaches it, so if linking does
-        # not give it one, nothing ever will.
         async with session_factory() as session:
             existing = User(
                 name="Legacy",
@@ -950,19 +937,21 @@ class TestTheCallbackPlacesTheUserInATenant:
         monkeypatch.setattr(oidc_routes, "_client", lambda: _FakeClient(token))
 
         async with session_factory() as session:
-            await oidc_routes.oidc_callback(
-                request=SimpleNamespace(session={}),  # type: ignore[arg-type]
-                config=_config(),
-                session=session,
-                session_factory=session_factory,
-                user_store=UserStore(),
-                organization_directory=LocalDirectory(),
-            )
+            with pytest.raises(HTTPException) as refused:
+                await oidc_routes.oidc_callback(
+                    request=SimpleNamespace(session={}),  # type: ignore[arg-type]
+                    config=_config(),
+                    session=session,
+                    session_factory=session_factory,
+                    user_store=UserStore(),
+                    organization_directory=LocalDirectory(),
+                )
+            assert refused.value.status_code == 409
             memberships = await self._memberships(session, user_id)
 
-        assert [m.tenant_id for m in memberships] == [TENANT_ZERO_ID]
+        assert memberships == []
 
-    async def test_linking_to_an_account_that_has_one_does_not_add_a_second(
+    async def test_a_bound_identity_keeps_its_membership(
         self,
         session_factory: async_sessionmaker[AsyncSession],
         monkeypatch: pytest.MonkeyPatch,
@@ -978,6 +967,12 @@ class TestTheCallbackPlacesTheUserInATenant:
             await UserStore().create(session, existing)
             await session.commit()
             user_id = existing.id
+            session.add(
+                OidcIdentity(
+                    user_id=user_id, iss="https://idp.example", sub="okta|member"
+                )
+            )
+            await session.commit()
 
         token = {
             "userinfo": {
@@ -1056,7 +1051,7 @@ class TestSignUpWithoutADefaultTenant:
         assert set_cookie is not None
         assert _tenant_claim(set_cookie) is None
 
-    async def test_linking_a_verified_email_adds_no_membership(
+    async def test_a_bound_identity_adds_no_membership(
         self,
         session_factory: async_sessionmaker[AsyncSession],
         monkeypatch: pytest.MonkeyPatch,
@@ -1071,6 +1066,12 @@ class TestSignUpWithoutADefaultTenant:
             session.add(existing)
             await session.commit()
             user_id = existing.id
+            session.add(
+                OidcIdentity(
+                    user_id=user_id, iss="https://idp.example", sub="okta|unplaced"
+                )
+            )
+            await session.commit()
 
         token = _verified_token("unplaced@example.com", "okta|unplaced")
         monkeypatch.setattr(oidc_routes, "_client", lambda: _FakeClient(token))
@@ -1117,6 +1118,11 @@ class TestSignUpWithoutADefaultTenant:
                         tenant_id=tenant_id, user_id=existing.id, role="member"
                     )
                 )
+            session.add(
+                OidcIdentity(
+                    user_id=existing.id, iss="https://idp.example", sub="okta|back"
+                )
+            )
             await session.commit()
 
         token = _verified_token("back@example.com", "okta|back")
