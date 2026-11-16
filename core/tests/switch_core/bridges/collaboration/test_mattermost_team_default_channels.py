@@ -4,7 +4,8 @@ Mattermost puts every account added to a team in Town Square and Off-Topic,
 agents' bots included, so a new agent used to be bridged into both — channels
 of company-wide chatter nobody chose to give it. A bot is now taken out of
 Off-Topic, stays in Town Square only because Mattermost allows nobody but a
-guest to leave it, and neither is bridged until a room is connected to it.
+guest to leave it, and neither is bridged until a room is connected to it,
+whether or not taking the bot out worked.
 """
 
 from __future__ import annotations
@@ -12,6 +13,8 @@ from __future__ import annotations
 import asyncio
 import json
 from typing import Any
+
+import pytest
 
 from switch_core.bridges.collaboration.mattermost.adapter import (
     MattermostAdapter,
@@ -38,7 +41,7 @@ _ENG = {"id": "c-eng", "type": "O", "name": "eng", "display_name": "Engineering"
 class _Channels:
     def __init__(self, member_of: list[dict[str, str]], refuse_leave: bool) -> None:
         self._member_of = member_of
-        self._refuse_leave = refuse_leave
+        self.refuse_leave = refuse_leave
         self.removed: list[tuple[str, str]] = []
 
     def get_channels_for_user(self, user_id: str, team_id: str) -> Any:
@@ -48,7 +51,7 @@ class _Channels:
         return next(c for c in [_TOWN, _OFF, _ENG] if c["id"] == channel_id)
 
     def remove_channel_member(self, channel_id: str, user_id: str) -> None:
-        if self._refuse_leave:
+        if self.refuse_leave:
             raise RuntimeError("Mattermost refused")
         self.removed.append((channel_id, user_id))
 
@@ -179,37 +182,70 @@ def test_an_overheard_join_to_town_square_bridges_nothing() -> None:
     assert seen == []
 
 
-def test_adding_a_bot_back_to_off_topic_bridges_it() -> None:
-    # Off-Topic is left on joining the team, so a later add is someone's choice.
+def test_a_refused_leave_is_tried_again_at_the_next_start() -> None:
+    adapter, channels, seen = _adapter([_OFF], connected=set(), refuse_leave=True)
+    _sweep(adapter)
+    assert channels.removed == []
+
+    channels.refuse_leave = False
+    _sweep(adapter)
+
+    assert channels.removed == [("c-off", _BOT)]
+    assert seen == []
+
+
+def test_an_overheard_join_to_off_topic_bridges_nothing() -> None:
+    """Mattermost adds a new agent's bot to Off-Topic as it adds it to the
+    team, and another bot's socket hears it before the new bot is taken out.
+    Nothing in the event says who added it, so no add bridges the channel."""
     adapter, _, seen = _adapter([], connected=set())
 
     _ws(adapter, _user_added(_OFF))
 
-    assert [join.channel_id for join in seen] == ["c-off"]
+    assert seen == []
 
 
-def test_chatter_in_an_unconnected_town_square_makes_no_room() -> None:
+@pytest.mark.parametrize("channel", [_TOWN, _OFF], ids=["town-square", "off-topic"])
+def test_chatter_in_an_unconnected_default_channel_makes_no_room(
+    channel: dict[str, str],
+) -> None:
     adapter, _, seen = _adapter([], connected=set())
 
-    _ws(adapter, _posted(_TOWN, "lunch anyone?"))
+    _ws(adapter, _posted(channel, "lunch anyone?"))
 
     assert seen == []
 
 
-def test_a_command_in_town_square_still_reaches_switch() -> None:
+def test_chatter_in_off_topic_after_a_refused_leave_makes_no_room() -> None:
+    """A bot still in Off-Topic because Mattermost would not let it leave
+    hears the channel's chatter; that is still not a reason to bridge it."""
+    adapter, _, seen = _adapter([_OFF], connected=set(), refuse_leave=True)
+    _sweep(adapter)
+
+    _ws(adapter, _posted(_OFF, "lunch anyone?"))
+    _ws(adapter, _user_added(_OFF))
+
+    assert seen == []
+
+
+@pytest.mark.parametrize("channel", [_TOWN, _OFF], ids=["town-square", "off-topic"])
+def test_a_command_in_a_default_channel_still_reaches_switch(
+    channel: dict[str, str],
+) -> None:
     adapter, _, seen = _adapter([], connected=set())
 
-    _ws(adapter, _posted(_TOWN, "!invite-agent @worker"))
+    _ws(adapter, _posted(channel, "!invite-agent @worker"))
 
     [command] = seen
     assert isinstance(command, InboundCommand)
     assert command.command == "invite-agent"
 
 
-def test_a_connected_town_square_is_relayed() -> None:
-    adapter, _, seen = _adapter([], connected={"c-town"})
+@pytest.mark.parametrize("channel", [_TOWN, _OFF], ids=["town-square", "off-topic"])
+def test_a_connected_default_channel_is_relayed(channel: dict[str, str]) -> None:
+    adapter, _, seen = _adapter([], connected={channel["id"]})
 
-    _ws(adapter, _posted(_TOWN, "lunch anyone?"))
+    _ws(adapter, _posted(channel, "lunch anyone?"))
 
     [message] = seen
     assert isinstance(message, InboundMessage)
