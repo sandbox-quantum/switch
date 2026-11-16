@@ -303,6 +303,15 @@ CHECKS: dict[str, Check] = {
                 ),
             ),
             Check(
+                "can_widen_addressing",
+                _get(f"{G}/agents/{{restricted_agent}}"),
+                _act(
+                    "PUT",
+                    f"{G}/agents/{{restricted_agent}}/addressing-policy",
+                    {"policy": None},
+                ),
+            ),
+            Check(
                 "can_edit_options",
                 AGENT,
                 _act("PATCH", f"{G}/agents/{{agent}}/options", {"options": {}}),

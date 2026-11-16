@@ -80,6 +80,7 @@ function showPageWith(flags: AgentFlags) {
       ...agent,
       ...flags,
       can_change_manage_agents: false,
+      can_widen_addressing: false,
       can_grant_services: false,
     },
     loading: false,

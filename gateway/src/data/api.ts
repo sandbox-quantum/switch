@@ -197,6 +197,9 @@ export interface AgentDetail extends AgentSummary {
   // has needs only ownership.
   can_change_manage_agents: boolean;
   can_grant_services: boolean;
+  // Its owner's alone: letting more people or agents address it. Whoever has
+  // `can_manage` may still narrow who can.
+  can_widen_addressing: boolean;
 }
 
 // Scoped agent-addressing permissions (CHOO-1585). Each dimension is "*" (any)

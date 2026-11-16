@@ -486,7 +486,8 @@ class AgentCapabilities(BaseModel):
     """
 
     # Edit its icon, display name, description and who may address it, and
-    # delete it: its owner or a workspace admin.
+    # delete it: its owner or a workspace admin. Only its owner lets more
+    # people or agents address it (`can_widen_addressing`).
     can_manage: bool
     # Edit its options: `can_manage`, for an agent Switch Console runs from a
     # spec it knows. Any other agent has no options to edit.
@@ -540,6 +541,9 @@ class GatewayAgentDetail(AgentDetail, AgentCapabilities):
     # Its owner only, not an admin: turning on that it may manage its
     # owner's agents.
     can_change_manage_agents: bool
+    # Its owner only: letting more people or agents address it. Anyone with
+    # `can_manage` may narrow who can.
+    can_widen_addressing: bool
     # Granting it service access: its owner only, since a grant is made on
     # the owner's own connections, while service connections are switched on,
     # and for an agent Switch Console runs from a spec it knows, since nothing

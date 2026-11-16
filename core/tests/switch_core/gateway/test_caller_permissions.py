@@ -430,6 +430,7 @@ class TestAgentPermissions:
                 change_manage_agents,
                 grant_services,
             )
+            assert detail.can_widen_addressing is change_manage_agents
 
 
 class TestRoomPackagePermissions:
