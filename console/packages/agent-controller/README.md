@@ -215,9 +215,10 @@ An agent's definition comes from the Switch server, so whoever can edit it there
 this machine's own user has allowed them for that agent, whatever the definition
 says:
 
-- **Running without approvals** (bypass, the definition's `auto_approve`). Until
-  it is allowed, the agent runs and asks for approval, and its status tells Switch
-  why.
+- **Running without approvals** (bypass: the definition's `auto_approve`, or a
+  Claude Code `permissionMode` of `bypassPermissions` or `dontAsk` in its advanced
+  configuration). Until it is allowed, the agent runs and asks for approval, with
+  that permission mode left out, and its status tells Switch why.
 - **A directory outside the workspaces folder.** Until it is allowed, the agent is
   refused as `definition_invalid`, with the command that would allow it. A
   directory in the data directory is refused whatever is allowed.

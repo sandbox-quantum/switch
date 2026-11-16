@@ -1057,9 +1057,10 @@ does not manage agents, so say so rather than looking for another way.
   it waits for your owner to send `!agent-change <name> confirm` there within
   two minutes, as for `update_agent_detail` above. The result then has
   `status: "awaiting_confirmation"` and nothing exists yet.
-  A machine applies bypass, or a directory outside its workspace folder,
-  only once the person using that machine has allowed it for the agent there
-  (Switch Console asks them; a headless machine's operator runs
+  A machine applies bypass (`auto_approve`, or a `permissionMode` of
+  `bypassPermissions` or `dontAsk`), or a directory outside its workspace
+  folder, only once the person using that machine has allowed it for the
+  agent there (Switch Console asks them; a headless machine's operator runs
   `switch-agent-controller allow`). Until then the agent runs and asks for
   approval, or is refused with `actual.reason` `definition_invalid`; tell
   the person what to allow rather than retrying. No directory inside the
