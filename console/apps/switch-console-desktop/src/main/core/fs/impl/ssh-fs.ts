@@ -37,6 +37,9 @@ interface SftpError extends Error {
   code?: number;
 }
 
+/** What ssh2 throws for an SFTP extension the server did not advertise. */
+const UNSUPPORTED_EXTENSION = 'Server does not support this extended request';
+
 /**
  * Allowed image extensions for readImage
  */
@@ -400,6 +403,11 @@ export class SshFileSystem implements FileSystemProvider {
       await this.sftpDone(fullPath, (cb) => sftp.ext_openssh_rename(temporary, fullPath, cb));
     } catch (error) {
       await this.sftpDone(temporary, (cb) => sftp.unlink(temporary, cb)).catch(() => {});
+      if (error instanceof Error && error.message === UNSUPPORTED_EXTENSION) {
+        throw new Error(
+          `The SSH server's SFTP does not support posix-rename@openssh.com, which Switch Console needs to replace ${fullPath} without exposing its contents. OpenSSH's sftp-server supports it.`
+        );
+      }
       throw error;
     }
   }

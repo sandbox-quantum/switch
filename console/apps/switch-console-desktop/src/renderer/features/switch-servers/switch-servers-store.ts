@@ -485,10 +485,15 @@ export class SwitchServersStore {
     }
   }
 
-  async addServer(name: string, url: string): Promise<SwitchServer | null> {
+  /** `allowUnencrypted`: the user confirmed a plain http address on another machine. */
+  async addServer(
+    name: string,
+    url: string,
+    allowUnencrypted: boolean
+  ): Promise<SwitchServer | null> {
     this.clearError();
     try {
-      const created = await rpc.switchServers.addServer({ name, url });
+      const created = await rpc.switchServers.addServer({ name, url, allowUnencrypted });
       const [servers, installIsEmpty] = await Promise.all([
         rpc.switchServers.listServers(),
         rpc.onboarding.installIsEmpty(),
@@ -553,10 +558,16 @@ export class SwitchServersStore {
     return found;
   }
 
-  async updateServer(id: string, name: string, url: string): Promise<UpdateServerResult | null> {
+  /** `allowUnencrypted`: the user confirmed a plain http address on another machine. */
+  async updateServer(
+    id: string,
+    name: string,
+    url: string,
+    allowUnencrypted: boolean
+  ): Promise<UpdateServerResult | null> {
     this.clearError();
     try {
-      const result = await rpc.switchServers.updateServer({ id, name, url });
+      const result = await rpc.switchServers.updateServer({ id, name, url, allowUnencrypted });
       const servers = await rpc.switchServers.listServers();
       runInAction(() => {
         this.servers = servers;
