@@ -12,6 +12,8 @@ import {
   nodeIsNewEnough,
   PREPARE_SCRIPT,
   prepareResultSchema,
+  SEALING_KEY_SCRIPT,
+  sealingKeyResultSchema,
   START_SCRIPT,
   STATUS_SCRIPT,
   statusResultSchema,
@@ -34,6 +36,13 @@ const flag = (name) => rest[rest.indexOf(name) + 1];
 if (command === 'enroll') {
   if (flag('--code') === 'bad') { process.stderr.write('switch-agent-controller: The enrollment code is invalid or expired.\n'); process.exit(2); }
   process.stdout.write('Enrolled as controller ctl-1 ("' + flag('--name') + '") on ' + flag('--server') + '.\n');
+  process.exit(0);
+}
+if (command === 'sealing-key') {
+  let publicKey = null;
+  try { publicKey = fs.readFileSync(path.join(flag('--data-dir'), 'public-key'), 'utf8').trim(); } catch (e) {}
+  if (publicKey === 'old-bundle') { process.stderr.write("switch-agent-controller: Unknown command 'sealing-key'.\n"); process.exit(2); }
+  process.stdout.write(JSON.stringify({ publicKey, fingerprint: publicKey && 'fp' }) + '\n');
   process.exit(0);
 }
 const dataDir = flag('--data-dir');
@@ -111,6 +120,30 @@ describe('looking the host over', () => {
     expect(nodeIsNewEnough('24.1.0')).toBe(true);
     expect(nodeIsNewEnough('22.12.1')).toBe(false);
     expect(nodeIsNewEnough('20.18.0')).toBe(false);
+  });
+});
+
+describe('reading the key logins are sealed to', () => {
+  const read = async () =>
+    sealingKeyResultSchema.parse(
+      await run(SEALING_KEY_SCRIPT, {
+        node: process.execPath,
+        bundle,
+        dataDir: '~/.local/state/switch/agent-controller/console-server-1',
+      })
+    );
+
+  it('answers the key the controller keeps, or null when it keeps none', async () => {
+    mkdirSync(dataDir(), { recursive: true });
+    expect(await read()).toEqual({ ok: true, publicKey: null });
+    writeFileSync(join(dataDir(), 'public-key'), 'a2V5LW9uLXRoZS1ob3N0');
+    expect(await read()).toEqual({ ok: true, publicKey: 'a2V5LW9uLXRoZS1ob3N0' });
+  });
+
+  it('says why when the controller cannot answer, as a bundle from before the command', async () => {
+    mkdirSync(dataDir(), { recursive: true });
+    writeFileSync(join(dataDir(), 'public-key'), 'old-bundle');
+    expect(await read()).toEqual({ ok: false, reason: "Unknown command 'sealing-key'." });
   });
 });
 

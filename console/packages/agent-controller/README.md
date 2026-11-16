@@ -89,6 +89,7 @@ switch-agent-controller enroll \
 switch-agent-controller install-service [--data-dir <dir>] [--env-file <path>]
 switch-agent-controller run [--data-dir <dir>] [--env-file <path>]
 switch-agent-controller status [--data-dir <dir>]
+switch-agent-controller sealing-key [--data-dir <dir>]
 switch-agent-controller set-info [--name <name>] [--description <text>] [--data-dir <dir>]
 switch-agent-controller doctor [--data-dir <dir>] [--env-file <path>]
 switch-agent-controller update [--check]
@@ -299,6 +300,22 @@ host) can be given one by its owner, on demand, at any time after it is up.
 before this registers its key once, when it next runs. Console seals the login
 to that key before sending it, so Switch stores and relays only ciphertext it
 cannot open.
+
+Console does not take the key on Switch's word alone, since a server that
+swapped in its own key could open the login:
+
+- For an SSH host it runs the controller on, Console reads the key on the host
+  (`switch-agent-controller sealing-key`, which prints the public half and its
+  fingerprint as JSON and never makes a key) and refuses another from Switch.
+- For any other machine, Console pins the key the first time it seals a login
+  to it, and refuses to seal to a different one until its owner trusts the new
+  key. Switch keeps one key per controller, and enrolling again makes a new
+  controller, so a pinned machine whose key changes is suspect.
+- This computer's own controller is handed its credential and keeps no key, so
+  it takes no given logins.
+
+Console shows the key's fingerprint where the login is given. `enroll` prints
+it (`Login key:`), and `status` shows it, so it can be checked on the machine.
 
 Switch then queues a `provider.login` operation. The controller fetches the
 login, opens it, checks the provider signs in with it, and reports the result.

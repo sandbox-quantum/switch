@@ -32,6 +32,16 @@ export async function sealingKeys(secrets: SecretStore): Promise<SealingKeyPair 
 }
 
 /**
+ * The public half of this machine's sealing keypair as the store keeps it, or
+ * null when it keeps none. Only reads: unlike {@link sealingKeys}, it never
+ * makes one.
+ */
+export async function savedSealingPublicKey(secrets: SecretStore): Promise<string | null> {
+  const saved = await secrets.get(SEALING_KEY);
+  return saved === null ? null : keyPairSchema.parse(JSON.parse(saved)).publicKey;
+}
+
+/**
  * Registers the key with Switch, which keeps the first one it is given. Says
  * so and answers false when Switch holds another, or cannot take one: then no
  * login given to this machine could be opened here.

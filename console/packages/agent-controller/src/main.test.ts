@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { SDK_SESSIONS_DIR_ENV } from '@switch-console/agent-providers';
+import { SDK_SESSIONS_DIR_ENV, sealingKeyFingerprint } from '@switch-console/agent-providers';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EXIT_CONFIGURATION, EXIT_FAILURE, EXIT_OK } from './exit-codes';
 import { infoChange, installerFor, isSupervised, main, planServiceReleases } from './main';
@@ -91,6 +91,51 @@ describe('main', () => {
     expect(bodies[0]).toMatchObject({
       controller: { kind: 'daemon', name: 'build-box', description: 'The build box in the office' },
     });
+  });
+
+  it('prints the key logins are sealed to, as enrolled, and nothing for a directory with none', async () => {
+    const out = () =>
+      vi
+        .mocked(process.stdout.write)
+        .mock.calls.map(([chunk]) => String(chunk))
+        .join('');
+    expect(await main(['sealing-key', '--data-dir', dir])).toBe(EXIT_OK);
+    expect(JSON.parse(out())).toEqual({ publicKey: null, fingerprint: null });
+
+    const bodies: { public_key: { key: string } }[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, init: RequestInit) => {
+        bodies.push(JSON.parse(String(init.body)));
+        return new Response(
+          JSON.stringify({ controller_id: 'controller-1', credential: 'swcc_test' }),
+          { status: 201, headers: { 'Content-Type': 'application/json' } }
+        );
+      })
+    );
+    const enrolled = await main([
+      'enroll',
+      '--server',
+      'https://switch.example.com',
+      '--code',
+      'swce_test',
+      '--data-dir',
+      dir,
+      '--secret-store',
+      'file',
+    ]);
+    vi.unstubAllGlobals();
+    expect(enrolled).toBe(EXIT_OK);
+    const sent = bodies[0]!.public_key.key;
+    expect(out()).toContain(`Login key: ${sealingKeyFingerprint(sent)}`);
+
+    vi.mocked(process.stdout.write).mockClear();
+    expect(await main(['sealing-key', '--data-dir', dir])).toBe(EXIT_OK);
+    expect(JSON.parse(out())).toEqual({
+      publicKey: sent,
+      fingerprint: sealingKeyFingerprint(sent),
+    });
+    expect(out()).not.toContain('privateKey');
   });
 
   it('enrolls without a description when none is given, and refuses an overlong one', async () => {

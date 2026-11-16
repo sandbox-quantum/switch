@@ -155,6 +155,7 @@ export {
   SEALED_LOGIN_ALG,
   type SealedLogin,
   sealedLoginSchema,
+  sealingKeyFingerprint,
   sealingKeyId,
   sealProviderLogin,
   type SealingKeyPair,
