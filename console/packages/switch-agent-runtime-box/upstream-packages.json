@@ -1,6 +1,6 @@
 {
-  "comment": "Git blob ids of every file in the four upstream agent packages at upstream main 35b791558. The desktop app and v1 machines build from these packages, so they must stay byte for byte upstream; hosted agents v2's versions live in the -box packages. Regenerate only when re-syncing with upstream: git ls-tree -r <commit> console/packages/{agent-controller,agent-providers,switch-agent-runtime,shared}.",
-  "upstream": "35b7915584b3e11029601ab93eda6ebee2069d98",
+  "comment": "Git blob ids of every file in the four upstream agent packages at upstream main 48f6758e0. The desktop app and v1 machines build from these packages, so they must stay byte for byte upstream; hosted agents v2's versions live in the -box packages. Regenerate only when re-syncing with upstream: git ls-tree -r <commit> console/packages/{agent-controller,agent-providers,switch-agent-runtime,shared}.",
+  "upstream": "48f6758e0bc00a0b38581bc523470d358012e630",
   "packages": ["agent-controller", "agent-providers", "switch-agent-runtime", "shared"],
   "files": {
     "agent-controller/README.md": "132ac489750602cfb7bc87a4e330a7bb7d057721",
@@ -32,10 +32,10 @@
     "agent-controller/src/handover.ts": "747666eedcf0b7480f8f2d499f3d6afabb359961",
     "agent-controller/src/hub-socket.ts": "764af2296f4a6c43bc340c5e59cfc61ee2070d64",
     "agent-controller/src/log.ts": "7c954e86cb505b6fa441de39806131fa4feb2fce",
-    "agent-controller/src/login-path.test.ts": "8faca3b3ae9dbcdc5bc4b7a90b0ba280f1e2d984",
-    "agent-controller/src/login-path.ts": "65a06b021a318d3cd6c09d298e7f5ec8e989c345",
+    "agent-controller/src/login-path.test.ts": "563882062911af6c6a7b1a6df24292fd1fe63d34",
+    "agent-controller/src/login-path.ts": "e27e49f978ec7ac5882bf03b73359ab6208395e5",
     "agent-controller/src/main.test.ts": "0c933121ba429cbc02ed537cb93ed817f5ace7b7",
-    "agent-controller/src/main.ts": "9d0d6cb9bbb85b89b55aaf19abb9d26be794a71a",
+    "agent-controller/src/main.ts": "1d2453084a7313c65a681af946eaeadbdc69b5bb",
     "agent-controller/src/operations.test.ts": "8e74410edea0866d92afd02d92b20b8328e1f6e9",
     "agent-controller/src/operations.ts": "92d74103ca473cb1bed0e6559b2e1fd0554b2341",
     "agent-controller/src/paths.test.ts": "1c696f84b54d56041c3a351adbd6a72a4a339676",

@@ -72,7 +72,12 @@ import {
 } from './live-status';
 import { createLogger, errorCode, errorMessage, type Logger } from './log';
 import { givenLoginCheck } from './login-check';
-import { loginShellPath, withUserBinDirs } from './login-path';
+import {
+  loginShellPath,
+  windowsRegistryPath,
+  withUserBinDirs,
+  withWindowsPathEntries,
+} from './login-path';
 import { guardLimitsFromEnv } from './memory-guard';
 import { type OwnerMarkers, openOwnerMarkers, processesOf, signalProven } from './owner-marker';
 import { dataLayout, ensureDataDir, resolveDataDir, serverWorkspacesDir } from './paths';
@@ -444,9 +449,19 @@ async function setInfoCommand(args: string[]): Promise<number> {
 function pathRefresher(log: Logger): () => Promise<void> {
   return async () => {
     if (process.platform === 'win32') {
+      const registry = await windowsRegistryPath(process.env);
+      if (registry === null)
+        log.warn(
+          'Could not read the PATH from the registry; a CLI installed since this controller started may not be found',
+          { path: process.env.PATH }
+        );
+      const current = withUserBinDirs(
+        withWindowsPathEntries(process.env.PATH ?? '', registry ?? ''),
+        homedir()
+      );
       process.env.PATH = withWindowsGitBashDir(
         withWindowsCodexBinDir(
-          withWindowsAgyBinDir(process.env.PATH ?? '', process.env.LOCALAPPDATA),
+          withWindowsAgyBinDir(current, process.env.LOCALAPPDATA),
           process.env.LOCALAPPDATA
         ),
         {
