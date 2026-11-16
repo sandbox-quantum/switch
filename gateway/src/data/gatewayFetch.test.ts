@@ -132,7 +132,7 @@ describe("a server that doesn't answer", () => {
       ),
     );
     const pending = gatewayFetch("/gateway/rooms");
-    const failed = expect(pending).rejects.toThrow("The server didn't answer within 30 seconds. Try again.");
+    const failed = expect(pending).rejects.toThrow("Switch didn't answer within 30 seconds. Try again.");
     await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS);
     await failed;
   });

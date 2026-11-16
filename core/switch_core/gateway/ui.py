@@ -80,6 +80,7 @@ PAGE_PATHS: tuple[str, ...] = (
     "/connectors/{connector_id}",
     "/settings",
     "/settings/general",
+    "/settings/general/private-channel-rooms",
     "/settings/users",
     "/settings/messaging-apps",
     "/settings/connectors",

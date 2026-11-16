@@ -56,7 +56,7 @@ function signal(what: SessionSignal): void {
 /** The server didn't answer in time. */
 export class ServerTimeout extends Error {
   constructor(timeoutMs: number) {
-    super(`The server didn't answer within ${Math.round(timeoutMs / 1000)} seconds. Try again.`);
+    super(`Switch didn't answer within ${Math.round(timeoutMs / 1000)} seconds. Try again.`);
     this.name = "ServerTimeout";
   }
 }

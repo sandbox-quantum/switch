@@ -28,7 +28,7 @@ export default function LoginPage() {
 
   useEffect(() => {
     fetchAuthConfig().then(setAuthConfig, (err: unknown) =>
-      console.warn("Could not read how this server signs people in; offering password sign-in", err),
+      console.warn("Could not read how Switch signs people in here; offering password sign-in", err),
     );
   }, []);
 
