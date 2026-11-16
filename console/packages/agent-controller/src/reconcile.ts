@@ -24,7 +24,11 @@ import {
 import type { GivenLogin } from './sealed-logins';
 import { isCredentialFailure, LAUNCH_GRACE_MS } from './status';
 import type { AgentRow, ControllerStore } from './store';
-import { advancedConfigDefinitionProblem, buildWatcherTemplate } from './template';
+import {
+  advancedConfigDefinitionProblem,
+  buildWatcherTemplate,
+  launchPermissionMode,
+} from './template';
 
 export type StartAction = {
   kind: 'start';
@@ -80,10 +84,24 @@ export function definitionProblem(
   return null;
 }
 
-/** The runtime mode an agent host for `entry` is given on this device. */
-function runtimeModeOf(entry: AgentAssignment, context: DefinitionContext): string {
+/**
+ * Whether an agent host was last configured as this device allows `entry`
+ * now: the runtime mode it was given (unknown in a configuration written
+ * without one) and the permission mode its agent definition names.
+ */
+function devicePolicyApplied(
+  configured: NonNullable<AgentObservation['configured']>,
+  entry: AgentAssignment,
+  context: DefinitionContext
+): boolean {
   const definition = effectiveDefinition(entry, context);
-  return runtimeModeFor({ autoApprove: definition.auto_approve, autoMode: definition.auto_mode });
+  const runtimeMode = runtimeModeFor({
+    autoApprove: definition.auto_approve,
+    autoMode: definition.auto_mode,
+  });
+  if (configured.runtimeMode !== null && configured.runtimeMode !== runtimeMode) return false;
+  if (!isProvider(definition.provider)) return true;
+  return configured.permissionMode === launchPermissionMode(definition.provider, definition);
 }
 
 /**
@@ -201,8 +219,8 @@ export function planReconcile(input: {
           why: 'its relay endpoint or token changed',
         });
       else if (
-        observation.configured?.runtimeMode != null &&
-        observation.configured.runtimeMode !== runtimeModeOf(entry, input.context)
+        observation.configured !== null &&
+        !devicePolicyApplied(observation.configured, entry, input.context)
       )
         actions.push({
           ...base,

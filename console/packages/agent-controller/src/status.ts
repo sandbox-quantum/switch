@@ -10,7 +10,7 @@ import {
   verifyClaudeSignIn,
 } from '@switch-console/agent-providers';
 import { pluginRegistry } from '@switch-console/plugins/agents';
-import { bypassWithheld, type DefinitionContext, howToAllow } from './device-policy';
+import { bypassWithheldDetail, type DefinitionContext } from './device-policy';
 import { errorMessage, type Logger } from './log';
 import type { AgentObservation, AgentRuntime } from './runtime';
 import {
@@ -698,10 +698,7 @@ export class StatusCollector {
       this.previous.set(entry.agent_id, { process: mapped.process, since });
       const health = observation.alive && observation.health?.current ? observation.health : null;
       const ids = health ? Object.keys(health.placements).sort() : [];
-      const withheld =
-        mapped.process !== 'failed' && bypassWithheld(entry, context)
-          ? `Switch asks for this agent to run without asking for approval, and this device has not allowed that, so it asks. ${howToAllow(entry.agent_id, 'bypass')}`
-          : null;
+      const withheld = mapped.process !== 'failed' ? bypassWithheldDetail(entry, context) : null;
       const detail = [mapped.detail, withheld].filter(Boolean).join(' ');
       agents.push({
         agent_id: entry.agent_id,

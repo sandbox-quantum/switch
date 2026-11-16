@@ -5,6 +5,7 @@ import { dirname, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import {
   allowInPolicy,
+  changeDevicePolicy,
   cliToolsBase,
   DEVICE_CONSENT_NEEDED_KIND,
   type DeviceConsentNeededMessage,
@@ -14,7 +15,6 @@ import {
   generateSealingKeyPair,
   isDevicePolicyChangedMessage,
   readDevicePolicy,
-  writeDevicePolicy,
   isProviderRecheckRequest,
   isStopMessage,
   PROVIDER_RECHECKED_KIND,
@@ -413,16 +413,15 @@ async function devicePolicyCommand(change: 'allow' | 'disallow', args: string[])
     throw new UsageError('allow needs --bypass, --directory <dir>, or both.');
   const dataDir = resolveDataDir(values['data-dir']);
   await ensureDataDir(dataDir);
-  const before = await readDevicePolicy(dataDir);
-  const after =
+  const after = await changeDevicePolicy(dataDir, (before) =>
     change === 'allow'
       ? allowInPolicy(before, agentId, { bypass, directory })
       : disallowInPolicy(
           before,
           agentId,
           !bypass && directory === null ? 'all' : { bypass, directory }
-        );
-  await writeDevicePolicy(dataDir, after);
+        )
+  );
   process.stdout.write(describeDevicePolicy(after));
   return EXIT_OK;
 }

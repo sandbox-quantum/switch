@@ -920,11 +920,12 @@ export class PiAdapter implements ProviderAdapter {
    * has no automatic review of its own.
    *
    * Pi enforces no workspace of its own, so that is decided here, on the
-   * path's real location (`pathScope`): reading outside the working
-   * directory asks, and so does changing a file outside it or in a part of it
-   * where a change runs code or widens the agent's own permissions (git's
-   * directory, the home directory's dot entries, Switch's state), in every
-   * mode but full access.
+   * path's real location (`pathScope`, which counts a file with more than
+   * one hard link as outside): reading outside the working directory asks,
+   * and so does changing a file outside it or in a part of it where a change
+   * runs code or widens the agent's own permissions (git's directory, the
+   * home directory's dot entries, Switch's state), in every mode but full
+   * access.
    */
   private gate(state: State, call: PiToolCall): Ask | null {
     const { toolName, input } = call;

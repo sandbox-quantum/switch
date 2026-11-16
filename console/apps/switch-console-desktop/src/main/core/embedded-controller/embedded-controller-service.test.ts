@@ -23,13 +23,13 @@ import type {
   EmbeddedControllerStateEvent,
 } from '@shared/core/embedded-controller/embedded-controller';
 import {
+  changeControllerPolicy,
   controllerDataDir,
   credentialSecretKey,
   DeviceConsentDenialFile,
   EnrollmentFile,
   turnOffWatchers,
   wipeControllerIdentity,
-  writeControllerPolicy,
 } from './controller-files';
 import {
   type EmbeddedControllerDeps,
@@ -84,7 +84,7 @@ function service(overrides: Partial<EmbeddedControllerDeps> = {}): EmbeddedContr
       turnOffWatchers,
       wipeIdentity: wipeControllerIdentity,
       readPolicy: readDevicePolicy,
-      writePolicy: writeControllerPolicy,
+      changePolicy: changeControllerPolicy,
     },
     bundles: {
       controller: () => '/app/dist-sidecar/agent-controller.mjs',

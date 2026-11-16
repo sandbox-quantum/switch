@@ -1,4 +1,4 @@
-import { lstatSync, readlinkSync, realpathSync } from 'node:fs';
+import { lstatSync, readlinkSync, realpathSync, statSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 /**
@@ -13,7 +13,10 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'nod
  *   watcher configuration that carries an agent's runtime mode among it), or
  *   Switch's application data. A working directory inside one of those makes
  *   it the workspace again: the agent was put there to work on it.
- * - `outside`: anywhere else, and anything that cannot be resolved.
+ * - `outside`: anywhere else, and anything that cannot be resolved. A file
+ *   with more than one hard link is outside too, wherever it is: its other
+ *   names could be anywhere, a dot file in the home directory among them, and
+ *   nothing says where.
  *
  * Symbolic links are followed through the deepest part of the path that
  * exists, so a link inside the workspace to a file outside it is outside.
@@ -29,7 +32,7 @@ export function pathScope(
   const home = homeOf(env);
   const real = realTarget(resolve(cwd, expandHome(path, home)), 0);
   if (real === null) return { scope: 'outside', real: resolve(cwd, path) };
-  if (!isWithin(cwd, real)) return { scope: 'outside', real };
+  if (!isWithin(cwd, real) || hardLinked(real)) return { scope: 'outside', real };
   if (relative(cwd, real).split(sep).includes('.git')) return { scope: 'protected', real };
   for (const root of protectedRoots(real, home, env))
     if (isWithin(root, real) && !isWithin(root, cwd)) return { scope: 'protected', real };
@@ -67,6 +70,20 @@ function protectedRoots(real: string, home: string | null, env: Record<string, s
   if (env.LOCALAPPDATA) roots.push(join(env.LOCALAPPDATA, 'Switch'));
   if (env.APPDATA) roots.push(join(env.APPDATA, 'Switchdash'));
   return roots;
+}
+
+/**
+ * Whether `real` is a file with more than one hard link. One whose status
+ * cannot be read for any reason but not existing counts as one.
+ */
+function hardLinked(real: string): boolean {
+  try {
+    const stats = statSync(real);
+    return stats.isFile() && stats.nlink > 1;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    return code !== 'ENOENT' && code !== 'ENOTDIR';
+  }
 }
 
 /** Links followed through a dangling one before giving up, as the system does at 40. */

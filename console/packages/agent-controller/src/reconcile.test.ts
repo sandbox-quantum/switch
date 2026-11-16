@@ -368,6 +368,69 @@ describe('reconcile', () => {
     expect(modes()).toEqual(['approval-required', 'full-access', 'approval-required']);
   });
 
+  it.each(['bypassPermissions', 'dontAsk'])(
+    'runs a Claude agent whose advanced configuration sets permissionMode %s without it until the device allows bypass, and again once it no longer does',
+    async (mode) => {
+      const launched = () =>
+        runtime.calls.flatMap((call) =>
+          call.kind === 'launch'
+            ? [
+                {
+                  runtimeMode: call.template.start.input.runtimeMode,
+                  permissionMode: call.template.start.input.agentDefinition?.permissionMode,
+                },
+              ]
+            : []
+        );
+      const entry = agent({}, { advanced_config: { permissionMode: mode, maxTurns: 5 } });
+      await reconcile(assignment(entry), deps());
+      expect(launched()).toEqual([{ runtimeMode: 'approval-required', permissionMode: undefined }]);
+      expect(runtime.launches('agent-1')[0]!.template.start.input.agentDefinition?.maxTurns).toBe(
+        5
+      );
+
+      await reconcile(assignment(entry), deps());
+      expect(launched()).toHaveLength(1);
+
+      policy = allowInPolicy(policy!, 'agent-1', { bypass: true, directory: null });
+      await reconcile(assignment(entry), deps());
+      expect(launched().at(-1)).toEqual({ runtimeMode: 'approval-required', permissionMode: mode });
+      expect(runtime.launches('agent-1').at(-1)!.options.restart).toBe(false);
+
+      await reconcile(assignment(entry), deps());
+      expect(launched()).toHaveLength(2);
+
+      policy = disallowInPolicy(policy, 'agent-1', { bypass: true, directory: null });
+      await reconcile(assignment(entry), deps());
+      expect(launched().at(-1)).toEqual({
+        runtimeMode: 'approval-required',
+        permissionMode: undefined,
+      });
+      expect(launched()).toHaveLength(3);
+    }
+  );
+
+  it('keeps a permissionMode that asks as it is, and every permissionMode where agents run as users of their own', async () => {
+    await reconcile(assignment(agent({}, { advanced_config: { permissionMode: 'plan' } })), deps());
+    expect(runtime.launches('agent-1')[0]!.template.start.input.agentDefinition).toMatchObject({
+      permissionMode: 'plan',
+    });
+
+    policy = null;
+    await reconcile(
+      assignment(
+        agent(
+          { agent_id: 'agent-2' },
+          { name: 'other', advanced_config: { permissionMode: 'bypassPermissions' } }
+        )
+      ),
+      deps()
+    );
+    expect(runtime.launches('agent-2')[0]!.template.start.input.agentDefinition).toMatchObject({
+      permissionMode: 'bypassPermissions',
+    });
+  });
+
   it('refuses a directory outside the workspaces folder until the device allows it, and stops it once it no longer does', async () => {
     const entry = agent({}, { directory: '/srv/repos/app' });
     await reconcile(assignment(entry), deps());
