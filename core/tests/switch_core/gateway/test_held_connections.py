@@ -63,6 +63,7 @@ from switch_core.gateway.hosted_machines import hosted_settings
 from switch_core.gateway.rooms import router as rooms_router
 from switch_core.keys import Keyring
 from switch_core.room_service import RoomService
+from tests.switch_core.gateway.login_limit_defaults import LOGIN_LIMIT_DEFAULTS
 from tests.switch_core.pool_checkouts import PoolCheckouts
 
 # Made for each run, so nothing secret-looking is committed.
@@ -281,6 +282,7 @@ def _config() -> SimpleNamespace:
         decision_endpoint_url=None,
         decision_api_key=None,
         decision_bedrock_enabled=False,
+        **LOGIN_LIMIT_DEFAULTS,
     )
 
 

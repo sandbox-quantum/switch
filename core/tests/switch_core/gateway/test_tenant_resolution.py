@@ -46,7 +46,7 @@ from typing import Annotated
 import httpx
 import pytest
 import pytest_asyncio
-from fastapi import Depends, FastAPI, Response
+from fastapi import Depends, FastAPI, Request, Response
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -77,6 +77,7 @@ from switch_core.gateway.tenants import router as tenants_router
 from switch_core.keys import Keyring
 from switch_core.organization_directory import LocalDirectory
 from tests.conftest import empty_the_database
+from tests.switch_core.gateway.login_limit_defaults import LOGIN_LIMIT_DEFAULTS
 
 _SECRET = "unit-test-jwt-key-unit-test-jwt-key-unit-test"  # gitleaks:allow
 _KEYRING = Keyring.parse("test:" + _SECRET, legacy_secret=None)
@@ -197,11 +198,25 @@ def _client(app: FastAPI, token: str) -> httpx.AsyncClient:
 
 
 def _login_config() -> SimpleNamespace:
-    # The three attributes `login` reads.
+    # The attributes `login` reads.
     return SimpleNamespace(
         gateway_password_login_enabled=True,
         keyring=_KEYRING,
         gateway_cookie_secure=False,
+        **LOGIN_LIMIT_DEFAULTS,
+    )
+
+
+def _login_request() -> Request:
+    """The request `login` counts its attempt against, from this computer."""
+    return Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/auth/login",
+            "headers": [],
+            "client": ("127.0.0.1", 50000),
+        }
     )
 
 
@@ -276,6 +291,7 @@ class TestSigningInSelectsFromCurrentMemberships:
         async with session_factory() as session:
             await login(
                 LoginRequest(email=email, password="correct horse battery staple"),
+                _login_request(),
                 response,
                 session,
                 session_factory,
@@ -1357,6 +1373,7 @@ class TestSigningInHoldsOneConnectionAtATime:
                     email="poollogin@example.invalid",
                     password="correct horse battery staple",
                 ),
+                _login_request(),
                 response,
                 session,
                 factory,

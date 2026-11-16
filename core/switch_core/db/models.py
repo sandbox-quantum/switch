@@ -5278,6 +5278,39 @@ class ServerAuditEvent(Base):
     details: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
 
+class AuthAttempt(Base):
+    """Password sign-ins and sign-ups, counted against what they came with
+    (`gateway/login_limits.py`), here so that a limit holds across replicas.
+
+    `kind` says what is counted against what: failed sign-ins against the
+    email address typed, whether or not it has an account, failed sign-ins
+    against the client's address, or accounts signed up from it. `key` is a
+    SHA-256 digest of that email or address, so neither is kept in the clear.
+    `attempts` counts from `window_started_at`, and no attempt is taken before
+    `locked_until`. Past `expires_at` the row means nothing, and the next
+    attempt to come along deletes it.
+
+    Not tenant-scoped: an address belongs to no workspace, and a sign-in has
+    no workspace yet when it is counted.
+    """
+
+    __tablename__ = "auth_attempts"
+    __table_args__ = (Index("ix_auth_attempts_expires_at", "expires_at"),)
+
+    kind: Mapped[str] = mapped_column(Text, primary_key=True)
+    key: Mapped[str] = mapped_column(Text, primary_key=True)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False)
+    window_started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    locked_until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+
 class WorkspaceServiceSetting(TenantScoped, Base):
     """A workspace admin switched a catalog service on or off for the workspace.
 

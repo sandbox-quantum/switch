@@ -81,6 +81,10 @@ from switch_core.gateway.hosted_machines import (
     ensure_machine,
     hosted_settings,
 )
+from switch_core.gateway.login_limits import (
+    admit_login,
+    clear_login_failures,
+)
 from switch_core.gateway.schemas import (
     AccountDeletionCheck,
     AuthConfigResponse,
@@ -157,6 +161,7 @@ async def get_version(
 @router.post("/auth/login")
 async def login(
     req: LoginRequest,
+    request: Request,
     response: Response,
     session: Annotated[AsyncSession, Depends(get_system_session)],
     session_factory: Annotated[
@@ -167,12 +172,14 @@ async def login(
 ) -> SessionUserResponse:
     # `get_system_session`, not `get_session`: there is no caller to take a
     # tenant from until this route decides there is one. It only ever reads
-    # `users`, which is global (a person is one account across tenants), so
-    # there is nothing here a tenant would scope. Which workspace the new
-    # session selects comes from the membership lookup, on a session of its own.
+    # `users`, which is global (a person is one account across tenants), and
+    # counts the attempt in `auth_attempts`, global too, so there is nothing
+    # here a tenant would scope. Which workspace the new session selects comes
+    # from the membership lookup, on a session of its own.
     if not config.gateway_password_login_enabled:
         raise HTTPException(status_code=403, detail="Password login is disabled")
 
+    attempt = await admit_login(session, config, req.email, request)
     user = await user_store.get_by_email(session, req.email)
     # One connection at a time, and none held across bcrypt.
     await session.commit()
@@ -182,6 +189,7 @@ async def login(
         # Counted for the alert on password guessing; nothing about who.
         metrics().increment(AUTH_SIGN_IN_FAILURES, {})
         raise HTTPException(status_code=401, detail="Invalid email or password")
+    await attempt.succeeded(session)
 
     set_session_cookie(
         response,
@@ -1034,6 +1042,34 @@ async def end_user_sessions(
     await session.commit()
     if user_id == admin.id:
         response.delete_cookie("switch_auth", path="/")
+    return {"ok": True}
+
+
+@router.delete("/users/{user_id}/sign-in-lock")
+async def clear_sign_in_lock(
+    user_id: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    admin: Annotated[User, Depends(require_admin)],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+) -> dict[str, bool]:
+    """The deployment operator lets someone locked out by failed password
+    sign-ins try again at once, rather than wait the lock out
+    (`gateway/login_limits.py`). Clears the count on the account's email
+    address only: a lock on the client address they sign in from stays until
+    it runs out. Recorded in the server's audit log."""
+    target = await user_store.get(session, user_id)
+    if target is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    await clear_login_failures(session, target.email)
+    await record_server_audit_event(
+        session,
+        actor_user_id=admin.id,
+        action=ServerAuditAction.USER_SIGN_IN_LOCK_CLEARED,
+        target_type="user",
+        target_id=user_id,
+        details=None,
+    )
+    await session.commit()
     return {"ok": True}
 
 
