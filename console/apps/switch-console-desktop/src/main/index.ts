@@ -18,6 +18,7 @@ import {
 import { setupApplicationMenu } from './app/menu';
 import { APP_ORIGIN, registerAppScheme, setupAppProtocol } from './app/protocol';
 import { LaunchesWhileQuitting } from './app/relaunch-on-quit';
+import { registerWebSecurity } from './app/web-security';
 import { createMainWindow, getMainWindow } from './app/window';
 import { startAutoMigration, stopAutoMigration } from './core/agent-migration/agent-migration';
 import { bridgeAgentEventsToRenderer } from './core/agents/agent-events-renderer-bridge';
@@ -94,6 +95,7 @@ if (process.platform === 'linux') {
 }
 
 registerAppScheme();
+registerWebSecurity();
 setupDeeplinks();
 
 initializeFileLogger();

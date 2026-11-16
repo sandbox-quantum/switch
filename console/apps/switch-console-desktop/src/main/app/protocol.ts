@@ -5,6 +5,20 @@ import { APP_NAME_LOWER } from '@shared/app-identity';
 export const APP_SCHEME = 'app';
 export const APP_ORIGIN = `${APP_SCHEME}://${APP_NAME_LOWER}`;
 
+/**
+ * Whether `url` is a page of the app's own renderer: the Vite dev server in
+ * development, the app scheme in a build.
+ */
+export function isAppRendererUrl(url: string): boolean {
+  const renderer = new URL(import.meta.env.DEV ? process.env.ELECTRON_RENDERER_URL! : APP_ORIGIN);
+  try {
+    const candidate = new URL(url);
+    return candidate.protocol === renderer.protocol && candidate.host === renderer.host;
+  } catch {
+    return false;
+  }
+}
+
 export function registerAppScheme(): void {
   protocol.registerSchemesAsPrivileged([
     {
