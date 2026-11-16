@@ -92,8 +92,21 @@ export function turnEndLabel(label: string, reason: string | null): ReactNode {
 }
 
 /**
+ * An agent as its rows name it: `name` as shown, and its unique name beside
+ * it when that differs (`chatAgentNaming`). `id` is null for an agent the
+ * chat does not list.
+ */
+export type RowAgent = {
+  id: string | null;
+  name: string;
+  uniqueName: string | null;
+  iconUrl: string | null;
+};
+
+/**
  * One row of an agent's block in the timeline. The first row of the block
- * carries the avatar and the agent's name; the rows after it keep the indent.
+ * carries the avatar and the agent's name, its unique name muted after a
+ * display name; the rows after it keep the indent.
  */
 export function AgentRow({
   agent,
@@ -104,7 +117,7 @@ export function AgentRow({
   children,
   ...props
 }: ComponentProps<'div'> & {
-  agent: { id: string | null; name: string; iconUrl: string | null };
+  agent: RowAgent;
   serverId: string;
   head: boolean;
   trailing?: ReactNode;
@@ -126,6 +139,9 @@ export function AgentRow({
         {head && (
           <span className="mb-1 text-xs leading-4 font-semibold text-foreground-muted">
             {agent.name}
+            {agent.uniqueName !== null && (
+              <span className="ml-1 font-normal text-foreground-passive">@{agent.uniqueName}</span>
+            )}
           </span>
         )}
         {children}
@@ -189,7 +205,7 @@ export const ChatActivityBlock = observer(function ChatActivityBlock({
 }: {
   activity: AgentActivity;
   turn: TurnActivity;
-  agent: { id: string | null; name: string; iconUrl: string | null };
+  agent: RowAgent;
   /** Who the turn's requests come from, as their cards name them. */
   asker: RequestAsker;
   /** Whether this turn starts the agent's block, so shows its avatar and name. */
