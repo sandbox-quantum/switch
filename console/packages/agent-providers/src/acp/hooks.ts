@@ -15,6 +15,7 @@ import type {
   AcpPermissionRequest,
   AcpPromptCapabilities,
   AcpSessionModes,
+  AcpSessionUpdate,
   AcpToolCall,
 } from './protocol';
 
@@ -70,6 +71,8 @@ export interface AcpSelectedAnswer {
 export interface AcpSessionContext {
   /** The running turn, or null when there is none or it was interrupted. */
   readonly turnId: string | null;
+  /** The session's runtime mode. */
+  readonly runtimeMode: RuntimeMode;
   /** Names of the MCP servers this session registered. */
   readonly mcpServerNames: ReadonlySet<string>;
   /**
@@ -193,6 +196,27 @@ export interface AcpProviderHooks {
    */
   persistentPermissionKinds?: readonly string[];
   /**
+   * The vendor request that adds a message to the running turn rather than
+   * queueing it behind (OpenCode's `_session/steering`), sent with the
+   * session id and the message's prompt content. The agent answers
+   * `{ outcome: 'injected' }` when the turn took it and
+   * `{ outcome: 'promptRequired' }` when no turn was running, in which case
+   * the message is sent as a turn of its own. Omit for an agent that cannot
+   * steer; its `capabilities.steering` should then be false.
+   */
+  steerMethod?: string;
+  /**
+   * How the agent compacts its conversation, for one that can: the prompt
+   * that asks it to (OpenCode's `/compact`), and how a session update reports
+   * a compaction's progress. A compaction the agent runs on its own inside a
+   * turn is reported the same way and shows in that turn. Omit for an agent
+   * Switch cannot compact.
+   */
+  compaction?: {
+    prompt: string;
+    progress(update: AcpSessionUpdate): AcpCompactionProgress | undefined;
+  };
+  /**
    * Native session ids are stored with this prefix, telling them apart from
    * ids an earlier, non-ACP runtime of the same provider stored. A resume id
    * without it starts a fresh conversation with `legacyMessage`.
@@ -240,6 +264,11 @@ export interface AcpProviderHooks {
   /** Register vendor-specific requests and notifications for a session. */
   extensions?(context: AcpSessionContext, on: AcpExtensionRegistrar): void;
 }
+
+export type AcpCompactionProgress =
+  | { status: 'started' }
+  | { status: 'completed' }
+  | { status: 'failed'; message: string };
 
 export interface AcpSignedInQuery {
   binaryPath: string;

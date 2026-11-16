@@ -57,7 +57,29 @@ export type DependencyUpdateError =
   | { type: 'unknown-dependency'; id: string }
   | { type: 'no-update-strategy'; id: string }
   | InstallCommandError
-  | { type: 'not-detected-after-update'; id: string };
+  | { type: 'not-detected-after-update'; id: string }
+  /** Moving to a new release line was refused by its precheck; nothing was changed. */
+  | { type: 'line-migration-blocked'; id: string; message: string }
+  /** Moving to a new release line failed to install it; the earlier version is back. */
+  | {
+      type: 'line-migration-failed';
+      id: string;
+      restoredVersion: string;
+      cause: InstallCommandError;
+    }
+  /**
+   * Moving to a new release line failed, and so did putting the earlier version back:
+   * the dependency is not installed. The commands are what the person can run.
+   */
+  | {
+      type: 'line-migration-unrestored';
+      id: string;
+      previousVersion: string;
+      cause: InstallCommandError;
+      restoreError: InstallCommandError;
+      installCommand: string;
+      restoreCommand: string;
+    };
 
 export type DependencyUpdateResult = Result<DependencyState, DependencyUpdateError>;
 
