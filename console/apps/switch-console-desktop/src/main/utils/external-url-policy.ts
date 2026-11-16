@@ -27,3 +27,23 @@ export function isWebContentUrl(url: string): boolean {
     protocol === 'data:'
   );
 }
+
+/**
+ * The schemes Console hands to the OS: the web, plus the messaging apps a
+ * room's channel opens in (links built from a room's bridge). Other schemes
+ * (file:, javascript:, …) stay blocked. Telegram needs no entry: its links are
+ * ordinary https `t.me` URLs.
+ */
+const EXTERNAL_PROTOCOLS: ReadonlySet<string> = new Set([
+  'http:',
+  'https:',
+  'slack:',
+  'mattermost:',
+  'discord:',
+]);
+
+/** Whether Console may ask the OS to open `url` at all. */
+export function isAllowedExternalUrl(url: string): boolean {
+  const protocol = protocolOf(url);
+  return protocol !== null && EXTERNAL_PROTOCOLS.has(protocol);
+}

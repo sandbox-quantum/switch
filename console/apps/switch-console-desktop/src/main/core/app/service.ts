@@ -14,6 +14,7 @@ import { getMainWindow } from '@main/app/window';
 import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
 import { buildExternalToolEnv } from '@main/utils/childProcessEnv';
+import { isAllowedExternalUrl } from '@main/utils/external-url-policy';
 import { appPasteChannel, appRedoChannel, appUndoChannel } from '@shared/events/appEvents';
 import {
   getAppById,
@@ -170,11 +171,7 @@ class AppService implements IInitializable, IDisposable {
     } catch {
       throw new Error('Invalid URL format');
     }
-    // http/https plus the messaging-app schemes used to open a room's channel
-    // in its desktop app (links built from a room's bridge); other schemes
-    // (file:, javascript:, …) stay blocked. Telegram needs no entry: its links
-    // are ordinary https `t.me` URLs.
-    if (!['http:', 'https:', 'slack:', 'mattermost:', 'discord:'].includes(parsedUrl.protocol)) {
+    if (!isAllowedExternalUrl(url)) {
       throw new Error(
         `Protocol "${parsedUrl.protocol}" is not allowed. Only http, https, ` +
           `slack, mattermost and discord URLs are permitted.`

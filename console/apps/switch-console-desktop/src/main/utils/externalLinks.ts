@@ -1,5 +1,6 @@
 import { shell, type BrowserWindow, type WebContents } from 'electron';
 import { DEEPLINK_SCHEME, handleDeeplinkUrl } from '@main/app/deeplinks';
+import { isAppRendererUrl } from '@main/app/protocol';
 import { getMainWindow } from '@main/app/window';
 import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
@@ -84,6 +85,14 @@ export function registerGuestLinkHandlers(guest: WebContents) {
     event.preventDefault();
     route(url);
   });
+
+  // `will-navigate` sees the main frame's own navigations only. A subframe, or
+  // a same-origin page answering with a redirect, would otherwise reach a
+  // custom scheme without passing through `route`.
+  guest.on('will-frame-navigate', (navigation) => {
+    if (!navigation.isMainFrame) refuseNonWebNavigation(navigation, 'room view');
+  });
+  guest.on('will-redirect', (navigation) => refuseNonWebNavigation(navigation, 'room view'));
 }
 
 type FrameNavigation = { url: string; preventDefault: () => void };
@@ -121,28 +130,40 @@ export function registerServerPageLinkHandlers(contents: WebContents): void {
   contents.on('will-redirect', (navigation) => refuseNonWebNavigation(navigation, 'server'));
 }
 
-export function registerExternalLinkHandlers(win: BrowserWindow, isDev: boolean) {
+/**
+ * Link handling for the app's own window. It never opens a window: a link to
+ * a Console page or a session moves the app there, an http(s) link goes to the
+ * browser through the confirmation, and anything else is dropped. A
+ * navigation to a custom scheme is left to the permission policy
+ * (`app/web-security.ts`), the one place an OS launch is decided.
+ */
+export function registerExternalLinkHandlers(win: BrowserWindow) {
   const wc = win.webContents;
 
-  const isInternalAppUrl = (url: string) => {
-    if (isDev) return url.startsWith(process.env.ELECTRON_RENDERER_URL!);
-    return url.startsWith('file://') || /^http:\/\/(127\.0\.0\.1|localhost):\d+(?:\/|$)/i.test(url);
+  const route = (url: string): void => {
+    if (url.startsWith(`${DEEPLINK_SCHEME}://`)) {
+      handleDeeplinkUrl(url);
+      return;
+    }
+    if (isHttpUrl(url) && !isAppRendererUrl(url)) {
+      requestExternalLinkOpen(url);
+      return;
+    }
+    log.warn('Blocked a link with an unsupported scheme from the app window', { url });
   };
 
   // Handle window.open and target="_blank"
   wc.setWindowOpenHandler(({ url }) => {
-    if (!isInternalAppUrl(url) && /^https?:\/\//i.test(url)) {
-      requestExternalLinkOpen(url);
-      return { action: 'deny' };
-    }
-    return { action: 'allow' };
+    route(url);
+    return { action: 'deny' };
   });
 
   // Intercept navigations that would leave the app
   wc.on('will-navigate', (event, url) => {
-    if (!isInternalAppUrl(url) && /^https?:\/\//i.test(url)) {
+    if (isAppRendererUrl(url)) return;
+    if (url.startsWith(`${DEEPLINK_SCHEME}://`) || isHttpUrl(url)) {
       event.preventDefault();
-      requestExternalLinkOpen(url);
+      route(url);
     }
   });
 }
