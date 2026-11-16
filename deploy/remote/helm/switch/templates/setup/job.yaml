@@ -21,6 +21,9 @@ spec:
       {{- include "switch.imagePullSecrets" . | nindent 6 }}
       {{- end }}
       restartPolicy: OnFailure
+      automountServiceAccountToken: false
+      securityContext:
+        {{- toYaml .Values.setup.podSecurityContext | nindent 8 }}
       initContainers:
         {{- include "switch.waitForHttp" (dict "name" "switch-core" "url" (printf "http://%s:%v/health" (include "switch.switchCoreHost" .) (.Values.switchCore.service.port | toString))) | nindent 8 }}
         {{- include "switch.waitForHttp" (dict "name" "mattermost" "url" (printf "http://%s:%v/api/v4/system/ping" (include "switch.mattermostHost" .) (.Values.mattermost.service.port | toString))) | nindent 8 }}
@@ -28,6 +31,8 @@ spec:
         - name: setup
           image: {{ include "switch.image" (dict "global" .Values.global "image" .Values.setup.image) }}
           imagePullPolicy: {{ include "switch.imagePullPolicy" (dict "policy" .Values.setup.imagePullPolicy "image" .Values.setup.image) }}
+          securityContext:
+            {{- toYaml .Values.setup.securityContext | nindent 12 }}
           env:
             - name: SWITCH_URL
               value: "http://{{ include "switch.switchCoreHost" . }}:{{ .Values.switchCore.service.port }}"

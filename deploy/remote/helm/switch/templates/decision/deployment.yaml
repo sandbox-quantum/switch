@@ -32,6 +32,9 @@ spec:
       {{- include "switch.imagePullSecrets" . | nindent 6 }}
       {{- end }}
       serviceAccountName: {{ include "switch.decisionHost" . }}
+      # Bedrock through workload identity (IRSA, EKS Pod Identity) mounts its
+      # own token; the service never calls the Kubernetes API.
+      automountServiceAccountToken: false
       securityContext:
         # The decision images' user; the model server or the downloader writes
         # the weights as it.
