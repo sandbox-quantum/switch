@@ -7,6 +7,7 @@ import { registerExternalLinkHandlers, registerGuestLinkHandlers } from '@main/u
 import { PRODUCT_NAME } from '@shared/app-identity';
 import { appCommandNavigateChannel } from '@shared/events/appEvents';
 import { DEVTOOLS_ENABLED } from './devtools';
+import { constrainGuest } from './guest-webview';
 import { APP_ORIGIN } from './protocol';
 
 let mainWindow: BrowserWindow | null = null;
@@ -111,30 +112,18 @@ export function createMainWindow(): BrowserWindow {
   return mainWindow;
 }
 
-/**
- * Strip privileges from any `<webview>` the renderer attaches.
- *
- * `webviewTag: true` lets renderer markup ask for a guest with whatever
- * webPreferences it likes, so the renderer is no longer the only thing that has
- * to be trusted — the embedded page is too. Rather than trusting the tag's
- * attributes, we overwrite the dangerous ones here, and allow only the guest
- * preload the app ships. Anything else is dropped.
- */
+/** Hold every `<webview>` the renderer attaches to what {@link constrainGuest} allows. */
 function constrainEmbeddedWebviews(window: BrowserWindow): void {
   const guestPreload = join(import.meta.dirname, '../preload/mattermost-guest.mjs');
 
   window.webContents.on('will-attach-webview', (event, webPreferences, params) => {
-    // Never honour a preload named in markup — pin it to the one we ship.
-    webPreferences.preload = guestPreload;
-    webPreferences.nodeIntegration = false;
-    webPreferences.contextIsolation = true;
-
-    // Only ever embed real web content. A file:// or custom-scheme guest would
-    // be running local content with a preload attached, which is not something
-    // this feature needs.
-    const protocol = params.src ? new URL(params.src).protocol : null;
-    if (protocol !== 'http:' && protocol !== 'https:') {
-      log.warn('Blocked webview attach for non-http source', { src: params.src });
+    const refusal = constrainGuest(webPreferences, params, guestPreload, DEVTOOLS_ENABLED);
+    if (refusal !== null) {
+      log.warn('Blocked a webview attach', {
+        reason: refusal,
+        src: params.src,
+        partition: params.partition,
+      });
       event.preventDefault();
     }
   });
