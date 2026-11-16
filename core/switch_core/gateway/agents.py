@@ -471,16 +471,13 @@ async def register_known_subagents(
         raise HTTPException(
             status_code=404, detail=f"Parent agent not found: {req.parent_agent_id}"
         )
-    try:
-        require_manage(
-            Principal(user.id, is_admin),
-            parent.owner_id,
-        )
-    except PermissionError as exc:
+    # Not an admin: the subagents would sit under someone else's agent, in
+    # its working directory, as the caller's own with keys of their own.
+    if not owns(Principal(user.id, is_admin), parent.owner_id):
         raise HTTPException(
             status_code=403,
-            detail="Only the parent agent's owner or an admin can register its subagents.",
-        ) from exc
+            detail="Only the parent agent's owner can register its subagents.",
+        )
 
     # Derive names + per-subagent options (inheriting parent settings); reject
     # in-batch duplicates before touching the DB.
