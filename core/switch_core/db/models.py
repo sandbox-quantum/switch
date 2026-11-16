@@ -2702,6 +2702,12 @@ class BridgeMessageMap(TenantScoped, Base):
         ),
         UniqueConstraint("bridge_id", "transport_event_id"),
         UniqueConstraint("bridge_id", "external_post_id"),
+        # A reply to any part of a message the platform split resolves to it.
+        Index(
+            "ix_bridge_message_map_further_post_ids",
+            "further_post_ids",
+            postgresql_using="gin",
+        ),
         ForeignKeyConstraint(
             ["tenant_id", "bridge_id"],
             ["collaboration_bridges.tenant_id", "collaboration_bridges.id"],
@@ -2719,6 +2725,13 @@ class BridgeMessageMap(TenantScoped, Base):
     # answers, so a second process handling the same message finds the claim
     # and does not post it again (`CollaborationCore._claim_outbound`).
     external_post_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The platform's other posts for this one message, when it split it to fit
+    # (Telegram's 4,096-character cap): `external_post_id` is the first, which
+    # edits and deletes go to, and a reply to any of these is a reply to it.
+    # Null for a message posted whole.
+    further_post_ids: Mapped[list[str] | None] = mapped_column(
+        ARRAY(Text), nullable=True
+    )
     # The press that answered the card this message carries, `{"by", "label"}`;
     # null until a press is delivered. A card takes one answer.
     card_answer: Mapped[dict | None] = mapped_column(JSONB, nullable=True)

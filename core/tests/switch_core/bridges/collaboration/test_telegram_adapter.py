@@ -499,7 +499,70 @@ def test_outside_a_forum_the_replied_to_message_is_the_root() -> None:
         )
     )
 
-    assert seen[0].root_id == "5"
+    # Spelled as the message map records every post, so it finds the message
+    # replied to; a bare number found nothing.
+    assert seen[0].root_id == f"{CHAT_ID}:5"
+
+
+def test_a_reply_to_the_bots_message_says_so() -> None:
+    """In a group with Group Privacy on, a reply to the bot's own message is
+    the one kind of message the bot is handed; it goes to the agent that
+    posted what it replies to."""
+    adapter = _adapter()
+    seen: list[InboundMessage] = []
+    adapter._on_message = lambda m: _collect(seen, m)
+
+    _run(
+        adapter._handle_message(
+            _FakeInbound(
+                text="Acme Corp",
+                reply_to_message=_FakeInbound(
+                    message_id=5,
+                    from_user=_FakeUser(BOT_USER_ID, username=BOT_USERNAME),
+                ),
+            )
+        )
+    )
+    _run(
+        adapter._handle_message(
+            _FakeInbound(
+                message_id=12,
+                text="agreed",
+                reply_to_message=_FakeInbound(message_id=6, from_user=_FakeUser(8)),
+            )
+        )
+    )
+
+    assert [(m.root_id, m.replies_to_app) for m in seen] == [
+        (f"{CHAT_ID}:5", True),
+        (f"{CHAT_ID}:6", False),
+    ]
+    # Not a mention of the bot: nobody typed its name.
+    assert seen[0].self_mention_token is None
+
+
+def test_every_part_of_a_split_message_is_handed_to_the_bridge() -> None:
+    """A reply to the third part of a long answer has to find the answer, so
+    the bridge is given the refs of the parts after the first to map."""
+    adapter = _adapter()
+    body = "\n".join(["x" * 200] * 50)
+
+    ref = _run(adapter.send_message(str(CHAT_ID), "scout", body))
+
+    sent = _bot(adapter).messages
+    assert len(sent) == 3
+    assert ref == f"{CHAT_ID}:501"
+    assert adapter.take_further_refs(ref) == [f"{CHAT_ID}:502", f"{CHAT_ID}:503"]
+    # Taken once: the bridge maps them as it settles the post.
+    assert adapter.take_further_refs(ref) == []
+
+
+def test_a_message_sent_whole_has_no_further_parts() -> None:
+    adapter = _adapter()
+
+    ref = _run(adapter.send_message(str(CHAT_ID), "scout", "on it"))
+
+    assert adapter.take_further_refs(ref) == []
 
 
 def test_a_top_level_message_has_no_root() -> None:

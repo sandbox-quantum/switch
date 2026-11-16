@@ -44,6 +44,7 @@ from switch_core.bridges.collaboration.models import (
     InboundMessage,
     InboundUserJoin,
     InboundUserLeave,
+    KnownUserLabel,
     OutboundAttachment,
     PrivateNoticeDelivery,
     RetireOutcome,
@@ -626,6 +627,13 @@ class PlatformAdapter(ABC):
     #: exists and while one is stopped.
     supports_directory_search: ClassVar[bool] = True
 
+    #: What the account search can find a person by here, as its field's
+    #: placeholder. Only what the search really matches: offering email where
+    #: it never matches sends people hunting for an address that finds
+    #: nobody. `account_search_hint` is what is shown, for an adapter whose
+    #: answer depends on what the connection was granted.
+    directory_search_hint: ClassVar[str] = "Your name or handle"
+
     #: Whether this platform can make a private channel from Switch.
     #:
     #: Reported per connection so a room form offers "New private channel"
@@ -1031,6 +1039,21 @@ class PlatformAdapter(ABC):
         return f"Post `!link-account {code}` from that account in any channel Switch is in."
 
     @classmethod
+    def unlink_account_instructions(
+        cls, name: str, connection_config: Mapping[str, object]
+    ) -> str:
+        """How to unlink the Switch user `name` from a chat account here, as
+        the rest of "If that isn't you, …", in Markdown.
+
+        Told after a link is confirmed by tapping a number in a message from
+        the bot, where the account ran no command and the conversation may
+        not take one (Slack's is read only), so it names the platform's own
+        command form and somewhere it reaches Switch, as
+        `link_code_instructions` does for a code.
+        """
+        return f"post `!unlink-account {name}` from this account in any channel Switch is in"
+
+    @classmethod
     def unlinkable_account_reason(cls, external_user_id: str) -> str | None:
         """Why this account cannot be linked to anyone, or None if it can.
 
@@ -1308,6 +1331,25 @@ class PlatformAdapter(ABC):
         nothing to recognise and nothing to repair.
         """
         return False
+
+    def take_further_refs(self, message_ref: str) -> list[str]:
+        """The platform's other posts for the message just posted as
+        `message_ref`, when it had to split it to fit: a reply to any of them
+        is a reply to that message. Asked once, right after the post; [] for a
+        platform that posts every message whole, which is this default."""
+        return []
+
+    def account_search_hint(self) -> str:
+        """The placeholder for this connection's account search."""
+        return self.directory_search_hint
+
+    def known_user_label(
+        self, external_user_id: str, external_username: str
+    ) -> KnownUserLabel:
+        """How a person Switch has seen is named in an account search that
+        falls back to those people. Default: the stored name, which is their
+        handle."""
+        return KnownUserLabel(display_name=external_username, has_handle=True)
 
     def render_app_mention(self, token: str) -> str:
         """Render a mention of the Switch app itself, given the platform's own

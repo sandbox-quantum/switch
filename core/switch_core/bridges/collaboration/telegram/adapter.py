@@ -76,6 +76,7 @@ from switch_core.bridges.collaboration.models import (
     InboundMessage,
     InboundUserJoin,
     InboundUserLeave,
+    KnownUserLabel,
     OutboundAttachment,
     PrivateNoticeDelivery,
     RetireOutcome,
@@ -139,6 +140,10 @@ _TELEGRAM_KEEP = re.compile(
 # A caption over this is posted as its own message ahead of the file. The
 # message-length cap lives in `chunking`, which owns the splitting.
 _MAX_CAPTION_CHARS = 1024
+
+# How many split messages' later parts are held for the bridge to map. Each
+# is taken within a moment of its post; this bounds the ones never taken.
+_FURTHER_REFS_KEPT = 256
 
 # The Bot API refuses to serve a file larger than this, whatever the bridge's
 # own ceiling is set to.
@@ -465,6 +470,9 @@ class _TelegramMarkup(Markup):
     def code(self, text: str) -> str:
         return f"<code>{text}</code>"
 
+    def reply_with(self, handle: str) -> str:
+        return f"Reply to this message with {handle}"
+
 
 TELEGRAM_HTML = _TelegramMarkup()
 
@@ -712,6 +720,13 @@ class TelegramAdapter(PlatformAdapter):
         # people who address by numeric id rather than handle.
         self._user_names: dict[int, str] = {}
         self._username_to_id: dict[str, int] = {}
+        # Telegram user id -> the name Telegram shows for them ("M M"), as
+        # last seen since start, for naming a person without a username.
+        self._full_names: dict[int, str] = {}
+        # The first part of each message `_send_text` split, to the refs of
+        # the rest, until the bridge takes them to map (`take_further_refs`).
+        # Bounded, since a post nobody maps (a notice) is never taken.
+        self._further_refs: OrderedDict[str, list[str]] = OrderedDict()
         # chat id -> its public `@name`, or None for a chat that resolved and
         # has none. A deeplink is built once per room on every dashboard read,
         # inside the request's transaction, and getChat is a network round trip
@@ -1546,6 +1561,13 @@ class TelegramAdapter(PlatformAdapter):
         # Commands reach the bot even in a group where it is not an admin,
         # which is where plain messages do not.
         return f"Send `/link_account {code}` from that account in a group the Switch bot is in."
+
+    @classmethod
+    def unlink_account_instructions(
+        cls, name: str, connection_config: Mapping[str, object]
+    ) -> str:
+        # Telegram command names take no hyphen.
+        return f"send `/unlink_account {name}` in a group the Switch bot is in"
 
     @classmethod
     def unlinkable_account_reason(cls, external_user_id: str) -> str | None:
@@ -2871,6 +2893,7 @@ class TelegramAdapter(PlatformAdapter):
         # handle resolves to.
         self._user_names[user.id] = name
         self._username_to_id[name] = user.id
+        self._remember_full_name(user)
 
         notices: list[str] = []
         held = _PRESS_NOTICE.set(notices)
@@ -3055,6 +3078,7 @@ class TelegramAdapter(PlatformAdapter):
         username = self._display_name(author)
         self._user_names[author.id] = username
         self._username_to_id[username] = author.id
+        self._remember_full_name(author)
 
         content = str(
             getattr(message, "text", None) or getattr(message, "caption", None) or ""
@@ -3144,6 +3168,7 @@ class TelegramAdapter(PlatformAdapter):
                     and f"@{self._bot_username}".lower() in content.lower()
                     else None
                 ),
+                replies_to_app=self._replies_to_app(message),
             )
         )
 
@@ -3521,17 +3546,70 @@ class TelegramAdapter(PlatformAdapter):
         """The thread this message belongs to, as an external ref.
 
         A forum topic gives a stable `message_thread_id` for every message in
-        it. Outside forums Telegram has no thread object, only reply chains, so
-        the message being replied to stands in as the root — which is what an
-        outbound reply is anchored to anyway.
+        it, and is named by that bare number. Outside forums Telegram has no
+        thread object, only reply chains, so the message being replied to
+        stands in as the root, named the way the message map records every
+        post, `chat:message`: a bare number found no message, so the reply
+        lost its conversation. It is also what an outbound reply is anchored
+        to, and `_resolve_root` reads that spelling as a reply target.
         """
         thread_id = getattr(message, "message_thread_id", None)
         if thread_id:
             return str(thread_id)
         replied = getattr(message, "reply_to_message", None)
         if replied is not None:
-            return str(replied.message_id)
+            return f"{message.chat.id}:{replied.message_id}"
         return None
+
+    def _replies_to_app(self, message: Any) -> bool:
+        """Whether this message replies to one the bot posted."""
+        replied = getattr(message, "reply_to_message", None)
+        author = getattr(replied, "from_user", None) if replied is not None else None
+        return author is not None and author.id == self._bot_user_id
+
+    @staticmethod
+    def _full_name(user: Any) -> str:
+        """The name Telegram shows for this person: first and last name."""
+        return " ".join(
+            str(part)
+            for part in (
+                getattr(user, "first_name", None),
+                getattr(user, "last_name", None),
+            )
+            if part
+        ).strip()
+
+    def _remember_full_name(self, user: Any) -> None:
+        full = self._full_name(user)
+        if full:
+            self._full_names[user.id] = full
+
+    @staticmethod
+    def _made_up_handle(external_username: str, external_user_id: str) -> bool:
+        """Whether a stored name is one `_display_name` made for a person
+        without a Telegram username, rather than their username."""
+        return external_username == f"user{external_user_id}" or (
+            external_username.endswith(f"_{external_user_id}")
+        )
+
+    def known_user_label(
+        self, external_user_id: str, external_username: str
+    ) -> KnownUserLabel:
+        """A person without a Telegram username is named as Telegram shows
+        them, not by the handle Switch made up for them. Their name is known
+        once they have written since the bridge started; until then it is the
+        stored name without the id Switch appended."""
+        if not self._made_up_handle(external_username, external_user_id):
+            return KnownUserLabel(display_name=external_username, has_handle=True)
+        seen = (
+            self._full_names.get(int(external_user_id))
+            if external_user_id.lstrip("-").isdigit()
+            else None
+        )
+        if seen:
+            return KnownUserLabel(display_name=seen, has_handle=False)
+        stem = external_username.removesuffix(f"_{external_user_id}")
+        return KnownUserLabel(display_name=stem, has_handle=False)
 
     @staticmethod
     def _display_name(user: Any) -> str:
@@ -3997,8 +4075,12 @@ class TelegramAdapter(PlatformAdapter):
         if first_ref is None:
             return None
         rest = anchor if every_chunk else {}
+        further: list[str] = []
         for index, chunk in enumerate(chunks[1:], start=1):
-            if await self._send_chunk(bot, channel_id, chunk, rest) is not None:
+            ref = await self._send_chunk(bot, channel_id, chunk, rest)
+            if ref is not None:
+                further.append(ref)
+                self._keep_further_refs(first_ref, further)
                 continue
             logger.error(
                 "Only %d of %d parts of a message reached Telegram chat %s",
@@ -4025,6 +4107,17 @@ class TelegramAdapter(PlatformAdapter):
                 total=len(chunks),
             )
         return first_ref
+
+    def _keep_further_refs(self, first_ref: str, further: list[str]) -> None:
+        self._further_refs[first_ref] = list(further)
+        self._further_refs.move_to_end(first_ref)
+        while len(self._further_refs) > _FURTHER_REFS_KEPT:
+            self._further_refs.popitem(last=False)
+
+    def take_further_refs(self, message_ref: str) -> list[str]:
+        """Every part after the first of a message Telegram's cap split, so a
+        reply to the last part of a long answer finds the answer."""
+        return self._further_refs.pop(message_ref, [])
 
     async def _send_chunk(
         self, bot: Any, channel_id: str, chunk: str, kwargs: dict[str, Any]

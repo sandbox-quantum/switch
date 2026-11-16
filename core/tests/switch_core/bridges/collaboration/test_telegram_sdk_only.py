@@ -488,7 +488,7 @@ async def test_what_a_refusal_carries_is_answerable_without_the_buttons() -> Non
     assert "2. Deny" in lines
     assert (
         lines[-1]
-        == "Reply with <code>R7</code> and your choice, e.g. <code>R7 1</code>."
+        == "Reply to this message with <code>R7</code> and your choice, e.g. <code>R7 1</code>."
     )
 
 
@@ -1073,7 +1073,11 @@ async def test_the_body_does_not_repeat_what_the_buttons_already_say() -> None:
     text = _posted(adapter)["text"]
     assert "1. Allow once" not in text
     assert "2. Deny" not in text
-    assert "Reply with <code>R7</code> and your choice, e.g. <code>R7 1</code>." in text
+    # A group bot sees replies to its messages, so the card says to reply to it.
+    assert (
+        "Reply to this message with <code>R7</code> and your choice, e.g. <code>R7 1</code>."
+        in text
+    )
 
 
 async def test_a_press_carries_the_request_and_where_the_control_was() -> None:
