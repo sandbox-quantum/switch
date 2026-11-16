@@ -111,23 +111,78 @@ export function unallowedDirectory(
   return directory;
 }
 
+/**
+ * Advanced settings, by provider, with the values that run an agent without
+ * asking a person, as `auto_approve` does. Claude Code lets the definition an
+ * agent runs as override the session's permission mode: `bypassPermissions`
+ * runs every tool, and `dontAsk` settles every call without asking (what the
+ * settings allow runs, the rest is refused). No other provider's settings can
+ * do as much: Codex's profile names no sandbox or approval policy, OpenCode's
+ * one permission setting (web search) is asked about by the session's own
+ * rules whatever it says, and the rest take no advanced settings.
+ */
+const BYPASS_SETTINGS: Readonly<Record<string, Readonly<Record<string, readonly string[]>>>> = {
+  claude: { permissionMode: ['bypassPermissions', 'dontAsk'] },
+};
+
+/** The definition's advanced settings that would run it without asking, with their values. */
+export function bypassSettings(
+  definition: Pick<AgentDefinition, 'provider' | 'advanced_config'>
+): Record<string, string> {
+  const found: Record<string, string> = {};
+  for (const [key, values] of Object.entries(BYPASS_SETTINGS[definition.provider] ?? {})) {
+    const value = definition.advanced_config[key];
+    if (typeof value === 'string' && values.includes(value.trim())) found[key] = value.trim();
+  }
+  return found;
+}
+
+/** What in the definition asks to run without approvals, in words; empty for nothing. */
+function bypassRequests(definition: AgentDefinition): string[] {
+  return [
+    ...(definition.auto_approve ? ['auto_approve'] : []),
+    ...Object.entries(bypassSettings(definition)).map(
+      ([key, value]) => `${key} ${value} in its advanced configuration`
+    ),
+  ];
+}
+
 /** Whether the definition asks to bypass approvals and the device has not allowed it. */
 export function bypassWithheld(entry: AgentAssignment, context: DefinitionContext): boolean {
   return (
     context.policy !== null &&
-    entry.definition.auto_approve &&
+    bypassRequests(entry.definition).length > 0 &&
     !policyAllowsBypass(context.policy, entry.agent_id)
   );
 }
 
-/** The definition as this device runs it: without bypass unless the device allowed it. */
+/**
+ * The definition as this device runs it: without bypass unless the device
+ * allowed it. A setting that would bypass approvals is left out, so the
+ * runtime mode decides, as it does for a definition that never set it.
+ */
 export function effectiveDefinition(
   entry: AgentAssignment,
   context: DefinitionContext
 ): AgentDefinition {
-  return bypassWithheld(entry, context)
-    ? { ...entry.definition, auto_approve: false }
-    : entry.definition;
+  if (!bypassWithheld(entry, context)) return entry.definition;
+  const withheld = bypassSettings(entry.definition);
+  return {
+    ...entry.definition,
+    auto_approve: false,
+    advanced_config: Object.fromEntries(
+      Object.entries(entry.definition.advanced_config).filter(([key]) => !(key in withheld))
+    ),
+  };
+}
+
+/** What a status report says of a bypass this device withholds, or null when it withholds none. */
+export function bypassWithheldDetail(
+  entry: AgentAssignment,
+  context: DefinitionContext
+): string | null {
+  if (!bypassWithheld(entry, context)) return null;
+  return `Switch asks for this agent to run without asking for approval (${bypassRequests(entry.definition).join('; ')}), and this device has not allowed that, so it asks. ${howToAllow(entry.agent_id, 'bypass')}`;
 }
 
 /** Every assigned agent asking for something the device has not allowed. */

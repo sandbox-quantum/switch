@@ -107,6 +107,7 @@ export class FakeRuntime implements AgentRuntime {
         provider: template.start.provider,
         cwd: template.start.input.cwd,
         runtimeMode: template.start.input.runtimeMode,
+        permissionMode: template.start.input.agentDefinition?.permissionMode ?? null,
       },
       flags: { enabled: true, spawn: true },
       failure: null,

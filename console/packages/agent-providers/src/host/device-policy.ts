@@ -12,7 +12,8 @@ import { replaceFile } from './replace-file';
  * itself more than the device's own user did.
  *
  * - `bypass`: the agent may run without asking for approval (its definition's
- *   `auto_approve`). Without it the agent runs, and asks.
+ *   `auto_approve`, or an advanced setting that skips asking, such as Claude
+ *   Code's `permissionMode`). Without it the agent runs, and asks.
  * - `directories`: folders outside the controller's workspaces folder the
  *   agent may work in, each with everything inside it.
  *
