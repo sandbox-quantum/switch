@@ -965,6 +965,21 @@ AUTH_SIGN_IN_FAILURES = _spec(
     "Password sign-ins refused for a wrong password or an unknown email. No "
     "attributes: never the email, the account or the caller's address.",
 )
+# `limit` is `email` or `client_address`, the sign-in limit that locked
+# (`gateway/login_limits.py`). Email lock-outs coming steadily with no
+# address lock-outs beside them are someone keeping one person out on
+# purpose, which the per-email lock lets anyone who knows the email do.
+AUTH_SIGN_IN_LOCKOUTS = _spec(
+    "switch.auth.sign_in_lockouts",
+    "sum",
+    "{lockout}",
+    "Password sign-in lock-outs, by the limit that locked: `email` (failures "
+    "with one email address, whether or not an account has it) or "
+    "`client_address` (failures from one client address). Counted when the "
+    "failed attempt that reached the limit is refused, never the email, the "
+    "account or the address.",
+    "limit",
+)
 CONTROLLER_CREDENTIAL_REFUSALS = _spec(
     "switch.controller.credential_refusals",
     "sum",
@@ -1094,6 +1109,7 @@ CATALOGUE: dict[str, MetricSpec] = {
         HOSTED_CONTROLLER_ERRORS,
         HOSTED_CONTROLLER_RESTARTS,
         AUTH_SIGN_IN_FAILURES,
+        AUTH_SIGN_IN_LOCKOUTS,
         CONTROLLER_CREDENTIAL_REFUSALS,
         TRUST_CHECK_FAILURES,
         RUNTIME_UNHANDLED_EXCEPTIONS,
