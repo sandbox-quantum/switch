@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readdir, readFile, rm } from 'node:fs/promises';
+import { readdir, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import {
@@ -12,6 +12,7 @@ import type { SwitchIdentity } from '@sandboxaq/switch-agent-runtime/hosted';
 import { z } from 'zod';
 import { isProcessAlive } from '../process-alive';
 import type { Handoff } from './handoff';
+import { ensurePrivateDirectory } from './host-permissions';
 import { Journal } from './journal';
 import {
   ensureSharedProcess,
@@ -420,6 +421,15 @@ export async function stopRedefinedSessions(
 }
 
 /**
+ * A session's state root, and the folder of them, private to this user: they
+ * hold its transcript, its room files and its provider's own databases.
+ */
+async function ensureSessionRoot(sessionId: string): Promise<void> {
+  await ensurePrivateDirectory(sharedSessionsBase());
+  await ensurePrivateDirectory(sharedSessionRoot(sessionId));
+}
+
+/**
  * Which session serves which room, and how far the watcher has got. Both the
  * assignment and the routing that follows it are on disk before the stream is
  * allowed past the event.
@@ -602,7 +612,7 @@ export class AgentHostAssignments {
       throw new Error('A watcher assignment needs the connection its agent is reached over.');
     const sessionId = sessionIdFor(template.session.agentId, event.roomId, event.messageId);
     const config = sessionFrom(template, sessionId);
-    await mkdir(sharedSessionRoot(sessionId), { recursive: true });
+    await ensureSessionRoot(sessionId);
     await this.journal.append({
       sequence: event.sequence,
       roomId: event.roomId,
@@ -618,7 +628,7 @@ export class AgentHostAssignments {
       throw new Error('A watcher assignment needs the connection its agent is reached over.');
     const sessionId = randomUUID();
     const config = sessionFrom(template, sessionId);
-    await mkdir(sharedSessionRoot(sessionId), { recursive: true });
+    await ensureSessionRoot(sessionId);
     await this.journal.append({ warmed: true, roomId, config });
     return config;
   }

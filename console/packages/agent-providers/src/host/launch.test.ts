@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
@@ -90,6 +90,20 @@ async function fixture() {
 it('refuses to replace missing conversation state with a fresh session', async () => {
   await expect(ensureSharedProcess(await fixture())).rejects.toThrow('no saved SDK conversation');
 });
+it.skipIf(process.platform === 'win32')(
+  'tightens a session root an earlier build left open before using it',
+  async () => {
+    const input = await fixture();
+    await chmod(input.root, 0o755);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await expect(ensureSharedProcess(input)).rejects.toThrow('no saved SDK conversation');
+    } finally {
+      warn.mockRestore();
+    }
+    expect((await stat(input.root)).mode & 0o777).toBe(0o700);
+  }
+);
 it('waits for the old owner to exit before starting its replacement', async () => {
   const input = await fixture();
   await writeFile(join(input.root, 'config.json'), JSON.stringify(input.config));

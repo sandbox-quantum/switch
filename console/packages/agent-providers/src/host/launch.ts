@@ -1,10 +1,11 @@
 import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { link, mkdir, open, readFile, unlink } from 'node:fs/promises';
+import { link, open, readFile, unlink } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { isProcessAlive } from '../process-alive';
+import { ensurePrivateDirectory } from './host-permissions';
 import { replaceOwner, withOwnershipLock } from './ownership-lock';
 import { commandLineNames, killProcessTree, processCommandLine } from './process-fence';
 import type { SessionLinks } from './session-channel';
@@ -155,7 +156,7 @@ export async function ensureSharedProcess(input: LaunchInput): Promise<{ created
 }
 
 async function launch(input: LaunchInput): Promise<{ created: boolean }> {
-  await mkdir(input.root, { recursive: true, mode: 0o700 });
+  await ensurePrivateDirectory(input.root);
   const path = join(input.root, 'config.json');
   let created = false;
   try {
