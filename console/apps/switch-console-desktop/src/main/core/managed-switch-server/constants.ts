@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { userDataDirName } from '../../app/user-data-dir';
 
 /**
@@ -11,13 +12,20 @@ import { userDataDirName } from '../../app/user-data-dir';
  * The `docker compose --project-name` of a managed stack kept by the Console
  * whose data lives in `dataDirName`, made of what compose accepts in a project
  * name: lowercase letters, digits, `-` and `_`, starting with a letter or digit.
+ *
+ * A name that has to change to fit gets a short hash of itself as well, so
+ * two that differ only in what was changed (`team.alpha` and `team-alpha`)
+ * never share a stack. A name that fits as it is keeps its project name, so
+ * an existing install stays attached to the stack it has.
  */
 export function stackProjectName(dataDirName: string, kind: 'local' | 'remote'): string {
   const safe = dataDirName
     .toLowerCase()
     .replace(/[^a-z0-9_-]+/g, '-')
     .replace(/^[^a-z0-9]+/, '');
-  return `${safe || 'switchdash'}-${kind}`;
+  if (safe === dataDirName) return `${safe}-${kind}`;
+  const hash = createHash('sha256').update(dataDirName).digest('hex').slice(0, 8);
+  return `${safe || 'switchdash'}-${hash}-${kind}`;
 }
 
 /**
@@ -107,6 +115,10 @@ export const LOCAL_SERVER_MATTERMOST_TEAM = 'switch';
  * name the seeder actually used — the generated env, the embed's silent login,
  * and the sign-in Switch Console shows the user — so it is named once here. */
 export const LOCAL_SERVER_MATTERMOST_USER = 'user';
+
+/** The stack's named volume holding its Postgres data (compose prefixes it
+ * with the project name). */
+export const DATABASE_VOLUME = 'pgdata';
 
 /** Its container stands for "the stack is up", its image tag is the stack's
  * version, and its environment carries the server's settings. */

@@ -18,8 +18,24 @@ describe('stackProjectName', () => {
   });
 
   it('only uses what compose accepts in a project name', () => {
-    expect(stackProjectName('My Data.Dir', 'local')).toBe('my-data-dir-local');
-    expect(stackProjectName('.hidden', 'remote')).toBe('hidden-remote');
-    expect(stackProjectName('...', 'local')).toBe('switchdash-local');
+    expect(stackProjectName('My Data.Dir', 'local')).toMatch(/^my-data-dir-[0-9a-f]{8}-local$/);
+    expect(stackProjectName('.hidden', 'remote')).toMatch(/^hidden-[0-9a-f]{8}-remote$/);
+    expect(stackProjectName('...', 'local')).toMatch(/^switchdash-[0-9a-f]{8}-local$/);
+  });
+
+  it('keeps data folders apart whose names differ only in punctuation or case', () => {
+    expect(stackProjectName('x-y', 'local')).toBe('x-y-local');
+    expect(stackProjectName('x.y', 'local')).not.toBe(stackProjectName('x-y', 'local'));
+    expect(stackProjectName('x.y', 'local')).toMatch(/^x-y-[0-9a-f]{8}-local$/);
+    expect(stackProjectName('team.alpha', 'remote')).not.toBe(
+      stackProjectName('team-alpha', 'remote')
+    );
+    expect(stackProjectName('Team-Alpha', 'local')).not.toBe(
+      stackProjectName('team-alpha', 'local')
+    );
+    // The same folder always gets the same name.
+    expect(stackProjectName('x.y', 'local')).toBe(stackProjectName('x.y', 'local'));
+    // Nor can a punctuated name land on the stable app's own stack.
+    expect(stackProjectName('.switchdash', 'local')).not.toBe('switchdash-local');
   });
 });
