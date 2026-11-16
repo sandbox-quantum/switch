@@ -158,13 +158,13 @@ def create_engine_from_config(
         "pool_pre_ping": config.db_pool_pre_ping,
         "pool_timeout": config.db_pool_timeout,
         "connect_args": connect_args,
-        # A database error's text is what lands in the logs, so it must not
-        # carry the bound values (emails, message text, tokens). They are still
-        # on the exception as `.params` for anyone debugging in a shell.
-        "hide_parameters": True,
     }
     defaults.update(engine_kwargs)
-    engine = create_async_engine(config.database_url, **defaults)
+    # A database error's text is what lands in the logs, so it must not carry
+    # the bound values (emails, message text, tokens). They are still on the
+    # exception as `.params` for anyone debugging in a shell. Every engine in
+    # the service passes it (`test_hidden_parameters.py` checks).
+    engine = create_async_engine(config.database_url, **defaults, hide_parameters=True)
     event.listen(engine.sync_engine, "checkout", _refuse_closed_connection)
     return _with_dead_peer_detection(engine, config)
 

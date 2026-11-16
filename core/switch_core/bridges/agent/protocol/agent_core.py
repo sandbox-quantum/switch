@@ -2040,6 +2040,7 @@ class AgentCore:
             thread_root_id=thread_root_id,
             extra_content=extra_content,
             metered=True,
+            authored=content,
         )
         if event_id is None:
             raise ValueError("Failed to send message")
@@ -2211,6 +2212,9 @@ class AgentCore:
                         else None
                     ),
                     metered=True,
+                    # Held to the length limit on the agent's own caption,
+                    # without the file notes Switch added under it.
+                    authored=caption if index == 0 else None,
                 )
                 if event_id is None:
                     raise ValueError(f"Failed to send media message for '{filename}'")
@@ -2569,11 +2573,16 @@ class AgentCore:
         client = self.client_lifecycle.get_by_agent_id(agent_id)
         if client is None:
             raise ValueError("Agent client not running")
+        written = detail
         detail, pending_alert, verdict = await self._enforce_trust(
             room, detail, None, client
         )
         event_id = await client.send_message(
-            room.transport_room_id, f"*{detail}*", format="markdown", metered=True
+            room.transport_room_id,
+            f"*{detail}*",
+            format="markdown",
+            metered=True,
+            authored=written,
         )
         if event_id is None:
             if pending_alert is not None:

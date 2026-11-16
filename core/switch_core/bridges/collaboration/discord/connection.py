@@ -21,13 +21,13 @@ logger = logging.getLogger(__name__)
 
 _READY_TIMEOUT = 30.0
 
-# The client's default, and passed again on every post that carries text
-# Switch did not write, so no single path depends on the other. Escaping the
-# text is not enough on its own: Discord decides who a message pings from the
-# raw content it receives, so `@everyone` is refused here rather than in
-# markup. Only the mass mentions are withheld; a user or role the agent
-# deliberately mentioned still resolves.
-NO_MASS_MENTIONS = discord.AllowedMentions(everyone=False)
+# The client's default, for a post that does not say who it may ping: nobody.
+# Discord decides who a message pings from the raw content it receives, so
+# escaping the text is not enough on its own. Every post that carries a
+# message's text lists who it may ping instead (`DiscordAdapter.
+# _mentions_allowed`): the people and agent roles the bridge itself wrote a
+# mention of, and `@everyone` only for a message marked room-wide.
+NO_MENTIONS = discord.AllowedMentions.none()
 
 # A member search is a Gateway send, and discord.py holds every send past 110 a
 # minute on one socket until the minute is up. On the shared connection that
@@ -270,7 +270,7 @@ class DiscordConnection:
         """
         client = discord.Client(
             intents=self._intents,
-            allowed_mentions=NO_MASS_MENTIONS,
+            allowed_mentions=NO_MENTIONS,
             **self._client_options,
         )
         self._client = client
@@ -296,7 +296,7 @@ class DiscordConnection:
         """
         client = discord.Client(
             intents=self._intents,
-            allowed_mentions=NO_MASS_MENTIONS,
+            allowed_mentions=NO_MENTIONS,
             **self._client_options,
         )
         client.event(self._make_on_message())

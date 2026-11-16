@@ -9,6 +9,7 @@ from switch_core.clients.admin_messages import AdminMessageType
 from switch_core.delivery.send_limits import (
     MessageRefused,
     MessageTooLong,
+    SendLimits,
     SendRateLimited,
 )
 from switch_core.trust.client import (
@@ -44,14 +45,16 @@ class _FakeHumanActor:
         self.client_id = "alice-client"
         self.transport_user_id = "@ext_alice:switch.local"
         self.sent: list[tuple[str, str]] = []
+        self.authored: list[object] = []
         self._fail_send = fail_send
 
     async def send_message(
-        self, room_id: str, content: str, **_kw: object
+        self, room_id: str, content: str, **kw: object
     ) -> str | None:
         if self._fail_send:
             return None
         self.sent.append((room_id, content))
+        self.authored.append(kw.get("authored"))
         return "$event-1"
 
 
@@ -381,6 +384,51 @@ async def test_a_long_message_is_checked_in_part_and_room_and_sender_are_told() 
     [(_, body, _, message_type)] = adapter.admin_messages
     assert "checked only the first 20,000 characters" in body
     assert message_type == AdminMessageType.TRUST_ERRORED.value
+
+
+async def test_switch_trusts_note_does_not_count_against_a_message_within_the_limit() -> (
+    None
+):
+    """A 65,496-character paste is within the 65,536 limit as the person
+    sent it. Switch Trust checks only its first 20,000 characters, and the
+    note saying so takes the stored message to 65,599. The limit is held to
+    what the person wrote, and the row has room for the note."""
+    human_actor = _FakeHumanActor()
+    adapter = _FakeAdapter()
+    bridge = _bridge(human_actor, adapter, _FixedTrustClient(_OK))
+    content = "x" * 65_496
+
+    await CollaborationCore._handle_inbound_message(bridge, _message(content))
+
+    [(_, sent)] = human_actor.sent
+    assert len(sent) == 65_599
+    assert sent.startswith(content + "\n\n")
+    assert human_actor.authored == [content]
+    limits = SendLimits(
+        max_message_chars=65_536, burst=1, per_second=1.0, clock=lambda: 0.0
+    )
+    # What the transport and the router hold this send to.
+    limits.admit(human_actor.client_id, content, actor="human", starts_post=True)
+    limits.require_row_length(sent)
+    [(_, notice, _, message_type)] = adapter.admin_messages
+    assert message_type == AdminMessageType.TRUST_ERRORED.value
+    assert "not delivered" not in notice
+
+
+async def test_the_agent_named_for_a_channel_does_not_count_against_its_sender() -> (
+    None
+):
+    """A bot tagged in a channel where it stands for an agent gets the
+    agent's `@name` written in front, so the agent is addressed."""
+    human_actor = _FakeHumanActor()
+    bridge = _bridge(human_actor, _FakeAdapter(), _FixedTrustClient(_OK))
+    bridge._resolve_self_mention_target = AsyncMock(return_value="helper")
+    message = _message("hello").model_copy(update={"self_mention_token": "bot"})
+
+    await CollaborationCore._handle_inbound_message(bridge, message)
+
+    assert human_actor.sent == [(TRANSPORT_ROOM_ID, "@helper hello")]
+    assert human_actor.authored == ["hello"]
 
 
 class _RefusingHumanActor(_FakeHumanActor):

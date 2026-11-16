@@ -172,7 +172,7 @@ async def test_discord_block_notice_is_a_direct_message_naming_the_channel() -> 
     users = {4242: _User()}
     client = SimpleNamespace(get_user=users.get)
     adapter = DiscordAdapter.__new__(DiscordAdapter)
-    adapter._connection = SimpleNamespace(client=client)  # type: ignore[assignment]
+    adapter._connection = SimpleNamespace(client=client, bot_user_id=0)  # type: ignore[assignment]
     adapter._gateway_public_url = None
     human_actor = _FakeHumanActor()
     bridge = _bridge(human_actor, adapter, _FixedTrustClient(_BLOCKED))  # type: ignore[arg-type]
@@ -235,7 +235,7 @@ async def test_a_long_discord_notice_is_split_to_fit() -> None:
 
     client = SimpleNamespace(get_user={4242: _User()}.get)
     adapter = DiscordAdapter.__new__(DiscordAdapter)
-    adapter._connection = SimpleNamespace(client=client)  # type: ignore[assignment]
+    adapter._connection = SimpleNamespace(client=client, bot_user_id=0)  # type: ignore[assignment]
     adapter._gateway_public_url = None
 
     await adapter.notify_privately(

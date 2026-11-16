@@ -660,7 +660,10 @@ async def _prepare_database(config: SwitchConfig) -> None:
     if owner_url is None:
         return
     owner_engine = create_async_engine(
-        owner_url, poolclass=NullPool, connect_args=config.db_connect_args
+        owner_url,
+        poolclass=NullPool,
+        connect_args=config.db_connect_args,
+        hide_parameters=True,
     )
     try:
         async with owner_engine.begin() as connection:
@@ -2656,6 +2659,7 @@ async def _schema_ahead(config: SwitchConfig, alembic_cfg: AlembicConfig) -> boo
         config.owner_database_url or config.database_url,
         poolclass=NullPool,
         connect_args=config.db_connect_args,
+        hide_parameters=True,
     )
     try:
         return await schema_ahead_through_expand_only(engine, alembic_cfg)
@@ -2671,7 +2675,10 @@ async def _check_schema_at_head(config: SwitchConfig) -> None:
             "which never uses it. Remove it from this process's environment."
         )
     engine = create_async_engine(
-        config.database_url, poolclass=NullPool, connect_args=config.db_connect_args
+        config.database_url,
+        poolclass=NullPool,
+        connect_args=config.db_connect_args,
+        hide_parameters=True,
     )
     try:
         await require_schema_at_head(engine, _alembic_config())
