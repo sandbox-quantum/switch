@@ -181,13 +181,16 @@ jobs:
               - 'scripts/release_charts.sh'
               - 'scripts/check_chart_decision.py'
               - '.github/workflows/switch-release.yml'
-            # What the deployment files promise about hardening: the gateway's
-            # security headers, and everything else check_deploy_hardening.py
-            # names.
+            # What the deployment files promise about hardening (the gateway's
+            # security headers, images pinned by digest, and the rest
+            # check_deploy_hardening.py names), CI's own docker run images
+            # included.
             deploy_hardening:
               - *shared
               - 'deploy/remote/helm/**'
               - 'deploy/shared_resources/**'
+              - 'deploy/local/**'
+              - '.github/workflows/**'
               - 'scripts/check_deploy_hardening.py'
             # Spans every tree, so it gets its own filter rather than riding
             # any one of them. Includes the files whose versions the registry is
@@ -646,7 +649,7 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           docker run --rm -v "$PWD:/repo" -w /repo \
-            zricethezav/gitleaks:v8.30.1 detect \
+            zricethezav/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f detect \
             --source=/repo \
             --redact \
             --log-opts="${BASE_SHA}..${HEAD_SHA}" \

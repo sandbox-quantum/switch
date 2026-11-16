@@ -67,7 +67,7 @@ x-switch-contract:
 
 services:
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:81e77a4833487b8132fe4b00bedd39dc3f74b8641e387f19312a48f7de218c2e
     ports:
       - "${SWITCH_BIND_ADDR:-127.0.0.1}:${POSTGRES_HOST_PORT:-5432}:5432"
     environment:
@@ -92,7 +92,7 @@ services:
       retries: 10
 
   init-db:
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:81e77a4833487b8132fe4b00bedd39dc3f74b8641e387f19312a48f7de218c2e
     # No profile here on purpose — see the note above the profile table. This
     # runs on every `up`, collab or not, because switch alone needs the
     # runtime role it creates.
@@ -150,7 +150,7 @@ services:
     # Pinned rather than `latest`: Switch Console embeds this Mattermost's web UI
     # and depends on its DOM structure, so an unattended upgrade could break
     # the embedded room view on a `docker compose pull` no one initiated.
-    image: mattermost/mattermost-team-edition:11.9.0
+    image: mattermost/mattermost-team-edition:11.9.0@sha256:1c538cf33c2144ba2c825571cd414aaaebf8d8c231d4b18081b811cd0ca0ef2a
     # Mattermost publishes team-edition for amd64 only, so an Apple Silicon or
     # other arm64 host fails the pull outright without this. Runs emulated.
     platform: linux/amd64

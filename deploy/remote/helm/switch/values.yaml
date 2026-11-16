@@ -909,7 +909,7 @@ mattermost:
   # and can silently jump major versions). Mattermost does not support
   # downgrades, so bump this deliberately. Requires >= v10.2 (see the API post
   # deletion setting below).
-  image: mattermost/mattermost-team-edition:11.8.3
+  image: mattermost/mattermost-team-edition:11.8.3@sha256:367ebf9621d8c2f4aa41da63143a9260cfa0670558cb840be583d7fc6d0da35b
   imagePullPolicy: IfNotPresent
   adminUser: admin
   teamName: switch
@@ -1331,7 +1331,7 @@ postgresql:
     database: switch
 
   # ── mode: managed ───────────────────────────────────────────────────────────
-  image: postgres:16-alpine
+  image: postgres:16-alpine@sha256:81e77a4833487b8132fe4b00bedd39dc3f74b8641e387f19312a48f7de218c2e
   imagePullPolicy: IfNotPresent
   database: switch
   persistence:

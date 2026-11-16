@@ -1,6 +1,6 @@
 services:
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:81e77a4833487b8132fe4b00bedd39dc3f74b8641e387f19312a48f7de218c2e
     ports:
       - "${SWITCH_BIND_ADDR:-127.0.0.1}:5432:5432"
     environment:
@@ -21,7 +21,7 @@ services:
       retries: 10
 
   init-db:
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:81e77a4833487b8132fe4b00bedd39dc3f74b8641e387f19312a48f7de218c2e
     environment:
       PGPASSWORD: ${DB_OWNER_PASSWORD}
     # Runs as the owner: creating a database and a role both need privileges
@@ -51,7 +51,7 @@ services:
         condition: service_healthy
 
   mattermost:
-    image: mattermost/mattermost-team-edition:latest
+    image: mattermost/mattermost-team-edition:latest@sha256:35927b9c535a9eb74f0e45385d3fe5d8308b16e0464031f157a834da8af3ee73
     platform: linux/amd64
     # It calls back to switch-core on the host for button presses; see `setup`.
     extra_hosts:

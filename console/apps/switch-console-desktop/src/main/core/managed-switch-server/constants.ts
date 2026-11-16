@@ -55,7 +55,8 @@ export const STACK_STATE_LABEL = 'com.switch-console.stack-state';
 /** For the throwaway containers that reach the state volume. The stack's own
  * Postgres image, so any host that has run the stack already has it;
  * `stack-state.test.ts` holds it to the bundled compose file. */
-export const STACK_HELPER_IMAGE = 'postgres:16-alpine';
+export const STACK_HELPER_IMAGE =
+  'postgres:16-alpine@sha256:81e77a4833487b8132fe4b00bedd39dc3f74b8641e387f19312a48f7de218c2e';
 
 /** File names of the compose file and generated `.env` inside the host working
  * dir. Kept relative so `docker compose -f <name>` resolves against the working
