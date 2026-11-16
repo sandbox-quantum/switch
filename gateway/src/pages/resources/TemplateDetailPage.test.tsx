@@ -218,7 +218,10 @@ describe("TemplateDetailPage", () => {
     await waitFor(() => expect((save as HTMLButtonElement).disabled).toBe(false), { timeout: 3000 });
     fireEvent.click(save);
 
-    expect(await screen.findByRole("heading", { name: "Switch expert (copy 2)" })).toBeTruthy();
+    // Saved, then navigated to and fetched: a few round trips.
+    expect(
+      await screen.findByRole("heading", { name: "Switch expert (copy 2)" }, { timeout: 3000 }),
+    ).toBeTruthy();
   });
 
   it("saves a changed use case, and clears one", async () => {

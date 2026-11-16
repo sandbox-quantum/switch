@@ -1,3 +1,4 @@
+import CloseOutlined from "@mui/icons-material/CloseOutlined";
 import ContentCopyOutlined from "@mui/icons-material/ContentCopyOutlined";
 import DeleteOutline from "@mui/icons-material/DeleteOutline";
 import EditOutlined from "@mui/icons-material/EditOutlined";
@@ -8,6 +9,7 @@ import {
   Box,
   Button,
   CircularProgress,
+  IconButton,
   InputAdornment,
   Link,
   Stack,
@@ -196,8 +198,9 @@ export default function TemplatesPage() {
       </Tabs>
 
       <Stack direction="row" spacing={1.5} useFlexGap sx={{ alignItems: "center", flexWrap: "wrap", mb: 3 }}>
+        {/* Plain text rather than `type="search"`, whose own clear glyph
+            would sit beside this one. */}
         <TextField
-          type="search"
           value={query}
           onChange={(event) => setQuery(event.target.value)}
           placeholder="Search templates"
@@ -211,6 +214,13 @@ export default function TemplatesPage() {
                   <SearchOutlined fontSize="small" />
                 </InputAdornment>
               ),
+              endAdornment: query ? (
+                <InputAdornment position="end">
+                  <IconButton size="small" edge="end" aria-label="Clear search" onClick={() => setQuery("")}>
+                    <CloseOutlined fontSize="small" />
+                  </IconButton>
+                </InputAdornment>
+              ) : undefined,
             },
           }}
         />

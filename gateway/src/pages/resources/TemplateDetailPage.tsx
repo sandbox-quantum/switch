@@ -10,6 +10,7 @@ import {
   Button,
   CircularProgress,
   Divider,
+  IconButton,
   Stack,
   TextField,
   Typography,
@@ -136,10 +137,10 @@ export default function TemplateDetailPage() {
 
   return (
     <Box>
-      <Button startIcon={<ArrowBack />} onClick={() => navigate(LIST_URL)} sx={{ ml: -1, mb: 1 }}>
-        Back to templates
-      </Button>
       <Stack direction="row" spacing={1} useFlexGap sx={{ alignItems: "center", flexWrap: "wrap", mb: 2 }}>
+        <IconButton onClick={() => navigate(LIST_URL)} size="small" aria-label="Back to templates">
+          <ArrowBack />
+        </IconButton>
         <Typography variant="h5" sx={{ minWidth: 0, overflowWrap: "anywhere" }}>
           {template.name || "Template"}
         </Typography>

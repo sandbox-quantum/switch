@@ -204,7 +204,9 @@ describe("TemplatesPage", () => {
     expect(cardNames(section("Workspace"))).toEqual(["Retro"]);
     expect(screen.queryByRole("region", { name: "Official" })).toBeNull();
     expect(tab(/^All/).textContent).toBe("All 1");
-    fireEvent.change(screen.getByLabelText("Search templates"), { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: "Clear search" }));
+    expect((screen.getByLabelText("Search templates") as HTMLInputElement).value).toBe("");
+    expect(screen.queryByRole("button", { name: "Clear search" })).toBeNull();
 
     const types = within(screen.getByRole("group", { name: "Filter by template type" }));
     expect(types.getAllByRole("button").map((b) => b.textContent)).toEqual(["All 3", "Agent 1", "Room 1", "Group 1"]);

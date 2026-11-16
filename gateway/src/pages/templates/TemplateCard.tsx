@@ -1,6 +1,6 @@
+import ChatBubbleOutlineOutlined from "@mui/icons-material/ChatBubbleOutlineOutlined";
 import GridViewOutlined from "@mui/icons-material/GridViewOutlined";
 import LockOutlined from "@mui/icons-material/LockOutlined";
-import MeetingRoomOutlined from "@mui/icons-material/MeetingRoomOutlined";
 import SmartToyOutlined from "@mui/icons-material/SmartToyOutlined";
 import { Box, Button, ButtonBase, Chip, Stack, Tooltip, Typography } from "@mui/material";
 import type { ReactElement } from "react";
@@ -16,11 +16,11 @@ import {
   useCaseLabel,
 } from "./templateRows";
 
-/** One glyph per kind, wherever a template's kind is shown: the rail's
- * for agents and rooms. */
+/** One glyph per kind, wherever a template's kind is shown. A room
+ * template is the speech bubble, as in Switch Console, not the rail's door. */
 const KIND_ICON: Record<TemplateKind, ReactElement> = {
   agent: <SmartToyOutlined />,
-  room: <MeetingRoomOutlined />,
+  room: <ChatBubbleOutlineOutlined />,
   group: <GridViewOutlined />,
 };
 
