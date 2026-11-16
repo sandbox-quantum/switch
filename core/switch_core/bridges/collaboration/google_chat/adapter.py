@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
@@ -11,6 +12,7 @@ from pydantic import Field, field_validator
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.agent_display_name import ZERO_WIDTH_SPACE
 from switch_core.bridges.collaboration.adapter import (
     AgentIdentity,
     PlatformAdapter,
@@ -56,6 +58,11 @@ from switch_core.bridges.collaboration.models import (
 )
 
 logger = logging.getLogger(__name__)
+
+# The opening of a Google Chat mention, `<users/ID>` for one person and
+# `<users/all>` for everyone in the space, which Google Chat resolves from the
+# text alone. Switch writes neither, so one in a body came from somewhere else.
+_RAW_MENTION = re.compile(r"<(?=users/)", re.IGNORECASE)
 
 
 class GoogleChatConnectionConfig(BridgeConnectionConfig):
@@ -451,4 +458,8 @@ class GoogleChatAdapter(PlatformAdapter):
         return text
 
     def _render_outbound(self, text: str) -> str:
-        return markdown_to_google_chat(text)
+        """Markdown as Google Chat formatting, with any mention already in it
+        shown as written: a zero-width space after its `<` leaves it legible
+        and unresolved, so text an agent echoed cannot notify a person, or the
+        whole space with `<users/all>`."""
+        return _RAW_MENTION.sub("<" + ZERO_WIDTH_SPACE, markdown_to_google_chat(text))

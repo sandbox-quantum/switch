@@ -724,6 +724,28 @@ class TestGoogleChatFormattingAndThreading:
         assert "`inline`" in converted
         assert "```\nblock\n```" in converted
 
+    @pytest.mark.asyncio
+    async def test_a_raw_mention_in_agent_text_notifies_nobody(self) -> None:
+        # Google Chat resolves `<users/…>` from the text alone, and
+        # `<users/all>` reaches everyone in the space.
+        adapter = GoogleChatAdapter(_make_config())
+        adapter.client.create_message = AsyncMock(
+            return_value={"name": "spaces/S1/messages/OUT_1"}
+        )
+
+        await adapter.send_message(
+            channel_id="spaces/S1",
+            sender_name="Scout",
+            content=adapter.translate_outbound(
+                "FYI <users/all> and <users/123456> and [x](users/all)"
+            ),
+        )
+
+        text_sent = adapter.client.create_message.call_args[1]["text"]
+        assert "<users/" not in text_sent
+        assert "<\u200busers/all>" in text_sent
+        assert "<\u200busers/123456>" in text_sent
+
     def test_split_long_messages_preserves_code_fences(self) -> None:
         long_code = "```python\n" + ("x = 1\n" * 500) + "```"
         chunks = split_message_chunks(long_code, max_bytes=1000)
