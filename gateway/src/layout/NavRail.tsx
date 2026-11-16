@@ -42,6 +42,7 @@ function RailItem({ item, active }: { item: RailItemDefinition; active: boolean 
       component={RouterLink}
       to={item.to}
       aria-current={active ? "page" : undefined}
+      aria-label={item.labelled ? undefined : item.label}
       sx={{
         display: "flex",
         flexDirection: "column",
@@ -49,9 +50,6 @@ function RailItem({ item, active }: { item: RailItemDefinition; active: boolean 
         gap: 0.25,
         textDecoration: "none",
         color: "text.primary",
-        opacity: active ? 1 : 0.75,
-        transition: "opacity 150ms",
-        "&:hover": { opacity: 1 },
         "&:focus-visible": { outline: "2px solid var(--sw-ring)", outlineOffset: 2, borderRadius: "16px" },
       }}
     >
@@ -75,13 +73,25 @@ function RailItem({ item, active }: { item: RailItemDefinition; active: boolean 
       >
         <item.icon sx={{ fontSize: ICON, strokeWidth: 1.5 }} />
       </Box>
-      <Typography
-        sx={{ fontSize: LABEL, lineHeight: 1, fontWeight: 500, letterSpacing: "-0.01em" }}
-      >
-        {item.label}
-      </Typography>
+      {item.labelled && (
+        <Typography
+          sx={{ fontSize: LABEL, lineHeight: 1, fontWeight: 500, letterSpacing: "-0.01em" }}
+        >
+          {item.label}
+        </Typography>
+      )}
     </Box>
   );
+}
+
+/** What the account button shows: the initials of the first and last words
+ * of the person's name, or the first letter of their email when the name
+ * gives none. */
+export function accountInitials(user: { name: string; email: string } | null): string {
+  const words = (user?.name ?? "").split(/\s+/).filter((word) => /^\p{L}/u.test(word));
+  const picked = words.length > 1 ? [words[0], words[words.length - 1]] : words;
+  const initials = picked.map((word) => Array.from(word)[0]).join("");
+  return (initials === "" ? (user?.email ?? "?").charAt(0) : initials).toLocaleUpperCase();
 }
 
 export default memo(function NavRail() {
@@ -105,7 +115,7 @@ export default memo(function NavRail() {
   const items = railFor(capabilities);
   const isActive = (item: RailItemDefinition) =>
     item.activeFor.some((prefix) => location.pathname.startsWith(prefix));
-  const initial = (user?.email ?? "?").charAt(0).toUpperCase();
+  const initials = accountInitials(user);
 
   return (
     <Stack
@@ -119,7 +129,7 @@ export default memo(function NavRail() {
         color: "text.primary",
       }}
     >
-      <Tooltip title="Switch Gateway" placement="right">
+      <Tooltip title="Switch" placement="right">
         {/* Two assets rather than one recoloured mark: the swap is done in CSS
             off the colour-scheme attribute so there is no flash on first paint,
             and a future coloured logo drops in without rework. The file names
@@ -215,7 +225,7 @@ export default memo(function NavRail() {
             "&:focus-visible": { outline: "2px solid var(--sw-ring)", outlineOffset: 2 },
           }}
         >
-          {initial}
+          {initials}
         </Box>
       </Stack>
 

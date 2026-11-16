@@ -125,9 +125,9 @@ export const REDIRECTS: readonly MatrixRedirect[] = [
   { from: "/operator/workspaces", to: "/platform/workspaces" },
 ];
 
-// The ecosystem graph has no rail item of its own: Overview links to it.
+// The ecosystem graph has no rail item of its own: Home links to it.
 const RAIL_EVERYONE = [
-  "Overview",
+  "Home",
   "Agents",
   "Rooms",
   "Templates",

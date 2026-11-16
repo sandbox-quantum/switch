@@ -19,7 +19,7 @@ import { DevRoleSlot } from "./DevRoleSlot";
 import WorkspaceMenu from "./WorkspaceMenu";
 
 const SECTION_LABELS: [prefix: string, label: string][] = [
-  ["/overview", "Overview"],
+  ["/overview", "Home"],
   ["/ecosystem", "Ecosystem"],
   ["/agents", "Agents"],
   ["/rooms", "Rooms"],

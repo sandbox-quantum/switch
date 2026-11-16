@@ -136,11 +136,13 @@ function renderAt(path: string) {
   );
 }
 
+/** The rail's links by their names: the label under each glyph, or, for
+ * one shown as a glyph alone, its accessible name. */
 async function railLabels(): Promise<string[]> {
   const rail = await screen.findByRole("navigation", { name: "Main" });
   return within(rail)
     .getAllByRole("link")
-    .map((link) => link.textContent ?? "");
+    .map((link) => link.getAttribute("aria-label") ?? link.textContent ?? "");
 }
 
 async function menuLabels(area: string): Promise<string[]> {
@@ -333,7 +335,7 @@ describe("deleting the workspace", () => {
 
 describe("the layout", () => {
 
-  it("opens on Overview", async () => {
+  it("opens on Home", async () => {
     mockFetch(signedInAs("member"));
     renderAt("/");
     await landsOn("/overview");
@@ -343,13 +345,21 @@ describe("the layout", () => {
     mockFetch(signedInAs("member"));
     renderAt("/overview");
     expect(await railLabels()).toEqual([
-      "Overview",
+      "Home",
       "Agents",
       "Rooms",
       "Templates",
       "Resources",
       "Settings",
     ]);
+  });
+
+  it("shows the Settings cog without a label, and every other item with one", async () => {
+    mockFetch(signedInAs("member"));
+    renderAt("/overview");
+    const rail = await screen.findByRole("navigation", { name: "Main" });
+    expect(within(rail).getByRole("link", { name: "Settings" }).textContent).toBe("");
+    expect(within(rail).getByRole("link", { name: "Home" }).textContent).toBe("Home");
   });
 
   it("puts Connectors on the rail where connectors run, and Platform for the operator", async () => {
@@ -395,7 +405,7 @@ describe("the layout", () => {
     await waitFor(() =>
       expect(within(rail).getByRole("link", { name: "Settings" }).getAttribute("aria-current")).toBe("page"),
     );
-    expect(within(rail).getByRole("link", { name: "Overview" }).getAttribute("aria-current")).toBeNull();
+    expect(within(rail).getByRole("link", { name: "Home" }).getAttribute("aria-current")).toBeNull();
   });
 
   it("keeps Templates out of Resources", async () => {

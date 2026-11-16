@@ -1,11 +1,11 @@
 import AdminPanelSettingsOutlined from "@mui/icons-material/AdminPanelSettingsOutlined";
-import DashboardOutlined from "@mui/icons-material/DashboardOutlined";
-import DescriptionOutlined from "@mui/icons-material/DescriptionOutlined";
-import FolderOutlined from "@mui/icons-material/FolderOutlined";
+import HomeOutlined from "@mui/icons-material/HomeOutlined";
+import LocalLibraryOutlined from "@mui/icons-material/LocalLibraryOutlined";
 import MeetingRoomOutlined from "@mui/icons-material/MeetingRoomOutlined";
 import PowerOutlined from "@mui/icons-material/PowerOutlined";
 import SettingsOutlined from "@mui/icons-material/SettingsOutlined";
 import SmartToyOutlined from "@mui/icons-material/SmartToyOutlined";
+import ViewQuiltOutlined from "@mui/icons-material/ViewQuiltOutlined";
 import type { ComponentType, ReactNode } from "react";
 import {
   type Access,
@@ -343,32 +343,41 @@ export interface RailItem {
   /** Kept at the foot of the rail, beside the account button: an area for
    * settings rather than for work. */
   bottom: boolean;
+  /** Whether the label shows under the glyph. Unshown, it is still the
+   * item's accessible name. */
+  labelled: boolean;
 }
 
 function railItem(
   label: string,
   to: string,
   icon: ComponentType<{ sx?: object }>,
-  { activeFor = [to], bottom = false }: { activeFor?: readonly string[]; bottom?: boolean } = {},
+  {
+    activeFor = [to],
+    bottom = false,
+    labelled = true,
+  }: { activeFor?: readonly string[]; bottom?: boolean; labelled?: boolean } = {},
 ): RailItem {
-  return { label, to, icon, activeFor, bottom };
+  return { label, to, icon, activeFor, bottom, labelled };
 }
 
 /** The rail, in order. An item shows only to someone who may open the page
- * it leads to (`accessTo`). The ecosystem graph is opened from Overview,
- * which shows as current there. */
+ * it leads to (`accessTo`). The ecosystem graph is opened from Home, which
+ * shows as current there. Each glyph is the outline of the thing the page
+ * holds. The Settings cog needs no label, like the account button below it. */
 export const RAIL: readonly RailItem[] = [
-  railItem("Overview", "/overview", DashboardOutlined, {
+  railItem("Home", "/overview", HomeOutlined, {
     activeFor: ["/overview", "/ecosystem"],
   }),
   railItem("Agents", "/agents", SmartToyOutlined),
   railItem("Rooms", "/rooms", MeetingRoomOutlined),
-  railItem("Templates", "/templates", DescriptionOutlined),
+  railItem("Templates", "/templates", ViewQuiltOutlined),
   railItem("Connectors", "/connectors", PowerOutlined),
-  railItem("Resources", "/resources", FolderOutlined),
+  railItem("Resources", "/resources", LocalLibraryOutlined),
   railItem("Settings", "/settings", SettingsOutlined, {
     activeFor: ["/settings", "/usage"],
     bottom: true,
+    labelled: false,
   }),
   railItem("Platform", "/platform", AdminPanelSettingsOutlined, { bottom: true }),
 ];

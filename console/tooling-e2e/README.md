@@ -182,7 +182,7 @@ saved under `screenshots/` in the output directory.
 None runs against `prod`: a page may write on load, and the browser goes
 around the clients' read-only guard.
 
-Signing in lands on Overview.
+Signing in lands on Home.
 
 ### The role matrix
 
