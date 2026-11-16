@@ -1941,7 +1941,8 @@ async def list_my_invitations(
     invitation_store: Annotated[InvitationStore, Depends(get_invitation_store)],
 ) -> list[AddressedInvitation]:
     """The live invitations addressed to the caller's own e-mail, in
-    workspaces they do not already belong to.
+    workspaces they do not already belong to, or that would raise their role
+    in one they do (`_join_through`).
 
     Authenticated without a tenant, like `accept_invitation`: these are
     invitations to workspaces the caller is not in, so no session they could
@@ -1956,11 +1957,14 @@ async def list_my_invitations(
     found: list[AddressedInvitation] = []
     for tenant_id in await tenants_with_invitations_for(session_factory, caller.email):
         async with tenant_session(session_factory, tenant_id) as session:
-            if await user_store.tenant_role(session, tenant_id, caller.id) is not None:
-                continue
-            invitations = await invitation_store.list_live_addressed_to(
-                session, tenant_id, caller.email
-            )
+            held = await user_store.tenant_role(session, tenant_id, caller.id)
+            invitations = [
+                invitation
+                for invitation in await invitation_store.list_live_addressed_to(
+                    session, tenant_id, caller.email
+                )
+                if held is None or _outranks(invitation.role, held)
+            ]
             if not invitations:
                 continue
             tenant = await session.get(Tenant, tenant_id)

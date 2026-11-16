@@ -313,6 +313,47 @@ class TestAcceptingWhenAlreadyIn:
             await _invitation(session_factory, TENANT_A, link_id)
         ).uses_remaining == 2
 
+    async def test_my_invitations_offer_only_what_would_change_something(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Addressed to a member of the workspace: an admin invitation raises
+        them and is offered; a member one, or one whose maker no longer
+        administers the workspace, would do nothing and is not."""
+        await _make_tenant(session_factory, TENANT_A)
+        owner = await _make_member(
+            session_factory, name="owner", tenant_id=TENANT_A, role="admin"
+        )
+        former = await _make_member(
+            session_factory, name="former", tenant_id=TENANT_A, role="member"
+        )
+        member = await _make_member(
+            session_factory, name="member", tenant_id=TENANT_A, role="member"
+        )
+        address = "member@example.invalid"
+        raising, _ = await _mint(
+            session_factory,
+            tenant_id=TENANT_A,
+            maker_id=owner,
+            role="admin",
+            email=address,
+        )
+        await _mint(session_factory, tenant_id=TENANT_A, maker_id=owner, email=address)
+        await _mint(
+            session_factory,
+            tenant_id=TENANT_A,
+            maker_id=former,
+            role="admin",
+            email=address,
+        )
+
+        async with _client(
+            _app(session_factory), _token(member, address, TENANT_A)
+        ) as client:
+            response = await client.get("/invitations/mine")
+
+        assert response.status_code == 200, response.text
+        assert [(i["id"], i["role"]) for i in response.json()] == [(raising, "admin")]
+
 
 class TestPreview:
     async def test_it_says_the_workspace_organization_and_role_and_nothing_else(
