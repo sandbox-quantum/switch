@@ -108,6 +108,7 @@ export {
 } from './host/provider-recheck';
 export {
   allowInPolicy,
+  changeDevicePolicy,
   DEVICE_CONSENT_NEEDED_KIND,
   DEVICE_POLICY_CHANGED_KIND,
   DEVICE_POLICY_FILE,

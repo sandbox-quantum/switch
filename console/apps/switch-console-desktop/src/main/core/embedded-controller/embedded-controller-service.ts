@@ -63,7 +63,11 @@ export interface ControllerFilesPort {
   wipeIdentity(dataDir: string): Promise<void>;
   /** The device policy in a controller's data directory (`readDevicePolicy`). */
   readPolicy(dataDir: string): Promise<DevicePolicy>;
-  writePolicy(dataDir: string, policy: DevicePolicy): Promise<void>;
+  /** Changes it, one writer at a time (`changeDevicePolicy`); the policy written. */
+  changePolicy(
+    dataDir: string,
+    change: (policy: DevicePolicy) => DevicePolicy
+  ): Promise<DevicePolicy>;
 }
 
 export type ServiceLog = {
@@ -396,7 +400,7 @@ export class EmbeddedControllerService {
     if (record?.kind !== 'enrolled')
       throw new Error('This computer does not run managed agents for this server.');
     const dataDir = this.deps.files.dataDir(serverId);
-    await this.deps.files.writePolicy(dataDir, change(await this.deps.files.readPolicy(dataDir)));
+    await this.deps.files.changePolicy(dataDir, change);
     this.runners.get(serverId)?.supervisor.policyChanged();
   }
 

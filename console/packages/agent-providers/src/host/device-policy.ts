@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
-import { open, readFile } from 'node:fs/promises';
+import { open, readFile, rm } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { z } from 'zod';
+import { OwnershipContendedError, withOwnershipLock } from './ownership-lock';
 import { replaceFile } from './replace-file';
 
 /**
@@ -63,18 +64,56 @@ export async function readDevicePolicy(dataDir: string): Promise<DevicePolicy> {
   return parsed.data;
 }
 
-/** Replaces the policy in `dataDir`, readable by this user only. */
+/**
+ * Replaces the policy in `dataDir` in one step, readable by this user only.
+ * Use `changeDevicePolicy` to change what is there.
+ */
 export async function writeDevicePolicy(dataDir: string, policy: DevicePolicy): Promise<void> {
   const path = join(dataDir, DEVICE_POLICY_FILE);
   const temporary = `${path}.${randomUUID()}`;
-  const file = await open(temporary, 'wx', 0o600);
   try {
-    await file.writeFile(`${JSON.stringify(devicePolicySchema.parse(policy), null, 2)}\n`);
-    await file.sync();
-  } finally {
-    await file.close();
+    const file = await open(temporary, 'wx', 0o600);
+    try {
+      await file.writeFile(`${JSON.stringify(devicePolicySchema.parse(policy), null, 2)}\n`);
+      await file.sync();
+    } finally {
+      await file.close();
+    }
+    await replaceFile(temporary, path);
+  } catch (error) {
+    await rm(temporary, { force: true });
+    throw error;
   }
-  await replaceFile(temporary, path);
+}
+
+/** The folder in a data directory that changes to the device policy take turns through. */
+const DEVICE_POLICY_TURNS = 'device-policy.lock';
+
+/**
+ * Changes the policy in `dataDir` by `change`, one change at a time, and
+ * returns the policy written. Switch Console and `switch-agent-controller
+ * allow` and `disallow` each read the file, change it and write it back, so
+ * two at once would each write over the other's change, a revocation among
+ * them. They take turns (`withOwnershipLock`, which passes over a turn taken
+ * by a process that has since exited).
+ */
+export async function changeDevicePolicy(
+  dataDir: string,
+  change: (policy: DevicePolicy) => DevicePolicy
+): Promise<DevicePolicy> {
+  try {
+    return await withOwnershipLock(join(dataDir, DEVICE_POLICY_TURNS), async () => {
+      const policy = change(await readDevicePolicy(dataDir));
+      await writeDevicePolicy(dataDir, policy);
+      return policy;
+    });
+  } catch (error) {
+    if (!(error instanceof OwnershipContendedError)) throw error;
+    throw new Error(
+      `Another process (pid ${error.holders.join(', ')}) has been changing ${join(dataDir, DEVICE_POLICY_FILE)} for longer than a change takes; nothing was changed. Try again once it has finished or exited.`,
+      { cause: error }
+    );
+  }
 }
 
 function fold(path: string): string {

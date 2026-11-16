@@ -20,12 +20,12 @@ import {
   embeddedControllerStateChannel,
 } from '@shared/events/embeddedControllerEvents';
 import {
+  changeControllerPolicy,
   controllerDataDir,
   DeviceConsentDenialFile,
   EnrollmentFile,
   turnOffWatchers,
   wipeControllerIdentity,
-  writeControllerPolicy,
 } from './controller-files';
 import { DEFAULT_BACKOFF } from './controller-supervisor';
 import { EmbeddedControllerService } from './embedded-controller-service';
@@ -130,7 +130,7 @@ export const embeddedControllerService = new EmbeddedControllerService({
     turnOffWatchers,
     wipeIdentity: wipeControllerIdentity,
     readPolicy: readDevicePolicy,
-    writePolicy: writeControllerPolicy,
+    changePolicy: changeControllerPolicy,
   },
   bundles: {
     controller: resolveAgentControllerBundlePath,
