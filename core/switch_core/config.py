@@ -365,6 +365,17 @@ class SwitchConfig(BaseSettings):
     # (`DELETE /users/{id}/sign-in-lock`). Kept in the `auth_attempts` table,
     # so the counts hold across replicas. Behind a proxy, client addresses are
     # counted only once uvicorn trusts the proxy (`FORWARDED_ALLOW_IPS`).
+    #
+    # The per-email lock is a trade-off, made on purpose: since failures from
+    # anywhere count, anyone who knows a person's email can pause that
+    # person's password sign-in for `gateway_login_lock_minutes` by failing
+    # `gateway_login_max_failures` times with it, and keep it paused by
+    # repeating that. It never touches their sessions or single sign-on.
+    # Raising `gateway_login_max_failures` or shortening
+    # `gateway_login_lock_minutes` makes such a lock cheaper to sit out and
+    # costlier to keep up, at the price of more guesses at a password;
+    # lowering them does the reverse. `switch.auth.sign_in_lockouts` counts
+    # the lock-outs, so a run of them aimed at one person shows.
     gateway_login_max_failures: int = Field(default=10, ge=1)
     gateway_login_max_failures_per_address: int = Field(default=50, ge=1)
     gateway_login_failure_window_minutes: int = Field(default=15, ge=1)
