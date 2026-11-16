@@ -12,6 +12,7 @@ import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { reportOpenAttempt } from '@renderer/lib/open-external';
 import { appState } from '@renderer/lib/stores/app-state';
 import { useWorkspaceAgents } from '@renderer/lib/stores/use-workspace-agents';
+import { SwitchConsoleMark } from '@renderer/lib/switch-console-mark';
 import { Button } from '@renderer/lib/ui/button';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import { cn } from '@renderer/utils/utils';
@@ -43,7 +44,7 @@ export const BUDDY_STAY_MESSAGE = 'I’ll stay in Switch Console for now.';
  * The setup cards under the greeting in the buddy's Welcome chat: pick a chat
  * app, connect it, link your account, then continue with the buddy there — in
  * a private channel made for them on Slack or Discord, by their own invite elsewhere. Or
- * stay here, which says so in the chat for the buddy to pick up. Drawn only in
+ * pick Switch Console to stay here, which says so in the chat for the buddy to pick up. Drawn only in
  * the Welcome chat.
  */
 export const BuddySetupCards = observer(function BuddySetupCards({
@@ -217,7 +218,11 @@ const Cards = observer(function Cards({
   return (
     <div className="@container mt-4 flex flex-col gap-3" data-testid="buddy-setup-cards">
       <div className="font-semibold">Where does your team chat?</div>
-      <div className="grid grid-cols-2 gap-3 @lg:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 @md:grid-cols-3 @2xl:grid-cols-5">
+        <button type="button" onClick={stay} className={TILE_CLASS}>
+          <SwitchConsoleMark size={28} />
+          <TileText name="Switch Console" subtitle="Chat right here" />
+        </button>
         {TILES.map((app) => (
           <button
             key={app.bridgeType}
@@ -225,7 +230,7 @@ const Cards = observer(function Cards({
             aria-pressed={pressed(app.bridgeType)}
             onClick={() => setPicked(app.bridgeType)}
             className={cn(
-              'flex flex-col items-start gap-3 rounded-lg border bg-background p-3 text-left transition-colors hover:bg-background-1 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none',
+              TILE_CLASS,
               pressed(app.bridgeType) && 'border-foreground/40 shadow-sm ring-1 ring-foreground/20'
             )}
           >
@@ -234,10 +239,6 @@ const Cards = observer(function Cards({
           </button>
         ))}
       </div>
-      <Button variant="ghost" size="sm" className="self-start" onClick={stay}>
-        No chat app? Continue here in Switch Console
-        <ArrowRight />
-      </Button>
 
       {platform && step.kind === 'loading' && (
         <StatusRow>
@@ -611,6 +612,9 @@ const PLATFORM_NAMES: Record<BuddyPlatform, string> = {
   discord: 'Discord',
   telegram: 'Telegram',
 };
+
+const TILE_CLASS =
+  'flex flex-col items-start gap-3 rounded-lg border bg-background p-3 text-left transition-colors hover:bg-background-1 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none';
 
 const TILES = [
   { bridgeType: 'slack', name: 'Slack', subtitle: 'Channels & DMs' },
