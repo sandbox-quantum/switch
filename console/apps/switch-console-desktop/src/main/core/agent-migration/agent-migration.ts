@@ -555,7 +555,7 @@ const credentials: MigrationCredentialsPort = {
     }
     const workdir = await resolveWorkdirFsFor(agent.sshHost, agent.dir);
     try {
-      await writeNeutralAgentSettingsFs(workdir.fs, {
+      await writeNeutralAgentSettingsFs(workdir, {
         slug: identity.slug,
         apiEndpoint: endpoint,
         apiToken: token,
