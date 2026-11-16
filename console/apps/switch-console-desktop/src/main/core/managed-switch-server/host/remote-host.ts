@@ -18,7 +18,7 @@ import type { StackStateHost } from '../stack-state';
 import { PortForwarder } from './port-forward';
 import { pickRemoteFreePorts } from './remote-free-port';
 import { hostSlug, remoteSecretsKey } from './remote-identity';
-import type { ServerHost } from './types';
+import { SECRET_FILE_MODE, type ServerHost } from './types';
 
 /** Ports mirrored into a desktop-side forward so a single `localhost:<port>`
  * URL reaches the stack from both the desktop and the remote host. Postgres is
@@ -69,6 +69,13 @@ export class RemoteServerHost implements ServerHost {
   }
 
   async writeFile(relPath: string, content: string, mode?: number): Promise<void> {
+    // A plain SFTP create takes the server's umask (usually 0644) and a chmod
+    // after it leaves the secrets readable by every account on the host in
+    // between, so an owner-only file is written the secret way instead.
+    if (mode === SECRET_FILE_MODE) {
+      await this.fs.writeSecret(relPath, content);
+      return;
+    }
     await this.fs.write(relPath, content);
     if (mode !== undefined) await this.restrictMode(relPath, mode);
   }
@@ -276,7 +283,10 @@ export async function createRemoteServerHost(sshHost: string): Promise<RemoteSer
     throw new Error(`Could not resolve the home directory on ${sshHost}.`);
   }
   const workingDir = `${home}/.switchdash/switch-server`;
-  await probe.exec('mkdir', ['-p', workingDir]);
+  // Owner-only: it holds the stack's `.env`. `-m` reaches only a directory
+  // mkdir creates, so one made before this by a wider umask is narrowed too.
+  await probe.exec('mkdir', ['-p', '-m', '700', workingDir]);
+  await probe.exec('chmod', ['700', workingDir]);
   probe.dispose();
   const ctx = new SshExecutionContext(proxy, { root: workingDir });
   return new RemoteServerHost({ sshHost, proxy, ctx, workingDir });

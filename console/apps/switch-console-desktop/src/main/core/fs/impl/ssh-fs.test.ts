@@ -267,7 +267,7 @@ describe('SshFileSystem.writeSecret', () => {
     });
 
     await expect(fs.writeSecret('.switch/agents/a.json', 'token')).rejects.toThrow(
-      /does not support/
+      /does not support posix-rename@openssh\.com/
     );
 
     const temporary = calls.find((call) => call[0] === 'open')?.[1];
