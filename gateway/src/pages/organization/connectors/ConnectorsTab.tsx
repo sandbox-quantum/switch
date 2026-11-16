@@ -217,7 +217,7 @@ export default function ConnectorsTab({
                         available={available(policy)}
                         connectorName={service.name}
                         scopeName={organizationName}
-                        turnedOffBy={null}
+                        blocked={null}
                         onChange={(on) => void choose(service, policyForSwitch(on))}
                       />
                       <PolicyMenu

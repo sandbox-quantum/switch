@@ -175,7 +175,7 @@ describe("ConnectorAvailability", () => {
   it("gives someone who may change it the state and a switch named for what it controls", () => {
     const onChange = vi.fn();
     render(
-      <ConnectorAvailability available connectorName="GitHub" scopeName="Acme" turnedOffBy={null} onChange={onChange} />,
+      <ConnectorAvailability available connectorName="GitHub" scopeName="Acme" blocked={null} onChange={onChange} />,
     );
     fireEvent.click(screen.getByRole("switch", { name: "GitHub available in Acme" }));
 
@@ -185,7 +185,7 @@ describe("ConnectorAvailability", () => {
 
   it("gives anyone else the state in words, with no switch at all", () => {
     render(
-      <ConnectorAvailability available={false} connectorName="GitHub" scopeName="Acme" turnedOffBy={null} onChange={null} />,
+      <ConnectorAvailability available={false} connectorName="GitHub" scopeName="Acme" blocked={null} onChange={null} />,
     );
 
     expect(screen.queryByRole("switch")).toBeNull();
@@ -193,9 +193,9 @@ describe("ConnectorAvailability", () => {
     expect(screen.getByText("GitHub is disabled in Acme.")).toBeTruthy();
   });
 
-  it("says when the level above has it off, with no switch to fight it", () => {
+  it("says what stops it being switched here, with no switch to fight it", () => {
     render(
-      <ConnectorAvailability available connectorName="GitHub" scopeName="Acme" turnedOffBy="SandboxAQ" onChange={() => {}} />,
+      <ConnectorAvailability available connectorName="GitHub" scopeName="Acme" blocked="Off for SandboxAQ" onChange={() => {}} />,
     );
 
     expect(screen.getByText("Off for SandboxAQ")).toBeTruthy();
