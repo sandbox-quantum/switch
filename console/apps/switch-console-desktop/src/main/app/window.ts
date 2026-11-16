@@ -47,8 +47,8 @@ export function createMainWindow(): BrowserWindow {
           //
           // A transparent `backgroundColor` is what stops Electron painting an
           // opaque sheet over the effect. The renderer must not repaint one
-          // either: `index.html` keys its translucent material on the same
-          // platform test this branch does.
+          // either: its boot script (`renderer/public/theme-boot.js`) keys its
+          // translucent material on the same platform test this branch does.
           vibrancy: 'under-window',
           visualEffectState: 'active',
           backgroundColor: '#00000000',
