@@ -15,7 +15,13 @@ vi.hoisted(() => {
   } as unknown as typeof window.electronAPI;
 });
 
-type Reported = { provider: string; ready: boolean; problem: string | null; detail: null };
+type Reported = {
+  provider: string;
+  ready: boolean;
+  problem: string | null;
+  detail: string | null;
+  loginHelps?: boolean;
+};
 
 const state = vi.hoisted(() => ({
   providers: [] as Reported[],
@@ -125,6 +131,30 @@ describe('ProviderSetup', () => {
       provider: 'claude',
       person: { name: 'Max Tam', email: null },
     });
+    expect(state.onCreated).toHaveBeenCalledWith({ agentId: 'a-1', name: 'switch-buddy-max-tam' });
+  });
+
+  it('starts the buddy with a provider whose sign-in could not be checked, saying so', async () => {
+    state.providers = [
+      {
+        provider: 'claude',
+        ready: false,
+        problem: 'login could not be checked',
+        detail: 'The sign-in check failed: it exited 3',
+        loginHelps: true,
+      },
+    ];
+    state.createBuddy.mockResolvedValue({ agentId: 'a-1', name: 'switch-buddy-max-tam' });
+    await render();
+
+    expect(container!.textContent).toContain('Couldn’t check sign-in');
+    expect(container!.textContent).toContain('Claude Code’s sign-in couldn’t be checked');
+    expect(container!.textContent).toContain('The sign-in check failed: it exited 3');
+    await click('Start with Claude Code');
+
+    expect(state.createBuddy).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: 'claude', machineId: 'm-1' })
+    );
     expect(state.onCreated).toHaveBeenCalledWith({ agentId: 'a-1', name: 'switch-buddy-max-tam' });
   });
 

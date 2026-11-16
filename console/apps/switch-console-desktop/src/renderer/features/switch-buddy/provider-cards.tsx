@@ -47,6 +47,7 @@ export function ComputerNote({
 
 const TAG: Record<BuddyProvider['state'], string> = {
   ready: 'Signed in locally',
+  unchecked: 'Couldn’t check sign-in',
   'sign-in': 'Not signed in',
   install: 'Not installed',
   checking: 'Checking…',
@@ -81,7 +82,11 @@ export function ProviderCard({
           <span
             className={cn(
               'flex items-center gap-1.5 text-xs',
-              provider.state === 'ready' ? 'text-emerald-600' : 'text-foreground-muted'
+              provider.state === 'ready'
+                ? 'text-emerald-600'
+                : provider.state === 'unchecked'
+                  ? 'text-foreground-warning'
+                  : 'text-foreground-muted'
             )}
           >
             {provider.state === 'checking' && <Spinner className="size-3" />}
@@ -138,6 +143,36 @@ export function SelectedPanel({
               {busy === 'create' ? 'Creating switch-buddy…' : `Start with ${provider.name}`}
             </Button>
           </div>
+        </>
+      );
+    case 'unchecked':
+      return (
+        <>
+          <div className="space-y-1">
+            <p className="text-sm font-medium text-foreground">
+              {provider.name}’s sign-in couldn’t be checked
+            </p>
+            {provider.detail && (
+              <p className="text-xs text-foreground-warning">{provider.detail}</p>
+            )}
+            <p className="text-xs text-foreground-muted">
+              You can still start switch-buddy with it. If {provider.name} isn’t signed in on this
+              computer, switch-buddy won’t answer until it is: run{' '}
+              <code className="rounded bg-background-tertiary px-1">{loginCommand}</code> in a
+              terminal, then press Check again.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button onClick={onStart} disabled={busy !== null}>
+              {busy === 'create' && <Spinner className="size-3.5" />}
+              {busy === 'create' ? 'Creating switch-buddy…' : `Start with ${provider.name}`}
+            </Button>
+            <Button variant="ghost" onClick={onCheckAgain} disabled={busy !== null}>
+              {busy === 'check' && <Spinner className="size-3.5" />}
+              Check again
+            </Button>
+          </div>
+          {checked && <p className="text-xs text-foreground-muted">{checked}</p>}
         </>
       );
     case 'install':

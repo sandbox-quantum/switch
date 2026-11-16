@@ -61,6 +61,7 @@ export function useProviderSetup({
   const selected =
     providers.find((p) => p.id === picked) ??
     providers.find((p) => p.state === 'ready') ??
+    providers.find((p) => p.state === 'unchecked') ??
     providers.find((p) => p.state === 'sign-in') ??
     null;
 

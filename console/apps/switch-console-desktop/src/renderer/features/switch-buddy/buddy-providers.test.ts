@@ -56,7 +56,7 @@ describe('buddyProviders', () => {
     ]);
   });
 
-  it('asks to sign in, with the reason, when a login could not be checked', () => {
+  it('offers a provider whose sign-in could not be checked, with the reason', () => {
     const [claude] = buddyProviders(
       PROVIDERS,
       machine([
@@ -69,7 +69,11 @@ describe('buddyProviders', () => {
         },
       ])
     );
-    expect(claude).toMatchObject({ id: 'claude', state: 'sign-in', detail: 'It may be too old.' });
+    expect(claude).toMatchObject({
+      id: 'claude',
+      state: 'unchecked',
+      detail: 'It may be too old.',
+    });
   });
 
   it('passes on that signing in would not make a provider ready', () => {
@@ -134,6 +138,16 @@ describe('startButtons', () => {
         )
       )
     ).toEqual(['opencode']);
+  });
+
+  it('offers a provider whose sign-in could not be checked, after those signed in', () => {
+    expect(ids(startButtons(states({ claude: 'unchecked', codex: 'sign-in' }), true))).toEqual([
+      'claude',
+    ]);
+    expect(ids(startButtons(states({ claude: 'unchecked', codex: 'ready' }), false))).toEqual([
+      'codex',
+      'claude',
+    ]);
   });
 
   it('offers what is ready once out of patience', () => {

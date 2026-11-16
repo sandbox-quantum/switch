@@ -1,4 +1,4 @@
-import type { OwnedMachine } from '@shared/core/managed-agents/managed-agents';
+import { type OwnedMachine, SIGN_IN_UNCHECKED } from '@shared/core/managed-agents/managed-agents';
 import type { AgentProviderDefinition } from '@shared/core/providers/agent-provider-registry';
 
 /**
@@ -7,9 +7,11 @@ import type { AgentProviderDefinition } from '@shared/core/providers/agent-provi
  * with it, so the one answer the buddy pages go by.
  *
  * `checking`: no report on it yet — the controller is still starting, or has
- * not checked it.
+ * not checked it. `unchecked`: installed, but whether it is signed in could
+ * not be checked; Switch creates an agent with it all the same, so the buddy
+ * can be started with it, with a warning.
  */
-export type BuddyProviderState = 'ready' | 'sign-in' | 'install' | 'checking';
+export type BuddyProviderState = 'ready' | 'unchecked' | 'sign-in' | 'install' | 'checking';
 
 export type BuddyProvider = {
   id: string;
@@ -33,7 +35,9 @@ export function buddyProviders(
         ? 'ready'
         : reported.problem === 'not installed'
           ? 'install'
-          : 'sign-in';
+          : reported.problem === SIGN_IN_UNCHECKED
+            ? 'unchecked'
+            : 'sign-in';
     return {
       id: provider.id,
       name: provider.name,
@@ -59,7 +63,9 @@ function startOrder(providers: BuddyProvider[]): BuddyProvider[] {
 }
 
 /**
- * The "Start with …" buttons, once they can be decided, or null while not.
+ * The "Start with …" buttons, once they can be decided, or null while not:
+ * the providers signed in here, then those whose sign-in could not be
+ * checked, which Switch creates an agent with all the same.
  *
  * Decided as soon as the preferred providers (Claude Code, Codex) are known
  * and one of them is ready: their checks are quick, while the others start a
@@ -77,8 +83,8 @@ export function startButtons(
     providers.every(known) ||
     (preferred.every(known) && preferred.some((provider) => provider.state === 'ready'));
   if (!decided) return null;
-  return startOrder(providers.filter((provider) => provider.state === 'ready')).slice(
-    0,
-    START_BUTTONS
-  );
+  return [
+    ...startOrder(providers.filter((provider) => provider.state === 'ready')),
+    ...startOrder(providers.filter((provider) => provider.state === 'unchecked')),
+  ].slice(0, START_BUTTONS);
 }

@@ -91,7 +91,17 @@ export const MeetBuddyPage = observer(function MeetBuddyPage({
   }, [decided, firstDecided]);
   const checked = firstDecided !== null;
   const ready = useMemo(
-    () => (firstDecided ?? []).flatMap((id) => providers.filter((provider) => provider.id === id)),
+    () =>
+      (firstDecided ?? []).flatMap((id) =>
+        providers
+          .filter((provider) => provider.id === id)
+          .map((provider): StartChoice => ({
+            id: provider.id,
+            name: provider.name,
+            unchecked: provider.state === 'unchecked',
+            detail: provider.detail,
+          }))
+      ),
     [firstDecided, providers]
   );
   const existing = findBuddy(useManagedAgents(serverId).data);
@@ -206,6 +216,14 @@ export const MeetBuddyPage = observer(function MeetBuddyPage({
   );
 });
 
+/** A provider the buddy can be started with, and whether its sign-in went unchecked. */
+export type StartChoice = { id: string; name: string; unchecked: boolean; detail: string | null };
+
+/** `text` ending as a sentence does, so another can follow it. */
+function sentence(text: string): string {
+  return /[.!?]$/.test(text.trim()) ? text.trim() : `${text.trim()}.`;
+}
+
 /**
  * How to start the buddy, as the chat's last turn: a card asking for an AI
  * provider. With one already signed in on this computer, each is a tile to
@@ -221,7 +239,11 @@ export function StartChoices({
   onSkip,
 }: {
   checking: boolean;
-  ready: { id: string; name: string }[];
+  /**
+   * The providers to start with: signed in here, or (`unchecked`) installed
+   * with a sign-in that couldn't be checked, which Switch takes all the same.
+   */
+  ready: StartChoice[];
   starting: string | null;
   onStart: (providerId: string) => void;
   onSetUp: () => void;
@@ -270,7 +292,11 @@ export function StartChoices({
                 )}
                 <span className="flex flex-col">
                   <span className="text-sm font-medium text-foreground">{provider.name}</span>
-                  <span className="text-xs text-foreground-success">Signed in locally</span>
+                  {provider.unchecked ? (
+                    <span className="text-xs text-foreground-warning">Couldn’t check sign-in</span>
+                  ) : (
+                    <span className="text-xs text-foreground-success">Signed in locally</span>
+                  )}
                 </span>
               </button>
             ))}
@@ -285,6 +311,19 @@ export function StartChoices({
                 use other providers
               </button>
             </span>
+            {ready
+              .filter((provider) => provider.unchecked)
+              .map((provider) => (
+                <p
+                  key={`${provider.id}-unchecked`}
+                  role="status"
+                  className="w-full px-1 text-xs text-foreground-muted"
+                >
+                  {provider.name}’s sign-in couldn’t be checked
+                  {provider.detail ? `: ${sentence(provider.detail)}` : '.'} You can still start
+                  with it. If it isn’t signed in, switch-buddy won’t answer until it is.
+                </p>
+              ))}
           </>
         ) : (
           <>
