@@ -30,8 +30,9 @@ its slug, and never revised, so nothing they made is ever updated. Each
 creates a room and the agents that work in it, on the deployer's machines,
 so they are served only with ``agent_management`` on. A workspace admin may
 remove one from their workspace (``hidden_official_templates``). A version 2
-document has no place for a name or description, so ``rooms/catalogue.yaml``
-holds them, by slug.
+document has no place for a name, a description or what it is for (its use
+case, from ``template_use_cases``), so ``rooms/catalogue.yaml`` holds them,
+by slug.
 """
 
 from __future__ import annotations
@@ -43,6 +44,8 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
+
+from switch_core.template_use_cases import USE_CASES, UseCase, is_use_case
 
 OFFICIAL_PREFIX = "official:"
 
@@ -65,6 +68,7 @@ class OfficialTemplate:
     description: str
     kind: str
     content: str
+    use_case: UseCase | None
     # Why a person should not run it by hand, for a client to give beside a
     # greyed Run. Advice, not a refusal: Switch Console still runs it.
     run_blocked_reason: str | None
@@ -83,6 +87,7 @@ class _Shipped:
     name: str
     description: str
     kind: str
+    use_case: UseCase
     # Where the server serves it, relative to switch-buddy: "buddy" only with
     # agent management and the switch_buddy flag on (it has no Console-run
     # document, and Console asks for it only where offered); "without_buddy"
@@ -100,6 +105,7 @@ _SHIPPED = (
             "up or why something is off."
         ),
         kind="agent",
+        use_case="support",
         served="without_buddy",
         run_blocked_reason=None,
     ),
@@ -111,6 +117,7 @@ _SHIPPED = (
             "answers anything about Switch and helps with any task."
         ),
         kind="agent",
+        use_case="personal",
         served="buddy",
         # Switch Console makes each person's switch-buddy itself, the first
         # time they use a workspace; running it again makes a second one.
@@ -192,6 +199,12 @@ def _room_templates() -> tuple[OfficialTemplate, ...]:
             raise RuntimeError(
                 f"{_CATALOGUE} gives '{path.stem}' no name or no description"
             )
+        use_case = entry.get("use_case")
+        if not is_use_case(use_case):
+            raise RuntimeError(
+                f"{_CATALOGUE} gives '{path.stem}' the use case {use_case!r}; "
+                f"it takes one of {', '.join(USE_CASES)}"
+            )
         templates.append(
             OfficialTemplate(
                 id=f"{OFFICIAL_PREFIX}{path.stem}",
@@ -199,6 +212,7 @@ def _room_templates() -> tuple[OfficialTemplate, ...]:
                 description=entry["description"],
                 kind="room",
                 content=path.read_text(encoding="utf-8"),
+                use_case=use_case,
                 run_blocked_reason=None,
                 removable=True,
             )
@@ -217,6 +231,7 @@ def official_templates(
             description=shipped.description,
             kind=shipped.kind,
             content=_document(shipped.slug, agent_management),
+            use_case=shipped.use_case,
             run_blocked_reason=shipped.run_blocked_reason,
             version=current_revision(shipped.slug),
         )

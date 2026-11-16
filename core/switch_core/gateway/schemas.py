@@ -8,6 +8,7 @@ from urllib.parse import urlsplit
 from pydantic import (
     AfterValidator,
     BaseModel,
+    BeforeValidator,
     ConfigDict,
     Field,
     StringConstraints,
@@ -30,6 +31,7 @@ from switch_core.db.models import (
     MAX_MESSAGE_RETENTION_DAYS,
     UsageMetric,
 )
+from switch_core.template_use_cases import USE_CASES, UseCase, is_use_case
 
 # ── Rooms ─────────────────────────────────────────────────────────────────────
 
@@ -2282,6 +2284,12 @@ class TemplateSummary(BaseModel):
     name: str
     description: str
     kind: str
+    # What it is for (see `template_use_cases`); None when nobody said.
+    use_case: UseCase | None
+    # How many agents and rooms the document describes, conditional ones
+    # included; None for a document that does not parse.
+    agent_count: int | None
+    room_count: int | None
     read_visibility: str
     write_visibility: str
     # Comes with Switch: served by the server on every workspace, and changed
@@ -2296,8 +2304,9 @@ class TemplateSummary(BaseModel):
     # greyed Run; None when nothing stands in the way. Advice, not a refusal.
     run_blocked_reason: str | None
     # How many times it has been run in this workspace, by people and agents,
-    # since runs were first counted.
+    # since runs were first counted, and when last; None if never.
     run_count: int
+    last_run_at: datetime | None
     version: int
     size_bytes: int
     created_at: str
@@ -2322,6 +2331,21 @@ TEMPLATE_DESCRIPTION_MAX = 2000
 TEMPLATE_KIND_MAX = 64
 
 
+def _known_use_case(value: object) -> object:
+    """Refuse a use case outside the list, naming the list: the type alone
+    would answer with a message that does not say which field it means."""
+    if value is not None and not is_use_case(value):
+        raise PydanticCustomError(
+            "unknown_use_case",
+            "'{value}' is not a use case. Use one of: {known}, or null for none.",
+            {"value": value, "known": ", ".join(USE_CASES)},
+        )
+    return value
+
+
+TemplateUseCase = Annotated[UseCase | None, BeforeValidator(_known_use_case)]
+
+
 class TemplateCreateRequest(BaseModel):
     # Same stance as the update request: a body naming a field this does not
     # have is a caller expecting something, and ignoring it silently answers
@@ -2331,6 +2355,7 @@ class TemplateCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=TEMPLATE_NAME_MAX)
     description: str = Field(default="", max_length=TEMPLATE_DESCRIPTION_MAX)
     kind: str = Field(default="room", min_length=1, max_length=TEMPLATE_KIND_MAX)
+    use_case: TemplateUseCase = None
     # Shared with the workspace and changed by the owner or an admin, unless said otherwise.
     read_visibility: str = "public"
     write_visibility: str = "private"
@@ -2344,6 +2369,8 @@ class TemplateUpdateRequest(BaseModel):
     description: str | None = Field(default=None, max_length=TEMPLATE_DESCRIPTION_MAX)
     kind: str | None = Field(default=None, min_length=1, max_length=TEMPLATE_KIND_MAX)
     content: str | None = Field(default=None, min_length=1)
+    # Sent as null to clear it; left out to leave it as it is.
+    use_case: TemplateUseCase = None
     read_visibility: str | None = None
     write_visibility: str | None = None
 

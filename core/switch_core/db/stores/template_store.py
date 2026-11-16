@@ -1,5 +1,8 @@
 from collections.abc import Callable, Collection
 from dataclasses import dataclass
+from datetime import datetime
+from enum import Enum
+from typing import Literal
 
 from sqlalchemy import ColumnElement, delete, func, or_, select
 from sqlalchemy.dialects.postgresql import insert
@@ -14,6 +17,15 @@ from switch_core.db.models import (
 )
 
 _LIKE_ESCAPE = "\\"
+
+
+class _Keep(Enum):
+    KEEP = "keep"
+
+
+# What `update_fields` is given for a nullable field it should leave alone,
+# where None means "clear it".
+KEEP = _Keep.KEEP
 
 
 class TemplateNameTaken(ValueError):
@@ -49,6 +61,7 @@ class TemplateListing:
     name: str
     description: str
     kind: str
+    use_case: str | None
     read_visibility: str
     write_visibility: str
     version: int
@@ -56,6 +69,14 @@ class TemplateListing:
     created_at: object
     updated_at: object
     created_by_agent_id: str | None = None
+
+
+@dataclass(frozen=True)
+class TemplateRuns:
+    """How often a template has been run in this tenant, and when last."""
+
+    count: int
+    last_run_at: datetime
 
 
 class TemplateStore:
@@ -130,6 +151,7 @@ class TemplateStore:
                 Template.name,
                 Template.description,
                 Template.kind,
+                Template.use_case,
                 Template.read_visibility,
                 Template.write_visibility,
                 Template.version,
@@ -149,6 +171,21 @@ class TemplateStore:
         # say nothing about it.
         return [TemplateListing(**row) for row in result.mappings()]
 
+    async def documents(
+        self, session: AsyncSession, template_ids: Collection[str]
+    ) -> list[tuple[str, int, str]]:
+        """The stored document of each of these templates, with its id and
+        revision: for the few a caller has not already read at that revision,
+        never the whole catalogue (see ``TemplateListing``)."""
+        if not template_ids:
+            return []
+        result = await session.execute(
+            select(Template.id, Template.version, Template.content).where(
+                Template.id.in_(template_ids)
+            )
+        )
+        return list(result.tuples())
+
     async def update_fields(
         self,
         session: AsyncSession,
@@ -158,6 +195,7 @@ class TemplateStore:
         description: str | None = None,
         kind: str | None = None,
         content: str | None = None,
+        use_case: str | None | Literal[_Keep.KEEP] = KEEP,
         read_visibility: str | None = None,
         write_visibility: str | None = None,
         guard: Callable[[Template], None] | None = None,
@@ -168,6 +206,9 @@ class TemplateStore:
         refuse the change. Authorization belongs here rather than on a row
         read earlier: an access change committed before the lock is taken
         is seen here and not by an earlier read.
+
+        ``use_case`` may be cleared, so it is left alone by ``KEEP`` rather
+        than by None.
 
         Metadata-only edits leave the revision alone: the document someone
         fetched is still the document they would fetch now.
@@ -215,6 +256,8 @@ class TemplateStore:
             template.description = description
         if kind is not None:
             template.kind = kind
+        if use_case is not KEEP:
+            template.use_case = use_case
         if read_visibility is not None:
             template.read_visibility = read_visibility
         if write_visibility is not None:
@@ -272,22 +315,29 @@ class TemplateStore:
         session.add(TemplateRunRecord(template_id=template_id))
         await session.flush()
 
-    async def run_counts(
+    async def run_stats(
         self, session: AsyncSession, template_ids: Collection[str]
-    ) -> dict[str, int]:
+    ) -> dict[str, TemplateRuns]:
         """How many times each of these templates has been run in this tenant,
-        by id. A template never run is absent."""
+        and when last, by id. A template never run is absent."""
         if not template_ids:
             return {}
         result = await session.execute(
-            select(TemplateRunRecord.template_id, func.count())
+            select(
+                TemplateRunRecord.template_id,
+                func.count(),
+                func.max(TemplateRunRecord.created_at),
+            )
             .where(
                 TemplateRunRecord.tenant_id == require_tenant_id(),
                 TemplateRunRecord.template_id.in_(template_ids),
             )
             .group_by(TemplateRunRecord.template_id)
         )
-        return {template_id: count for template_id, count in result.tuples()}
+        return {
+            template_id: TemplateRuns(count=count, last_run_at=last)
+            for template_id, count, last in result.tuples()
+        }
 
     async def run_count(self, session: AsyncSession, template_id: str) -> int:
         result = await session.execute(

@@ -10,6 +10,7 @@ mangles, so it makes the trip here for real.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 
 import httpx
 import pytest
@@ -731,3 +732,209 @@ async def test_an_admin_removes_an_official_room_template_from_their_workspace_o
         elsewhere = {t["id"] for t in (await as_admin.get("/templates")).json()}
         assert template_id in elsewhere
         assert (await as_admin.get(f"/templates/{template_id}")).status_code == 200
+
+
+class TestUseCase:
+    async def test_a_use_case_is_set_changed_kept_and_cleared(
+        self, session_factory: async_sessionmaker[AsyncSession], users: dict[str, User]
+    ) -> None:
+        client = _client(session_factory, users["alice"])
+        created = await _upload(client, name="triage", use_case="support")
+        assert created["use_case"] == "support"
+
+        async def listed() -> str | None:
+            listing = {t["id"]: t for t in (await client.get("/templates")).json()}
+            return listing[created["id"]]["use_case"]  # type: ignore[no-any-return]
+
+        assert await listed() == "support"
+        changed = await client.patch(
+            f"/templates/{created['id']}", json={"use_case": "engineering"}
+        )
+        assert changed.json()["use_case"] == "engineering"
+        # Leaving it out of an edit leaves it as it is.
+        renamed = await client.patch(
+            f"/templates/{created['id']}", json={"name": "triage two"}
+        )
+        assert renamed.json()["use_case"] == "engineering"
+        cleared = await client.patch(
+            f"/templates/{created['id']}", json={"use_case": None}
+        )
+        assert cleared.json()["use_case"] is None
+        assert await listed() is None
+        detail = await client.get(f"/templates/{created['id']}")
+        assert detail.json()["use_case"] is None
+
+    async def test_a_template_saved_without_one_has_none(
+        self, session_factory: async_sessionmaker[AsyncSession], users: dict[str, User]
+    ) -> None:
+        created = await _upload(_client(session_factory, users["alice"]), name="t")
+        assert created["use_case"] is None
+
+    async def test_a_use_case_outside_the_list_is_refused_naming_the_list(
+        self, session_factory: async_sessionmaker[AsyncSession], users: dict[str, User]
+    ) -> None:
+        client = _client(session_factory, users["alice"])
+        refused = await client.post(
+            "/templates",
+            json={"name": "t", "content": "room:\n  name: r\n", "use_case": "Eng"},
+        )
+        assert refused.status_code == 422
+        (error,) = refused.json()["detail"]
+        assert error["loc"] == ["body", "use_case"]
+        assert error["msg"] == (
+            "'Eng' is not a use case. Use one of: engineering, product, support, "
+            "research, ops, personal, sales, marketing, or null for none."
+        )
+
+        created = await _upload(client, name="t", use_case="sales")
+        patched = await client.patch(
+            f"/templates/{created['id']}", json={"use_case": "finance"}
+        )
+        assert patched.status_code == 422
+        assert "'finance' is not a use case" in patched.text
+        detail = await client.get(f"/templates/{created['id']}")
+        assert detail.json()["use_case"] == "sales"
+
+    async def test_an_official_template_has_the_catalogue_s_use_case(
+        self, session_factory: async_sessionmaker[AsyncSession], users: dict[str, User]
+    ) -> None:
+        client = _client(session_factory, users["alice"])
+        listing = {t["id"]: t for t in (await client.get("/templates")).json()}
+        assert listing["official:incident-war-room"]["use_case"] == "engineering"
+        assert listing["official:deal-room"]["use_case"] == "sales"
+        assert listing["official:switch-expert"]["use_case"] == "support"
+        assert all(t["use_case"] for t in listing.values() if t["official"])
+        detail = await client.get("/templates/official:user-research-lab")
+        assert detail.json()["use_case"] == "research"
+
+
+class TestCounts:
+    async def test_the_listing_and_the_template_count_what_the_document_creates(
+        self, session_factory: async_sessionmaker[AsyncSession], users: dict[str, User]
+    ) -> None:
+        client = _client(session_factory, users["alice"])
+        team = await _upload(
+            client,
+            name="team",
+            content="agents:\n  - name: a\n  - name: b\nroom:\n  name: r\n",
+        )
+        group = await _upload(
+            client,
+            name="group",
+            content=(
+                "version: 2\n"
+                "resources:\n"
+                "  lead: { type: agent, display_name: Lead }\n"
+                '  lobby: { type: room, name: Lobby, group: team, if: "{x}" }\n'
+                "  work: { type: room, name: Work, group: team }\n"
+                "  team: { type: group, name: Team }\n"
+            ),
+        )
+        assert (team["agent_count"], team["room_count"]) == (2, 1)
+
+        listing = {t["id"]: t for t in (await client.get("/templates")).json()}
+        assert (
+            listing[team["id"]]["agent_count"],
+            listing[team["id"]]["room_count"],
+        ) == (2, 1)
+        assert (
+            listing[group["id"]]["agent_count"],
+            listing[group["id"]]["room_count"],
+        ) == (1, 2)
+        detail = (await client.get(f"/templates/{group['id']}")).json()
+        assert (detail["agent_count"], detail["room_count"]) == (1, 2)
+
+    async def test_the_counts_follow_a_changed_document(
+        self, session_factory: async_sessionmaker[AsyncSession], users: dict[str, User]
+    ) -> None:
+        client = _client(session_factory, users["alice"])
+        created = await _upload(client, name="grows")
+        assert (created["agent_count"], created["room_count"]) == (0, 1)
+        await client.get("/templates")
+
+        await client.patch(
+            f"/templates/{created['id']}",
+            json={"content": "agent:\n  name: solo\n"},
+        )
+
+        listing = {t["id"]: t for t in (await client.get("/templates")).json()}
+        assert (
+            listing[created["id"]]["agent_count"],
+            listing[created["id"]]["room_count"],
+        ) == (1, 0)
+
+    async def test_a_document_that_does_not_parse_is_listed_without_counts(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        users: dict[str, User],
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        client = _client(session_factory, users["alice"])
+        # Stored, since only a document that is not a YAML mapping is refused;
+        # a run would refuse a resource with no type.
+        broken = await _upload(
+            client,
+            name="broken",
+            content="version: 2\nresources:\n  x: { name: no type }\n",
+        )
+
+        response = await client.get("/templates")
+
+        assert response.status_code == 200
+        (listed,) = [t for t in response.json() if t["id"] == broken["id"]]
+        assert (listed["agent_count"], listed["room_count"]) == (None, None)
+        assert f"Template {broken['id']} does not parse" in caplog.text
+
+    async def test_an_official_template_counts_its_agents_and_room(
+        self, session_factory: async_sessionmaker[AsyncSession], users: dict[str, User]
+    ) -> None:
+        client = _client(session_factory, users["alice"])
+        listing = {t["id"]: t for t in (await client.get("/templates")).json()}
+        incident = listing["official:incident-war-room"]
+        assert (incident["agent_count"], incident["room_count"]) == (3, 1)
+        assert all(
+            t["agent_count"] and t["room_count"] == 1
+            for t in listing.values()
+            if t["official"] and t["kind"] == "room"
+        )
+        expert = listing["official:switch-expert"]
+        assert (expert["agent_count"], expert["room_count"]) == (1, 1)
+
+
+class TestLastRun:
+    async def test_a_template_never_run_has_no_last_run(
+        self, session_factory: async_sessionmaker[AsyncSession], users: dict[str, User]
+    ) -> None:
+        client = _client(session_factory, users["alice"])
+        created = await _upload(client, name="idle")
+        assert created["last_run_at"] is None
+        listing = {t["id"]: t for t in (await client.get("/templates")).json()}
+        assert listing[created["id"]]["last_run_at"] is None
+        assert listing["official:switch-expert"]["last_run_at"] is None
+
+    async def test_the_last_run_is_the_latest_reported_in_this_workspace(
+        self, session_factory: async_sessionmaker[AsyncSession], users: dict[str, User]
+    ) -> None:
+        async with session_factory() as session:
+            await add_tenant(session, "other-workspace")
+            await session.commit()
+        client = _client(session_factory, users["alice"])
+        created = await _upload(client, name="busy")
+        before = datetime.now(UTC)
+        await client.post(f"/templates/{created['id']}/runs")
+        await client.post("/templates/official:switch-expert/runs")
+        second = await client.post(f"/templates/{created['id']}/runs")
+        assert second.status_code == 201
+
+        listing = {t["id"]: t for t in (await client.get("/templates")).json()}
+        last = datetime.fromisoformat(listing[created["id"]]["last_run_at"])
+        assert before <= last <= datetime.now(UTC)
+        official_last = listing["official:switch-expert"]["last_run_at"]
+        assert before <= datetime.fromisoformat(official_last) <= last
+        detail = (await client.get(f"/templates/{created['id']}")).json()
+        assert detail["last_run_at"] == listing[created["id"]]["last_run_at"]
+
+        with tenant_scope("other-workspace"):
+            elsewhere = {t["id"]: t for t in (await client.get("/templates")).json()}
+        assert elsewhere["official:switch-expert"]["last_run_at"] is None
+        assert elsewhere["official:switch-expert"]["run_count"] == 0

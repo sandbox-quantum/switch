@@ -10,10 +10,15 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.db.models import Template, User
-from switch_core.db.stores.template_store import TemplateNameTaken, TemplateStore
+from switch_core.db.stores.template_store import (
+    KEEP,
+    TemplateNameTaken,
+    TemplateStore,
+)
 
 _STORE = TemplateStore()
 
@@ -219,6 +224,94 @@ class TestTemplateStoreListing:
                 )
             }
             assert by_owner == {"a-room", "a-group"}
+
+
+class TestTemplateStoreDocuments:
+    async def test_reads_the_documents_asked_for_with_their_revision(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            owner = await _make_user(session, "alice")
+            wanted = await _make_template(
+                session, owner_id=owner.id, name="wanted", content="agent:\n  name: a\n"
+            )
+            await _make_template(session, owner_id=owner.id, name="other")
+            await _STORE.update_fields(
+                session, wanted.id, content="agent:\n  name: b\n"
+            )
+
+            assert await _STORE.documents(session, [wanted.id, "missing"]) == [
+                (wanted.id, 2, "agent:\n  name: b\n")
+            ]
+            assert await _STORE.documents(session, []) == []
+
+
+class TestTemplateStoreRuns:
+    async def test_counts_each_template_s_runs_and_keeps_the_latest(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            for _ in range(3):
+                await _STORE.record_run(session, "official:switch-expert")
+                # One transaction's `now()` is one instant: commit so each
+                # run is stamped with its own.
+                await session.commit()
+            await _STORE.record_run(session, "t-1")
+            await session.commit()
+
+            stats = await _STORE.run_stats(
+                session, ["official:switch-expert", "t-1", "never-run"]
+            )
+
+            assert set(stats) == {"official:switch-expert", "t-1"}
+            assert stats["official:switch-expert"].count == 3
+            assert stats["t-1"].count == 1
+            assert (
+                stats["official:switch-expert"].last_run_at < stats["t-1"].last_run_at
+            )
+            assert await _STORE.run_stats(session, []) == {}
+
+
+class TestTemplateStoreUseCase:
+    async def test_an_edit_keeps_sets_or_clears_the_use_case(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            owner = await _make_user(session, "alice")
+            created = await _make_template(session, owner_id=owner.id, name="t")
+            assert created.use_case is None
+
+            assert (
+                await _STORE.update_fields(session, created.id, use_case="sales")
+            ).use_case == "sales"
+            assert (
+                await _STORE.update_fields(session, created.id, description="x")
+            ).use_case == "sales"
+            assert (
+                await _STORE.update_fields(session, created.id, use_case=KEEP)
+            ).use_case == "sales"
+            assert (
+                await _STORE.update_fields(session, created.id, use_case=None)
+            ).use_case is None
+
+    async def test_the_database_refuses_a_use_case_outside_the_list(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            owner = await _make_user(session, "alice")
+            await session.commit()
+            with pytest.raises(IntegrityError, match="ck_templates_use_case"):
+                await _STORE.create(
+                    session,
+                    Template(
+                        owner_id=owner.id,
+                        name="t",
+                        description="",
+                        kind="room",
+                        content="room:\n  name: r\n",
+                        use_case="finance",
+                    ),
+                )
 
 
 class TestTemplateStoreNaming:

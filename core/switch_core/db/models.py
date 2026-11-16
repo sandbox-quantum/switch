@@ -77,6 +77,7 @@ from switch_core.db.session_version_ddl import (
     DROP_SESSION_VERSION_TRIGGER,
 )
 from switch_core.db.tenant_lookup import attach_tenant_lookups
+from switch_core.template_use_cases import USE_CASES
 from switch_core.tenant_context import current_organization_id, current_tenant_id
 
 #: The highest boot number `agent_event_boot` hands out. An agent's own event
@@ -1678,6 +1679,10 @@ class Template(TenantScoped, Base):
             name="fk_templates_created_by_agent",
             ondelete="SET NULL (created_by_agent_id)",
         ),
+        CheckConstraint(
+            "use_case IN ({})".format(", ".join(f"'{u}'" for u in USE_CASES)),
+            name="ck_templates_use_case",
+        ),
     )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
@@ -1695,6 +1700,8 @@ class Template(TenantScoped, Base):
         Text, nullable=False, server_default="private"
     )
     content: Mapped[str] = mapped_column(Text, nullable=False)
+    # What it is for, from ``template_use_cases``; NULL when nobody said.
+    use_case: Mapped[str | None] = mapped_column(Text, nullable=True)
     version: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
     # The agent that saved it through an agent operation, NULL for a person.
     # ``owner_id`` is the agent's owner either way; only this agent may change
