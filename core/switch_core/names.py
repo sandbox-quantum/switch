@@ -5,10 +5,13 @@ without showing itself:
 
 - a bidirectional control (U+202A-U+202E, U+2066-U+2069), which reorders what
   follows it, so "report <U+202E>slrep.exe" reads as "report exe.perls";
-- a zero-width or invisible character (U+200B-U+200F, U+2060, U+FEFF), which
-  makes two names that look alike differ, or hides one inside another.
+- a zero-width or invisible character (U+200B, U+200E, U+200F, U+2060,
+  U+FEFF), which makes two names that look alike differ, or hides one inside
+  another.
 
-Text in any script is fine; only these are refused. A workspace's or an
+Text in any script is fine; only these are refused. The zero-width joiner and
+non-joiner (U+200C, U+200D) are allowed: emoji sequences and Persian and Indic
+writing need them. A workspace's or an
 organization's name is also held to one line (`OneLineName`), as the switcher
 and the breadcrumbs show it.
 """
@@ -26,7 +29,9 @@ HIDDEN_CHARACTERS = frozenset(
     for code in (
         *range(0x202A, 0x202F),
         *range(0x2066, 0x206A),
-        *range(0x200B, 0x2010),
+        0x200B,
+        0x200E,
+        0x200F,
         0x2060,
         0xFEFF,
     )

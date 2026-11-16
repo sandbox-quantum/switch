@@ -26,8 +26,6 @@ RLO = "\u202e"
 def test_the_hidden_characters_are_the_bidi_controls_and_the_invisible_ones() -> None:
     assert sorted(f"{ord(c):04X}" for c in HIDDEN_CHARACTERS) == [
         "200B",
-        "200C",
-        "200D",
         "200E",
         "200F",
         "202A",
@@ -59,6 +57,9 @@ def test_each_is_refused_and_named(char: str) -> None:
         "צוות",
         "команда",
         "Ops 🚀",
+        # Joiners: a family emoji, and Persian that needs the non-joiner.
+        "Team 👨‍👩‍👧",
+        "می‌خواهم",
         # Next to the refused ranges, and shown: a hair space, a hyphen and
         # a narrow no-break space.
         "a\u200ab",
