@@ -35,6 +35,8 @@ _MAX_ATTEMPTS = 2
 
 _LAST_TENANT_KEY = "last_tenant_id"
 
+_ORGANIZATIONS_LEFT_KEY = "organizations_left"
+
 # Postgres's default name for `users.email`'s unique constraint, from the
 # migration that created the table.
 _EMAIL_CONSTRAINT = "users_email_key"
@@ -491,6 +493,51 @@ class UserStore:
         # for an operator: the server's role grants no workspace's.
         if join_tenant:
             await self._ensure_membership(session, user, "member")
+
+    async def remember_organization_left(
+        self, session: AsyncSession, user_id: str, organization_id: str
+    ) -> None:
+        """Note that `user_id` was taken out of a workspace of
+        `organization_id`, which may have been their last there: the
+        organizations someone may be left in with no workspace, for them to
+        be offered leaving (`organizations_left`). `users` is global, so any
+        session writes it; lands when the caller commits."""
+        user = await session.get(User, user_id)
+        if user is None:
+            raise RuntimeError(f"User {user_id} has no row to note an organization on")
+        left = self.organizations_left(user)
+        if organization_id in left:
+            return
+        user.metadata_ = {
+            **(user.metadata_ or {}),
+            _ORGANIZATIONS_LEFT_KEY: sorted([*left, organization_id]),
+        }
+        await session.flush()
+
+    def organizations_left(self, user: User) -> list[str]:
+        """The organizations `remember_organization_left` noted for `user`.
+
+        Only a hint, as `last_tenant_id` is: whoever reads it checks each
+        against the person's memberships as they stand.
+        """
+        value = (user.metadata_ or {}).get(_ORGANIZATIONS_LEFT_KEY)
+        return (
+            [v for v in value if isinstance(v, str)] if isinstance(value, list) else []
+        )
+
+    async def forget_organization_left(
+        self, session: AsyncSession, user: User, organization_id: str
+    ) -> None:
+        """Drop `organization_id` from `organizations_left`, once they have
+        left it. Lands when the caller commits."""
+        left = self.organizations_left(user)
+        if organization_id not in left:
+            return
+        user.metadata_ = {
+            **(user.metadata_ or {}),
+            _ORGANIZATIONS_LEFT_KEY: [o for o in left if o != organization_id],
+        }
+        await session.flush()
 
     def last_tenant_id(self, user: User) -> str | None:
         """The workspace `user` last selected, as recorded by

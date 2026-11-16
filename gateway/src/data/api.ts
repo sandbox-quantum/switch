@@ -2239,6 +2239,23 @@ export async function fetchOrganizationAuditEvents(
   );
 }
 
+/** An organization you're still a member of, though in none of its
+ * workspaces: someone removed from their last one is left in it. */
+export interface OrganizationWithoutWorkspace {
+  id: string;
+  name: string;
+}
+
+export async function fetchOrganizationsWithoutWorkspace(): Promise<
+  OrganizationWithoutWorkspace[]
+> {
+  return jsonRequest<OrganizationWithoutWorkspace[]>("/organizations/without-workspace", "GET");
+}
+
+export async function leaveOrganization(organizationId: string): Promise<void> {
+  await jsonRequest(`/organizations/${encodeURIComponent(organizationId)}/leave`, "POST");
+}
+
 /** Every workspace on the server; the platform operator only. */
 export async function fetchOperatorWorkspaces(): Promise<OperatorWorkspace[]> {
   return jsonRequest<OperatorWorkspace[]>("/operator/workspaces", "GET");

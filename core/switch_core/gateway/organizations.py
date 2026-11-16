@@ -54,7 +54,7 @@ from switch_core.db.models import (
     User,
     require_tenant_id,
 )
-from switch_core.db.session_scope import tenant_session
+from switch_core.db.session_scope import organization_session, tenant_session
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.organization_store import OrganizationStore
@@ -101,6 +101,7 @@ from switch_core.gateway.schemas import (
     OrganizationRenameRequest,
     OrganizationRenameResponse,
     OrganizationSummary,
+    OrganizationWithoutWorkspace,
     OrganizationWorkspaceResponse,
     TenantMembershipResponse,
     WorkspaceCreateRequest,
@@ -287,6 +288,158 @@ async def list_organizations(
     workspaces is left out (`gateway/auth.organizations_bindable_by`).
     """
     return await organizations_bindable_by(session_factory, user_store, user_id)
+
+
+@router.get("/organizations/without-workspace")
+async def list_organizations_without_workspace(
+    caller: Annotated[AuthenticatedCaller, Depends(get_authenticated_caller)],
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+    organization_directory: Annotated[
+        OrganizationDirectory, Depends(get_organization_directory)
+    ],
+) -> list[OrganizationWithoutWorkspace]:
+    """The organizations the caller is still a member of, though in none of
+    its workspaces, as removing someone from their last one leaves them:
+    those they may leave (`leave_organization`). Like `GET /organizations`,
+    it needs no workspace selected.
+
+    Read from the organizations they were last taken out of a workspace of
+    (`UserStore.organizations_left`) and the one their last workspace belongs
+    to, each checked as it stands.
+    """
+    found = []
+    for organization_id in await _organizations_maybe_left(
+        session_factory, user_store, caller.id
+    ):
+        refusal, organization = await _leaving_refusal(
+            session_factory, organization_directory, caller.id, organization_id
+        )
+        if refusal is None and organization is not None:
+            found.append(
+                OrganizationWithoutWorkspace(id=organization.id, name=organization.name)
+            )
+    return sorted(found, key=lambda o: (o.name.casefold(), o.id))
+
+
+@router.post("/organizations/{organization_id}/leave")
+async def leave_organization(
+    organization_id: str,
+    caller: Annotated[AuthenticatedCaller, Depends(get_authenticated_caller)],
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+    organization_directory: Annotated[
+        OrganizationDirectory, Depends(get_organization_directory)
+    ],
+) -> dict[str, bool]:
+    """Leave an organization the caller is in none of the workspaces of,
+    which nobody else is asked about: they hold nothing in it to take away.
+
+    404 when they aren't its member, as when it doesn't exist. Refused, 409,
+    while they are in any of its workspaces (removing them from one is an
+    admin's), for its `org_admin`, who leaves from its Users page while
+    another remains, and where a directory keeps its members. Recorded in
+    the organization's audit log.
+    """
+    refusal, organization = await _leaving_refusal(
+        session_factory, organization_directory, caller.id, organization_id
+    )
+    if organization is None:
+        raise HTTPException(status_code=404, detail="Not a member of this organization")
+    if refusal is not None:
+        raise HTTPException(status_code=409, detail=refusal)
+    async with organization_session(session_factory, organization_id) as session:
+        removed = await session.execute(
+            delete(OrganizationMember)
+            .where(
+                OrganizationMember.organization_id == organization_id,
+                OrganizationMember.user_id == caller.id,
+                OrganizationMember.role != ORGANIZATION_ADMIN_ROLE,
+            )
+            .returning(OrganizationMember.user_id)
+        )
+        if removed.first() is None:
+            raise HTTPException(
+                status_code=409,
+                detail="Your place in this organization changed meanwhile. Try again.",
+            )
+        await record_organization_audit_event(
+            session,
+            organization_id=organization_id,
+            actor_user_id=caller.id,
+            action=OrganizationAuditAction.MEMBER_LEFT,
+            target_type="user",
+            target_id=caller.id,
+            details=None,
+        )
+        user = await user_store.get(session, caller.id)
+        if user is None:
+            raise HTTPException(status_code=401, detail="User not found")
+        await user_store.forget_organization_left(session, user, organization_id)
+        await session.commit()
+    return {"ok": True}
+
+
+async def _organizations_maybe_left(
+    session_factory: async_sessionmaker[AsyncSession],
+    user_store: UserStore,
+    user_id: str,
+) -> list[str]:
+    """The organizations `user_id` may be left in with no workspace: those
+    `UserStore.organizations_left` notes, and the one their last workspace
+    belongs to, which covers a removal from before the note was kept."""
+    async with session_factory() as session:
+        user = await user_store.get(session, user_id)
+    if user is None:
+        raise HTTPException(status_code=401, detail="User not found")
+    candidates = set(user_store.organizations_left(user))
+    last_tenant = user_store.last_tenant_id(user)
+    if last_tenant is not None:
+        async with tenant_session(session_factory, last_tenant) as session:
+            tenant = await session.get(Tenant, last_tenant)
+        if tenant is not None and tenant.organization_id is not None:
+            candidates.add(tenant.organization_id)
+    return sorted(candidates)
+
+
+async def _leaving_refusal(
+    session_factory: async_sessionmaker[AsyncSession],
+    organization_directory: OrganizationDirectory,
+    user_id: str,
+    organization_id: str,
+) -> tuple[str | None, Organization | None]:
+    """Why `user_id` may not leave `organization_id` on their own, or None
+    when they may; and the organization, None when they aren't its member."""
+    async with organization_session(session_factory, organization_id) as session:
+        member = await session.get(OrganizationMember, (organization_id, user_id))
+        organization = await session.get(Organization, organization_id)
+    if member is None or organization is None:
+        return None, None
+    if member.role == ORGANIZATION_ADMIN_ROLE:
+        return (
+            "You're an org admin of this organization. Leave it from its Users "
+            "page, while another org admin remains."
+        ), organization
+    if organization_directory.keeps_members_of(
+        organization
+    ) or organization_directory.sends_changes_for(organization):
+        return (
+            "Your place in this organization is kept in its directory. Ask its "
+            "admins to remove you there."
+        ), organization
+    workspaces = await workspaces_in_organization(
+        session_factory, user_id, organization_id
+    )
+    if workspaces:
+        names = ", ".join(sorted(tenant.name for tenant in workspaces))
+        return (
+            f"You're still in its workspaces: {names}. Ask an admin to remove you."
+        ), organization
+    return None, organization
 
 
 @router.post("/organizations", status_code=201)

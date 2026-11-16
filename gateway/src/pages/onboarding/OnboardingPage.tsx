@@ -13,6 +13,7 @@ import {
 import { useEffect, useState } from "react";
 import { type OperatorWorkspace, fetchOperatorWorkspaces } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
+import OrganizationsWithoutWorkspace from "../account/OrganizationsWithoutWorkspace";
 import { inviteTokenFrom, storePendingInvite } from "../../data/sessionState";
 import CenteredCard from "./CenteredCard";
 import CreateWorkspaceForm from "./CreateWorkspaceForm";
@@ -47,6 +48,7 @@ export default function OnboardingPage() {
       }
     >
       <Stack spacing={3}>
+        <OrganizationsWithoutWorkspace />
         {session?.user.is_operator && <OperatorWorkspaces />}
         {session?.user.is_operator && <Divider>or</Divider>}
         {canCreate && <CreateWorkspaceForm />}

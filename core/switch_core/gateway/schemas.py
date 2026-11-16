@@ -1426,6 +1426,14 @@ class OrganizationSummary(BaseModel):
     role: str
 
 
+class OrganizationWithoutWorkspace(BaseModel):
+    """An organization the caller is still a member of, though in none of
+    its workspaces, which they may leave."""
+
+    id: str
+    name: str
+
+
 class CurrentOrganizationResponse(BaseModel):
     """The bound workspace's organization, and the caller's role in it: None
     for the platform operator there on the operator flag alone.

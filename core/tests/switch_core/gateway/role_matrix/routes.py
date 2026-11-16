@@ -374,6 +374,14 @@ ROUTES: dict[str, Case] = {
     ),
     # ── Organizations ────────────────────────────────────────────────────
     "GET /gateway/organizations": get(f"{G}/organizations", SELF),
+    "GET /gateway/organizations/without-workspace": get(
+        f"{G}/organizations/without-workspace", SELF
+    ),
+    "POST /gateway/organizations/{organization_id}/leave": post(
+        f"{G}/organizations/no-such-organization/leave",
+        anyone(ok=404),
+        why="Your own membership; nobody here is in this organization.",
+    ),
     "POST /gateway/organizations": post(
         f"{G}/organizations", SELF, json={"name": "{tag}-org"}
     ),

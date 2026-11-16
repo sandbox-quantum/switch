@@ -2610,6 +2610,11 @@ async def remove_member_from_workspace(
         details={},
         keep_agent_keys=False,
     )
+    tenant = await session.get(Tenant, tenant_id)
+    if tenant is not None and tenant.organization_id is not None:
+        await user_store.remember_organization_left(
+            session, user_id, tenant.organization_id
+        )
     await session.commit()
 
     warning = await revocation.finish(session, user_id, removal.revoked)

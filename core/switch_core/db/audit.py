@@ -110,6 +110,8 @@ class OrganizationAuditAction(StrEnum):
     MEMBER_JOINED_BY_DOMAIN = "organization.member_joined_by_domain"
     ROLE_CHANGED = "organization.role_changed"
     MEMBER_REMOVED = "organization.member_removed"
+    # Someone in none of its workspaces left it themselves.
+    MEMBER_LEFT = "organization.member_left"
     CONNECTOR_APP_SAVED = "organization.connector_app_saved"
     CONNECTOR_APP_REMOVED = "organization.connector_app_removed"
     SERVICE_SET = "organization.service_set"
