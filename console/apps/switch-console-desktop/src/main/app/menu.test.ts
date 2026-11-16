@@ -30,11 +30,11 @@ beforeEach(() => {
 });
 
 describe('setupApplicationMenu', () => {
-  it('offers no DevTools, and so no shortcut to them, in a stable build', async () => {
+  it('offers no DevTools, and so no shortcut to them, in a packaged build', async () => {
     expect(await viewMenuRoles(false)).not.toContain('toggleDevTools');
   });
 
-  it('keeps DevTools in dev and Canary builds', async () => {
+  it('keeps DevTools in development', async () => {
     expect(await viewMenuRoles(true)).toContain('toggleDevTools');
   });
 });

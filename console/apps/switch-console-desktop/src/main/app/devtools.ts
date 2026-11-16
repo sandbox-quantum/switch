@@ -1,9 +1,10 @@
-import { IS_CANARY, IS_DEV } from '@shared/app-identity';
+import { IS_DEV } from '@shared/app-identity';
 
 /**
- * Whether Console's windows offer DevTools. A stable build ships without them:
- * a console there reaches every main-process call the app window can make, one
- * keystroke from anyone talking a user into pasting something. Dev builds and
- * Canary, whose users are there to test it, keep them.
+ * Whether Console's windows offer DevTools: only in development. A packaged
+ * build ships without them, Canary included: a console there reaches every
+ * main-process call the app window can make, one keystroke from anyone
+ * talking a user into pasting something, and Canary shares stable's database
+ * and keychain key, so it holds the same sign-ins.
  */
-export const DEVTOOLS_ENABLED = IS_DEV || IS_CANARY;
+export const DEVTOOLS_ENABLED = IS_DEV;
