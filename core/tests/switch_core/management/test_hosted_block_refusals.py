@@ -18,6 +18,7 @@ from switch_core.db.models import (
     User,
 )
 from switch_core.db.session_scope import tenant_session
+from switch_core.management.errors import ManagementError
 from switch_core.tenant_context import no_tenant
 from tests.switch_core.management.harness import (
     EnrolledController,
@@ -203,6 +204,31 @@ async def test_a_hosted_blocks_revoke_is_marked_and_any_other_revoke_clears_it(
             session, TENANT_ZERO_ID, controller.owner.id, controller.controller_id
         )
     assert await _revoke_state(harness, controller.controller_id) == (revoked_at, None)
+
+
+async def test_an_organization_admin_can_t_remove_a_paused_box_s_controller(
+    harness: Harness,
+) -> None:
+    """An organization admin's removal goes through `remove_controller`, which
+    refuses any cloud device (`refuse_cloud`) before the revoke. So a paused
+    box's controller keeps its pause mark: its owner's resume can still wake
+    it."""
+    controller = await _cloud_controller(harness)
+    service = harness.management.service
+    async with tenant_session(harness.session_factory, TENANT_ZERO_ID) as session:
+        await service.revoke_controllers(
+            session, TENANT_ZERO_ID, [controller.controller_id], "pause"
+        )
+        await session.commit()
+    paused = await _revoke_state(harness, controller.controller_id)
+
+    async with tenant_session(harness.session_factory, TENANT_ZERO_ID) as session:
+        with pytest.raises(ManagementError) as refused:
+            await service.remove_controller(
+                session, TENANT_ZERO_ID, controller.controller_id, owner_id=None
+            )
+    assert (refused.value.status_code, refused.value.code) == (409, "cloud_managed")
+    assert await _revoke_state(harness, controller.controller_id) == paused
 
 
 async def test_a_revoke_by_any_other_path_carries_no_mark_by_default(

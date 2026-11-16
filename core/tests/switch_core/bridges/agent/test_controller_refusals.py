@@ -31,6 +31,7 @@ from switch_core.bridges.agent.auth import (
     ControllerAuthError,
     ControllerPrincipal,
 )
+from switch_core.bridges.agent.protocol.controller_presence import Binding
 from switch_core.bridges.agent.refusals import (
     RefusalGuard,
     client_address,
@@ -41,6 +42,7 @@ from switch_core.bridges.agent.refusals import (
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.gateway import hosted_controller
+from switch_core.observability.metrics import MetricsRegistry, install, uninstall
 
 LOGGER = "switch_core.bridges.agent.refusals"
 GOOD = "swct_good-token-0123456789"
@@ -573,3 +575,62 @@ class TestWithHostedAgentsV2Off:
             ("invalid_credential", "controller"): 3.0,
             ("wrong", "hosted_controller"): 1.0,
         }
+
+
+class _ArchivedWorkspaceAuth(_FakeControllerAuth):
+    """GOOD authenticates as controller `c-1`, bound to agent `a-1`, whose
+    workspace is archived: main's archive stops the binding, and a controller
+    may then not act for the agent."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        binding = Binding(
+            agent_id="a-1",
+            controller_id="c-1",
+            tenant_id="t-1",
+            controller_name="the box",
+            running=False,
+        )
+        self.presence = SimpleNamespace(binding=lambda agent_id: binding)
+        self.auth_cache = SimpleNamespace()
+
+    async def stopped_by_archive(self, binding: Binding) -> bool:
+        return True
+
+
+@pytest.mark.usefixtures("hosted_v2_on")
+async def test_an_archived_workspace_s_403_never_feeds_the_lockout_or_the_refusal_count(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """With v2 on, a box controller acting for an agent in an archived
+    workspace is refused 403 `workspace_archived` every time, as main refuses
+    it. That's not a credential refusal: past the lockout threshold it is still
+    answered 403, never 429, and nothing is counted or logged as one."""
+    caplog.set_level(logging.INFO, logger=LOGGER)
+    registry = MetricsRegistry()
+    install(registry)
+    try:
+        auth = _ArchivedWorkspaceAuth()
+        mw, served = _middleware(
+            RefusalGuard(lockout_after=2, window_s=60, lockout_s=300, clock=_Clock()),
+            auth,
+        )
+        answers = []
+        for _ in range(5):
+            sent = await _dispatch(mw, "/agents/a-1/ops/post_message", GOOD)
+            body = json.loads(b"".join(m.get("body", b"") for m in sent[1:]))
+            answers.append((_status(sent), body["error"]["code"]))
+        refusals = [
+            point
+            for payload in registry.collect()
+            if payload.name == "switch.controller.credential_refusals"
+            for point in payload.numbers
+        ]
+    finally:
+        uninstall()
+
+    assert answers == [(403, "workspace_archived")] * 5
+    assert served == []
+    assert len(auth.authenticated) == 5  # authenticated every time, never locked out
+    assert refusals == []
+    assert _warnings(caplog) == []

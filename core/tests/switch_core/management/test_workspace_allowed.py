@@ -160,7 +160,7 @@ async def test_a_bad_secret_is_still_invalid_not_refused(
     assert enrolled.json()["error"]["code"] == "enrollment_code_invalid"
 
 
-def _wire(monkeypatch, tmp_path, tenants_json: str | None):
+def _wire(monkeypatch, tmp_path, tenants_json: str | None, hosted_v2: bool = True):
     """create_management, as main calls it, with build_management captured: what workspace rule it hands down."""
     from types import SimpleNamespace
 
@@ -190,12 +190,14 @@ def _wire(monkeypatch, tmp_path, tenants_json: str | None):
         controller_status_interval_seconds=30,
         gateway_public_url=None,
         third_party_avatars_enabled=False,
+        feature_flags={},
         controller_release=None,
         agent_auth_cache_ttl_seconds=1,
         agent_auth_cache_max_entries=16,
         controller_auth_cache_max_agents=16,
         hosted_controller_config_path=path,
         hosted_wait_limit_minutes=10,  # the agents view's wait limit, sent in every status answer
+        hosted_box_provisioning=hosted_v2,
     )
     assert (
         wiring.create_management(
@@ -273,6 +275,7 @@ def test_the_cloud_machine_list_never_narrows_agent_management(monkeypatch, tmp_
         controller_status_interval_seconds=30,
         gateway_public_url=None,
         third_party_avatars_enabled=False,
+        feature_flags={},
         controller_release=None,
         agent_auth_cache_ttl_seconds=1,
         agent_auth_cache_max_entries=16,
@@ -316,3 +319,32 @@ async def test_an_agent_s_management_tools_are_refused_in_an_unlisted_workspace(
     assert listed.status_code == 200, listed.text
     assert refused.status_code == 403, refused.text
     assert WORKSPACE_NOT_ENABLED_MESSAGE in refused.json()["detail"]
+
+
+def test_with_v2_off_the_list_has_no_effect_and_says_so(monkeypatch, tmp_path, caplog):
+    """It's hosted agents v2's setting: with v2 off, every workspace is served,
+    as on a server without it, and one WARN says the setting is ignored."""
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="switch_core.management.wiring"):
+        wired = _wire(monkeypatch, tmp_path, '["t1"]', hosted_v2=False)
+    assert wired["workspace_allowed"]("t1") and wired["workspace_allowed"]("t2")
+    assert wired["workspace_restricted"] is False
+    warned = [
+        r.getMessage()
+        for r in caplog.records
+        if r.name == "switch_core.management.wiring"
+    ]
+    assert warned == [
+        "management_tenant_ids is set but hosted agents v2 is off; it has no effect"
+    ]
+
+
+def test_with_v2_off_and_no_list_nothing_is_said(monkeypatch, tmp_path, caplog):
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="switch_core.management.wiring"):
+        for tenants_json in ("null", None):
+            wired = _wire(monkeypatch, tmp_path, tenants_json, hosted_v2=False)
+            assert wired["workspace_allowed"]("any")
+    assert not [r for r in caplog.records if r.name == "switch_core.management.wiring"]
