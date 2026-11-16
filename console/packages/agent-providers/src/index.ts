@@ -216,3 +216,4 @@ export { CONTROL_FILE, ControlClient, SidecarConnectionClosedError } from './hos
 export { hostSessions, hostSessionsByAgent, LIST_SCRIPT } from './host/session-list';
 export { JournalUnavailableError, replayJournal } from './host/journal-snapshot';
 export { openCodeConsoleCredentialSchema } from './opencode/console-credential';
+export { windowsRegistryPath, withWindowsPathEntries } from './windows-registry-path';

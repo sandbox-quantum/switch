@@ -161,6 +161,16 @@ export function useProviderSetup({
     started.start(provider.id);
   };
 
+  const sendSignInCode = async (code: string) => {
+    if (!login) return;
+    setError(null);
+    try {
+      await rpc.providers.loginInput({ attemptId: login.attemptId, line: code });
+    } catch (cause) {
+      setError(failureText(cause, 'Could not send the code to the sign-in.'));
+    }
+  };
+
   const cancelSignIn = () => {
     void rpc.providers.cancelLogin();
     setLogin(null);
@@ -179,6 +189,7 @@ export function useProviderSetup({
     checkAgain,
     signIn,
     cancelSignIn,
+    sendSignInCode,
     install,
     start,
   };

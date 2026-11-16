@@ -24,3 +24,14 @@ export function linksIn(lines: readonly string[]): string[] {
   for (const line of lines) for (const match of line.matchAll(URL_PATTERN)) seen.add(match[0]);
   return [...seen];
 }
+
+const ASKS_FOR_CODE = /paste (the )?(authentication |auth )?code/i;
+
+/**
+ * Whether the command is waiting for a code typed in: Claude Code's sign-in
+ * page can end by showing one to paste, when its callback to this computer
+ * did not happen.
+ */
+export function asksForCode(lines: readonly string[]): boolean {
+  return lines.some((line) => ASKS_FOR_CODE.test(line));
+}
