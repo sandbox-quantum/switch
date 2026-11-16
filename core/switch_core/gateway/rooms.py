@@ -877,9 +877,11 @@ async def run_template_document(
 
     The agents a run of a known template creates are recorded as its
     install (``template_installs``), so a later revision can update them.
-    A successful run of a template named by ``template_id`` is counted for
-    the catalogue here, for the caller, so the run Switch Console reports
-    after it is not counted again (``record_template_run``).
+    A successful run of a template named by ``template_id``, with that
+    template's own document, is counted for the catalogue here, for the
+    caller, so the run Switch Console reports after it is not counted again
+    (``record_template_run``). A document that is not the named template's
+    counts only through that report, which is believed once in a while.
     """
     loaded = (
         await readable_template(
@@ -955,7 +957,7 @@ async def run_template_document(
             plans=plan.new_agents,
             created=result["created_agents"],
         )
-    if loaded is not None and isinstance(result, dict):
+    if source is not None and loaded is not None and isinstance(result, dict):
         await _count_run(session, template_store, loaded.id, user.id)
     return result
 
