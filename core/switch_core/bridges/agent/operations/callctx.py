@@ -63,6 +63,10 @@ class CallContext:
     agent_id: str
     session_key: str | None
     session: CallerSession | None
+    # The sender's key for a room post this call makes (`X-Switch-Client-Txn-Id`):
+    # the agent's host keys every post, so a post resent after Switch restarted
+    # is the one already made, never a second. Set only by the HTTP door.
+    client_txn_id: str | None = None
 
 
 @dataclass(frozen=True)

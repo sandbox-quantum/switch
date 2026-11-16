@@ -226,6 +226,8 @@ def build_harness(
     additional_agent_providers: bool = True,
     controller_release: ControllerRelease | None = None,
     signal_engine: Callable[[], Any] = _no_listening_engine,
+    workspace_allowed: Callable[[str], bool] = lambda _tenant_id: True,
+    workspace_restricted: bool = False,
 ) -> Harness:
     """The controller-token cache is on, as it is by default in production,
     so every management test runs through it."""
@@ -259,6 +261,8 @@ def build_harness(
             key_ids=[key.id for key in TEST_KEYRING.keys],
         ),
         user_changes=SignalUserChanges(local=user_changes, bus=signal_bus),
+        workspace_allowed=workspace_allowed,
+        workspace_restricted=workspace_restricted,
     )
 
     async def _session() -> AsyncIterator[AsyncSession]:

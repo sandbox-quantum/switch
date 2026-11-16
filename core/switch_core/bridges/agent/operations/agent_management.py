@@ -16,6 +16,7 @@ infrastructure.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -30,31 +31,80 @@ from switch_core.bridges.agent.protocol.agent_management import (
     NewManagedAgent,
 )
 from switch_core.db.models import User, require_tenant_id
+from switch_core.tenant_context import current_tenant_id
 
 AGENT_MANAGEMENT_OPERATIONS = "agent_management"
 
 CAPABILITY_LABEL = "can manage agents"
 
+# What a workspace agent management isn't on for is told, everywhere: the
+# controller routes, the Console-side routes, an agent's tools and a template
+# run (the hosted config's `management_tenant_ids`).
+WORKSPACE_NOT_ENABLED_MESSAGE = (
+    "Agent management isn't turned on for this workspace on this server."
+)
+
+
+def _every_workspace(_tenant_id: str) -> bool:
+    return True
+
+
 _port: AgentManagementPort | None = None
+_workspace_allowed: Callable[[str], bool] = _every_workspace
+# Whether a workspace list is set at all: with one, a call with no workspace
+# bound sees agent management as off (fail closed) rather than on.
+_restricted = False
 
 
-def enable_agent_management(port: AgentManagementPort) -> None:
-    """Make the agent-management operations exist, served by `port`."""
-    global _port
+def enable_agent_management(
+    port: AgentManagementPort,
+    workspace_allowed: Callable[[str], bool] = _every_workspace,
+    restricted: bool = False,
+) -> None:
+    """Make the agent-management operations exist, served by `port`, for the
+    workspaces `workspace_allowed` admits (management's own rule).
+    `restricted`: a workspace list is set."""
+    global _port, _workspace_allowed, _restricted
     _port = port
+    _workspace_allowed = workspace_allowed
+    _restricted = restricted
     enable_operation_group(AGENT_MANAGEMENT_OPERATIONS)
 
 
 def disable_agent_management() -> None:
     """Take the agent-management operations away again."""
-    global _port
+    global _port, _workspace_allowed, _restricted
     disable_operation_group(AGENT_MANAGEMENT_OPERATIONS)
     _port = None
+    _workspace_allowed = _every_workspace
+    _restricted = False
 
 
 def management_port() -> AgentManagementPort | None:
-    """Management's implementation, or None when agent management is off."""
+    """Management's implementation, or None when agent management is off,
+    for the bound workspace too: a workspace it isn't turned on for sees it
+    as off, so a template run or an agent's context can't list machines or
+    create managed agents there."""
+    if _port is None:
+        return None
+    tenant_id = current_tenant_id()
+    if tenant_id is None:
+        # No workspace to check: closed when a list is set, as before when not.
+        return None if _restricted else _port
+    if not _workspace_allowed(tenant_id):
+        return None
     return _port
+
+
+def management_off_reason() -> str:
+    """Why `management_port()` is off for this call, in words for a person: the
+    workspace when agent management runs here but not for it, else the server."""
+    if _port is not None:
+        return WORKSPACE_NOT_ENABLED_MESSAGE
+    return (
+        "agent management is not turned on here, "
+        "so it cannot create agents on a device."
+    )
 
 
 def _management() -> AgentManagementPort:
@@ -98,7 +148,10 @@ async def management_permission() -> Permitted | str:
                 f"Agent {agent.name}'s owner no longer exists, so it cannot "
                 "manage agents."
             )
-    return Permitted(tenant_id=require_tenant_id(), owner=owner)
+    tenant_id = require_tenant_id()
+    if not _workspace_allowed(tenant_id):
+        return WORKSPACE_NOT_ENABLED_MESSAGE
+    return Permitted(tenant_id=tenant_id, owner=owner)
 
 
 def refuse_managing_self(agent_id: str) -> None:

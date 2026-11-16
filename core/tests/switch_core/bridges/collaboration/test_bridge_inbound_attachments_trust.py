@@ -109,6 +109,11 @@ def _bridge(trust_client: object) -> SimpleNamespace:
     async def _record_message_map(**kwargs: str) -> None:
         recorded.append(kwargs)
 
+    async def _not_handed_in(_msg: object) -> bool:
+        # Hosted agents v2's once-only check (`_already_handed_in`): every post
+        # here is a first copy. With v2 off it is never asked.
+        return False
+
     bridge = SimpleNamespace(
         _bridge_id="bridge-1",
         _handle_text_answer=_none,
@@ -119,6 +124,7 @@ def _bridge(trust_client: object) -> SimpleNamespace:
         _is_registered_agent=_not_an_agent,
         _ensure_human_in_room=_ensure_human_in_room,
         _record_message_map=_record_message_map,
+        _already_handed_in=_not_handed_in,
         _trust_client=trust_client,
         _room_tenant=AsyncMock(return_value="tenant-1"),
         human_actor=human_actor,
