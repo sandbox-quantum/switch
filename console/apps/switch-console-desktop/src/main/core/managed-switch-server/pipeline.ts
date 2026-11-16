@@ -13,6 +13,7 @@ import {
   type ConnectRemoteServerResult,
   othersRecentlySeen,
   type StartLocalServerResult,
+  unknownVersionBackupNotice,
 } from '@shared/core/managed-switch-server/managed-switch-server';
 import type { ManagedServerRef } from '@shared/core/switch-servers/switch-servers';
 import { currentTelemetryEnv, TELEMETRY_RELAY_ORIGIN } from '../telemetry/config';
@@ -34,7 +35,12 @@ import { buildEnvFile, keysDisagreeing, telemetryRequested } from './env-file';
 import { apiUrlFor, managedServerAddresses, type LocalServerPorts } from './free-port';
 import { waitForHealth } from './health';
 import type { ServerHost } from './host/types';
-import { finishUpgrade, type OwedUpgrade, prepareUpgrade } from './managed-upgrade';
+import {
+  backUpUnknownDockerVersion,
+  finishUpgrade,
+  type OwedUpgrade,
+  prepareUpgrade,
+} from './managed-upgrade';
 import { crossesMatrixBoundary, runBackfill } from './matrix-migration';
 import { osUserFullName } from './os-user-name';
 import { clearPorts, readPersistedPorts, rememberPorts, resolvePorts } from './ports';
@@ -590,6 +596,8 @@ export async function startStack(opts: StartStackOptions): Promise<StartLocalSer
   // Back the database up before anything can migrate it: the Matrix backfill
   // below already starts the stack, and the rewrite after it moves the pin.
   const upgrade = await prepareUpgrade(host, checkoutRoot, onMessage, onUpgrade);
+  const unknownVersionBackup =
+    upgrade === null ? await backUpUnknownDockerVersion(host, checkoutRoot, onMessage) : null;
 
   // Copy the homeserver's history across before the upgrade removes the only
   // thing that can read it. Runs against the stack as currently deployed, so
@@ -640,7 +648,8 @@ export async function startStack(opts: StartStackOptions): Promise<StartLocalSer
   await composeUp(host, onLog, checkoutRoot !== null);
   // A copy published before its database existed is stamped now. The stack is
   // up, so a failure here is a warning, not a failed start.
-  let warning: string | null = null;
+  let warning: string | null =
+    unknownVersionBackup === null ? null : unknownVersionBackupNotice(unknownVersionBackup);
   if (shared !== null) {
     try {
       await writeEnvStamp(
@@ -652,10 +661,11 @@ export async function startStack(opts: StartStackOptions): Promise<StartLocalSer
       log.error(`managed-switch-server: could not stamp the published settings on ${host.label}`, {
         error,
       });
-      warning =
+      const stampWarning =
         `Started, but its settings on ${host.label} could not be stamped with its ` +
         `database (${reason}). Until the next start stamps them, a reset from a Console older ` +
         `than sharing could leave them looking current to the others.`;
+      warning = warning === null ? stampWarning : `${warning} ${stampWarning}`;
     }
   }
 

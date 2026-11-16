@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { unknownVersionBackupNotice } from '@shared/core/managed-switch-server/managed-switch-server';
 
 vi.hoisted(() => {
   window.electronAPI ??= {
@@ -272,6 +273,20 @@ describe('a running server', () => {
     expect(hasButton(/^Restart$/)).toBe(true);
     expect(hasButton(/^Stop$/)).toBe(true);
     expect(messageBoxes()).toHaveLength(0);
+  });
+
+  it('says why it backed the database up when no record said which version last ran it', async () => {
+    state.localStatus = status({
+      notice: unknownVersionBackupNotice('/data/backups/2026-11-16-switch-core-unknown'),
+    });
+    await render();
+
+    expect(text()).toContain('Running');
+    expect(text()).toContain(
+      "Switch Console couldn't tell which version of switch-core last ran this server, so it " +
+        'backed up the database before starting it. The backup is in ' +
+        '/data/backups/2026-11-16-switch-core-unknown.'
+    );
   });
 
   it('lists what has happened to it, most recent first', async () => {

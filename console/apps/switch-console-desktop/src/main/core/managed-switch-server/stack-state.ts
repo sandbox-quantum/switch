@@ -6,6 +6,7 @@ import type {
 } from '@shared/core/managed-switch-server/managed-switch-server';
 import {
   CORE_SERVICE,
+  DATABASE_VOLUME,
   ENV_FILE_NAME,
   ENV_STAMP_FILE_NAME,
   STACK_HELPER_IMAGE,
@@ -53,9 +54,6 @@ const PUBLISHED_ENV_FILE = 'stack.env';
 const PUBLISHED_STAMP_FILE = 'stack.db';
 /** Separates the copy from its stamp when both come back from one read. */
 const STAMP_MARKER = '---switch-console-stamp---';
-
-/** Holds the Postgres data whose credentials the published copy must match. */
-const DATABASE_VOLUME = 'pgdata';
 
 const QUICK_TIMEOUT_MS = 60_000;
 /** A host that has never run the stack has to pull the helper image first. */

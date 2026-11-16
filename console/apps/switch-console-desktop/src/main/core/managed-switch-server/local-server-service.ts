@@ -66,13 +66,13 @@ import {
   nativeMattermostLauncher,
   nativeStackRunning,
   nativeStartedAt,
-  readNativeDeployedVersion,
   readNativeAdminPages,
   readNativeTelemetry,
   resetNativeStack,
   startNativeStack,
   stopNativeStack,
 } from './native/native-stack';
+import { readNativeDeployedVersion } from './native/native-version';
 import { localServerBundleRoot, localServerDir } from './paths';
 import { resetStack, startStack, stopStack } from './pipeline';
 import { readPersistedPorts, rememberPorts } from './ports';

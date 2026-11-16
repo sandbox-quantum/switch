@@ -74,8 +74,12 @@ vi.mock('./deployed-version', async (importOriginal) => ({
 vi.mock('./compose', () => ({ composeUp: composeUpMock, composeDown: composeDownMock }));
 vi.mock('./health', () => ({ waitForHealth: waitForHealthMock }));
 const prepareUpgradeMock = vi.hoisted(() => vi.fn(async () => null));
+const backUpUnknownMock = vi.hoisted(() =>
+  vi.fn<() => Promise<string | null>>(() => Promise.resolve(null))
+);
 vi.mock('./managed-upgrade', () => ({
   prepareUpgrade: prepareUpgradeMock,
+  backUpUnknownDockerVersion: backUpUnknownMock,
   finishUpgrade: vi.fn(),
 }));
 vi.mock('./bundled-compose', () => ({ bundledComposeYaml: () => 'services: {}' }));

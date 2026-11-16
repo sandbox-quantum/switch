@@ -1,6 +1,5 @@
 import { appendFileSync, mkdirSync } from 'node:fs';
-import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { createServer } from 'node:net';
+import { mkdir, readFile, rm } from 'node:fs/promises';
 import path from 'node:path';
 import {
   assertManagedServerUrlFree,
@@ -13,6 +12,7 @@ import {
   type DeployedTelemetry,
   type LocalServerAdminPages,
   type StartLocalServerResult,
+  unknownVersionBackupNotice,
 } from '@shared/core/managed-switch-server/managed-switch-server';
 import { MAX_START_FAILURE_LINE } from '@shared/core/managed-switch-server/start-failure';
 import type { ManagedServerRef } from '@shared/core/switch-servers/switch-servers';
@@ -23,13 +23,13 @@ import {
   TELEMETRY_RELAY_ORIGIN,
 } from '../../telemetry/config';
 import { currentInternalFlag } from '../../telemetry/internal-account';
-import { classifyVersionDrift, type DeployedVersion } from '../deployed-version';
+import { classifyVersionDrift } from '../deployed-version';
 import { detectDocker } from '../docker';
 import { readEnvValue } from '../env-file';
 import { errorText } from '../error-text';
-import type { LocalServerPorts } from '../free-port';
 import type { ServerHost } from '../host/types';
 import {
+  backUpUnknownVersion,
   finishUpgrade,
   type OwedUpgrade,
   prepareUpgradeFrom,
@@ -62,6 +62,12 @@ import {
 import { type DockerExport, importIntoCluster } from './migrate-from-docker';
 import type { NativeLayout } from './native-paths';
 import {
+  nativeUpgradeSource,
+  readNativeDeployedVersion,
+  writeNativeDeployedVersion,
+} from './native-version';
+import { assertPortsFree } from './port-check';
+import {
   findPostgresForCluster,
   type PostgresBinaries,
   resolvePostgres,
@@ -69,6 +75,7 @@ import {
 import {
   clusterExists,
   initCluster,
+  runningPostmasterBinary,
   startCluster,
   stopCluster,
   stopClusterByPid,
@@ -82,11 +89,6 @@ import {
   pruneSwitchCoreInstalls,
 } from './switch-core-install';
 import { resolveUv } from './uv';
-
-/** What was last started here: the version the database has been (or is
- * being) migrated to. Written before switch-core boots, as the Docker stack
- * writes `SWITCH_VERSION` into `.env` before `compose up`. */
-const DEPLOYED_FILE = 'deployed.json';
 
 export type NativeStartOptions = {
   /** Files (ports, journal) and the secrets key, shared with the Docker mode. */
@@ -110,96 +112,6 @@ export type NativeStartOptions = {
    * this start is the move off Docker; null for every other start. */
   importFrom: DockerExport | null;
 };
-
-export async function readNativeDeployedVersion(layout: NativeLayout): Promise<DeployedVersion> {
-  let raw: string;
-  try {
-    raw = await readFile(path.join(layout.run, DEPLOYED_FILE), 'utf8');
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
-      return { kind: 'unreadable', reason: errorText(error) };
-    }
-    // No record, but a cluster: something started it that this build cannot
-    // date, which must not read as a fresh install.
-    if (await clusterExists(layout)) {
-      return {
-        kind: 'unreadable',
-        reason: `${DEPLOYED_FILE} is missing beside an existing database`,
-      };
-    }
-    return { kind: 'absent' };
-  }
-  try {
-    const parsed = JSON.parse(raw) as { version?: unknown };
-    if (typeof parsed.version === 'string' && parsed.version.length > 0) {
-      return { kind: 'deployed', version: parsed.version, source: 'env-file' };
-    }
-  } catch {}
-  return { kind: 'unreadable', reason: `${DEPLOYED_FILE} does not name a version` };
-}
-
-async function writeDeployedVersion(layout: NativeLayout, version: string): Promise<void> {
-  await writeFile(
-    path.join(layout.run, DEPLOYED_FILE),
-    `${JSON.stringify({ version }, null, 2)}\n`
-  );
-}
-
-/** Whether `port` can be bound on loopback right now. */
-function portFree(port: number): Promise<boolean> {
-  return new Promise((resolve) => {
-    const server = createServer();
-    server.once('error', () => resolve(false));
-    server.listen(port, '127.0.0.1', () => server.close(() => resolve(true)));
-  });
-}
-
-/**
- * Refuse a start whose ports something else has taken since they were chosen,
- * in the words a failed bind uses, so the start-failure explainer offers to
- * move the server to another port.
- */
-async function assertPortsFree(ports: LocalServerPorts): Promise<void> {
-  for (const port of [ports.api, ports.postgres]) {
-    if (!(await portFree(port))) {
-      throw new Error(`bind 127.0.0.1:${port}: address already in use`);
-    }
-  }
-}
-
-/**
- * Copy the data directory aside before switch-core migrates it. The cluster
- * is stopped by then, so a file copy is a consistent backup — and it needs no
- * `pg_dump`, which the portable build does not ship.
- */
-async function backupDataDirectory(
-  layout: NativeLayout,
-  from: string,
-  onMessage: (message: string) => void
-): Promise<string> {
-  onMessage(
-    `Backing up the database before updating switch-core ${from} → ${managedSwitchVersion()}…`
-  );
-  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const directory = path.join(layout.backups, `${stamp}-switch-core-${from}`);
-  await mkdir(directory, { recursive: true, mode: 0o700 });
-  await cp(layout.pgdata, path.join(directory, 'pgdata'), { recursive: true });
-  await writeFile(
-    path.join(directory, 'README.txt'),
-    [
-      `Switch Console took this backup before updating the Switch server from switch-core ${from} to ${managedSwitchVersion()}.`,
-      '',
-      'pgdata/   a copy of the PostgreSQL data directory, taken with the server stopped',
-      '',
-      'Keep it private: it holds every message and credential the server stored. To go back,',
-      `stop the server, replace ${layout.pgdata} with this copy, and run switch-core ${from}.`,
-      '',
-    ].join('\n'),
-    { mode: 0o600 }
-  );
-  log.info(`local-switch-server: backed up the database to ${directory} before updating`);
-  return directory;
-}
 
 /** Stop whatever of the server is running, switch-core first so it is not
  * left talking to a database that has gone. */
@@ -364,10 +276,11 @@ export async function startNativeStack(opts: NativeStartOptions): Promise<Native
   // would push whatever actually went wrong out of sight.
   const pgLog = fileLogger(path.join(layout.logs, 'postgres-setup.log'));
   await stopProcesses(layout, postgres, pgLog);
-  await assertPortsFree(ports);
+  await assertPortsFree(ports, runMattermost);
 
   const passwords = { owner: secrets.dbPassword, runtime: secrets.dbRuntimePassword };
   let upgrade: UpgradeJournal | null = null;
+  let unknownVersionBackup: string | null = null;
   if (opts.importFrom !== null && (await clusterExists(layout))) {
     throw new Error(
       `A Docker-free database already exists in ${layout.pgdata}, so the Docker server's ` +
@@ -375,15 +288,16 @@ export async function startNativeStack(opts: NativeStartOptions): Promise<Native
     );
   }
   if (await clusterExists(layout)) {
-    upgrade = await prepareUpgradeFrom(host, checkoutRoot, onMessage, onUpgrade, {
-      readDeployedVersion: () => readNativeDeployedVersion(layout),
-      backupDatabase: (from, message) => backupDataDirectory(layout, from, message),
-    });
+    const source = nativeUpgradeSource(layout);
+    upgrade = await prepareUpgradeFrom(host, checkoutRoot, onMessage, onUpgrade, source);
+    if (upgrade === null) {
+      unknownVersionBackup = await backUpUnknownVersion(checkoutRoot, onMessage, source);
+    }
     await syncPasswords(postgres, layout, passwords, pgLog);
   } else {
     onMessage(`Creating the database (PostgreSQL ${postgres.major})…`);
     await initCluster(postgres, layout, passwords, pgLog);
-    await writeDeployedVersion(layout, install.version);
+    await writeNativeDeployedVersion(layout, install.version);
   }
   await writeClusterConfig(layout, ports.postgres);
   onMessage('Starting PostgreSQL…');
@@ -414,7 +328,7 @@ export async function startNativeStack(opts: NativeStartOptions): Promise<Native
       telemetryEndpoint: nativeServerTelemetryEndpoint(),
       gatewayUiDir: install.gatewayUiDir,
     });
-    await writeDeployedVersion(layout, install.version);
+    await writeNativeDeployedVersion(layout, install.version);
     onMessage('Starting switch-core…');
     const record = await startCore(layout, install, settings);
     log.info(`local-switch-server: started switch-core ${install.version} (pid ${record.pid})`);
@@ -481,7 +395,9 @@ export async function startNativeStack(opts: NativeStartOptions): Promise<Native
 
     if (checkoutRoot === null) {
       if (bundle !== null) {
-        await pruneBundleCopies(layout.toolchain, bundle.root).catch((error: unknown) => {
+        const running = await runningPostmasterBinary(layout);
+        const inUse = [postgres.binDir, ...(running === null ? [] : [running])];
+        await pruneBundleCopies(layout.toolchain, bundle.root, inUse).catch((error: unknown) => {
           log.warn('local-switch-server: could not remove old bundle copies', {
             error: String(error),
           });
@@ -494,7 +410,13 @@ export async function startNativeStack(opts: NativeStartOptions): Promise<Native
       });
     }
     return {
-      result: { kind: 'started', serverId, telemetryEnabled, warning: null },
+      result: {
+        kind: 'started',
+        serverId,
+        telemetryEnabled,
+        warning:
+          unknownVersionBackup === null ? null : unknownVersionBackupNotice(unknownVersionBackup),
+      },
       bringUpMattermost,
     };
   } catch (error) {

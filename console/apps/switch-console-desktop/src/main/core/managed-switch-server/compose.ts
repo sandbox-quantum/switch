@@ -3,6 +3,7 @@ import {
   BUILD_OVERRIDE_FILE_NAME,
   COMPOSE_FILE_NAME,
   CORE_SERVICE,
+  DATABASE_VOLUME,
   ENV_FILE_NAME,
   LOCAL_SERVER_PROFILES,
 } from './constants';
@@ -33,16 +34,29 @@ function baseArgs(host: ServerHost, globalFlags: string[], extraFiles: string[] 
   ];
 }
 
-export async function runDocker(
+export function runDocker(host: ServerHost, args: string[], timeout: number): Promise<string> {
+  return runDockerWithEnv(host, args, timeout, {});
+}
+
+/**
+ * Variables set for one compose invocation. They take precedence over the
+ * `.env` beside the compose file, so a start can still bring the database up
+ * when that `.env` lacks a value the compose file requires.
+ */
+export type ComposeEnv = Record<string, string>;
+
+async function runDockerWithEnv(
   host: ServerHost,
   args: string[],
-  timeout: number
+  timeout: number,
+  env: ComposeEnv
 ): Promise<string> {
   const full = [host.dockerBin, ...args];
   try {
     const { stdout } = await host.ctx.exec(host.dockerBin, args, {
       timeout,
       maxBuffer: 32 * 1024 * 1024,
+      ...(Object.keys(env).length > 0 ? { env } : {}),
     });
     return stdout;
   } catch (error) {
@@ -129,6 +143,18 @@ export function dockerRunOneOff(
   );
 }
 
+/** Whether the stack's database volume exists on the host, whether or not
+ * anything is running on it. */
+export async function databaseVolumeExists(host: ServerHost): Promise<boolean> {
+  const volume = `${host.composeProjectName}_${DATABASE_VOLUME}`;
+  const names = await runDocker(
+    host,
+    ['volume', 'ls', '--filter', `name=${volume}`, '--format', '{{.Name}}'],
+    60_000
+  );
+  return names.split('\n').some((name) => name.trim() === volume);
+}
+
 /** Stop and remove the stack's containers. `removeVolumes` also destroys the
  * data volumes (the reset path) — irreversible. */
 export async function composeDown(host: ServerHost, removeVolumes: boolean): Promise<void> {
@@ -151,18 +177,32 @@ export async function composeStop(host: ServerHost): Promise<void> {
  * — the compose file and `.env` already there, not this build's — without its
  * dependents, and wait for it to report healthy.
  */
-export async function composeUpService(host: ServerHost, service: string): Promise<void> {
+export async function composeUpService(
+  host: ServerHost,
+  service: string,
+  env: ComposeEnv
+): Promise<void> {
   log.info(`local-switch-server: docker compose up ${service} (${host.label})`);
-  await runDocker(
+  await runDockerWithEnv(
     host,
     [...baseArgs(host, []), 'up', '-d', '--no-deps', '--wait', service],
-    5 * 60 * 1000
+    5 * 60 * 1000,
+    env
   );
 }
 
 /** Id of the container running `service`. Throws when there is none. */
-export async function serviceContainerId(host: ServerHost, service: string): Promise<string> {
-  const stdout = await runDocker(host, [...baseArgs(host, []), 'ps', '-q', service], 60_000);
+export async function serviceContainerId(
+  host: ServerHost,
+  service: string,
+  env: ComposeEnv
+): Promise<string> {
+  const stdout = await runDockerWithEnv(
+    host,
+    [...baseArgs(host, []), 'ps', '-q', service],
+    60_000,
+    env
+  );
   const id = stdout.trim();
   if (!/^[a-f0-9]+$/.test(id)) {
     throw new Error(`Could not identify the ${service} container on ${host.label}.`);
@@ -176,7 +216,7 @@ export async function serviceContainerId(host: ServerHost, service: string): Pro
  */
 export async function coreStartedAt(host: ServerHost): Promise<string | null> {
   if (!(await isStackRunning(host))) return null;
-  const id = await serviceContainerId(host, CORE_SERVICE);
+  const id = await serviceContainerId(host, CORE_SERVICE, {});
   const stdout = await runDocker(host, ['inspect', '--format', '{{.State.StartedAt}}', id], 30_000);
   const startedAt = stdout.trim();
   if (Number.isNaN(Date.parse(startedAt))) {

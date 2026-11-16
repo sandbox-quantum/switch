@@ -1,13 +1,14 @@
-import { execFile } from 'node:child_process';
-import { access, constants, mkdir, readdir, readFile, symlink, writeFile } from 'node:fs/promises';
-import os from 'node:os';
+import { access, constants, mkdir, readFile, symlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { promisify } from 'node:util';
-import { getWindowsEnvValue } from '@switch-console/core/exec';
-import { findExecutableOnPath } from '@main/core/utils/resolve-executable';
 import { log } from '@main/lib/logger';
-import type { LocalServerBundle } from './bundle';
+import { bundleCopyHolding, type LocalServerBundle } from './bundle';
 import { installPinnedArchive } from './download';
+import {
+  detectInstalledPostgres,
+  MAX_POSTGRES_MAJOR,
+  MIN_POSTGRES_MAJOR,
+  probeBinDir,
+} from './installed-postgres';
 import { exe, type NativeLayout } from './native-paths';
 import {
   currentNativePlatform,
@@ -17,16 +18,6 @@ import {
   VC_RUNTIME_DLLS,
 } from './toolchain-pins';
 
-const execFileAsync = promisify(execFile);
-
-/**
- * The oldest and newest PostgreSQL majors an installed copy may be. 16 is what
- * the Docker stack runs and switch-core's migrations are tested on; older
- * majors lack syntax they use (a column list on `ON DELETE SET NULL` is 15+).
- */
-export const MIN_POSTGRES_MAJOR = 16;
-export const MAX_POSTGRES_MAJOR = 18;
-
 export type PostgresBinaries = {
   /** Directory holding `initdb`, `pg_ctl` and `postgres`. */
   binDir: string;
@@ -34,7 +25,6 @@ export type PostgresBinaries = {
   source: 'installed' | 'bundled' | 'downloaded';
 };
 
-const REQUIRED = ['initdb', 'pg_ctl', 'postgres'] as const;
 const CHOICE_FILE = 'postgres.json';
 
 export const VC_REDIST_URL = 'https://aka.ms/vs/17/release/vc_redist.x64.exe';
@@ -79,110 +69,6 @@ async function assertVcRuntime(binDir: string): Promise<void> {
 
 export function postgresBin(binaries: Pick<PostgresBinaries, 'binDir'>, name: string): string {
   return path.join(binaries.binDir, exe(name));
-}
-
-/** `postgres (PostgreSQL) 16.4` → 16. */
-export function parsePostgresMajor(versionOutput: string): number | null {
-  const match = /\(PostgreSQL\)\s+(\d+)/.exec(versionOutput);
-  return match ? Number(match[1]) : null;
-}
-
-async function isExecutable(file: string): Promise<boolean> {
-  try {
-    await access(file, process.platform === 'win32' ? constants.F_OK : constants.X_OK);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function subdirectories(dir: string): Promise<string[]> {
-  try {
-    const entries = await readdir(dir, { withFileTypes: true });
-    return entries
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => path.join(dir, entry.name));
-  } catch {
-    return [];
-  }
-}
-
-/** Directories an installed PostgreSQL commonly puts its server binaries in. */
-async function candidateBinDirs(env: NodeJS.ProcessEnv): Promise<string[]> {
-  const dirs: string[] = [];
-  const onPath = findExecutableOnPath('pg_ctl', env);
-  if (onPath) dirs.push(path.dirname(onPath));
-  if (process.platform === 'darwin') {
-    for (let major = MAX_POSTGRES_MAJOR; major >= MIN_POSTGRES_MAJOR; major--) {
-      dirs.push(
-        `/opt/homebrew/opt/postgresql@${major}/bin`,
-        `/usr/local/opt/postgresql@${major}/bin`
-      );
-    }
-    dirs.push('/opt/homebrew/opt/postgresql/bin', '/usr/local/opt/postgresql/bin');
-    for (const version of await subdirectories('/Applications/Postgres.app/Contents/Versions')) {
-      dirs.push(path.join(version, 'bin'));
-    }
-  } else if (process.platform === 'linux') {
-    // Debian and Ubuntu keep the server binaries off PATH, one directory per major.
-    for (const version of await subdirectories('/usr/lib/postgresql')) {
-      dirs.push(path.join(version, 'bin'));
-    }
-    for (const version of (await subdirectories('/usr')).filter((d) =>
-      path.basename(d).startsWith('pgsql-')
-    )) {
-      dirs.push(path.join(version, 'bin'));
-    }
-    dirs.push('/usr/bin', '/usr/local/bin', path.join(os.homedir(), '.local', 'bin'));
-  } else if (process.platform === 'win32') {
-    const programFiles = getWindowsEnvValue(env, 'ProgramFiles');
-    if (programFiles) {
-      for (const version of await subdirectories(path.join(programFiles, 'PostgreSQL'))) {
-        dirs.push(path.join(version, 'bin'));
-      }
-    }
-  }
-  return [...new Set(dirs)];
-}
-
-/** The major version of the server in `binDir`, or null when it is not a
- * complete, runnable PostgreSQL server install. */
-export async function probeBinDir(binDir: string): Promise<number | null> {
-  for (const name of REQUIRED) {
-    if (!(await isExecutable(path.join(binDir, exe(name))))) return null;
-  }
-  try {
-    const { stdout } = await execFileAsync(path.join(binDir, exe('postgres')), ['--version'], {
-      timeout: 15_000,
-      windowsHide: true,
-    });
-    return parsePostgresMajor(stdout);
-  } catch (error) {
-    log.warn('local-switch-server: found a PostgreSQL install that does not run', {
-      binDir,
-      error: String(error),
-    });
-    return null;
-  }
-}
-
-/** Installed PostgreSQL servers this machine has, newest major first. */
-export async function detectInstalledPostgres(
-  env: NodeJS.ProcessEnv = process.env
-): Promise<PostgresBinaries[]> {
-  const found: PostgresBinaries[] = [];
-  for (const binDir of await candidateBinDirs(env)) {
-    const major = await probeBinDir(binDir);
-    if (major === null) continue;
-    if (major < MIN_POSTGRES_MAJOR || major > MAX_POSTGRES_MAJOR) {
-      log.info(
-        `local-switch-server: skipping PostgreSQL ${major} at ${binDir} (unsupported major)`
-      );
-      continue;
-    }
-    found.push({ binDir, major, source: 'installed' });
-  }
-  return found.sort((a, b) => b.major - a.major);
 }
 
 /** The major the data directory was initialised by, or null when there is no
@@ -297,6 +183,12 @@ async function hydrateSymlinks(root: string): Promise<void> {
   }
 }
 
+/** Whether a portable PostgreSQL build is published for this platform. */
+function portableArchiveAvailable(): boolean {
+  const platform = currentNativePlatform();
+  return platform !== null && postgresArchive(platform) !== null;
+}
+
 async function downloadPostgres(
   layout: NativeLayout,
   onMessage: (message: string) => void
@@ -331,11 +223,16 @@ async function downloadPostgres(
  * The PostgreSQL to run the cluster with.
  *
  * The cluster's major decides it once there is one: a data directory only runs
- * under the major that created it, so an installed copy of another major is
- * passed over, and the one used last time is preferred while it still works.
- * Without a cluster, the newest supported installed copy wins; with none
- * installed, the one the app ships, and in a build that ships none (a dev
- * build), the pinned portable build is downloaded.
+ * under the major that created it. The one used last time is kept while it
+ * still works — an installed copy a server was created on stays its
+ * PostgreSQL — except a copy from an older bundle, which gives way to this
+ * build's copy of the same major: older bundles are removed once a start
+ * succeeds, and a server left running from one would lose its files.
+ *
+ * A new cluster runs on the PostgreSQL the app ships, whatever is installed,
+ * so that upgrading or removing someone's own PostgreSQL never strands the
+ * server. A build that ships none (a dev build) downloads the same pinned
+ * portable build instead; only where neither exists is an installed copy used.
  */
 export async function resolvePostgres(
   layout: NativeLayout,
@@ -350,9 +247,24 @@ export async function resolvePostgres(
         `(this deletes its data).`
     );
   }
+  const bundled = await bundledPostgres(bundle);
+  const fits = (major: number) => required === null || major === required;
   const previous = await readChoice(layout);
   const supported = (major: number) => major >= MIN_POSTGRES_MAJOR && major <= MAX_POSTGRES_MAJOR;
-  if (previous && supported(previous.major) && (required === null || previous.major === required)) {
+  if (previous && supported(previous.major) && fits(previous.major)) {
+    const fromOlderBundle =
+      bundled !== null &&
+      bundled.major === previous.major &&
+      bundled.binDir !== previous.binDir &&
+      bundleCopyHolding(layout.toolchain, previous.binDir) !== null;
+    if (fromOlderBundle) {
+      log.info(
+        `local-switch-server: moving PostgreSQL ${previous.major} from ${previous.binDir} to ` +
+          `this build's copy in ${bundled.binDir}`
+      );
+      await recordChoice(layout, bundled);
+      return bundled;
+    }
     if ((await probeBinDir(previous.binDir)) === previous.major) return previous;
     log.warn('local-switch-server: the PostgreSQL used last time is gone; looking again', {
       binDir: previous.binDir,
@@ -360,21 +272,28 @@ export async function resolvePostgres(
   }
 
   onMessage('Looking for PostgreSQL…');
-  const installed = (await detectInstalledPostgres()).filter(
-    (candidate) => required === null || candidate.major === required
-  );
-  const bundled = await bundledPostgres(bundle);
-  let chosen: PostgresBinaries;
-  if (installed.length === 0 && bundled === null && bundle?.postgresBinDir != null) {
+  let chosen: PostgresBinaries | null = bundled !== null && fits(bundled.major) ? bundled : null;
+  if (chosen === null && bundled === null && bundle?.postgresBinDir != null) {
+    // The app ships PostgreSQL, but it does not run: on Windows, say what is
+    // missing rather than fall back to something else in silence.
     await assertVcRuntime(bundle.postgresBinDir);
   }
-  if (installed.length > 0) {
-    chosen = installed[0];
-  } else if (bundled !== null && (required === null || bundled.major === required)) {
-    chosen = bundled;
-  } else if (required === null || required === POSTGRES_MAJOR) {
+  const portable = portableArchiveAvailable();
+  if (chosen === null && (required === null || required === POSTGRES_MAJOR) && portable) {
     chosen = await downloadPostgres(layout, onMessage);
-  } else {
+  }
+  if (chosen === null) {
+    const installed = (await detectInstalledPostgres()).filter((c) => fits(c.major));
+    chosen = installed[0] ?? null;
+  }
+  if (chosen === null) {
+    if (required === null) {
+      throw new Error(
+        `No PostgreSQL ${MIN_POSTGRES_MAJOR}–${MAX_POSTGRES_MAJOR} was found on this computer, and ` +
+          `there is no portable build to download for ${process.platform}-${process.arch}. ` +
+          `Install PostgreSQL ${POSTGRES_MAJOR}, then start the server again.`
+      );
+    }
     throw new Error(
       `This server's database was created by PostgreSQL ${required}, which is no longer on this ` +
         `computer. Install PostgreSQL ${required} again, or reset the server (deletes its data).`

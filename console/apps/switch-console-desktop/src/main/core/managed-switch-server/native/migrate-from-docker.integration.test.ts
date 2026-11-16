@@ -86,8 +86,8 @@ describe.skipIf(!process.env.SWITCH_MIGRATION_INTEGRATION)('moving off Docker', 
     );
 
     // A stack's database with something in each of its two databases.
-    await composeUpService(host, 'postgres');
-    const container = await serviceContainerId(host, 'postgres');
+    await composeUpService(host, 'postgres', {});
+    const container = await serviceContainerId(host, 'postgres', {});
     const psql = (db: string, sql: string) =>
       runDocker(
         host!,

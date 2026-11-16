@@ -3,7 +3,9 @@ import type * as AppIdentity from '@shared/app-identity';
 import {
   CHECKOUT_IMAGE_TAG,
   type StartLocalServerResult,
+  unknownVersionBackupNotice,
 } from '@shared/core/managed-switch-server/managed-switch-server';
+import { explainStartFailure } from '@shared/core/managed-switch-server/start-failure';
 import type * as ManagedUpgrade from './managed-upgrade';
 import type { StartStackOptions } from './pipeline';
 import type * as ServerVersion from './server-version';
@@ -126,13 +128,13 @@ vi.mock('./native/native-stack', () => ({
   resetNativeStack: native.reset,
   nativeStackRunning: native.running,
   nativeStartedAt: vi.fn(),
-  readNativeDeployedVersion: native.deployed,
   readNativeTelemetry: vi.fn(async () => ({ known: true, enabled: false })),
   readNativeAdminPages: vi.fn(async () => 'served'),
   nativeMattermostLauncher: native.launcher,
   discardNativeData: native.discard,
   nativeCoreFailureLine: native.failureLine,
 }));
+vi.mock('./native/native-version', () => ({ readNativeDeployedVersion: native.deployed }));
 const move = vi.hoisted(() => ({
   export: vi.fn(),
   blocked: vi.fn(async (): Promise<string | null> => null),
@@ -616,6 +618,47 @@ it('starts a native server without the Docker pipeline, and records the runtime'
   expect(m.start).not.toHaveBeenCalled();
   expect(runtime.write).toHaveBeenCalledWith('/data/local-switch-server', 'native');
   expect(service.getStatus()).toMatchObject({ phase: 'running', runtime: 'native' });
+});
+
+it('refuses a native start whose gateway port is taken, explaining it, and never shows Running', async () => {
+  runtime.read.mockResolvedValue('native');
+  m.running.mockResolvedValue(false);
+  const service = new LocalServerService();
+  await boot(service);
+  m.emit.mockClear();
+  native.start.mockRejectedValue(new Error('bind 127.0.0.1:8000: address already in use'));
+
+  const result = await service.start();
+
+  expect(result).toMatchObject({ kind: 'error' });
+  const status = service.getStatus();
+  expect(status).toMatchObject({ phase: 'error', failedTo: null });
+  expect(explainStartFailure(status.error ?? '')).toMatchObject({
+    port: 8000,
+    hint: 'Another program is using port 8000. Quit it, or use another port, then try again.',
+  });
+  const phases = m.emit.mock.calls.map(([, emitted]) => (emitted as { phase: string }).phase);
+  expect(phases).not.toContain('running');
+});
+
+it('shows why a native start backed the database up when no version record said what ran it', async () => {
+  runtime.read.mockResolvedValue('native');
+  const notice = unknownVersionBackupNotice('/data/backups/2026-11-16-switch-core-unknown');
+  native.start.mockResolvedValue({
+    result: { ...started, warning: notice },
+    bringUpMattermost: null,
+  });
+  const service = new LocalServerService();
+  await boot(service);
+
+  await service.start();
+
+  expect(service.getStatus()).toMatchObject({ phase: 'running', notice });
+  expect(notice).toBe(
+    "Switch Console couldn't tell which version of switch-core last ran this server, so it " +
+      'backed up the database before starting it. The backup is in ' +
+      '/data/backups/2026-11-16-switch-core-unknown.'
+  );
 });
 
 it('reads a native server as running from its processes, not from Docker', async () => {

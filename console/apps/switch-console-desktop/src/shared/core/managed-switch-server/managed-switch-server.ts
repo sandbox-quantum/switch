@@ -91,6 +91,17 @@ export function switchVersionDowngradeMessage(deployed: string, expected: string
 }
 
 /**
+ * What a start says after backing up a database whose last switch-core
+ * version it had no record of: why it made the backup, and where it is.
+ */
+export function unknownVersionBackupNotice(backup: string): string {
+  return (
+    `Switch Console couldn't tell which version of switch-core last ran this server, so it ` +
+    `backed up the database before starting it. The backup is in ${backup}.`
+  );
+}
+
+/**
  * Why an upgrade stopped short of removing the message server, in one message.
  *
  * Says the two things a user needs: nothing has changed, and trying again is

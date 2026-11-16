@@ -8,7 +8,13 @@ import {
   type ManagedServerUpgrade,
   type SwitchVersionDrift,
 } from '@shared/core/managed-switch-server/managed-switch-server';
-import { composeUpService, runDocker, serviceContainerId } from './compose';
+import {
+  type ComposeEnv,
+  composeUpService,
+  databaseVolumeExists,
+  runDocker,
+  serviceContainerId,
+} from './compose';
 import { COMPOSE_FILE_NAME, ENV_FILE_NAME } from './constants';
 import {
   classifyVersionDrift,
@@ -110,19 +116,61 @@ export function prepareUpgrade(
   onMessage: (message: string) => void,
   onUpgrade: (upgrade: OwedUpgrade) => void
 ): Promise<UpgradeJournal | null> {
-  return prepareUpgradeFrom(host, checkoutRoot, onMessage, onUpgrade, {
+  return prepareUpgradeFrom(host, checkoutRoot, onMessage, onUpgrade, dockerUpgradeSource(host));
+}
+
+/** {@link backUpUnknownVersion} for a Docker stack. */
+export function backUpUnknownDockerVersion(
+  host: ServerHost,
+  checkoutRoot: string | null,
+  onMessage: (message: string) => void
+): Promise<string | null> {
+  return backUpUnknownVersion(checkoutRoot, onMessage, dockerUpgradeSource(host));
+}
+
+function dockerUpgradeSource(host: ServerHost): UpgradeSource {
+  return {
     readDeployedVersion: () => readDeployedVersion(host),
+    databaseExists: () => databaseVolumeExists(host),
     backupDatabase: (from, message) => backupDatabase(host, from, message),
-  });
+  };
 }
 
 /** Where an upgrade reads the deployed version from and how it backs the
  * database up: the Docker stack's containers, or a native server's files. */
 export type UpgradeSource = {
   readDeployedVersion: () => Promise<DeployedVersion>;
-  /** Back the database up before it is migrated past `from`; returns where. */
-  backupDatabase: (from: string, onMessage: (message: string) => void) => Promise<string>;
+  /** Whether the server has a database, whatever its version record says. */
+  databaseExists: () => Promise<boolean>;
+  /** Back the database up before it is migrated past `from`, or before a start
+   * when nothing says which version last ran it (`null`); returns where. */
+  backupDatabase: (from: string | null, onMessage: (message: string) => void) => Promise<string>;
 };
+
+/**
+ * Back the database up when its version record cannot be read but the
+ * database is there: whatever ran it last is unknown, so the start about to
+ * migrate it may be an update, and an update takes a backup first. Returns
+ * where the backup is, or null when none was needed.
+ *
+ * Runs before the start writes a new record, so a backup that fails leaves
+ * the record as unreadable as it was and the next start tries again.
+ */
+export async function backUpUnknownVersion(
+  checkoutRoot: string | null,
+  onMessage: (message: string) => void,
+  source: UpgradeSource
+): Promise<string | null> {
+  if (checkoutRoot !== null) return null;
+  const deployed = await source.readDeployedVersion();
+  if (deployed.kind !== 'unreadable') return null;
+  if (!(await source.databaseExists())) return null;
+  log.warn(
+    'managed-switch-server: the deployed switch-core version is unknown; backing up the database before starting',
+    { reason: deployed.reason }
+  );
+  return source.backupDatabase(null, onMessage);
+}
 
 /** {@link prepareUpgrade} against an explicit {@link UpgradeSource}. The
  * journal is kept in `host`'s working directory either way. */
@@ -188,14 +236,11 @@ async function writeJournal(host: ServerHost, journal: UpgradeJournal): Promise<
  */
 async function backupDatabase(
   host: ServerHost,
-  from: string,
+  from: string | null,
   onMessage: (message: string) => void
 ): Promise<string> {
-  onMessage(
-    `Backing up the database before updating switch-core ${from} → ${managedSwitchVersion()}…`
-  );
-  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const directory = `${BACKUPS_DIR}/${stamp}-switch-core-${from}`;
+  onMessage(backupMessage(from));
+  const directory = `${BACKUPS_DIR}/${backupDirectoryName(from)}`;
   await host.writeFile(`${directory}/README.txt`, backupReadme(from), 0o600);
   await host.restrictMode(directory, 0o700);
   for (const file of [COMPOSE_FILE_NAME, ENV_FILE_NAME]) {
@@ -208,8 +253,11 @@ async function backupDatabase(
     await host.writeFile(`${directory}/${file}`, content, 0o600);
   }
 
-  await composeUpService(host, DATABASE_SERVICE);
-  const container = await serviceContainerId(host, DATABASE_SERVICE);
+  // A `.env` that no longer names the version cannot bring the stack's
+  // compose file up, though only its database, whose image is fixed, starts.
+  const env: ComposeEnv = from === null ? { SWITCH_VERSION: managedSwitchVersion() } : {};
+  await composeUpService(host, DATABASE_SERVICE, env);
+  const container = await serviceContainerId(host, DATABASE_SERVICE, env);
   const inContainer = `/tmp/switch-upgrade-${randomUUID()}.sql`;
   const destination = `${directory}/database.sql`;
   try {
@@ -243,17 +291,39 @@ async function backupDatabase(
   return path;
 }
 
-function backupReadme(from: string): string {
+/** What a start says while it backs up before migrating past `from`, or
+ * past a version nothing recorded (`null`). */
+export function backupMessage(from: string | null): string {
+  return from === null
+    ? `Backing up the database: there is no record of which switch-core last ran it…`
+    : `Backing up the database before updating switch-core ${from} → ${managedSwitchVersion()}…`;
+}
+
+/** A new backup's directory name, which sorts by when it was taken. */
+export function backupDirectoryName(from: string | null): string {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  return `${stamp}-switch-core-${from ?? 'unknown'}`;
+}
+
+/** The first line of a backup's README: why it was taken. */
+export function backupReason(from: string | null): string {
+  return from === null
+    ? `Switch Console took this backup before starting the Switch server with switch-core ${managedSwitchVersion()}, because nothing recorded which switch-core version last ran it.`
+    : `Switch Console took this backup before updating the Switch server from switch-core ${from} to ${managedSwitchVersion()}.`;
+}
+
+function backupReadme(from: string | null): string {
+  const before = from ?? 'the version that last ran it';
   return [
-    `Switch Console took this backup before updating the Switch server from switch-core ${from} to ${managedSwitchVersion()}.`,
+    backupReason(from),
     '',
     'database.sql                   pg_dumpall of every database in the stack',
     `${COMPOSE_FILE_NAME}  the compose file the stack ran with`,
     `${ENV_FILE_NAME}                           its environment, including credentials`,
     '',
     'Keep these files private. switch-core migrates its database forward and cannot run',
-    `against it at ${from} again once the update has started. To go back, stop the stack and`,
-    `restore database.sql into a fresh database volume with switch-core ${from}.`,
+    `against it at ${before} again once the update has started. To go back, stop the stack and`,
+    `restore database.sql into a fresh database volume with switch-core ${before}.`,
     'Uploaded files stay in the Docker volumes; this dump does not copy them.',
     '',
   ].join('\n');

@@ -81,8 +81,12 @@ vi.mock('@main/core/switch-servers/auth', () => ({
 // Reaches the reachability store, and through it the database client.
 vi.mock('@main/core/switch-servers/gateway-client', () => ({ updateMyName: vi.fn() }));
 vi.mock('./os-user-name', () => ({ osUserFullName: () => Promise.resolve('Ada Lovelace') }));
+const backUpUnknownMock = vi.hoisted(() =>
+  vi.fn<() => Promise<string | null>>(() => Promise.resolve(null))
+);
 vi.mock('./managed-upgrade', () => ({
   prepareUpgrade: prepareUpgradeMock,
+  backUpUnknownDockerVersion: backUpUnknownMock,
   finishUpgrade: finishUpgradeMock,
 }));
 

@@ -113,8 +113,8 @@ export async function exportDockerStack(
   // Everything stops, so nothing writes while the data is exported; only its
   // database comes back up.
   await composeStop(host);
-  await composeUpService(host, DATABASE_SERVICE);
-  const container = await serviceContainerId(host, DATABASE_SERVICE);
+  await composeUpService(host, DATABASE_SERVICE, {});
+  const container = await serviceContainerId(host, DATABASE_SERVICE, {});
 
   const dumps: DockerExport['dumps'] = [];
   for (const database of [DATABASE, MATTERMOST_DATABASE]) {

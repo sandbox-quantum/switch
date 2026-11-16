@@ -9,9 +9,10 @@ import { readLocalRuntime, writeLocalRuntime } from '../runtime';
 import { generateSecrets } from '../secret-values';
 import { buildNativeCoreSettings } from './core-settings';
 import { downloadFile } from './download';
+import { parsePostgresMajor } from './installed-postgres';
 import { mattermostCallbackBaseUrl, mattermostComposeYaml, mattermostImage } from './mattermost';
 import { nativeLayout } from './native-paths';
-import { missingVcRuntimeDlls, parsePostgresMajor, resolvePostgres } from './postgres-binaries';
+import { missingVcRuntimeDlls, resolvePostgres } from './postgres-binaries';
 import { bundlePthLine } from './switch-core-install';
 import {
   currentNativePlatform,
