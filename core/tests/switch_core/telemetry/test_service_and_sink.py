@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import uuid
 from datetime import UTC, datetime
 
@@ -19,6 +20,7 @@ from switch_core.telemetry.catalogue import (
 )
 from switch_core.telemetry.service import TelemetryService, emit_safely
 from switch_core.telemetry.sink import NullSink, OtlpRelaySink, TelemetryRecord
+from tests.switch_core.telemetry.test_catalogue import _valid_payload
 
 
 def _relay_sink(
@@ -237,6 +239,24 @@ class TestFailuresDoNotReachTheCaller:
         """A bad event must not take down the room creation that reported it."""
         service = _service(_RecordingSink())
         emit_safely(service, "deployment_started", {"tenant_count": "one"})
+
+    @pytest.mark.parametrize("prop", ["failure_reason", "bridge_platform"])
+    def test_emit_safely_logs_the_refused_property_but_not_its_value(
+        self, prop: str, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The refused value is the free text the catalogue keeps off the
+        wire; logging it would put it in the log pipeline instead."""
+        leaked = "SlackApiError: invalid_auth for team acme-corp"
+        payload = _valid_payload("bridge_connected")
+        payload[prop] = leaked
+        service = _service(_RecordingSink())
+
+        with caplog.at_level(logging.ERROR, logger="switch_core.telemetry.service"):
+            emit_safely(service, "bridge_connected", payload)  # type: ignore[arg-type]
+
+        assert f"'bridge_connected'.{prop}: expected one of" in caplog.text
+        assert "got a str outside them" in caplog.text
+        assert leaked not in caplog.text
 
     def test_emit_safely_tolerates_no_service_at_all(self) -> None:
         emit_safely(None, "deployment_started", {"tenant_count": 1})
