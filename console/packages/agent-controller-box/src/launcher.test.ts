@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Launcher, type LauncherDeps, type PushOutcome, type SpawnRecorder } from './launcher';
 import { encodeLine, type LauncherReport } from './launcher-protocol';
 import type { ProcessEntry } from './owner-marker';
@@ -162,6 +162,18 @@ async function replied(id: number): Promise<void> {
   }
   throw new Error(`No reply to order ${id}.`);
 }
+/**
+ * Waits for the replies to every order in `ids`. The launcher answers an order
+ * only once its work is done, so this, not a quiet spell, is what says an order
+ * has been carried out on a loaded runner.
+ */
+async function answered(...ids: number[]): Promise<void> {
+  for (const id of ids) await replied(id);
+}
+/** Retries `check` until it passes, however long a loaded runner takes (up to 5 s). */
+async function eventually(check: () => void): Promise<void> {
+  await vi.waitFor(check, { timeout: 5_000, interval: 10 });
+}
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'launcher-'));
@@ -193,6 +205,7 @@ describe('Launcher', () => {
   it('launches an ordered host isolated, writes its credentials with no login, and hands its ticket to the host', async () => {
     const l = launcher();
     l.feed(Buffer.from(encodeLine(launchOrder(X, MX, 1))));
+    await answered(1);
     await settle();
     expect(sent).toEqual([{ kind: 'reply', id: 1, ok: true }]);
     expect(launched).toEqual([
@@ -201,17 +214,19 @@ describe('Launcher', () => {
     const written = JSON.parse(readFileSync(join(dir, 'agents', X, 'credentials.json'), 'utf8'));
     expect(written.providerLogin).toBeNull();
     expect(written.env.SWITCH_AGENT_ID).toBe(X);
-    expect(pushed).toEqual([[X, 'c'.repeat(32)]]);
+    await eventually(() => expect(pushed).toEqual([[X, 'c'.repeat(32)]]));
     l.feed(
       Buffer.from(
         encodeLine({ kind: 'ticket', id: 9, agentId: X, launchId: 1, ticket: 'd'.repeat(32) })
       )
     );
-    await settle();
-    expect(pushed).toEqual([
-      [X, 'c'.repeat(32)],
-      [X, 'd'.repeat(32)],
-    ]);
+    await answered(9);
+    await eventually(() =>
+      expect(pushed).toEqual([
+        [X, 'c'.repeat(32)],
+        [X, 'd'.repeat(32)],
+      ])
+    );
   });
 
   it('makes a launch’s directory only inside the workspaces folder; inside the data folder it must exist', async () => {
@@ -222,7 +237,7 @@ describe('Launcher', () => {
     l.feed(Buffer.from(encodeLine({ ...launchOrder(X, MX, 1), directory: inside })));
     l.feed(Buffer.from(encodeLine({ ...launchOrder(Y, MY, 2), directory: inData })));
     l.feed(Buffer.from(encodeLine({ ...launchOrder(X, MX, 3), directory: outside })));
-    await settle();
+    await answered(1, 2, 3);
     expect(existsSync(inside)).toBe(true);
     expect(existsSync(inData)).toBe(false);
     expect(existsSync(outside)).toBe(false);
@@ -233,14 +248,15 @@ describe('Launcher', () => {
   it('warms a room and passes on the memory line through the host, only for an agent it launched', async () => {
     const l = launcher();
     l.feed(Buffer.from(encodeLine({ kind: 'warm', id: 1, agentId: X, roomId: '!r:x' })));
-    await settle();
+    await answered(1);
     expect(sent).toEqual([{ kind: 'reply', id: 1, ok: false, code: 'unknown_agent' }]);
     l.feed(Buffer.from(encodeLine(launchOrder(X, MX, 2))));
+    await answered(2);
     await settle();
     sent = [];
     l.feed(Buffer.from(encodeLine({ kind: 'warm', id: 3, agentId: X, roomId: '!r:x' })));
     l.feed(Buffer.from(encodeLine({ kind: 'memory_notice', id: 4, agentId: X })));
-    await settle();
+    await answered(3, 4);
     expect(warmed).toEqual([[X, '!r:x']]);
     expect(sent).toEqual([
       { kind: 'reply', id: 3, ok: true },
@@ -252,7 +268,8 @@ describe('Launcher', () => {
     const l = launcher();
     l.feed(Buffer.from(encodeLine({ ...launchOrder(X, MX, 2), template: { nope: true } })));
     l.feed(Buffer.from('{"kind":"exec","cmd":"id"}\n'));
-    await settle();
+    await answered(2);
+    await eventually(() => expect(logged).toHaveLength(1));
     expect(sent).toEqual([{ kind: 'reply', id: 2, ok: false, code: 'bad_template' }]);
     expect(launched).toEqual([]);
     expect(logged).toEqual([['refused_order', { reason: 'bad_shape' }]]);
@@ -261,7 +278,7 @@ describe('Launcher', () => {
   it('measures by first sight: a tool under X carrying Y’s marker counts to X; a stray with Y’s marker is disputed for Y', async () => {
     const l = launcher();
     l.feed(Buffer.from(encodeLine(launchOrder(X, MX, 1)) + encodeLine(launchOrder(Y, MY, 2))));
-    await settle();
+    await answered(1, 2);
     process(10, 1, 100, MX, `node bundle.mjs ${root(X)} --watch`, 1000); // X's host
     process(11, 10, 110, MX, 'claude', 2000); // X's tool
     process(12, 10, 120, MY, 'sneaky', 4000); // under X, carrying Y's marker
@@ -310,6 +327,7 @@ describe('Launcher', () => {
   it('reports a host that exited, and never starts one itself; once closed it sends nothing', async () => {
     const l = launcher();
     l.feed(Buffer.from(encodeLine(launchOrder(X, MX, 3))));
+    await answered(3);
     await settle();
     sent = [];
     l.hostExited(X, 'gone');
@@ -328,12 +346,12 @@ describe('Launcher: spawn and file safety', () => {
     // An older process carrying X's marker and naming X's root: the old guess would take it.
     process(5, 1, 50, MX, `node bundle.mjs ${root(X)} --watch`, 1);
     l.feed(Buffer.from(encodeLine(launchOrder(X, MX, 1))));
-    await settle();
+    await answered(1);
     process(10, 1, 100, MX, `node bundle.mjs ${root(X)} --watch`, 1); // the spawned host
     process(11, 10, 110, MX, 'tool', 1);
     signals = [];
     l.feed(Buffer.from(encodeLine({ kind: 'freeze', id: 2, agentId: X })));
-    await settle();
+    await answered(2);
     // The host is spared; the impostor (disputed, X's marker) and the tool are frozen.
     expect(signals.map(([pid]) => pid).sort((a, b) => a - b)).toEqual([5, 11]);
   });
@@ -341,11 +359,11 @@ describe('Launcher: spawn and file safety', () => {
   it('never takes a reused pid for the host: the first sighting must be this launcher’s own child', async () => {
     const l = launcher();
     l.feed(Buffer.from(encodeLine(launchOrder(X, MX, 1))));
-    await settle();
+    await answered(1);
     process(10, 7, 100, MX, 'not ours', 1); // pid 10, but its parent isn't the launcher
     signals = [];
     l.feed(Buffer.from(encodeLine({ kind: 'freeze', id: 2, agentId: X })));
-    await settle();
+    await answered(2);
     // Not the host, so not spared: frozen as a disputed process with X's marker.
     expect(signals).toEqual([[10, 'SIGSTOP']]);
   });
@@ -371,16 +389,23 @@ describe('Launcher: spawn and file safety', () => {
     const l = launcher({ confirmMs: 30 });
     process(10, 1, 100, MX, 'host', 1); // the host the launch spawns, as pid 10
     l.feed(Buffer.from(encodeLine(launchOrder(X, MX, 1))));
-    await settle();
-    expect(pushedTo[0]).toEqual({ pid: 10, key: Buffer.alloc(32, 1) });
-    await new Promise((resolve) => setTimeout(resolve, 80));
-    expect(signals).toContainEqual([10, 'SIGKILL']);
-    expect(sent.at(-1)).toEqual({ kind: 'exited', agentId: X, launchId: 1, reason: 'unconfirmed' });
+    await answered(1);
+    await eventually(() => expect(pushedTo[0]).toEqual({ pid: 10, key: Buffer.alloc(32, 1) }));
+    await eventually(() => {
+      expect(signals).toContainEqual([10, 'SIGKILL']);
+      expect(sent.at(-1)).toEqual({
+        kind: 'exited',
+        agentId: X,
+        launchId: 1,
+        reason: 'unconfirmed',
+      });
+    });
   });
 
   it('a confirmed host is left alone', async () => {
     const l = launcher({ confirmMs: 30 });
     l.feed(Buffer.from(encodeLine(launchOrder(X, MX, 1))));
+    await answered(1);
     await settle();
     await new Promise((resolve) => setTimeout(resolve, 80));
     expect(sent.filter((report) => report.kind === 'exited')).toEqual([]);
@@ -390,9 +415,10 @@ describe('Launcher: spawn and file safety', () => {
     pushOutcome = 'wrong_port';
     const l = launcher();
     l.feed(Buffer.from(encodeLine(launchOrder(X, MX, 1))));
-    await settle();
-    await settle();
-    expect(sent.at(-1)).toEqual({ kind: 'exited', agentId: X, launchId: 1, reason: 'wrong_port' });
+    await answered(1);
+    await eventually(() =>
+      expect(sent.at(-1)).toEqual({ kind: 'exited', agentId: X, launchId: 1, reason: 'wrong_port' })
+    );
   });
 
   it('hands a ticket only to a host it spawned', async () => {
@@ -402,7 +428,7 @@ describe('Launcher: spawn and file safety', () => {
         encodeLine({ kind: 'ticket', id: 1, agentId: X, launchId: 1, ticket: 'd'.repeat(32) })
       )
     );
-    await settle();
+    await answered(1);
     expect(pushed).toEqual([]);
     expect(logged).toContainEqual(['ticket_no_host', { agentId: X }]);
   });
@@ -419,7 +445,7 @@ describe('Launcher: operator exec on test boxes', () => {
   it('leaves an exec’d shell and its child running with the setting on, counts them, and says so once', async () => {
     const l = launcher();
     l.feed(Buffer.from(encodeLine({ kind: 'settings', id: 1, operatorExec: true })));
-    await settle();
+    await answered(1);
     execTree();
     sent = [];
     await l.measure();
@@ -447,7 +473,7 @@ describe('Launcher: other requests', () => {
   it('refuses a working directory outside the agents’ folders, before anything starts', async () => {
     const l = launcher();
     l.feed(Buffer.from(encodeLine({ ...launchOrder(X, MX, 1), directory: '/etc' })));
-    await settle();
+    await answered(1);
     expect(sent).toEqual([{ kind: 'reply', id: 1, ok: false, code: 'bad_directory' }]);
     expect(launched).toEqual([]);
   });
@@ -455,7 +481,7 @@ describe('Launcher: other requests', () => {
   it('answers observe with only what the controller acts on', async () => {
     const l = launcher();
     l.feed(Buffer.from(encodeLine({ kind: 'observe', id: 1, agentId: X })));
-    await settle();
+    await answered(1);
     expect(sent).toEqual([
       {
         kind: 'reply',
@@ -479,7 +505,7 @@ describe('Launcher: other requests', () => {
         })
       )
     );
-    await settle();
+    await answered(1);
     expect(sent).toEqual([
       {
         kind: 'reply',
@@ -501,7 +527,7 @@ describe('the agents’ disk', () => {
       },
     });
     l.feed(Buffer.from(encodeLine({ kind: 'disk', id: 4 })));
-    await settle();
+    await answered(4);
     expect(asked).toEqual([join(dir, 'agents')]);
     expect(sent).toEqual([
       { kind: 'reply', id: 4, ok: true, disk: { free: 12_288_000_000, total: 15_728_640_000 } },
@@ -511,7 +537,7 @@ describe('the agents’ disk', () => {
   it('never says more is free than the disk holds', async () => {
     const l = launcher({ statfs: async () => ({ bavail: 10, blocks: 5, bsize: 1 }) });
     l.feed(Buffer.from(encodeLine({ kind: 'disk', id: 1 })));
-    await settle();
+    await answered(1);
     expect(sent).toEqual([{ kind: 'reply', id: 1, ok: true, disk: { free: 5, total: 5 } }]);
   });
 
@@ -522,7 +548,7 @@ describe('the agents’ disk', () => {
         throw new Error('EACCES: /data/agents secret-path');
       },
     }).feed(Buffer.from(encodeLine({ kind: 'disk', id: 2 })));
-    await settle();
+    await answered(1, 2);
     expect(sent).toEqual([
       { kind: 'reply', id: 1, ok: false, code: 'failed' },
       { kind: 'reply', id: 2, ok: false, code: 'failed' },
@@ -554,10 +580,10 @@ describe('Launcher.checkHosts', () => {
       }),
     });
     l.feed(Buffer.from(encodeLine(launchOrder(X, MX, 1)) + encodeLine(launchOrder(Y, MY, 2))));
-    await settle();
+    await answered(1, 2);
     await l.checkHosts(); // both seen alive
     l.feed(Buffer.from(encodeLine({ kind: 'stop', id: 3, agentId: Y, wait: true, asked: true })));
-    await settle();
+    await answered(3);
     sent = [];
     alive = false;
     await l.checkHosts();
