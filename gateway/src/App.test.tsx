@@ -388,6 +388,16 @@ describe("the layout", () => {
     }
   });
 
+  it("marks the rail item a page belongs to as the current one", async () => {
+    mockFetch(signedInAs("workspace_admin"));
+    renderAt("/usage");
+    const rail = await screen.findByRole("navigation", { name: "Main" });
+    await waitFor(() =>
+      expect(within(rail).getByRole("link", { name: "Settings" }).getAttribute("aria-current")).toBe("page"),
+    );
+    expect(within(rail).getByRole("link", { name: "Overview" }).getAttribute("aria-current")).toBeNull();
+  });
+
   it("keeps Templates out of Resources", async () => {
     mockFetch(signedInAs("member"));
     renderAt("/resources");

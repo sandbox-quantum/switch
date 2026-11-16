@@ -31,7 +31,7 @@ import {
   fromAccessLevel,
   toAccessLevel,
 } from "../../data/visibility";
-import { EM_DASH, MONO_SX, formatDateTime } from "../../theme/format";
+import { EM_DASH, MONO_SX, formatDateTime, sentenceCase } from "../../theme/format";
 import { TEMPLATE_ACCESS_HELPERS } from "./templateAccess";
 import TemplateFindings from "./TemplateFindings";
 import { formatBytes, templateFilename } from "./templateFormat";
@@ -108,7 +108,7 @@ export default function TemplateDetailPage() {
         <Typography variant="h5" sx={{ flexGrow: 1 }}>
           {template.name || "Template"}
         </Typography>
-        <Chip size="small" variant="outlined" label={template.kind} />
+        <Chip size="small" variant="outlined" label={sentenceCase(template.kind)} />
       </Stack>
 
       <Stack spacing={4}>

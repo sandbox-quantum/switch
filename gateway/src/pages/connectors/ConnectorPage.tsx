@@ -89,8 +89,9 @@ function General({ connection }: { connection: ServiceConnection }) {
         <Fact label="Category">
           <Chip size="small" variant="outlined" label={connection.category} />
         </Fact>
-        <Fact label="Sign-in">{signInLabel(connection)}</Fact>
-        <Fact label="Agent access lasts">{accessLastsLabel(connection)}</Fact>
+        {/* How one not built yet signs in, and for how long, is not known. */}
+        {connection.enabled && <Fact label="Sign-in">{signInLabel(connection)}</Fact>}
+        {connection.enabled && <Fact label="Agent access lasts">{accessLastsLabel(connection)}</Fact>}
       </Box>
       {(connection.publisher || connection.links || connection.mcp_urls.length > 0) && (
         <Box
@@ -395,7 +396,8 @@ export default function ConnectorPage() {
 
   const connectedAs = connectedAsLine(connection);
   const way = connectWay(connection);
-  const off = offNotice(connection, workspaceName);
+  // One not built yet is not off anywhere: there is nothing to turn on.
+  const off = connection.enabled ? offNotice(connection, workspaceName) : null;
   const connected = isConnected(connection);
   const broken = brokenLine(connection);
   // What a pasted connection is replaced with: pasted the same way where

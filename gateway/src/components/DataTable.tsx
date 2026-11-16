@@ -704,6 +704,11 @@ export default function DataTable<T extends { id: string | number }>({
             Filter by {pickerColumn.headerName ?? pickerColumn.field}
           </Typography>
           <Stack>
+            {filterOptions(pickerColumn, rows).length === 0 && (
+              <Typography variant="body2" color="text.secondary" sx={{ px: 1, py: 0.5 }}>
+                Nothing to filter by yet.
+              </Typography>
+            )}
             {filterOptions(pickerColumn, rows).map((option) => (
               <FormControlLabel
                 key={option.value}

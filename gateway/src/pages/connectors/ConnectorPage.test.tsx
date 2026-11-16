@@ -228,6 +228,18 @@ describe("a connector's page", () => {
     expect(screen.queryByRole("link", { name: "Workspace settings" })).toBeNull();
   });
 
+  it("says a connector not built yet is coming, not off, and claims nothing of how it signs in", async () => {
+    signedIn({ admin: true });
+    server(serviceConnection({ enabled: false, workspace_enabled: false, decided_by: "workspace" }));
+    renderPage();
+
+    expect(await screen.findByText("Coming soon")).toBeTruthy();
+    expect(screen.queryByText(/A workspace admin can turn it on/)).toBeNull();
+    expect(screen.queryByRole("link", { name: "Workspace settings" })).toBeNull();
+    expect(screen.queryByText("Sign-in")).toBeNull();
+    expect(screen.queryByText("Agent access lasts")).toBeNull();
+  });
+
   it("shows a member their own agents, and adds one", async () => {
     signedIn();
     const calls = server(

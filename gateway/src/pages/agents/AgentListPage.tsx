@@ -258,7 +258,7 @@ function AgentList({
         field: "description",
         headerName: "Description",
         flex: 2,
-        minWidth: 125,
+        minWidth: 220,
         sortable: false,
         renderCell: ({ value }) => (
           <Box

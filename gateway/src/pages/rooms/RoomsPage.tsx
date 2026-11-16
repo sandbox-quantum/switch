@@ -273,12 +273,16 @@ export default function RoomsPage() {
           value ? <Chip label={channelTypeLabel(value as string)} size="small" /> : <Missing />,
       },
       // Counts sit under their headers, left-aligned like every other column,
-      // so the Users column's filter button reads as its own.
+      // so the Connected users column's filter button reads as its own.
       { field: "agent_count", headerName: "Agents", width: 84, type: "number", align: "left", headerAlign: "left" },
       {
+        // Only people who reach the room from a messaging app or a Console
+        // chat: someone in the room otherwise is not counted, so the header
+        // says which people these are.
         field: "connected_user_count",
-        headerName: "Users",
-        width: 96,
+        headerName: "Connected users",
+        description: "People in the room through a messaging app or a Switch Console chat.",
+        width: 150,
         type: "number",
         align: "left",
         headerAlign: "left",

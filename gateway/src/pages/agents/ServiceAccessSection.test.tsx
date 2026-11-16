@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactElement } from "react";
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   type AgentDetail,
@@ -292,6 +292,27 @@ describe("ServiceAccessSection", () => {
     expect(await screen.findByText(/To turn Example on, first connect it\./)).toBeTruthy();
     expect(screen.queryByText(/Switch Console, under Connectors/)).toBeNull();
     expect(screen.getByRole("link", { name: "Connect" }).getAttribute("href")).toBe("/connectors/example");
+  });
+
+  it("leads back to the agent from the connector's page", async () => {
+    mockServer(NONE, [onOff("not_connected")]);
+    function BackProbe() {
+      const back = (useLocation().state as { back?: { label: string; to: string } } | null)?.back;
+      return <output>{back ? `${back.label} at ${back.to}` : "no way back"}</output>;
+    }
+    render(
+      <MemoryRouter initialEntries={["/agents/a1"]}>
+        <Routes>
+          <Route
+            path="/agents/:agentId"
+            element={<ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />}
+          />
+          <Route path="/connectors/:slug" element={<BackProbe />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+    fireEvent.click(await screen.findByRole("link", { name: "Connect" }));
+    expect(await screen.findByText("helper at /agents/a1")).toBeTruthy();
   });
 
   it("says a service signs in through the organization's app only while that app works", async () => {

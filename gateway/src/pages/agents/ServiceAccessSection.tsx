@@ -16,7 +16,7 @@ import {
   Typography,
 } from "@mui/material";
 import { useCallback, useEffect, useState } from "react";
-import { Link as RouterLink } from "react-router";
+import { Link as RouterLink, useLocation } from "react-router";
 import {
   type AgentDetail,
   ApiError,
@@ -274,6 +274,7 @@ export default function ServiceAccessSection({
         )}
         {grants && canGrant && githubBlocked === null && (editing || !githubGrant) && (
           <GitHubGrantForm
+            backLabel={agent.name}
             github={github}
             githubError={githubError}
             current={githubGrant}
@@ -356,12 +357,19 @@ function SetUpLink() {
 }
 
 /** Where to connect a service before granting it: its own page, which
- * connects it or says how. */
-function ConnectFirst({ slug, what }: { slug: string; what: string }) {
+ * connects it or says how, and leads back here, named `backLabel`. */
+function ConnectFirst({ slug, what, backLabel }: { slug: string; what: string; backLabel: string | null }) {
+  const { pathname } = useLocation();
   return (
     <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
       {what}.
-      <Button component={RouterLink} to={`/connectors/${slug}`} size="small" sx={{ ml: 1 }}>
+      <Button
+        component={RouterLink}
+        to={`/connectors/${slug}`}
+        state={backLabel === null ? undefined : { back: { label: backLabel, to: pathname } }}
+        size="small"
+        sx={{ ml: 1 }}
+      >
         Connect
       </Button>
     </Typography>
@@ -425,7 +433,7 @@ function OnOffGrant({
         </Typography>
       )}
       {!grant && !connected && !blocked && (
-        <ConnectFirst slug={service.slug} what={`To turn ${service.name} on, first connect it`} />
+        <ConnectFirst slug={service.slug} what={`To turn ${service.name} on, first connect it`} backLabel={agentName} />
       )}
       <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>
         {onOffGrantNote(agentName, service)}
@@ -442,6 +450,7 @@ export function GitHubGrantForm({
   busy,
   onCancel,
   onSave,
+  backLabel = null,
 }: {
   github: GitHubConnection | null;
   githubError: string | null;
@@ -451,6 +460,9 @@ export function GitHubGrantForm({
   busy: boolean;
   onCancel: (() => void) | null;
   onSave: (access: Access, resources: Record<string, unknown>) => void;
+  /** What the GitHub page's back button names, leading back here; null
+   *  where this already is a connector's page. */
+  backLabel?: string | null;
 }) {
   const [access, setAccess] = useState<Access>(current?.access ?? "read");
   const [installationId, setInstallationId] = useState<number | null>(
@@ -465,7 +477,9 @@ export function GitHubGrantForm({
   if (githubError) return <Alert severity="error">{githubError}</Alert>;
   if (github === null) return <CircularProgress size={20} />;
   if (github.status === "not_connected")
-    return <ConnectFirst slug="github" what="To grant GitHub, first connect your GitHub account" />;
+    return (
+      <ConnectFirst slug="github" what="To grant GitHub, first connect your GitHub account" backLabel={backLabel} />
+    );
 
   const installation = github.installations.find((i) => i.id === installationId) ?? null;
   const options = installation?.repositories ?? [];

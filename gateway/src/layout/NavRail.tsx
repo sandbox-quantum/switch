@@ -16,7 +16,7 @@ import {
   Typography,
 } from "@mui/material";
 import { memo, useState } from "react";
-import { NavLink, Link as RouterLink, useLocation } from "react-router";
+import { Link as RouterLink, useLocation } from "react-router";
 import type { MouseEvent } from "react";
 import { useAuth } from "../data/AuthContext";
 import CreateWorkspaceForm from "../pages/onboarding/CreateWorkspaceForm";
@@ -36,8 +36,10 @@ const LOGO = "clamp(24px, 2.6vh, 28px)";
 
 function RailItem({ item, active }: { item: RailItemDefinition; active: boolean }) {
   return (
+    // A plain link: NavLink would set aria-current from its own match, which
+    // misses the paths an item also stands for (`activeFor`).
     <Box
-      component={NavLink}
+      component={RouterLink}
       to={item.to}
       aria-current={active ? "page" : undefined}
       sx={{

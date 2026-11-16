@@ -10,9 +10,13 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ForceGraph2D from "react-force-graph-2d";
 import { useNavigate } from "react-router";
-import type { EcosystemNodeKind } from "../../data/api";
+import { type EcosystemNodeKind, loadAgents } from "../../data/api";
+import { useAuth } from "../../data/AuthContext";
 import { useEcosystemGraph } from "../../data/hooks";
+import { agentsInScope, listScopeOf } from "../../data/listScope";
 import { useGraphCanvasTheme } from "../graphCanvasTheme";
+import { useLoad } from "../workspace/useLoad";
+import { graphInScope } from "./graphScope";
 
 interface GraphNode {
   id: string;
@@ -53,8 +57,32 @@ function prettyType(key: string): string {
 }
 
 export default function EcosystemGraphPage() {
-  const { data, loading, error } = useEcosystemGraph();
+  const { session, capabilities } = useAuth();
+  const graph = useEcosystemGraph();
   const navigate = useNavigate();
+  // A member sees their own agents, as Overview counts them and the Agents
+  // list shows them; which those are comes from that same list.
+  const scope = listScopeOf(capabilities);
+  const loadOwn = useCallback(
+    () => (scope === "yours" ? loadAgents() : Promise.resolve(null)),
+    [scope],
+  );
+  const own = useLoad(loadOwn);
+  const userId = session?.user.id ?? "";
+  const ownIds = useMemo(
+    () =>
+      scope === "yours" && own.data
+        ? new Set(agentsInScope(own.data, scope, userId).map((agent) => agent.id))
+        : null,
+    [scope, own.data, userId],
+  );
+  const scoped = scope === "workspace" || own.data !== null;
+  const data = useMemo(
+    () => (graph.data && scoped ? graphInScope(graph.data, ownIds) : null),
+    [graph.data, scoped, ownIds],
+  );
+  const loading = graph.loading || (scope === "yours" && own.loading);
+  const error = graph.error ?? own.error;
 
   // "Show owners" inserts an owner node between each agent-type and its agents
   // (type -> owner -> agent). Owner names come from the ecosystem payload,

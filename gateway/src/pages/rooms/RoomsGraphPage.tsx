@@ -45,6 +45,11 @@ interface LegendEntry {
 
 const UNGROUPED_COLOR = "#5A5F66";
 
+/** `1 room`, `3 rooms`: a count with its noun. */
+function count(n: number, noun: string): string {
+  return `${n} ${noun}${n === 1 ? "" : "s"}`;
+}
+
 export default function RoomsGraphPage() {
   const navigate = useNavigate();
   const { capabilities } = useAuth();
@@ -213,7 +218,7 @@ export default function RoomsGraphPage() {
           Rooms graph
         </Typography>
         <Typography variant="caption" color="text.secondary">
-          {`${nodes.length} rooms · ${links.length} links · ${legend.length} groups`}
+          {[count(nodes.length, "room"), count(links.length, "link"), count(legend.length, "group")].join(" · ")}
         </Typography>
       </Stack>
 
