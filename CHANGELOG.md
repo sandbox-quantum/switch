@@ -4537,6 +4537,20 @@ version of their own to them without also giving them a release of their own.
   the workspace has switched off. It now names only what you could connect
   and then turn on here. A card for a service the workspace or the server
   stops says why, as Connectors does, even when it is turned on.
+- **A file's name in a chat shows its real extension.** A name carrying
+  hidden or text-reversing characters could read as something else: a file
+  named with a right-to-left override showed as `invoiceexe.pdf` when it was
+  `invoice<…>fdp.exe`. The file, the line above it and replies naming it now
+  show each such character, and any path or control character, as `_`, and
+  that is also the name offered when you save it.
+- **HTML and other web-page attachments can be downloaded.** Saving one used
+  to fail with a message telling you to ask whoever runs the server to fix
+  its routing. It now saves like any other file, and is never opened in
+  Switch Console.
+- **Links in room documents, library items and transcripts no longer open a
+  blank Switch Console window or another app.** A `mailto:`, `irc:` or
+  relative link there now does what it does in chat: a web link asks before
+  it opens in your browser, and any other link is refused with a notice.
 
 #### Removed
 - **The welcome page.** The Switch mark in the sidebar, and deleting the agent
@@ -4558,6 +4572,77 @@ version of their own to them without also giving them a release of their own.
   over the WebSocket, so it can no longer reach a Switch server older than the
   socket (agent-protocol 7 and older), and it stops sending its own heartbeat
   requests (#673).
+- **The "Environment variables" and "Additional parameters" fields in a
+  provider's settings.** Nothing ever applied them to an agent, and they were
+  stored unencrypted. Values saved by earlier versions are deleted from the
+  database when Console starts.
+
+#### Security
+- **Claude sessions keep their MCP tokens off the command line.** The Switch
+  tools' token and every connector's used to be written into the `claude`
+  process's arguments, where another user on a Linux machine could read them
+  and act as the agent. Each is now passed in the process environment, which
+  only the agent's own user can read. A session picks this up when it next
+  starts.
+- **Agents can send files only from their working directory.** A file sent
+  with `send_attachment` must be inside the session's working directory or
+  among the attachments it downloaded, with links followed; anything else is
+  refused with the reason, in every permission mode. Before, a manipulated
+  agent could post a key or credential file from anywhere on the machine
+  without asking. To send a file from elsewhere, a screenshot in `/tmp` say,
+  the agent copies it into its working directory first.
+- **Pi asks before touching files outside its working directory.** In auto
+  mode Pi used to change any file without asking, and in every mode it read
+  any file. It now changes files on its own only inside its working
+  directory, and asks before changing anything else: files outside it,
+  git's hooks and config, the dot files in your home folder, and Switch's own
+  settings, including the one that sets the agent's permission mode. Unless
+  bypass is on, it also asks before reading outside its working directory.
+- **Session folders and downloaded room files are private to you.** Each
+  session's folder is created readable by you alone, and one an earlier
+  version left open is tightened when the session next starts. Files an agent
+  downloads from a room are saved the same way.
+- **A login you give a machine is sealed only to a key Console can vouch
+  for.** Console used to seal it to whatever key the server listed for the
+  machine, so a server that listed its own key could open the API key, setup
+  token or sign-in file. Now an SSH host's key is read from the host itself,
+  this computer takes no given logins (its controller keeps no key), and any
+  other machine is held to the key Console sealed its first login to. Giving
+  a login shows that key's fingerprint; if the server later sends another,
+  Console shows both and seals nothing until you choose "Trust the new key".
+  The agent controller's `enroll` and `status` print the same fingerprint, and
+  a new `switch-agent-controller sealing-key` command prints the key.
+- **Signing out of a server tells the server.** Console now calls the
+  server's sign-out before it forgets its copy of the session. A server that
+  can't be reached is logged and the session is still forgotten here. The
+  server does not yet end that one session on sign-out, so a copied session
+  stays valid until it expires.
+- **Switch Console's data folder, database and log are readable by your user
+  alone on Linux and macOS.** The folder is made private (0700), and the
+  database, its write-ahead files and the log private (0600), including ones
+  an earlier version created with the default permissions.
+- **The log keeps more kinds of credential out.** camelCase names such as
+  accessToken, refreshToken and clientSecret, cookie headers, Basic
+  authorization, and Switch agent keys written without a label are now
+  redacted in Switch Console's log and its diagnostics export.
+- **A repository can no longer make an agent's token committable.** Console
+  keeps its own `.gitignore` in `.switch/agents/` even where a repository
+  ships a different one, and refuses to write the token into a file the
+  repository tracks, saying how to untrack it. Tokens that earlier versions
+  left in `.claude/settings.local.json` or `.claude/switch-subagents/` are
+  removed once the agent's own credentials file holds them.
+- **A template's Use page shows what its agents will be allowed to do, and
+  asks before creating a risky one.** Anyone in a workspace can write a
+  template, and a link to it opens this page. The preview now says who the
+  template is from and, for each agent, whether it runs every command without
+  asking, who can talk to it, and its instructions. When an agent would run
+  without asking or answer anyone in the workspace, Create asks first and
+  names the risks.
+- **Files saved from a chat are marked as downloaded.** On macOS a saved
+  attachment now carries the quarantine mark a browser gives a download, so
+  Gatekeeper checks it the first time it is opened; on Windows it is marked
+  as coming from the Internet zone. If the mark cannot be written, the file
+  is still saved and the log says so.
 
 ### [0.40.1] - 2026-10-21
 
@@ -6574,6 +6659,11 @@ tags; see RELEASING.md.
   offer them, while the socket is down, and when as many calls are in flight
   as Switch takes. A call the socket closes on is answered 502, as a request
   whose connection drops.
+- **A controller with its own data directory keeps its sessions there.** Run
+  with `--data-dir` or `SWITCH_CONTROLLER_DATA_DIR`, it keeps its agents'
+  session state in that directory's `sdk-sessions/`, not in your
+  `~/.local/state/switch`. A controller Switch Console runs, and a data
+  directory that ran agents before this version, keep the old location.
 
 #### Fixed
 - **A Claude Code login that is there but does not work is reported as not
@@ -6612,6 +6702,14 @@ tags; see RELEASING.md.
   with a new code, `5` (update the controller) or `6` (enroll the machine
   again), and the systemd unit and launchd job it installs do not restart it on
   either.
+
+#### Security
+- **The controller no longer installs an older release because the server
+  names one.** It used to follow Switch back to any signed release, so a
+  compromised server could return every controller to one with a known flaw.
+  It now installs only newer releases, and reports a refused one as a failed
+  update with the reason. To roll back, install the older release on the
+  machine yourself.
 
 ### [0.1.1] - 2026-10-07
 
@@ -6665,6 +6763,13 @@ The Switch protocol client and MCP runtime
   socket's close code as `fallback_close_code`, so the server's log can tell
   it from a client built before the socket. Opening the event stream straight
   away, against an old server, sends neither.
+
+#### Security
+- **`send_attachment` sends only files inside the session's working
+  directory** or its downloaded attachments, with links followed, and
+  refuses any other path with the reason. `download_attachment` saves each
+  file readable by you alone, and replaces a link planted at its name rather
+  than writing through it.
 
 ### [0.8.0] - 2026-09-25
 
