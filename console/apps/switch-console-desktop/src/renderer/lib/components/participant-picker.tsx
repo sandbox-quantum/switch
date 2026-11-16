@@ -43,6 +43,7 @@ function Mark({
 }) {
   return participant.kind === 'agent' ? (
     <AgentAvatar
+      agentId={participant.id}
       name={participant.name}
       iconUrl={participant.iconUrl}
       serverId={serverId}

@@ -439,6 +439,7 @@ function AgentsCard({
                       className="flex max-w-full cursor-pointer items-center gap-2.5 text-left text-foreground underline-offset-2 hover:underline"
                     >
                       <AgentAvatar
+                        agentId={agent.agentId}
                         name={label}
                         iconUrl={agent.iconUrl}
                         serverId={agent.serverId}

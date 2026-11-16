@@ -88,7 +88,7 @@ async function render(
         <ChatActivityBlock
           activity={activity}
           turn={turn}
-          agent={{ name: 'helper', iconUrl: null }}
+          agent={{ id: 'agent-1', name: 'helper', iconUrl: null }}
           head
           endReason="model not supported"
           serverId="server"

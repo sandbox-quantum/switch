@@ -120,6 +120,7 @@ export const SidebarAgentItem = observer(function SidebarAgentItem({
     <ContextMenu>
       <ContextMenuTrigger>
         <SidebarAgentRow
+          agentId={agent.switchAgentId}
           label={label}
           iconUrl={iconUrl}
           serverId={agent.serverId}

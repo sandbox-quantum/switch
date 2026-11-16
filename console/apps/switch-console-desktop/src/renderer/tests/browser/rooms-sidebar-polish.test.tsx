@@ -128,6 +128,7 @@ it('puts turning the agent off and moving it beside its Connectors and settings'
   const el = await mount(
     <div style={{ width: 300 }}>
       <AgentProfile
+        agentId="agent-1"
         name="Flint Code Assistant"
         iconUrl={null}
         serverId="s"

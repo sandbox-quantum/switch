@@ -104,7 +104,7 @@ export function AgentRow({
   children,
   ...props
 }: ComponentProps<'div'> & {
-  agent: { name: string; iconUrl: string | null };
+  agent: { id: string | null; name: string; iconUrl: string | null };
   serverId: string;
   head: boolean;
   trailing?: ReactNode;
@@ -112,7 +112,13 @@ export function AgentRow({
   return (
     <div className={cn('flex gap-3', className)} {...props}>
       {head ? (
-        <AgentAvatar name={agent.name} iconUrl={agent.iconUrl} serverId={serverId} size={28} />
+        <AgentAvatar
+          agentId={agent.id}
+          name={agent.name}
+          iconUrl={agent.iconUrl}
+          serverId={serverId}
+          size={28}
+        />
       ) : (
         <span className="w-7 shrink-0" aria-hidden />
       )}
@@ -182,7 +188,7 @@ export const ChatActivityBlock = observer(function ChatActivityBlock({
 }: {
   activity: AgentActivity;
   turn: TurnActivity;
-  agent: { name: string; iconUrl: string | null };
+  agent: { id: string | null; name: string; iconUrl: string | null };
   /** Whether this turn starts the agent's block, so shows its avatar and name. */
   head: boolean;
   /** Why the turn ended, from the host's notice in the room; null when it posted none. */
