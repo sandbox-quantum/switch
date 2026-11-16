@@ -1,4 +1,12 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  linkSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -40,6 +48,16 @@ describe('pathScope', () => {
     expect(scopeIn(work, 'up/.zshrc')).toBe('outside');
     expect(scopeIn(work, 'dangling.txt')).toBe('outside');
     expect(scopeIn(work, 'source/a.ts')).toBe('workspace');
+  });
+
+  it('places a file with another hard link outside, wherever the other is', () => {
+    writeFileSync(join(home, '.zshrc'), 'export PATH=/usr/bin');
+    linkSync(join(home, '.zshrc'), join(work, 'notes.txt'));
+    linkSync(join(work, 'src', 'a.ts'), join(work, 'src', 'b.ts'));
+    expect(scopeIn(work, 'notes.txt')).toBe('outside');
+    expect(scopeIn(work, 'src/a.ts')).toBe('outside');
+    expect(scopeIn(home, '.zshrc')).toBe('outside');
+    expect(scopeIn(work, 'src')).toBe('workspace');
   });
 
   it("protects git's own directory inside the workspace", () => {
