@@ -369,6 +369,11 @@
       "flags": []
     },
     {
+      "route": "DELETE /gateway/users/{user_id}/sign-in-lock",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "DELETE /gateway/workspace/services/{service}",
       "auth": "session",
       "flags": [
@@ -397,7 +402,7 @@
     },
     {
       "route": "GET /gateway/agents/known-types",
-      "auth": "none",
+      "auth": "session",
       "flags": []
     },
     {

@@ -528,7 +528,20 @@ async def complete(
         raise HTTPException(400, str(error)) from None
     except ServiceUnavailableError as error:
         raise HTTPException(503, str(error)) from None
-    return await _connect(session, broker, flows, flow, exchange, user.id)
+    try:
+        return await _connect(session, broker, flows, flow, exchange, user.id)
+    except Exception:
+        # The flow fails with why, as the web's does, rather than read as
+        # pending until it expires.
+        logger.exception(
+            "Writing a %s connection from Switch Console failed: tenant=%s user=%s",
+            service,
+            flow.tenant_id,
+            user.id,
+        )
+        await flows.failed(exchange.flow, not_saved(flow.name))
+        await session.rollback()
+        return JSONResponse(status_code=500, content={"detail": not_saved(flow.name)})
 
 
 async def _connect(

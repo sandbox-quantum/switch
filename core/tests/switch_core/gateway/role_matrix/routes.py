@@ -82,6 +82,7 @@ SELF = anyone()
 ROUTES: dict[str, Case] = {
     # ── Agents ───────────────────────────────────────────────────────────
     "GET /gateway/agents": get(f"{G}/agents", anyone()),
+    "GET /gateway/agents/known-types": get(f"{G}/agents/known-types", anyone()),
     "GET /gateway/agents/avatar-settings": get(f"{G}/agents/avatar-settings", anyone()),
     "GET /gateway/agents/icon-choices": get(
         f"{G}/agents/icon-choices", anyone(), name="matrix"
@@ -514,6 +515,9 @@ ROUTES: dict[str, Case] = {
     "DELETE /gateway/users/{user_id}": delete(f"{G}/users/{{user_target}}", operator()),
     "POST /gateway/users/{user_id}/sessions/revoke": post(
         f"{G}/users/{{user_target}}/sessions/revoke", operator()
+    ),
+    "DELETE /gateway/users/{user_id}/sign-in-lock": delete(
+        f"{G}/users/{{user_target}}/sign-in-lock", operator()
     ),
     "POST /gateway/auth/sessions/revoke": post(
         f"{G}/auth/sessions/revoke",
@@ -1382,13 +1386,12 @@ STREAMS: dict[str, Case] = {
 # Routes that take no session, or the hosted controller's token: no persona
 # changes their answer, so each is asked once and must answer the same to all.
 UNAUTHENTICATED: dict[str, str] = {
-    "GET /gateway/agents/known-types": "The agent types any client may register.",
     "GET /gateway/auth/config": "How to sign in, read before anyone has.",
     "GET /gateway/auth/oidc/callback": "A sign-in coming back from the identity provider.",
     "GET /gateway/auth/oidc/login": "Starting a sign-in.",
     "POST /gateway/auth/oidc/exchange": "Finishing a sign-in with its one-time code.",
     "POST /gateway/auth/login": "Signing in.",
-    "POST /gateway/auth/logout": "Signing out, which only clears the cookie.",
+    "POST /gateway/auth/logout": "Signing out of the session the cookie belongs to.",
     "POST /gateway/auth/signup": "Signing up.",
     "GET /gateway/docs": "The API's own documentation.",
     "GET /gateway/docs/oauth2-redirect": "The API's own documentation.",

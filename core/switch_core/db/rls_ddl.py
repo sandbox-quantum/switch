@@ -185,6 +185,16 @@ ORGANIZATION_POLICY_NAME = "organization_isolation"
 # `server_audit_events` is the history of changes no tenant owns, such as the
 # operator setting up one of those apps. `audit_events` is scoped, so a
 # server-wide change has no tenant to be filed under there.
+#
+# `auth_attempts` counts password sign-ins and sign-ups against the email
+# address typed and the client's address, before anyone is signed in: there
+# is no workspace yet to file a count under, and an email address with no
+# account belongs to none at all. A row holds digests and counters, and lasts
+# minutes.
+#
+# `revoked_sessions` names sessions someone signed out of. A session is a
+# person's, across their workspaces, and a row holds only its random id and
+# when it can be forgotten.
 GLOBAL_TABLES = frozenset(
     {
         "cloud_machines",
@@ -201,6 +211,8 @@ GLOBAL_TABLES = frozenset(
         "schema_expand_only_revisions",
         "service_app_credentials",
         "server_audit_events",
+        "auth_attempts",
+        "revoked_sessions",
     }
 )
 
