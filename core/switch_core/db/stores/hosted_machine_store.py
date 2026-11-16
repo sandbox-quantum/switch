@@ -277,13 +277,21 @@ async def box_deleted(
     `hosted.box_to_remove` entry names it for the removal step: the machine
     id and the owner's keyed id only. The caller holds the machine's lock and
     commits."""
-    from switch_core.visibility.dependencies import process_keyed_id_key
-    from switch_core.visibility.keyed_id import KeyedIdKind
-
     machine.state = "deleted"
     machine.error = None
     machine.error_code = None
     machine.updated_at = now
+    await _box_removal_entry(session, machine, ServerAuditAction.HOSTED_BOX_TO_REMOVE)
+
+
+async def _box_removal_entry(
+    session: AsyncSession, machine: CloudMachine, action: ServerAuditAction
+) -> None:
+    """A `hosted.box_to_remove` entry or its cancel, both with the same
+    target and details: the machine id and the owner's keyed id only."""
+    from switch_core.visibility.dependencies import process_keyed_id_key
+    from switch_core.visibility.keyed_id import KeyedIdKind
+
     key = process_keyed_id_key()
     details: dict[str, str] = {"machine_id": machine.id}
     if key is not None:
@@ -291,7 +299,7 @@ async def box_deleted(
     await record_server_audit_event(
         session,
         actor_user_id=None,
-        action=ServerAuditAction.HOSTED_BOX_TO_REMOVE,
+        action=action,
         target_type="box",
         target_id=_keyed_box(machine.id),
         details=details,
@@ -463,6 +471,12 @@ class CloudMachineStore:
             or machine.owner_id != owner_id
         ):
             return None
+        if machine.backend == "box":
+            # Its disk is in use again: withdraw `box_deleted`'s entry, in
+            # this same transaction, so nobody removes a live box's disk.
+            await _box_removal_entry(
+                session, machine, ServerAuditAction.HOSTED_BOX_TO_REMOVE_CANCELLED
+            )
         for tenant_id in await tenants_of_cloud_machine(factory, machine.id):
             async with tenant_session(factory, tenant_id) as scoped:
                 row = await workspace_on(scoped, machine.id)

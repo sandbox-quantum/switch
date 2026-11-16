@@ -364,7 +364,7 @@ class OrganizationPurge:
         await self._tear_down_machines(plan.machines, outcome)
         if outcome.waiting:
             return outcome
-        boxes = await self._boxes_awaiting_removal(plan.machines)
+        boxes = await self._boxes_awaiting_removal(plan.deleted_accounts)
         if boxes:
             # Gone from Switch, but each box's disk is still in the cluster
             # until the runbook's manual step: never a silent "finished".
@@ -739,10 +739,12 @@ class OrganizationPurge:
                 "Took cloud machine %s off the organization's workspaces", machine_id
             )
 
-    async def _boxes_awaiting_removal(self, machine_ids: list[str]) -> int:
-        """The purge's box machines counted deleted (`box_deleted`), each with
-        a disk left in the cluster for the manual removal step."""
-        if not machine_ids:
+    async def _boxes_awaiting_removal(self, accounts: list[Account]) -> int:
+        """The box machines of the accounts the purge deletes that Core counts
+        deleted (`box_deleted`), each with a disk left in the cluster for the
+        manual removal step. By owner, not the plan's machines, which leave
+        out deleted ones; read before the purge removes the rows."""
+        if not accounts:
             return 0
         async with self.session_factory() as session:
             return (
@@ -750,7 +752,7 @@ class OrganizationPurge:
                     select(func.count())
                     .select_from(CloudMachine)
                     .where(
-                        CloudMachine.id.in_(machine_ids),
+                        CloudMachine.owner_id.in_([a.id for a in accounts]),
                         CloudMachine.backend == "box",
                         CloudMachine.state == "deleted",
                     )

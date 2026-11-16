@@ -196,6 +196,9 @@ class ServerAuditAction(StrEnum):
     # the cluster until it's removed. Server-wide, so it outlives a workspace
     # purge; the box removal runbook lists these.
     HOSTED_BOX_TO_REMOVE = "hosted.box_to_remove"
+    # Its revival withdraws that: the revived box reuses the namespace and
+    # disk, so the runbook skips an entry with a later cancel for the box.
+    HOSTED_BOX_TO_REMOVE_CANCELLED = "hosted.box_to_remove_cancelled"
     # Operator alerts: one row per raise and per clear, with no actor.
     # `alert.` is one of the operators' log's prefixes; it leaves them out
     # unless asked for.

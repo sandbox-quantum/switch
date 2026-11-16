@@ -239,7 +239,7 @@ async def test_with_nothing_polling_core_marks_the_box_not_made(
     # No longer wanted running, so the box scaler never starts it.
     assert machine.desired_state == "stopped"
     listed = await app.client.get("/hosted-controller/machines", headers=_bearer(TOKEN))
-    [item] = [m for m in listed.json()["machines"] if m["id"] == app.machine_id]
+    [item] = [m for m in listed.json()["machines"] if m["machine_id"] == app.machine_id]
     assert (item["state"], item["desired_state"]) == ("error", "stopped")
     assert _total(machine_metrics, seen) == {"launch_refused": 1.0}
     results = [
@@ -329,38 +329,43 @@ async def test_core_s_own_pass_doesn_t_count_as_hearing_the_controller(
 
 @pytest.mark.usefixtures("hosted_v2_on")
 @pytest.mark.parametrize("observed", ["running", "provisioning", "error"])
+@pytest.mark.parametrize("revision_of", ["previous", "current"])
 async def test_a_late_report_doesn_t_bring_back_a_box_not_made(
     provisioner_app,  # noqa: F811
     machine_metrics,  # noqa: F811
     observed: str,
+    revision_of: str,
 ) -> None:
     """A box that came up, or failed, after Core gave up on it, reporting at
-    the current or the previous revision, changes nothing: the machine stays
-    in error, not wanted running, until its owner's Retry, and no second
-    failure is counted, as `launch_refused` or `stop_failed`."""
+    the previous revision (the stale branch) or the current one, changes
+    nothing: the machine stays in error with Core's own code and message, not
+    wanted running, until its owner's Retry, and no second failure is
+    counted, as `launch_refused` or `stop_failed`."""
     app = provisioner_app
     seen: dict[str, float] = {}
     await _expired_request(app)
     assert await _pass(app)
     assert _total(machine_metrics, seen) == {"launch_refused": 1.0}
     before = await _machine(app)
-    for revision in {before.revision - 1, before.revision} - {0}:
-        body: dict[str, Any] = {"state": observed, "revision": revision}
-        if observed == "error":
-            body["error"] = "The instance failed its status checks."
-            body["error_code"] = "machine_needs_attention"
-        reported = await app.client.post(
-            f"/hosted-controller/machines/{app.machine_id}/observation",
-            headers=_bearer(TOKEN),
-            json=body,
-        )
-        assert reported.status_code == 200, reported.text
+    revision = before.revision - 1 if revision_of == "previous" else before.revision
+    assert revision > 0
+    body: dict[str, Any] = {"state": observed, "revision": revision}
+    if observed == "error":
+        body["error"] = "The instance failed its status checks."
+        body["error_code"] = "machine_needs_attention"
+    reported = await app.client.post(
+        f"/hosted-controller/machines/{app.machine_id}/observation",
+        headers=_bearer(TOKEN),
+        json=body,
+    )
+    assert reported.status_code == 200, reported.text
     after = await _machine(app)
     assert (after.state, after.error_code, after.desired_state) == (
         "error",
         "box_not_made",
         "stopped",
     )
+    assert after.error == before.error
     assert after.revision == before.revision
     assert _total(machine_metrics, seen) == {"launch_refused": 1.0}
 

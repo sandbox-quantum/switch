@@ -523,7 +523,6 @@ async def test_tearing_down_a_box_machine_revokes_its_controller(
     credential: tearing its machine down revokes the controller at once, and
     every process is told. A v1 machine is torn down as before."""
     import dataclasses
-    from datetime import UTC, datetime
 
     from tests.switch_core.hosted_machine_helpers import link_controller
 
@@ -539,7 +538,6 @@ async def test_tearing_down_a_box_machine_revokes_its_controller(
             revision=3,
         )
         machine.backend = backend
-        await add_workspace(session, machine, created_at=datetime.now(UTC))
         controller = await link_controller(session, machine)
         await session.commit()
         controller_id = controller.id
@@ -578,7 +576,6 @@ async def test_a_box_revoke_that_fails_never_stops_a_purge(
     and the workspace's rows, the credential among them, still go later."""
     import dataclasses
     import logging
-    from datetime import UTC, datetime
 
     from tests.switch_core.hosted_machine_helpers import link_controller
 
@@ -594,7 +591,6 @@ async def test_a_box_revoke_that_fails_never_stops_a_purge(
             revision=3,
         )
         machine.backend = "box"
-        await add_workspace(session, machine, created_at=datetime.now(UTC))
         await link_controller(session, machine)
         await session.commit()
         machine_id = machine.id

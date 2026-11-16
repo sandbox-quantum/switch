@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
+from typing import Literal
 
 import pytest
 from sqlalchemy import delete, select
@@ -72,6 +73,7 @@ async def _claim(
     factory: async_sessionmaker[AsyncSession],
     owner: User,
     revoke: RevokeController | None = revoke_machine_controller,
+    backend: Literal["vm", "box"] = "vm",
 ) -> CloudMachine:
     async with factory() as session:
         await lock_claims(session)
@@ -82,6 +84,7 @@ async def _claim(
             capacity=5,
             now=datetime.now(UTC),
             revoke=revoke,
+            backend=backend,
         )
         machine = claimed.machine
         await session.commit()
@@ -100,10 +103,13 @@ async def _cleaned_up(
         await session.commit()
 
 
-async def _enrolled_machine(harness: Harness, owner: User) -> tuple[str, str]:
-    """A machine whose controller enrolled: (machine id, controller id)."""
+async def _enrolled_machine(
+    harness: Harness, owner: User, backend: Literal["vm", "box"] = "vm"
+) -> tuple[str, str]:
+    """A machine whose controller enrolled: (machine id, controller id). A
+    box needs v2 on to be prepared."""
     factory = harness.session_factory
-    machine = await _claim(factory, owner)
+    machine = await _claim(factory, owner, backend=backend)
     async with _hosted_app(factory, owner) as hosted:
         [entry] = (await _prepare(hosted, machine.id))["controllers"]
     async with harness.client() as client:
@@ -367,7 +373,7 @@ async def test_a_box_deleted_at_retention_has_its_controller_revoked(
     forgets the credential and a copy left on the disk is refused."""
     factory = harness.session_factory
     owner = await add_member(factory, "ada")
-    machine_id, controller_id = await _enrolled_machine(harness, owner)
+    machine_id, controller_id = await _enrolled_machine(harness, owner, "box")
     async with factory() as session:
         controller = await session.get(AgentController, controller_id)
         assert controller is not None and controller.api_key_id is not None
@@ -420,7 +426,7 @@ async def test_a_box_deleted_at_retention_with_its_controller_already_revoked(
     apart from clearing a pause's mark, as any later revoke does."""
     factory = harness.session_factory
     owner = await add_member(factory, "ada")
-    machine_id, controller_id = await _enrolled_machine(harness, owner)
+    machine_id, controller_id = await _enrolled_machine(harness, owner, "box")
     async with factory() as session:
         controller = await session.get(AgentController, controller_id)
         assert controller is not None
@@ -483,11 +489,11 @@ async def test_a_box_deleted_at_retention_and_at_zero_is_revived_on_the_next_cla
 ) -> None:
     """The real path, not a hand-set `deleted`: retention marks it deleted, the
     box scaler's `stopped` at 0 makes Core count it deleted and list its disk
-    for removal, and the owner's next claim brings the same row back, the
-    removal entry kept."""
+    for removal, and the owner's next claim brings the same row back and
+    cancels that entry, so the runbook never removes a live box's disk."""
     factory = harness.session_factory
     owner = await add_member(factory, "ada")
-    machine_id, _controller_id = await _enrolled_machine(harness, owner)
+    machine_id, _controller_id = await _enrolled_machine(harness, owner, "box")
     await _expire_retention(harness, machine_id)
     async with factory() as session:
         machine = await session.get(CloudMachine, machine_id)
@@ -506,7 +512,16 @@ async def test_a_box_deleted_at_retention_and_at_zero_is_revived_on_the_next_cla
 
     assert revived.id == machine_id
     assert revived.state == "queued" and revived.desired_state == "running"
-    assert len(await _box_to_remove(factory)) == 1  # still to be removed
+    [still] = await _box_to_remove(factory)  # the log is append-only
+    [cancel] = await _box_to_remove(
+        factory, ServerAuditAction.HOSTED_BOX_TO_REMOVE_CANCELLED
+    )
+    assert (cancel.target_type, cancel.target_id, cancel.details) == (
+        still.target_type,
+        still.target_id,
+        still.details,
+    )
+    assert cancel.occurred_at >= still.occurred_at
 
 
 async def _report_stopped(
@@ -528,12 +543,11 @@ async def _report_stopped(
 
 async def _box_to_remove(
     factory: async_sessionmaker[AsyncSession],
+    action: ServerAuditAction = ServerAuditAction.HOSTED_BOX_TO_REMOVE,
 ) -> list[ServerAuditEvent]:
     async with factory() as session:
         return list(
             await session.scalars(
-                select(ServerAuditEvent).where(
-                    ServerAuditEvent.action == ServerAuditAction.HOSTED_BOX_TO_REMOVE
-                )
+                select(ServerAuditEvent).where(ServerAuditEvent.action == action)
             )
         )

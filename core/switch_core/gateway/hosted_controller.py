@@ -72,6 +72,7 @@ from switch_core.visibility.alerts import (
 )
 from switch_core.visibility.box_facts import with_box_facts
 from switch_core.visibility.box_provision import (
+    BOX_NOT_MADE,
     ask_for_box,
     box_provisioning_on,
     expire_provisions,
@@ -820,8 +821,10 @@ async def observe(
                 machine.revision,
             )
         elif (
-            body.state == "error" or body.error is not None
-        ) and machine.state not in STALE_ERROR_IGNORED_STATES:
+            (body.state == "error" or body.error is not None)
+            and machine.state not in STALE_ERROR_IGNORED_STATES
+            and not _box_not_made(machine)
+        ):
             if machine.state != "error":
                 reason = _observed_failure(body.error_code)
                 _report_failure(
@@ -866,14 +869,17 @@ async def observe(
         if machine.state != "ready":
             machine.state = "provisioning"
     elif body.state == "error":
-        if machine.state != "error":
-            reason = _observed_failure(body.error_code)
-            _report_failure(
-                session, machine, reason, finer=_observed_finer(machine, reason)
-            )
-        machine.state = "error"
-        machine.error = body.error or OBSERVED_ERROR
-        machine.error_code = body.error_code
+        # A box Core found never made keeps that finding, counted once
+        # already: a later error report doesn't replace or recount it.
+        if not _box_not_made(machine):
+            if machine.state != "error":
+                reason = _observed_failure(body.error_code)
+                _report_failure(
+                    session, machine, reason, finer=_observed_finer(machine, reason)
+                )
+            machine.state = "error"
+            machine.error = body.error or OBSERVED_ERROR
+            machine.error_code = body.error_code
     else:
         machine.state = body.state
         machine.error = None
@@ -882,6 +888,11 @@ async def observe(
         machine.updated_at = now
     await session.commit()
     return machine_item(machine)
+
+
+def _box_not_made(machine: CloudMachine) -> bool:
+    """Core marked it: its box was asked for and never made (box_provision)."""
+    return machine.state == "error" and machine.error_code == BOX_NOT_MADE
 
 
 # A cluster report is at most 200 nodes and a short list of services; this is
