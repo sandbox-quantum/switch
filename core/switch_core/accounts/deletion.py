@@ -98,6 +98,7 @@ from switch_core.db.rls_ddl import GLOBAL_TABLES
 from switch_core.db.session_scope import organization_session, tenant_session
 from switch_core.db.stores.erasure_store import FORMER_MEMBER_NAME, ErasureStore
 from switch_core.db.tenant_lookup import all_tenant_ids
+from switch_core.invitation_revocation import revoke_invitations_made_by
 from switch_core.tenant_context import tenant_scope
 
 if TYPE_CHECKING:
@@ -684,6 +685,17 @@ class AccountDeletion:
 
             await self._delete_resources(session, user_id)
             await self._release_rooms(session, user_id)
+            # What they made stops working with them, before it is handed on
+            # only because `invitations.created_by` must name someone; with
+            # nobody to hand it to, it goes.
+            if successor is not None:
+                await revoke_invitations_made_by(
+                    session,
+                    tenant_id=tenant_id,
+                    user_id=user_id,
+                    actor_id=actor_id,
+                    reason="creator_account_deleted",
+                )
             await self._hand_over(session, user_id, successor)
             await self._delete_controllers(session, user_id, controller_ids)
 

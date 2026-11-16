@@ -118,6 +118,7 @@ from switch_core.gateway.workspace_creation import (
     lock_workspace_allowance,
     refuse_a_workspace_name_taken,
 )
+from switch_core.invitation_revocation import revoke_invitations_made_by
 from switch_core.organization_access import (
     AccessRevocation,
     end_access_through_organization,
@@ -880,7 +881,9 @@ async def _end_access_through_organization(
 ) -> str | None:
     """Take away what `user_id` holds in the workspaces they stand in only as
     the organization's `org_admin`, before they stop being one
-    (`organization_access.end_access_through_organization`).
+    (`organization_access.end_access_through_organization`), and the
+    invitations they made in those where their own membership is not an
+    admin's (`invitation_revocation.py`).
 
     Refuses, 409 naming the workspaces, while they own agents in any of them,
     as removing a workspace member does.
@@ -900,7 +903,7 @@ async def _end_access_through_organization(
                 f"{', '.join(sorted(tenant.name for tenant in with_agents))}"
             ),
         )
-    return await end_access_through_organization(
+    warning = await end_access_through_organization(
         session_factory,
         revocation,
         user_id=user_id,
@@ -908,6 +911,22 @@ async def _end_access_through_organization(
         actor_id=actor_id,
         details={"reason": reason},
     )
+    for tenant in await workspaces_in_organization(
+        session_factory, user_id, organization_id
+    ):
+        async with tenant_session(session_factory, tenant.id) as bound:
+            membership = await bound.get(TenantMember, (tenant.id, user_id))
+            if membership is not None and membership.role == "admin":
+                continue
+            if await revoke_invitations_made_by(
+                bound,
+                tenant_id=tenant.id,
+                user_id=user_id,
+                actor_id=actor_id,
+                reason="organization_admin_access_ended",
+            ):
+                await bound.commit()
+    return warning
 
 
 @router.patch("/organizations/current/members/{user_id}", response_model=None)

@@ -2484,8 +2484,26 @@ export async function revokeInvitation(
   );
 }
 
-export async function acceptInvitation(token: string): Promise<TenantMembership> {
-  return jsonRequest<TenantMembership>("/invitations/accept", "POST", { token });
+/** `already_member`: they were in the workspace already at the invitation's
+ * role or above, so nothing changed and the invitation wasn't spent. */
+export interface InvitationAcceptResult extends TenantMembership {
+  already_member: boolean;
+}
+
+export async function acceptInvitation(token: string): Promise<InvitationAcceptResult> {
+  return jsonRequest<InvitationAcceptResult>("/invitations/accept", "POST", { token });
+}
+
+/** What an invitation is to, and nothing else. */
+export interface InvitationPreview {
+  workspace_name: string;
+  organization_name: string | null;
+  role: TenantRole;
+}
+
+/** Refused exactly as accepting it now would be; changes nothing. */
+export async function previewInvitation(token: string): Promise<InvitationPreview> {
+  return jsonRequest<InvitationPreview>("/invitations/preview", "POST", { token });
 }
 
 // Unauthenticated: tells the login page which methods to offer.

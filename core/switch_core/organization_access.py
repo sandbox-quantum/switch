@@ -34,6 +34,7 @@ from switch_core.gateway.workspace_access import (
     finish_revocation,
     revoke_workspace_access,
 )
+from switch_core.invitation_revocation import revoke_invitations_made_by
 
 
 @dataclass(frozen=True)
@@ -94,7 +95,8 @@ async def end_organization_admin_access(
 ) -> RevokedAccess:
     """In workspace `tenant_id`, bound on `session`, where `user_id` stands
     only as their organization's `org_admin`: remove their keys, service
-    connections and sign-ins under way, recorded in its audit log with
+    connections and sign-ins under way, and revoke the invitations they made
+    there (`invitation_revocation.py`), recorded in its audit log with
     `details`; `keep_agent_keys` as `revoke_workspace_access` has it.
 
     What they own there passes to an heir, as `remove_membership` does it,
@@ -115,6 +117,13 @@ async def end_organization_admin_access(
         actor_id=actor_id,
         reason="organization_admin_access_ended",
     )
+    invitations = await revoke_invitations_made_by(
+        session,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        actor_id=actor_id,
+        reason="organization_admin_access_ended",
+    )
     await record_audit_event(
         session,
         tenant_id=tenant_id,
@@ -126,6 +135,7 @@ async def end_organization_admin_access(
             **details,
             "api_keys_deleted": len(revoked.key_hashes),
             "service_connections_deleted": len(revoked.removed_services),
+            "invitations_revoked": invitations,
             "handed_over_to": heir,
             "handed_over": handed,
         },
@@ -143,9 +153,10 @@ async def remove_membership(
     keep_agent_keys: bool,
 ) -> MembershipRemoval:
     """Remove `membership` from its workspace, bound on `session`, with the
-    member's keys, service connections and sign-ins under way there, recorded
-    in its audit log with `details`; `keep_agent_keys` as
-    `revoke_workspace_access` has it.
+    member's keys, service connections and sign-ins under way there and the
+    invitations they made there (`invitation_revocation.py`), recorded in its
+    audit log with `details`; `keep_agent_keys` as `revoke_workspace_access`
+    has it.
 
     What they own there passes to an heir (`removal_heir`), so the workspace
     is not left with rooms, packages and the like owned by someone who can no
@@ -167,6 +178,13 @@ async def remove_membership(
         actor_id=actor_id,
         reason="member_removed",
     )
+    invitations = await revoke_invitations_made_by(
+        session,
+        tenant_id=membership.tenant_id,
+        user_id=membership.user_id,
+        actor_id=actor_id,
+        reason="member_removed",
+    )
     await record_audit_event(
         session,
         tenant_id=membership.tenant_id,
@@ -179,6 +197,7 @@ async def remove_membership(
             "role": membership.role,
             "api_keys_deleted": len(revoked.key_hashes),
             "service_connections_deleted": len(revoked.removed_services),
+            "invitations_revoked": invitations,
             "handed_over_to": heir,
             "handed_over": handed,
         },

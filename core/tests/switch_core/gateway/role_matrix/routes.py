@@ -239,7 +239,11 @@ ROUTES: dict[str, Case] = {
         json={"message_retention_days": 30},
         why="Deleting messages can't be undone: its admins by their own membership.",
     ),
-    "DELETE /gateway/tenants/{tenant_id}/retention": delete(f"{W}/retention", admins()),
+    "DELETE /gateway/tenants/{tenant_id}/retention": delete(
+        f"{W}/retention",
+        admin_by_membership(),
+        why="As setting a policy: its admins by their own membership.",
+    ),
     "GET /gateway/tenants/{tenant_id}/private-channel-rooms": get(
         f"{W}/private-channel-rooms", admins()
     ),
@@ -328,6 +332,12 @@ ROUTES: dict[str, Case] = {
     ),
     "POST /gateway/invitations/accept": post(
         f"{G}/invitations/accept",
+        anyone(ok=404),
+        json={"token": "no-such-invitation"},
+        why="Whoever holds the token; this one matches no invitation.",
+    ),
+    "POST /gateway/invitations/preview": post(
+        f"{G}/invitations/preview",
         anyone(ok=404),
         json={"token": "no-such-invitation"},
         why="Whoever holds the token; this one matches no invitation.",
@@ -514,6 +524,11 @@ ROUTES: dict[str, Case] = {
     "DELETE /gateway/users/{user_id}": delete(f"{G}/users/{{user_target}}", operator()),
     "POST /gateway/users/{user_id}/sessions/revoke": post(
         f"{G}/users/{{user_target}}/sessions/revoke", operator()
+    ),
+    "POST /gateway/users/{user_id}/demote": post(
+        f"{G}/users/{{user_target}}/demote",
+        operator(ok=409),
+        why="The operator's; this account is no operator, which is what they're told.",
     ),
     "POST /gateway/auth/sessions/revoke": post(
         f"{G}/auth/sessions/revoke",

@@ -1617,6 +1617,24 @@ class InvitationAcceptRequest(BaseModel):
     token: str
 
 
+class InvitationAcceptResponse(TenantMembershipResponse):
+    """The workspace an accepted invitation is for, and the caller's standing
+    there. `already_member`: they were in it already with a role at least the
+    invitation's, so nothing changed and nothing was spent."""
+
+    already_member: bool
+
+
+class InvitationPreviewResponse(BaseModel):
+    """What an invitation is to, for the person about to accept it: nothing
+    beyond these three."""
+
+    workspace_name: str
+    # None only for a workspace from before organizations.
+    organization_name: str | None
+    role: str
+
+
 class AddressedInvitation(BaseModel):
     """An invitation waiting for the signed-in caller, as they are shown it.
 

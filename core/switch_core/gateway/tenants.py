@@ -160,9 +160,11 @@ from switch_core.gateway.schemas import (
     ErasureCreateRequest,
     ErasureDetail,
     InvitationAcceptRequest,
+    InvitationAcceptResponse,
     InvitationCreateRequest,
     InvitationCreateResponse,
     InvitationDetail,
+    InvitationPreviewResponse,
     JoinableTenant,
     JoinDomainCreateRequest,
     JoinDomainDetail,
@@ -197,6 +199,7 @@ from switch_core.gateway.workspace_creation import (
     directory_failed,
     refuse_a_workspace_name_taken,
 )
+from switch_core.invitation_revocation import revoke_invitations_made_by
 from switch_core.organization_access import (
     AccessRevocation,
     removal_heir,
@@ -1593,7 +1596,7 @@ async def accept_invitation(
         OrganizationDirectory, Depends(get_organization_directory)
     ],
     config: Annotated[SwitchConfig, Depends(get_config)],
-) -> TenantMembershipResponse:
+) -> InvitationAcceptResponse:
     """Accept an invitation, joining its tenant, and switch the caller's
     session into it — someone who follows an invite link means to be there.
 
@@ -1612,12 +1615,17 @@ async def accept_invitation(
     and a path segment is written to proxy and access logs, kept in browser
     history, and sent onward in `Referer`.
 
-    A use is spent only when a membership is actually granted. Accepting an
-    invitation you already hold is a no-op that returns your existing role —
-    a double-clicked shared link must not cost the invite a slot — and the
-    `consume` that does spend one is a conditional `UPDATE` that arbitrates
-    between simultaneous acceptances, so a single-use link grants exactly one
-    membership however many people race for it.
+    A use is spent only when something is granted: a membership, or a role
+    above the one the caller already holds there. Accepting an invitation
+    to a workspace you are already in at its role or above changes nothing,
+    spends nothing — a double-clicked shared link must not cost the invite a
+    slot — and says so (`already_member`). The `consume` that does spend one
+    is a conditional `UPDATE` that arbitrates between simultaneous
+    acceptances, so a single-use link grants exactly one membership however
+    many people race for it.
+
+    Refused while whoever made the invitation no longer administers the
+    workspace (`invitation_revocation.py`).
     """
     token_hash = hashlib.sha256(req.token.encode()).hexdigest()
     tenant_id = await tenant_of_invitation_token(session_factory, token_hash)
@@ -1648,6 +1656,80 @@ async def accept_invitation(
         session_auth_time(request),
     )
     return membership
+
+
+@router.post("/invitations/preview")
+async def preview_invitation(
+    req: InvitationAcceptRequest,
+    caller: Annotated[AuthenticatedCaller, Depends(get_authenticated_caller)],
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+    invitation_store: Annotated[InvitationStore, Depends(get_invitation_store)],
+) -> InvitationPreviewResponse:
+    """What an invitation is to — the workspace, its organization and the
+    role — for the person about to accept it, refused exactly as accepting
+    it now would be. Changes nothing.
+
+    Signed in, like `accept_invitation`, and for the invitation's own
+    address when it names one: an invitation addressed to someone else says
+    nothing about where it leads. The token arrives in the body, for the
+    reason `accept_invitation` gives.
+    """
+    token_hash = hashlib.sha256(req.token.encode()).hexdigest()
+    tenant_id = await tenant_of_invitation_token(session_factory, token_hash)
+    if tenant_id is None:
+        raise HTTPException(status_code=404, detail="Invitation not found")
+    async with tenant_session(session_factory, tenant_id) as session:
+        invitation = await invitation_store.get_by_token_hash(session, token_hash)
+        if invitation is None:
+            raise HTTPException(status_code=404, detail="Invitation not found")
+        _require_invitation_usable(invitation, caller.email)
+        if await is_archived(session, tenant_id):
+            raise HTTPException(status_code=409, detail=WORKSPACE_ARCHIVED)
+        await _require_maker_administers(session, user_store, invitation)
+        tenant = await session.get(Tenant, tenant_id)
+        assert tenant is not None
+        organization = (
+            await session.get(Organization, tenant.organization_id)
+            if tenant.organization_id is not None
+            else None
+        )
+        return InvitationPreviewResponse(
+            workspace_name=tenant.name,
+            organization_name=organization.name if organization is not None else None,
+            role=invitation.role,
+        )
+
+
+INVITATION_MAKER_GONE = (
+    "This invitation no longer works: whoever made it no longer administers "
+    "this workspace. Ask a workspace admin for a new one."
+)
+
+
+async def _maker_administers(
+    session: AsyncSession, user_store: UserStore, invitation: Invitation
+) -> bool:
+    """Whether whoever made `invitation` still administers its workspace, on
+    `session`, bound to it: the platform operator, or by a role they hold
+    there (`invitation_revocation.py`)."""
+    maker = await user_store.get(session, invitation.created_by)
+    return maker is not None and (
+        maker.role == "admin"
+        or await user_store.administers_by_role(session, invitation.tenant_id, maker.id)
+    )
+
+
+async def _require_maker_administers(
+    session: AsyncSession, user_store: UserStore, invitation: Invitation
+) -> None:
+    """Refuse, 403, an invitation whose maker no longer administers its
+    workspace: one made before demotions and removals revoked what the person
+    made."""
+    if not await _maker_administers(session, user_store, invitation):
+        raise HTTPException(status_code=403, detail=INVITATION_MAKER_GONE)
 
 
 async def _organization_to_join(
@@ -1688,9 +1770,11 @@ async def _join_through(
     user_store: UserStore,
     invitation_store: InvitationStore,
     organization_directory: OrganizationDirectory,
-) -> tuple[TenantMembershipResponse, User]:
-    """Make `caller` a member of the invitation's tenant, spending one use,
-    select that tenant for them, and commit.
+) -> tuple[InvitationAcceptResponse, User]:
+    """Make `caller` a member of the invitation's tenant, or raise their role
+    there to the invitation's, spending one use; select that tenant for them,
+    and commit. Someone already there at the invitation's role or above is
+    let in with nothing changed or spent (`already_member`).
 
     `session` is bound to the invitation's tenant, and `invitation` has
     already passed `_require_invitation_usable` for this caller. Both ways of
@@ -1700,14 +1784,15 @@ async def _join_through(
     tenant_id = invitation.tenant_id
     if await is_archived(session, tenant_id):
         raise HTTPException(status_code=409, detail=WORKSPACE_ARCHIVED)
-    existing_role = await user_store.tenant_role(session, tenant_id, caller.id)
-    if existing_role is None:
-        try:
-            await invitation_store.consume(session, invitation.id)
-        except InvitationNotUsableError as exc:
-            raise HTTPException(
-                status_code=403, detail="This invitation has already been used"
-            ) from exc
+    await _require_maker_administers(session, user_store, invitation)
+    existing = await session.get(
+        TenantMember, (tenant_id, caller.id), with_for_update=True
+    )
+    already_member = existing is not None and not _outranks(
+        invitation.role, existing.role
+    )
+    if existing is None:
+        await _consume(session, invitation_store, invitation)
         role = invitation.role
         joining = await _organization_to_join(session, tenant_id, caller.id)
         await user_store.add_membership(
@@ -1727,17 +1812,51 @@ async def _join_through(
             details={"role": role},
         )
         # Only on the branch that actually joined someone. A caller who
-        # was already a member takes the `else` below and has accepted
-        # nothing — reporting it there would count re-clicking a link as
-        # onboarding.
+        # was already a member has joined nothing — reporting it would count
+        # re-clicking a link, or a promotion, as onboarding.
         emit_safely(
             current_telemetry(),
             "invitation_accepted",
             {"age_hours": age_hours(invitation.created_at)},
         )
         await _join_in_directory(organization_directory, joining, caller.id)
+    elif not already_member:
+        await _consume(session, invitation_store, invitation)
+        previous_role = existing.role
+        existing.role = invitation.role
+        await record_audit_event(
+            session,
+            tenant_id=tenant_id,
+            actor_user_id=caller.id,
+            action=AuditAction.INVITATION_ACCEPTED,
+            target_type="invitation",
+            target_id=invitation.id,
+            details={"role": invitation.role, "previous_role": previous_role},
+        )
 
-    return await _enter(session, tenant_id, caller, user_store)
+    membership, user = await _enter(session, tenant_id, caller, user_store)
+    return (
+        InvitationAcceptResponse(
+            **membership.model_dump(), already_member=already_member
+        ),
+        user,
+    )
+
+
+def _outranks(role: str, held: str) -> bool:
+    """Whether workspace role `role` is above `held`: admin above member."""
+    return role == "admin" and held != "admin"
+
+
+async def _consume(
+    session: AsyncSession, invitation_store: InvitationStore, invitation: Invitation
+) -> None:
+    try:
+        await invitation_store.consume(session, invitation.id)
+    except InvitationNotUsableError as exc:
+        raise HTTPException(
+            status_code=403, detail="This invitation has already been used"
+        ) from exc
 
 
 async def _enter(
@@ -1815,6 +1934,9 @@ async def list_my_invitations(
             if tenant.archived_at is not None:
                 continue
             for invitation in invitations:
+                # Not offered once it can't be accepted.
+                if not await _maker_administers(session, user_store, invitation):
+                    continue
                 inviter = await user_store.get(session, invitation.created_by)
                 assert inviter is not None
                 found.append(
@@ -1847,7 +1969,7 @@ async def accept_my_invitation(
         OrganizationDirectory, Depends(get_organization_directory)
     ],
     config: Annotated[SwitchConfig, Depends(get_config)],
-) -> TenantMembershipResponse:
+) -> InvitationAcceptResponse:
     """Accept an invitation addressed to the caller, by id, without its token,
     and switch the caller's session into its workspace.
 
@@ -2212,7 +2334,8 @@ async def change_member_role(
     recording the change. Refuses an `org_admin` of its organization, whose
     standing comes from there; making the registration service account an
     admin; and demoting the last admin, whose rows are locked until the
-    caller commits. Shared by the workspace's own route and its
+    caller commits. Demoting an admin revokes the invitations they made here
+    (`invitation_revocation.py`). Shared by the workspace's own route and its
     organization's (`gateway/organization_workspaces.py`)."""
     membership = await session.get(TenantMember, (tenant_id, user_id))
     if membership is None:
@@ -2236,6 +2359,14 @@ async def change_member_role(
             target_type="user",
             target_id=user_id,
             details={"from": membership.role, "to": role},
+        )
+    if membership.role == "admin" and role != "admin":
+        await revoke_invitations_made_by(
+            session,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            actor_id=actor_id,
+            reason="creator_demoted",
         )
     membership.role = role
     return user, membership
