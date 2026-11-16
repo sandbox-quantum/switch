@@ -134,10 +134,18 @@ _ROUTES_THAT_NEVER_BIND_A_TENANT = {
     # The same for organizations: list the caller's, make one.
     ("GET", "/organizations"),
     ("POST", "/organizations"),
+    # The organizations the caller is left in with none of their workspaces,
+    # and leaving one: there is no workspace of theirs to bind. Each opens an
+    # `organization_session` of its own — see `leave_organization`.
+    ("GET", "/organizations/without-workspace"),
+    ("POST", "/organizations/{organization_id}/leave"),
     # Accepting an invitation binds the tenant the *token* names, which is
     # neither the one on the caller's session nor one they belong to yet. It
     # opens its own `tenant_session` around that id — see `accept_invitation`.
     ("POST", "/invitations/accept"),
+    # Previewing one opens a `tenant_session` around the same tenant, and
+    # changes nothing — see `preview_invitation`.
+    ("POST", "/invitations/preview"),
     # Invitations addressed to the caller are in workspaces they are not in, so
     # no session of theirs is bound to one. Listing opens a `tenant_session`
     # per tenant `tenants_with_invitations_for` names; accepting opens one

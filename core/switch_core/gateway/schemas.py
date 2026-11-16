@@ -1251,9 +1251,11 @@ class OperatorUserResponse(UserResponse):
     """An account as the deployment operator manages it. `can_delete`: not
     their own, which they delete from their account settings, and not the
     server's administrator account (`accounts.deletion.is_server_administrator`).
-    What else stands in the way is answered when it is asked."""
+    `can_demote`: another platform operator, on the same terms. What else
+    stands in the way is answered when it is asked."""
 
     can_delete: bool
+    can_demote: bool
 
 
 class CreateUserRequest(BaseModel):
@@ -1441,6 +1443,14 @@ class OrganizationSummary(BaseModel):
     role: str
 
 
+class OrganizationWithoutWorkspace(BaseModel):
+    """An organization the caller is still a member of, though in none of
+    its workspaces, which they may leave."""
+
+    id: str
+    name: str
+
+
 class CurrentOrganizationResponse(BaseModel):
     """The bound workspace's organization, and the caller's role in it: None
     for the platform operator there on the operator flag alone.
@@ -1607,6 +1617,24 @@ class InvitationAcceptRequest(BaseModel):
     # browser history and `Referer` headers, and this one is a bearer
     # credential.
     token: str
+
+
+class InvitationAcceptResponse(TenantMembershipResponse):
+    """The workspace an accepted invitation is for, and the caller's standing
+    there. `already_member`: they were in it already with a role at least the
+    invitation's, so nothing changed and nothing was spent."""
+
+    already_member: bool
+
+
+class InvitationPreviewResponse(BaseModel):
+    """What an invitation is to, for the person about to accept it: nothing
+    beyond these three."""
+
+    workspace_name: str
+    # None only for a workspace from before organizations.
+    organization_name: str | None
+    role: str
 
 
 class AddressedInvitation(BaseModel):
@@ -1785,11 +1813,14 @@ class OrganizationMemberDetail(BaseModel):
     # operator restoring an `org_admin` included;
     # `can_grant_org_admin` too, unless the organization's members come from
     # a directory Switch cannot change; `can_remove` for its `org_admin` only.
-    # The last `org_admin`, someone still in a workspace, and a directory that
-    # wants a sign-in first are answered when it is asked.
+    # Neither for the last `org_admin`, which the `_blocked_reason` beside
+    # each says. Someone still in a workspace, and a directory that wants a
+    # sign-in first, are answered when it is asked.
     can_change_role: bool
+    change_role_blocked_reason: str | None
     can_grant_org_admin: bool
     can_remove: bool
+    remove_blocked_reason: str | None
 
 
 class OrganizationMemberListEntry(OrganizationMemberDetail):

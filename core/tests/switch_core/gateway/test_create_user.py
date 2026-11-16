@@ -28,7 +28,12 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.db.models import TenantMember, User
+from switch_core.db.models import (
+    OrganizationMember,
+    ServerAuditEvent,
+    TenantMember,
+    User,
+)
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway import auth_routes
 from switch_core.gateway import dependencies as gw_deps
@@ -96,9 +101,11 @@ class _NamelessUserStore(UserStore):
     """Writes the user with no name, which `users.name` refuses: an integrity
     failure that is not the email being taken."""
 
-    async def create(self, session: AsyncSession, user: User) -> None:
+    async def create_without_membership(
+        self, session: AsyncSession, user: User
+    ) -> None:
         user.name = None  # type: ignore[assignment]
-        await super().create(session, user)
+        await super().create_without_membership(session, user)
 
 
 async def _emails_like(
@@ -217,15 +224,13 @@ class TestCreateUserOverHttp:
         assert [e["loc"] for e in response.json()["detail"]] == [["body", "role"]]
         assert await _emails_like(session_factory, "ed@example.invalid") == []
 
-    @pytest.mark.parametrize(
-        ("role", "membership_role"), [("user", "member"), ("admin", "admin")]
-    )
-    async def test_a_known_role_is_stored_with_its_membership(
-        self,
-        session_factory: async_sessionmaker[AsyncSession],
-        role: str,
-        membership_role: str,
+    @pytest.mark.parametrize("role", ["user", "admin"])
+    async def test_a_known_role_is_stored_in_no_workspace_or_organization(
+        self, session_factory: async_sessionmaker[AsyncSession], role: str
     ) -> None:
+        """Whichever workspace the operator's own session is in: an operator
+        made here is no workspace's admin and no organization's `org_admin`
+        either, and the server's audit log says who added the account."""
         app = _app(session_factory)
         async with await _admin_client(session_factory, app) as client:
             response = await client.post(
@@ -240,18 +245,34 @@ class TestCreateUserOverHttp:
 
         assert response.status_code == 200, response.text
         assert response.json()["role"] == role
+        created = response.json()["id"]
         async with session_factory() as session:
-            stored = await session.scalar(
-                select(User.role).where(User.email == "fay@example.invalid")
-            )
-            memberships = await session.scalars(
-                select(TenantMember.role).where(
-                    TenantMember.user_id == response.json()["id"]
+            stored = await session.scalar(select(User.role).where(User.id == created))
+            memberships = list(
+                await session.scalars(
+                    select(TenantMember.tenant_id).where(
+                        TenantMember.user_id == created
+                    )
                 )
             )
-            membership_roles = list(memberships)
+            organizations = list(
+                await session.scalars(
+                    select(OrganizationMember.organization_id).where(
+                        OrganizationMember.user_id == created
+                    )
+                )
+            )
+            operator_id = await session.scalar(
+                select(User.id).where(User.email == "operator@example.invalid")
+            )
+            events = [
+                (event.action, event.actor_user_id, event.target_id, event.details)
+                for event in await session.scalars(select(ServerAuditEvent))
+            ]
         assert stored == role
-        assert membership_roles == [membership_role]
+        assert memberships == []
+        assert organizations == []
+        assert events == [("user.created", operator_id, created, {"role": role})]
 
     async def test_concurrent_creates_of_one_address_are_one_user_and_a_conflict(
         self,
@@ -381,7 +402,8 @@ class TestWhichAccountsTheOperatorMayDelete:
     ) -> None:
         """Not their own account, nor the server's administrator account,
         which the server recreates; the same refusals `DELETE /users/{id}`
-        makes before anything else."""
+        and `POST /users/{id}/demote` make before anything else. Another
+        operator may be either."""
         async with session_factory() as session:
             for name, email, role in (
                 ("Ada", "ada@example.invalid", "user"),
@@ -398,9 +420,11 @@ class TestWhichAccountsTheOperatorMayDelete:
             response = await client.get("/users")
 
         assert response.status_code == 200, response.text
-        assert {u["name"]: u["can_delete"] for u in response.json()} == {
-            "Operator": False,
-            "Ada": True,
-            "Root": False,
-            "Configured": False,
+        assert {
+            u["name"]: (u["can_delete"], u["can_demote"]) for u in response.json()
+        } == {
+            "Operator": (False, False),
+            "Ada": (True, False),
+            "Root": (True, True),
+            "Configured": (False, False),
         }

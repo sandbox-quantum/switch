@@ -6,6 +6,7 @@ import {
   DialogActions,
   DialogContent,
   DialogTitle,
+  DialogContentText,
   MenuItem,
   Stack,
   TextField,
@@ -59,7 +60,11 @@ export default function CreateUserDialog({ open, onClose, onCreated }: Props) {
     <Dialog open={open} onClose={handleClose} maxWidth="sm" fullWidth>
       <DialogTitle>Add user</DialogTitle>
       <DialogContent>
-        <Stack spacing={2} sx={{ mt: 1 }}>
+        <DialogContentText>
+          The account starts in no workspace. A workspace admin gives them one by inviting them,
+          with a link or to this address.
+        </DialogContentText>
+        <Stack spacing={2} sx={{ mt: 2 }}>
           {error && <Alert severity="error">{error}</Alert>}
           <TextField
             label="Name"
@@ -86,6 +91,11 @@ export default function CreateUserDialog({ open, onClose, onCreated }: Props) {
             select
             value={role}
             onChange={(e) => setRole(e.target.value as UserRole)}
+            helperText={
+              role === "admin"
+                ? "Runs this server. It doesn't make them an admin of any workspace or organization."
+                : undefined
+            }
           >
             <MenuItem value="user">User</MenuItem>
             <MenuItem value="admin">Platform operator</MenuItem>

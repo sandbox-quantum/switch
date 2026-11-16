@@ -46,8 +46,10 @@ function member(
     warning: null,
     service_account: false,
     can_change_role: true,
+    change_role_blocked_reason: null,
     can_grant_org_admin: true,
     can_remove: true,
+    remove_blocked_reason: null,
     workspaces: [],
     ...overrides,
   };

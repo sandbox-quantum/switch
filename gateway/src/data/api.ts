@@ -1567,8 +1567,10 @@ export interface UserInfo {
 
 /** A user on the operator's list. */
 export interface ListedUser extends UserInfo {
-  // Deleting the account: never your own, nor another operator's.
+  // Deleting the account, or making an operator a regular account: never
+  // your own, nor the server's administrator account.
   can_delete: boolean;
+  can_demote: boolean;
 }
 
 export async function login(email: string, password: string): Promise<UserInfo> {
@@ -1858,12 +1860,15 @@ export interface OrganizationMember {
   // The account agents added with the shared registration token are owned
   // by: not a person, and never made an admin.
   service_account: boolean;
-  /** What you may do with them, as the server decides it: never on your own
-   * row; making them Org Admin not where the members come from account
-   * settings Switch cannot change; removing them as an Org Admin only. */
+  /** What you may do with them, as the server decides it: making them Org
+   * Admin not where the members come from account settings Switch cannot
+   * change; removing them as an Org Admin only; neither for the
+   * organization's only Org Admin, which the `_blocked_reason` says. */
   can_change_role: boolean;
+  change_role_blocked_reason: string | null;
   can_grant_org_admin: boolean;
   can_remove: boolean;
+  remove_blocked_reason: string | null;
 }
 
 export interface OrganizationAuditEvent {
@@ -2200,6 +2205,23 @@ export async function fetchOrganizationAuditEvents(
   );
 }
 
+/** An organization you're still a member of, though in none of its
+ * workspaces: someone removed from their last one is left in it. */
+export interface OrganizationWithoutWorkspace {
+  id: string;
+  name: string;
+}
+
+export async function fetchOrganizationsWithoutWorkspace(): Promise<
+  OrganizationWithoutWorkspace[]
+> {
+  return jsonRequest<OrganizationWithoutWorkspace[]>("/organizations/without-workspace", "GET");
+}
+
+export async function leaveOrganization(organizationId: string): Promise<void> {
+  await jsonRequest(`/organizations/${encodeURIComponent(organizationId)}/leave`, "POST");
+}
+
 /** Every workspace on the server; the platform operator only. */
 export async function fetchOperatorWorkspaces(): Promise<OperatorWorkspace[]> {
   return jsonRequest<OperatorWorkspace[]>("/operator/workspaces", "GET");
@@ -2448,8 +2470,26 @@ export async function revokeInvitation(
   );
 }
 
-export async function acceptInvitation(token: string): Promise<TenantMembership> {
-  return jsonRequest<TenantMembership>("/invitations/accept", "POST", { token });
+/** `already_member`: they were in the workspace already at the invitation's
+ * role or above, so nothing changed and the invitation wasn't spent. */
+export interface InvitationAcceptResult extends TenantMembership {
+  already_member: boolean;
+}
+
+export async function acceptInvitation(token: string): Promise<InvitationAcceptResult> {
+  return jsonRequest<InvitationAcceptResult>("/invitations/accept", "POST", { token });
+}
+
+/** What an invitation is to, and nothing else. */
+export interface InvitationPreview {
+  workspace_name: string;
+  organization_name: string | null;
+  role: TenantRole;
+}
+
+/** Refused exactly as accepting it now would be; changes nothing. */
+export async function previewInvitation(token: string): Promise<InvitationPreview> {
+  return jsonRequest<InvitationPreview>("/invitations/preview", "POST", { token });
 }
 
 // Unauthenticated: tells the login page which methods to offer.
@@ -2527,6 +2567,12 @@ export async function endUserSessions(userId: string): Promise<void> {
 // account and the caller's own.
 export async function deleteUser(userId: string): Promise<void> {
   await jsonRequest(`/users/${encodeURIComponent(userId)}`, "DELETE");
+}
+
+// Deployment operator only. Makes another platform operator a regular
+// account, keeping their workspaces and roles in them.
+export async function demoteUser(userId: string): Promise<ListedUser> {
+  return jsonRequest<ListedUser>(`/users/${encodeURIComponent(userId)}/demote`, "POST");
 }
 
 // ── Resources (References & Documents) ─────────────────────────────────────

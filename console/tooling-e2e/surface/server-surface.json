@@ -800,6 +800,11 @@
       "flags": []
     },
     {
+      "route": "GET /gateway/organizations/without-workspace",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "GET /gateway/packages",
       "auth": "session",
       "flags": []
@@ -1427,6 +1432,11 @@
       "flags": []
     },
     {
+      "route": "POST /gateway/invitations/preview",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "POST /gateway/joinable-tenants/{tenant_id}/join",
       "auth": "session",
       "flags": []
@@ -1504,6 +1514,11 @@
     },
     {
       "route": "POST /gateway/organizations/current/workspaces/{workspace_id}/restore",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/organizations/{organization_id}/leave",
       "auth": "session",
       "flags": []
     },
@@ -1742,6 +1757,11 @@
     },
     {
       "route": "POST /gateway/users",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/users/{user_id}/demote",
       "auth": "session",
       "flags": []
     },

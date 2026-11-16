@@ -130,8 +130,8 @@ def ensure_account(
     account: SeededAccount,
     password: str,
 ) -> str:
-    """The account's id, made (again, if its password is lost) as needed. The
-    operator's session is in the default workspace, so a new account joins it."""
+    """The account's id, made (again, if its password is lost) as needed. An
+    account the operator makes starts in no workspace (`ensure_member`)."""
     if existing is not None:
         if signs_in(account.email, password):
             return str(existing["id"])
@@ -150,6 +150,27 @@ def ensure_account(
         },
     )
     return str(created["id"])
+
+
+def ensure_member(
+    operator: Client,
+    members: set[str],
+    user_id: str,
+    account: SeededAccount,
+    password: str,
+) -> None:
+    """Put the account in the default workspace, by an invitation addressed
+    to it that it accepts, unless it is in it already."""
+    if user_id in members:
+        return
+    invitation = operator.call(
+        "POST",
+        f"/tenants/{DEFAULT_WORKSPACE_ID}/invitations",
+        {"role": "member", "email": account.email},
+    )
+    invitee = Client()
+    invitee.sign_in(account.email, password)
+    invitee.call("POST", "/invitations/accept", {"token": invitation["token"]})
 
 
 def ensure_second_workspace(operator: Client) -> None:
@@ -204,6 +225,12 @@ def seed(operator_email: str, operator_password: str) -> None:
         )
         for account in SEEDED
     }
+    members = {
+        member["user_id"]
+        for member in operator.call("GET", f"/tenants/{DEFAULT_WORKSPACE_ID}/members")
+    }
+    for account in SEEDED:
+        ensure_member(operator, members, ids[account.role], account, password)
 
     # The organization role first: it decides what someone holds in every
     # workspace, and an org admin's own workspace role cannot be changed at all.
