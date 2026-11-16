@@ -9,6 +9,7 @@ data:
   default.conf: |
     server {
         listen 3000;
+        server_tokens off;
 
         root /usr/share/nginx/html;
         index index.html;
