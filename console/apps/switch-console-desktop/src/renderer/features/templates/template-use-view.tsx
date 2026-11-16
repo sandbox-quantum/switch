@@ -65,7 +65,7 @@ import { describeRemoteDirRefusal } from '@shared/core/remote-hosts/remote-dir';
 import { ownerAndMyAgentsPolicy, ownerOnlyPolicy } from '@shared/core/switch-servers/owner-policy';
 import { CONSOLE_ROOM, NEW } from '@shared/core/switch-servers/room-template-params';
 import { RpcError } from '@shared/lib/ipc/rpc-error';
-import { runsWithoutAsking, whoCanAddress } from './use/agent-permissions';
+import { permissionsOnCreate } from './use/agent-permissions';
 import { CollapsibleInput } from './use/collapsible-input';
 import {
   type AgentSlot,
@@ -1653,12 +1653,13 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
   /** What a new agent runs with, for its preview card and the risks asked about before Create. Null for an existing agent. */
   const runtimeFor = (slot: AgentSlot, setup: SlotSetup): SlotRuntime | null => {
     if (setup.existing !== null) return null;
-    const written = slot.entry.permissionsAsWritten;
-    const reach = whoCanAddress(written.addressing, values);
+    const { bypass, reach } = permissionsOnCreate(
+      slot.entry,
+      values,
+      isV2 ? 'document' : management ? 'managed' : 'console'
+    );
     const permissions = {
-      // An agent this Console runs is created asking first, whatever the
-      // template says; a managed one, or a version 2 run, takes the template's.
-      bypass: management || isV2 ? runsWithoutAsking(written.autoApprove, values) : false,
+      bypass,
       reach: reach.kind === 'rooms' ? { ...reach, rooms: reach.rooms.map(roomNameOf) } : reach,
       instructions: interpolate(slot.entry.instructions, { ...values, agent: setup.name }),
     };

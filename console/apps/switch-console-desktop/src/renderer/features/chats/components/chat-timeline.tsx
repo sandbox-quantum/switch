@@ -2,15 +2,17 @@ import { format, isToday, isYesterday } from 'date-fns';
 import { CornerUpLeft, Loader2, RotateCw, X } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { Fragment, type ReactNode } from 'react';
+import { isOwnBuddy } from '@renderer/features/switch-buddy/own-buddies';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
 import { Button } from '@renderer/lib/ui/button';
 import { cn } from '@renderer/utils/utils';
 import { agentInitials } from '@shared/core/agents/agent-avatar';
+import { readsAsSwitchBuddy } from '@shared/core/agents/switch-buddy';
 import type { ChatApproval } from '@shared/core/chats/activity';
 import type { ChatAgent, ChatKickoff, ChatMessage } from '@shared/core/chats/chats';
 import {
-  chatAgentLabel,
+  chatAgentNaming,
   isSessionStartingNotice,
   liveSessionStartingNotices,
   turnEndNotice,
@@ -36,12 +38,34 @@ import {
   AgentRow,
   ChatActivityBlock,
   ChatRequests,
+  type RowAgent,
   turnEndLabel,
   turnShown,
 } from './chat-activity-block';
 import { requestAsker } from './chat-approval-card';
 import { ChatAttachments } from './chat-attachments';
 import { MentionMark } from './mention-mark';
+
+/**
+ * An agent as a row names it (`chatAgentNaming`). One the chat does not list
+ * goes by `fallback`, the name it sent under or its id; but a name that reads
+ * as switch-buddy's, on an agent that is not the person's own buddy, cannot
+ * be checked against a unique name, so it goes by its id.
+ */
+function rowAgent(
+  agent: ChatAgent | null,
+  agentId: string | null,
+  fallback: string,
+  serverId: string
+): RowAgent {
+  if (agent) {
+    const { label, uniqueName } = chatAgentNaming(agent, isOwnBuddy(serverId, agent.id));
+    return { id: agent.id, name: label, uniqueName, iconUrl: agent.iconUrl };
+  }
+  const unchecked =
+    agentId !== null && readsAsSwitchBuddy(fallback) && !isOwnBuddy(serverId, agentId);
+  return { id: null, name: unchecked ? agentId : fallback, uniqueName: null, iconUrl: null };
+}
 
 /** Messages more than this far apart start a new dated group. */
 const GROUP_GAP_MS = 30 * 60 * 1000;
@@ -275,11 +299,7 @@ export const ChatTimelineView = observer(function ChatTimelineView({
     return (
       <AgentRow
         key={key}
-        agent={{
-          id: agent?.id ?? null,
-          name: agent ? chatAgentLabel(agent) : activity.agentId,
-          iconUrl: agent?.iconUrl ?? null,
-        }}
+        agent={rowAgent(agent, activity.agentId, activity.agentId, serverId)}
         serverId={serverId}
         head={head}
         className={spacing(head)}
@@ -327,11 +347,7 @@ export const ChatTimelineView = observer(function ChatTimelineView({
         const chip = threadChip(message, find);
         const turns = turnsByMessage.get(message.messageId) ?? [];
         const agent = agentOf(message.sender.agentId);
-        const agentLabel = {
-          id: agent?.id ?? null,
-          name: agent ? chatAgentLabel(agent) : message.sender.name,
-          iconUrl: agent?.iconUrl ?? null,
-        };
+        const agentLabel = rowAgent(agent, message.sender.agentId, message.sender.name, serverId);
         const agentRow = notice || ended !== null || message.sender.kind === 'agent';
         const head = startsBlock(agentRow ? message.sender.agentId : null);
         const kickoff = message.sender.kind === 'system' ? message.kickoff : null;
@@ -351,7 +367,7 @@ export const ChatTimelineView = observer(function ChatTimelineView({
                   icon={<Loader2 aria-hidden className="size-3.5 animate-spin" />}
                   label={
                     agents.length > 1
-                      ? `${message.sender.name} is starting a session…`
+                      ? `${agentLabel.name} is starting a session…`
                       : 'Starting a session…'
                   }
                   active
@@ -470,11 +486,7 @@ export const ChatTimelineView = observer(function ChatTimelineView({
                   }}
                   endReason={endReasons.get(`${activity.agentId}:${turn.turnId}`) ?? null}
                   head={head}
-                  agent={{
-                    id: turnAgent?.id ?? null,
-                    name: turnAgent ? chatAgentLabel(turnAgent) : activity.agentId,
-                    iconUrl: turnAgent?.iconUrl ?? null,
-                  }}
+                  agent={rowAgent(turnAgent, activity.agentId, activity.agentId, serverId)}
                   asker={requestAsker(turnAgent, activity.agentId)}
                   className={spacing(head)}
                 />
@@ -609,21 +621,31 @@ function KickoffRow({
   id: string;
   className: string;
 }) {
-  const sender = kickoff.displayName ?? (agent ? chatAgentLabel(agent) : kickoff.name);
+  // An agent's kickoff names it as its rows do; `name` is then its unique name.
+  const sender =
+    kickoff.agentId !== null
+      ? chatAgentNaming(
+          { name: kickoff.name, displayName: kickoff.displayName ?? agent?.displayName ?? null },
+          isOwnBuddy(serverId, kickoff.agentId)
+        )
+      : { label: kickoff.displayName ?? kickoff.name, uniqueName: null };
   return (
     <div {...props} className={cn('rounded-xl border bg-background-1 px-4 py-3', props.className)}>
       <div className="mb-1.5 flex items-center gap-2 text-xs text-foreground-muted">
         {kickoff.agentId !== null && (
           <AgentAvatar
             agentId={kickoff.agentId}
-            name={sender}
+            name={sender.label}
             iconUrl={kickoff.iconUrl ?? agent?.iconUrl ?? null}
             serverId={serverId}
             size={16}
           />
         )}
         <span>
-          Kickoff from <span className="font-medium text-foreground">{sender}</span>
+          Kickoff from <span className="font-medium text-foreground">{sender.label}</span>
+          {sender.uniqueName !== null && (
+            <span className="text-foreground-passive"> @{sender.uniqueName}</span>
+          )}
         </span>
       </div>
       <div className="text-sm leading-relaxed">
