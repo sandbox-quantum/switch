@@ -1781,6 +1781,13 @@ class DiscordAdapter(PlatformAdapter):
             f"or post `!link-account {code}` there."
         )
 
+    @classmethod
+    def unlink_account_instructions(
+        cls, name: str, connection_config: Mapping[str, object]
+    ) -> str:
+        option = COMMANDS_BY_NAME["unlink-account"].args_spec[0].name
+        return f"run `/unlink-account {option}:{name}` in a server channel Switch is in"
+
     async def answer_command(self, command: InboundCommand, text: str) -> None:
         """Answer an account command where only its sender sees it.
 
@@ -2454,6 +2461,8 @@ class DiscordAdapter(PlatformAdapter):
             raise self._rich_failure(
                 error, f"Discord refused the post in channel {channel_id}", fallback
             ) from error
+        if thread is not None and _turn_ended(content):
+            await self._archive_progress_thread(thread)
         return f"{sent.channel.id}:{sent.id}"
 
     async def _publication_thread(
@@ -2601,6 +2610,55 @@ class DiscordAdapter(PlatformAdapter):
             lobby=lobby,
             fallback=self.rich_fallback_text(content),
         )
+        if not lobby and _turn_ended(content):
+            await self._archive_thread_holding(channel_id, message_ref)
+
+    async def _archive_thread_holding(self, channel_id: str, message_ref: str) -> None:
+        """Archive the thread a publication sits in, when it sits in one: its
+        reference names the thread as its location, where one at the channel
+        root names the channel."""
+        location_id, _ = self._parse_message_ref(message_ref)
+        if not location_id.isdigit() or location_id == channel_id:
+            return
+        client = self._require_client()
+        thread = client.get_channel(int(location_id))
+        if thread is None:
+            try:
+                thread = await client.fetch_channel(int(location_id))
+            except discord.HTTPException as error:
+                # The status is redrawn; only the badge is left.
+                logger.warning(
+                    "Could not find the finished progress thread %s to archive it: %s",
+                    location_id,
+                    error,
+                )
+                return
+        await self._archive_progress_thread(thread)
+
+    async def _archive_progress_thread(self, thread: Any) -> None:
+        """Close the thread a turn's progress went in, once the turn is over.
+
+        Each turn started from a channel message gets a thread for its status,
+        and an active thread stays in the channel list with an unread badge:
+        three questions left three of them there. Archived, it drops out of
+        the list and stays readable from the message it hangs from, and the
+        next message in it opens it again. Only a thread this bot started is
+        closed: one people made is theirs to keep open. Not closing it costs a
+        badge, so a refusal is logged rather than raised.
+        """
+        if getattr(thread, "archived", False):
+            return
+        bot_user_id = self._require_connection().bot_user_id
+        if not bot_user_id or getattr(thread, "owner_id", None) != bot_user_id:
+            return
+        try:
+            await thread.edit(archived=True)
+        except discord.HTTPException as error:
+            logger.warning(
+                "Could not archive the finished progress thread %s in Discord: %s",
+                getattr(thread, "id", "?"),
+                error,
+            )
 
     async def _edit_rich(
         self,
@@ -4729,6 +4787,11 @@ class DiscordAdapter(PlatformAdapter):
 
 # A user, role or channel mention as Discord writes it in a message's text.
 _MENTION_TOKEN = re.compile(r"<(?:@[!&]?|#)\d+>")
+
+
+def _turn_ended(content: RichContent) -> bool:
+    """Whether `content` is the status of a turn that is over."""
+    return isinstance(content, TurnActivity) and content.turn.status in TURN_ENDED
 
 
 def _thread_title(message: Any) -> str:

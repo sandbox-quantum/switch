@@ -241,6 +241,16 @@ class _Thread(_Channel):
         super().__init__(thread_id, guild=parent.guild)
         self.parent = parent
         self.parent_id = parent.id
+        # Who started it: the bridge, which makes a turn's thread from the
+        # message that asked.
+        self.owner_id = BOT_USER_ID
+        self.archived = False
+        self.archive_error: Exception | None = None
+
+    async def edit(self, *, archived: bool) -> None:
+        if self.archive_error is not None:
+            raise self.archive_error
+        self.archived = archived
 
 
 _WEBHOOK_IDS = {
@@ -640,6 +650,69 @@ async def test_a_thread_keeps_the_finished_turn_as_its_record() -> None:
 
     assert webhook.deletes == []
     assert webhook.edits[0]["message_id"] == 901
+
+
+async def test_a_finished_turn_archives_its_progress_thread() -> None:
+    """An active thread stays in the channel list with an unread badge, so
+    three questions left three there. Archived, it drops out of the list; its
+    messages stay, opened from the one it hangs from."""
+    adapter, _channel, thread, webhook = _guild_setup()
+
+    await adapter.update_rich(
+        str(CHANNEL_ID), "my-agent", f"{ROOT_MESSAGE_ID}:901", _ended(), None
+    )
+
+    assert thread.archived is True
+    assert webhook.deletes == []
+    assert webhook.edits[0]["thread"].id == ROOT_MESSAGE_ID
+
+
+async def test_a_running_turn_leaves_its_thread_open() -> None:
+    adapter, _channel, thread, _webhook = _guild_setup()
+
+    await adapter.update_rich(
+        str(CHANNEL_ID), "my-agent", f"{ROOT_MESSAGE_ID}:901", _activity(), None
+    )
+
+    assert thread.archived is False
+
+
+async def test_a_thread_people_started_is_left_open() -> None:
+    adapter, _channel, thread, _webhook = _guild_setup()
+    thread.owner_id = 7
+
+    await adapter.update_rich(
+        str(CHANNEL_ID), "my-agent", f"{ROOT_MESSAGE_ID}:901", _ended(), None
+    )
+
+    assert thread.archived is False
+
+
+async def test_a_turn_published_already_finished_archives_the_thread_it_made() -> None:
+    adapter, _channel, thread, webhook = _guild_setup()
+
+    await adapter.post_rich(
+        str(CHANNEL_ID), "my-agent", _ended(), f"{CHANNEL_ID}:{ROOT_MESSAGE_ID}"
+    )
+
+    assert webhook.sent[0]["thread"] is thread
+    assert thread.archived is True
+
+
+async def test_a_refused_archive_is_logged_and_the_redraw_stands(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    adapter, _channel, thread, webhook = _guild_setup()
+    thread.archive_error = _http_error(403)
+
+    with caplog.at_level(logging.WARNING):
+        await adapter.update_rich(
+            str(CHANNEL_ID), "my-agent", f"{ROOT_MESSAGE_ID}:901", _ended(), None
+        )
+
+    assert webhook.edits[0]["message_id"] == 901
+    assert thread.archived is False
+    assert "Could not archive the finished progress thread" in caplog.text
 
 
 async def test_a_flat_channel_keeps_the_finished_turn_too() -> None:
