@@ -572,6 +572,32 @@ describe('SelfUpdater', () => {
     expect(dev.downloads).toEqual(['0.31.0']);
   });
 
+  it('follows one canary build to the next', async () => {
+    const { installer, calls } = recordingInstaller();
+    const canary = updater({ installer, version: '0.32.0-canary.9' });
+    await canary.self.offer({ ...named, version: '0.32.0-canary.10' }, host().lent);
+    expect(canary.downloads).toEqual(['0.32.0-canary.10']);
+    expect(calls).toEqual(['prepare 0.32.0-canary.10', 'activate 0.32.0-canary.10']);
+    expect(canary.self.status()).toBeNull();
+  });
+
+  it('refuses to rank against a version of its own it cannot read, saying so rather than calling the release older', async () => {
+    const { installer, calls } = recordingInstaller();
+    const { self, downloads, attempt } = updater({ installer, version: '0.30.0+local.1' });
+    const idle = host();
+    await self.offer(named, idle.lent);
+    expect(downloads).toEqual([]);
+    expect(calls).toEqual([]);
+    expect(attempt()).toBeNull();
+    expect(idle.restarts()).toBe(0);
+    const report = self.status();
+    expect(report).toMatchObject({ target: '0.31.0', state: 'failed' });
+    expect(report!.problem).toContain(
+      "This controller's own version, '0.30.0+local.1', cannot be compared with 0.31.0"
+    );
+    expect(report!.problem).not.toContain('older');
+  });
+
   it('waits while a session runs, and goes ahead at a later report once none does', async () => {
     const { installer, calls } = recordingInstaller();
     const { self, downloads, attempt } = updater({ installer });

@@ -10,7 +10,7 @@ import { errorMessage, type Logger } from './log';
 import type { TrustedReleaseKey } from './release-keys';
 import { assertTrustedKeys, verifyDownloadedRelease } from './release-signing';
 import { pointCurrent, prefixBin, pruneReleases, readCurrent } from './releases';
-import { isNewer, RELEASE_VERSION } from './update';
+import { compareVersions, RELEASE_VERSION, UnreadableVersionError } from './update';
 
 /**
  * Updating this controller to the release Switch names in its status
@@ -374,13 +374,29 @@ export type UpdateHost = {
 };
 
 /**
+ * Why the release Switch names is not followed when it or this controller's
+ * own version cannot be ranked: whichever it is, this controller cannot tell
+ * whether the release is newer, so it installs nothing.
+ */
+function unreadableVersionProblem(
+  error: UnreadableVersionError,
+  target: string,
+  version: string
+): string {
+  return error.version === version
+    ? `This controller's own version, '${version}', cannot be compared with ${target}, the release Switch names: it is not x.y.z or x.y.z-<prerelease>. It installs no release on Switch's word until it runs a version it can compare; reinstall it with install.sh.`
+    : `Switch names '${target}', which cannot be compared with the ${version} this controller runs: it is not x.y.z or x.y.z-<prerelease>, so this controller installs nothing.`;
+}
+
+/**
  * Follows the release Switch names: a newer version than this one is
  * installed while no session is mid-turn, and the controller restarts into
  * it. An older one is refused and reported: old releases stay validly
  * signed, so a server that could roll a controller back could take it back
  * to a release with a fixed vulnerability; rolling back is for whoever runs
- * the machine. A failed attempt is not repeated for an hour; what stands in
- * the way is reported (`status()`).
+ * the machine. So is one this controller cannot rank against its own
+ * version, said as that. A failed attempt is not repeated for an hour; what
+ * stands in the way is reported (`status()`).
  */
 export class SelfUpdater {
   private report: UpdateReport | null = null;
@@ -428,7 +444,15 @@ export class SelfUpdater {
       return;
     }
     const target = release.version;
-    if (!isNewer(target, version)) {
+    let order: number;
+    try {
+      order = compareVersions(target, version);
+    } catch (error) {
+      if (!(error instanceof UnreadableVersionError)) throw error;
+      this.fail(target, unreadableVersionProblem(error, target, version), false);
+      return;
+    }
+    if (order < 0) {
       this.fail(
         target,
         `Switch names ${target}, which is older than the ${version} this controller runs; a controller does not install an older release on Switch's word. To roll back, install ${target} on this machine yourself.`,
