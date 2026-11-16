@@ -17,6 +17,9 @@ const SUBAGENT_TOOLS = new Set(['Agent', 'Task']);
 
 const MCP_PREFIX = 'mcp__';
 
+/** The model name the Claude Code CLI gives assistant messages it writes itself; the SDK does not export it. */
+const SYNTHETIC_MODEL = '<synthetic>';
+
 /**
  * Every mode names its permission mode, so the CLI never falls back to the
  * `defaultMode` in the person's own Claude Code settings: with `auto` there,
@@ -184,10 +187,11 @@ export function isUsageLimitText(text: string): boolean {
 /**
  * The text of an assistant message the CLI wrote in place of a reply because
  * the account's usage limit was reached, or undefined when it is not one. The
- * CLI marks such a message with `error`; its text is the notice.
+ * CLI marks such a message with `error` or writes it as a synthetic message;
+ * its text is the notice. A model's own reply is never read as one.
  */
 export function usageLimitNotice(message: SDKAssistantMessage): string | undefined {
-  if (message.error === undefined) return undefined;
+  if (message.error === undefined && message.message.model !== SYNTHETIC_MODEL) return undefined;
   const text = assistantText(message);
   return isUsageLimitText(text) ? text : undefined;
 }
