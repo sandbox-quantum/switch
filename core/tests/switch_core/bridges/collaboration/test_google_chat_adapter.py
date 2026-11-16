@@ -12,6 +12,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 from switch_core.bridges.collaboration.adapter import (
+    MessagePartlySent,
     RequestCard,
     RequestReference,
     TurnActivity,
@@ -745,6 +746,37 @@ class TestGoogleChatFormattingAndThreading:
         assert "<users/" not in text_sent
         assert "<\u200busers/all>" in text_sent
         assert "<\u200busers/123456>" in text_sent
+
+    @pytest.mark.asyncio
+    async def test_a_refusal_part_way_through_a_long_message_says_so(self) -> None:
+        adapter = GoogleChatAdapter(_make_config())
+        adapter.client.create_message = AsyncMock(
+            side_effect=[
+                {"name": "spaces/S1/messages/PART_1"},
+                BridgeOperationError("Google Chat refused create_message"),
+                {"name": "spaces/S1/messages/NOTICE"},
+            ]
+        )
+
+        with pytest.raises(MessagePartlySent) as raised:
+            await adapter.send_message(
+                channel_id="spaces/S1",
+                sender_name="Scout",
+                content="\n".join("word " * 20 for _ in range(1000)),
+                thread_root_id="spaces/S1/threads/T123",
+            )
+
+        partial = raised.value
+        assert (partial.first_ref, partial.delivered) == (
+            "spaces/S1/messages/PART_1",
+            1,
+        )
+        notice = adapter.client.create_message.call_args_list[-1][1]
+        assert notice["text"] == (
+            f"_Only 1 of {partial.total} parts of this message could be delivered; "
+            "Google Chat refused the rest._"
+        )
+        assert notice["thread_name"] == "spaces/S1/threads/T123"
 
     def test_split_long_messages_preserves_code_fences(self) -> None:
         long_code = "```python\n" + ("x = 1\n" * 500) + "```"

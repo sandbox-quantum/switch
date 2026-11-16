@@ -15,6 +15,7 @@ if TYPE_CHECKING:
 from switch_core.agent_display_name import ZERO_WIDTH_SPACE
 from switch_core.bridges.collaboration.adapter import (
     AgentIdentity,
+    MessagePartlySent,
     PlatformAdapter,
     RequestCard,
     RichContent,
@@ -313,17 +314,64 @@ class GoogleChatAdapter(PlatformAdapter):
         chunks = split_message_chunks(formatted)
         first_ref: str | None = None
 
-        for chunk in chunks:
-            res = await self.client.create_message(
-                space_id=channel_id,
-                text=chunk,
-                thread_name=thread_root_id,
-            )
+        for index, chunk in enumerate(chunks):
+            try:
+                res = await self.client.create_message(
+                    space_id=channel_id,
+                    text=chunk,
+                    thread_name=thread_root_id,
+                )
+            except (BridgeOperationError, httpx.HTTPError) as exc:
+                if first_ref is None:
+                    raise
+                await self._note_truncation(
+                    channel_id, thread_root_id, index, len(chunks), exc
+                )
+                raise MessagePartlySent(
+                    platform="Google Chat",
+                    first_ref=first_ref,
+                    delivered=index,
+                    total=len(chunks),
+                ) from exc
             msg_name = res.get("name")
             if first_ref is None and msg_name:
                 first_ref = msg_name
 
         return first_ref
+
+    async def _note_truncation(
+        self,
+        channel_id: str,
+        thread_root_id: str | None,
+        delivered: int,
+        total: int,
+        refusal: Exception,
+    ) -> None:
+        """Say in the space that a split message stopped part way, after the
+        parts that arrived."""
+        logger.error(
+            "Only %d of %d parts of a message reached Google Chat space %s: %s",
+            delivered,
+            total,
+            channel_id,
+            refusal,
+        )
+        try:
+            await self.client.create_message(
+                space_id=channel_id,
+                text=(
+                    f"_Only {delivered} of {total} parts of this message could be "
+                    "delivered; Google Chat refused the rest._"
+                ),
+                thread_name=thread_root_id,
+            )
+        except (BridgeOperationError, httpx.HTTPError) as exc:
+            logger.error(
+                "Could not tell Google Chat space %s that a message is cut short; "
+                "nothing there says so: %s",
+                channel_id,
+                exc,
+            )
 
     async def update_message(
         self,
