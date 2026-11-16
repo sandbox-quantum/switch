@@ -32,7 +32,7 @@
   },
   "dependencies": {
     "@switch-console/core": "workspace:*",
-    "smol-toml": "^1.8.0",
+    "smol-toml": "^1.9.1",
     "zod": "^4.6.7"
   },
   "devDependencies": {
@@ -40,7 +40,7 @@
     "oxfmt": "^0.67.0",
     "oxlint": "^1.69.0",
     "tsdown": "^0.22.2",
-    "vitest": "^5.0.1"
+    "vitest": "^5.1.0"
   },
   "packageManager": "pnpm@10.28.2"
 }

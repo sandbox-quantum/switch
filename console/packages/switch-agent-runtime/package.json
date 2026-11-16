@@ -35,13 +35,13 @@
     "typecheck": "tsgo --noEmit -p tsconfig.json"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.0.0"
+    "@modelcontextprotocol/sdk": "^1.32.2"
   },
   "devDependencies": {
     "@types/node": "^24.13.3",
     "@typescript/native-preview": "7.0.0-dev.20260609.1",
     "tsdown": "^0.22.2",
-    "vitest": "^5.0.1"
+    "vitest": "^5.1.0"
   },
   "engines": {
     "node": ">=22"
