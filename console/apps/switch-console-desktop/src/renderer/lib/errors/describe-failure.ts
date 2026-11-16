@@ -93,6 +93,7 @@ export function describeFailure(error: unknown, fallback: string): FailureDescri
       case 'ServerBusyError':
       case 'MovedAgentsHereError':
       case 'NotTheServerAddressError':
+      case 'UnencryptedServerAddressError':
       case 'DuplicateServerUrlError':
       case 'NoDashboardError':
       case 'NoManagementApiError':
