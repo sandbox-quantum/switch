@@ -63,7 +63,7 @@ describe('buildEnvFile', () => {
     expect(vars.API_HOST_PORT).toBe('51001');
     expect(vars.MATTERMOST_HOST_PORT).toBe('51002');
     expect(vars.POSTGRES_HOST_PORT).toBe('51003');
-    expect(vars.FRONTEND_BASE_URL).toBe('http://localhost:51000');
+    expect(vars.FRONTEND_BASE_URL).toBe('http://127.0.0.1:51000');
   });
 
   it('binds the managed stack to loopback and seeds the admin account', () => {
@@ -279,8 +279,8 @@ describe('buildEnvFile', () => {
     // switch-core only rewrites `switchdash://` links into clickable http ones
     // when this is set, and serves the redirect on the agent-bridge app — so
     // the gateway's own URL here would produce links that 404.
-    expect(vars.GATEWAY_PUBLIC_URL).toBe('http://localhost:51001');
-    expect(vars.FRONTEND_BASE_URL).toBe('http://localhost:51000');
+    expect(vars.GATEWAY_PUBLIC_URL).toBe('http://127.0.0.1:51001');
+    expect(vars.FRONTEND_BASE_URL).toBe('http://127.0.0.1:51000');
   });
 });
 
