@@ -89,7 +89,9 @@ export default function RoomCreateFormBody() {
       ["which agents you may add", candidatesError],
       ["the messaging apps", bridgesError],
       ["the room groups", canAdminTenant ? groupsError : null],
-      ["the messaging app's people", bridgeUsersError],
+      // With no messaging app chosen there are no people to load, and the
+      // hook reports that as a failure.
+      ["the messaging app's people", bridgeId ? bridgeUsersError : null],
     ] satisfies [string, string | null][]
   ).filter((entry): entry is [string, string] => entry[1] !== null);
 
