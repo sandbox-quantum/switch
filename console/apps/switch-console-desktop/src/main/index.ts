@@ -16,7 +16,12 @@ import {
   probeSecretService,
 } from './app/linux-password-store';
 import { setupApplicationMenu } from './app/menu';
-import { APP_ORIGIN, registerAppScheme, setupAppProtocol } from './app/protocol';
+import {
+  APP_ORIGIN,
+  registerAppScheme,
+  setupAppProtocol,
+  setupDevRendererCsp,
+} from './app/protocol';
 import { LaunchesWhileQuitting } from './app/relaunch-on-quit';
 import { registerWebSecurity } from './app/web-security';
 import { createMainWindow, getMainWindow } from './app/window';
@@ -319,6 +324,7 @@ void app.whenReady().then(async () => {
   });
 
   setupAppProtocol(join(app.getAppPath(), 'out', 'renderer'));
+  if (import.meta.env.DEV) setupDevRendererCsp(process.env.ELECTRON_RENDERER_URL!);
   setupApplicationMenu();
   createMainWindow();
   // A deeplink that launched the app (cold start) is buffered until the
