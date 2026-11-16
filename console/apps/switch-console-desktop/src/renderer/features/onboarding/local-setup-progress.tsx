@@ -3,7 +3,6 @@ import { observer } from 'mobx-react-lite';
 import { useEffect, useRef, useState } from 'react';
 import { LocalSetupStep } from '@renderer/features/switch-servers/AddServerModal';
 import { localServerStore } from '@renderer/features/switch-servers/local-server-store';
-import { Button } from '@renderer/lib/ui/button';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import { OnboardingSurface, useWizardExit } from '@renderer/lib/ui/wizard-frame';
 import { SETUP_STAGES, setupStage } from './setup-stages';
@@ -23,6 +22,11 @@ const LONG_SETUP_MS = 30_000;
  * Anything that needs the person — a failed start, Docker missing for a server
  * that still runs on it, a status that could not be read — hands over to the
  * full setup page, which carries the error, Retry and Start over.
+ *
+ * There is no Back while it works: going back would not stop the install,
+ * which would carry on and register the server behind a page that says
+ * nothing is set up. Back returns with the full setup page once the start
+ * has failed.
  */
 export const LocalSetupProgress = observer(function LocalSetupProgress({
   onBack,
@@ -103,14 +107,7 @@ export const LocalSetupProgress = observer(function LocalSetupProgress({
   }
 
   return (
-    <OnboardingSurface
-      exit={exit}
-      footer={
-        <Button variant="outline" onClick={onBack}>
-          Back
-        </Button>
-      }
-    >
+    <OnboardingSurface exit={exit} footer={null}>
       <div className="mx-auto flex w-full max-w-sm flex-col items-center gap-4 text-center">
         <h1 className="text-2xl font-semibold">Setting things up…</h1>
         <ul

@@ -253,6 +253,8 @@ function currentPage(
       return (
         <HowToRunPage
           cloud={cloud}
+          picked={onboardingStore.howToRun}
+          onPick={(choice) => onboardingStore.pickHowToRun(choice)}
           onBack={back}
           onLocal={() => goTo('local')}
           onExternal={() => goTo('connect')}

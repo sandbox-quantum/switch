@@ -1,9 +1,10 @@
 import { Check, Cloud, Globe, Laptop } from 'lucide-react';
-import { useState, type ReactNode } from 'react';
+import type { ReactNode } from 'react';
 import { Button } from '@renderer/lib/ui/button';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import { OnboardingSurface, useWizardExit } from '@renderer/lib/ui/wizard-frame';
 import { cn } from '@renderer/utils/utils';
+import type { HowToRunChoice } from './onboarding-store';
 
 /**
  * What the page can say about Switch Cloud, and what choosing it does.
@@ -24,8 +25,6 @@ export type CloudChoiceState =
       onConnect: () => void;
     };
 
-type Choice = 'cloud' | 'local' | 'external';
-
 /**
  * Where Switch runs: Switch Cloud, recommended and on top, then the two ways
  * of running it yourself that work without anything set up beforehand.
@@ -37,14 +36,21 @@ type Choice = 'cloud' | 'local' | 'external';
  * A build that has not been told where the Cloud is does not show its card,
  * and one whose Cloud configuration could not be read shows it as unavailable,
  * in words as well as in grey.
+ *
+ * What was picked is the flow's to keep, not the page's, so walking back to
+ * the question shows the answer given before.
  */
 export function HowToRunPage({
   cloud,
+  picked,
+  onPick,
   onBack,
   onLocal,
   onExternal,
 }: {
   cloud: CloudChoiceState;
+  picked: HowToRunChoice | null;
+  onPick: (choice: HowToRunChoice) => void;
   onBack: () => void;
   onLocal: () => void;
   onExternal: () => void;
@@ -53,8 +59,7 @@ export function HowToRunPage({
   const cloudOpen = cloud.kind === 'open';
   // Nothing picked yet follows the Cloud's availability, which is read after
   // the page first draws: the Cloud once it turns out to be open.
-  const [picked, setPicked] = useState<Choice | null>(null);
-  const chosen: Choice =
+  const chosen: HowToRunChoice =
     picked === null || (picked === 'cloud' && !cloudOpen)
       ? cloudOpen
         ? 'cloud'
@@ -63,6 +68,7 @@ export function HowToRunPage({
   const connecting = cloudOpen && cloud.connecting;
 
   const onContinue = () => {
+    onPick(chosen);
     if (chosen === 'cloud' && cloudOpen) cloud.onConnect();
     else if (chosen === 'local') onLocal();
     else if (chosen === 'external') onExternal();
@@ -91,11 +97,7 @@ export function HowToRunPage({
       </div>
 
       <div className="flex flex-col gap-4" role="radiogroup" aria-label="How to run Switch">
-        <CloudCard
-          cloud={cloud}
-          selected={chosen === 'cloud'}
-          onSelect={() => setPicked('cloud')}
-        />
+        <CloudCard cloud={cloud} selected={chosen === 'cloud'} onSelect={() => onPick('cloud')} />
         <p className="text-center text-sm text-foreground-muted">or run your own server</p>
         <div className="grid gap-3 sm:grid-cols-2">
           <SmallCard
@@ -104,7 +106,7 @@ export function HowToRunPage({
             description="Switch Console installs the Switch server on this computer and keeps it updated."
             selected={chosen === 'local'}
             disabled={connecting}
-            onSelect={() => setPicked('local')}
+            onSelect={() => onPick('local')}
           />
           <SmallCard
             icon={<Globe className="size-5" />}
@@ -112,7 +114,7 @@ export function HowToRunPage({
             description="Connect to a Switch server your team already runs. You’ll need its address."
             selected={chosen === 'external'}
             disabled={connecting}
-            onSelect={() => setPicked('external')}
+            onSelect={() => onPick('external')}
           />
         </div>
       </div>

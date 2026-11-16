@@ -544,12 +544,12 @@ export const LocalSetupStep = observer(function LocalSetupStep({
   }, [store, waitingForDocker]);
 
   // The pager's back arrow only ever repeats the footer's Back, so the two read
-  // one const. Open during the install too: the store is a singleton the main
-  // process streams into, so leaving loses only what is on screen, and holding
-  // the page shut left the full-window flow with no live control at all through
-  // a multi-gigabyte pull — while the same page in the dialog could still be
-  // dismissed with Escape.
-  const goBack = onBack ?? null;
+  // one const. In the dialog it stays open during the install: the store is a
+  // singleton the main process streams into, so leaving loses only what is on
+  // screen. The first-run pages hide it while a start runs, as their own
+  // progress page does: going back there would not stop the install, which
+  // would carry on and register the server behind the question it answered.
+  const goBack = onClose === null && starting ? null : (onBack ?? null);
 
   // The first run goes on to the workspace; the dialog is finished.
   const finished = onClose === null ? 'Continue' : 'Done';

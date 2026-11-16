@@ -191,3 +191,18 @@ describe('going back through the first-run pages', () => {
     expect(onboardingStore.inProgress).toBe(false);
   });
 });
+
+describe('the answer to how Switch runs', () => {
+  it('is kept while the person walks back and forth, and forgotten when the flow starts over', () => {
+    onboardingStore.reset();
+    onboardingStore.goTo('howToRun');
+    onboardingStore.pickHowToRun('local');
+    onboardingStore.goTo('local');
+
+    expect(onboardingStore.back()).toBe('howToRun');
+    expect(onboardingStore.howToRun).toBe('local');
+
+    onboardingStore.reset();
+    expect(onboardingStore.howToRun).toBeNull();
+  });
+});

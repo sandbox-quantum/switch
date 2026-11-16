@@ -28,6 +28,9 @@ export type OnboardingPage =
  * a form does not: the fields belong to the page drawing them, so a stray ⌘,
  * on the connect page costs the two addresses.
  */
+/** The answer to "How do you want to run Switch?". */
+export type HowToRunChoice = 'cloud' | 'local' | 'external';
+
 /** Where this install remembers the first-run intro has played. */
 const INTRO_PLAYED_KEY = 'onboarding.introPlayed';
 
@@ -57,6 +60,11 @@ class OnboardingStore {
    * offered to it would take the user somewhere they did not set up.
    */
   registeredOn: { page: OnboardingPage; serverId: string } | null = null;
+  /**
+   * The way of running Switch the person picked, kept so that coming back to
+   * the question shows their answer rather than the page's default.
+   */
+  howToRun: HowToRunChoice | null = null;
   /**
    * The server was already signed in to when it was reached, so the flow went
    * from it straight to the workspace: Back from there returns to the page
@@ -177,6 +185,11 @@ class OnboardingStore {
     this.page = page;
   }
 
+  /** The person picked a way of running Switch. */
+  pickHowToRun(choice: HowToRunChoice): void {
+    this.howToRun = choice;
+  }
+
   /** Step back to the previous page, staying put where there is none. Returns the page now on screen. */
   back(): OnboardingPage {
     const previous = this.previousPage;
@@ -245,6 +258,7 @@ class OnboardingStore {
     this.serverWorkspaces = null;
     this.joinOfferCount = 0;
     this.registeredOn = null;
+    this.howToRun = null;
     this.signInSkipped = false;
     this.begun = false;
     this.rehearsal = false;

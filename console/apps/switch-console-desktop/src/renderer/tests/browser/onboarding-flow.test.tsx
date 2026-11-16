@@ -373,6 +373,45 @@ describe('the first-run flow', () => {
     expect(labels(el).some((l) => l?.startsWith('Retry'))).toBe(true);
   });
 
+  it('offers no Back while it sets the server up', async () => {
+    localServer.start.mockImplementationOnce(() => {
+      localServer.isTransitioning = true;
+      return Promise.resolve();
+    });
+    const el = await renderFlow();
+    await act(async () => button(el, 'Get started').click());
+
+    await act(async () => button(el, 'Continue').click());
+
+    expect(el.textContent).toContain('Setting things up…');
+    expect(labels(el)).not.toContain('Back');
+  });
+
+  it('offers Back once setup has failed, and none again while a retry runs', async () => {
+    localServer.start.mockImplementationOnce(() => {
+      Object.assign(localServer, { phase: 'error', error: 'PostgreSQL did not start.' });
+      return Promise.resolve();
+    });
+    const el = await renderFlow();
+    await act(async () => button(el, 'Get started').click());
+    await act(async () => button(el, 'Continue').click());
+    expect(labels(el)).toContain('Back');
+
+    localServer.start.mockImplementationOnce(() => {
+      Object.assign(localServer, { phase: 'starting', error: null, isTransitioning: true });
+      return Promise.resolve();
+    });
+    await choose(el, 'Retry');
+    // The stand-in store is not observable, so the page is drawn again to see
+    // the retry under way.
+    await act(async () => root!.unmount());
+    el.remove();
+    const again = await renderFlow();
+
+    expect(again.textContent).toContain('Setting things up…');
+    expect(labels(again)).not.toContain('Back');
+  });
+
   it('asks for the one address, and not for a name, on the connect page', async () => {
     const el = await renderFlow();
     await act(async () => button(el, 'Get started').click());
@@ -463,6 +502,27 @@ describe('the first-run flow with Switch Cloud named', () => {
     await act(async () => button(el, 'Back').click());
 
     expect(onboardingStore.page).toBe('howToRun');
+  });
+
+  it('still has "On this computer" picked on coming back after its setup failed', async () => {
+    localServer.start.mockImplementationOnce(() => {
+      Object.assign(localServer, { phase: 'error', error: 'PostgreSQL did not start.' });
+      return Promise.resolve();
+    });
+    const el = await atHowToRun();
+    await choose(el, 'On this computer');
+    await act(async () => button(el, 'Continue').click());
+    expect(el.textContent).toContain('PostgreSQL did not start.');
+
+    await act(async () => button(el, 'Back').click());
+
+    expect(onboardingStore.page).toBe('howToRun');
+    const picked = [...el.querySelectorAll('[role="radio"][aria-checked="true"]')].map(
+      (radio) => radio.textContent
+    );
+    expect(picked).toHaveLength(1);
+    expect(picked[0]).toContain('On this computer');
+    expect(connectToSwitchCloud).not.toHaveBeenCalled();
   });
 
   it('stays on the question and says why when the Cloud cannot be registered', async () => {
