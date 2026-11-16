@@ -5215,12 +5215,15 @@ class AgentCore:
         await self.require_room_member(agent_id, room_id)
         return {"verdict": POST_INVOCATION_OK}
 
-    async def list_room_resources(self, room_id: str) -> dict[str, Any]:
+    async def list_room_resources(self, agent_id: str, room_id: str) -> dict[str, Any]:
         """Return the {reference_types, references, documents} payload for a
-        room. Used by ``connect_to_room`` and the ``list_references`` MCP tool.
-        Caller is responsible for verifying agent membership first."""
+        room, as the agent is given it, acting as its owner. Used by
+        ``connect_to_room`` and the ``list_references`` MCP tool. Caller is
+        responsible for verifying agent membership first."""
         async with self.session_factory() as session:
-            return await self.resource_service.list_room_resources(session, room_id)
+            return await self.resource_service.list_room_resources(
+                session, room_id, await self._acting_principal(session, agent_id)
+            )
 
     async def request_document_load(
         self,
@@ -5238,7 +5241,10 @@ class AgentCore:
         await self.require_room_member(agent_id, room_id)
         async with self.session_factory() as session:
             entries = await self.resource_service.load_documents(
-                session, room_id, document_ids
+                session,
+                room_id,
+                document_ids,
+                await self._acting_principal(session, agent_id),
             )
         return [entry.model_dump(mode="json") for entry in entries]
 

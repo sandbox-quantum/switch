@@ -590,6 +590,49 @@ class World:
             holder="package_id",
         )
 
+    async def foreign_package(self) -> str:
+        """A package of the member's that everyone may read: not the
+        owner's."""
+
+        async def make(session: AsyncSession) -> str:
+            package = Package(
+                owner_id=self.id_of(Persona.MEMBER),
+                name=self.name("foreign-package"),
+                description="",
+                instructions="",
+                read_visibility="public",
+                write_visibility="private",
+            )
+            session.add(package)
+            await session.flush()
+            return package.id
+
+        return str(await self._once("foreign_package", make))
+
+    async def foreign_packaged_reference(self) -> str:
+        """The owner's private reference, in a package of someone else's
+        everyone may read: there since it was readable, and private since,
+        which the package shares with nobody."""
+        return await self._held_in(
+            "foreign_packaged_reference",
+            self.foreign_package,
+            self.reference,
+            package_references,
+            "reference_id",
+            holder="package_id",
+        )
+
+    async def foreign_packaged_document(self) -> str:
+        """The owner's private document, as `foreign_packaged_reference`."""
+        return await self._held_in(
+            "foreign_packaged_document",
+            self.foreign_package,
+            self.document,
+            package_documents,
+            "document_id",
+            holder="package_id",
+        )
+
     async def shown_reference(self) -> str:
         """The private reference, in a room everyone may read."""
         return await self._held_in(

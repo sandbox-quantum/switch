@@ -1889,8 +1889,9 @@ class ReferenceDetail(BaseModel):
     type: str
     name: str
     description: str
-    instructions: str
-    value: dict[str, Any]
+    # Null when `can_read` is false: what is in it is withheld.
+    instructions: str | None
+    value: dict[str, Any] | None
     attached_rooms_count: int = 0
     # Of `attached_rooms_count`, rooms the caller may not read, which are
     # never named to them. Counted only for whoever may manage the resource
@@ -1901,13 +1902,16 @@ class ReferenceDetail(BaseModel):
     # Resolved server-side, unfiltered by the type's visibility: the caller can
     # already read the raw slug. Null when the slug resolves to no type at all.
     type_display_name: str | None = None
-    # What the caller may do with it (`switch_core.authz`). `can_read`: open
-    # it — its owner, an admin, or anyone when it is publicly readable. Every
-    # route returns only what the caller may read, except a package's or a
-    # room's list, which names a private item to everyone who may read the
-    # package or room. `can_edit`: change it — its owner, an admin, or anyone
-    # when it is publicly writable. `can_manage`: delete it, change who may see
-    # or edit it, transfer it — its owner or an admin.
+    # What the caller may do with it (`switch_core.authz`). `can_read`: what
+    # is in it came with it, and its own page opens for them — true wherever it
+    # is returned whole, false only where that is withheld. Its owner, an
+    # admin, and anyone when it is publicly readable read it; so does whoever
+    # may read a room it is attached to, or a package that shares it
+    # (`can_read_in_package`). Only a package's list withholds it: someone
+    # else's private item in it, which the package's owner cannot share.
+    # `can_edit`: change it — its owner, an admin, or anyone when it is
+    # publicly writable. `can_manage`: delete it, change who may see or edit
+    # it, transfer it — its owner or an admin.
     can_read: bool
     can_edit: bool
     can_manage: bool
@@ -2121,9 +2125,8 @@ class DocumentDetail(BaseModel):
     created_at: str
     # As on `ReferenceDetail`, and `can_transfer`, which `can_manage` gives.
     # Those three are false for a room's own document, which is changed and
-    # removed in its room, not through the library. `can_read` is whether the
-    # library opens it; the room routes say otherwise for a room's own document
-    # (`RoomDocumentDetail`).
+    # removed in its room, not through the library. A detail is always
+    # returned whole, so its `can_read` is true.
     can_read: bool
     can_edit: bool
     can_manage: bool
@@ -2136,10 +2139,9 @@ class DocumentDetail(BaseModel):
 
 
 class RoomDocumentDetail(DocumentDetail):
-    """A document as seen from a room it is in. Its `can_read` is true for a
-    room's own document, which the room opens for everyone who may read the
-    room; an attached library document keeps the library's rule, which says
-    whether its own page opens."""
+    """A document as seen from a room it is in: the room shares what is in
+    it, whether the room's own or attached, with everyone who may read the
+    room."""
 
     can_remove: bool
 
@@ -2152,7 +2154,8 @@ class DocumentSummary(BaseModel):
     write_visibility: str
     name: str
     description: str
-    instructions: str
+    # Null when `can_read` is false: what is in it is withheld.
+    instructions: str | None
     attached_rooms_count: int = 0
     # Of `attached_rooms_count`, rooms the caller may not read, which are
     # never named to them. Counted only for whoever may manage the resource
@@ -2172,7 +2175,7 @@ class DocumentSummary(BaseModel):
 
 
 class RoomDocumentSummary(DocumentSummary):
-    """A document as listed in a room it is in. `can_read` as on
+    """A document as listed in a room it is in, whole, as on
     `RoomDocumentDetail`."""
 
     can_remove: bool
@@ -2222,10 +2225,9 @@ class PackageDetail(BaseModel):
     # (`gateway/resource_rooms.py`); for anyone else those rooms are left out.
     hidden_rooms_count: int = 0
     created_at: str
-    # Whether the caller may open the package. Every route returns only
-    # packages the caller may read, except a room's package list: a private
-    # package its owner attached is listed to every reader of the room, and the
-    # Gateway shows that one without a link.
+    # Whether the caller may open the package. Every route returns a package
+    # whole, and only to whoever may open it: those who may read it, and
+    # readers of a room it is attached to, which shares it.
     can_read: bool
     # As on `ReferenceDetail`.
     can_edit: bool

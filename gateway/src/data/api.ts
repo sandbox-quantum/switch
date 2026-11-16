@@ -2647,10 +2647,19 @@ export interface ReferenceDetail {
   // it, and handing it to someone else.
   can_edit: boolean;
   can_manage: boolean;
-  // Whether the viewer may open its page. A package's or a room's list names
-  // a private item to everyone who may read the package or room.
+  // Whether what is in it came with it, and so whether its page opens for
+  // the viewer. Always true here: only a package's list withholds anything
+  // (`PackageReference`).
   can_read: boolean;
 }
+
+/** A reference as a package lists it. Someone else's private item in a
+ * package, which its owner cannot share, comes with `can_read` false and
+ * what is in it null. */
+export type PackageReference = Omit<ReferenceDetail, "instructions" | "value"> & {
+  instructions: string | null;
+  value: Record<string, unknown> | null;
+};
 
 export interface ReferenceCreateInput {
   read_visibility: "public" | "private";
@@ -2704,6 +2713,11 @@ export interface DocumentSummary {
 export interface DocumentDetail extends DocumentSummary {
   content: string;
 }
+
+/** A document as a package lists it, withheld as `PackageReference` is. */
+export type PackageDocument = Omit<DocumentSummary, "instructions"> & {
+  instructions: string | null;
+};
 
 // Whether the viewer may remove a document from a room it is in: delete it if
 // it is room-scoped (its creator, the room's owner, a workspace admin), unlink
@@ -3166,22 +3180,22 @@ export async function loadPackageRooms(id: string): Promise<ResourceRoom[]> {
 
 export async function fetchPackageReferences(
   id: string,
-): Promise<ReferenceDetail[] | null> {
-  return fetchJson<ReferenceDetail[]>(`/packages/${id}/references`);
+): Promise<PackageReference[] | null> {
+  return fetchJson<PackageReference[]>(`/packages/${id}/references`);
 }
 
 export async function fetchPackageDocuments(
   id: string,
-): Promise<DocumentSummary[] | null> {
-  return fetchJson<DocumentSummary[]>(`/packages/${id}/documents`);
+): Promise<PackageDocument[] | null> {
+  return fetchJson<PackageDocument[]>(`/packages/${id}/documents`);
 }
 
-export async function loadPackageReferences(id: string): Promise<ReferenceDetail[]> {
-  return jsonRequest<ReferenceDetail[]>(`/packages/${id}/references`, "GET");
+export async function loadPackageReferences(id: string): Promise<PackageReference[]> {
+  return jsonRequest<PackageReference[]>(`/packages/${id}/references`, "GET");
 }
 
-export async function loadPackageDocuments(id: string): Promise<DocumentSummary[]> {
-  return jsonRequest<DocumentSummary[]>(`/packages/${id}/documents`, "GET");
+export async function loadPackageDocuments(id: string): Promise<PackageDocument[]> {
+  return jsonRequest<PackageDocument[]>(`/packages/${id}/documents`, "GET");
 }
 
 export async function addReferenceToPackage(

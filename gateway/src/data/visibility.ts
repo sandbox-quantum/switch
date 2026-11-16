@@ -71,14 +71,16 @@ export const ACCESS_HELPERS_FOR_OTHERS: Record<AccessLevel, string> = {
     "Anyone can see, attach and change it. Only its owner and admins can change who may.",
 };
 
-/** References, documents and packages: their lists show each person their
- * own and the public ones, admins included, so a private one is listed to its
- * owner alone, though an admin can still open it from a link. */
+/** References, documents and packages: a private one is its owner's and
+ * admins', and attaching it shares it, with whoever may read the room, or the
+ * package of its owner's it is put in. */
 export const LISTED_RESOURCE_HELPERS: Partial<Record<AccessLevel, string>> = {
-  private: "Only you see it listed. An admin can still open and change it from a link to it.",
+  private:
+    "Only you and admins can see or change it. Anyone who can read a room it's attached to, or a package of yours it's in, can see it there.",
 };
 
 export const LISTED_RESOURCE_HELPERS_FOR_OTHERS: Record<AccessLevel, string> = {
   ...ACCESS_HELPERS_FOR_OTHERS,
-  private: "Only its owner sees it listed. An admin can still open and change it from a link to it.",
+  private:
+    "Only its owner and admins can see or change it. Anyone who can read a room it's attached to, or a package of its owner's it's in, can see it there.",
 };
