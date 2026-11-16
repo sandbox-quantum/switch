@@ -127,7 +127,7 @@ export default function RoomDetailPage() {
   return (
     <Box>
       <Stack direction="row" alignItems="center" spacing={1} mb={2}>
-        <IconButton onClick={() => navigate("/rooms")} size="small" aria-label="Back">
+        <IconButton onClick={() => navigate("/rooms")} size="small" aria-label="Back to rooms">
           <ArrowBack />
         </IconButton>
         <Typography variant="h5" sx={{ flexGrow: 1 }}>
