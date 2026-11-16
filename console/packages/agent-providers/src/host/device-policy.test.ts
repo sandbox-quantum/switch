@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   allowInPolicy,
+  changeDevicePolicy,
   DEVICE_POLICY_FILE,
   disallowInPolicy,
   emptyDevicePolicy,
@@ -34,6 +35,38 @@ describe('the device policy', () => {
     expect(await readDevicePolicy(dir)).toEqual(policy);
     if (process.platform !== 'win32')
       expect((await stat(join(dir, DEVICE_POLICY_FILE))).mode & 0o777).toBe(0o600);
+  });
+
+  it('lands every one of several changes made at once, a revocation among them', async () => {
+    await writeDevicePolicy(
+      dir,
+      allowInPolicy(emptyDevicePolicy(), 'agent-0', { bypass: true, directory: null })
+    );
+    const agents = Array.from({ length: 8 }, (_, index) => `agent-${index + 1}`);
+    await Promise.all([
+      changeDevicePolicy(dir, (policy) => disallowInPolicy(policy, 'agent-0', 'all')),
+      ...agents.map((agentId) =>
+        changeDevicePolicy(dir, (policy) =>
+          allowInPolicy(policy, agentId, { bypass: true, directory: null })
+        )
+      ),
+    ]);
+    const policy = await readDevicePolicy(dir);
+    expect(Object.keys(policy.agents).sort()).toEqual(agents);
+    expect(agents.every((agentId) => policyAllowsBypass(policy, agentId))).toBe(true);
+  });
+
+  it('writes nothing when a change throws, and leaves the next change free to go ahead', async () => {
+    await expect(
+      changeDevicePolicy(dir, () => {
+        throw new Error('no');
+      })
+    ).rejects.toThrow('no');
+    expect(await readDevicePolicy(dir)).toEqual(emptyDevicePolicy());
+    const written = await changeDevicePolicy(dir, (policy) =>
+      allowInPolicy(policy, 'agent-1', { bypass: true, directory: null })
+    );
+    expect(await readDevicePolicy(dir)).toEqual(written);
   });
 
   it('refuses a file it cannot read as a policy rather than reading it as allowing nothing', async () => {

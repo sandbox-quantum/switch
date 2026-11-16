@@ -91,6 +91,25 @@ describe('main', () => {
     expect((await readDevicePolicy(data)).agents['agent-1']).toBeUndefined();
   });
 
+  it('lands every one of several changes to what the device allows made at once', async () => {
+    const data = join(dir, 'data');
+    expect(await main(['allow', 'agent-1', '--bypass', '--data-dir', data])).toBe(EXIT_OK);
+    expect(
+      await Promise.all([
+        main(['disallow', 'agent-1', '--bypass', '--data-dir', data]),
+        main(['allow', 'agent-2', '--bypass', '--data-dir', data]),
+        main(['allow', 'agent-3', '--directory', '/srv/repos', '--data-dir', data]),
+      ])
+    ).toEqual([EXIT_OK, EXIT_OK, EXIT_OK]);
+    expect(await readDevicePolicy(data)).toEqual({
+      version: 1,
+      agents: {
+        'agent-2': { bypass: true },
+        'agent-3': { directories: [resolve('/srv/repos')] },
+      },
+    });
+  });
+
   it('enrolls with the name and description it is given', async () => {
     const bodies: unknown[] = [];
     vi.stubGlobal(
