@@ -8,18 +8,31 @@ back rather than dropped.
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.bridges.agent.protocol import agent_core
 from switch_core.bridges.agent.protocol.agent_core import (
     AgentExistsError,
     AgentRenameRefused,
     AgentRenameResult,
 )
+from switch_core.bridges.collaboration.adapter import AgentIdentity
+from switch_core.db.models import User
 from switch_core.db.stores.agent_store import AgentStore
+from switch_core.db.stores.room_role_store import RoomRoleStore
+from switch_core.db.stores.room_store import RoomStore
 from switch_core.gateway.agents import rename_agent
 from switch_core.gateway.schemas import RenameAgentRequest
+from tests.switch_core.bridges.agent.protocol.registration_harness import (
+    FakeClientLifecycle,
+    make_owner,
+    make_service,
+    register,
+)
 from tests.switch_core.gateway.agent_route_harness import (
     add_agent,
     add_user,
@@ -61,7 +74,75 @@ class _Protocol:
         )
 
 
+class _UnansweringAdapter:
+    """A messaging app that has stopped answering."""
+
+    async def create_agent_identity(self, agent: AgentIdentity) -> None:
+        return None
+
+    async def check_agent_identity_name(self, agent_id: str, new_name: str) -> None:
+        await asyncio.Event().wait()
+
+    async def rename_agent_identity(self, old_name: str, agent: AgentIdentity) -> None:
+        await asyncio.Event().wait()
+
+
+class _UnansweringBridge:
+    bridge_type = "mattermost"
+    adapter = _UnansweringAdapter()
+
+
+class _ClientLifecycle(FakeClientLifecycle):
+    def get(self, client_id: str) -> None:
+        return None
+
+
+class _Bridges:
+    def __init__(self) -> None:
+        self._bridges = [_UnansweringBridge()]
+
+    def bridges_for_tenant(self, tenant_id: str) -> list[_UnansweringBridge]:
+        return self._bridges
+
+
 class TestRenameAgentRoute:
+    async def test_a_messaging_app_not_answering_still_renames(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The route answers 200 with the app listed as behind, never a 500,
+        when an app does not answer the rename's handle check."""
+        monkeypatch.setattr(agent_core, "BRIDGE_RENAME_CHECK_TIMEOUT_S", 0.1)
+        protocol = make_service(session_factory)
+        protocol.collab_lifecycle = _Bridges()  # type: ignore[assignment]
+        protocol.client_lifecycle = _ClientLifecycle(session_factory)  # type: ignore[assignment]
+        protocol.room_store = RoomStore()
+        protocol.room_role_store = RoomRoleStore()
+        owner_id = await make_owner(session_factory)
+        agent_id = await register(protocol, "flint-tracker", owner_id)
+
+        async with session_factory() as session:
+            owner = await session.get(User, owner_id)
+            assert owner is not None
+            response = await asyncio.wait_for(
+                rename_agent(
+                    agent_id,
+                    RenameAgentRequest(name="flint-scout", display_name=None),
+                    session,
+                    _AGENT_STORE,
+                    protocol,
+                    owner,
+                    await is_admin(session, owner),
+                ),
+                5.0,
+            )
+
+        assert response.agent.name == "flint-scout"
+        assert response.bridge_failures == [
+            "mattermost: it did not answer in time, and will be updated when it answers"
+        ]
+
     async def test_the_owner_renames_and_hears_what_is_outstanding(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:

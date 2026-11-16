@@ -218,6 +218,22 @@ logger = logging.getLogger(__name__)
 
 LIST_ALL_ROOMS_MAX = 500
 
+# How long one bridge gets to give a new agent its platform identity. The
+# agent is already registered and its caller answered; this only bounds the
+# background task, and the bridge's own identity sync retries what it misses.
+BRIDGE_IDENTITY_CREATE_TIMEOUT_S = 60.0
+# How long one bridge gets to say whether a rename's handle is free. A bridge
+# that does not answer in time does not hold the rename up: it is reported as
+# not yet updated, and catches up when it answers.
+BRIDGE_RENAME_CHECK_TIMEOUT_S = 5.0
+# How long one bridge gets to move or relabel an agent's handle after a rename
+# is written. Past it the rename stands and the bridge is reported as behind.
+BRIDGE_RENAME_APPLY_TIMEOUT_S = 10.0
+
+# Identity creations still running after the registration that started them
+# returned. Held so a running task is not garbage-collected mid-flight.
+_identity_tasks: set[asyncio.Task[None]] = set()
+
 
 def _encode_room_cursor(created_at: datetime | str, room_id: str) -> str:
     stamp = created_at.isoformat() if isinstance(created_at, datetime) else created_at
@@ -366,6 +382,44 @@ class AgentExistsError(Exception):
 class AgentRenameRefused(ValueError):
     """A rename Switch will not do, with the reason in words a person can act
     on."""
+
+
+@dataclass(frozen=True)
+class _RenamePlan:
+    """What a rename's checks found: the tenant, the display name as it will
+    be stored, the agent's current name and display name, and each bridge
+    (by `id`) whose handle could not be checked, with why."""
+
+    tenant_id: str
+    display_name: str | None
+    old_name: str
+    old_display_name: str | None
+    unchecked: dict[int, str]
+
+
+def _bridge_failure(bridge_type: str, exc: BaseException) -> str:
+    """One entry of a rename's `bridge_failures`: the platform and why."""
+    if isinstance(exc, TimeoutError):
+        return (
+            f"{bridge_type}: it did not answer in time, and will be updated "
+            "when it answers"
+        )
+    return f"{bridge_type}: {str(exc) or type(exc).__name__}"
+
+
+async def _create_bridge_identity(adapter: Any, agent: AgentIdentity) -> None:
+    try:
+        await asyncio.wait_for(
+            adapter.create_agent_identity(agent),
+            timeout=BRIDGE_IDENTITY_CREATE_TIMEOUT_S,
+        )
+    except Exception:
+        logger.warning(
+            "Failed to create bridge identity for %s; the bridge provisions it "
+            "when it next syncs its agents",
+            agent.name,
+            exc_info=True,
+        )
 
 
 @dataclass(frozen=True)
@@ -704,7 +758,7 @@ class AgentCore:
         async with self.session_factory() as session:
             registered = await self.agent_store.get(session, agent_id)
         if registered is not None:
-            await self._create_bridge_identities(tenant_id, agent_identity(registered))
+            self._create_bridge_identities(tenant_id, agent_identity(registered))
 
         return RegistrationResult(
             agent_id=agent_id,
@@ -924,11 +978,15 @@ class AgentCore:
         if self._agent_profile_listener is not None:
             await self._agent_profile_listener(require_tenant_id(), agent_id)
 
-    async def _create_bridge_identities(
-        self, tenant_id: str, agent: AgentIdentity
-    ) -> None:
-        """Create the agent's platform identity on the bridges of
-        `tenant_id` — and only that tenant's bridges.
+    def _create_bridge_identities(self, tenant_id: str, agent: AgentIdentity) -> None:
+        """Start creating the agent's platform identity on the bridges of
+        `tenant_id` — and only that tenant's bridges — without waiting.
+
+        Each bridge gets its own background task, bounded by
+        `BRIDGE_IDENTITY_CREATE_TIMEOUT_S`, so a messaging app that is slow or
+        not answering never holds up the registration. A failure is logged;
+        the bridge's own identity sync, which runs when it learns of the new
+        agent and on every start, provisions what was missed.
 
         The tenant is passed in rather than read from the ambient context so
         that it is the caller's to establish: `register_agent` refuses without
@@ -937,14 +995,11 @@ class AgentCore:
         to avoid.
         """
         for collaboration_core in self.collab_lifecycle.bridges_for_tenant(tenant_id):
-            try:
-                await collaboration_core.adapter.create_agent_identity(agent)
-            except Exception:
-                logger.warning(
-                    "Failed to create bridge identity for %s",
-                    agent.name,
-                    exc_info=True,
-                )
+            task = asyncio.create_task(
+                _create_bridge_identity(collaboration_core.adapter, agent)
+            )
+            _identity_tasks.add(task)
+            task.add_done_callback(_identity_tasks.discard)
 
     async def update_bridge_identities(self, agent_id: str) -> list[str]:
         """Tell the tenant's bridges an agent's display name or description
@@ -958,18 +1013,27 @@ class AgentCore:
         if agent is None:
             raise ValueError(f"Agent not found: {agent_id}")
         identity = agent_identity(agent)
+        bridges = self.collab_lifecycle.bridges_for_tenant(tenant_id)
+        outcomes = await asyncio.gather(
+            *(
+                asyncio.wait_for(
+                    bridge.adapter.update_agent_identity(identity),
+                    timeout=BRIDGE_RENAME_APPLY_TIMEOUT_S,
+                )
+                for bridge in bridges
+            ),
+            return_exceptions=True,
+        )
         failures: list[str] = []
-        for collaboration_core in self.collab_lifecycle.bridges_for_tenant(tenant_id):
-            try:
-                await collaboration_core.adapter.update_agent_identity(identity)
-            except Exception as exc:
+        for bridge, outcome in zip(bridges, outcomes, strict=True):
+            if isinstance(outcome, BaseException):
                 logger.error(
                     "Failed to update %s identity for agent %s",
-                    collaboration_core.bridge_type,
+                    bridge.bridge_type,
                     agent.name,
-                    exc_info=True,
+                    exc_info=outcome,
                 )
-                failures.append(f"{collaboration_core.bridge_type}: {exc}")
+                failures.append(_bridge_failure(bridge.bridge_type, outcome))
         return failures
 
     def set_agent_rename_listener(
@@ -1102,22 +1166,40 @@ class AgentCore:
         return failures
 
     async def _rename_bridge_identities(
-        self, tenant_id: str, old_name: str, agent: AgentIdentity
+        self, tenant_id: str, old_name: str, agent: AgentIdentity, *, skip: set[int]
     ) -> list[str]:
+        """Move the agent's handle on each of the tenant's bridges at once,
+        each bounded by `BRIDGE_RENAME_APPLY_TIMEOUT_S`. Returns the platforms
+        that could not be updated in time, with why; the bridge's own identity
+        sync renames the handle when it answers. Bridges in `skip` (by `id`)
+        are left to that sync: they already failed the rename's check."""
+        bridges = [
+            bridge
+            for bridge in self.collab_lifecycle.bridges_for_tenant(tenant_id)
+            if id(bridge) not in skip
+        ]
+        outcomes = await asyncio.gather(
+            *(
+                asyncio.wait_for(
+                    bridge.adapter.rename_agent_identity(old_name, agent),
+                    timeout=BRIDGE_RENAME_APPLY_TIMEOUT_S,
+                )
+                for bridge in bridges
+            ),
+            return_exceptions=True,
+        )
         failures: list[str] = []
-        for collaboration_core in self.collab_lifecycle.bridges_for_tenant(tenant_id):
-            try:
-                await collaboration_core.adapter.rename_agent_identity(old_name, agent)
-            except Exception as exc:
+        for bridge, outcome in zip(bridges, outcomes, strict=True):
+            if isinstance(outcome, BaseException):
                 logger.error(
                     "Failed to rename %s identity for agent %s to %s; the bridge "
-                    "catches up when it next starts",
-                    collaboration_core.bridge_type,
+                    "catches up when it answers",
+                    bridge.bridge_type,
                     old_name,
                     agent.name,
-                    exc_info=True,
+                    exc_info=outcome,
                 )
-                failures.append(f"{collaboration_core.bridge_type}: {exc}")
+                failures.append(_bridge_failure(bridge.bridge_type, outcome))
         return failures
 
     async def rename_agent(
@@ -1144,7 +1226,9 @@ class AgentCore:
         the name's format, that it is free, that it clashes with no alias or
         role in the agent's rooms, and that no chat platform has something
         else under the handle it would need. A platform that fails after the
-        write is reported in the result, not raised: the rename stands.
+        write is reported in the result, not raised: the rename stands. So is
+        one that errs or does not answer the handle check in time: only a
+        clash it reports refuses.
 
         Raises:
             ValueError: the name is malformed or reserved, the display name is
@@ -1154,12 +1238,11 @@ class AgentCore:
                 that cannot be renamed (a subagent or a parent of subagents).
             RuntimeError: no tenant is bound.
         """
-        (
-            tenant_id,
-            new_display_name,
-            old_name,
-            old_display_name,
-        ) = await self._prepare_rename(agent_id, new_name, display_name)
+        plan = await self._prepare_rename(agent_id, new_name, display_name)
+        tenant_id = plan.tenant_id
+        new_display_name = plan.display_name
+        old_name = plan.old_name
+        old_display_name = plan.old_display_name
         if old_name == new_name:
             if old_display_name == new_display_name:
                 return AgentRenameResult(
@@ -1213,8 +1296,9 @@ class AgentCore:
         if self._agent_rename_listener is not None:
             await self._agent_rename_listener(tenant_id, agent_id, old_name)
         await self._agent_profile_changed(agent_id)
-        bridge_failures = await self._rename_bridge_identities(
-            tenant_id, old_name, identity
+        bridge_failures = list(plan.unchecked.values())
+        bridge_failures += await self._rename_bridge_identities(
+            tenant_id, old_name, identity, skip=set(plan.unchecked)
         )
         logger.info(
             "Renamed agent %s from %s to %s%s",
@@ -1241,10 +1325,14 @@ class AgentCore:
 
     async def _prepare_rename(
         self, agent_id: str, new_name: str, display_name: str | None
-    ) -> tuple[str, str | None, str, str | None]:
-        """Every check a rename makes before it writes. Returns the tenant, the
-        display name as it will be stored, and the agent's current name and
-        display name."""
+    ) -> _RenamePlan:
+        """Every check a rename makes before it writes.
+
+        Each bridge is asked about the new handle at once, with a deadline of
+        `BRIDGE_RENAME_CHECK_TIMEOUT_S`. A clash refuses the rename. A bridge
+        that errs or does not answer in time does not: it comes back in the
+        plan's `unchecked`, so the rename reports it as not yet updated instead
+        of failing on it."""
         if not _VALID_NAME_RE.match(new_name):
             raise ValueError(
                 f"Invalid agent name: {new_name!r}. "
@@ -1264,17 +1352,37 @@ class AgentCore:
             if old_name != new_name:
                 await self._check_renamable(session, agent, new_name)
 
+        unchecked: dict[int, str] = {}
         if old_name != new_name:
-            for collaboration_core in self.collab_lifecycle.bridges_for_tenant(
-                tenant_id
-            ):
-                try:
-                    await collaboration_core.adapter.check_agent_identity_name(
-                        agent_id, new_name
+            bridges = self.collab_lifecycle.bridges_for_tenant(tenant_id)
+            outcomes = await asyncio.gather(
+                *(
+                    asyncio.wait_for(
+                        bridge.adapter.check_agent_identity_name(agent_id, new_name),
+                        timeout=BRIDGE_RENAME_CHECK_TIMEOUT_S,
                     )
-                except AgentIdentityConflict as exc:
-                    raise AgentRenameRefused(str(exc)) from exc
-        return tenant_id, new_display_name, old_name, old_display_name
+                    for bridge in bridges
+                ),
+                return_exceptions=True,
+            )
+            for outcome in outcomes:
+                if isinstance(outcome, AgentIdentityConflict):
+                    raise AgentRenameRefused(str(outcome)) from outcome
+            for bridge, outcome in zip(bridges, outcomes, strict=True):
+                if isinstance(outcome, BaseException):
+                    logger.warning(
+                        "Could not check the %s handle for renaming agent %s to "
+                        "%s; renaming anyway, and the bridge catches up when it "
+                        "answers",
+                        bridge.bridge_type,
+                        old_name,
+                        new_name,
+                        exc_info=outcome,
+                    )
+                    unchecked[id(bridge)] = _bridge_failure(bridge.bridge_type, outcome)
+        return _RenamePlan(
+            tenant_id, new_display_name, old_name, old_display_name, unchecked
+        )
 
     async def request_agent_deletion(
         self, *, caller_agent_id: str, target_agent_id: str, room_id: str

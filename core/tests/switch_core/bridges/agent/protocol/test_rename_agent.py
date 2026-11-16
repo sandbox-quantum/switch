@@ -9,6 +9,8 @@ and a platform failing after the write is reported, not raised.
 
 from __future__ import annotations
 
+import asyncio
+import time
 from dataclasses import dataclass, field
 
 import pytest
@@ -16,6 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.agent_icon import generated_icon_url
+from switch_core.bridges.agent.protocol import agent_core
 from switch_core.bridges.agent.protocol.agent_core import (
     AgentExistsError,
     AgentRenameRefused,
@@ -62,6 +65,10 @@ class _LiveClientLifecycle(FakeClientLifecycle):
 class _FakeAdapter:
     conflict: str | None = None
     rename_error: str | None = None
+    check_error: str | None = None
+    check_hangs: bool = False
+    check_takes: float = 0.0
+    rename_hangs: bool = False
     renamed: list[tuple[str, str]] = field(default_factory=list)
     renamed_display_names: list[str | None] = field(default_factory=list)
     created: list[str] = field(default_factory=list)
@@ -74,10 +81,17 @@ class _FakeAdapter:
         self.created.append(agent.name)
 
     async def check_agent_identity_name(self, agent_id: str, new_name: str) -> None:
+        if self.check_hangs:
+            await asyncio.Event().wait()
+        await asyncio.sleep(self.check_takes)
+        if self.check_error is not None:
+            raise RuntimeError(self.check_error)
         if self.conflict is not None:
             raise AgentIdentityConflict(self.conflict)
 
     async def rename_agent_identity(self, old_name: str, agent: AgentIdentity) -> None:
+        if self.rename_hangs:
+            await asyncio.Event().wait()
         if self.rename_error is not None:
             raise RuntimeError(self.rename_error)
         self.renamed.append((old_name, agent.name))
@@ -523,6 +537,110 @@ class TestRefusals:
 
         assert (await _agent(session_factory, agent_id)).name == "flint-tracker"
         assert adapter.renamed == []
+
+    async def test_a_clash_refuses_even_while_another_platform_hangs(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(agent_core, "BRIDGE_RENAME_CHECK_TIMEOUT_S", 0.1)
+        clash = _FakeAdapter(conflict="The Slack handle @designers is taken")
+        hanging = _FakeAdapter(check_hangs=True)
+        svc = _service(session_factory, clash)
+        svc.collab_lifecycle.bridges.append(_FakeBridge(hanging, "mattermost"))  # type: ignore[attr-defined]
+        owner = await make_owner(session_factory)
+        agent_id = await register(svc, "flint-tracker", owner)
+
+        with pytest.raises(AgentRenameRefused, match="@designers"):
+            await svc.rename_agent(
+                agent_id=agent_id, new_name="designers", display_name=None
+            )
+
+        assert (await _agent(session_factory, agent_id)).name == "flint-tracker"
+
+    async def test_a_platform_not_answering_the_check_does_not_block_the_rename(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(agent_core, "BRIDGE_RENAME_CHECK_TIMEOUT_S", 0.1)
+        healthy = _FakeAdapter()
+        hanging = _FakeAdapter(check_hangs=True)
+        svc = _service(session_factory, healthy)
+        svc.collab_lifecycle.bridges.append(_FakeBridge(hanging, "mattermost"))  # type: ignore[attr-defined]
+        owner = await make_owner(session_factory)
+        agent_id = await register(svc, "flint-tracker", owner)
+
+        result = await asyncio.wait_for(
+            svc.rename_agent(
+                agent_id=agent_id, new_name="flint-scout", display_name=None
+            ),
+            2.0,
+        )
+
+        assert result.bridge_failures == [
+            "mattermost: it did not answer in time, and will be updated when it answers"
+        ]
+        assert (await _agent(session_factory, agent_id)).name == "flint-scout"
+        assert healthy.renamed == [("flint-tracker", "flint-scout")]
+        # Left to the bridge's own sync rather than tried again after the write.
+        assert hanging.renamed == []
+
+    async def test_a_platform_erring_on_the_check_is_reported_not_raised(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        adapter = _FakeAdapter(check_error="connection refused")
+        svc = _service(session_factory, adapter)
+        owner = await make_owner(session_factory)
+        agent_id = await register(svc, "flint-tracker", owner)
+
+        result = await svc.rename_agent(
+            agent_id=agent_id, new_name="flint-scout", display_name=None
+        )
+
+        assert result.bridge_failures == ["slack: connection refused"]
+        assert (await _agent(session_factory, agent_id)).name == "flint-scout"
+
+    async def test_platforms_are_checked_at_once(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        svc = _service(session_factory, _FakeAdapter(check_takes=0.4))
+        svc.collab_lifecycle.bridges.append(  # type: ignore[attr-defined]
+            _FakeBridge(_FakeAdapter(check_takes=0.4), "discord")
+        )
+        owner = await make_owner(session_factory)
+        agent_id = await register(svc, "flint-tracker", owner)
+
+        started = time.monotonic()
+        result = await svc.rename_agent(
+            agent_id=agent_id, new_name="flint-scout", display_name=None
+        )
+
+        assert time.monotonic() - started < 0.75
+        assert result.bridge_failures == []
+
+    async def test_a_platform_not_answering_the_rename_itself_is_reported(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(agent_core, "BRIDGE_RENAME_APPLY_TIMEOUT_S", 0.1)
+        adapter = _FakeAdapter(rename_hangs=True)
+        svc = _service(session_factory, adapter)
+        owner = await make_owner(session_factory)
+        agent_id = await register(svc, "flint-tracker", owner)
+
+        result = await asyncio.wait_for(
+            svc.rename_agent(
+                agent_id=agent_id, new_name="flint-scout", display_name=None
+            ),
+            2.0,
+        )
+
+        assert result.bridge_failures == [
+            "slack: it did not answer in time, and will be updated when it answers"
+        ]
+        assert (await _agent(session_factory, agent_id)).name == "flint-scout"
 
     async def test_a_subagent_and_its_parent(
         self, session_factory: async_sessionmaker[AsyncSession]

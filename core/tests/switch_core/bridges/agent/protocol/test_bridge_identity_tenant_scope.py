@@ -25,9 +25,12 @@ create or remove the identity, and neither `register_agent` nor
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.bridges.agent.protocol import agent_core
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.collaboration.adapter import AgentIdentity
 from switch_core.db.models import TENANT_ZERO_ID, Client, Tenant
@@ -95,6 +98,7 @@ class TestBridgeIdentityTenantScope:
 
         owner = await make_owner(session_factory)
         await register(svc, "cross-tenant-bot", owner)
+        await asyncio.gather(*agent_core._identity_tasks)
 
         assert tenant_a_bridge.adapter.identities_created == [
             ("cross-tenant-bot", "cross-tenant-bot desc")
