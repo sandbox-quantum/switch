@@ -23,7 +23,7 @@ import { policyHasDeadRule } from '@renderer/features/switch-servers/addressing-
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { ProviderConnectionStatus } from '@renderer/lib/components/provider-connection-status';
-import { describeFailure, failureText } from '@renderer/lib/errors/describe-failure';
+import { describeFailure, failureText, isTimedOut } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { rpc } from '@renderer/lib/ipc';
@@ -95,6 +95,14 @@ export type NewAgentFormProps = {
 
 /** Sentinel `runHost` value meaning "run on this machine" (no remote host). */
 const LOCAL_RUN_LOCATION = 'local';
+
+/** A create the server did not answer in time, and had not finished when Switch Console looked. */
+const SERVER_STILL_WORKING = {
+  title: 'The server is taking longer than expected',
+  description:
+    'It may still create the agent. Check Your Agents in a moment before you create it again.',
+  variant: 'destructive' as const,
+};
 const NO_ATTRIBUTES: RepoAgentAttributes = {};
 
 /** Canonical working-directory path: trimmed, with trailing slashes removed
@@ -562,6 +570,10 @@ export const NewAgentForm = observer(function NewAgentForm({
       });
       return;
     }
+    if (result.kind === 'timed-out') {
+      toast(SERVER_STILL_WORKING);
+      return;
+    }
     if (result.kind === 'error') {
       toast({
         title: 'The agent could not be registered on the server. Nothing was created.',
@@ -671,6 +683,11 @@ export const NewAgentForm = observer(function NewAgentForm({
             'Open the agent in Your Agents and check its addressing policy, and whether it can manage agents, before using it. Do not create it again.',
           variant: 'destructive',
         });
+        return;
+      }
+      // The server may yet make the agent: "nothing was created" would be a guess.
+      if (isTimedOut(error)) {
+        toast(SERVER_STILL_WORKING);
         return;
       }
       const { headline, detail } = describeFailure(

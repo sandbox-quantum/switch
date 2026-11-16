@@ -97,7 +97,9 @@ export type AddAgentResult =
    * which way. Reported before anything is minted, so no Switch-side agent is
    * left behind (CHOO-1416). */
   | { kind: 'directory-unusable'; sshHost: string; inspection: RemoteDirInspection }
-  | { kind: 'error'; message: string };
+  | { kind: 'error'; message: string }
+  /** The server did not answer in time and had not made the agent when asked: it may still. */
+  | { kind: 'timed-out'; message: string };
 
 /** The result's discriminant as a reportable code. Never its message. */
 const ADD_AGENT_FAILURE_REASON: Record<
@@ -111,6 +113,7 @@ const ADD_AGENT_FAILURE_REASON: Record<
   'invalid-name': 'invalid_name',
   'directory-unusable': 'directory_unusable',
   error: 'error',
+  'timed-out': 'error',
 };
 
 /**

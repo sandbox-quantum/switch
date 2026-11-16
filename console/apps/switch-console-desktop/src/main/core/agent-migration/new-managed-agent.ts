@@ -1,8 +1,10 @@
 import {
   AgentManagementUnavailableError,
   createManagedAgent,
+  fetchManagedAgents,
   fetchManagementControllers,
   GatewayError,
+  isGatewayTimeout,
   managementErrorCode,
   managementErrorMessage,
 } from '@main/core/switch-servers/gateway-client';
@@ -34,6 +36,18 @@ export const newManagedAgentService = new NewManagedAgentService({
       try {
         return { kind: 'created', switchAgentId: await createManagedAgent(server, body) };
       } catch (error) {
+        // Switch Console stopped waiting, but the server may have made the
+        // agent: what exists is read back before anything is reported.
+        if (isGatewayTimeout(error)) {
+          const made = (await fetchManagedAgents(server)).find((a) => a.name === body.name);
+          if (made) {
+            log.warn('Creating a managed agent outlasted the wait; the server had made it', {
+              event: 'new_managed_agent',
+              agentId: made.agentId,
+            });
+            return { kind: 'created', switchAgentId: made.agentId };
+          }
+        }
         if (!(error instanceof GatewayError)) throw error;
         const failure = managedCreateFailureOf({
           kind: error.kind,

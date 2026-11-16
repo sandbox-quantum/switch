@@ -37,7 +37,7 @@ import { ServerSectionTitlebar } from '@renderer/features/switch-servers/server-
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { useMyIdentities } from '@renderer/features/switch-servers/use-my-identities';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
-import { failureText } from '@renderer/lib/errors/describe-failure';
+import { failureText, isTimedOut } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { rpc } from '@renderer/lib/ipc';
@@ -87,6 +87,7 @@ import {
   shownDirectory,
 } from './use/managed-run';
 import { ParamField } from './use/param-field';
+import { type OutlastedState, reconcileRun } from './use/reconcile-run';
 import { RoomChoiceField } from './use/room-pick-field';
 import { LOCAL_RUN_LOCATION, runLocationLabel, useAllowedHosts } from './use/run-location-select';
 import {
@@ -340,6 +341,12 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
   > | null>(null);
   const [roomStatus, setRoomStatus] = useState<SlotStatus>('idle');
   const [createError, setCreateError] = useState<string | null>(null);
+  // The run the Create press started, sent with each attempt so a retry
+  // finishes what an earlier attempt made instead of refusing it as taken.
+  const runKey = useRef<string>(crypto.randomUUID());
+  // Set when the last attempt outlasted Switch Console's wait, from what the
+  // server said it had made by then.
+  const [outlasted, setOutlasted] = useState<OutlastedState | null>(null);
   // Advanced inputs the deployer opened, by param name or row key.
   const [opened, setOpened] = useState<ReadonlySet<string>>(new Set());
   // For a template whose agent joins a `room` param: whether the deployer
@@ -1122,15 +1129,24 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
         yamlText: room?.coreYaml ?? null,
         inputs: room?.inputs ?? {},
         templateName: loaded.name,
+        runKey: runKey.current,
         entryPoint: 'template',
       });
     } catch (e) {
+      if (isTimedOut(e)) {
+        await reconcileAfterWait(pending.map(({ i, setup }) => ({ i, name: setup.name })));
+        return false;
+      }
       for (const { i } of pending) setSlot(i, { status: 'failed', step: null });
       if (room) setRoomStatus('failed');
       const serverDetail =
         e instanceof RpcError && e.code === 'GatewayError' ? e.stringField('detail') : undefined;
       setCreateError(serverDetail ?? failureText(e, 'Could not create from this template.'));
       setPhase('failed');
+      return false;
+    }
+    if (result.kind === 'refused' && result.code === 'busy') {
+      await reconcileAfterWait(pending.map(({ i, setup }) => ({ i, name: setup.name })));
       return false;
     }
     if (result.kind === 'refused') {
@@ -1276,15 +1292,24 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
         filled,
         templateName: loaded.name,
         templateId: templateId ?? null,
+        runKey: runKey.current,
         entryPoint: 'template',
       });
     } catch (e) {
+      if (isTimedOut(e)) {
+        await reconcileAfterWait(pending.map(({ i, setup }) => ({ i, name: setup.name })));
+        return;
+      }
       for (const { i } of pending) setSlot(i, { status: 'failed', step: null });
       if (makesRoom) setRoomStatus('failed');
       const serverDetail =
         e instanceof RpcError && e.code === 'GatewayError' ? e.stringField('detail') : undefined;
       setCreateError(serverDetail ?? failureText(e, 'Could not create from this template.'));
       setPhase('failed');
+      return;
+    }
+    if (result.kind === 'refused' && result.code === 'busy') {
+      await reconcileAfterWait(pending.map(({ i, setup }) => ({ i, name: setup.name })));
       return;
     }
     if (result.kind === 'refused') {
@@ -1345,8 +1370,61 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
     finish('Opening Your Agents…', () => navigate('serverAgents', { serverId }));
   };
 
+  /**
+   * The request outlasted Switch Console's wait, or an earlier attempt of the
+   * run is still going: read back what the server has made and show each
+   * step as it really stands, instead of calling the run failed. A run the
+   * server finished is opened as if the answer had come in time.
+   */
+  const reconcileAfterWait = async (pending: { i: number; name: string }[]) => {
+    if (workspaceId === null) return;
+    const soFar = await rpc.workspaces
+      .templateRunSoFar({ workspaceId, runKey: runKey.current })
+      .catch(() => null);
+    const run = reconcileRun({
+      agentNames: pending.map((p) => p.name),
+      roomCount: makesRoom ? (parsed?.rooms.length ?? 1) : 0,
+      soFar,
+    });
+    for (const { i, name } of pending) {
+      const agent = run.agents.get(name);
+      if (!agent) continue;
+      setSlot(i, {
+        status: agent.status,
+        step: agent.status === 'created' ? null : 'create',
+        error: agent.error,
+        ...(agent.agentId !== null
+          ? { createdName: name, createdSwitchAgentId: agent.agentId }
+          : {}),
+      });
+    }
+    if (run.room) setRoomStatus(run.room.status);
+    if (run.agents.size > 0 || run.room?.roomId) {
+      await agentsStore.load().catch(() => {});
+      await queryClient
+        .invalidateQueries({ queryKey: workspaceAgentsQueryKey(workspaceId) })
+        .catch(() => {});
+      await refreshSidebarRoomState(true).catch(() => {});
+    }
+    if (run.complete) {
+      const roomId = run.room?.roomId ?? null;
+      if (roomId !== null) {
+        finish(`Opening ${run.room?.roomName ?? 'the room'}…`, () => navigate('room', { roomId }));
+      } else {
+        finish('Opening Your Agents…', () => navigate('serverAgents', { serverId }));
+      }
+      return;
+    }
+    setOutlasted(run.state);
+    setCreateError(run.message);
+    setPhase('failed');
+  };
+
   const createAll = async () => {
     if (!loaded || workspaceId === null || blockedReason !== null) return;
+    // A fresh run gets a key of its own; Retry sends the last one again.
+    if (!partlyDone) runKey.current = crypto.randomUUID();
+    setOutlasted(null);
     setPhase('creating');
     setCreateError(null);
     setFieldErrors({});
@@ -2005,6 +2083,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
               phase={phase}
               steps={createSteps}
               error={refusedPerAgent ? null : (runError ?? null)}
+              outlasted={outlasted}
               doneDetail={doneDetail}
               onRetry={nothingKept ? null : () => void createAll()}
               onBack={() => setPhase('form')}

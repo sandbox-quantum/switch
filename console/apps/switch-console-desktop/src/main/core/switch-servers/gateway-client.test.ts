@@ -133,6 +133,9 @@ const {
   updateManagedAgent,
   fetchAvatarSettings,
   fetchAgentIconChoices,
+  fetchTemplateRunSoFar,
+  isGatewayTimeout,
+  runTemplateDocument,
 } = await import('./gateway-client');
 
 const SERVER = {
@@ -1003,6 +1006,7 @@ describe('registerKnownAgent', () => {
       options: { channels_enabled: true, repo_dir: '/repo' },
       iconUrl: null,
       displayName: null,
+      overwrite: false,
     });
 
     expect(registered).toEqual({ id: 'sw-1', apiKey: 'tok-123' });
@@ -1029,6 +1033,7 @@ describe('registerKnownAgent', () => {
       options: { channels_enabled: true, repo_dir: '/repo' },
       iconUrl: null,
       displayName: 'Switch Dev',
+      overwrite: false,
     });
 
     const [, init] = fetchMock.mock.calls[0] as unknown as [string, { body: string }];
@@ -4529,5 +4534,91 @@ describe('fetchTenants', () => {
     const tenants = await fetchTenants(SERVER);
 
     expect(tenants.map((t) => t.role)).toEqual(['admin', 'member']);
+  });
+});
+
+describe('a template run Switch Console stops waiting for', () => {
+  const ok = (body: unknown) =>
+    ({
+      status: 200,
+      ok: true,
+      json: async () => body,
+      headers: { get: () => null, getSetCookie: () => [] },
+      text: async () => JSON.stringify(body),
+    }) as unknown as Response;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal('fetch', fetchMock);
+    getSessionCookie.mockResolvedValue(makeJwt(24 * 60 * 60));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('names the run in the query, leaving the strict body as an older server knows it', async () => {
+    fetchMock.mockImplementation(async () => ok({ created_agents: [], room: null }));
+
+    await runTemplateDocument(SERVER, {
+      template: 'version: 2',
+      inputs: {},
+      filled: {},
+      templateName: 'Bug Triage Room',
+      templateId: null,
+      runKey: 'run 1',
+    });
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, { body: string }];
+    expect(url).toContain('/rooms/from-template-document?run_key=run%201');
+    expect(JSON.parse(init.body)).not.toHaveProperty('run_key');
+  });
+
+  it('reports a request that outlasted the wait as a timeout, not as unreachable', async () => {
+    fetchMock.mockImplementation(async () => {
+      throw new DOMException('The operation was aborted due to timeout', 'TimeoutError');
+    });
+
+    const failure = await runTemplateDocument(SERVER, {
+      template: 'version: 2',
+      inputs: {},
+      filled: {},
+      templateName: 'Bug Triage Room',
+      templateId: null,
+      runKey: 'run-1',
+    }).catch((error: unknown) => error);
+
+    expect(isGatewayTimeout(failure)).toBe(true);
+    expect(failure).toMatchObject({ kind: 'network', timedOut: true });
+  });
+
+  it('keeps a refused connection apart from a timeout', async () => {
+    fetchMock.mockImplementation(async () => {
+      throw new TypeError('fetch failed');
+    });
+
+    const failure = await fetchAgentIconChoices(SERVER, 'a', 0).catch((error: unknown) => error);
+
+    expect(isGatewayTimeout(failure)).toBe(false);
+  });
+
+  it('reads back what the run made so far', async () => {
+    fetchMock.mockImplementation(async () =>
+      ok({
+        in_flight: true,
+        agents: [{ agent_id: 'a1', name: 'acme-triage-assistant' }],
+        rooms: [{ room_id: 'r1', room_name: 'Acme Bug Triage', kickoff_posted: false }],
+      })
+    );
+
+    const soFar = await fetchTemplateRunSoFar(SERVER, 'run-1');
+
+    const [url] = fetchMock.mock.calls[0] as unknown as [string];
+    expect(url).toContain('/rooms/from-template/runs/run-1');
+    expect(soFar).toEqual({
+      inFlight: true,
+      agents: [{ agentId: 'a1', name: 'acme-triage-assistant' }],
+      rooms: [{ roomId: 'r1', roomName: 'Acme Bug Triage', kickoffPosted: false }],
+    });
   });
 });

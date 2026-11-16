@@ -1484,7 +1484,10 @@ export type RegisterIdentityFailure =
   | { kind: 'unauthenticated' }
   | { kind: 'name-conflict' }
   | { kind: 'invalid-name'; message: string }
-  | { kind: 'error'; message: string };
+  | { kind: 'error'; message: string }
+  /** Switch Console stopped waiting, and the server had not made the agent by
+   * the time it looked: it may still. Nothing can be said to be created or not. */
+  | { kind: 'timed-out'; message: string };
 
 export type ProvisionAgentResult =
   | { kind: 'created'; agentId: string }

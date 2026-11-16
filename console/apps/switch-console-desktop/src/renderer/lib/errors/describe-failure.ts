@@ -108,6 +108,15 @@ export function describeFailure(error: unknown, fallback: string): FailureDescri
   return { headline: fallback, detail: raw };
 }
 
+/**
+ * Whether a gateway call failed because Switch Console stopped waiting for it
+ * (`GatewayTimeoutError`). The server may still be working, and may have done
+ * what was asked: read back what exists rather than reporting a failure.
+ */
+export function isTimedOut(error: unknown): boolean {
+  return error instanceof RpcError && error.code === 'GatewayError' && error.data.timedOut === true;
+}
+
 /** One string, for the surfaces that have nowhere to put the detail separately. */
 export function failureText(error: unknown, fallback: string): string {
   const { headline, detail } = describeFailure(error, fallback);

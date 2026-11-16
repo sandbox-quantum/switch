@@ -60,6 +60,7 @@ describe('createBuddy', () => {
       filled: {},
       templateName: 'switch-buddy',
       templateId: 'official:switch-buddy',
+      runKey: null,
       entryPoint: 'switch_buddy',
     });
     // The template run reports the new buddy as `agent_created`; a second

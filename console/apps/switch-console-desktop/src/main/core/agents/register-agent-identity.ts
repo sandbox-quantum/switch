@@ -1,5 +1,10 @@
 import type { KnownAgentType } from '@main/core/agents/known-agent-type';
-import { GatewayError, registerKnownAgent } from '@main/core/switch-servers/gateway-client';
+import {
+  fetchAgents,
+  GatewayError,
+  isGatewayTimeout,
+  registerKnownAgent,
+} from '@main/core/switch-servers/gateway-client';
 import type { RegisterIdentityFailure } from '@shared/core/switch-servers/switch-servers';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 
@@ -38,8 +43,8 @@ export async function registerAgentIdentity(
   server: SwitchServer,
   input: RegisterAgentInput
 ): Promise<{ kind: 'created'; id: string; apiKey: string } | RegisterIdentityFailure> {
-  try {
-    const registered = await registerKnownAgent(server, {
+  const register = (overwrite: boolean) =>
+    registerKnownAgent(server, {
       name: input.name,
       description: input.description,
       agentType: input.agentType,
@@ -50,9 +55,23 @@ export async function registerAgentIdentity(
         repo_dir: input.repoDir,
         auto_session: true,
       },
+      overwrite,
     });
+  const startedAt = Date.now();
+  try {
+    const registered = await register(false);
     return { kind: 'created', id: registered.id, apiKey: registered.apiKey };
   } catch (cause) {
+    // Switch Console stopped waiting, but the server may have registered the
+    // agent. One made by this attempt is registered again to get the key
+    // whose answer was lost; nothing is reported as failed while it exists.
+    if (isGatewayTimeout(cause) && (await madeSince(server, input.name, startedAt))) {
+      const registered = await register(true);
+      return { kind: 'created', id: registered.id, apiKey: registered.apiKey };
+    }
+    if (isGatewayTimeout(cause) && cause instanceof GatewayError) {
+      return { kind: 'timed-out', message: cause.message };
+    }
     if (cause instanceof GatewayError) {
       if (cause.kind === 'unauthorized') return { kind: 'unauthenticated' };
       if (cause.kind === 'http' && cause.status === 409) return { kind: 'name-conflict' };
@@ -63,4 +82,14 @@ export async function registerAgentIdentity(
     }
     throw cause;
   }
+}
+
+/** Leeway for the server's clock against this one when matching an agent to the attempt that made it. */
+const CLOCK_LEEWAY_MS = 60_000;
+
+/** Whether the server has an agent named `name` made since `since`: by the attempt that timed out. */
+async function madeSince(server: SwitchServer, name: string, since: number): Promise<boolean> {
+  const agents = await fetchAgents(server);
+  const made = agents.find((agent) => agent.name === name);
+  return made !== undefined && Date.parse(made.createdAt) >= since - CLOCK_LEEWAY_MS;
 }

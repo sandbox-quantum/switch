@@ -1,6 +1,7 @@
 import { Check, Circle, Loader2, TriangleAlert } from 'lucide-react';
 import { Button } from '@renderer/lib/ui/button';
 import { cn } from '@renderer/utils/utils';
+import type { OutlastedState } from './reconcile-run';
 import type { CreateStep, CreateStepStatus } from './use-template-model';
 
 function StepIcon({ status }: { status: CreateStepStatus }) {
@@ -33,6 +34,7 @@ export function CreatingScreen({
   phase,
   steps,
   error,
+  outlasted,
   doneDetail,
   onRetry,
   onBack,
@@ -41,6 +43,8 @@ export function CreatingScreen({
   phase: 'creating' | 'done' | 'failed';
   steps: CreateStep[];
   error: string | null;
+  /** How the run stood when its request outlasted Switch Console's wait, read back from the server; null otherwise. */
+  outlasted: OutlastedState | null;
   /** Where the page goes next, shown under the finished heading. */
   doneDetail: string | null;
   /** Null when the run kept nothing, so there is nothing to retry from: back to the form instead. */
@@ -65,22 +69,30 @@ export function CreatingScreen({
           <h3 className="text-lg font-semibold tracking-tight">
             {phase === 'done'
               ? `${templateName} is ready`
-              : phase === 'failed'
-                ? onRetry
-                  ? 'Stopped at one step'
-                  : 'Nothing was created'
-                : `Creating ${templateName}`}
+              : phase === 'failed' && outlasted === 'running'
+                ? `${templateName} is still being created`
+                : phase === 'failed' && outlasted === 'unknown'
+                  ? 'The server did not answer in time'
+                  : phase === 'failed'
+                    ? onRetry
+                      ? 'Stopped at one step'
+                      : 'Nothing was created'
+                    : `Creating ${templateName}`}
           </h3>
           <p className="text-[13px] text-foreground-muted">
             {phase === 'done'
               ? (doneDetail ?? 'Opening it…')
-              : phase === 'failed'
-                ? !onRetry
-                  ? 'The run was refused as a whole. Change what each step says, then create again.'
-                  : done > 0
-                    ? 'What was created stays created.'
-                    : 'Nothing was created.'
-                : 'This takes a few seconds.'}
+              : phase === 'failed' && outlasted === 'running'
+                ? 'Switch Console stopped waiting, but the server is still working. Each step shows what it has done so far.'
+                : phase === 'failed' && outlasted === 'unknown'
+                  ? 'Switch Console could not find out what it made, so it claims nothing either way.'
+                  : phase === 'failed'
+                    ? !onRetry
+                      ? 'The run was refused as a whole. Change what each step says, then create again.'
+                      : done > 0
+                        ? 'What was created stays created.'
+                        : 'Nothing was created.'
+                    : 'This takes a few seconds.'}
           </p>
         </div>
 

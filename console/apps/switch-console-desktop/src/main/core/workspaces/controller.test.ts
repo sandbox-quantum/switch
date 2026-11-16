@@ -632,6 +632,7 @@ describe('reporting what a template made', () => {
       yamlText: null,
       inputs: {},
       templateName: 'T',
+      runKey: null,
       entryPoint: 'template',
     });
 
@@ -662,6 +663,7 @@ describe('reporting what a template made', () => {
       filled: {},
       templateName: 'Buddy',
       templateId: null,
+      runKey: null,
       entryPoint: 'onboarding',
     });
 
@@ -735,6 +737,7 @@ describe('reporting what a template made', () => {
       filled: {},
       templateName: 'T',
       templateId: null,
+      runKey: null,
       entryPoint: 'template',
     });
 
@@ -753,6 +756,7 @@ describe('reporting what a template made', () => {
       yamlText: null,
       inputs: {},
       templateName: 'T',
+      runKey: null,
       entryPoint: 'template',
     });
 
@@ -761,6 +765,7 @@ describe('reporting what a template made', () => {
       yamlText: null,
       inputs: {},
       templateName: 'T',
+      runKey: null,
     });
   });
 
@@ -779,6 +784,7 @@ describe('reporting what a template made', () => {
       filled: {},
       templateName: 'T',
       templateId: null,
+      runKey: null,
       entryPoint: 'template',
     });
 

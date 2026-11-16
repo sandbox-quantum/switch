@@ -28,10 +28,12 @@ import {
   beginChatClaim,
   changeTemplateRun,
   createRoomFromTemplate,
+  fetchTemplateRunSoFar,
   runTemplateDocument,
   runTemplateWithAgents,
   type TemplateRunAgent,
   type TemplateRunResult,
+  type TemplateRunSoFar,
   createTemplate,
   deleteRoom,
   deleteTemplate,
@@ -881,6 +883,8 @@ export const workspacesController = createRPCController({
       yamlText: string | null;
       inputs: Record<string, string | number | boolean>;
       templateName: string;
+      /** The run this is one attempt of, the same key again on a retry; null for a run of its own. */
+      runKey: string | null;
       /** Where the run was started, for the agents it makes. */
       entryPoint: UiEntryPoint;
     }
@@ -905,6 +909,8 @@ export const workspacesController = createRPCController({
       templateName: string;
       /** The template the document is, when it is one; see `runTemplateDocument`. */
       templateId: string | null;
+      /** The run this is one attempt of, the same key again on a retry; null for a run of its own. */
+      runKey: string | null;
       /** Where the run was started, for the agents it makes. */
       entryPoint: UiEntryPoint;
     }
@@ -917,6 +923,15 @@ export const workspacesController = createRPCController({
       madeByRun({ entryPoint, declaredProviders: new Map() })
     );
   },
+
+  /**
+   * What a template run has made so far, read back when a run outlasted
+   * Switch Console's wait, so the page reports what exists rather than a guess.
+   */
+  templateRunSoFar: (params: { workspaceId: string; runKey: string }): Promise<TemplateRunSoFar> =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      fetchTemplateRunSoFar(server, params.runKey)
+    ),
 
   /** The runs the user may see, or null when the server does not record runs. */
   listTemplateRuns: (params: { workspaceId: string }): Promise<TemplateRun[] | null> =>

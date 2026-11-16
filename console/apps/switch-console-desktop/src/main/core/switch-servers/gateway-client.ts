@@ -256,6 +256,29 @@ export class GatewayError extends Error {
 }
 
 /**
+ * A gateway call Switch Console stopped waiting for. The server may still be
+ * working on it, and may yet finish: a caller that changed something reads
+ * back what exists before it reports anything, rather than calling the
+ * change failed. `timedOut` crosses to the renderer with the error.
+ */
+export class GatewayTimeoutError extends GatewayError {
+  readonly timedOut = true;
+
+  constructor(message: string) {
+    super('network', message);
+  }
+}
+
+/** Whether the call failed because Switch Console stopped waiting for it. */
+export function isGatewayTimeout(error: unknown): boolean {
+  return error instanceof GatewayTimeoutError;
+}
+
+function isTimeoutCause(cause: unknown): boolean {
+  return cause instanceof Error && cause.name === 'TimeoutError';
+}
+
+/**
  * Unwrap FastAPI's `{"detail": "…"}` error envelope. Returns undefined for any
  * other body shape (an HTML error page, a 422 validation array, empty), leaving
  * the caller with the full status-prefixed message rather than a misleading
@@ -414,10 +437,11 @@ export async function gatewayRequest(
       });
     } catch (cause) {
       noteManagedServerUnanswered(server);
-      throw new GatewayError(
-        'network',
-        `Could not reach ${server.url}: ${cause instanceof Error ? cause.message : String(cause)}`
-      );
+      const reason = cause instanceof Error ? cause.message : String(cause);
+      if (isTimeoutCause(cause)) {
+        throw new GatewayTimeoutError(`${server.url} did not answer in time: ${reason}`);
+      }
+      throw new GatewayError('network', `Could not reach ${server.url}: ${reason}`);
     }
   };
 
@@ -1439,6 +1463,9 @@ export async function registerKnownAgent(
      * same reason as `iconUrl`: the create form holds a label the user typed,
      * and an omitted field would drop it without saying so. */
     displayName: string | null;
+    /** Re-register an agent of the caller's that already has the name, rotating
+     * its key. Only for finishing a registration whose first answer was lost. */
+    overwrite: boolean;
   }
 ): Promise<RegisteredAgent> {
   const res = await gatewayFetch(server, '/agents/register', {
@@ -1451,7 +1478,7 @@ export async function registerKnownAgent(
       options: params.options,
       icon_url: params.iconUrl,
       display_name: params.displayName,
-      overwrite: false,
+      overwrite: params.overwrite,
     },
   });
   const json = (await res.json()) as { id: string; api_key: string };
@@ -3056,9 +3083,11 @@ export async function runTemplateWithAgents(
     yamlText: string | null;
     inputs: Record<string, string | number | boolean>;
     templateName: string;
+    /** The run this is one attempt of, the same key again on a retry; null for a run of its own. */
+    runKey: string | null;
   }
 ): Promise<TemplateRunResult> {
-  return postTemplateRun(server, '/rooms/from-template', {
+  return postTemplateRun(server, withRunKey('/rooms/from-template', body.runKey), {
     agents: body.agents.map((a) => ({
       slot: a.slot,
       name: a.name,
@@ -3102,15 +3131,66 @@ export async function runTemplateDocument(
      * exactly the template's.
      */
     templateId: string | null;
+    /** The run this is one attempt of, the same key again on a retry; null for a run of its own. */
+    runKey: string | null;
   }
 ): Promise<TemplateRunResult> {
-  return postTemplateRun(server, '/rooms/from-template-document', {
+  return postTemplateRun(server, withRunKey('/rooms/from-template-document', body.runKey), {
     template: body.template,
     inputs: body.inputs,
     filled: body.filled,
     template_name: body.templateName,
     ...(body.templateId !== null ? { template_id: body.templateId } : {}),
   });
+}
+
+/**
+ * A template run's path with the run it is an attempt of. A query parameter,
+ * not a body field: a server from before keyed runs ignores it and runs as it
+ * always did, where a strict body would refuse the unknown field.
+ */
+function withRunKey(path: string, runKey: string | null): string {
+  return runKey === null ? path : `${path}?run_key=${encodeURIComponent(runKey)}`;
+}
+
+/** What a template run has made so far, read back after Switch Console stopped waiting for it. */
+export type TemplateRunSoFar = {
+  /** An attempt of the run is still going on the server: a step not listed may yet be made. */
+  inFlight: boolean;
+  agents: { agentId: string; name: string }[];
+  rooms: { roomId: string; roomName: string; kickoffPosted: boolean }[];
+};
+
+/**
+ * The agents and rooms the signed-in person's template run `runKey` has made,
+ * and whether an attempt of it is still going (`GET /rooms/from-template/runs/{key}`).
+ * A server from before runs were keyed answers 404, raised as a `GatewayError`.
+ */
+export async function fetchTemplateRunSoFar(
+  server: SwitchServer,
+  runKey: string
+): Promise<TemplateRunSoFar> {
+  const res = await gatewayFetch(
+    server,
+    `/rooms/from-template/runs/${encodeURIComponent(runKey)}`,
+    {
+      authenticated: true,
+    }
+  );
+  const json = (await res.json()) as {
+    in_flight: boolean;
+    agents: { agent_id: string; name: string }[];
+    rooms: { room_id: string; room_name: string; kickoff_posted: boolean }[];
+  };
+  return {
+    inFlight: json.in_flight,
+    agents: json.agents.map((a) => ({ agentId: a.agent_id, name: a.name })),
+    rooms: json.rooms.map((r) => ({
+      roomId: r.room_id,
+      roomName: r.room_name,
+      kickoffPosted: r.kickoff_posted,
+    })),
+  };
 }
 
 async function postTemplateRun(
