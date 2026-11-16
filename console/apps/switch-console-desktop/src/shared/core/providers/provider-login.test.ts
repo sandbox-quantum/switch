@@ -14,6 +14,12 @@ describe('provider sign-in output', () => {
 
   it('notices a command waiting for a pasted code', () => {
     expect(asksForCode(['Browser didn’t open?', 'Paste code here if prompted >'])).toBe(true);
+    expect(
+      asksForCode([
+        "If the browser didn't open, visit: https://claude.com/cai/oauth/authorize?code=true&client_id=x",
+      ])
+    ).toBe(true);
     expect(asksForCode(['Opening your browser to sign in…'])).toBe(false);
+    expect(asksForCode(['Visit https://auth.example/device?user_code=ABCD'])).toBe(false);
   });
 });
