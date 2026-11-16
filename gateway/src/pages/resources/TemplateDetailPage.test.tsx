@@ -165,6 +165,20 @@ describe("TemplateDetailPage", () => {
     expect(await screen.findByText("Templates page")).toBeTruthy();
   });
 
+  it("removes an official template from the workspace, saying other workspaces keep it", async () => {
+    const calls = showWith({ ...EXPERT, can_manage: true });
+    fireEvent.click(await screen.findByRole("button", { name: "Remove from this workspace" }));
+    expect(
+      screen.getByText(
+        "Remove “Switch expert” from this workspace? It comes with Switch, so other workspaces keep it. Agents and rooms already made from it keep working. This can’t be undone.",
+      ),
+    ).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+
+    await waitFor(() => expect(calls.map((c) => c.key)).toContain("DELETE /templates/official:switch-expert"));
+  });
+
   it("goes back to the templates from a labelled link", async () => {
     showWith(OWNED);
     fireEvent.click(await screen.findByRole("button", { name: "Back to templates" }));

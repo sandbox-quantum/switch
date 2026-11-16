@@ -188,16 +188,20 @@ export default function TemplateDetailPage() {
               </>
             )}
             <Divider />
-            <DangerSection onDelete={() => setDeleteOpen(true)} />
+            <DangerSection official={official} onDelete={() => setDeleteOpen(true)} />
           </>
         )}
       </Stack>
 
       <ConfirmDialog
         open={deleteOpen}
-        title="Delete template"
-        description={`Delete “${template.name || id}”? Agents and rooms already made from it keep working. This can’t be undone.`}
-        confirmLabel="Delete"
+        title={official ? "Remove template" : "Delete template"}
+        description={
+          official
+            ? `Remove “${template.name || id}” from this workspace? It comes with Switch, so other workspaces keep it. Agents and rooms already made from it keep working. This can’t be undone.`
+            : `Delete “${template.name || id}”? Agents and rooms already made from it keep working. This can’t be undone.`
+        }
+        confirmLabel={official ? "Remove" : "Delete"}
         tone="destructive"
         onConfirm={async () => {
           await deleteTemplate(id);
@@ -497,7 +501,7 @@ function DocumentSection({
   );
 }
 
-function DangerSection({ onDelete }: { onDelete: () => void }) {
+function DangerSection({ official, onDelete }: { official: boolean; onDelete: () => void }) {
   return (
     <Stack spacing={1}>
       <Typography
@@ -513,7 +517,7 @@ function DangerSection({ onDelete }: { onDelete: () => void }) {
         onClick={onDelete}
         sx={{ alignSelf: "flex-start" }}
       >
-        Delete template
+        {official ? "Remove from this workspace" : "Delete template"}
       </Button>
     </Stack>
   );

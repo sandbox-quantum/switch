@@ -35,7 +35,7 @@ function serve(initialDays: number | null, toDelete = 0) {
 describe("describeRetention", () => {
   it("says what the policy does in plain words", () => {
     expect(describeRetention(null)).toBe(
-      "No retention policy is set, so Switch keeps every message and file. Nothing is deleted automatically.",
+      "No retention policy is set, so Switch keeps every message and the files attached to it.",
     );
     expect(describeRetention(1)).toBe("Messages older than 1 day are deleted.");
     expect(describeRetention(90)).toBe("Messages older than 90 days are deleted.");
