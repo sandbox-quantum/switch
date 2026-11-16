@@ -7,7 +7,6 @@ import type {
 } from '@switch-console/core/deps/runtime';
 import { reportedCliAction } from '@main/core/telemetry/cli-action';
 import { ensureUserBinDirsInPath, ensureWindowsUserBinDirsInPath } from '@main/utils/userEnv';
-import type { ProviderCustomConfig } from '@shared/core/app-settings';
 import {
   type AgentProviderDefinition,
   type AgentProviderId,
@@ -18,7 +17,6 @@ import { clearResolvedPathCache } from '../agent-runtime/impl/resolve-agent-exec
 import { agentUpdateService } from '../dependencies/agent-update-service';
 import { getDependencyManager } from '../dependencies/dependency-managers';
 import { hostDependencyStore } from '../dependencies/host-dependency-store';
-import { providerOverrideSettings } from '../settings/provider-settings-service';
 import {
   buildAgentPayload,
   buildAgentPayloads,
@@ -109,20 +107,6 @@ export const providersController = createRPCController({
   startLogin: (id: AgentProviderId): { attemptId: string } => providerLoginRunner.start(id),
 
   cancelLogin: (): void => providerLoginRunner.cancel(),
-
-  // ── Settings ─────────────────────────────────────────────────────────────────
-
-  getDefaultSettings: async (id: string): Promise<ProviderCustomConfig | null> => {
-    const meta = await providerOverrideSettings.getItemWithMeta(id);
-    return meta?.defaults ?? null;
-  },
-
-  getSettings: async (id: string) => {
-    return providerOverrideSettings.getItemWithMeta(id);
-  },
-
-  updateSettings: (id: string, config: Partial<ProviderCustomConfig>): Promise<void> =>
-    providerOverrideSettings.updateItem(id, config),
 
   // ── Selection + probe ────────────────────────────────────────────────────────
 
