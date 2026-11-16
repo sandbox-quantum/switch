@@ -107,7 +107,7 @@ function WorkspaceChip({ workspace }: { workspace: OrganizationMemberWorkspace }
   );
 }
 
-/** Organization settings › Users, in the new layout: everyone in the
+/** Organization settings › Users: everyone in the
  * organization, the workspaces of it they are in and their role in each.
  * Its admins make someone Org admin or take it back, add them to another
  * workspace, change their role in one or remove them from it, remove them

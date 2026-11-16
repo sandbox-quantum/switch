@@ -1,6 +1,5 @@
 import type { BrowserContext, ConsoleMessage, Locator, Page, Request, Response } from 'playwright';
 import { expect } from 'vitest';
-import type { MatrixLayout } from '../../../../gateway/src/routes/roleMatrix.ts';
 import type { SwitchEnv } from '../core/env.ts';
 import type { IssuedSecrets } from '../core/secrets.ts';
 
@@ -25,14 +24,14 @@ const STREAMING = new Set(['eventsource', 'websocket']);
  */
 const ABORTED = /net::ERR_ABORTED|NS_BINDING_ABORTED|cancelled/i;
 
-/** Where signing in lands, in each layout of the dashboard. */
-const LANDING: Record<MatrixLayout, string> = { current: '/rooms', v2: '/overview' };
+/** Where signing in lands. */
+const LANDING = '/overview';
 
 /**
  * What a page of the dashboard shows: the page itself, or one of the app's
  * own status pages in its place (`gateway/src/routes/StatusPages.tsx`).
  */
-export type PageState = 'page' | 'refused' | 'not-enabled' | 'planned' | 'not-found';
+export type PageState = 'page' | 'refused' | 'not-enabled' | 'not-found';
 
 /** Routes the server mounts only behind a feature flag; the organization page
  * hides the section on a 404, so a server without the flag is not an error. */
@@ -54,8 +53,6 @@ const FLAG_GATED_ROUTES = /^\/gateway\/organizations\/current\/(services|connect
  */
 export class GatewayUi {
   readonly page: Page;
-  /** The dashboard's layout on this server: `v2` when `gateway_v2` is on. */
-  readonly layout: MatrixLayout;
   private readonly context: BrowserContext;
   private readonly baseUrl: string;
   private readonly credentials: SwitchEnv;
@@ -70,13 +67,11 @@ export class GatewayUi {
     context: BrowserContext,
     page: Page,
     baseUrl: string,
-    layout: MatrixLayout,
     credentials: SwitchEnv,
     secrets: IssuedSecrets
   ) {
     this.context = context;
     this.page = page;
-    this.layout = layout;
     this.baseUrl = baseUrl;
     this.credentials = credentials;
     this.secrets = secrets;
@@ -143,19 +138,10 @@ export class GatewayUi {
     await this.open('/');
   }
 
-  /**
-   * Open the workspace switcher: the top bar's breadcrumb in the new layout.
-   * Today's layout lists the other workspaces in the account menu instead.
-   */
+  /** Open the workspace switcher: the top bar's breadcrumb. */
   private async openSwitcher(): Promise<Locator> {
-    if (this.layout === 'v2') {
-      await this.page.locator('button[aria-haspopup="menu"]').click();
-      const menu = this.page.getByRole('menu', { name: 'Workspaces' });
-      await expect.poll(() => menu.isVisible(), { timeout: 15_000 }).toBe(true);
-      return menu;
-    }
-    await this.page.getByRole('button', { name: 'Account menu' }).click();
-    const menu = this.page.getByRole('menu');
+    await this.page.locator('button[aria-haspopup="menu"]').click();
+    const menu = this.page.getByRole('menu', { name: 'Workspaces' });
     await expect.poll(() => menu.isVisible(), { timeout: 15_000 }).toBe(true);
     return menu;
   }
@@ -172,10 +158,7 @@ export class GatewayUi {
   async switchWorkspace(workspace: { id: string; name: string }): Promise<void> {
     await this.quiet();
     const menu = await this.openSwitcher();
-    const item =
-      this.layout === 'v2'
-        ? menu.getByRole('menuitem').filter({ hasText: workspace.name })
-        : menu.getByRole('menuitem', { name: `Switch to ${workspace.name}`, exact: true });
+    const item = menu.getByRole('menuitem').filter({ hasText: workspace.name });
     if ((await item.count()) !== 1) {
       const offered = (await menu.getByRole('menuitem').allInnerTexts()).map((t) => t.trim());
       throw new Error(
@@ -194,7 +177,7 @@ export class GatewayUi {
     await this.settled();
   }
 
-  /** Whether the new layout's switcher offers to invite people to the current workspace. */
+  /** Whether the switcher offers to invite people to the current workspace. */
   async switcherOffersInvite(): Promise<boolean> {
     const menu = await this.openSwitcher();
     const offers = (await menu.getByRole('menuitem', { name: /^Invite people to / }).count()) > 0;
@@ -202,7 +185,7 @@ export class GatewayUi {
     return offers;
   }
 
-  /** The organizations the new layout's switcher groups workspaces under, by name. */
+  /** The organizations the switcher groups workspaces under, by name. */
   async switcherOrganizations(): Promise<string[]> {
     const menu = await this.openSwitcher();
     const headings = (await menu.locator('.MuiListSubheader-root').allInnerTexts()).map((t) =>
@@ -212,9 +195,9 @@ export class GatewayUi {
     return headings;
   }
 
-  /** The page signing in lands on in this layout. */
+  /** The page signing in lands on. */
   get landing(): string {
-    return LANDING[this.layout];
+    return LANDING;
   }
 
   /** Sign in through the login form as the gateway admin, and land on the start page. */
@@ -292,10 +275,6 @@ export class GatewayUi {
     if (await heading("You don't have access to this page")) return 'refused';
     if (await heading('Not turned on')) return 'not-enabled';
     if (await heading("There's no page here")) return 'not-found';
-    const planned = this.page
-      .getByRole('alert')
-      .filter({ hasText: "This page is part of the new layout and isn't built yet." });
-    if (await planned.isVisible()) return 'planned';
     return 'page';
   }
 

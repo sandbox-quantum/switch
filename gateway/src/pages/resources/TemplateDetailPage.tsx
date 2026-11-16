@@ -37,8 +37,6 @@ import TemplateFindings from "./TemplateFindings";
 import { formatBytes, templateFilename } from "./templateFormat";
 import { useTemplateValidation } from "./useTemplateValidation";
 
-// The Templates page in the new layout; in today's, where it is a Resources
-// tab, the route redirects there.
 const LIST_URL = "/templates";
 
 export default function TemplateDetailPage() {

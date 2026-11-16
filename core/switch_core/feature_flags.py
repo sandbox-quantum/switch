@@ -98,12 +98,10 @@ BUDDY_SLACK_HANDOFF = "buddy_slack_handoff"
 # server's apps, as before organizations.
 ORGANIZATION_CONNECTOR_APPS = "organization_connector_apps"
 
-# The dashboard's new layout: Overview, Templates and Connectors on the rail,
-# Workspace and Organization settings as their own areas, and the operator's
-# pages in a Platform area. Today's pages move into it and their old URLs
-# redirect. Core has nothing of its own behind it; the dashboard reads it. It
-# stays off until every page of the new layout is built, and on a server with
-# it off the dashboard is laid out as before.
+# The dashboard's settings-areas layout (Overview, Templates and Connectors on
+# the rail, Workspace and Organization settings, a Platform area), which was
+# built behind this flag and is now the dashboard's only layout. Always on:
+# see ALWAYS_ON_FEATURE_FLAGS.
 GATEWAY_V2 = "gateway_v2"
 
 # Messaging platforms beyond Slack, Mattermost, Teams, Discord and Telegram:
@@ -140,6 +138,12 @@ def without_flag(flags: frozenset[str], flag: str) -> frozenset[str]:
                 changed = True
     return flags - off
 
+
+# Flags whose feature no longer has an off. Each is still accepted in
+# FEATURE_FLAGS_ENABLED, so a deployment that names one keeps starting, and is
+# always reported on, so a client that still reads it sees what the server
+# does: Switch Console picks its links into the dashboard by gateway_v2.
+ALWAYS_ON_FEATURE_FLAGS: frozenset[str] = frozenset({GATEWAY_V2})
 
 # Every flag the server recognises.
 KNOWN_FEATURE_FLAGS: frozenset[str] = frozenset(

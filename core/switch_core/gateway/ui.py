@@ -36,7 +36,8 @@ from switch_core.observability.http import GATEWAY_UI_SCOPE_KEY
 logger = logging.getLogger(__name__)
 
 # The dashboard's page routes, as `gateway/src/App.tsx` and its route table
-# (`gateway/src/routes/routeTable.tsx`) declare them, in both of its layouts.
+# (`gateway/src/routes/routeTable.tsx`) declare them, the URLs that only
+# redirect to a page that moved included.
 PAGE_PATHS: tuple[str, ...] = (
     "/",
     "/login",
@@ -65,7 +66,6 @@ PAGE_PATHS: tuple[str, ...] = (
     "/workspace/private-channel-rooms",
     "/organization",
     "/operator/workspaces",
-    # The new layout's (`gateway_v2`). With it off they redirect to today's.
     "/overview",
     "/templates",
     "/templates/{id}",

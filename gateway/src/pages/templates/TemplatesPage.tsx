@@ -42,7 +42,7 @@ type Dialog =
   | { kind: "delete"; template: TemplateSummary };
 
 /**
- * Templates, a page of its own in the new layout: the workspace's own, which
+ * Templates, a page of its own: the workspace's own, which
  * have owners and so a row menu that changes from row to row, and the ones
  * that come with Switch, which nobody changes. Each row's menu follows what
  * the server says the viewer may do with that template.

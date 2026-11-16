@@ -83,7 +83,7 @@ function useRowControls(): RowControls {
 }
 
 /**
- * Workspace settings › Messaging apps, in the new layout.
+ * Workspace settings › Messaging apps.
  *
  * Two sections with two owners. The table is the workspace's messaging apps
  * and their settings, so it is for whoever administers the workspace; a

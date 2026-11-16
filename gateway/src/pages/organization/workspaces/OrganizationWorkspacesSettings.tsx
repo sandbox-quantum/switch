@@ -8,7 +8,7 @@ import { useLoad } from "../../workspace/useLoad";
 import CreateWorkspaceDialog from "./CreateWorkspaceDialog";
 import WorkspacesTable from "./WorkspacesTable";
 
-/** Organization settings › Workspaces, in the new layout: every workspace in
+/** Organization settings › Workspaces: every workspace in
  * the organization, who administers each, and for an organization admin,
  * what can be done with one. The platform operator may open it too, read
  * only: running the organization's workspaces is its admins'. */
