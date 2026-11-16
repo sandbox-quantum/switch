@@ -103,7 +103,11 @@ export class FakeRuntime implements AgentRuntime {
     const observation = this.observation(agentId);
     Object.assign(observation, {
       alive: true,
-      configured: { provider: template.start.provider, cwd: template.start.input.cwd },
+      configured: {
+        provider: template.start.provider,
+        cwd: template.start.input.cwd,
+        runtimeMode: template.start.input.runtimeMode,
+      },
       flags: { enabled: true, spawn: true },
       failure: null,
       takenOver: options.clearTakenOver ? null : observation.takenOver,

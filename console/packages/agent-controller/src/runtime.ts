@@ -49,8 +49,11 @@ const execute = promisify(execFile);
 export type AgentObservation = {
   /** The agent host or its supervisor is running. */
   alive: boolean;
-  /** The provider and working directory its saved configuration was created with. */
-  configured: { provider: string; cwd: string } | null;
+  /**
+   * The provider, working directory and runtime mode its saved configuration
+   * holds; the runtime mode is null in one written without it.
+   */
+  configured: { provider: string; cwd: string; runtimeMode: string | null } | null;
   flags: WatchFlags | null;
   /** `current` is false when the process that wrote it is gone. */
   health: (WatcherHealthFile & { current: boolean }) | null;
@@ -337,7 +340,11 @@ export async function readRoot(
   let configured: AgentObservation['configured'] = null;
   if (config !== null) {
     const parsed = JSON.parse(config) as SharedHostConfig;
-    configured = { provider: parsed.start.provider, cwd: parsed.start.input.cwd };
+    configured = {
+      provider: parsed.start.provider,
+      cwd: parsed.start.input.cwd,
+      runtimeMode: parsed.start.input.runtimeMode ?? null,
+    };
   }
   let flags: WatchFlags | null = null;
   try {

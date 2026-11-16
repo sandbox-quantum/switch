@@ -2,7 +2,14 @@ import { isAbsolute } from 'node:path';
 import {
   providerLoginEnvironment,
   providerUnsupportedReason,
+  runtimeModeFor,
 } from '@switch-console/agent-providers';
+import {
+  type DefinitionContext,
+  effectiveDefinition,
+  howToAllow,
+  unallowedDirectory,
+} from './device-policy';
 import { ReasonedError } from './errors';
 import { errorMessage, type Logger } from './log';
 import { expandHome, insideDataDir, isSafeSegment } from './paths';
@@ -41,10 +48,14 @@ export type Action =
 
 /**
  * Why an assigned agent cannot be applied on this machine as defined, or null
- * when it can. `dataDir` is the controller's data directory, which no agent
- * may work in; a link to it is found only when the agent starts.
+ * when it can. No agent may work in the controller's data directory (a link
+ * to it is found only when the agent starts), and one may work outside the
+ * workspaces folder only where the device allows it.
  */
-export function definitionProblem(entry: AgentAssignment, dataDir: string): string | null {
+export function definitionProblem(
+  entry: AgentAssignment,
+  context: DefinitionContext
+): string | null {
   if (!isSafeSegment(entry.agent_id))
     return `The agent id '${entry.agent_id}' cannot be used as a directory name.`;
   if (!isProvider(entry.definition.provider))
@@ -60,10 +71,19 @@ export function definitionProblem(entry: AgentAssignment, dataDir: string): stri
     return `The agent name '${entry.definition.name}' cannot be used as a workspace directory name; set a directory.`;
   if (entry.definition.directory !== null) {
     const directory = expandHome(entry.definition.directory);
-    if (isAbsolute(directory) && insideDataDir(dataDir, directory))
-      return `The working directory ${directory} is inside this controller's data directory ${dataDir}, which holds its credentials. Choose another directory.`;
+    if (isAbsolute(directory) && insideDataDir(context.dataDir, directory))
+      return `The working directory ${directory} is inside this controller's data directory ${context.dataDir}, which holds its credentials. Choose another directory.`;
   }
+  const unallowed = unallowedDirectory(entry, context);
+  if (unallowed !== null)
+    return `Switch asks for this agent to work in ${unallowed}, outside ${context.workspaces}, and this device has not allowed that. ${howToAllow(entry.agent_id, { directory: unallowed })}`;
   return null;
+}
+
+/** The runtime mode an agent host for `entry` is given on this device. */
+function runtimeModeOf(entry: AgentAssignment, context: DefinitionContext): string {
+  const definition = effectiveDefinition(entry, context);
+  return runtimeModeFor({ autoApprove: definition.auto_approve, autoMode: definition.auto_mode });
 }
 
 /**
@@ -87,8 +107,8 @@ export function definitionProblem(entry: AgentAssignment, dataDir: string): stri
  */
 export function planReconcile(input: {
   assignment: Assignment;
-  /** The controller's data directory (`definitionProblem`). */
-  dataDir: string;
+  /** What definitions are checked against here (`definitionProblem`). */
+  context: DefinitionContext;
   rows: AgentRow[];
   observations: Map<string, AgentObservation>;
   /** Agents whose relay credentials file was rewritten in this pass. */
@@ -105,7 +125,7 @@ export function planReconcile(input: {
     const observation = input.observations.get(agentId);
     if (!observation) throw new Error(`No observation of agent ${agentId} to reconcile against.`);
     const applied = row?.appliedRevision ?? null;
-    const problem = definitionProblem(entry, input.dataDir);
+    const problem = definitionProblem(entry, input.context);
     if (problem) {
       if (row?.failure?.revision !== entry.revision || observation.alive)
         actions.push({
@@ -180,6 +200,17 @@ export function planReconcile(input: {
           clearTakenOver: false,
           why: 'its relay endpoint or token changed',
         });
+      else if (
+        observation.configured?.runtimeMode != null &&
+        observation.configured.runtimeMode !== runtimeModeOf(entry, input.context)
+      )
+        actions.push({
+          ...base,
+          restart: false,
+          replaceIdentity: false,
+          clearTakenOver: false,
+          why: 'what this device allows it changed',
+        });
       continue;
     }
     if (observation.takenOver) continue;
@@ -213,8 +244,8 @@ export function planReconcile(input: {
 export type ReconcileDeps = {
   store: ControllerStore;
   runtime: AgentRuntime;
-  /** The controller's data directory (`definitionProblem`). */
-  dataDir: string;
+  /** What definitions are checked against here, as it stands now (`definitionProblem`). */
+  context: () => DefinitionContext;
   /**
    * Makes the agent's credentials file name the relay and a token it accepts.
    * Resolves true when the file had to be (re)written.
@@ -245,7 +276,7 @@ export async function startAgent(
   deps: ReconcileDeps
 ): Promise<StartFailure | null> {
   const { agentId, entry } = action;
-  const definition = entry.definition;
+  const definition = effectiveDefinition(entry, deps.context());
   const nowMs = deps.now();
   const now = new Date(nowMs).toISOString();
   try {
@@ -355,13 +386,17 @@ export async function executeAction(action: Action, deps: ReconcileDeps): Promis
 export async function reconcile(assignment: Assignment, deps: ReconcileDeps): Promise<Action[]> {
   const observations = new Map<string, AgentObservation>();
   const credentialsChanged = new Set<string>();
+  const context = deps.context();
   for (const entry of assignment.agents) {
-    if (definitionProblem(entry, deps.dataDir)) {
+    // An id that cannot name a directory has nothing on disk to observe.
+    if (!isSafeSegment(entry.agent_id)) {
       observations.set(entry.agent_id, emptyObservation());
       continue;
     }
+    // Observed even when it cannot be applied: one running under what is no
+    // longer allowed here is stopped.
     observations.set(entry.agent_id, await deps.runtime.observe(entry.agent_id));
-    if (entry.desired_state !== 'running') continue;
+    if (entry.desired_state !== 'running' || definitionProblem(entry, context)) continue;
     try {
       if (await deps.ensureCredentials(entry.agent_id, entry.definition.provider))
         credentialsChanged.add(entry.agent_id);
@@ -375,7 +410,7 @@ export async function reconcile(assignment: Assignment, deps: ReconcileDeps): Pr
   }
   const actions = planReconcile({
     assignment,
-    dataDir: deps.dataDir,
+    context,
     rows: deps.store.agents(),
     observations,
     credentialsChanged,
