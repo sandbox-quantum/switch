@@ -123,6 +123,9 @@ def test_the_dashboard_files_carry_the_security_headers() -> None:
     # `no-referrer` would also strip Origin from the dashboard's own POSTs,
     # which switch-core's Origin check refuses.
     assert headers["referrer-policy"] == "same-origin"
+    assert "server_tokens off;" in NGINX_CONF.read_text(), (
+        "the gateway's nginx names its version in every response's Server header"
+    )
 
 
 def test_the_chart_serves_the_images_nginx_config() -> None:

@@ -1300,7 +1300,8 @@ version of their own to them without also giving them a release of their own.
 - **The gateway container sends the dashboard with security headers.** Its
   nginx, and the chart's copy of the same config, now send the dashboard's
   own files with switch-core's Content-Security-Policy, `X-Frame-Options:
-  DENY`, `X-Content-Type-Options: nosniff` and `Referrer-Policy: same-origin`.
+  DENY`, `X-Content-Type-Options: nosniff` and `Referrer-Policy: same-origin`,
+  and no longer name the nginx version in the `Server` header.
 - **Images Switch does not build are pinned by digest.** The switch-core and
   setup images build from `python:3.12.16-slim-trixie` (what `3.12-slim` is
   today), and switch-core's uv is 0.13.1, no longer `latest`. The gateway
