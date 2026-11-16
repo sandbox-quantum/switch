@@ -20,6 +20,8 @@ vi.mock('@main/core/managed-switch-server/host/host-for-server', () => ({
       ? `remote-switch-server:${server.sshHost}:secrets`
       : 'local-switch-server:secrets',
 }));
+const registerServerPageLinkHandlers = vi.hoisted(() => vi.fn());
+vi.mock('@main/utils/externalLinks', () => ({ registerServerPageLinkHandlers }));
 vi.mock('./servers-store', () => ({ getSessionCookie, setSessionCookie }));
 vi.mock('./server-address', () => ({ keepSeparateDashboard }));
 const consoleIdentityHeaders = vi.hoisted(() =>
@@ -416,26 +418,24 @@ describe('oidcLogin following an older server to its callback host', () => {
     const loadURL = vi.fn(async (_url: string) => {});
     loadURL.mockImplementationOnce(() => firstLoad);
     let cookie: string | null = null;
+    const destroy = vi.fn();
+    const webContents = {
+      on: (event: string, listener: (...args: unknown[]) => void) => {
+        listeners.set(event, [...(listeners.get(event) ?? []), listener]);
+      },
+    };
     vi.mocked(electron.session.fromPartition).mockReturnValue({
       cookies: { get: vi.fn(async () => (cookie === null ? [] : [{ value: cookie }])) },
     } as never);
     vi.mocked(electron.BrowserWindow).mockImplementation(function () {
-      return {
-        loadURL,
-        webContents: {
-          on: (event: string, listener: (...args: unknown[]) => void) => {
-            listeners.set(event, [...(listeners.get(event) ?? []), listener]);
-          },
-        },
-        on: vi.fn(),
-        isDestroyed: () => false,
-        destroy: vi.fn(),
-      } as never;
+      return { loadURL, webContents, on: vi.fn(), isDestroyed: () => false, destroy } as never;
     });
     const emit = (event: string, ...args: unknown[]) =>
       (listeners.get(event) ?? []).forEach((listener) => listener(...args));
     return {
       loadURL,
+      destroy,
+      webContents,
       /** A server-side redirect of the window's main frame, or of a subframe. */
       redirect(url: string, isMainFrame = true) {
         const preventDefault = vi.fn();
@@ -526,6 +526,42 @@ describe('oidcLogin following an older server to its callback host', () => {
     win.signedIn();
 
     expect(await result).toMatchObject({ success: true });
+  });
+
+  it('keeps the server’s pages from opening windows or leaving the web', async () => {
+    const win = signInWindow();
+    const result = oidcLogin(ONE_ADDRESS, null, false);
+
+    expect(registerServerPageLinkHandlers).toHaveBeenCalledExactlyOnceWith(win.webContents);
+
+    win.signedIn();
+    await result;
+  });
+
+  it('says at once when the session cannot be kept, rather than timing out', async () => {
+    vi.useFakeTimers();
+    try {
+      setSessionCookie.mockRejectedValueOnce(
+        new Error('Secure secret storage is unavailable on this system.')
+      );
+      const win = signInWindow();
+      const result = oidcLogin(ONE_ADDRESS, null, false);
+
+      win.signedIn();
+
+      // No timer is advanced: the answer cannot be the sign-in timing out.
+      expect(await result).toEqual({
+        success: false,
+        error: {
+          kind: 'failed',
+          message:
+            'Sign-in succeeded, but Switch Console could not save the session securely: Secure secret storage is unavailable on this system. Check that the operating system keychain is available, then sign in again.',
+        },
+      });
+      expect(win.destroy).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('is signed in even when the host cannot be kept', async () => {

@@ -13,6 +13,7 @@ import { type BaseModalProps } from '@renderer/lib/modal/modal-provider';
 import { report } from '@renderer/lib/telemetry/report';
 import { Alert, AlertDescription, AlertTitle } from '@renderer/lib/ui/alert';
 import { Button } from '@renderer/lib/ui/button';
+import { Checkbox } from '@renderer/lib/ui/checkbox';
 import { ConfirmButton } from '@renderer/lib/ui/confirm-button';
 import { Field, FieldGroup, FieldLabel } from '@renderer/lib/ui/field';
 import { Input } from '@renderer/lib/ui/input';
@@ -26,6 +27,7 @@ import type {
   AddServerChoiceName,
   AddServerStepName,
 } from '@shared/core/switch-servers/add-server-steps';
+import { isUnencryptedRemoteUrl } from '@shared/core/switch-servers/loopback';
 import {
   type ServerApiUrlPropagation,
   type SwitchServer,
@@ -1142,6 +1144,11 @@ export function RemoteStackNotice({
 // Step 2c — external server form (connect by URL; also the edit form)
 // ---------------------------------------------------------------------------
 
+/** Whether two addresses are the same, ignoring a trailing slash. */
+function sameAddress(a: string, b: string | null): boolean {
+  return b !== null && a.replace(/\/+$/, '') === b.trim().replace(/\/+$/, '');
+}
+
 function looksLikeUrl(value: string): boolean {
   try {
     const url = new URL(value);
@@ -1199,14 +1206,22 @@ export const ExternalServerStep = observer(function ExternalServerStep({
   const [url, setUrl] = useState(initialUrl ?? existing?.url ?? '');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [unencryptedConfirmed, setUnencryptedConfirmed] = useState(false);
 
   const trimmedName = name.trim();
   const trimmedUrl = url.trim();
   const urlValid = looksLikeUrl(trimmedUrl);
+  // Asked only of an address being set: one already saved was confirmed then.
+  const savedUrl = isEdit ? initialUrl : (existing?.url ?? null);
+  const needsUnencryptedConfirm =
+    urlValid && isUnencryptedRemoteUrl(trimmedUrl) && !sameAddress(trimmedUrl, savedUrl);
   // In edit mode the name is owned by the separate Rename action, and on first
   // run it comes from the address, so neither shows the field or requires it.
   const asksForName = !isEdit && !firstRun;
-  const isValid = (!asksForName || trimmedName.length > 0) && urlValid;
+  const isValid =
+    (!asksForName || trimmedName.length > 0) &&
+    urlValid &&
+    (!needsUnencryptedConfirm || unencryptedConfirmed);
   const submittedName = firstRun && urlValid ? nameFromUrl(trimmedUrl) : trimmedName;
 
   const urlMessage =
@@ -1223,7 +1238,12 @@ export const ExternalServerStep = observer(function ExternalServerStep({
     setSubmitting(true);
     setError(null);
     if (savedId) {
-      const result = await switchServersStore.updateServer(savedId, submittedName, trimmedUrl);
+      const result = await switchServersStore.updateServer(
+        savedId,
+        submittedName,
+        trimmedUrl,
+        needsUnencryptedConfirm && unencryptedConfirmed
+      );
       if (!result) {
         setError(switchServersStore.errorText ?? 'Could not save the server.');
         setSubmitting(false);
@@ -1235,7 +1255,11 @@ export const ExternalServerStep = observer(function ExternalServerStep({
         return;
       }
     } else {
-      const saved = await switchServersStore.addServer(submittedName, trimmedUrl);
+      const saved = await switchServersStore.addServer(
+        submittedName,
+        trimmedUrl,
+        needsUnencryptedConfirm && unencryptedConfirmed
+      );
       if (!saved) {
         setError(switchServersStore.errorText ?? 'Could not add the server.');
         setSubmitting(false);
@@ -1245,7 +1269,17 @@ export const ExternalServerStep = observer(function ExternalServerStep({
       return;
     }
     onSuccess();
-  }, [isValid, isEdit, savedId, submittedName, trimmedUrl, onSuccess, onConnected]);
+  }, [
+    isValid,
+    isEdit,
+    savedId,
+    submittedName,
+    trimmedUrl,
+    needsUnencryptedConfirm,
+    unencryptedConfirmed,
+    onSuccess,
+    onConnected,
+  ]);
 
   // First run is asked before the saved row, because a page that goes on to the
   // sign-in must not offer "Save changes" — the user stepped back to fix an
@@ -1317,7 +1351,10 @@ export const ExternalServerStep = observer(function ExternalServerStep({
           <FieldLabel>Server address</FieldLabel>
           <Input
             value={url}
-            onChange={(e) => setUrl(e.target.value)}
+            onChange={(e) => {
+              setUrl(e.target.value);
+              setUnencryptedConfirmed(false);
+            }}
             placeholder="https://switch.example.com"
             autoFocus={isEdit || firstRun}
             onKeyDown={(e) => {
@@ -1330,6 +1367,27 @@ export const ExternalServerStep = observer(function ExternalServerStep({
           {urlMessage && <p className="mt-1 text-xs text-destructive">{urlMessage}</p>}
           {error && <p className="mt-1 text-xs text-destructive">{error}</p>}
         </Field>
+        {needsUnencryptedConfirm && (
+          <Alert variant="destructive">
+            <TriangleAlert className="size-4" />
+            <AlertTitle>This address is not encrypted</AlertTitle>
+            <AlertDescription className="flex flex-col gap-2">
+              <span>
+                Your password, your session and your agents&rsquo; tokens would cross the network in
+                the clear, where anyone between you and the server can read them. Use the
+                server&rsquo;s https address if it has one.
+              </span>
+              <label className="flex cursor-pointer items-start gap-2 text-foreground">
+                <Checkbox
+                  checked={unencryptedConfirmed}
+                  onCheckedChange={(checked) => setUnencryptedConfirmed(checked === true)}
+                  className="mt-0.5"
+                />
+                <span>Connect without encryption anyway</span>
+              </label>
+            </AlertDescription>
+          </Alert>
+        )}
         {firstRun && (
           <Alert>
             <Info className="size-4" />

@@ -1,6 +1,7 @@
 import { createServer, type Server, type Socket } from 'node:net';
 import type { SshClientProxy } from '@main/core/ssh/lifecycle/ssh-client-proxy';
 import { log } from '@main/lib/logger';
+import { assertIpv6LoopbackFree } from '../free-port';
 
 /** Listen on `127.0.0.1:<port>`, saying why not when that fails. */
 function bind(server: Server, port: number, label: string): Promise<void> {
@@ -33,7 +34,7 @@ function bind(server: Server, port: number, label: string): Promise<void> {
  * for every incoming connection, opens a direct-tcpip channel to the SAME port
  * on the remote host's loopback (via {@link SshClientProxy.forwardOut}) and
  * pipes the two together. Because the port number is mirrored, a single
- * `http://localhost:<port>` URL resolves to the same server whether the caller
+ * `http://127.0.0.1:<port>` URL resolves to the same server whether the caller
  * runs on the desktop (through this bridge) or on the remote host (directly on
  * its loopback).
  *
@@ -76,6 +77,7 @@ export class PortForwarder {
       await bind(server, port, label);
       await new Promise((resolve) => server.close(() => resolve(null)));
     }
+    await assertIpv6LoopbackFree(ports);
   }
 
   private async listen(port: number): Promise<void> {

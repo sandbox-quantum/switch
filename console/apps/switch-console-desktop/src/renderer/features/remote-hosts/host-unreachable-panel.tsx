@@ -31,6 +31,8 @@ export const HostUnreachablePanel = observer(function HostUnreachablePanel({
   const nextProbe = relativeToNow(nextProbeAt);
   const lastSeen = relativeToNow(lastReachableAt);
   const suspended = status === 'suspended';
+  const untrusted = status === 'untrusted';
+  const paused = suspended || untrusted;
 
   return (
     <div className="flex h-full w-full items-center justify-center p-8">
@@ -41,7 +43,11 @@ export const HostUnreachablePanel = observer(function HostUnreachablePanel({
 
         <div className="flex flex-col gap-1.5">
           <p className="text-sm font-medium text-foreground">
-            {suspended ? 'SSH authentication failed' : 'Host unreachable'}
+            {suspended
+              ? 'SSH authentication failed'
+              : untrusted
+                ? 'SSH host key refused'
+                : 'Host unreachable'}
           </p>
           <p className="font-mono text-xs text-foreground-muted">{sshHost}</p>
         </div>
@@ -53,7 +59,9 @@ export const HostUnreachablePanel = observer(function HostUnreachablePanel({
         <p className="max-w-sm text-xs text-foreground-passive">
           {suspended
             ? 'Automatic retries are paused — a rejected credential will not fix itself. Restore SSH access to this host, then retry.'
-            : 'Work on this host is paused so it is not retried continuously. It resumes automatically once the host is back.'}
+            : untrusted
+              ? 'Switch Console connects only to a host whose key it can check. Retry to review the key the host presents now.'
+              : 'Work on this host is paused so it is not retried continuously. It resumes automatically once the host is back.'}
         </p>
 
         <Button
@@ -64,13 +72,13 @@ export const HostUnreachablePanel = observer(function HostUnreachablePanel({
           onClick={() => void hostReachabilityStore.retry(sshHost)}
         >
           <RefreshCw className={retrying ? 'size-3.5 animate-spin' : 'size-3.5'} />
-          {retrying ? 'Checking…' : 'Retry connection'}
+          {retrying ? 'Checking…' : untrusted ? 'Review host key' : 'Retry connection'}
         </Button>
 
         {(nextProbe || lastSeen) && (
           <div className="flex items-center gap-2 text-[11px] text-foreground-passive">
-            {!suspended && nextProbe && <span>Next check in {nextProbe}</span>}
-            {!suspended && nextProbe && lastSeen && <span aria-hidden>·</span>}
+            {!paused && nextProbe && <span>Next check in {nextProbe}</span>}
+            {!paused && nextProbe && lastSeen && <span aria-hidden>·</span>}
             {lastSeen && <span>Last reachable {lastSeen} ago</span>}
           </div>
         )}

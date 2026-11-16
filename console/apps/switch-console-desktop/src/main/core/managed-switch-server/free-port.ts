@@ -1,4 +1,5 @@
 import { createServer } from 'node:net';
+import { LOCAL_SERVER_BIND_ADDR } from './constants';
 
 /**
  * Host ports the managed stack publishes. The compose binds these to 127.0.0.1
@@ -65,14 +66,58 @@ export function isPorts(value: unknown): value is LocalServerPorts {
   );
 }
 
+/**
+ * The address the managed stack is reached at on `port`. The IPv4 literal the
+ * stack binds, never `localhost`: Node and Chromium both try `::1` first for
+ * that name, and the stack holds only `127.0.0.1`, so any other local account
+ * could listen on `[::1]:<port>` and be sent the admin password and session.
+ */
+export function loopbackUrl(port: number): string {
+  return `http://${LOCAL_SERVER_BIND_ADDR}:${port}`;
+}
+
 /** Dashboard URL for a resolved port set. */
 export function gatewayUrlFor(ports: LocalServerPorts): string {
-  return `http://localhost:${ports.gateway}`;
+  return loopbackUrl(ports.gateway);
 }
 
 /** Agent-bridge API URL for a resolved port set. */
 export function apiUrlFor(ports: LocalServerPorts): string {
-  return `http://localhost:${ports.api}`;
+  return loopbackUrl(ports.api);
+}
+
+/**
+ * Whether another program holds `[::1]:<port>`: bound there, it is what
+ * anything reaching the stack as `localhost` gets first. A machine with no
+ * IPv6 loopback has nothing to hold.
+ */
+export function ipv6LoopbackHeld(port: number): Promise<boolean> {
+  return new Promise((resolve, reject) => {
+    const server = createServer();
+    server.once('error', (error: NodeJS.ErrnoException) => {
+      if (error.code === 'EADDRINUSE') resolve(true);
+      else if (error.code === 'EADDRNOTAVAIL' || error.code === 'EAFNOSUPPORT') resolve(false);
+      else reject(error);
+    });
+    server.listen({ port, host: '::1', ipv6Only: true }, () => server.close(() => resolve(false)));
+  });
+}
+
+/**
+ * Refuse a start when another program listens on the IPv6 loopback at one of
+ * the stack's ports, in the words a failed bind uses so the start-failure
+ * explainer offers to move the server to another port.
+ */
+export async function assertIpv6LoopbackFree(ports: number[]): Promise<void> {
+  for (const port of ports) {
+    if (await ipv6LoopbackHeld(port)) {
+      throw new Error(
+        `bind [::1]:${port}: address already in use. Another program is listening on the ` +
+          `IPv6 loopback at the Switch server's port ${port}, where anything that reaches the ` +
+          `server as localhost would go instead.`
+      );
+    }
+  }
 }
 
 /**

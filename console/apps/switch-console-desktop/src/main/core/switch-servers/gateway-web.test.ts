@@ -8,11 +8,13 @@ const fromPartition = vi.hoisted(() =>
   vi.fn(() => ({ cookies: { set: cookiesSet }, webRequest: { onBeforeSendHeaders } }))
 );
 const loadURL = vi.hoisted(() => vi.fn(async () => {}));
+const webContents = vi.hoisted(() => ({}));
 const BrowserWindow = vi.hoisted(() =>
   vi.fn(function () {
-    return { loadURL };
+    return { loadURL, webContents };
   })
 );
+const registerServerPageLinkHandlers = vi.hoisted(() => vi.fn());
 
 vi.mock('electron', () => ({ BrowserWindow, session: { fromPartition } }));
 vi.mock('./servers-store', () => ({ getSessionCookie }));
@@ -24,6 +26,7 @@ vi.mock('./console-identity', () => ({
       : {},
 }));
 vi.mock('@main/lib/logger', () => ({ log: { warn: vi.fn(), error: vi.fn() } }));
+vi.mock('@main/utils/externalLinks', () => ({ registerServerPageLinkHandlers }));
 
 const { openAuthenticatedGatewayPage } = await import('./gateway-web');
 
@@ -72,6 +75,14 @@ describe('openAuthenticatedGatewayPage', () => {
     expect(fromPartition).toHaveBeenCalledWith('persist:switch-gateway:srv-1');
     expect(loadURL).toHaveBeenCalledWith('http://127.0.0.1:8080/agents/abc');
     expect(reauthenticateManagedServer).not.toHaveBeenCalled();
+  });
+
+  it('keeps the dashboard window from opening windows or leaving the web', async () => {
+    getSessionCookie.mockResolvedValue('stored-jwt');
+
+    await openAuthenticatedGatewayPage(SERVER, 'http://127.0.0.1:8080/agents/abc');
+
+    expect(registerServerPageLinkHandlers).toHaveBeenCalledExactlyOnceWith(webContents);
   });
 
   it('opens pages on the dashboard address a server keeps apart, and nowhere else', async () => {
