@@ -27,6 +27,7 @@ from switch_core.db.models import (
     User,
 )
 from switch_core.db.session_scope import tenant_session
+from switch_core.gateway import organization_workspaces
 from tests.switch_core.gateway.test_organization_routes import (
     _app,
     _client,
@@ -470,6 +471,49 @@ class TestItsMembers:
                 "workspace_id": org.first,
             }
         ]
+
+    async def test_a_removal_is_never_kept_without_its_audit_entry(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        app = _app(session_factory)
+        _with_archive(app)
+        org = await _organization(session_factory, app)
+
+        async def audit_fails(*args: object, **kwargs: object) -> None:
+            raise RuntimeError("the audit log is unavailable")
+
+        monkeypatch.setattr(
+            organization_workspaces, "record_organization_audit_event", audit_fails
+        )
+        async with _client(app, org.ada, org.first) as client:
+            with pytest.raises(RuntimeError, match="audit log is unavailable"):
+                await client.delete(f"{WORKSPACES}/{org.second}/members/{org.bob}")
+
+        assert await _role(session_factory, org.second, org.bob) == "member"
+
+    async def test_a_refused_removal_records_nothing(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        app = _app(session_factory)
+        _with_archive(app)
+        org = await _organization(session_factory, app)
+
+        async with _client(app, org.ada, org.first) as client:
+            refused = await client.delete(
+                f"{WORKSPACES}/{org.second}/members/{org.ada}"
+            )
+
+        assert refused.status_code == 409, refused.text
+        assert (
+            await _organization_events(
+                session_factory,
+                org.second,
+                OrganizationAuditAction.MEMBER_REMOVED_FROM_WORKSPACE,
+            )
+            == []
+        )
 
 
 class TestInviting:

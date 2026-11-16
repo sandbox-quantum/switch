@@ -432,7 +432,8 @@ async def remove_organization_workspace_member(
     Users page does (`tenants.remove_member_from_workspace`): their keys and
     connections there revoked, what they own handed over, refused while they
     own agents there or are its last admin. Recorded in the organization's
-    audit log once the removal has committed."""
+    audit log in the removal's own transaction, so neither commits without
+    the other."""
     acting = await acting_org_admin(session, user_store, organization_store, user)
     revocation = AccessRevocation(
         agent_store=agent_store,
@@ -447,9 +448,6 @@ async def remove_organization_workspace_member(
             tenant,
         ):
             role = await user_store.tenant_role(bound, workspace_id, user_id)
-            removed = await remove_member_from_workspace(
-                bound, user_store, revocation, workspace_id, user_id, actor_id=user.id
-            )
             await record_organization_audit_event(
                 bound,
                 organization_id=acting.access.organization_id,
@@ -464,7 +462,9 @@ async def remove_organization_workspace_member(
                     **acting.made_from,
                 },
             )
-            await bound.commit()
+            removed = await remove_member_from_workspace(
+                bound, user_store, revocation, workspace_id, user_id, actor_id=user.id
+            )
     except ServiceError as error:
         return service_refusal(error)
     if user_id == user.id:
