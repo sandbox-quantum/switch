@@ -28,6 +28,7 @@
     "GET /gateway/provider-connections/github/authorize": "Needs a registered GitHub App and a browser round trip through github.com.",
     "GET /gateway/provider-connections/github/callback": "Needs a registered GitHub App and a browser round trip through github.com.",
     "GET /gateway/redoc": "FastAPI's generated API documentation; no behaviour of Switch's own to cover.",
+    "GET /gateway/rooms/from-template/runs/{run_key}": "What a keyed template run has made so far, read by Switch Console only when a run outlasts its wait; a scenario would have to hold a run past that wait. Covered by core's test_template_run_retries.py and test_template_run_key_route.py against real Postgres, and by the role matrix.",
     "GET /gateway/service-connections/{service}/flows/authorize": "Needs the third-party service's own sign-in page in a browser.",
     "GET /gateway/service-connections/{service}/flows/callback": "Needs the third-party service's own sign-in page in a browser.",
     "GET /gateway/service-connections/{service}/workspace": "A workspace admin's view of everyone connected to a service and every agent granted it; anything to list needs a person connected, which takes a vendor's own sign-in or a key the vendor accepts, and no stack the harness builds has either. Covered by core's test_service_connections.py against real Postgres.",

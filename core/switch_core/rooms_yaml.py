@@ -47,6 +47,7 @@ from switch_core.bridges.resource.registry import validate_reference_value
 from switch_core.clients.actor import SystemActor
 from switch_core.clients.admin_messages import OnBehalfOf
 from switch_core.db.models import User, require_tenant_id
+from switch_core.db.stores.room_store import KICKOFF_POSTED_KEY
 from switch_core.room_service import RoleSpec, RoomCreateConfig
 from switch_core.telemetry import TelemetryService, emit_after_commit
 
@@ -1105,8 +1106,15 @@ class RoomYamlService:
         origin: AgentOrigin | None = None,
         template_name: str | None = None,
         on_room_made: Callable[[str, str], Awaitable[None]] | None = None,
+        run_key: str | None = None,
     ) -> ProvisionResult:
         """Create the room and everything the spec attaches to it.
+
+        ``run_key`` names the template run this is one attempt of. A room an
+        earlier attempt of that run made, under this name, is finished
+        instead of made again (`_finish_earlier_room`): its agents are put in
+        and its kickoff posted if it never was. A room this makes is recorded
+        under the key.
 
         ``on_room_made`` is called with the room's name and id as soon as it
         exists, before its kickoff: a template run opens its agents to the room
@@ -1123,6 +1131,29 @@ class RoomYamlService:
         that can refuse an agent's room have run before this is called.
         ``template_name`` is what the room's run is listed under.
         """
+        if run_key is not None:
+            async with self._session_factory() as session:
+                earlier = next(
+                    (
+                        room
+                        for room in await self._room_store.template_run_rooms(
+                            session, run_key, owner_id=user_id
+                        )
+                        if room.name == spec.name
+                    ),
+                    None,
+                )
+            if earlier is not None:
+                return await self._finish_earlier_room(
+                    earlier,
+                    spec,
+                    kickoff=kickoff,
+                    user_id=user_id,
+                    creator_name=creator_name,
+                    origin=origin,
+                    on_room_made=on_room_made,
+                )
+
         console = is_console_room(spec.bridge)
         owner: User | None = None
         if console:
@@ -1173,6 +1204,7 @@ class RoomYamlService:
             run_id=origin.run_id if origin else None,
             kickoff_hash=kickoff_fingerprint(kickoff) if origin and kickoff else None,
             template_name=template_name,
+            template_run_key=run_key,
             owner_id=user_id,
             acting_user_id=user_id,
             acting_is_admin=is_admin,
@@ -1208,20 +1240,15 @@ class RoomYamlService:
         )
 
         if kickoff:
-            # The room exists at this point. A kickoff failure is recorded on
-            # the result; raising here would report the room as not created.
-            try:
-                await self._send_kickoff(
-                    result.room,
-                    kickoff,
-                    agent_names=spec.agents,
-                    user_id=user_id,
-                    user_name=creator_name,
-                    origin=origin,
-                    failures=failures,
-                )
-            except Exception as e:  # noqa: BLE001 - reported on the result
-                failures.append({"kind": "kickoff", "id": "kickoff", "error": str(e)})
+            await self._post_kickoff_once(
+                result.room,
+                kickoff,
+                agent_names=spec.agents,
+                user_id=user_id,
+                user_name=creator_name,
+                origin=origin,
+                failures=failures,
+            )
 
         return ProvisionResult(
             room_id=room_id,
@@ -1233,6 +1260,92 @@ class RoomYamlService:
             role_names=[r.name for r in spec.roles],
             failed_attachments=failures,
         )
+
+    async def _finish_earlier_room(
+        self,
+        room: Room,
+        spec: RoomSpec,
+        *,
+        kickoff: str | None,
+        user_id: str,
+        creator_name: str | None,
+        origin: AgentOrigin | None,
+        on_room_made: Callable[[str, str], Awaitable[None]] | None,
+    ) -> ProvisionResult:
+        """Finish a room an earlier attempt of the same template run made:
+        put in the agents the spec names that it lacks, and post the kickoff
+        if it was never posted. Nothing else is made again, so a retry neither
+        doubles the kickoff nor leaves a second channel beside the first."""
+        failures: list[dict[str, Any]] = []
+        async with self._session_factory() as session:
+            present = set(await self._room_store.get_agent_ids(session, room.id))
+            wanted = await self._agent_store.get_by_names(session, list(spec.agents))
+        missing = [agent.id for agent in wanted if agent.id not in present]
+        if missing:
+            await self._rooms.add_agents_to_room(
+                room.id, agent_ids=missing, added_by_kind="system"
+            )
+        if on_room_made is not None:
+            await on_room_made(room.name, room.id)
+        if kickoff and not (room.metadata_ or {}).get(KICKOFF_POSTED_KEY):
+            await self._post_kickoff_once(
+                room,
+                kickoff,
+                agent_names=spec.agents,
+                user_id=user_id,
+                user_name=creator_name,
+                origin=origin,
+                failures=failures,
+            )
+        logger.info(
+            "Template run finished room %s (%s) an earlier attempt made, adding %d agent(s)",
+            room.name,
+            room.id,
+            len(missing),
+        )
+        return ProvisionResult(
+            room_id=room.id,
+            room_name=room.name,
+            attached_reference_ids=[],
+            attached_package_ids=[],
+            created_reference_ids=[],
+            created_document_ids=[],
+            role_names=[r.name for r in spec.roles],
+            failed_attachments=failures,
+        )
+
+    async def _post_kickoff_once(
+        self,
+        room: Room,
+        text: str,
+        *,
+        agent_names: list[str],
+        user_id: str,
+        user_name: str | None,
+        failures: list[dict[str, Any]],
+        origin: AgentOrigin | None,
+    ) -> None:
+        """Post the kickoff, and record on the room that it was, so no later
+        attempt of the run posts it again. The room exists at this point: a
+        kickoff failure is recorded on the result, never raised, which would
+        report the room as not created."""
+        try:
+            posted = await self._send_kickoff(
+                room,
+                text,
+                agent_names=agent_names,
+                user_id=user_id,
+                user_name=user_name,
+                origin=origin,
+                failures=failures,
+            )
+        except Exception as e:  # noqa: BLE001 - reported on the result
+            failures.append({"kind": "kickoff", "id": "kickoff", "error": str(e)})
+            return
+        if posted:
+            async with self._session_factory() as session:
+                await self._room_store.mark_kickoff_posted(session, room.id)
+                await session.commit()
 
     async def provision_group(
         self,
@@ -1559,8 +1672,9 @@ class RoomYamlService:
         user_name: str | None,
         failures: list[dict[str, Any]],
         origin: AgentOrigin | None = None,
-    ) -> None:
-        """Post the kickoff into the room the template just created.
+    ) -> bool:
+        """Post the kickoff into the room the template just created. Returns
+        whether its headline reached the room.
 
         Switch posts it on the creator's behalf, so nobody is impersonated:
         the message renders as the app, and each agent it mentions applies
@@ -1578,12 +1692,12 @@ class RoomYamlService:
 
         if self._client_lifecycle is None:
             fail("kickoff posting is not configured here")
-            return
+            return False
         admins = self._client_lifecycle.get_by_type("admin", room.tenant_id)
         admin = next((c for c in admins if isinstance(c, SystemActor)), None)
         if admin is None:
             fail("the platform has no client to post with")
-            return
+            return False
 
         late = await self._wait_for_kickoff_audience(
             room.transport_room_id, admin, agent_names
@@ -1591,7 +1705,7 @@ class RoomYamlService:
         if late:
             fail("did not join the room in time to see the kickoff: " + ", ".join(late))
         if "the platform" in late:
-            return
+            return False
 
         if origin is not None:
             person = OnBehalfOf(user_id, origin.agent_name, origin.agent_id)
@@ -1601,13 +1715,14 @@ class RoomYamlService:
         else:
             person = OnBehalfOf(user_id, user_name or user_id)
             headline = f"Template kickoff on behalf of {person.label}"
+        root_id: str | None = None
         try:
             root_id = await admin.send_platform_message(
                 room.transport_room_id, headline, on_behalf_of=person
             )
             if root_id is None:
                 fail("the platform could not post the kickoff")
-                return
+                return False
             event_id = await admin.send_platform_message(
                 room.transport_room_id,
                 text,
@@ -1617,9 +1732,10 @@ class RoomYamlService:
             )
         except Exception as e:
             fail(str(e))
-            return
+            return root_id is not None
         if event_id is None:
             fail("the platform posted the kickoff headline but not its thread")
+        return True
 
     async def _wait_for_kickoff_audience(
         self,

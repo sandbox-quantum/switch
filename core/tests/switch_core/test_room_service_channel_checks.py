@@ -28,6 +28,7 @@ from switch_core.bridges.collaboration.models import (
     ChannelNotUsable,
     CreatedChannel,
     PrivateChannelOwnerMissing,
+    RetireOutcome,
 )
 from switch_core.db.models import (
     Client,
@@ -60,6 +61,7 @@ class _Adapter:
         self.created: list[dict[str, Any]] = []
         self.checked: list[str] = []
         self.not_usable: dict[str, str] = {}
+        self.retired: list[str] = []
 
     def can_own_channel(self, external_user_id: str) -> bool:
         return not external_user_id.startswith("29:")
@@ -87,6 +89,10 @@ class _Adapter:
             {"channel_type": channel_type, "owner_external_id": owner_external_id}
         )
         return CreatedChannel(id="19:new@thread.tacv2", name=name)
+
+    async def retire_channel(self, external_channel_id: str) -> RetireOutcome:
+        self.retired.append(external_channel_id)
+        return RetireOutcome(outcome="archived")
 
 
 class _Core:
@@ -223,6 +229,25 @@ async def test_a_private_channel_is_owned_by_the_room_owners_linked_account(
     assert adapter.created == [
         {"channel_type": "channel_private", "owner_external_id": DIRECTORY_ID}
     ]
+
+
+async def test_a_channel_made_for_a_room_that_is_never_recorded_is_retired(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A room that fails after its channel exists, before it is recorded,
+    leaves no empty channel behind: nothing in Switch would ever point at
+    it."""
+    user_id, bridge_id = await _setup(
+        session_factory, linked=[(CHANNEL_ACCOUNT, True), (DIRECTORY_ID, True)]
+    )
+    adapter = _Adapter(needs_owner=False)
+
+    with pytest.raises(_Reached):
+        await _service(session_factory, bridge_id, adapter).create_room(
+            _private(bridge_id, user_id)
+        )
+
+    assert adapter.retired == ["19:new@thread.tacv2"]
 
 
 async def test_a_private_channel_without_a_linked_account_is_refused_first(

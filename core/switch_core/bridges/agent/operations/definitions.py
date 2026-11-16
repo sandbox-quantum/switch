@@ -73,6 +73,7 @@ from switch_core.template_runs import (
     NewAgentPlan,
     Problem,
     TemplateAgents,
+    derived_run_key,
     opening_rooms_as_made,
     pending_addressing,
     room_ids_of,
@@ -1983,10 +1984,24 @@ async def _provision_as_agent(
     every check of the agents and the rooms has passed; when the rooms then
     fail, they are deleted again. ``yaml`` is None for a template that
     creates agents and no room.
+
+    The same request made again by the same agent from the same room is a
+    retry of one run (`derived_run_key`): the agents and the room an earlier
+    attempt made are counted and finished, never refused as taken nor made a
+    second time, and the room's kickoff is posted once.
     """
     protocol = get_protocol()
     acting = await _acting_for()
     agent, owner = acting.agent, acting.owner
+    from_room_id = await connected_room()
+    run_key = derived_run_key(
+        agent.id,
+        from_room_id,
+        yaml,
+        inputs,
+        template_name,
+        sorted(plan.name for plan in new_agents),
+    )
     # An agent acts for its owner but not with the owner's admin reach: a
     # document it writes or a template it runs attaches only what the owner
     # could attach as a member, never another person's private reference.
@@ -2009,6 +2024,7 @@ async def _provision_as_agent(
             management=management_port(),
             broker=protocol.service_broker,
             listen_timeout=LISTEN_TIMEOUT_SECONDS,
+            run_key=run_key,
         )
         checked = await creator.check(tenant_id, owner.id, new_agents)
     created_names = {plan.name for plan in new_agents}
@@ -2048,7 +2064,7 @@ async def _provision_as_agent(
     async with protocol.run_service().agent_creating(
         agent,
         owner_name=owner.name,
-        from_room_id=await connected_room(),
+        from_room_id=from_room_id,
         kickoffs=kickoffs,
         pending=pending_addressing(new_agents, owner.id, room_addressing),
     ) as origin:
@@ -2080,6 +2096,7 @@ async def _provision_as_agent(
                     origin=origin,
                     template_name=template_name,
                     on_room_made=room_made,
+                    run_key=run_key,
                 )
                 result = room_result.model_dump()
             if creator is not None and room_addressing:

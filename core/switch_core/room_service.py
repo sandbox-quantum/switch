@@ -60,6 +60,7 @@ from switch_core.db.stores.room_role_store import validate_role_name
 from switch_core.db.stores.room_store import (
     LINKED_CHANNEL_NAME_KEY,
     NAME_SOURCE_KEY,
+    TEMPLATE_RUN_KEY,
     RoomStore,
 )
 from switch_core.db.tenant_lookup import all_tenant_ids
@@ -152,6 +153,10 @@ class RoomCreateConfig(BaseModel):
     kickoff_hash: str | None = None
     # The template the room came from, for runs to show; see `Room`.
     template_name: str | None = None
+    # The template run that made the room, when one did: a retry of that run
+    # finds and finishes the room instead of making another
+    # (`TEMPLATE_RUN_KEY` in the room's metadata).
+    template_run_key: str | None = None
     # Optional group to file the room under at creation (navigation layer).
     group_id: str | None = None
     # Authorization owner (the acting user, or an agent's owner for MCP-created
@@ -691,6 +696,42 @@ class RoomService:
             "public channel."
         )
 
+    @staticmethod
+    async def _retire_unrecorded_channel(
+        collaboration_core: CollaborationCore, external_channel_id: str, room_name: str
+    ) -> None:
+        """Retire a channel made for a room that could not then be recorded.
+        A platform that will not retire it is logged, not raised: the room's
+        own failure is what the caller needs to hear."""
+        try:
+            outcome = await collaboration_core.adapter.retire_channel(
+                external_channel_id
+            )
+        except Exception:
+            logger.exception(
+                "Room %r failed after its channel %s was made, and the channel "
+                "could not be retired; it is left empty",
+                room_name,
+                external_channel_id,
+            )
+            return
+        if outcome.outcome in ("failed", "kept"):
+            logger.error(
+                "Room %r failed after its channel %s was made, and the channel "
+                "was not retired (%s); it is left empty",
+                room_name,
+                external_channel_id,
+                outcome.reason or outcome.outcome,
+            )
+            return
+        logger.warning(
+            "Room %r failed after its channel %s was made; the channel was "
+            "retired (%s)",
+            room_name,
+            external_channel_id,
+            outcome.outcome,
+        )
+
     async def _create_channel(
         self,
         collaboration_core: CollaborationCore,
@@ -948,6 +989,9 @@ class RoomService:
         # The name of a channel made here for the room, which the room then
         # follows through the channel's renames (`NAME_SOURCE_KEY`).
         created_channel_name: str | None = None
+        # Whether the channel was made here, and so is this call's to retire
+        # when the room cannot be recorded for it.
+        made_channel = False
         # The person a new channel is for, put in it below.
         creator: ExternalUser | None = None
         if collaboration_core and external_channel_id is None:
@@ -978,6 +1022,7 @@ class RoomService:
                         user_external_id=user_external_id,
                     )
                 )
+                made_channel = True
             else:
                 created, creator = await self._create_channel(
                     collaboration_core,
@@ -989,6 +1034,7 @@ class RoomService:
                 )
                 external_channel_id = created.id
                 created_channel_name = created.name
+                made_channel = True
 
         # Guard the channel from the moment it exists until the room↔channel
         # mapping is registered. Creating the channel makes the bot auto-join
@@ -1038,6 +1084,11 @@ class RoomService:
                     **(
                         {"agent_greeting": config.agent_greeting}
                         if config.agent_greeting is not None
+                        else {}
+                    ),
+                    **(
+                        {TEMPLATE_RUN_KEY: config.template_run_key}
+                        if config.template_run_key is not None
                         else {}
                     ),
                     **(
@@ -1100,6 +1151,14 @@ class RoomService:
                 )
             if bridge_id and external_channel_id:
                 self._collab_lifecycle.rooms_changed(bridge_id)
+        except Exception:
+            # No room was recorded for the channel made above, so nothing in
+            # Switch would ever point at it: an empty channel left behind.
+            if made_channel and collaboration_core and external_channel_id:
+                await self._retire_unrecorded_channel(
+                    collaboration_core, external_channel_id, config.name
+                )
+            raise
         finally:
             if collaboration_core and external_channel_id:
                 collaboration_core.end_provisioning(external_channel_id)

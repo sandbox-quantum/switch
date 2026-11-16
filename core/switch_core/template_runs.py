@@ -18,10 +18,15 @@ Console from its form, the server from the document (`agent_templates`).
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Literal
+
+from sqlalchemy import func, select
 
 from switch_core.addressing import AddressingRule, owner_only_policy
 from switch_core.agent_refusals import AgentRefused
@@ -40,6 +45,8 @@ from switch_core.db.session_scope import tenant_session
 from switch_core.room_service import FIXED_MEMBERSHIP
 
 if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
     from switch_core.bridges.agent.protocol.agent_core import AgentCore
 
 logger = logging.getLogger(__name__)
@@ -50,6 +57,11 @@ AGENTS_DIR = "{$agents_dir}"
 # be taking events before it makes their rooms.
 LISTEN_TIMEOUT_SECONDS = 30.0
 _CLIENT_POLL_SECONDS = 0.1
+
+# Where an agent a keyed template run created says so, in its `metadata`:
+# `{"key": <run key>, "machine": {"id", "name"}}`. A later attempt of the same
+# run counts the agent as made rather than refusing its name as taken.
+TEMPLATE_RUN_META = "template_run"
 
 # How a template says who may address an agent, and the addressing choice
 # each stands for.
@@ -136,6 +148,67 @@ class RunUndone(AgentRefused):
     def __init__(self, message: str, left_behind: list[str]) -> None:
         super().__init__("run_undone", message)
         self.left_behind = left_behind
+
+
+class RunInProgress(AgentRefused):
+    """Another attempt of the same template run is still going: this one
+    would race it for the same agents and rooms."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "busy",
+            "An earlier attempt of this run is still going. Wait for it to "
+            "finish, then retry: what it made is kept.",
+        )
+
+
+def _run_lock_key(tenant_id: str, owner_id: str, run_key: str) -> Any:
+    return func.hashtext(f"template-run:{tenant_id}:{owner_id}:{run_key}")
+
+
+@asynccontextmanager
+async def one_attempt_at_a_time(
+    session_factory: async_sessionmaker[AsyncSession],
+    tenant_id: str,
+    owner_id: str,
+    run_key: str,
+) -> AsyncIterator[None]:
+    """Hold run `run_key`'s one attempt slot while the attempt runs, across
+    every server process: a session-level advisory lock, released with the
+    attempt, or with its connection if the process dies. A second attempt
+    while one is going is refused with `RunInProgress` rather than left to
+    wait, so a person retrying sees at once that the first is still going."""
+    key = _run_lock_key(tenant_id, owner_id, run_key)
+    async with session_factory() as session:
+        got = (await session.execute(select(func.pg_try_advisory_lock(key)))).scalar()
+        if not got:
+            raise RunInProgress()
+        try:
+            yield
+        finally:
+            await session.execute(select(func.pg_advisory_unlock(key)))
+
+
+async def attempt_in_flight(
+    session_factory: async_sessionmaker[AsyncSession],
+    tenant_id: str,
+    owner_id: str,
+    run_key: str,
+) -> bool:
+    """Whether an attempt of run `run_key` holds its slot right now."""
+    key = _run_lock_key(tenant_id, owner_id, run_key)
+    async with session_factory() as session:
+        got = (await session.execute(select(func.pg_try_advisory_lock(key)))).scalar()
+        if got:
+            await session.execute(select(func.pg_advisory_unlock(key)))
+        return not got
+
+
+def derived_run_key(*parts: Any) -> str:
+    """A run key for a caller that does not choose one: the same request
+    made again gives the same key, so its retry finds what the first made."""
+    canonical = json.dumps(parts, sort_keys=True, default=str)
+    return hashlib.sha256(canonical.encode()).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -243,11 +316,16 @@ class TemplateAgents:
         management: AgentManagementPort | None,
         broker: ServiceBroker | None,
         listen_timeout: float,
+        run_key: str | None,
     ) -> None:
         self._protocol = protocol
         self._management = management
         self._broker = broker
         self._listen_timeout = listen_timeout
+        self._run_key = run_key
+        # Agents an earlier attempt of this run made, found by `check`: they
+        # count as created, and `create` makes only the rest.
+        self._earlier: list[CreatedAgent] = []
 
     async def check(
         self, tenant_id: str, owner_id: str, plans: Sequence[NewAgentPlan]
@@ -271,12 +349,14 @@ class TemplateAgents:
         problems: list[Problem] = []
         names = [plan.name for plan in plans]
         async with tenant_session(self._protocol.session_factory, tenant_id) as session:
-            taken = {
-                agent.name
-                for agent in await self._protocol.agent_store.get_by_names(
-                    session, names
-                )
-            }
+            existing = await self._protocol.agent_store.get_by_names(session, names)
+        earlier = {
+            agent.name: agent
+            for agent in existing
+            if self._made_by_this_run(agent, owner_id)
+        }
+        taken = {agent.name for agent in existing} - earlier.keys()
+        self._earlier = []
         seen: set[str] = set()
         checked: list[CheckedAgent] = []
         for plan in plans:
@@ -301,6 +381,18 @@ class TemplateAgents:
                 )
                 continue
             seen.add(plan.name)
+            if plan.name in earlier:
+                mark = (earlier[plan.name].metadata_ or {})[TEMPLATE_RUN_META]
+                self._earlier.append(
+                    CreatedAgent(
+                        slot=plan.slot,
+                        agent_id=earlier[plan.name].id,
+                        name=plan.name,
+                        machine=dict(mark.get("machine") or {}),
+                        listening=False,
+                    )
+                )
+                continue
             if plan.name in taken:
                 problems.append(
                     Problem(
@@ -355,6 +447,12 @@ class TemplateAgents:
         if problems:
             raise AgentsNotCreated(problems)
         return checked
+
+    def _made_by_this_run(self, agent: Agent, owner_id: str) -> bool:
+        if self._run_key is None or agent.owner_id != owner_id:
+            return False
+        mark = (agent.metadata_ or {}).get(TEMPLATE_RUN_META)
+        return isinstance(mark, dict) and mark.get("key") == self._run_key
 
     async def _check_joins(
         self, tenant_id: str, owner_id: str, plan: NewAgentPlan
@@ -494,13 +592,14 @@ class TemplateAgents:
     async def create(
         self, tenant_id: str, owner_id: str, checked: Sequence[CheckedAgent]
     ) -> list[CreatedAgent]:
-        """Create the checked agents with their addressing and connections.
-        When one fails, the ones already created are deleted again and the
-        failure is raised as `RunUndone`."""
+        """Create the checked agents with their addressing and connections,
+        after the agents an earlier attempt of the run made (`check`). When
+        one fails, the run's agents are deleted again and the failure is
+        raised as `RunUndone`."""
+        created: list[CreatedAgent] = list(self._earlier)
         if not checked:
-            return []
+            return await self._listening(created) if created else []
         assert self._management is not None
-        created: list[CreatedAgent] = []
         for agent in checked:
             plan = agent.plan
             try:
@@ -519,7 +618,9 @@ class TemplateAgents:
                         listening=False,
                     )
                 )
-                await self._finish(tenant_id, owner_id, result["agent_id"], agent)
+                await self._finish(
+                    tenant_id, owner_id, result["agent_id"], agent, result["machine"]
+                )
                 for room_id in agent.join_room_ids:
                     await self._protocol.room_service.add_agents_to_room(
                         room_id, agent_ids=[result["agent_id"]]
@@ -559,17 +660,30 @@ class TemplateAgents:
         return out
 
     async def _finish(
-        self, tenant_id: str, owner_id: str, agent_id: str, agent: CheckedAgent
+        self,
+        tenant_id: str,
+        owner_id: str,
+        agent_id: str,
+        agent: CheckedAgent,
+        machine: dict[str, str],
     ) -> None:
         """Set what creating the managed agent does not: who may address it,
-        whether it can manage agents, and the connections it is granted."""
+        whether it can manage agents, the connections it is granted, and the
+        run that made it, for a later attempt of the run to find."""
         async with tenant_session(self._protocol.session_factory, tenant_id) as session:
-            await self._protocol.agent_store.update(
-                session,
-                agent_id,
-                addressing_policy=agent.addressing_policy,
-                can_manage_agents=agent.plan.can_manage_agents,
-            )
+            columns: dict[str, Any] = {
+                "addressing_policy": agent.addressing_policy,
+                "can_manage_agents": agent.plan.can_manage_agents,
+            }
+            if self._run_key is not None:
+                row = await session.get(Agent, agent_id)
+                metadata = dict(row.metadata_ or {}) if row is not None else {}
+                metadata[TEMPLATE_RUN_META] = {
+                    "key": self._run_key,
+                    "machine": dict(machine),
+                }
+                columns["metadata_"] = metadata
+            await self._protocol.agent_store.update(session, agent_id, **columns)
             await session.commit()
         if not agent.grants:
             return

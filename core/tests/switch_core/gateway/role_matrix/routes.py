@@ -575,6 +575,11 @@ ROUTES: dict[str, Case] = {
         json={"agents": [], "yaml": "{room_yaml}", "template_name": "matrix"},
         why="From a document the caller supplies.",
     ),
+    "GET /gateway/rooms/from-template/runs/{run_key}": get(
+        f"{G}/rooms/from-template/runs/matrix-run",
+        SELF,
+        why="Reads only the caller's own run, by the key the caller chose.",
+    ),
     "POST /gateway/rooms/from-template-document": post(
         f"{G}/rooms/from-template-document",
         owner_or_admins(refused=404),

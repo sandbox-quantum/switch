@@ -55,6 +55,14 @@ NAME_SOURCE_KEY = "name_source"
 # The linked platform channel's name as the bridge last saw it.
 LINKED_CHANNEL_NAME_KEY = "linked_channel_name"
 
+# The template run that made the room, in its `metadata`: a key the run's
+# caller chose, so every attempt of one run finds the rooms an earlier one
+# made. Absent on a room no keyed run made.
+TEMPLATE_RUN_KEY = "template_run_key"
+# Set once the room's template kickoff has been posted, so a retry of the run
+# that made it never posts it again.
+KICKOFF_POSTED_KEY = "kickoff_posted"
+
 # Keys in a room's `metadata` for the follow-the-conversation settings. Both
 # are absent by default (follow-ups on, no main agent), so rooms made before
 # the settings existed need no backfill.
@@ -302,6 +310,28 @@ class RoomStore:
             .order_by(Room.run_id.is_not(None), Room.created_at)
         )
         return list(result.scalars().all())
+
+    async def template_run_rooms(
+        self, session: AsyncSession, run_key: str, *, owner_id: str
+    ) -> list[Room]:
+        """The live rooms `owner_id`'s template run `run_key` made, oldest
+        first (`TEMPLATE_RUN_KEY`)."""
+        result = await session.execute(
+            select(Room)
+            .where(
+                Room.metadata_[TEMPLATE_RUN_KEY].astext == run_key,
+                Room.owner_id == owner_id,
+                Room.archived_at.is_(None),
+            )
+            .order_by(Room.created_at)
+        )
+        return list(result.scalars().all())
+
+    async def mark_kickoff_posted(self, session: AsyncSession, room_id: str) -> None:
+        room = await session.get(Room, room_id)
+        if room is None:
+            return
+        room.metadata_ = {**(room.metadata_ or {}), KICKOFF_POSTED_KEY: True}
 
     async def path_to_root(self, session: AsyncSession, room_id: str) -> list[Room]:
         """``room_id`` and each room above it, up to the root of its run.

@@ -36,7 +36,7 @@ from switch_core.db.stores.reference_type_store import ReferenceTypeStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_link_store import RoomLinkStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
-from switch_core.db.stores.room_store import RoomStore
+from switch_core.db.stores.room_store import TEMPLATE_RUN_KEY, RoomStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.room_policy import visibility_for_channel
 from switch_core.room_service import RoomCreateConfig, RoomCreateResult
@@ -83,6 +83,11 @@ class FakeRoomService:
                 or visibility_for_channel(config.channel_type or "channel_public"),
                 write_visibility="private",
                 group_id=config.group_id,
+                metadata_=(
+                    {TEMPLATE_RUN_KEY: config.template_run_key}
+                    if config.template_run_key is not None
+                    else None
+                ),
             )
             session.add(room)
             await session.flush()
@@ -92,6 +97,16 @@ class FakeRoomService:
                 )
             await session.commit()
             return RoomCreateResult(room=room, failed_attachments=[])
+
+    async def add_agents_to_room(
+        self, room_id: str, agent_ids: list[str], added_by_kind: str
+    ) -> None:
+        async with self._sf() as session:
+            for aid in agent_ids:
+                await session.execute(
+                    insert(room_agents).values(room_id=room_id, agent_id=aid)
+                )
+            await session.commit()
 
 
 async def _make_agent(

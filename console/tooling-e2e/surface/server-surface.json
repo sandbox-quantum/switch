@@ -895,6 +895,11 @@
       "flags": []
     },
     {
+      "route": "GET /gateway/rooms/from-template/runs/{run_key}",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "GET /gateway/rooms/template-schema",
       "auth": "session",
       "flags": []

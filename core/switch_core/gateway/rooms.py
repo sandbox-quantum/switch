@@ -30,7 +30,11 @@ from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_group_store import RoomGroupStore
-from switch_core.db.stores.room_store import LINKED_CHANNEL_NAME_KEY, RoomStore
+from switch_core.db.stores.room_store import (
+    KICKOFF_POSTED_KEY,
+    LINKED_CHANNEL_NAME_KEY,
+    RoomStore,
+)
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.decision.room import (
@@ -127,11 +131,15 @@ from switch_core.telemetry import emit_after_commit
 from switch_core.template_installs import record_install, vouched_source
 from switch_core.template_runs import (
     LISTEN_TIMEOUT_SECONDS,
+    TEMPLATE_RUN_META,
     AgentsNotCreated,
     ConnectionPlan,
     NewAgentPlan,
+    RunInProgress,
     RunUndone,
     TemplateAgents,
+    attempt_in_flight,
+    one_attempt_at_a_time,
     opening_rooms_as_made,
     room_ids_of,
 )
@@ -794,11 +802,11 @@ class TemplateRunBody(BaseModel):
     template_name: str
 
 
-def _refused_run(error: AgentsNotCreated | RunUndone) -> JSONResponse:
+def _refused_run(error: AgentsNotCreated | RunUndone | RunInProgress) -> JSONResponse:
     content: dict[str, Any] = {"detail": str(error), "code": error.reason}
     if isinstance(error, AgentsNotCreated):
         content["problems"] = [p.as_dict() for p in error.problems]
-    else:
+    elif isinstance(error, RunUndone):
         content["left_behind"] = error.left_behind
     return JSONResponse(status_code=409, content=content)
 
@@ -810,6 +818,7 @@ async def run_template_with_agents(
     protocol: Annotated[AgentCore, Depends(get_protocol)],
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
+    run_key: Annotated[str | None, Query(max_length=128)] = None,
 ) -> dict[str, Any] | JSONResponse:
     """Run a template that creates agents: the agents first, as managed
     agents of the caller on their own machines, then its rooms.
@@ -821,6 +830,13 @@ async def run_template_with_agents(
     When the rooms fail after the agents were created, the agents are deleted
     again: 409 with ``code`` ``run_undone`` and ``left_behind`` naming any
     that could not be. A room half that is wrong is 400, as from-yaml.
+
+    ``run_key`` names the run this request is one attempt of, chosen by the
+    caller and sent again on a retry: the retry then counts the agents and
+    finishes the room an earlier attempt made, instead of refusing them as
+    taken. One attempt of a run goes at a time; another while it does is 409
+    with ``code`` ``busy``. A query parameter rather than a body field, so a
+    server from before it ignores it instead of refusing the run.
 
     Returns ``{created_agents: [{slot, agent_id, name, machine, listening}],
     room}``, ``room`` being what from-yaml returns, or null with no room
@@ -837,6 +853,7 @@ async def run_template_with_agents(
         inputs=body.inputs,
         template_name=body.template_name,
         room_addressing={},
+        run_key=run_key,
     )
 
 
@@ -867,6 +884,7 @@ async def run_template_document(
     config: Annotated[SwitchConfig, Depends(get_config)],
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
+    run_key: Annotated[str | None, Query(max_length=128)] = None,
 ) -> dict[str, Any] | JSONResponse:
     """Run a template from its document, the way ``run_template`` does for an
     agent: the server resolves the agents (their machine and provider among
@@ -938,6 +956,7 @@ async def run_template_document(
         inputs=plan.inputs or None,
         template_name=body.template_name,
         room_addressing=plan.room_addressing,
+        run_key=run_key,
     )
     if source is not None and isinstance(result, dict):
         await record_install(
@@ -965,15 +984,67 @@ async def _run_as_person(
     inputs: dict[str, Any] | None,
     template_name: str,
     room_addressing: dict[str, list[str]],
+    run_key: str | None,
 ) -> dict[str, Any] | JSONResponse:
     """Check everything, create the agents, then the rooms, as `user`; undo
-    the agents when the rooms fail."""
+    the agents when the rooms fail.
+
+    With a `run_key`, one attempt of the run goes at a time, and an attempt
+    counts the agents and finishes the room an earlier one made."""
+    tenant_id = require_tenant_id()
+    try:
+        if run_key is None:
+            return await _attempt_as_person(
+                rooms_yaml,
+                protocol,
+                user,
+                is_admin,
+                plans=plans,
+                document=document,
+                inputs=inputs,
+                template_name=template_name,
+                room_addressing=room_addressing,
+                run_key=None,
+            )
+        async with one_attempt_at_a_time(
+            protocol.session_factory, tenant_id, user.id, run_key
+        ):
+            return await _attempt_as_person(
+                rooms_yaml,
+                protocol,
+                user,
+                is_admin,
+                plans=plans,
+                document=document,
+                inputs=inputs,
+                template_name=template_name,
+                room_addressing=room_addressing,
+                run_key=run_key,
+            )
+    except RunInProgress as error:
+        return _refused_run(error)
+
+
+async def _attempt_as_person(
+    rooms_yaml: RoomYamlService,
+    protocol: AgentCore,
+    user: User,
+    is_admin: bool,
+    *,
+    plans: list[NewAgentPlan],
+    document: str | None,
+    inputs: dict[str, Any] | None,
+    template_name: str,
+    room_addressing: dict[str, list[str]],
+    run_key: str | None,
+) -> dict[str, Any] | JSONResponse:
     tenant_id = require_tenant_id()
     creator = TemplateAgents(
         protocol=protocol,
         management=management_port(),
         broker=protocol.service_broker,
         listen_timeout=LISTEN_TIMEOUT_SECONDS,
+        run_key=run_key,
     )
     try:
         parsed = None
@@ -1017,6 +1088,7 @@ async def _run_as_person(
                         creator_name=builtins["$creator"],
                         template_name=template_name,
                         on_room_made=room_made,
+                        run_key=run_key,
                     )
                 if room_addressing:
                     await creator.open_to_rooms(
@@ -1054,6 +1126,65 @@ async def _run_as_person(
         ],
         "room": None if room is None else room.model_dump(),
     }
+
+
+class TemplateRunAttemptAgent(BaseModel):
+    agent_id: str
+    name: str
+
+
+class TemplateRunAttemptRoom(BaseModel):
+    room_id: str
+    room_name: str
+    kickoff_posted: bool
+
+
+class TemplateRunAttempts(BaseModel):
+    """What a keyed template run has made so far, for a caller that stopped
+    waiting for its answer. `in_flight` is whether an attempt is still going:
+    a step not listed here then may yet be made."""
+
+    in_flight: bool
+    agents: list[TemplateRunAttemptAgent]
+    rooms: list[TemplateRunAttemptRoom]
+
+
+@router.get("/from-template/runs/{run_key}")
+async def template_run_so_far(
+    run_key: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
+    room_store: Annotated[RoomStore, Depends(get_room_store)],
+    agent_store: Annotated[AgentStore, Depends(get_agent_store)],
+    user: Annotated[User, Depends(get_current_user)],
+) -> TemplateRunAttempts:
+    """The agents and rooms the caller's template run `run_key` has made,
+    and whether an attempt of it is still going. Read by Switch Console when
+    a run outlasts its wait, so it reports what exists, not a guess."""
+    tenant_id = require_tenant_id()
+    agents = [
+        agent
+        for agent in await agent_store.get_in_tenant(session, tenant_id)
+        if agent.owner_id == user.id
+        and isinstance((agent.metadata_ or {}).get(TEMPLATE_RUN_META), dict)
+        and (agent.metadata_ or {})[TEMPLATE_RUN_META].get("key") == run_key
+    ]
+    rooms = await room_store.template_run_rooms(session, run_key, owner_id=user.id)
+    await session.commit()
+    return TemplateRunAttempts(
+        in_flight=await attempt_in_flight(
+            protocol.session_factory, tenant_id, user.id, run_key
+        ),
+        agents=[TemplateRunAttemptAgent(agent_id=a.id, name=a.name) for a in agents],
+        rooms=[
+            TemplateRunAttemptRoom(
+                room_id=r.id,
+                room_name=r.name,
+                kickoff_posted=bool((r.metadata_ or {}).get(KICKOFF_POSTED_KEY)),
+            )
+            for r in rooms
+        ],
+    )
 
 
 class RoomAgentCandidates(BaseModel):
