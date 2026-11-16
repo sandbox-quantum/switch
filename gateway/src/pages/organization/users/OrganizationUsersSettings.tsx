@@ -1,4 +1,10 @@
 import Add from "@mui/icons-material/Add";
+import AdminPanelSettingsOutlined from "@mui/icons-material/AdminPanelSettingsOutlined";
+import GroupAddOutlined from "@mui/icons-material/GroupAddOutlined";
+import LogoutOutlined from "@mui/icons-material/LogoutOutlined";
+import ManageAccountsOutlined from "@mui/icons-material/ManageAccountsOutlined";
+import PersonOffOutlined from "@mui/icons-material/PersonOffOutlined";
+import PersonRemoveOutlined from "@mui/icons-material/PersonRemoveOutlined";
 import {
   Alert,
   Box,
@@ -12,7 +18,9 @@ import {
 import { useCallback, useMemo, useState } from "react";
 import ConfirmDialog from "../../../components/ConfirmDialog";
 import DataTable, { type TableColumn, TableEmptyState } from "../../../components/DataTable";
+import InfoTip from "../../../components/InfoTip";
 import RowActionsMenu, { type RowAction } from "../../../components/RowActionsMenu";
+import SuccessSnackbar from "../../../components/SuccessSnackbar";
 import { useAuth } from "../../../data/AuthContext";
 import {
   type CurrentOrganization,
@@ -25,6 +33,7 @@ import {
 import CreateInvitationDialog from "../../workspace/CreateInvitationDialog";
 import { workspaceRoleLabel } from "../../workspace/roles";
 import { useLoad } from "../../workspace/useLoad";
+import UserAvatar from "../../workspace/UserAvatar";
 import { useMemberChanges } from "../memberChanges";
 import OrganizationUsersNotices from "../OrganizationUsersNotices";
 import InviteWorkspacePicker from "./InviteWorkspacePicker";
@@ -146,17 +155,24 @@ export default function OrganizationUsersSettings({
   });
   const [pending, setPending] = useState<Pending | null>(null);
   const [inviting, setInviting] = useState<"pick" | OrganizationWorkspace | null>(null);
+  // What a removal from a workspace did, and what it couldn't revoke, stay on
+  // the page; a plain change is said in the snackbar.
   const [notice, setNotice] = useState<string | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
+  const [done, setDone] = useState<string | null>(null);
 
-  const workspaceChanged = useCallback(
+  const workspaceChanged = useCallback(async () => {
+    onChanged();
+    await members.refetch();
+  }, [members, onChanged]);
+
+  const removedFromWorkspace = useCallback(
     async (message: string, removalWarning: string | null) => {
       setNotice(message);
       setWarning(removalWarning);
-      onChanged();
-      await members.refetch();
+      await workspaceChanged();
     },
-    [members, onChanged],
+    [workspaceChanged],
   );
 
   // The workspaces someone could be added to, or why none can be offered yet.
@@ -168,6 +184,14 @@ export default function OrganizationUsersSettings({
     [workspaces.data],
   );
   const workspacesError = workspaces.error;
+  const noOpenWorkspace =
+    openWorkspaceIds === null
+      ? workspacesError !== null
+        ? "The organization's workspaces couldn't be loaded."
+        : "Loading the organization's workspaces…"
+      : openWorkspaceIds.length === 0
+        ? "Every workspace in the organization is archived."
+        : null;
 
   const columns = useMemo<TableColumn<Row>[]>(() => {
     const administers = organization.administers;
@@ -178,11 +202,13 @@ export default function OrganizationUsersSettings({
         if (row.role === "org_admin") {
           actions.push({
             label: self ? "Step down to Member" : "Make Member",
+            icon: <ManageAccountsOutlined fontSize="small" />,
             onClick: () => setPending({ kind: "demote", member: row }),
           });
         } else {
           actions.push({
             label: "Make Org admin",
+            icon: <AdminPanelSettingsOutlined fontSize="small" />,
             onClick: () => setPending({ kind: "promote", member: row }),
             disabledReason: row.can_grant_org_admin
               ? null
@@ -197,20 +223,17 @@ export default function OrganizationUsersSettings({
         actions.push(
           {
             label: "Add to a workspace",
+            icon: <GroupAddOutlined fontSize="small" />,
             onClick: () => setPending({ kind: "add", member: row }),
             disabledReason:
-              openWorkspaceIds === null
-                ? workspacesError !== null
-                  ? "The organization's workspaces couldn't be loaded."
-                  : "Loading the organization's workspaces…"
-                : openWorkspaceIds.length === 0
-                  ? "Every workspace in the organization is archived."
-                  : openWorkspaceIds.every((id) => row.workspaces.some((w) => w.id === id))
-                    ? "They're already in every workspace that isn't archived."
-                    : null,
+              noOpenWorkspace ??
+              (openWorkspaceIds!.every((id) => row.workspaces.some((w) => w.id === id))
+                ? "They're already in every workspace that isn't archived."
+                : null),
           },
           {
             label: "Change role in a workspace",
+            icon: <ManageAccountsOutlined fontSize="small" />,
             onClick: () => setPending({ kind: "change", member: row }),
             disabledReason: orgAdmin
               ? ORG_ADMIN_WORKSPACE_REASON
@@ -220,6 +243,7 @@ export default function OrganizationUsersSettings({
           },
           {
             label: self ? "Leave a workspace" : "Remove from a workspace",
+            icon: self ? <LogoutOutlined fontSize="small" /> : <PersonRemoveOutlined fontSize="small" />,
             onClick: () => setPending({ kind: "remove-workspace", member: row }),
             destructive: true,
             disabledReason: orgAdmin
@@ -234,6 +258,7 @@ export default function OrganizationUsersSettings({
         const names = row.workspaces.map((w) => w.name).join(", ");
         actions.push({
           label: self ? "Leave organization" : "Remove from organization",
+          icon: self ? <LogoutOutlined fontSize="small" /> : <PersonOffOutlined fontSize="small" />,
           onClick: () => setPending({ kind: "remove-organization", member: row }),
           destructive: true,
           disabledReason:
@@ -252,29 +277,32 @@ export default function OrganizationUsersSettings({
         flex: 1,
         minWidth: 240,
         renderCell: ({ row }) => (
-          <Stack sx={{ justifyContent: "center", height: "100%", minWidth: 0, lineHeight: 1.3 }}>
-            <Stack direction="row" spacing={1} sx={{ alignItems: "center", minWidth: 0 }}>
-              <Typography variant="body2" noWrap sx={{ fontWeight: 500 }}>
-                {row.name}
-                {row.user_id === selfId && (
-                  <Box component="span" sx={{ fontWeight: 400, color: "text.secondary" }}>
-                    {" "}
-                    (you)
-                  </Box>
-                )}
+          <Stack direction="row" spacing={1.5} sx={{ alignItems: "center", height: "100%", minWidth: 0 }}>
+            <UserAvatar name={row.name} email={row.email} />
+            <Stack sx={{ minWidth: 0, lineHeight: 1.3 }}>
+              <Stack direction="row" spacing={1} sx={{ alignItems: "center", minWidth: 0 }}>
+                <Typography variant="body2" noWrap sx={{ fontWeight: 500 }}>
+                  {row.name}
+                  {row.user_id === selfId && (
+                    <Box component="span" sx={{ fontWeight: 400, color: "text.secondary" }}>
+                      {" "}
+                      (you)
+                    </Box>
+                  )}
+                </Typography>
+                {row.service_account && <Chip label="Service account" size="small" variant="outlined" />}
+              </Stack>
+              <Typography variant="caption" color="text.secondary" noWrap>
+                {row.email}
               </Typography>
-              {row.service_account && <Chip label="Service account" size="small" variant="outlined" />}
             </Stack>
-            <Typography variant="caption" color="text.secondary" noWrap>
-              {row.email}
-            </Typography>
           </Stack>
         ),
       },
       {
         field: "role",
-        headerName: "Role",
-        width: 140,
+        headerName: "Organization role",
+        width: 170,
         valueGetter: (_value, row) => ROLE_LABELS[row.role],
         filter: ROLE_FILTER,
         renderCell: ({ row }) =>
@@ -307,7 +335,7 @@ export default function OrganizationUsersSettings({
         },
       },
     ];
-  }, [organization.administers, selfId, openWorkspaceIds, workspacesError]);
+  }, [organization.administers, selfId, openWorkspaceIds, noOpenWorkspace]);
 
   const close = () => setPending(null);
   const openWorkspaces = (workspaces.data ?? []).filter((w) => w.archived_at === null);
@@ -321,21 +349,31 @@ export default function OrganizationUsersSettings({
       >
         <Stack spacing={0.5}>
           <Typography variant="h5">Users</Typography>
-          <Typography variant="body2" color="text.secondary">
-            Everyone in {organization.name}. Someone is removed from each workspace before they can
-            be removed from the organization.
-          </Typography>
+          <Stack direction="row" spacing={0.5} sx={{ alignItems: "center" }}>
+            <Typography variant="body2" color="text.secondary">
+              Everyone in {organization.name}. Someone is removed from each workspace before they can
+              be removed from the organization.
+            </Typography>
+            <InfoTip>
+              Workspaces lists the ones each person is a member of. Org admins also administer every
+              workspace through the organization, so each workspace's user count includes them.
+            </InfoTip>
+          </Stack>
         </Stack>
         {organization.administers && (
-          <Button
-            variant="contained"
-            startIcon={<Add />}
-            onClick={() => setInviting("pick")}
-            disabled={openWorkspaces.length === 0}
-            sx={{ flexShrink: 0 }}
-          >
-            Invite users
-          </Button>
+          <Tooltip title={noOpenWorkspace ?? ""}>
+            {/* A disabled button fires no events, so the tooltip listens on this. */}
+            <Box component="span" sx={{ flexShrink: 0 }}>
+              <Button
+                variant="contained"
+                startIcon={<Add />}
+                onClick={() => setInviting("pick")}
+                disabled={noOpenWorkspace !== null}
+              >
+                Invite users
+              </Button>
+            </Box>
+          </Tooltip>
         )}
       </Stack>
       <Stack spacing={1.5} sx={{ mb: 3 }}>
@@ -450,7 +488,10 @@ export default function OrganizationUsersSettings({
               ? openWorkspaces.filter((w) => !pending.member.workspaces.some((held) => held.id === w.id))
               : pending.member.workspaces
           }
-          onDone={(message) => workspaceChanged(message, null)}
+          onDone={async (message) => {
+            setDone(message);
+            await workspaceChanged();
+          }}
           onClose={close}
         />
       )}
@@ -458,7 +499,7 @@ export default function OrganizationUsersSettings({
         <RemoveFromWorkspaceDialog
           member={pending.member}
           selfId={selfId}
-          onRemoved={workspaceChanged}
+          onRemoved={removedFromWorkspace}
           onClose={close}
         />
       )}
@@ -480,6 +521,7 @@ export default function OrganizationUsersSettings({
           onClose={() => setInviting(null)}
         />
       )}
+      <SuccessSnackbar message={done} onClose={() => setDone(null)} />
     </Box>
   );
 }
