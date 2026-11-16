@@ -25,6 +25,12 @@ export type AgentProviderDefinition = {
   loginCommand: string;
   /** The Switch gateway's known-agent type, sent when an agent registers. */
   knownAgentType: string;
+  /**
+   * Whether a new agent on this provider starts in auto mode: false where
+   * nothing reviews an action before it runs in auto mode. Read it through
+   * `newAgentPermissions`.
+   */
+  newAgentAutoMode: boolean;
 };
 
 type Catalogue = {
@@ -130,6 +136,17 @@ export function isValidProviderId(value: unknown): value is AgentProviderId {
 export function asAgentProviderId(value: string): AgentProviderId {
   if (isValidProviderId(value)) return value;
   throw new Error(`unknown agent provider '${value}'`);
+}
+
+/**
+ * Whether turning auto mode on for `id` lets every action run without anyone
+ * reviewing it first, commands included: the providers a new agent does not
+ * start in auto mode on. False for an id this build does not know, which an
+ * agent row from a newer install can hold; the settings that show this still
+ * render for it.
+ */
+export function autoModeIsUnreviewed(id: AgentProviderId): boolean {
+  return getProvider(id)?.newAgentAutoMode === false;
 }
 
 /**

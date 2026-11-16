@@ -60,6 +60,7 @@ const catalogued = (id: string) => ({
   cliLabel: id,
   loginCommand: id,
   knownAgentType: id,
+  newAgentAutoMode: true,
 });
 
 beforeEach(() => {

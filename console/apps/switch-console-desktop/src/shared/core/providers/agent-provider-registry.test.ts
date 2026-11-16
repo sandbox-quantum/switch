@@ -14,6 +14,7 @@ const provider = (id: string, name: string) => ({
   cliLabel: name,
   loginCommand: `${id} login`,
   knownAgentType: id,
+  newAgentAutoMode: true,
 });
 
 describe('agent provider catalogue', () => {

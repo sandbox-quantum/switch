@@ -187,7 +187,7 @@ async def create_agent(
     advanced_config: dict[str, Any] | None = None,
     instructions: str = "",
     directory: str | None = None,
-    auto_mode: bool = True,
+    auto_mode: bool | None = None,
     auto_approve: bool = False,
     display_name: str | None = None,
     icon_url: str | None = None,
@@ -229,10 +229,13 @@ async def create_agent(
             when the machine has reported where it keeps workspaces, and the
             machine makes the directory if it is missing. Any other directory
             must already exist there.
-        auto_mode: Auto mode, on by default: the provider's own automatic
-            review lets safe actions run without asking and still asks a
-            person before risky ones. Leave it on unless the person asks for
-            every action to be approved.
+        auto_mode: Auto mode: the provider's own automatic review lets safe
+            actions run without asking and still asks a person before risky
+            ones. Null for the provider's default: on for every provider but
+            OpenCode, whose auto mode has no review and runs every command
+            without asking, so a new OpenCode agent asks its owner before
+            each action. Pass true for OpenCode only when the person asks for
+            that after being told commands will then run unreviewed.
         auto_approve: Bypass mode: the agent runs every tool without any
             permission check, and this overrides `auto_mode`. Unsafe; set it
             only when the person explicitly asks for bypass.

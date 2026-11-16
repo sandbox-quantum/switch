@@ -30,7 +30,7 @@ from switch_core.db.models import AgentDefinition as AgentDefinitionRow
 from switch_core.management.advanced_config import validate_advanced_config
 from switch_core.management.sealed_logins import PublicKey, key_id
 from switch_core.process_lease import ProcessLeases
-from switch_core.providers.registry import AgentProviderId
+from switch_core.providers.registry import AgentProviderId, with_new_agent_auto_mode
 
 Provider = AgentProviderId
 ControllerKind = Literal["console", "daemon", "ec2"]
@@ -86,9 +86,11 @@ class DefinitionV1(_GatewayBody):
     advanced_config: dict[str, Any] = Field(default_factory=dict)
     instructions: str = ""
     # The provider's own automatic review: safe actions run, risky ones still
-    # ask. A stored definition without the key predates it and reads as off
-    # (`stored_definition`).
-    auto_mode: bool = True
+    # ask. A body without it gets its provider's default for a new agent
+    # (`_auto_mode_from_provider`); the False here only stands in for a body
+    # whose provider is invalid, which is refused anyway. A stored definition
+    # without the key predates it and reads as off (`stored_definition`).
+    auto_mode: bool = False
     # Bypass: every permission check skipped. Wins over `auto_mode`.
     auto_approve: bool = False
     directory: str | None = None
@@ -96,6 +98,11 @@ class DefinitionV1(_GatewayBody):
     # `isolated`: it runs as a process of its own (a systemd unit on a cloud
     # machine, which runs every agent isolated).
     isolation: Isolation = "shared"
+
+    @model_validator(mode="before")
+    @classmethod
+    def _auto_mode_from_provider(cls, data: Any) -> Any:
+        return with_new_agent_auto_mode(data)
 
     @field_validator("instructions")
     @classmethod

@@ -10,7 +10,11 @@ const plugin = (metadata: { id: string; cliLabel?: string; knownAgentType?: stri
   },
 });
 
-const runtime = (id: string) => ({ id, loginCommand: `${id} login` });
+const runtime = (id: string, newAgentAutoMode = true) => ({
+  id,
+  loginCommand: `${id} login`,
+  newAgentAutoMode,
+});
 
 describe('buildAgentProviderCatalogue', () => {
   it('makes one entry per plugin, in registration order, with its runtime login command', () => {
@@ -28,6 +32,7 @@ describe('buildAgentProviderCatalogue', () => {
         cliLabel: 'beta name',
         loginCommand: 'beta login',
         knownAgentType: 'beta',
+        newAgentAutoMode: true,
       },
       expect.objectContaining({ id: 'alpha', loginCommand: 'alpha login' }),
     ]);
@@ -40,6 +45,12 @@ describe('buildAgentProviderCatalogue', () => {
     );
 
     expect(entry).toMatchObject({ cliLabel: 'Acme CLI', knownAgentType: 'acme-code' });
+  });
+
+  it("takes whether a new agent starts in auto mode from the provider's runtime", () => {
+    const [entry] = buildAgentProviderCatalogue([plugin({ id: 'acme' })], [runtime('acme', false)]);
+
+    expect(entry?.newAgentAutoMode).toBe(false);
   });
 
   it('refuses a plugin with no runtime, naming it', () => {

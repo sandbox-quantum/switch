@@ -4,6 +4,10 @@ import { Badge } from '@renderer/lib/ui/badge';
 import { Switch } from '@renderer/lib/ui/switch';
 import { log } from '@renderer/utils/logger';
 import type { Agent } from '@shared/core/agents/agents';
+import {
+  autoModeIsUnreviewed,
+  providerDisplayName,
+} from '@shared/core/providers/agent-provider-registry';
 import { SettingRow } from './setting-row';
 
 type PermissionSetting = 'autoApprove' | 'autoMode';
@@ -15,7 +19,7 @@ export const PERMISSION_COPY = {
     description: 'Safe actions run on their own; risky ones ask you first.',
     overridden: 'Bypass permissions is on and overrides it.',
     infoLabel: 'More info about auto mode',
-    info: "The agent's provider reviews each action before it runs: Claude, Codex, OpenCode, Cursor and Junie use their own automatic review, Antigravity and Pi approve edits and ask before commands, and DeepSeek Harness, which has no reviewer of its own, asks before every tool except those that only read or search files. Applies to every session, including ones started automatically.",
+    info: "The agent's provider reviews each action before it runs: Claude, Codex, Cursor and Junie use their own automatic review, Antigravity and Pi approve edits and ask before commands, and DeepSeek Harness, which has no reviewer of its own, asks before every tool except those that only read or search files. OpenCode has no review: in auto mode every action runs without asking, so a new OpenCode agent starts with it off. Applies to every session, including ones started automatically.",
   },
   autoApprove: {
     title: 'Bypass permissions',
@@ -24,6 +28,23 @@ export const PERMISSION_COPY = {
     info: "Sessions start with the provider's auto-approve flag, including ones started automatically. Turn it on only for agents you trust to run unattended.",
   },
 } as const;
+
+/**
+ * What the auto mode row says for agents on `providerIds`. For a provider whose
+ * auto mode nothing reviews (OpenCode) it warns that every action, commands
+ * included, then runs without asking, in place of the usual line.
+ */
+export function autoModeDescription(providerIds: readonly string[], overridden: boolean): string {
+  const copy = PERMISSION_COPY.autoMode;
+  const unreviewed = [
+    ...new Set(providerIds.filter(autoModeIsUnreviewed).map((id) => providerDisplayName(id) ?? id)),
+  ];
+  const line =
+    unreviewed.length === 0
+      ? copy.description
+      : `${unreviewed.join(' and ')} ${unreviewed.length === 1 ? 'has' : 'have'} no automatic review: with this on, every action runs without asking, commands included.`;
+  return overridden ? `${line} ${copy.overridden}` : line;
+}
 
 /** The "Unsafe" mark beside the bypass title. */
 export function UnsafeBadge() {
@@ -75,6 +96,7 @@ export function PermissionSettingsSection({
   return (
     <>
       <AutoModeRow
+        providerIds={list.map((agent) => agent.providerId)}
         overridden={single?.autoApprove ?? false}
         control={
           single && <PermissionSwitch agent={single} setting="autoMode" locationId={locationId} />
@@ -97,10 +119,13 @@ export function PermissionSettingsSection({
 
 /** The "Auto mode" row itself, whatever holds the value its switch shows. */
 export function AutoModeRow({
+  providerIds,
   overridden,
   control,
   children,
 }: {
+  /** The providers of the agents the row is for. */
+  providerIds: readonly string[];
   /** Bypass is on, so auto mode has no effect for now. */
   overridden: boolean;
   control: React.ReactNode;
@@ -111,7 +136,7 @@ export function AutoModeRow({
     <SettingRow
       title={copy.title}
       info={{ label: copy.infoLabel, content: copy.info }}
-      description={overridden ? `${copy.description} ${copy.overridden}` : copy.description}
+      description={autoModeDescription(providerIds, overridden)}
       control={control}
     >
       {children}

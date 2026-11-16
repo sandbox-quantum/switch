@@ -2673,7 +2673,9 @@ async def update_agent_detail(
         instructions: Its system prompt (at most 32 KiB).
         auto_mode: Auto mode: the provider's own automatic review lets safe
             actions run without asking and still asks a person before risky
-            ones. On by default for new agents.
+            ones. On by default for new agents, except OpenCode's: its auto
+            mode has no review and runs every command without asking, so
+            turn it on for OpenCode only when the person asks for that.
         auto_approve: Bypass mode: run every tool without any permission
             check; overrides `auto_mode`. Unsafe; turn it on only when the
             person explicitly asks.

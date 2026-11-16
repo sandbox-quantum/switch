@@ -1009,9 +1009,12 @@ does not manage agents, so say so rather than looking for another way.
   `mistral-vibe`, `goose`, `qwen`, `droid`, `cline` and `junie`; a server that
   does not refuses them, naming the feature flag they need), and
   optionally `model`, `advanced_config` (e.g. `{"effort": "high"}`; keys from
-  `get_advanced_config`), `instructions`, `directory`, `auto_mode` (on by
-  default: the provider's automatic review runs safe actions and asks before
-  risky ones), `auto_approve` (bypass: skips every permission check and
+  `get_advanced_config`), `instructions`, `directory`, `auto_mode` (the
+  provider's automatic review runs safe actions and asks before risky ones; on
+  by default, except for `opencode`, whose auto mode has no review and runs
+  every command without asking, so it defaults off and the agent asks before
+  each action; turn it on for OpenCode only when the person asks for that),
+  `auto_approve` (bypass: skips every permission check and
   overrides `auto_mode`; off by default and unsafe, so set it only when the
   person asks), `display_name`, `icon_url`, and `start=false` to create it
   stopped. Leave

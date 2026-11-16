@@ -870,6 +870,15 @@ version of their own to them without also giving them a release of their own.
   stuck out past it.
 
 #### Security
+- **A new OpenCode agent is created with auto mode off.** OpenCode's auto mode
+  has no review of its own and runs every command without asking, so a
+  managed OpenCode agent created without saying whether it runs in auto mode,
+  through the management API, a template run (`auto_mode` left out of the
+  template or the request) or an agent's `create_agent`, now starts asking its
+  owner. Every other provider still defaults to auto mode on, and asking for
+  auto mode explicitly still turns it on. Agents already created keep their
+  stored setting; `list_managed_agents` shows each one's `auto_mode`, and
+  `update_agent_detail` or the agent's settings turn it off.
 - **Cookie-signed changes must come from Switch's own origins.** Every POST,
   PUT, PATCH and DELETE that carries the sign-in cookie, sign-in itself and the
   change socket are checked against `GATEWAY_PUBLIC_URL`, `FRONTEND_BASE_URL`
@@ -4533,6 +4542,19 @@ version of their own to them without also giving them a release of their own.
   over the WebSocket, so it can no longer reach a Switch server older than the
   socket (agent-protocol 7 and older), and it stops sending its own heartbeat
   requests (#673).
+
+#### Security
+- **A new OpenCode agent asks before it acts.** OpenCode's auto mode has no
+  review of its own: it answers every permission request itself, so with it
+  on, anyone who can post in the agent's rooms could have commands run on its
+  owner's machine. New OpenCode agents now start with auto mode off, wherever
+  they are created (the new-agent form, a template, or attaching an agent
+  already set up in a folder), and ask before each command and edit. Auto mode
+  is still there for an owner who turns it on, and the switch now says that
+  every action, commands included, then runs without asking. Agents on other
+  providers start in auto mode as before. Existing agents keep their settings:
+  check an OpenCode agent's **Auto mode** switch in its settings and turn it
+  off if it should ask.
 
 ### [0.40.1] - 2026-10-21
 

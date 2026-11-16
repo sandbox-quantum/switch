@@ -68,6 +68,7 @@ describe('a provider added as a plugin and a runtime', () => {
       cliLabel: 'Dummy CLI',
       loginCommand: 'dummy-agent login',
       knownAgentType: 'dummy',
+      newAgentAutoMode: true,
     });
     expect(knownAgentTypeForProvider('dummy')).toBe('dummy');
   });

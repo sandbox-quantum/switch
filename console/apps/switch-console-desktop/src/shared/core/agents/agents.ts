@@ -1,5 +1,8 @@
 import type { AgentProviderConfig } from '@shared/core/agents/agent-provider-config';
-import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
+import {
+  type AgentProviderId,
+  requireProvider,
+} from '@shared/core/providers/agent-provider-registry';
 
 /**
  * A Switch agent: an agent identity bound to a single provider, living at a
@@ -66,6 +69,16 @@ export type CreateAgentParams = {
   providerConfig?: AgentProviderConfig | null;
 };
 
-/** The permission settings a new agent starts with, wherever it runs: the
- * provider's auto mode on, bypass off. */
-export const NEW_AGENT_PERMISSIONS = { autoApprove: false, autoMode: true } as const;
+/**
+ * The permission settings a new agent on `providerId` starts with, wherever it
+ * runs: bypass off, and the provider's auto mode on unless nothing would review
+ * an action in it (OpenCode), where the agent asks its owner instead. Read from
+ * the provider catalogue, whose `newAgentAutoMode` comes from the provider's
+ * runtime in `@switch-console/agent-providers`.
+ */
+export function newAgentPermissions(providerId: AgentProviderId): {
+  autoApprove: boolean;
+  autoMode: boolean;
+} {
+  return { autoApprove: false, autoMode: requireProvider(providerId).newAgentAutoMode };
+}

@@ -323,6 +323,7 @@ function ManagedAgentPageContent({
             <section className="flex flex-col gap-6">
               <SectionLabel>General</SectionLabel>
               <AutoModeRow
+                providerIds={[agent.definition.provider]}
                 overridden={draft.autoApprove}
                 control={
                   <Switch

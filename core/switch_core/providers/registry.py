@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Annotated
+from typing import Annotated, Any
 
 from pydantic import AfterValidator
 
@@ -67,6 +67,15 @@ class AgentProvider:
 
     tools: tuple[ToolSpec, ...] = ()
     """The built-in tools its agents register."""
+
+    new_agent_auto_mode: bool = True
+    """Whether a new agent on it starts in auto mode when whoever creates it
+    does not say. False where nothing reviews an action before it runs in
+    auto mode: room text reaches an agent as a prompt, so anyone who can post
+    in its rooms could have commands run on its owner's machine. Such an agent
+    starts asking its owner instead, who can still turn auto mode on. Switch
+    Console's `newAgentAutoMode` on the provider's runtime is the same, which
+    a test holds this to."""
 
     def __post_init__(self) -> None:
         if not self.known_agent_type:
@@ -120,6 +129,9 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
         flag=None,
         connector_type="OpenCode CLI",
         advanced_fields=OPENCODE_FIELDS,
+        # OpenCode's auto mode answers every permission ask itself, as its own
+        # `--auto` does: no person and no classifier sees a command first.
+        new_agent_auto_mode=False,
         tools=(
             ToolSpec(name="Bash", description="Executes shell commands"),
             ToolSpec(name="Edit", description="Edits existing files"),
@@ -346,6 +358,30 @@ def agent_provider(provider_id: str) -> AgentProvider:
     raise UnknownProvider(
         f"unknown provider {provider_id!r}; one of {', '.join(provider_ids())}"
     )
+
+
+def new_agent_auto_mode(provider_id: str) -> bool:
+    """Whether a new agent on `provider_id` starts in auto mode when its
+    creator does not say. Raises UnknownProvider for a provider Switch does
+    not run."""
+    return agent_provider(provider_id).new_agent_auto_mode
+
+
+def with_new_agent_auto_mode(data: Any) -> Any:
+    """A new agent's request body with `auto_mode` filled in from its
+    `provider` when the body leaves it out. A body whose provider is missing
+    or unknown is returned as it is, for the provider's own validation to
+    refuse."""
+    if not isinstance(data, dict) or "auto_mode" in data:
+        return data
+    provider = data.get("provider")
+    if not isinstance(provider, str):
+        return data
+    try:
+        default = new_agent_auto_mode(provider)
+    except UnknownProvider:
+        return data
+    return {**data, "auto_mode": default}
 
 
 def _require_agent_provider(value: str) -> str:
