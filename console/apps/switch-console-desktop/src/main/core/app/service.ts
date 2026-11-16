@@ -1,7 +1,7 @@
 import { exec } from 'node:child_process';
-import { readFile, realpath, stat, writeFile } from 'node:fs/promises';
+import { access, readFile, realpath, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { extname, resolve, sep } from 'node:path';
+import { extname, isAbsolute, join, resolve, sep } from 'node:path';
 import type { IDisposable, IInitializable } from '@switch-console/shared';
 import { app, dialog, shell } from 'electron';
 import {
@@ -35,6 +35,25 @@ import {
 
 const FONT_CACHE_TTL_MS = 5 * 60 * 1_000;
 const MAX_AUDIO_FILE_BYTES = 20 * 1024 * 1024;
+
+/**
+ * The schemes "Open in" may hand to the OS: those of its own URL templates
+ * (Warp's), and no others. Kept apart from the `openExternal` allowlist so
+ * that adding Warp here does not let every caller launch Warp actions.
+ */
+const OPEN_IN_URL_PROTOCOLS: ReadonlySet<string> = new Set(
+  Object.values(OPEN_IN_APPS).flatMap((openInApp) =>
+    Object.values(openInApp.platforms).flatMap((config) =>
+      (config?.openUrls ?? []).map((template) => new URL(template).protocol)
+    )
+  )
+);
+
+/**
+ * Characters cmd.exe acts on even inside the double quotes a Windows template
+ * puts round `{{path_raw}}`, where a nested `cmd /K "…"` re-parses them.
+ */
+const CMD_METACHARACTERS = /["&|<>^%!]/;
 
 const AUDIO_MIME_TYPES: Record<string, string> = {
   '.aac': 'audio/aac',
@@ -214,28 +233,48 @@ class AppService implements IInitializable, IDisposable {
       throw new Error(`${label} is not available on this platform.`);
     }
 
-    await this.openInLocal({ appId, label, target, platformConfig });
+    if (!isAbsolute(target)) throw new Error(`${target} is not an absolute path.`);
+    const isDirectory = (await stat(target)).isDirectory();
+
+    await this.openInLocal({ appId, label, target, isDirectory, platformConfig });
   }
 
+  /**
+   * Hand a folder to the app the person picked. "Open in" names a folder, and
+   * whatever it is given is opened, so it never opens anything that would run:
+   * a file is only shown in the file manager, and so is a macOS bundle (an
+   * `.app`, a `.prefPane`), which is a folder the OS launches when opened.
+   */
   private async openInLocal(args: {
     appId: OpenInAppId;
     label: string;
     target: string;
+    isDirectory: boolean;
     platformConfig: PlatformConfig | undefined;
   }): Promise<void> {
-    const { appId, label, target, platformConfig } = args;
+    const { appId, label, target, isDirectory, platformConfig } = args;
 
     if (appId === 'finder') {
+      if (!isDirectory || (await isMacBundle(target))) {
+        shell.showItemInFolder(target);
+        return;
+      }
       const errorMessage = await shell.openPath(target);
       if (errorMessage) throw new Error(errorMessage);
       return;
     }
 
+    if (!isDirectory) throw new Error(`${target} is not a folder.`);
+
     if (platformConfig?.openUrls) {
+      // A URL takes the path encoded, whichever placeholder names it: raw, a
+      // `?` or `#` in a folder name would end the query and change the action.
+      const encoded = encodeURIComponent(target);
       for (const urlTemplate of platformConfig.openUrls) {
-        const url = urlTemplate
-          .replace('{{path_url}}', encodeURIComponent(target))
-          .replace('{{path}}', target);
+        const url = urlTemplate.replace('{{path_url}}', encoded).replace('{{path}}', encoded);
+        if (!OPEN_IN_URL_PROTOCOLS.has(new URL(url).protocol)) {
+          throw new Error(`Refusing to open ${url}: not a scheme "Open in" uses.`);
+        }
         try {
           await shell.openExternal(url);
           return;
@@ -251,6 +290,15 @@ class AppService implements IInitializable, IDisposable {
     const quoted = (p: string) =>
       process.platform !== 'win32' ? `'${p.replace(/'/g, "'\\''")}'` : `"${p.replace(/"/g, '""')}"`;
     const commands: string[] = platformConfig?.openCommands ?? [];
+    if (
+      process.platform === 'win32' &&
+      commands.some((cmd) => cmd.includes('{{path_raw}}')) &&
+      CMD_METACHARACTERS.test(target)
+    ) {
+      throw new Error(
+        `${label} cannot be opened safely on a folder whose name contains & | < > ^ % ! or ".`
+      );
+    }
     const command = commands
       .map((cmd) => cmd.replace('{{path}}', quoted(target)).replace('{{path_raw}}', target))
       .join(' || ');
@@ -325,7 +373,9 @@ class AppService implements IInitializable, IDisposable {
       throw new Error('Audio file must be located within the user home directory');
     }
 
-    const extension = extname(filePath).toLowerCase();
+    // The file read is the one the path resolves to, so its name is the one
+    // checked: a link named `.mp3` can point at anything.
+    const extension = extname(resolvedPath).toLowerCase();
     const mimeType = AUDIO_MIME_TYPES[extension];
     if (!mimeType) throw new Error('Unsupported audio file type');
 
@@ -336,6 +386,15 @@ class AppService implements IInitializable, IDisposable {
     const file = await readFile(resolvedPath);
     return `data:${mimeType};base64,${file.toString('base64')}`;
   }
+}
+
+/** A macOS bundle: a folder the OS launches or installs, rather than shows, when it is opened. */
+async function isMacBundle(target: string): Promise<boolean> {
+  if (process.platform !== 'darwin') return false;
+  return access(join(target, 'Contents', 'Info.plist')).then(
+    () => true,
+    () => false
+  );
 }
 
 export const appService = new AppService();
