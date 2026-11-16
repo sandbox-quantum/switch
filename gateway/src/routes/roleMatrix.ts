@@ -82,7 +82,7 @@ export const PAGES: readonly MatrixPage[] = [
   page("/connectors/:connectorId", EVERYONE),
 
   page("/settings/general", EVERYONE),
-  page("/workspace/private-channel-rooms", ADMINS),
+  page("/settings/general/private-channel-rooms", ADMINS),
   page("/settings/users", EVERYONE),
   page("/settings/messaging-apps", EVERYONE),
   page("/settings/connectors", EVERYONE),
@@ -120,6 +120,7 @@ export const REDIRECTS: readonly MatrixRedirect[] = [
   { from: "/collaborations", to: "/settings/messaging-apps" },
   { from: "/registration-keys", to: "/settings/api-keys" },
   { from: "/workspace", to: "/settings/users" },
+  { from: "/workspace/private-channel-rooms", to: "/settings/general/private-channel-rooms" },
   { from: "/organization", to: "/settings/org" },
   { from: "/users", to: "/platform/users" },
   { from: "/operator/workspaces", to: "/platform/workspaces" },

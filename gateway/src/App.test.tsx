@@ -376,6 +376,7 @@ describe("the layout", () => {
       ["/collaborations?bridge=b1#teams", "/settings/messaging-apps?bridge=b1#teams"],
       ["/registration-keys", "/settings/api-keys"],
       ["/workspace", "/settings/users"],
+      ["/workspace/private-channel-rooms", "/settings/general/private-channel-rooms"],
       ["/resources/templates/tpl-1", "/templates/tpl-1"],
       ["/resources?tab=templates&q=ci#top", "/templates?q=ci#top"],
     ];
@@ -385,6 +386,16 @@ describe("the layout", () => {
       await landsOn(to);
       cleanup();
     }
+  });
+
+  it("opens the review of Public rooms on private channels inside Settings, leading back to General", async () => {
+    mockFetch(signedInAs("workspace_admin"));
+    renderAt("/settings/general/private-channel-rooms");
+    expect(await menuLabels("Settings")).toContain("General");
+    const menu = screen.getByRole("navigation", { name: "Settings" });
+    expect(within(menu).getByRole("link", { name: "General" }).className).toContain("Mui-selected");
+    fireEvent.click(await screen.findByRole("button", { name: "General" }));
+    await landsOn("/settings/general");
   });
 
   it("moves the operator's pages to Platform", async () => {

@@ -29,7 +29,7 @@ describe("PrivateChannelRoomsSection", () => {
 
     await screen.findByText(/132 Public rooms are on private channels/);
     const review = screen.getByRole("link", { name: "Review" });
-    expect(review.getAttribute("href")).toBe("/workspace/private-channel-rooms");
+    expect(review.getAttribute("href")).toBe("/settings/general/private-channel-rooms");
     expect(String(fetch.mock.calls[0][0])).toContain("/tenants/t1/private-channel-rooms/count");
   });
 

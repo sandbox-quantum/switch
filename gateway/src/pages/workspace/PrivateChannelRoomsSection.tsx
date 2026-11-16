@@ -32,7 +32,7 @@ export default function PrivateChannelRoomsSection({ tenantId }: { tenantId: str
             color="inherit"
             size="small"
             component={RouterLink}
-            to="/workspace/private-channel-rooms"
+            to="/settings/general/private-channel-rooms"
           >
             Review
           </Button>

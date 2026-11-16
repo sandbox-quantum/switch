@@ -136,7 +136,7 @@ function menuRow(item: { label: string; path: string }, pathname: string, traili
       <ListItemButton
         component={NavLink}
         to={item.path}
-        selected={pathname === item.path}
+        selected={pathname === item.path || pathname.startsWith(`${item.path}/`)}
         sx={{ borderRadius: 1 }}
       >
         <ListItemText primary={item.label} />
