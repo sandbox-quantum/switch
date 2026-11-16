@@ -48,21 +48,50 @@ def device_type(controller: AgentController) -> DeviceType:
     return "computer"
 
 
+# The longest a device's own words (a sign-in or update problem, why an agent
+# stopped) are passed on, so a report cannot fill a page.
+_REPORTED_TEXT_MAX = 500
+
+
+def _reported_text(value: object) -> str | None:
+    return value[:_REPORTED_TEXT_MAX] if isinstance(value, str) else None
+
+
 def _provider_reports(controller: AgentController) -> list[dict[str, Any]]:
     """Each provider the controller last reported: installed or not, its
-    sign-in, version and when it checked."""
+    sign-in, version and when it checked.
+
+    Named fields only: a controller's status takes keys this server doesn't
+    know, and whatever else a device put in its report is not passed on to
+    everyone who may see the device."""
     providers = (controller.status or {}).get("providers")
     return [
-        entry
+        {
+            "provider": entry["provider"],
+            "installed": entry.get("installed") is True,
+            "version": _reported_text(entry.get("version")),
+            "auth": _reported_text(entry.get("auth")),
+            "auth_source": _reported_text(entry.get("auth_source")),
+            "checked_at": _reported_text(entry.get("checked_at")),
+            "reason": _reported_text(entry.get("reason")),
+            "auth_problem": _reported_text(entry.get("auth_problem")),
+        }
         for entry in (providers if isinstance(providers, list) else [])
         if isinstance(entry, dict) and isinstance(entry.get("provider"), str)
     ]
 
 
 def _update_report(controller: AgentController) -> dict[str, Any] | None:
-    """Where the controller last said it stands in moving to a release."""
+    """Where the controller last said it stands in moving to a release, by
+    the same named fields only as its providers."""
     update = (controller.status or {}).get("update")
-    return update if isinstance(update, dict) else None
+    if not isinstance(update, dict):
+        return None
+    return {
+        "target": _reported_text(update.get("target")),
+        "state": _reported_text(update.get("state")),
+        "problem": _reported_text(update.get("problem")),
+    }
 
 
 def _device(
@@ -141,8 +170,12 @@ def _managed_agent(
         # one placed nowhere. `updating` while its device runs an older
         # revision of its definition than the latest.
         "process": None if status is None else status.get("process"),
-        "process_reason": None if status is None else status.get("reason"),
-        "process_detail": None if status is None else status.get("detail"),
+        "process_reason": None
+        if status is None
+        else _reported_text(status.get("reason")),
+        "process_detail": None
+        if status is None
+        else _reported_text(status.get("detail")),
         "updating": status is not None
         and status.get("applied_revision") != row.revision,
         "owner_id": row.owner_id,

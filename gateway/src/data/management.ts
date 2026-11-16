@@ -65,6 +65,8 @@ export interface ProviderStatus {
   auth_source: string | null;
   checked_at: string;
   reason?: string | null;
+  /** What went wrong signing it in, in the controller's words. */
+  auth_problem?: string | null;
 }
 
 export interface AgentStatus {
