@@ -15,6 +15,7 @@ import { buddyPerson } from './buddy-person';
 import { buddyProviders, startButtons } from './buddy-providers';
 import { reportBuddyStep } from './buddy-telemetry';
 import { MeetBuddyIntro } from './meet-buddy-intro';
+import { ComputerNote } from './provider-cards';
 import { ProviderSetup } from './provider-setup';
 import { useStartBuddy } from './use-start-buddy';
 import { useThisComputer } from './use-this-computer';
@@ -36,8 +37,9 @@ const CHECK_PATIENCE_MS = 45_000;
  * there. Someone who already has a buddy (replaying these pages) is offered
  * to open it instead.
  *
- * This computer starts running agents for the workspace as the page opens, so
- * what its providers are ready for is known by the time it has been read.
+ * A computer that does not run agents for the workspace yet says so here,
+ * with the button that turns it on once the person confirms; until then the
+ * providers Console found as onboarding opened are what the page goes by.
  */
 export const MeetBuddyPage = observer(function MeetBuddyPage({
   serverId,
@@ -187,6 +189,16 @@ export const MeetBuddyPage = observer(function MeetBuddyPage({
           )
         }
       />
+      {computer.kind === 'off' && (
+        <div className="flex justify-center">
+          <ComputerNote
+            serverId={serverId}
+            computer={computer}
+            onRetry={thisComputer.retry}
+            onTurnOn={() => void thisComputer.turnOn()}
+          />
+        </div>
+      )}
       {computer.kind === 'failed' && (
         <div className="flex flex-col items-center gap-2">
           <p role="alert" className="text-center text-sm text-destructive">

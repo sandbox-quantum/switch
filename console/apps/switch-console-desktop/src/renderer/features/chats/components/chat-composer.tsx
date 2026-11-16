@@ -689,6 +689,7 @@ export const ChatComposer = observer(function ChatComposer({
                       ) : each.kind === 'agent' ? (
                         <>
                           <AgentAvatar
+                            agentId={each.agent.id}
                             name={each.agent.name}
                             iconUrl={each.agent.iconUrl}
                             serverId={serverId}
@@ -885,6 +886,7 @@ export const ChatComposer = observer(function ChatComposer({
                         >
                           {owner && (
                             <AgentAvatar
+                              agentId={owner.id}
                               name={owner.name}
                               iconUrl={owner.iconUrl}
                               serverId={serverId}

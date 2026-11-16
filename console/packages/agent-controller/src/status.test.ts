@@ -824,6 +824,7 @@ describe('StatusCollector', () => {
       attached: () => true,
       dataDir: dir,
       workspacesDir: join(dir, 'workspaces'),
+      context: () => ({ dataDir: dir, workspaces: join(dir, 'workspaces'), policy: null }),
       version: '0.1.0',
       updatedBy: 'self',
       now: () => clock,
@@ -875,7 +876,7 @@ describe('StatusCollector', () => {
       observed({
         alive: true,
         health: health('connecting'),
-        configured: { provider: 'claude', cwd: '/work/scout' },
+        configured: { provider: 'claude', cwd: '/work/scout', runtimeMode: 'approval-required' },
       })
     );
     const resolved = await collector.collect(assignment);

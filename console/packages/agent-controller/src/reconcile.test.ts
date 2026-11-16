@@ -1,6 +1,12 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import {
+  allowInPolicy,
+  type DevicePolicy,
+  disallowInPolicy,
+  emptyDevicePolicy,
+} from '@switch-console/agent-providers';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { silentLogger } from './log';
 import { planReconcile, reconcile, type ReconcileDeps } from './reconcile';
@@ -50,11 +56,13 @@ let endpoint: string;
 let clock: number;
 let missingProvider: boolean;
 let givenLogin: GivenLogin | null;
+let policy: DevicePolicy | null;
 
 function deps(): ReconcileDeps {
   return {
     store,
     runtime,
+    context: () => ({ dataDir: join(dir, 'data'), workspaces: '/data/workspaces', policy }),
     ensureCredentials: async (agentId) => {
       if (runtime.credentials.get(agentId)?.endpoint === endpoint) return false;
       minted.push(agentId);
@@ -76,6 +84,7 @@ function deps(): ReconcileDeps {
 
 beforeEach(() => {
   givenLogin = null;
+  policy = emptyDevicePolicy();
   dir = mkdtempSync(join(tmpdir(), 'controller-reconcile-'));
   store = ControllerStore.open(join(dir, 'controller.db'));
   runtime = new FakeRuntime();
@@ -157,6 +166,7 @@ describe('reconcile', () => {
   });
 
   it('replaces the saved identity when the provider or directory changes', async () => {
+    policy = allowInPolicy(policy!, 'agent-1', { bypass: false, directory: '/srv/repo' });
     await reconcile(assignment(agent()), deps());
     await reconcile(assignment(agent({ revision: 2 }, { provider: 'codex' })), deps());
     await reconcile(
@@ -308,6 +318,97 @@ describe('reconcile', () => {
     expect(runtime.calls).toEqual([]);
   });
 
+  it('records a directory in the controller’s data directory as invalid, and never starts it', async () => {
+    const directories = [
+      join(dir, 'data'),
+      join(dir, 'data', 'secrets'),
+      join(dir, 'data', 'workspaces', '..', 'agents', 'agent-1'),
+    ];
+    await reconcile(
+      assignment(
+        ...directories.map((directory, index) =>
+          agent({ agent_id: `agent-${index}` }, { name: `scout-${index}`, directory })
+        )
+      ),
+      deps()
+    );
+    for (const index of directories.keys())
+      expect(store.agent(`agent-${index}`)?.failure).toMatchObject({
+        reason: 'definition_invalid',
+        detail: expect.stringContaining('data directory'),
+      });
+    expect(runtime.calls).toEqual([]);
+  });
+
+  it('starts an agent the server gave a directory in the data directory’s old workspaces folder', async () => {
+    const directory = join(dir, 'data', 'workspaces', 'scout');
+    await reconcile(assignment(agent({}, { directory })), deps());
+    expect(store.agent('agent-1')).toMatchObject({ appliedRevision: 1, failure: null });
+  });
+
+  it('runs an agent asking for bypass with approvals until the device allows it, and again once it no longer does', async () => {
+    const modes = () =>
+      runtime.calls.flatMap((call) =>
+        call.kind === 'launch' ? [call.template.start.input.runtimeMode] : []
+      );
+    const entry = agent({}, { auto_approve: true });
+    await reconcile(assignment(entry), deps());
+    expect(modes()).toEqual(['approval-required']);
+    expect(store.agent('agent-1')).toMatchObject({ appliedRevision: 1, failure: null });
+
+    await reconcile(assignment(entry), deps());
+    expect(modes()).toEqual(['approval-required']);
+
+    policy = allowInPolicy(policy!, 'agent-1', { bypass: true, directory: null });
+    await reconcile(assignment(entry), deps());
+    expect(modes()).toEqual(['approval-required', 'full-access']);
+
+    policy = disallowInPolicy(policy, 'agent-1', { bypass: true, directory: null });
+    await reconcile(assignment(entry), deps());
+    expect(modes()).toEqual(['approval-required', 'full-access', 'approval-required']);
+  });
+
+  it('refuses a directory outside the workspaces folder until the device allows it, and stops it once it no longer does', async () => {
+    const entry = agent({}, { directory: '/srv/repos/app' });
+    await reconcile(assignment(entry), deps());
+    expect(store.agent('agent-1')?.failure).toMatchObject({
+      reason: 'definition_invalid',
+      detail: expect.stringContaining('this device has not allowed that'),
+    });
+    expect(runtime.launches('agent-1')).toHaveLength(0);
+
+    policy = allowInPolicy(policy!, 'agent-1', { bypass: false, directory: '/srv/repos' });
+    await reconcile(assignment(entry), deps());
+    expect(runtime.launches('agent-1')).toHaveLength(1);
+    expect(runtime.launches('agent-1')[0]!.template.start.input.cwd).toBe('/srv/repos/app');
+
+    policy = disallowInPolicy(policy, 'agent-1', 'all');
+    await reconcile(assignment(entry), deps());
+    expect(runtime.calls.at(-1)).toEqual({ kind: 'stop', agentId: 'agent-1', wait: false });
+    expect(store.agent('agent-1')?.failure?.reason).toBe('definition_invalid');
+  });
+
+  it('never lets the device policy open the data directory', async () => {
+    policy = allowInPolicy(policy!, 'agent-1', { bypass: false, directory: dir });
+    await reconcile(assignment(agent({}, { directory: join(dir, 'data', 'secrets') })), deps());
+    expect(store.agent('agent-1')?.failure).toMatchObject({
+      reason: 'definition_invalid',
+      detail: expect.stringContaining('data directory'),
+    });
+    expect(runtime.launches('agent-1')).toHaveLength(0);
+  });
+
+  it('applies bypass and directories as defined where agents run as users of their own', async () => {
+    policy = null;
+    await reconcile(
+      assignment(agent({}, { auto_approve: true, directory: '/var/lib/agents/agent/repo' })),
+      deps()
+    );
+    const [launch] = runtime.launches('agent-1');
+    expect(launch!.template.start.input.runtimeMode).toBe('full-access');
+    expect(launch!.template.start.input.cwd).toBe('/var/lib/agents/agent/repo');
+  });
+
   it('records a missing provider CLI, and retries on the next pass', async () => {
     missingProvider = true;
     await reconcile(assignment(agent()), deps());
@@ -332,6 +433,7 @@ describe('planReconcile', () => {
   it('holds an agent whose desired state it does not know', () => {
     const actions = planReconcile({
       assignment: assignment(agent({ desired_state: 'unknown' })),
+      context: { dataDir: join(dir, 'data'), workspaces: '/data/workspaces', policy },
       rows: [],
       observations: new Map([['agent-1', emptyObservation()]]),
       credentialsChanged: new Set(),
@@ -343,6 +445,7 @@ describe('planReconcile', () => {
   it('restarts a running watcher that is being turned off', () => {
     const actions = planReconcile({
       assignment: assignment(agent()),
+      context: { dataDir: join(dir, 'data'), workspaces: '/data/workspaces', policy },
       rows: [
         {
           agentId: 'agent-1',

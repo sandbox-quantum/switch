@@ -164,6 +164,7 @@ export const ConnectorAgentsSection = observer(function ConnectorAgentsSection({
               <>
                 <span className="flex size-7 shrink-0 items-center justify-center">
                   <AgentAvatar
+                    agentId={agent.agent_id}
                     name={agent.name}
                     iconUrl={iconFor(agent.agent_id)}
                     serverId={serverId}
@@ -410,6 +411,7 @@ const AddAgentPanel = observer(function AddAgentPanel({
                 )}
               >
                 <AgentAvatar
+                  agentId={agent.agent_id}
                   name={agent.name}
                   iconUrl={iconFor(agent.agent_id)}
                   serverId={serverId}

@@ -207,6 +207,36 @@ model overrides, and the Vertex AI, Bedrock and Google Cloud settings), plus the
 basics a CLI needs. The file is read once at start; restart the service after
 changing it.
 
+### What this machine allows its agents
+
+An agent's definition comes from the Switch server, so whoever can edit it there
+(or the server itself) decides what it asks for. Two things are applied only once
+this machine's own user has allowed them for that agent, whatever the definition
+says:
+
+- **Running without approvals** (bypass, the definition's `auto_approve`). Until
+  it is allowed, the agent runs and asks for approval, and its status tells Switch
+  why.
+- **A directory outside the workspaces folder.** Until it is allowed, the agent is
+  refused as `definition_invalid`, with the command that would allow it. A
+  directory in the data directory is refused whatever is allowed.
+
+```bash
+switch-agent-controller allow <agent-id> --bypass
+switch-agent-controller allow <agent-id> --directory ~/src/app   # and everything inside it
+switch-agent-controller allow --every-agent --directory /srv/repos
+switch-agent-controller disallow <agent-id>                     # everything it was given
+switch-agent-controller policy                                  # what is allowed now
+```
+
+What is allowed is kept in `device-policy.json` in the data directory (mode 0600)
+and never sent to Switch. A running controller applies a change within seconds:
+taking bypass away restarts the agent's sessions with approvals once their turn
+ends, and taking a directory away stops the agent. Switch Console keeps this file
+for the controller it runs, and asks its user the first time an agent asks for
+either. Agents run as Linux users of their own (below) are contained by their
+units instead, and need neither.
+
 ### Each agent as a Linux user of its own
 
 By default every agent runs as the user the controller runs as, so an agent can
@@ -656,6 +686,7 @@ It holds:
 
 | Path | What |
 |---|---|
+| `device-policy.json` | What this machine allows its agents beyond their definitions (see above). Never sent to Switch. |
 | `controller.db` | SQLite: identity, cached assignment, per-agent applied revision and local failures, restart times, each agent's stream cursor, the relay's port, status seq. Everything except the identity can be rebuilt from the server. |
 | `secrets/controller-credential` | The controller credential, with the `file` secret store (see below). Absent with a keychain store, or when the credential is handed over with `--credential-stdin`. |
 | `agents/<id>/credentials.json` | Each agent's relay endpoint, relay token and hub, in the layout the shared host reads. No Switch credential. |
@@ -667,7 +698,11 @@ An agent whose definition names no directory works in
 `~/.switch/agents/<server>/<name>/`, where `<server>` is the server's address
 (`localhost-8000`, `switch.example.com`). The server fills this path in once the
 controller reports `machine.workspaces_dir`. A missing directory under that folder
-is made; any other must already exist.
+is made; any other must already exist. A directory in the data directory is
+refused (`definition_invalid`), whether named directly or reached through a link,
+because an agent working there could read the controller's credential and keys.
+The one exception is its `workspaces` folder, where agents defined before the
+default moved to `~/.switch/agents` were given their directories.
 
 Sessions an agent host starts keep their state where the shared host puts it
 (`~/.local/state/switch/sdk-sessions/`), as they do under Console.

@@ -27,7 +27,12 @@ Console has discovered but never opened. If the stop outcome is unknown, the
 session remains available for inspection.
 
 The execution host supplies the working directory, provider installation,
-credentials, environment, shell setup, skills and MCP configuration. Skills and MCP changes take effect when the host restarts. Confirmed model
+credentials, environment, shell setup, skills and MCP configuration. A session
+inherits only the host variables on the allowlist in
+`packages/agent-providers/src/host/agent-env.ts`, plus the agent's own. Shell
+setup runs in a login shell and may change those variables (prepend to `PATH`,
+say), but anything else it or the user's profile exports does not reach the
+provider; set such a variable in the agent's environment instead. Skills and MCP changes take effect when the host restarts. Confirmed model
 changes apply to the next turn and survive host restart. A cold
 provider startup can take up to two minutes before Console reports a startup
 failure. The saved session remains available for inspection after a failure;

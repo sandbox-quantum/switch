@@ -29,7 +29,7 @@ import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
-import { openExternalUrl } from '@renderer/lib/open-external';
+import { confirmOpenLink } from '@renderer/lib/open-external-link';
 import { Alert, AlertDescription } from '@renderer/lib/ui/alert';
 import { Badge } from '@renderer/lib/ui/badge';
 import { Button } from '@renderer/lib/ui/button';
@@ -268,7 +268,7 @@ function ItemBody({ item }: { item: LibraryItem | LibraryDocument }) {
                   key={url}
                   type="button"
                   className="flex w-full cursor-pointer items-center gap-2 px-3.5 py-2.5 text-left text-sm hover:bg-background-1"
-                  onClick={() => void openExternalUrl(url, 'Could not open the link')}
+                  onClick={() => confirmOpenLink(url)}
                 >
                   <span className="min-w-0 flex-1 truncate font-mono text-xs">{url}</span>
                   <ExternalLink className="size-3.5 shrink-0 text-foreground-muted" />

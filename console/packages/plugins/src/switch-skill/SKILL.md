@@ -1024,6 +1024,13 @@ does not manage agents, so say so rather than looking for another way.
   `directory` null and Switch fills in the machine's own workspace for the
   agent, which the machine makes; any other directory must already exist
   there. Change it later with `update_agent_detail`.
+  A machine applies bypass, or a directory outside its workspace folder,
+  only once the person using that machine has allowed it for the agent there
+  (Switch Console asks them; a headless machine's operator runs
+  `switch-agent-controller allow`). Until then the agent runs and asks for
+  approval, or is refused with `actual.reason` `definition_invalid`; tell
+  the person what to allow rather than retrying. No directory inside the
+  machine's controller data folder is ever accepted.
 - **`list_managed_agents`** — your owner's managed agents, with the machine
   each runs on, what your owner wants (`desired_state`) and what the machine
   last reported (`actual.process`, and `actual.reason` when it crashed or

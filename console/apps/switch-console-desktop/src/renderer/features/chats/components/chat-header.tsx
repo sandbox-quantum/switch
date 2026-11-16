@@ -39,6 +39,7 @@ export function ChatHeaderTitle({ serverId, chat }: { serverId: string; chat: Ch
     <div className="flex min-w-0 items-center gap-2 text-sm">
       {agent && (
         <AgentAvatar
+          agentId={agent.id}
           name={chatAgentLabel(agent)}
           iconUrl={agent.iconUrl}
           serverId={serverId}

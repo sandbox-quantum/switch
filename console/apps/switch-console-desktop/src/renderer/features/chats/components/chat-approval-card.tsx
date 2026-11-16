@@ -3,8 +3,27 @@ import { failureText } from '@renderer/lib/errors/describe-failure';
 import { Button } from '@renderer/lib/ui/button';
 import { Textarea } from '@renderer/lib/ui/textarea';
 import type { ChatApproval, ChatApprovalAnswer } from '@shared/core/chats/activity';
+import type { ChatAgent } from '@shared/core/chats/chats';
 
 type Answers = NonNullable<ChatApproval['answers']>;
+
+/**
+ * Who a request comes from, as its card names them: the agent's unique name,
+ * never the display name its owner may set to anything, and whose it is.
+ */
+export type RequestAsker = { name: string; ownerName: string | null; ownedByViewer: boolean };
+
+/** The asker of a request from `agentId`, the chat's agent of that id when it knows it. */
+export function requestAsker(agent: ChatAgent | null, agentId: string): RequestAsker {
+  return agent
+    ? { name: agent.name, ownerName: agent.ownerName, ownedByViewer: agent.ownedByViewer }
+    : { name: agentId, ownerName: null, ownedByViewer: false };
+}
+
+function askerOwner(asker: RequestAsker): string | null {
+  if (asker.ownedByViewer) return 'your agent';
+  return asker.ownerName ? `owned by ${asker.ownerName}` : null;
+}
 
 function settledLabel(request: ChatApproval): string {
   if (request.state === 'expired') return 'Expired';
@@ -19,12 +38,18 @@ function settledLabel(request: ChatApproval): string {
  * An agent's request as the chat shows it, from Switch's copy: answered
  * through Switch as the signed-in person, so it needs no connection to the
  * agent's session. A settled one folds to a line saying how it ended.
+ *
+ * An open card always says which agent asks, and shows the title as that
+ * agent's words: an agent writes the title and questions, and a card that
+ * read as Console's own could ask for anything.
  */
 export function ChatApprovalCard({
   request,
+  asker,
   onAnswer,
 }: {
   request: ChatApproval;
+  asker: RequestAsker;
   onAnswer: (answer: ChatApprovalAnswer) => Promise<void>;
 }) {
   const [answers, setAnswers] = useState<Record<string, Answers[number]>>({});
@@ -64,7 +89,13 @@ export function ChatApprovalCard({
       data-chat-request={request.requestId}
       className="rounded-xl border border-border bg-background-1 p-4"
     >
-      <h3 className="font-medium">{request.title}</h3>
+      <p className="text-xs text-foreground-muted">
+        <span className="font-medium text-foreground">{asker.name}</span> asks
+        {askerOwner(asker) && ` · ${askerOwner(asker)}`}
+      </p>
+      <h3 className="mt-2 border-l-2 border-border pl-3 font-medium [overflow-wrap:anywhere]">
+        {request.title}
+      </h3>
       {request.kind !== 'questions' ? (
         <>
           {request.detail && (
@@ -128,6 +159,11 @@ export function ChatApprovalCard({
                     </span>
                   </label>
                 ))}
+                {question.allowCustomAnswer && (
+                  <p className="text-xs text-foreground-muted">
+                    What you write goes to {asker.name}, not to Switch.
+                  </p>
+                )}
                 {question.allowCustomAnswer && (
                   <Textarea
                     aria-label={`Custom answer: ${question.title || question.prompt}`}

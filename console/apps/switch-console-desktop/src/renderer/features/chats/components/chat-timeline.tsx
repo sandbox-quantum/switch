@@ -38,6 +38,7 @@ import {
   turnEndLabel,
   turnShown,
 } from './chat-activity-block';
+import { requestAsker } from './chat-approval-card';
 import { ChatAttachments } from './chat-attachments';
 import { MentionMark } from './mention-mark';
 
@@ -274,6 +275,7 @@ export const ChatTimelineView = observer(function ChatTimelineView({
       <AgentRow
         key={key}
         agent={{
+          id: agent?.id ?? null,
           name: agent ? chatAgentLabel(agent) : activity.agentId,
           iconUrl: agent?.iconUrl ?? null,
         }}
@@ -281,7 +283,11 @@ export const ChatTimelineView = observer(function ChatTimelineView({
         head={head}
         className={spacing(head)}
       >
-        <ChatRequests activity={activity} requests={requests} />
+        <ChatRequests
+          activity={activity}
+          requests={requests}
+          asker={requestAsker(agent, activity.agentId)}
+        />
       </AgentRow>
     );
   };
@@ -321,6 +327,7 @@ export const ChatTimelineView = observer(function ChatTimelineView({
         const turns = turnsByMessage.get(message.messageId) ?? [];
         const agent = agentOf(message.sender.agentId);
         const agentLabel = {
+          id: agent?.id ?? null,
           name: agent ? chatAgentLabel(agent) : message.sender.name,
           iconUrl: agent?.iconUrl ?? null,
         };
@@ -463,9 +470,11 @@ export const ChatTimelineView = observer(function ChatTimelineView({
                   endReason={endReasons.get(`${activity.agentId}:${turn.turnId}`) ?? null}
                   head={head}
                   agent={{
+                    id: turnAgent?.id ?? null,
                     name: turnAgent ? chatAgentLabel(turnAgent) : activity.agentId,
                     iconUrl: turnAgent?.iconUrl ?? null,
                   }}
+                  asker={requestAsker(turnAgent, activity.agentId)}
                   className={spacing(head)}
                 />
               );
@@ -605,6 +614,7 @@ function KickoffRow({
       <div className="mb-1.5 flex items-center gap-2 text-xs text-foreground-muted">
         {kickoff.agentId !== null && (
           <AgentAvatar
+            agentId={kickoff.agentId}
             name={sender}
             iconUrl={kickoff.iconUrl ?? agent?.iconUrl ?? null}
             serverId={serverId}

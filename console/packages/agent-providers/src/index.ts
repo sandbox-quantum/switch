@@ -105,6 +105,27 @@ export {
   type ProviderRecheckReply,
   type ProviderRecheckRequest,
 } from './host/provider-recheck';
+export {
+  allowInPolicy,
+  DEVICE_CONSENT_NEEDED_KIND,
+  DEVICE_POLICY_CHANGED_KIND,
+  DEVICE_POLICY_FILE,
+  type DeviceConsentNeed,
+  type DeviceConsentNeededMessage,
+  type DeviceGrant,
+  type DevicePolicy,
+  type DevicePolicyChangedMessage,
+  disallowInPolicy,
+  emptyDevicePolicy,
+  EVERY_AGENT,
+  isDeviceConsentNeededMessage,
+  isDevicePolicyChangedMessage,
+  policyAllowsBypass,
+  policyAllowsDirectory,
+  readDevicePolicy,
+  withinDirectory,
+  writeDevicePolicy,
+} from './host/device-policy';
 export { hostStartSources, type HostStartSource } from './host/session-start';
 export {
   type AgentEventStream,
