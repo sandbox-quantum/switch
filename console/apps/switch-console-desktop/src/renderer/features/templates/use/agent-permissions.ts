@@ -1,12 +1,14 @@
+import type { AgentTemplateAddressing } from '@main/core/agent-templates/agent-template-format';
+import type { ParsedAgentEntry } from '@main/core/agent-templates/template-document';
 import { holds, type Values } from './use-template-model';
 
 /**
  * What a template gives a new agent that decides what anyone can make it do:
  * whether it runs every tool without asking, and who may talk to it. Worked
- * out from the fields as written (`permissionsAsWritten`), the way the server
- * works them out, so the Use page can show them before anything is created.
- * Anyone in a workspace can write a template, so these are never left out of
- * what the page shows.
+ * out the way the run that creates the agent reads the template
+ * (`permissionsOnCreate`), so the Use page can show them before anything is
+ * created. Anyone in a workspace can write a template, so these are never
+ * left out of what the page shows.
  */
 
 /** Who may talk to a new agent once it exists. */
@@ -75,4 +77,59 @@ export function whoCanAddress(written: unknown, values: Values): AgentReach {
   )
     return { kind: 'rooms', rooms: value.anyone_in as string[] };
   return { kind: 'unknown' };
+}
+
+/**
+ * `auto_approve` as Switch Console sends it for a new managed agent of a
+ * version 1 template: `true`, or a `{param}` whose input is true. Anything
+ * else is false, a list of cases included: version 1 has none.
+ */
+export function consoleAutoApprove(
+  entry: Pick<ParsedAgentEntry, 'autoApprove'>,
+  values: Values
+): boolean {
+  return typeof entry.autoApprove === 'string'
+    ? values[entry.autoApprove.replace(/^\{|\}$/g, '')] === true
+    : entry.autoApprove === true;
+}
+
+/**
+ * `addressing` as Switch Console gives a new agent of a version 1 template:
+ * one of the plain values, or else the default, its owner and the owner's
+ * agents. A list of cases or a `{param}` is not read.
+ */
+export function consoleAddressing(
+  entry: Pick<ParsedAgentEntry, 'addressing'>
+): AgentTemplateAddressing {
+  return entry.addressing ?? 'owner-agents';
+}
+
+/**
+ * Who creates a template run's agents, which decides how their permissions
+ * are read: the server for a version 2 document (`document`); Switch Console
+ * for a version 1 template, as managed agents on a server with agent
+ * management (`managed`) or as agents it runs itself (`console`).
+ */
+export type TemplateRun = 'document' | 'managed' | 'console';
+
+/**
+ * What a new agent will be given, read the way the run that creates it reads
+ * the template, so what the Use page shows and asks about before Create is
+ * what gets created.
+ */
+export function permissionsOnCreate(
+  entry: Pick<ParsedAgentEntry, 'autoApprove' | 'addressing' | 'permissionsAsWritten'>,
+  values: Values,
+  run: TemplateRun
+): { bypass: boolean | null; reach: AgentReach } {
+  if (run === 'document')
+    return {
+      bypass: runsWithoutAsking(entry.permissionsAsWritten.autoApprove, values),
+      reach: whoCanAddress(entry.permissionsAsWritten.addressing, values),
+    };
+  return {
+    // An agent this Console runs is created asking first, whatever the template says.
+    bypass: run === 'managed' ? consoleAutoApprove(entry, values) : false,
+    reach: { kind: consoleAddressing(entry) },
+  };
 }

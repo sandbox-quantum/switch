@@ -69,6 +69,42 @@ export const TurnOnMachine = observer(function TurnOnMachine({
         {busy ? 'Turning on…' : buttonLabel}
       </Button>
     );
+  return (
+    <MachineConsentPrompt
+      serverId={serverId}
+      label={label}
+      sshHost={sshHost}
+      confirmLabel="Turn on"
+      onCancel={() => setConfirming(false)}
+      onConfirm={() => {
+        setConfirming(false);
+        onConfirm();
+      }}
+    />
+  );
+});
+
+/**
+ * The confirmation `TurnOnMachine` asks for, for a page that asks it from a
+ * button of its own: which server will be able to run agents on the computer,
+ * with Cancel and `confirmLabel`.
+ */
+export const MachineConsentPrompt = observer(function MachineConsentPrompt({
+  serverId,
+  label,
+  sshHost,
+  confirmLabel,
+  onCancel,
+  onConfirm,
+}: {
+  serverId: string;
+  /** The computer as the page names it: "This computer", or the host's name. */
+  label: string;
+  sshHost: string | null;
+  confirmLabel: string;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
   const consent = machineConsent({
     server: serverForConsent(switchServersStore.serverById(serverId)),
     label,
@@ -83,17 +119,11 @@ export const TurnOnMachine = observer(function TurnOnMachine({
       <p className="font-medium text-foreground">{consent.title}</p>
       <p className="text-foreground-muted">{consent.text}</p>
       <div className="flex gap-2">
-        <Button size="sm" variant="outline" onClick={() => setConfirming(false)}>
+        <Button size="sm" variant="outline" onClick={onCancel}>
           Cancel
         </Button>
-        <Button
-          size="sm"
-          onClick={() => {
-            setConfirming(false);
-            onConfirm();
-          }}
-        >
-          Turn on
+        <Button size="sm" onClick={onConfirm}>
+          {confirmLabel}
         </Button>
       </div>
     </div>

@@ -4,6 +4,12 @@ import { normalizeExternalHttpUrl } from './external-url';
 
 const HTTP_URL_PATTERN = /^https?:\/\//i;
 
+/**
+ * Opens a web link outside the app once the person confirms, showing it in
+ * full: for an address someone else chose, such as a room's reference, whose
+ * name need not say where it goes. Anything that is not http(s) is not
+ * offered at all; the main process still refuses a scheme it does not open.
+ */
 export function confirmOpenExternalLink(url: string, onError?: (error: unknown) => void): void {
   const normalizedUrl = normalizeExternalHttpUrl(url);
 
@@ -14,13 +20,8 @@ export function confirmOpenExternalLink(url: string, onError?: (error: unknown) 
   confirmOpenLink(normalizedUrl, onError);
 }
 
-/**
- * Shows `url` in full and opens it outside the app only once the person
- * confirms: for an address someone else chose, such as a room's reference,
- * whose name need not say where it goes. The main process still refuses a
- * scheme it does not open.
- */
-export function confirmOpenLink(url: string, onError?: (error: unknown) => void): void {
+/** Shows `url` in full and opens it outside the app only once the person confirms. */
+function confirmOpenLink(url: string, onError?: (error: unknown) => void): void {
   showModal('confirmExternalLinkModal', {
     url,
     canOpenInSwitchConsoleBrowser: false,

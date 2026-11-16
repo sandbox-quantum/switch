@@ -7,3 +7,17 @@
  */
 export const BUDDY_ICON_URL =
   'https://raw.githubusercontent.com/sandbox-quantum/switch/main/assets/switch-buddy.png';
+
+/**
+ * Whether a name an agent's owner chose reads as switch-buddy's: "Switch
+ * Buddy", "switch_buddy", "Your switch-buddy" and the like, compared without
+ * case, accents, spaces or punctuation.
+ */
+export function readsAsSwitchBuddy(text: string): boolean {
+  return text
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '')
+    .includes('switchbuddy');
+}

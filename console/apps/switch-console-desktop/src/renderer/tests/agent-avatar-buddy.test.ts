@@ -27,7 +27,7 @@ beforeEach(() => {
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
-  recordOwnBuddy('srv', [
+  recordOwnBuddy('srv', 'ws', [
     { agentId: 'agent-buddy', name: 'switch-buddy-ada', template: BUDDY_TEMPLATE },
     { agentId: 'agent-other', name: 'helper', template: null },
   ]);
@@ -75,9 +75,27 @@ describe('switch-buddy’s picture', () => {
   });
 
   it('follows the managed agents as they are read again', async () => {
-    recordOwnBuddy('srv', [{ agentId: 'agent-other', name: 'helper', template: null }]);
+    recordOwnBuddy('srv', 'ws', [{ agentId: 'agent-other', name: 'helper', template: null }]);
     expect(wearsBuddyPicture('srv', 'agent-buddy')).toBe(false);
     expect(wearsBuddyPicture('elsewhere', 'agent-buddy')).toBe(false);
+  });
+
+  it('is worn by the person’s buddy in each workspace, whichever was read last', async () => {
+    recordOwnBuddy('multi', 'ws-a', [
+      { agentId: 'buddy-a', name: 'switch-buddy-ada', template: BUDDY_TEMPLATE },
+    ]);
+    // Switching to another workspace on the same server reads its agents.
+    recordOwnBuddy('multi', 'ws-b', [
+      { agentId: 'buddy-b', name: 'switch-buddy-ada', template: BUDDY_TEMPLATE },
+    ]);
+    expect(wearsBuddyPicture('multi', 'buddy-a')).toBe(true);
+    expect(wearsBuddyPicture('multi', 'buddy-b')).toBe(true);
+
+    // A read of one workspace replaces that workspace's buddy, and only it.
+    recordOwnBuddy('multi', 'ws-b', [{ agentId: 'agent-other', name: 'helper', template: null }]);
+    expect(wearsBuddyPicture('multi', 'buddy-a')).toBe(true);
+    expect(wearsBuddyPicture('multi', 'buddy-b')).toBe(false);
+    expect(wearsBuddyPicture('srv', 'buddy-a')).toBe(false);
   });
 });
 
