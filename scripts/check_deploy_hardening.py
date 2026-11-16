@@ -53,6 +53,7 @@ NGINX_CONF = Path("deploy/shared_resources/gateway-nginx.conf")
 OPTIONAL = "deploy/remote/helm/render-check-optional-values.yaml"
 DOCKERFILES = sorted(Path("deploy/shared_resources/images").glob("Dockerfile.*"))
 STANDALONE_COMPOSE = Path("deploy/local/standalone-docker-compose.yml")
+DEV_COMPOSE = Path("deploy/local/docker-compose.yml")
 WORKFLOWS = sorted(Path(".github/workflows").glob("*.yml"))
 # The chart's own images, which the release pins by digest when it packages
 # the chart (scripts/pin_chart_images.py); in the repository they are
@@ -203,11 +204,12 @@ def test_third_party_images_are_pinned_by_digest() -> None:
     refs: dict[str, str] = {}
     for dockerfile in DOCKERFILES:
         refs.update(dockerfile_images(dockerfile))
-    compose = yaml.safe_load(STANDALONE_COMPOSE.read_text())
-    for name, service in compose["services"].items():
-        image = service.get("image", "")
-        if not image.startswith("${SWITCH_REGISTRY"):
-            refs[f"{STANDALONE_COMPOSE} {name}"] = image
+    for path in (STANDALONE_COMPOSE, DEV_COMPOSE):
+        compose = yaml.safe_load(path.read_text())
+        for name, service in compose["services"].items():
+            image = service.get("image", "")
+            if image and "build" not in service and not image.startswith("${SWITCH_REGISTRY"):
+                refs[f"{path} {name}"] = image
     for args in ((), ("-f", OPTIONAL)):
         for where, image in chart_images(render(*args)):
             name = image.split("@", 1)[0].rsplit(":", 1)[0].rsplit("/", 1)[-1]
@@ -405,7 +407,6 @@ def test_what_serves_the_outside_admits_only_who_ingress_from_names() -> None:
     assert set(off) == {"decision"}, off
 
 
-DEV_COMPOSE = Path("deploy/local/docker-compose.yml")
 # The standalone stack's services that serve people and agents off this
 # machine once SWITCH_BIND_ADDR says so.
 APP_SERVICES = {"switch", "gateway"}
