@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -149,6 +150,7 @@ def _bridge(rows: dict[tuple[str, str], str]) -> SimpleNamespace:
         _channel_to_room={"chan-1": ("room-uuid", TRANSPORT_ROOM_ID)},
         _channel_locks={},
         _trust_client=NullTrustClient(),
+        _room_tenant=AsyncMock(return_value="tenant-1"),
     )
     bridge.human = human
     bridge.texts = texts

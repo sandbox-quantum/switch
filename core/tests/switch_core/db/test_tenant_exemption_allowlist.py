@@ -358,6 +358,13 @@ _RAW_SESSION_FACTORY_MODULES = {
     # with no tenant and no policy. Each workspace a box serves is read on a
     # session with that workspace bound (`tenant_scope`).
     "switch_core.gateway.hosted_controller",
+    # Core's own hosted sweep loop: each pass opens one session under
+    # `no_tenant()` and does nothing but call `sweep_hosted_machines`, the
+    # sweep the operator controller's poll runs, which touches only
+    # `cloud_machines` and `server_audit_events`. Its per-workspace work (the
+    # workspaces a box serves, and revoking a deleted box's controllers) runs
+    # on `tenant_session`, with that workspace bound.
+    "switch_core.gateway.hosted_sweep",
     # The provisioner routes: its credential's session is opened under
     # `no_tenant()` and touches only `cloud_machines` and `server_audit_events`
     # (the claim and the result, through box_provision). The pause and
