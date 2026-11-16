@@ -116,6 +116,12 @@ describe('a provider added as a plugin and a runtime', () => {
       allFeatureFlagsOff()
     );
 
-    expect(options).toContainEqual({ id: 'dummy', name: 'Dummy', ready: true, problem: null });
+    expect(options).toContainEqual({
+      id: 'dummy',
+      name: 'Dummy',
+      ready: true,
+      pickable: true,
+      problem: null,
+    });
   });
 });
