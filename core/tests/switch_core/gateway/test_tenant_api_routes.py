@@ -1054,6 +1054,40 @@ class TestInvitationLifecycle:
             assert membership is not None
             assert membership.role == "admin"
 
+    async def test_the_service_account_cannot_accept_an_admin_invitation(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Agents added with the shared registration token act with its role,
+        so an admin invitation is refused to it as a promotion is, and is not
+        spent."""
+        await _make_tenant(session_factory, TENANT_A)
+        admin_id = await _make_member(
+            session_factory, name="inviter", tenant_id=TENANT_A, role="admin"
+        )
+        invitation_id, token = await self._mint(
+            session_factory, tenant_id=TENANT_A, admin_id=admin_id, role="admin"
+        )
+        await _make_tenant(session_factory, TENANT_B)
+        bootstrap_id = await _make_member(
+            session_factory, name="robot", tenant_id=TENANT_B, role="member"
+        )
+        async with session_factory() as session:
+            bootstrap = await session.get(User, bootstrap_id)
+            assert bootstrap is not None
+            bootstrap.metadata_ = {BOOTSTRAP_OWNER_MARKER_META_KEY: True}
+            await session.commit()
+        caller_token = _token(bootstrap_id, "robot@example.invalid", TENANT_B)
+
+        async with _client(_app(session_factory), caller_token) as client:
+            response = await client.post("/invitations/accept", json={"token": token})
+
+        assert response.status_code == 409, response.text
+        assert response.json()["detail"] == SERVICE_ACCOUNT_ADMIN_REFUSAL
+        async with tenant_session(session_factory, TENANT_A) as session:
+            assert await session.get(TenantMember, (TENANT_A, bootstrap_id)) is None
+            invitation = await session.get(Invitation, invitation_id)
+            assert invitation is not None and invitation.uses_remaining == 1
+
     async def test_re_accepting_an_invitation_you_already_hold_costs_nothing(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:

@@ -1826,6 +1826,10 @@ async def _join_through(
     already_member = existing is not None and not _outranks(
         invitation.role, existing.role
     )
+    if invitation.role == "admin" and not already_member:
+        joiner = await user_store.get(session, caller.id)
+        if joiner is not None and is_bootstrap_owner(joiner):
+            raise HTTPException(status_code=409, detail=SERVICE_ACCOUNT_ADMIN_REFUSAL)
     if existing is None:
         await _consume(session, invitation_store, invitation)
         role = invitation.role
