@@ -1,6 +1,7 @@
 import { observer } from 'mobx-react-lite';
 import { motion } from 'motion/react';
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { MachineConsentPrompt } from '@renderer/features/machines/turn-on-machine';
 import { useManagedAgents } from '@renderer/features/managed-agents/use-managed-agents';
 import { AgentIcon } from '@renderer/lib/components/agent-icon';
 import { TermInfo } from '@renderer/lib/components/term-info';
@@ -40,6 +41,8 @@ const CHECK_PATIENCE_MS = 45_000;
  * A computer that does not run agents for the workspace yet says so here,
  * with the button that turns it on once the person confirms; until then the
  * providers Console found as onboarding opened are what the page goes by.
+ * Picking one of those while it is off asks the same confirmation, and starts
+ * the buddy with it once the computer is on.
  */
 export const MeetBuddyPage = observer(function MeetBuddyPage({
   serverId,
@@ -103,6 +106,19 @@ export const MeetBuddyPage = observer(function MeetBuddyPage({
     computer,
     onCreated,
   });
+  // A provider picked while this computer runs no managed agents: it waits
+  // on the person turning the computer on, and is forgotten if they do not.
+  const [pickedWhileOff, setPickedWhileOff] = useState<string | null>(null);
+  const asking = computer.kind === 'off' ? pickedWhileOff : null;
+  const pick = (providerId: string) => {
+    if (computer.kind === 'off') setPickedWhileOff(providerId);
+    else start(providerId);
+  };
+  const turnOnAndStart = (providerId: string) => {
+    setPickedWhileOff(null);
+    void thisComputer.turnOn();
+    start(providerId);
+  };
   const firstName = firstNameOf(buddyPerson(serverId).name);
   // The opening plays once: back from setting up a provider, it is at rest.
   const introPlayed = useRef(false);
@@ -178,18 +194,30 @@ export const MeetBuddyPage = observer(function MeetBuddyPage({
         }}
         after={
           existing ? null : (
-            <StartChoices
-              checking={computer.kind !== 'failed' && !checked}
-              ready={ready}
-              starting={starting}
-              onStart={start}
-              onSetUp={openSetup}
-              onSkip={skip}
-            />
+            <div className="flex flex-col gap-3">
+              <StartChoices
+                checking={computer.kind !== 'failed' && !checked}
+                ready={ready}
+                starting={starting}
+                onStart={pick}
+                onSetUp={openSetup}
+                onSkip={skip}
+              />
+              {asking !== null && (
+                <MachineConsentPrompt
+                  serverId={serverId}
+                  label="This computer"
+                  sshHost={null}
+                  confirmLabel="Turn on and start"
+                  onCancel={() => setPickedWhileOff(null)}
+                  onConfirm={() => turnOnAndStart(asking)}
+                />
+              )}
+            </div>
           )
         }
       />
-      {computer.kind === 'off' && (
+      {computer.kind === 'off' && asking === null && (
         <div className="flex justify-center">
           <ComputerNote
             serverId={serverId}
