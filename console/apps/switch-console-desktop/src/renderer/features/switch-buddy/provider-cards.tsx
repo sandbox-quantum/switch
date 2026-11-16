@@ -293,7 +293,7 @@ function SignInCodeForm({ onSubmit }: { onSubmit: (code: string) => void }) {
   const [code, setCode] = useState('');
   return (
     <form
-      className="flex items-center gap-2"
+      className="flex flex-wrap items-center gap-2"
       onSubmit={(event) => {
         event.preventDefault();
         if (!code.trim()) return;
@@ -301,10 +301,13 @@ function SignInCodeForm({ onSubmit }: { onSubmit: (code: string) => void }) {
         setCode('');
       }}
     >
+      <p className="w-full text-xs text-foreground-muted">
+        Only if the sign-in page shows you a code instead of saying you’re signed in:
+      </p>
       <Input
         value={code}
         onChange={(event) => setCode(event.target.value)}
-        placeholder="Paste the code the sign-in page shows"
+        placeholder="Paste the code here"
         aria-label="Sign-in code"
         className="h-8 flex-1"
       />
