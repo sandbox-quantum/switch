@@ -660,7 +660,9 @@ async def test_unset_allow_lists_add_no_403_on_the_paths_that_check_them(
     from switch_core.providers.hosted import load_hosted_settings, tenant_allowed
 
     path = None if lists is None else _hosted_config(tmp_path, **lists)
-    tenant_ids = _management_tenant_ids(path)
+    # With v2 on, where the list can apply at all: with v2 off it never does
+    # (test_workspace_allowed).
+    tenant_ids = _management_tenant_ids(path, True)
     principal = ControllerPrincipal(controller_id="c", owner_id="u", tenant_id="t-2")
     authenticator = ManagementAuthenticator(
         session_factory=AsyncMock(),  # type: ignore[arg-type]
