@@ -1,4 +1,5 @@
 import type { ChildProcess } from 'node:child_process';
+import type * as NodeCrypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { connect } from 'node:net';
@@ -13,6 +14,12 @@ import type { Supervision } from './launch';
 import { SessionHostFailedError, SessionLinks } from './session-channel';
 import { WatcherControl } from './watcher-tools';
 
+const crypto = vi.hoisted(() => ({ timingSafeEqual: vi.fn() }));
+vi.mock('node:crypto', async (importOriginal) => {
+  const actual = await importOriginal<typeof NodeCrypto>();
+  crypto.timingSafeEqual.mockImplementation(actual.timingSafeEqual);
+  return { ...actual, timingSafeEqual: crypto.timingSafeEqual };
+});
 const paths = vi.hoisted(() => ({ base: '' }));
 const launched = vi.hoisted(() => ({ ensureSharedProcess: vi.fn() }));
 vi.mock('./launch', () => ({
@@ -302,6 +309,25 @@ it('forgets a session with no config and waits on one until its config is saved'
 it('refuses a client without the secret', async () => {
   const { stop, serving, client } = await started();
   await expect(client('wrong').ready).rejects.toThrow();
+  stop.abort();
+  await serving;
+});
+
+it('compares the secret in constant time, and refuses one that is nearly right', async () => {
+  const { stop, serving, client, control } = await started();
+  const last = control.token.at(-1) === '0' ? '1' : '0';
+  for (const near of [
+    `${control.token.slice(0, -1)}${last}`,
+    control.token.slice(0, -1),
+    `${control.token}0`,
+  ])
+    await expect(client(near).ready).rejects.toThrow();
+  crypto.timingSafeEqual.mockClear();
+  await client().ready;
+  expect(crypto.timingSafeEqual).toHaveBeenCalledWith(
+    Buffer.from(control.token),
+    Buffer.from(control.token)
+  );
   stop.abort();
   await serving;
 });
