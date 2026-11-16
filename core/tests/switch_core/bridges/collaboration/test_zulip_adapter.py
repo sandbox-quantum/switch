@@ -603,6 +603,42 @@ async def test_a_mass_mention_notifies_nobody_unless_the_post_is_room_wide(
     assert "@**all**" in second
 
 
+async def test_a_person_or_group_mention_an_agent_wrote_notifies_nobody(
+    server: Zulip,
+) -> None:
+    # Switch writes `@**…**` for nobody but the app, so one naming a person
+    # or a user group came from text the agent echoed.
+    server.on("POST", "/api/v1/messages", lambda r: _ok(id=50))
+    adapter, _ = await _started(server)
+
+    await adapter.send_message(
+        str(STREAM_ID),
+        "helper",
+        adapter.translate_outbound(
+            "cc @**Org Owner** @**Org Owner|8** @*oncall*, quietly @_**Test Person**"
+        ),
+    )
+
+    [request] = server.sent("POST", "/api/v1/messages")
+    content = _form(request)["content"]
+    assert "@**Org Owner**" not in content
+    assert "@**Org Owner|8**" not in content
+    assert "@*oncall*" not in content
+    assert "@\u200b**Org Owner**" in content
+    assert "@_**Test Person**" in content
+
+
+def test_the_apps_own_mention_in_a_notice_still_reads_as_one() -> None:
+    adapter = ZulipAdapter(config=ZulipConnectionConfig.model_validate(CONFIG))
+    adapter._bot_name = "Switch"
+
+    text = adapter.translate_outbound(
+        f"!set-alias @agent_name {adapter.render_app_mention('Switch')}"
+    )
+
+    assert text == "!set-alias @agent_name @**Switch**"
+
+
 async def test_an_edit_and_a_delete_reach_the_message(server: Zulip) -> None:
     server.on("PATCH", "/api/v1/messages/30", lambda r: _ok())
     server.on("DELETE", "/api/v1/messages/30", lambda r: _ok())

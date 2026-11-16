@@ -31,6 +31,7 @@ from urllib.parse import urljoin, urlsplit
 import httpx
 from pydantic import Field, field_validator
 
+from switch_core.agent_display_name import ZERO_WIDTH_SPACE
 from switch_core.bridges.collaboration.adapter import (
     ActivityMark,
     ActivityMarkRefused,
@@ -102,6 +103,12 @@ _REACTION_AS_ASKED = ("REACTION_ALREADY_EXISTS", "REACTION_DOES_NOT_EXIST")
 _UPLOAD_LINK = re.compile(r"\[([^\]]*)\]\(/user_uploads/([^)\s]+)\)")
 # `@**name**` and `@_**name**` (silent), each optionally `|user_id`.
 _MENTION = re.compile(r"@_?\*\*([^*|]+)(?:\|\d+)?\*\*")
+# The `@` of a mention that notifies: `@**Name**` for a person, `@*group*` for
+# everyone in a user group. The silent `@_**name**` notifies nobody, and the
+# stream-wide ones are `defuse_mass_mentions`'s, which a room-wide post skips.
+_NOTIFYING_MENTION = re.compile(
+    r"@(?=\*)(?!\*\*(?:all|everyone|stream|channel|topic)\*\*)", re.IGNORECASE
+)
 # The mentions that notify everyone in a stream or topic.
 _MASS_MENTION = re.compile(
     r"@_?\*\*(all|everyone|stream|channel|topic)\*\*", re.IGNORECASE
@@ -933,8 +940,18 @@ class ZulipAdapter(PlatformAdapter):
     # ── Markup ───────────────────────────────────────────────────────────────
 
     def _render_outbound(self, content: str) -> str:
-        """Switch Markdown is Zulip's Markdown for everything Switch writes."""
-        return content
+        """Switch Markdown is Zulip's Markdown for everything Switch writes.
+
+        Except a mention. Switch writes `@**…**` for nobody but the app itself
+        (`render_app_mention`), which notifies no person, so any other
+        `@**Name**` or `@*group*` in a body came from somewhere else — text an
+        agent echoed — and a zero-width space after its `@` shows it as
+        written without notifying anyone."""
+        own = self.render_app_mention(self._bot_name) if self._bot_name else ""
+        pieces = content.split(own) if own else [content]
+        return own.join(
+            _NOTIFYING_MENTION.sub("@" + ZERO_WIDTH_SPACE, piece) for piece in pieces
+        )
 
     def translate_inbound(self, raw_message: str) -> str:
         """Zulip's mentions as the `@name` Switch addresses agents by."""
