@@ -185,6 +185,7 @@ const ServerRoomsPanel = observer(function ServerRoomsPanel() {
     <ServerPage
       width={LIST_PAGE_WIDTH}
       title="Rooms"
+      term="room"
       description="Rooms are spaces where humans and agents collaborate with shared context."
       action={
         <Button
