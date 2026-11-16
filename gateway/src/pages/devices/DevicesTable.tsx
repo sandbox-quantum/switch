@@ -46,17 +46,23 @@ export function deviceState(row: DeviceTableRow): { label: string; color: "succe
   return { ...STATES[row.state], detail: connectionDetail(row) };
 }
 
-export function agentsCell(row: WorkspaceDevice): string {
-  return row.agents_total === 0 ? "None" : `${row.agents_running} of ${row.agents_total} running`;
+/** How many agents are placed on it; how many of those run is on hover. */
+export function agentsRunning(row: WorkspaceDevice): string {
+  return `${row.agents_running} of ${row.agents_total} running`;
 }
 
 const byLabel = (a: FilterOption, b: FilterOption) => a.label.localeCompare(b.label);
+const NO_PLATFORM = "\u0000no-platform";
+
+function platformOf(row: WorkspaceDevice): string | null {
+  return row.platform ? `${row.platform.os} ${row.platform.arch}` : null;
+}
 
 /** Kept stable: a fresh array each render would rebuild the grid's columns. */
 const PINNED = ["actions"];
 const TABLE_CHROME = 108;
 const ROW = 56;
-const PAGE_SIZE = 10;
+const PAGE_SIZE = 25;
 
 /**
  * Devices, each with its owner when `showOwner`, and its workspace when
@@ -91,6 +97,10 @@ export default function DevicesTable({
     const states: FilterOption[] = [...new Set(rows.map((row) => deviceState(row).label))]
       .map((label) => ({ value: label, label }))
       .sort(byLabel);
+    const platforms: FilterOption[] = [
+      ...[...new Set(rows.flatMap((row) => platformOf(row) ?? []))].sort().map((label) => ({ value: label, label })),
+      ...(rows.some((row) => platformOf(row) === null) ? [{ value: NO_PLATFORM, label: "Not reported" }] : []),
+    ];
     const types: FilterOption[] = (Object.keys(DEVICE_TYPES) as DeviceType[])
       .filter((type) => rows.some((row) => row.type === type))
       .map((type) => ({ value: type, label: DEVICE_TYPES[type].label }));
@@ -98,7 +108,7 @@ export default function DevicesTable({
     return [
       {
         field: "name",
-        headerName: showOwner ? "Device and owner" : "Device",
+        headerName: "Device",
         flex: 1,
         minWidth: 180,
         // Its owner is under its name, so the column filters by owner.
@@ -171,14 +181,22 @@ export default function DevicesTable({
       {
         field: "agents_total",
         headerName: "Agents",
-        width: 140,
-        renderCell: ({ row }) => agentsCell(row),
+        width: 100,
+        type: "number",
+        align: "left",
+        headerAlign: "left",
+        renderCell: ({ row }) => (
+          <Tooltip title={agentsRunning(row)}>
+            <span>{row.agents_total}</span>
+          </Tooltip>
+        ),
       },
       {
         field: "platform",
         headerName: "Platform",
         width: 150,
-        valueGetter: (_value, row) => (row.platform ? `${row.platform.os} ${row.platform.arch}` : ""),
+        filter: { value: (row) => platformOf(row) ?? NO_PLATFORM, options: platforms },
+        valueGetter: (_value, row) => platformOf(row) ?? "",
         renderCell: ({ row }) =>
           row.platform ? (
             <Typography component="span" sx={MONO_SX}>
@@ -222,6 +240,7 @@ export default function DevicesTable({
       ...(showOwner ? [{ field: "name", label: "Owner", allLabel: "All owners" }] : []),
       { field: "state", label: "State", allLabel: "All states" },
       { field: "type", label: "Type", allLabel: "All types" },
+      { field: "platform", label: "Platform", allLabel: "All platforms" },
     ],
     [showOwner, showWorkspace],
   );
