@@ -7,6 +7,7 @@ Same FakeRoomService pattern as test_rooms_yaml.py: real PostgreSQL, no Matrix.
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import pytest
@@ -22,6 +23,7 @@ from switch_core.db.models import (
     Room,
     RoomGroup,
 )
+from tests.switch_core.test_template_yaml import alias_bomb
 
 SINGLE_ROOM_YAML = """\
 version: 0
@@ -130,6 +132,16 @@ async def test_kickoff_is_posted_on_behalf_of_the_agent(env):
 async def test_missing_required_input_creates_nothing(env):
     with pytest.raises(ValueError, match="project"):
         await _call(env["agent_id"], yaml=PARAMETERIZED_YAML)
+    async with env["session_factory"]() as session:
+        assert (await session.execute(select(Room))).scalars().all() == []
+
+
+@pytest.mark.asyncio
+async def test_an_alias_bomb_is_refused_at_once_and_creates_nothing(env):
+    started = time.monotonic()
+    with pytest.raises(ValueError, match="anchors or aliases"):
+        await _call(env["agent_id"], yaml=alias_bomb(depth=10, width=6))
+    assert time.monotonic() - started < 1
     async with env["session_factory"]() as session:
         assert (await session.execute(select(Room))).scalars().all() == []
 

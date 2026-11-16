@@ -29,6 +29,7 @@ Export emits resolved rooms and never emits ``params:``.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import time
@@ -49,6 +50,7 @@ from switch_core.clients.admin_messages import OnBehalfOf
 from switch_core.db.models import User, require_tenant_id
 from switch_core.room_service import RoleSpec, RoomCreateConfig
 from switch_core.telemetry import TelemetryService, emit_after_commit
+from switch_core.template_yaml import load_template_yaml
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -683,7 +685,7 @@ class RoomYamlService:
         intentional (the template author owns the namespace).
         """
         try:
-            data = yaml.safe_load(text)
+            data = load_template_yaml(text)
         except yaml.YAMLError as e:
             raise ValueError(f"Invalid YAML: {e}") from e
         if not isinstance(data, dict):
@@ -764,6 +766,18 @@ class RoomYamlService:
         return ParsedTemplate(
             spec=spec, kickoff=kickoff, params=declared, values=resolved
         )
+
+    async def read_template(
+        self,
+        text: str,
+        *,
+        inputs: dict[str, Any] | None,
+        builtins: dict[str, str],
+    ) -> ParsedTemplate:
+        """``parse_template`` on a worker thread, for a request handler: a
+        template of the largest size allowed still takes long enough to read
+        that it must not hold up the event loop."""
+        return await asyncio.to_thread(self.parse_template, text, inputs, builtins)
 
     @staticmethod
     def _group_spec(body: dict[str, Any]) -> GroupSpec:
@@ -913,7 +927,7 @@ class RoomYamlService:
         error. Chains of the Console's types are the Console's to resolve.
         """
         try:
-            data = yaml.safe_load(text)
+            data = await asyncio.to_thread(load_template_yaml, text)
             # A version 2 param's `if:` is the template engine's, not the spec's.
             declared = {
                 name: ParamSpec.model_validate(
@@ -1056,7 +1070,7 @@ class RoomYamlService:
         fails loudly later when it matters. A template naming no bridge lands
         on the default one, same as provisioning."""
         try:
-            data = yaml.safe_load(text)
+            data = await asyncio.to_thread(load_template_yaml, text)
         except yaml.YAMLError:
             return None
         if not isinstance(data, dict):
