@@ -90,6 +90,7 @@ const notion: CatalogueConnector = {
   name: "Notion",
   category: "Knowledge base",
   description: "Read and write Notion pages and databases.",
+  publisher: "Example Labs",
 };
 
 describe("ConnectorCard", () => {
@@ -149,7 +150,7 @@ describe("CatalogueGrid", () => {
     errors.mockRestore();
   });
 
-  it("searches names, categories and descriptions, and says when nothing matches", () => {
+  it("searches names, categories, descriptions and makers, and says when nothing matches", () => {
     render(<Harness />);
     const search = screen.getByLabelText("Search connectors");
 
@@ -158,6 +159,10 @@ describe("CatalogueGrid", () => {
     expect(screen.getByText("Notion")).toBeTruthy();
 
     expect(screen.getByRole("status").textContent).toBe("1 of 2 connectors");
+
+    fireEvent.change(search, { target: { value: "example labs" } });
+    expect(screen.queryByText("GitHub")).toBeNull();
+    expect(screen.getByText("Notion")).toBeTruthy();
 
     fireEvent.change(search, { target: { value: "spreadsheets" } });
     expect(screen.getByRole("status").textContent).toBe("No connectors match that search.");
