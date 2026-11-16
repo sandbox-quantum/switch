@@ -1262,7 +1262,7 @@ class OperatorUserResponse(UserResponse):
 
 
 class CreateUserRequest(BaseModel):
-    name: str
+    name: Name
     email: Email
     password: Password
     # Only the exact string "admin" grants operator rights (`require_admin`),
