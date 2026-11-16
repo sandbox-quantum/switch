@@ -1,11 +1,12 @@
 import AddLinkOutlined from "@mui/icons-material/AddLinkOutlined";
 import OpenInNewOutlined from "@mui/icons-material/OpenInNewOutlined";
 import ScheduleOutlined from "@mui/icons-material/ScheduleOutlined";
-import { Alert, Box, Button, Chip, CircularProgress, Divider, Snackbar, Stack, Typography } from "@mui/material";
+import { Alert, Box, Button, Chip, CircularProgress, Divider, Stack, Typography } from "@mui/material";
 import { Fragment, useEffect, useRef, useState } from "react";
 import ConfirmDialog from "../../components/ConfirmDialog";
 import BrandTile from "../../components/connectors/BrandTile";
 import InfoTip from "../../components/InfoTip";
+import SuccessSnackbar from "../../components/SuccessSnackbar";
 import { ApiError, type BridgeDetail, cancelLinkRequest, releaseBridgeIdentity } from "../../data/api";
 import { formatDate, platformLabel, sentenceCase } from "../../theme/format";
 import {
@@ -210,6 +211,7 @@ export default function YourAccountsSection({
           try {
             await releaseBridgeIdentity(toUnlink.app.bridge_id, toUnlink.line.id);
             setFocusApp(toUnlink.app.bridge_id);
+            setNotice(`Unlinked ${accountHandle(toUnlink.line.username)}.`);
           } finally {
             refresh();
           }
@@ -217,13 +219,7 @@ export default function YourAccountsSection({
         onClose={() => setToUnlink(null)}
       />
 
-      <Snackbar open={notice !== null} autoHideDuration={6000} onClose={() => setNotice(null)}>
-        {notice !== null ? (
-          <Alert severity="success" onClose={() => setNotice(null)}>
-            {notice}
-          </Alert>
-        ) : undefined}
-      </Snackbar>
+      <SuccessSnackbar message={notice} onClose={() => setNotice(null)} />
     </Box>
   );
 }

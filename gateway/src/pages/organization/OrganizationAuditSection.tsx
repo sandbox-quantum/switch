@@ -67,7 +67,7 @@ const COLUMNS: GridColDef<OrganizationAuditEvent>[] = [
 /** What changed in the organization as a whole, newest first, a page at a
  * time. A change the platform operator made through operator access alone is
  * marked. */
-export default function OrganizationAuditSection() {
+export default function OrganizationAuditSection({ organizationName }: { organizationName: string }) {
   const [events, setEvents] = useState<OrganizationAuditEvent[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -94,7 +94,12 @@ export default function OrganizationAuditSection() {
 
   return (
     <Stack spacing={1.5}>
-      <Typography variant="h6">Audit log</Typography>
+      <Stack spacing={0.5} sx={{ mb: 1.5 }}>
+        <Typography variant="h5">Audit log</Typography>
+        <Typography variant="body2" color="text.secondary">
+          Changes to {organizationName}&apos;s workspaces, users and connectors, platform operator access included.
+        </Typography>
+      </Stack>
       {error && <Alert severity="error">{error}</Alert>}
       {loading && events.length === 0 ? (
         <CircularProgress />

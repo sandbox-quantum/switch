@@ -19,15 +19,17 @@ import { WORKSPACE_ROLES } from "./roles";
 
 interface Props {
   member: Member;
+  workspaceName: string;
   onSave: (role: TenantRole) => Promise<void>;
   onClose: () => void;
 }
 
-/** Pick a member's workspace role from the two the server takes, each with
- * what it lets them do. Organization admin is not offered: it is granted in
- * the organization's settings. Mounted only while open, so it starts from the
- * member's current role every time. */
-export default function ChangeRoleDialog({ member, onSave, onClose }: Props) {
+/** Pick a member's role in this workspace from the two the server takes,
+ * each with what it lets them do. Organization admin is not offered: it is
+ * granted in the organization's settings. Their role in any other workspace
+ * they are in is not changed here. Mounted only while open, so it starts from
+ * the member's current role every time. */
+export default function ChangeRoleDialog({ member, workspaceName, onSave, onClose }: Props) {
   const [role, setRole] = useState<TenantRole>(member.role);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -56,7 +58,7 @@ export default function ChangeRoleDialog({ member, onSave, onClose }: Props) {
       slotProps={{ paper: { sx: { borderRadius: "16px" } } }}
     >
       <DialogTitle id={titleId} sx={{ fontSize: "1.0625rem", fontWeight: 600, pt: 3, pr: 8, pb: 0.5 }}>
-        Change role
+        Change access
       </DialogTitle>
       <IconButton
         aria-label="Close"
@@ -114,6 +116,9 @@ export default function ChangeRoleDialog({ member, onSave, onClose }: Props) {
             })}
           </Stack>
         </RadioGroup>
+        <Typography variant="caption" color="text.secondary" component="p" sx={{ mt: 1.5 }}>
+          This changes their role in {workspaceName} only. People can be in several workspaces, with a role in each.
+        </Typography>
         {error && (
           <Alert severity="error" sx={{ mt: 2, overflowWrap: "anywhere" }}>
             {error}

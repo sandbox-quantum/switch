@@ -70,6 +70,22 @@ export function settingOf(policy: Policy): OrganizationServiceSetting | null {
   }
 }
 
+/** What the snackbar says once the organization's setting is `policy`. */
+export function policyChanged(connector: string, policy: Policy): string {
+  switch (policy) {
+    case "workspaces_decide":
+      return `Each workspace now decides whether to use ${connector}.`;
+    case "on_by_default":
+      return `${connector} is now on by default in every workspace. Workspace admins can turn it off.`;
+    case "off_by_default":
+      return `${connector} is now off by default in every workspace. Workspace admins can turn it on.`;
+    case "on_locked":
+      return `${connector} is on in every workspace. Workspace admins can't turn it off.`;
+    case "off_locked":
+      return `${connector} is off in every workspace. It disappears from them until it is switched back on.`;
+  }
+}
+
 /** The card's switch: on while workspaces may use the connector at all. */
 export function available(policy: Policy): boolean {
   return policy !== "off_locked";

@@ -1,3 +1,4 @@
+import LinkOffOutlined from "@mui/icons-material/LinkOffOutlined";
 import { Alert, Chip, CircularProgress, FormControlLabel, Stack, Switch, Typography } from "@mui/material";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import ConfirmDialog from "../../components/ConfirmDialog";
@@ -130,7 +131,14 @@ export default function InviteLinksSection({ tenantId, inOrganization, members }
             label={`Actions for the link ${row.email === null ? "for anyone" : `for ${row.email}`}`}
             actions={
               invitationStatus(row, now) === "Active"
-                ? [{ label: "Revoke link", destructive: true, onClick: () => setRevoking(row) }]
+                ? [
+                    {
+                      label: "Revoke link",
+                      icon: <LinkOffOutlined fontSize="small" />,
+                      destructive: true,
+                      onClick: () => setRevoking(row),
+                    },
+                  ]
                 : []
             }
             tabIndex={tabIndex}
