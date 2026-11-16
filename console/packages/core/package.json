@@ -40,6 +40,10 @@
       "types": "./dist/agents-plugins-helpers.d.mts",
       "default": "./dist/agents-plugins-helpers.mjs"
     },
+    "./agents/provider-setup": {
+      "types": "./dist/agents-provider-setup.d.mts",
+      "default": "./dist/agents-provider-setup.mjs"
+    },
     "./package.json": "./package.json"
   },
   "scripts": {
