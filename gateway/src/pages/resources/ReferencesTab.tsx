@@ -18,6 +18,7 @@ import {
   descriptionColumn,
   nameColumn,
   ownerColumn,
+  RESOURCE_SEARCH_LABEL,
   resourceSearchText,
   useRefetchOnRefresh,
 } from "./resourceList";
@@ -33,7 +34,7 @@ const SELECT_FILTERS: SelectFilter[] = [
   { field: "type", label: "Type", allLabel: "All types" },
 ];
 
-const SEARCH = { label: "Search references", text: resourceSearchText };
+const SEARCH = { label: RESOURCE_SEARCH_LABEL, text: resourceSearchText };
 
 /** What a reference's type reads as: its name, or the slug when no type of
  * that slug exists any more. */

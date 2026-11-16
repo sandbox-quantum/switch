@@ -37,6 +37,8 @@ import {
   DetailLoading,
   InPackagesSection,
   InfoLine,
+  ReadOnlyBanner,
+  ownerCanChange,
   requiredHelper,
   useAfterTransfer,
   useResourceDetail,
@@ -70,7 +72,7 @@ export default function ReferenceDetailPage() {
         <IconButton
           onClick={() => navigate(LIST_PATH)}
           size="small"
-          aria-label="Back"
+          aria-label="Back to resources"
         >
           <ArrowBack />
         </IconButton>
@@ -80,6 +82,7 @@ export default function ReferenceDetailPage() {
         <CategoryChip label={referenceTypeLabel(ref)} />
         <AccessChip pair={ref} />
       </Stack>
+      {!ref.can_edit && <ReadOnlyBanner whose={ownerCanChange("reference", ref.owner_id, ref.owner_name)} />}
 
       <Stack spacing={4}>
         <RefInfoSection ref_={ref} />

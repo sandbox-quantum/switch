@@ -3,7 +3,7 @@ import type { GridRowId } from "@mui/x-data-grid";
 import type { ReactNode } from "react";
 import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { TableColumn } from "../../components/DataTable";
+import type { SelectFilter, TableColumn } from "../../components/DataTable";
 import type { RoomSummary, Session } from "../../data/api";
 import * as api from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
@@ -103,9 +103,10 @@ vi.mock("../../data/api", async (importOriginal) => {
 });
 
 // The data grid lays rows out from measured sizes, which jsdom does not have,
-// so it renders none. This draws each row in the order given, its selection
-// checkbox when the row is selectable, and its action cell, or the table's
-// empty state when there are no rows.
+// so it renders none. This draws each select filter with what it offers, then
+// each row in the order given, its owner, its selection checkbox when the row
+// is selectable, and its action cell. The order the table opens in and whether
+// it holds only the viewer's rooms are on the table's element.
 vi.mock("../../components/DataTable", () => ({
   TableEmptyState: ({ title, children }: { title: string; children?: ReactNode }) => (
     <div>
@@ -116,24 +117,43 @@ vi.mock("../../components/DataTable", () => ({
   default: function FakeTable({
     rows,
     columns,
-    emptyState,
+    selectFilters,
+    initialSort,
+    yours,
     isRowSelectable,
     onRowSelectionModelChange,
   }: {
     rows: RoomSummary[];
     columns: TableColumn<RoomSummary>[];
-    emptyState?: ReactNode;
+    selectFilters?: SelectFilter[];
+    initialSort?: { field: string; sort: string };
+    yours?: boolean;
     isRowSelectable?: (row: RoomSummary) => boolean;
     onRowSelectionModelChange?: (ids: GridRowId[]) => void;
   }) {
     const [picked, setPicked] = useState<GridRowId[]>([]);
     const actions = columns.find((c) => c.field === "actions");
-    if (rows.length === 0) return <div data-testid="empty">{emptyState}</div>;
+    const owner = columns.find((c) => c.field === "owner_name");
     return (
-      <div>
+      <div
+        data-testid="table"
+        data-sort={initialSort ? `${initialSort.field} ${initialSort.sort}` : ""}
+        data-yours={String(Boolean(yours))}
+      >
+        {(selectFilters ?? []).map((select) => (
+          <select key={select.field} aria-label={select.label}>
+            <option>{select.allLabel}</option>
+            {columns
+              .find((c) => c.field === select.field)
+              ?.filter?.options?.map((option) => <option key={option.value}>{option.label}</option>)}
+          </select>
+        ))}
         {rows.map((row) => (
           <div key={row.id} data-testid={`row-${row.name}`}>
             {row.name}
+            <span data-testid={`owner-${row.name}`}>
+              {owner?.renderCell?.({ row, value: row.owner_name } as never)}
+            </span>
             {(isRowSelectable?.(row) ?? true) && (
               <input
                 type="checkbox"
@@ -217,10 +237,36 @@ describe("RoomsPage rows and actions", () => {
     render(<RoomsPage />);
     await screen.findByTestId("row-mine");
     expect(rowNames()).toEqual(["mine", "open", "readonly", "bridged"]);
+    expect(screen.getByTestId("table").dataset.sort).toBe("created_at desc");
     expect(screen.getByRole("tab", { name: "Active 4" })).toBeTruthy();
 
     fireEvent.click(screen.getByRole("tab", { name: "Archived 1" }));
     expect(rowNames()).toEqual(["old"]);
+  });
+
+  it("offers Group, Owner, Bridge and Connected users dropdowns, from the rooms in view", async () => {
+    const offered = (label: string) =>
+      Array.from(screen.getByRole("combobox", { name: label }).querySelectorAll("option")).map((o) => o.textContent);
+    render(<RoomsPage />);
+    await screen.findByTestId("row-mine");
+    expect(offered("Group")).toEqual(["All groups", "No group"]);
+    expect(offered("Owner")[0]).toBe("All owners");
+    expect(offered("Bridge")).toEqual(["All bridges", "Not bridged", "Slack"]);
+    expect(offered("Connected users")).toEqual(["Anyone"]);
+
+    // The archived room isn't bridged, so Slack would return nothing there.
+    fireEvent.click(screen.getByRole("tab", { name: "Archived 1" }));
+    expect(offered("Bridge")).toEqual(["All bridges", "Not bridged"]);
+  });
+
+  it("says No owner for a room nobody owns, and Unknown for an owner with no name", async () => {
+    vi.mocked(api.loadRoomsWithArchived).mockResolvedValue([
+      room("orphan", { owner_id: null, owner_name: null }),
+      room("nameless", { owner_id: "u9", owner_name: null }),
+    ]);
+    render(<RoomsPage />);
+    expect((await screen.findByTestId("owner-orphan")).textContent).toBe("No owner");
+    expect(screen.getByTestId("owner-nameless").textContent).toBe("Unknown");
   });
 
   it("offers archive on rooms the viewer may archive, delete on rooms they manage", async () => {
@@ -362,12 +408,13 @@ describe("RoomsPage rows and actions", () => {
 });
 
 describe("RoomsPage scope", () => {
-  it("shows a member only their own rooms", async () => {
+  it("shows a member only their own rooms, and words a search that matches none of them for them", async () => {
     signedInAs("member");
     render(<RoomsPage />);
     await screen.findByTestId("row-mine");
     expect(rowNames()).toEqual(["mine", "bridged"]);
     expect(screen.getByText("Rooms in Acme that you own, are in, or have an agent in.")).toBeTruthy();
+    expect(screen.getByTestId("table").dataset.yours).toBe("true");
   });
 
   it("shows an admin every room", async () => {
@@ -375,18 +422,29 @@ describe("RoomsPage scope", () => {
     await screen.findByTestId("row-mine");
     expect(rowNames()).toEqual(["mine", "open", "readonly", "bridged"]);
     expect(screen.getByText("Rooms in Acme.")).toBeTruthy();
+    expect(screen.getByTestId("table").dataset.yours).toBe("false");
   });
 
-  it("words an empty list for an admin and for a member", async () => {
+  it("says a workspace with no rooms has none, to anyone, on a card in place of the table", async () => {
     vi.mocked(api.loadRoomsWithArchived).mockResolvedValue([]);
     render(<RoomsPage />);
     expect(await screen.findByText("No rooms in Acme yet")).toBeTruthy();
+    expect(screen.queryByTestId("table")).toBeNull();
+    expect(screen.queryByRole("tab")).toBeNull();
+    expect(screen.getAllByRole("button", { name: "New room" })).toHaveLength(2);
     cleanup();
 
     signedInAs("member");
     render(<RoomsPage />);
-    expect(await screen.findByText("You're not in any rooms in Acme yet")).toBeTruthy();
-    expect(within(screen.getByTestId("empty")).getByRole("button", { name: "New room" })).toBeTruthy();
+    expect(await screen.findByText("No rooms in Acme yet")).toBeTruthy();
+  });
+
+  it("tells a member in none of the workspace's rooms that they are in none", async () => {
+    signedInAs("member");
+    vi.mocked(api.loadRoomsWithArchived).mockResolvedValue([room("theirs", {})]);
+    render(<RoomsPage />);
+    expect(await screen.findByText("You’re not in any rooms in Acme yet")).toBeTruthy();
+    expect(screen.queryByTestId("table")).toBeNull();
   });
 
   it("says when there are no archived rooms", async () => {

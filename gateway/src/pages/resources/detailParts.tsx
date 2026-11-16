@@ -3,6 +3,7 @@ import DeleteOutline from "@mui/icons-material/DeleteOutline";
 import { Alert, Box, Button, Chip, CircularProgress, Stack, Typography } from "@mui/material";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router";
+import PageBanner from "../../components/PageBanner";
 import { useAuth } from "../../data/AuthContext";
 import { ApiError, loadPackages } from "../../data/api";
 import { EM_DASH, MONO_SX } from "../../theme/format";
@@ -78,6 +79,26 @@ export function useAfterTransfer<T>(
     </Alert>
   );
   return { afterTransfer, refreshNotice };
+}
+
+/** Over the page of a resource the viewer may read but not change, as the
+ * agent and template pages have: disabled fields alone read as a page that
+ * failed to load. `whose` says who can change it. */
+export function ReadOnlyBanner({ whose }: { whose: string }) {
+  return (
+    <Box sx={{ mb: 2 }}>
+      <PageBanner tone="neutral">{whose}</PageBanner>
+    </Box>
+  );
+}
+
+/** Who can change a resource someone else owns, for `ReadOnlyBanner`. An
+ * owner with no name has left the workspace, as on a template's page. */
+export function ownerCanChange(what: string, ownerId: string | null, ownerName: string | null): string {
+  if (ownerId === null) return `This ${what} has no owner. Only a workspace admin can change it.`;
+  return ownerName === null
+    ? `This ${what} belongs to a former member. Only a workspace admin can change it.`
+    : `This ${what} belongs to ${ownerName}. Only they or a workspace admin can change it.`;
 }
 
 export function DetailLoading() {
