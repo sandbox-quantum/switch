@@ -76,6 +76,7 @@ jobs:
       chart: ${{ steps.filter.outputs.chart }}
       decision: ${{ steps.filter.outputs.decision }}
       observability: ${{ steps.filter.outputs.observability }}
+      hosted_controller: ${{ steps.filter.outputs.hosted_controller }}
       e2e: ${{ steps.filter.outputs.e2e }}
       e2e_browser: ${{ steps.filter.outputs.e2e_browser }}
       local_server_bundle: ${{ steps.filter.outputs.local_server_bundle }}
@@ -115,6 +116,13 @@ jobs:
             decision:
               - *shared
               - 'decision/**'
+            # The hosted agents v2 cluster services (the box operator, scaler,
+            # placer and gates), tested on their own. Their tests read the
+            # manifests and the box image's files beside them, so any change
+            # under deploy/hosted runs them.
+            hosted_controller:
+              - *shared
+              - 'deploy/hosted/**'
             # The morning report, tested with its own dependencies, not core's.
             observability:
               - *shared
@@ -300,6 +308,29 @@ jobs:
       - name: pytest
         working-directory: decision
         run: uv run pytest -q
+
+  hosted-controller:
+    name: Hosted controller (deploy/hosted)
+    needs: changes
+    if: ${{ needs.changes.outputs.hosted_controller == 'true' || github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          python-version: '3.12'
+          enable-cache: true
+
+      - name: Sync dependencies
+        run: uv sync --frozen --project deploy/hosted/controller --extra test
+
+      - name: pytest
+        working-directory: deploy/hosted/controller
+        run: uv run --frozen pytest -q
 
   observability:
     name: Morning report
@@ -506,6 +537,25 @@ jobs:
         # Off renders nothing; on runs it, points switch-core at it and admits
         # only switch-core; an endpoint elsewhere is wired without it.
         run: python3 scripts/check_chart_decision.py
+
+      - name: Hosted agents v2 renders only with what it needs
+        # Off sets no v2; on, with the example values, runs v2 with the
+        # keyed-id key; on without a value v2 needs, the chart refuses.
+        run: python3 scripts/check_chart_hosted_v2.py
+
+      - name: With v2 off, the chart renders exactly as on the base branch
+        # Hosted agents v2's chart values promise no change at all to a
+        # deployment that sets none of them. Byte-for-byte against the base
+        # commit's chart, from the same values files. Only on the pull request
+        # that adds those values: a later chart change meant to alter the
+        # default render would rightly fail it. It guards this PR's promise only
+        # and is removed once the PR merges.
+        if: ${{ github.event_name == 'pull_request' && github.head_ref == 'hosted-v2-cloud-setup' }}
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          python3 scripts/check_chart_default_render.py "$BASE_SHA"
 
   gateway:
     name: Gateway UI

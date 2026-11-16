@@ -1,0 +1,166 @@
+# PROPOSED, not applied. Operator-chosen placement: the narrow powers the placer gets, and the guard on them.
+# Review before applying. Placeholders: __PLACER_NS__ (where the hosted controller runs).
+#
+# The placer's access, in full (rendered from the RBAC objects below):
+#   ClusterRole switch-placer-read  get, list, watch on nodes, pods and persistentvolumes. Read-only: no secrets,
+#                                   configmaps, exec, logs or writes of any kind.
+#   Role switch-placer (one per     get on persistentvolumeclaims/data; get and patch on statefulsets/box and
+#   agents-user-* namespace)        statefulsets/box/scale. Nothing else in the namespace.
+#   The StatefulSet patch is possible only through the per-namespace Role, and this policy narrows it further to
+#   replicas and preferred node affinity.
+#
+# RBAC can't say WHICH fields of a StatefulSet a service account may change, so the placer's Role allows `patch` on
+# the `box` StatefulSet, and this ValidatingAdmissionPolicy refuses any change it makes beyond replicas and the
+# template's PREFERRED node affinity. A required node affinity term (the zone pin) may not be added, changed or
+# removed, and `nodeName` and host access must stay absent.
+#
+# Limitation, stated plainly: Kubernetes CEL can't loop over a typed object's fields, so the policy compares a fixed
+# list. That list is every field of StatefulSet metadata, StatefulSetSpec, PodTemplateSpec, PodSpec, Affinity and
+# NodeAffinity as the cluster's own OpenAPI schema lists them (v1.37, saved in
+# controller/tests/fixtures/k8s-fields.json), less the few the placer may change or the server manages. A unit test
+# fails when any field in those lists is neither compared nor allowed, so on a Kubernetes upgrade: refresh the
+# fixture from the cluster, and the test names any new field. Before applying, check the policy with a server-side
+# dry run (CEL cost limits are only known to the cluster).
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: switch-placer-only-affinity
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["apps"]
+        apiVersions: ["v1"]
+        operations: ["UPDATE"]
+        resources: ["statefulsets"]
+  matchConditions:
+    - name: is-the-placer
+      expression: "request.userInfo.username == 'system:serviceaccount:__PLACER_NS__:switch-placer'"
+  validations:
+    - expression: "object.metadata.name == 'box' && object.metadata.namespace.startsWith('agents-user-')"
+      message: "the placer may only change user box StatefulSets"
+    # Generated from the cluster's own field lists (controller/tests/fixtures/k8s-fields.json); the test
+    # tests/test_placer_guard.py fails when a field in those lists is neither compared here nor allowed.
+    - expression: >-
+        (has(object.metadata.annotations) == has(oldObject.metadata.annotations)) && (!has(object.metadata.annotations) || object.metadata.annotations == oldObject.metadata.annotations) &&
+        (has(object.metadata.finalizers) == has(oldObject.metadata.finalizers)) && (!has(object.metadata.finalizers) || object.metadata.finalizers == oldObject.metadata.finalizers) &&
+        (has(object.metadata.generateName) == has(oldObject.metadata.generateName)) && (!has(object.metadata.generateName) || object.metadata.generateName == oldObject.metadata.generateName) &&
+        (has(object.metadata.labels) == has(oldObject.metadata.labels)) && (!has(object.metadata.labels) || object.metadata.labels == oldObject.metadata.labels) &&
+        (has(object.metadata.ownerReferences) == has(oldObject.metadata.ownerReferences)) && (!has(object.metadata.ownerReferences) || object.metadata.ownerReferences == oldObject.metadata.ownerReferences)
+      message: "the placer may not change the StatefulSet's labels, annotations, owners or finalizers"
+    - expression: >-
+        (has(object.spec.minReadySeconds) == has(oldObject.spec.minReadySeconds)) && (!has(object.spec.minReadySeconds) || object.spec.minReadySeconds == oldObject.spec.minReadySeconds) &&
+        (has(object.spec.ordinals) == has(oldObject.spec.ordinals)) && (!has(object.spec.ordinals) || object.spec.ordinals == oldObject.spec.ordinals) &&
+        (has(object.spec.persistentVolumeClaimRetentionPolicy) == has(oldObject.spec.persistentVolumeClaimRetentionPolicy)) && (!has(object.spec.persistentVolumeClaimRetentionPolicy) || object.spec.persistentVolumeClaimRetentionPolicy == oldObject.spec.persistentVolumeClaimRetentionPolicy) &&
+        (has(object.spec.podManagementPolicy) == has(oldObject.spec.podManagementPolicy)) && (!has(object.spec.podManagementPolicy) || object.spec.podManagementPolicy == oldObject.spec.podManagementPolicy) &&
+        (has(object.spec.revisionHistoryLimit) == has(oldObject.spec.revisionHistoryLimit)) && (!has(object.spec.revisionHistoryLimit) || object.spec.revisionHistoryLimit == oldObject.spec.revisionHistoryLimit) &&
+        (has(object.spec.selector) == has(oldObject.spec.selector)) && (!has(object.spec.selector) || object.spec.selector == oldObject.spec.selector) &&
+        (has(object.spec.serviceName) == has(oldObject.spec.serviceName)) && (!has(object.spec.serviceName) || object.spec.serviceName == oldObject.spec.serviceName) &&
+        (has(object.spec.updateStrategy) == has(oldObject.spec.updateStrategy)) && (!has(object.spec.updateStrategy) || object.spec.updateStrategy == oldObject.spec.updateStrategy) &&
+        (has(object.spec.volumeClaimTemplates) == has(oldObject.spec.volumeClaimTemplates)) && (!has(object.spec.volumeClaimTemplates) || object.spec.volumeClaimTemplates == oldObject.spec.volumeClaimTemplates)
+      message: "the placer may not change the StatefulSet's spec beyond replicas and the pod template's node affinity (this includes the disk retention policy)"
+    - expression: >-
+        (has(object.spec.template.metadata) == has(oldObject.spec.template.metadata)) && (!has(object.spec.template.metadata) || object.spec.template.metadata == oldObject.spec.template.metadata)
+      message: "the placer may not change the pod template's labels or annotations"
+    - expression: >-
+        !has(object.spec.template.spec.nodeName) &&
+        !has(object.spec.template.spec.hostNetwork) &&
+        !has(object.spec.template.spec.hostPID) &&
+        !has(object.spec.template.spec.hostIPC)
+      message: "the placer may not pin a machine (nodeName) or give host access"
+    - expression: >-
+        (has(object.spec.template.spec.activeDeadlineSeconds) == has(oldObject.spec.template.spec.activeDeadlineSeconds)) && (!has(object.spec.template.spec.activeDeadlineSeconds) || object.spec.template.spec.activeDeadlineSeconds == oldObject.spec.template.spec.activeDeadlineSeconds) &&
+        (has(object.spec.template.spec.automountServiceAccountToken) == has(oldObject.spec.template.spec.automountServiceAccountToken)) && (!has(object.spec.template.spec.automountServiceAccountToken) || object.spec.template.spec.automountServiceAccountToken == oldObject.spec.template.spec.automountServiceAccountToken) &&
+        (has(object.spec.template.spec.containers) == has(oldObject.spec.template.spec.containers)) && (!has(object.spec.template.spec.containers) || object.spec.template.spec.containers == oldObject.spec.template.spec.containers) &&
+        (has(object.spec.template.spec.dnsConfig) == has(oldObject.spec.template.spec.dnsConfig)) && (!has(object.spec.template.spec.dnsConfig) || object.spec.template.spec.dnsConfig == oldObject.spec.template.spec.dnsConfig) &&
+        (has(object.spec.template.spec.dnsPolicy) == has(oldObject.spec.template.spec.dnsPolicy)) && (!has(object.spec.template.spec.dnsPolicy) || object.spec.template.spec.dnsPolicy == oldObject.spec.template.spec.dnsPolicy) &&
+        (has(object.spec.template.spec.enableServiceLinks) == has(oldObject.spec.template.spec.enableServiceLinks)) && (!has(object.spec.template.spec.enableServiceLinks) || object.spec.template.spec.enableServiceLinks == oldObject.spec.template.spec.enableServiceLinks) &&
+        (has(object.spec.template.spec.ephemeralContainers) == has(oldObject.spec.template.spec.ephemeralContainers)) && (!has(object.spec.template.spec.ephemeralContainers) || object.spec.template.spec.ephemeralContainers == oldObject.spec.template.spec.ephemeralContainers) &&
+        (has(object.spec.template.spec.evictionResponders) == has(oldObject.spec.template.spec.evictionResponders)) && (!has(object.spec.template.spec.evictionResponders) || object.spec.template.spec.evictionResponders == oldObject.spec.template.spec.evictionResponders)
+      message: "the placer may not change the pod spec (fields: activeDeadlineSeconds, automountServiceAccountToken, containers, dnsConfig, dnsPolicy, enableServiceLinks, ephemeralContainers, evictionResponders)"
+    - expression: >-
+        (has(object.spec.template.spec.hostAliases) == has(oldObject.spec.template.spec.hostAliases)) && (!has(object.spec.template.spec.hostAliases) || object.spec.template.spec.hostAliases == oldObject.spec.template.spec.hostAliases) &&
+        (has(object.spec.template.spec.hostUsers) == has(oldObject.spec.template.spec.hostUsers)) && (!has(object.spec.template.spec.hostUsers) || object.spec.template.spec.hostUsers == oldObject.spec.template.spec.hostUsers) &&
+        (has(object.spec.template.spec.hostname) == has(oldObject.spec.template.spec.hostname)) && (!has(object.spec.template.spec.hostname) || object.spec.template.spec.hostname == oldObject.spec.template.spec.hostname) &&
+        (has(object.spec.template.spec.hostnameOverride) == has(oldObject.spec.template.spec.hostnameOverride)) && (!has(object.spec.template.spec.hostnameOverride) || object.spec.template.spec.hostnameOverride == oldObject.spec.template.spec.hostnameOverride) &&
+        (has(object.spec.template.spec.imagePullSecrets) == has(oldObject.spec.template.spec.imagePullSecrets)) && (!has(object.spec.template.spec.imagePullSecrets) || object.spec.template.spec.imagePullSecrets == oldObject.spec.template.spec.imagePullSecrets) &&
+        (has(object.spec.template.spec.initContainers) == has(oldObject.spec.template.spec.initContainers)) && (!has(object.spec.template.spec.initContainers) || object.spec.template.spec.initContainers == oldObject.spec.template.spec.initContainers) &&
+        (has(object.spec.template.spec.nodeSelector) == has(oldObject.spec.template.spec.nodeSelector)) && (!has(object.spec.template.spec.nodeSelector) || object.spec.template.spec.nodeSelector == oldObject.spec.template.spec.nodeSelector) &&
+        (has(object.spec.template.spec.os) == has(oldObject.spec.template.spec.os)) && (!has(object.spec.template.spec.os) || object.spec.template.spec.os == oldObject.spec.template.spec.os)
+      message: "the placer may not change the pod spec (fields: hostAliases, hostUsers, hostname, hostnameOverride, imagePullSecrets, initContainers, nodeSelector, os)"
+    - expression: >-
+        (has(object.spec.template.spec.overhead) == has(oldObject.spec.template.spec.overhead)) && (!has(object.spec.template.spec.overhead) || object.spec.template.spec.overhead == oldObject.spec.template.spec.overhead) &&
+        (has(object.spec.template.spec.preemptionPolicy) == has(oldObject.spec.template.spec.preemptionPolicy)) && (!has(object.spec.template.spec.preemptionPolicy) || object.spec.template.spec.preemptionPolicy == oldObject.spec.template.spec.preemptionPolicy) &&
+        (has(object.spec.template.spec.priority) == has(oldObject.spec.template.spec.priority)) && (!has(object.spec.template.spec.priority) || object.spec.template.spec.priority == oldObject.spec.template.spec.priority) &&
+        (has(object.spec.template.spec.priorityClassName) == has(oldObject.spec.template.spec.priorityClassName)) && (!has(object.spec.template.spec.priorityClassName) || object.spec.template.spec.priorityClassName == oldObject.spec.template.spec.priorityClassName) &&
+        (has(object.spec.template.spec.readinessGates) == has(oldObject.spec.template.spec.readinessGates)) && (!has(object.spec.template.spec.readinessGates) || object.spec.template.spec.readinessGates == oldObject.spec.template.spec.readinessGates) &&
+        (has(object.spec.template.spec.resourceClaims) == has(oldObject.spec.template.spec.resourceClaims)) && (!has(object.spec.template.spec.resourceClaims) || object.spec.template.spec.resourceClaims == oldObject.spec.template.spec.resourceClaims) &&
+        (has(object.spec.template.spec.resources) == has(oldObject.spec.template.spec.resources)) && (!has(object.spec.template.spec.resources) || object.spec.template.spec.resources == oldObject.spec.template.spec.resources) &&
+        (has(object.spec.template.spec.restartPolicy) == has(oldObject.spec.template.spec.restartPolicy)) && (!has(object.spec.template.spec.restartPolicy) || object.spec.template.spec.restartPolicy == oldObject.spec.template.spec.restartPolicy)
+      message: "the placer may not change the pod spec (fields: overhead, preemptionPolicy, priority, priorityClassName, readinessGates, resourceClaims, resources, restartPolicy)"
+    - expression: >-
+        (has(object.spec.template.spec.runtimeClassName) == has(oldObject.spec.template.spec.runtimeClassName)) && (!has(object.spec.template.spec.runtimeClassName) || object.spec.template.spec.runtimeClassName == oldObject.spec.template.spec.runtimeClassName) &&
+        (has(object.spec.template.spec.schedulerName) == has(oldObject.spec.template.spec.schedulerName)) && (!has(object.spec.template.spec.schedulerName) || object.spec.template.spec.schedulerName == oldObject.spec.template.spec.schedulerName) &&
+        (has(object.spec.template.spec.schedulingGates) == has(oldObject.spec.template.spec.schedulingGates)) && (!has(object.spec.template.spec.schedulingGates) || object.spec.template.spec.schedulingGates == oldObject.spec.template.spec.schedulingGates) &&
+        (has(object.spec.template.spec.schedulingGroup) == has(oldObject.spec.template.spec.schedulingGroup)) && (!has(object.spec.template.spec.schedulingGroup) || object.spec.template.spec.schedulingGroup == oldObject.spec.template.spec.schedulingGroup) &&
+        (has(object.spec.template.spec.securityContext) == has(oldObject.spec.template.spec.securityContext)) && (!has(object.spec.template.spec.securityContext) || object.spec.template.spec.securityContext == oldObject.spec.template.spec.securityContext) &&
+        (has(object.spec.template.spec.serviceAccount) == has(oldObject.spec.template.spec.serviceAccount)) && (!has(object.spec.template.spec.serviceAccount) || object.spec.template.spec.serviceAccount == oldObject.spec.template.spec.serviceAccount) &&
+        (has(object.spec.template.spec.serviceAccountName) == has(oldObject.spec.template.spec.serviceAccountName)) && (!has(object.spec.template.spec.serviceAccountName) || object.spec.template.spec.serviceAccountName == oldObject.spec.template.spec.serviceAccountName) &&
+        (has(object.spec.template.spec.setHostnameAsFQDN) == has(oldObject.spec.template.spec.setHostnameAsFQDN)) && (!has(object.spec.template.spec.setHostnameAsFQDN) || object.spec.template.spec.setHostnameAsFQDN == oldObject.spec.template.spec.setHostnameAsFQDN)
+      message: "the placer may not change the pod spec (fields: runtimeClassName, schedulerName, schedulingGates, schedulingGroup, securityContext, serviceAccount, serviceAccountName, setHostnameAsFQDN)"
+    - expression: >-
+        (has(object.spec.template.spec.shareProcessNamespace) == has(oldObject.spec.template.spec.shareProcessNamespace)) && (!has(object.spec.template.spec.shareProcessNamespace) || object.spec.template.spec.shareProcessNamespace == oldObject.spec.template.spec.shareProcessNamespace) &&
+        (has(object.spec.template.spec.subdomain) == has(oldObject.spec.template.spec.subdomain)) && (!has(object.spec.template.spec.subdomain) || object.spec.template.spec.subdomain == oldObject.spec.template.spec.subdomain) &&
+        (has(object.spec.template.spec.terminationGracePeriodSeconds) == has(oldObject.spec.template.spec.terminationGracePeriodSeconds)) && (!has(object.spec.template.spec.terminationGracePeriodSeconds) || object.spec.template.spec.terminationGracePeriodSeconds == oldObject.spec.template.spec.terminationGracePeriodSeconds) &&
+        (has(object.spec.template.spec.tolerations) == has(oldObject.spec.template.spec.tolerations)) && (!has(object.spec.template.spec.tolerations) || object.spec.template.spec.tolerations == oldObject.spec.template.spec.tolerations) &&
+        (has(object.spec.template.spec.topologySpreadConstraints) == has(oldObject.spec.template.spec.topologySpreadConstraints)) && (!has(object.spec.template.spec.topologySpreadConstraints) || object.spec.template.spec.topologySpreadConstraints == oldObject.spec.template.spec.topologySpreadConstraints) &&
+        (has(object.spec.template.spec.volumes) == has(oldObject.spec.template.spec.volumes)) && (!has(object.spec.template.spec.volumes) || object.spec.template.spec.volumes == oldObject.spec.template.spec.volumes)
+      message: "the placer may not change the pod spec (fields: shareProcessNamespace, subdomain, terminationGracePeriodSeconds, tolerations, topologySpreadConstraints, volumes)"
+    - expression: >-
+        (has(object.spec.template.spec.affinity) && has(object.spec.template.spec.affinity.podAffinity)) == (has(oldObject.spec.template.spec.affinity) && has(oldObject.spec.template.spec.affinity.podAffinity)) &&
+        !(has(object.spec.template.spec.affinity) && has(object.spec.template.spec.affinity.podAffinity)) || object.spec.template.spec.affinity.podAffinity == oldObject.spec.template.spec.affinity.podAffinity &&
+        (has(object.spec.template.spec.affinity) && has(object.spec.template.spec.affinity.podAntiAffinity)) == (has(oldObject.spec.template.spec.affinity) && has(oldObject.spec.template.spec.affinity.podAntiAffinity)) &&
+        !(has(object.spec.template.spec.affinity) && has(object.spec.template.spec.affinity.podAntiAffinity)) || object.spec.template.spec.affinity.podAntiAffinity == oldObject.spec.template.spec.affinity.podAntiAffinity
+      message: "the placer may not change pod affinity or anti-affinity"
+    - expression: >-
+        (has(object.spec.template.spec.affinity) && has(object.spec.template.spec.affinity.nodeAffinity) && has(object.spec.template.spec.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution)) == (has(oldObject.spec.template.spec.affinity) && has(oldObject.spec.template.spec.affinity.nodeAffinity) && has(oldObject.spec.template.spec.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution)) &&
+        !(has(object.spec.template.spec.affinity) && has(object.spec.template.spec.affinity.nodeAffinity) && has(object.spec.template.spec.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution)) || object.spec.template.spec.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution == oldObject.spec.template.spec.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution
+      message: "the placer may set only PREFERRED node affinity: a required term may never be added, changed or removed"
+
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: switch-placer-only-affinity
+spec:
+  policyName: switch-placer-only-affinity
+  validationActions: ["Deny"]
+---
+# The placer's cluster-wide reads: machines and where box pods run (metadata the scheduler already shows), and the
+# volume a box's disk is bound to (for its zone). No secrets, no exec, no logs, nothing inside a box.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: switch-placer-read
+rules:
+  - apiGroups: [""]
+    resources: ["nodes", "pods", "persistentvolumes"]
+    verbs: ["get", "list", "watch"]
+---
+# Per user namespace (as the box scaler's Role is today): read the disk claim, read and patch only the `box`
+# StatefulSet, and its scale.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: switch-placer
+  namespace: agents-__USER__
+rules:
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    resourceNames: ["data"]
+    verbs: ["get"]
+  - apiGroups: ["apps"]
+    resources: ["statefulsets", "statefulsets/scale"]
+    resourceNames: ["box"]
+    verbs: ["get", "patch"]
