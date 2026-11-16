@@ -134,6 +134,7 @@ import {
   assertServesDashboard,
   NotTheServerAddressError,
 } from './server-address';
+import { signOutOnServer } from './server-sign-out';
 import {
   addServer,
   DuplicateServerUrlError,
@@ -729,6 +730,7 @@ export const switchServersController = createRPCController({
     // Read before the cookie goes, so the kind of server is still knowable — and
     // caught, because nobody should be unable to sign out because of it.
     const server = await getServer(serverId).catch(() => null);
+    if (server) await signOutOnServer(server);
     await forgetSession(serverId);
     if (server) trackEvent('server_sign_out', { server_kind: serverKindOf(server) });
   },

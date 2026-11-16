@@ -6,6 +6,9 @@ const fetchMe = vi.hoisted(() => vi.fn());
 const getServer = vi.hoisted(() => vi.fn());
 const isManagedServerRunning = vi.hoisted(() => vi.fn());
 const managedServerHostBlocked = vi.hoisted(() => vi.fn((): unknown => null));
+const managedServerStoppedPhase = vi.hoisted(() => vi.fn((): unknown => null));
+const getSessionCookie = vi.hoisted(() => vi.fn());
+const deleteSessionCookie = vi.hoisted(() => vi.fn());
 const fetchAuthConfig = vi.hoisted(() => vi.fn());
 const trackEvent = vi.hoisted(() => vi.fn());
 const addServer = vi.hoisted(() => vi.fn());
@@ -57,7 +60,9 @@ vi.mock('@main/core/telemetry/telemetry-service', () => ({ trackEvent }));
 vi.mock('@main/core/managed-switch-server/managed-server-status', () => ({
   isManagedServerRunning,
   managedServerHostBlocked,
+  managedServerStoppedPhase,
 }));
+vi.mock('./console-identity', () => ({ consoleIdentityHeaders: async () => ({}) }));
 // Reads this install's own workspace rows, and through them the database client.
 vi.mock('@main/core/workspaces/reconcile-workspaces', () => ({
   reconcileServerWorkspaces,
@@ -125,7 +130,8 @@ vi.mock('./servers-store', () => ({
   DuplicateServerUrlError,
   findServerByUrl,
   findServerByWebAddress,
-  deleteSessionCookie: vi.fn(),
+  deleteSessionCookie,
+  getSessionCookie,
   listServers: vi.fn(),
   removeServer: vi.fn(),
   renameServer: vi.fn(),
@@ -135,6 +141,7 @@ vi.mock('./servers-store', () => ({
 }));
 
 const { switchServersController } = await import('./controller');
+const { log } = await import('@main/lib/logger');
 
 const USER = { id: 'u1', name: 'Dev', email: 'dev@example.com', role: 'admin' };
 
@@ -988,5 +995,61 @@ describe('cloud machines', () => {
       'does not have cloud machines turned on'
     );
     expect(ensureCloudMachine).not.toHaveBeenCalled();
+  });
+});
+
+describe('signing out', () => {
+  const fetchMock = vi.fn();
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal('fetch', fetchMock);
+    managedServerHostBlocked.mockReturnValue(null);
+    managedServerStoppedPhase.mockReturnValue(null);
+    getServer.mockResolvedValue(server({ url: 'https://switch.example.com' }));
+    getSessionCookie.mockResolvedValue('jwt-held');
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('ends the session on the server before forgetting it here', async () => {
+    fetchMock.mockResolvedValue(new Response('{"ok":true}', { status: 200 }));
+
+    await switchServersController.logout('srv');
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://switch.example.com/gateway/auth/logout',
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({ Cookie: 'switch_auth=jwt-held' }),
+      })
+    );
+    expect(deleteSessionCookie).toHaveBeenCalledWith('srv');
+    expect(fetchMock.mock.invocationCallOrder[0]).toBeLessThan(
+      deleteSessionCookie.mock.invocationCallOrder[0]!
+    );
+  });
+
+  it('still forgets the session here when the server cannot be reached', async () => {
+    fetchMock.mockRejectedValue(new TypeError('fetch failed'));
+
+    await switchServersController.logout('srv');
+
+    expect(deleteSessionCookie).toHaveBeenCalledWith('srv');
+    expect(log.warn).toHaveBeenCalledWith(
+      expect.stringMatching(/Could not reach the server/),
+      expect.objectContaining({ serverId: 'srv' })
+    );
+  });
+
+  it('calls nothing on the server without a session to end', async () => {
+    getSessionCookie.mockResolvedValue(null);
+
+    await switchServersController.logout('srv');
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(deleteSessionCookie).toHaveBeenCalledWith('srv');
   });
 });

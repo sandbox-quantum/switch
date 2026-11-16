@@ -89,6 +89,7 @@ switch-agent-controller enroll \
 switch-agent-controller install-service [--data-dir <dir>] [--env-file <path>]
 switch-agent-controller run [--data-dir <dir>] [--env-file <path>]
 switch-agent-controller status [--data-dir <dir>]
+switch-agent-controller sealing-key [--data-dir <dir>]
 switch-agent-controller set-info [--name <name>] [--description <text>] [--data-dir <dir>]
 switch-agent-controller doctor [--data-dir <dir>] [--env-file <path>]
 switch-agent-controller update [--check]
@@ -300,6 +301,22 @@ before this registers its key once, when it next runs. Console seals the login
 to that key before sending it, so Switch stores and relays only ciphertext it
 cannot open.
 
+Console does not take the key on Switch's word alone, since a server that
+swapped in its own key could open the login:
+
+- For an SSH host it runs the controller on, Console reads the key on the host
+  (`switch-agent-controller sealing-key`, which prints the public half and its
+  fingerprint as JSON and never makes a key) and refuses another from Switch.
+- For any other machine, Console pins the key the first time it seals a login
+  to it, and refuses to seal to a different one until its owner trusts the new
+  key. Switch keeps one key per controller, and enrolling again makes a new
+  controller, so a pinned machine whose key changes is suspect.
+- This computer's own controller is handed its credential and keeps no key, so
+  it takes no given logins.
+
+Console shows the key's fingerprint where the login is given. `enroll` prints
+it (`Login key:`), and `status` shows it, so it can be checked on the machine.
+
 Switch then queues a `provider.login` operation. The controller fetches the
 login, opens it, checks the provider signs in with it, and reports the result.
 Console shows that result: the operation fails with `provider_login_expired`
@@ -349,8 +366,8 @@ When Switch names a release for this controller, `run` follows it; otherwise
 `update` does it by hand.
 
 **The release Switch names.** A status response can carry
-`controller_release: {"version", "url", "sha256"}`. When it names a version other
-than the one running (newer or older: Switch can roll back), the controller:
+`controller_release: {"version", "url", "sha256"}`. When it names a version newer
+than the one running, the controller:
 
 1. waits until no session on the machine is in the middle of a turn, checking at
    each status report and every few seconds while it waits, and reports
@@ -376,6 +393,12 @@ than the one running (newer or older: Switch can roll back), the controller:
    says `--version` is that version, checks again that no turn started
    meanwhile, and switches to it;
 4. exits with code `7`, and its service starts it again on the new release.
+
+An older version is refused, reported as `update: {"target", "state": "failed",
+"problem"}` and logged: old releases stay validly signed, so following Switch
+back to one would let a server return every controller to a release with a
+fixed vulnerability. Rolling back is done on the machine, by installing the
+older release there.
 
 A failed attempt is reported (`update: {"target", "state": "failed", "problem"}`)
 and logged, and the same release is not tried again for an hour; the last
@@ -670,7 +693,13 @@ controller reports `machine.workspaces_dir`. A missing directory under that fold
 is made; any other must already exist.
 
 Sessions an agent host starts keep their state where the shared host puts it
-(`~/.local/state/switch/sdk-sessions/`), as they do under Console.
+(`~/.local/state/switch/sdk-sessions/`), as they do under Console, except under a
+data directory named with `--data-dir` or `SWITCH_CONTROLLER_DATA_DIR`: there they
+are kept in its `sdk-sessions/`, so a controller run apart shares no session state
+with the user's. A controller Switch Console runs keeps the user's folder, where
+Console reads its sessions, and so does a named data directory that ran agents
+before this version, so its sessions are found again. `SWITCH_SDK_SESSIONS_DIR`
+names the folder outright.
 
 ## The file secret store
 

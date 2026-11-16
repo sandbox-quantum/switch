@@ -393,6 +393,32 @@ it('stays down while a takeover marker says another client holds the connection'
   ).rejects.toThrow('credentials.json');
 });
 
+it.skipIf(process.platform === 'win32')(
+  'keeps the session roots it creates, and their folder, to this user',
+  async () => {
+    const root = await mkdtemp(join(tmpdir(), 'shared-watch-modes-'));
+    roots.push(root);
+    const sessions = join(root, 'sdk-sessions');
+    paths.root = sessions;
+    const config = template(root);
+    const assignments = await AgentHostAssignments.open(root);
+    const umask = process.umask(0o022);
+    try {
+      const assigned = await assignments.assign(config, {
+        sequence: 1,
+        roomId: 'room',
+        messageId: 'one',
+      });
+      const warmed = await assignments.warm(config, 'other');
+      expect((await stat(sessions)).mode & 0o777).toBe(0o700);
+      for (const session of [assigned, warmed])
+        expect((await stat(join(sessions, session.session.sessionId))).mode & 0o777).toBe(0o700);
+    } finally {
+      process.umask(umask);
+    }
+  }
+);
+
 it('asks again for an event it assigned but died before routing', async () => {
   const root = await mkdtemp(join(tmpdir(), 'shared-watch-unrouted-'));
   roots.push(root);

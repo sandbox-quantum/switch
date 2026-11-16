@@ -1,6 +1,7 @@
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { SDK_SESSIONS_DIR_ENV, sealingKeyFingerprint } from '@switch-console/agent-providers';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EXIT_CONFIGURATION, EXIT_FAILURE, EXIT_OK } from './exit-codes';
 import { infoChange, installerFor, isSupervised, main, planServiceReleases } from './main';
@@ -27,6 +28,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  delete process.env[SDK_SESSIONS_DIR_ENV];
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -89,6 +91,51 @@ describe('main', () => {
     expect(bodies[0]).toMatchObject({
       controller: { kind: 'daemon', name: 'build-box', description: 'The build box in the office' },
     });
+  });
+
+  it('prints the key logins are sealed to, as enrolled, and nothing for a directory with none', async () => {
+    const out = () =>
+      vi
+        .mocked(process.stdout.write)
+        .mock.calls.map(([chunk]) => String(chunk))
+        .join('');
+    expect(await main(['sealing-key', '--data-dir', dir])).toBe(EXIT_OK);
+    expect(JSON.parse(out())).toEqual({ publicKey: null, fingerprint: null });
+
+    const bodies: { public_key: { key: string } }[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, init: RequestInit) => {
+        bodies.push(JSON.parse(String(init.body)));
+        return new Response(
+          JSON.stringify({ controller_id: 'controller-1', credential: 'swcc_test' }),
+          { status: 201, headers: { 'Content-Type': 'application/json' } }
+        );
+      })
+    );
+    const enrolled = await main([
+      'enroll',
+      '--server',
+      'https://switch.example.com',
+      '--code',
+      'swce_test',
+      '--data-dir',
+      dir,
+      '--secret-store',
+      'file',
+    ]);
+    vi.unstubAllGlobals();
+    expect(enrolled).toBe(EXIT_OK);
+    const sent = bodies[0]!.public_key.key;
+    expect(out()).toContain(`Login key: ${sealingKeyFingerprint(sent)}`);
+
+    vi.mocked(process.stdout.write).mockClear();
+    expect(await main(['sealing-key', '--data-dir', dir])).toBe(EXIT_OK);
+    expect(JSON.parse(out())).toEqual({
+      publicKey: sent,
+      fingerprint: sealingKeyFingerprint(sent),
+    });
+    expect(out()).not.toContain('privateKey');
   });
 
   it('enrolls without a description when none is given, and refuses an overlong one', async () => {
@@ -282,6 +329,17 @@ describe('main', () => {
       EXIT_CONFIGURATION
     );
     expect(lastLine()).toMatch(/not enrolled/);
+  });
+
+  it('keeps the sessions of a controller with a data directory of its own in it', async () => {
+    await main(['run', '--data-dir', dir, '--shared-host-bundle', bundle]);
+    expect(process.env[SDK_SESSIONS_DIR_ENV]).toBe(join(dir, 'sdk-sessions'));
+    expect(statSync(join(dir, 'sdk-sessions')).isDirectory()).toBe(true);
+  });
+
+  it("leaves a Console controller's sessions where Console reads them", async () => {
+    await main(['run', '--data-dir', dir, '--shared-host-bundle', bundle, '--updated-by-console']);
+    expect(process.env[SDK_SESSIONS_DIR_ENV]).toBeUndefined();
   });
 });
 

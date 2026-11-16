@@ -10,6 +10,8 @@ import {
   isStopMessage,
   PROVIDER_RECHECKED_KIND,
   type ProviderRecheckReply,
+  SDK_SESSIONS_DIR_ENV,
+  sealingKeyFingerprint,
 } from '@switch-console/agent-providers';
 import {
   withWindowsAgyBinDir,
@@ -56,7 +58,14 @@ import {
   withUserBinDirs,
   withWindowsPathEntries,
 } from './login-path';
-import { dataLayout, ensureDataDir, resolveDataDir, serverWorkspacesDir } from './paths';
+import {
+  controllerSessionsDir,
+  DATA_DIR_ENV,
+  dataLayout,
+  ensureDataDir,
+  resolveDataDir,
+  serverWorkspacesDir,
+} from './paths';
 import { ProviderRechecks } from './provider-rechecks';
 import { readProviderSeed, writeProviderSeed } from './provider-seed';
 import { definitionProblem } from './reconcile';
@@ -66,6 +75,7 @@ import { isManagedRelease, readCurrent, throughCurrent } from './releases';
 import { emptyObservation, InProcessRuntime, observeOnDisk, probeProvider } from './runtime';
 import { AgentRuntimes } from './runtimes';
 import { type ControllerInfoChange, PROTOCOL_VERSION, PROVIDERS, type UpdatedBy } from './schemas';
+import { savedSealingPublicKey } from './sealed-logins';
 import {
   CONTROLLER_CREDENTIAL,
   defaultSecretStoreKind,
@@ -74,6 +84,7 @@ import {
   runCommand as runSecretCommand,
   SEALING_KEY,
   SECRET_STORE_KINDS,
+  type SecretStore,
   secretStoreFor,
 } from './secrets';
 import {
@@ -167,6 +178,11 @@ Commands:
       clears the description. The same limits as at enrollment.
   status [--data-dir <dir>] [--shared-host-bundle <path>]
       Show this controller's identity and its agents, from local state only.
+  sealing-key [--data-dir <dir>]
+      Print the public key provider logins given to this machine are sealed
+      to, and its fingerprint, as one line of JSON (both null without one).
+      Switch Console shows the same fingerprint when it gives the machine a
+      login.
   install-service [--data-dir <dir>] [--env-file <path>] [--shared-host-bundle <path>]
       Run this controller as a service of this user: a systemd user unit on
       Linux, a launchd agent on macOS. It starts now and again at each login
@@ -312,7 +328,7 @@ async function enrollCommand(args: string[]): Promise<number> {
       enrolledAt: new Date().toISOString(),
     });
     process.stdout.write(
-      `Enrolled as controller ${enrolled.controller_id} ("${name}") on ${server}.\nData: ${dataDir}\nRun it as a service: switch-agent-controller install-service${values['data-dir'] ? ` --data-dir ${dataDir}` : ''}\nor in this terminal: switch-agent-controller run${values['data-dir'] ? ` --data-dir ${dataDir}` : ''}\n`
+      `Enrolled as controller ${enrolled.controller_id} ("${name}") on ${server}.\nLogin key: ${sealingKeyFingerprint(keys.publicKey)}\nData: ${dataDir}\nRun it as a service: switch-agent-controller install-service${values['data-dir'] ? ` --data-dir ${dataDir}` : ''}\nor in this terminal: switch-agent-controller run${values['data-dir'] ? ` --data-dir ${dataDir}` : ''}\n`
     );
     const warning = secrets.startupWarning();
     if (warning) process.stderr.write(`Warning: ${warning}\n`);
@@ -608,6 +624,21 @@ async function runCommand(args: string[]): Promise<number> {
     credential !== null || values['updated-by-console'] === true ? 'console' : 'self';
   if (updatedBy === 'self') void announceUpdate(log);
   try {
+    // Before any agent host starts: each reads it, and passes it to the
+    // session hosts it starts.
+    if (!process.env[SDK_SESSIONS_DIR_ENV]) {
+      const sessionsDir = await controllerSessionsDir({
+        dataDir,
+        named: values['data-dir'] !== undefined || Boolean(process.env[DATA_DIR_ENV]),
+        runByConsole: updatedBy === 'console',
+      });
+      if (sessionsDir !== null) {
+        process.env[SDK_SESSIONS_DIR_ENV] = sessionsDir;
+        log.info("Keeping agent sessions in this controller's data directory", {
+          dir: sessionsDir,
+        });
+      }
+    }
     const selfUpdate =
       updatedBy === 'self'
         ? new SelfUpdater({
@@ -716,6 +747,39 @@ async function runCommand(args: string[]): Promise<number> {
   }
 }
 
+/** The sealing key's fingerprint for `status`, or why there is none to show. */
+async function loginKeyLine(secrets: SecretStore): Promise<string> {
+  try {
+    const publicKey = await savedSealingPublicKey(secrets);
+    return publicKey === null
+      ? 'none here (made when the controller next runs, if its credential is kept here)'
+      : sealingKeyFingerprint(publicKey);
+  } catch (error) {
+    return `could not be read: ${errorMessage(error)}`;
+  }
+}
+
+async function sealingKeyCommand(args: string[]): Promise<number> {
+  const { values } = parseArgs({
+    args,
+    options: { 'data-dir': { type: 'string' } },
+    strict: true,
+  });
+  const { store, secrets } = await openState(values['data-dir']);
+  try {
+    const publicKey = await savedSealingPublicKey(secrets);
+    process.stdout.write(
+      `${JSON.stringify({
+        publicKey,
+        fingerprint: publicKey === null ? null : sealingKeyFingerprint(publicKey),
+      })}\n`
+    );
+    return EXIT_OK;
+  } finally {
+    store.close();
+  }
+}
+
 async function statusCommand(args: string[]): Promise<number> {
   const { values } = parseArgs({
     args,
@@ -750,7 +814,8 @@ async function statusCommand(args: string[]): Promise<number> {
       `Controller:     ${identity.controllerId} ("${identity.name}")`,
       `Server:         ${identity.server}`,
       `Enrolled at:    ${identity.enrolledAt}`,
-      `Secret store:   ${secrets.description}`
+      `Secret store:   ${secrets.description}`,
+      `Login key:      ${await loginKeyLine(secrets)}`
     );
     const relayPort = store.relayPort();
     out.push(
@@ -1219,6 +1284,8 @@ export async function main(argv: string[]): Promise<number> {
         return await setInfoCommand(rest);
       case 'status':
         return await statusCommand(rest);
+      case 'sealing-key':
+        return await sealingKeyCommand(rest);
       case 'install-service':
         return await installServiceCommand(rest);
       case 'uninstall-service':

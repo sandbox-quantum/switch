@@ -437,7 +437,10 @@ resumes or attaches, including ones started automatically:
   automatic reviewer and keeps its sandbox, OpenCode runs with `--auto`, Cursor
   uses Smart Auto, Mistral Vibe uses Smart Approve where Vibe offers it, and
   Antigravity, Pi (and Mistral Vibe without Smart Approve) approve edits and ask
-  before commands. DeepSeek Harness, with no reviewer of its own, asks before every tool except those that only read or search files,
+  before commands. Pi approves only edits inside the working directory: unless
+  bypass is on, it asks before changing a file outside it or in git's directory,
+  the home directory's dot files or Switch's own state, and before reading
+  outside it. DeepSeek Harness, with no reviewer of its own, asks before every tool except those that only read or search files,
   Junie uses its Auto brave mode, and Kiro applies its own trust policy and safety check before anything reaches
   Console, which asks about the rest.
 - **Bypass permissions** — every permission check skipped. Unsafe; it overrides

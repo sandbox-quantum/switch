@@ -1,9 +1,10 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import {
+  controllerSessionsDir,
   dataLayout,
   defaultDataDir,
   agentWorkspace,
@@ -89,5 +90,44 @@ describe('dataLayout', () => {
     for (const bad of ['', '.', '..', '.hidden', 'a/b', 'a..b'])
       expect(isSafeSegment(bad)).toBe(false);
     expect(isSafeSegment('00000000-0000-4000-8000-0000000000a1')).toBe(true);
+  });
+});
+
+describe('controllerSessionsDir', () => {
+  function base(): string {
+    const dir = mkdtempSync(join(tmpdir(), 'controller-sessions-'));
+    roots.push(dir);
+    return dir;
+  }
+  const roots: string[] = [];
+  afterEach(() => {
+    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  });
+
+  it("leaves a controller on the default data directory, or Console's, on the user's folder", async () => {
+    const dataDir = base();
+    expect(await controllerSessionsDir({ dataDir, named: false, runByConsole: false })).toBeNull();
+    expect(await controllerSessionsDir({ dataDir, named: true, runByConsole: true })).toBeNull();
+    expect(existsSync(join(dataDir, 'sdk-sessions'))).toBe(false);
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    "keeps a fresh named data directory's sessions in it, made private",
+    async () => {
+      const dataDir = base();
+      const dir = join(dataDir, 'sdk-sessions');
+      expect(await controllerSessionsDir({ dataDir, named: true, runByConsole: false })).toBe(dir);
+      expect(statSync(dir).mode & 0o777).toBe(0o700);
+      // Once there, it stays there, agents run or not.
+      mkdirSync(join(dataDir, 'watchers'));
+      expect(await controllerSessionsDir({ dataDir, named: true, runByConsole: false })).toBe(dir);
+    }
+  );
+
+  it('leaves a named data directory that ran agents before on the folder its sessions are in', async () => {
+    const dataDir = base();
+    mkdirSync(join(dataDir, 'watchers', 'agent-1'), { recursive: true });
+    expect(await controllerSessionsDir({ dataDir, named: true, runByConsole: false })).toBeNull();
+    expect(existsSync(join(dataDir, 'sdk-sessions'))).toBe(false);
   });
 });

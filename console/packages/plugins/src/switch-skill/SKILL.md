@@ -472,7 +472,10 @@ then read the returned path. It works for any file type.
 Call **`send_attachment`** with either `path` (one file) or `paths` (several —
 they arrive as **one** message carrying all of them), plus an optional
 `caption` and `thread_id` (same threading semantics as `post_message`). Any
-file type works.
+file type works, but only from inside your working directory or from the
+attachments `download_attachment` fetched; a path anywhere else (symbolic links
+followed) is refused with the reason. To send another file, a screenshot in
+`/tmp` say, copy it into the working directory first and send the copy.
 
 The files enter the room as native image/file events; bridges relay them out
 as platform file uploads, and a multi-file send lands as a single post with

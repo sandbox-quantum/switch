@@ -17,6 +17,7 @@ const modelCatalogue = vi.hoisted(() => vi.fn());
 const advancedConfigSchema = vi.hoisted(() => vi.fn());
 const giveMachineLogin = vi.hoisted(() => vi.fn());
 const machineLoginOutcome = vi.hoisted(() => vi.fn());
+const machineSealingKey = vi.hoisted(() => vi.fn());
 // The server's additional_agent_providers flag; on unless a test turns it off.
 const flagState = vi.hoisted(() => ({ additionalProviders: true }));
 
@@ -35,7 +36,12 @@ vi.mock('@renderer/lib/ipc', () => ({
     embeddedController: { enable: embeddedEnable, defaultWorkspace },
     hostControllers: { enable: hostEnable },
     agents: { modelCatalogue },
-    managedAgents: { advancedConfigSchema, giveMachineLogin, machineLoginOutcome },
+    managedAgents: {
+      advancedConfigSchema,
+      giveMachineLogin,
+      machineLoginOutcome,
+      machineSealingKey,
+    },
     featureFlags: {
       get: async (serverId: string) => ({
         success: true,
@@ -431,6 +437,11 @@ describe('the providers a server machine offers', () => {
   it('gives the machine a login for a provider installed there but not signed in', async () => {
     giveMachineLogin.mockReset().mockResolvedValue({ operationId: 'op-1' });
     machineLoginOutcome.mockReset().mockResolvedValue({ state: 'succeeded' });
+    machineSealingKey.mockReset().mockResolvedValue({
+      state: 'verified',
+      fingerprint: '6668 7aad f862 bd77 6c8f c18b 8e9f 8e20',
+      source: 'machine',
+    });
     const el = await render(
       <MachineProviderPicker
         serverId="server-1"
@@ -450,6 +461,7 @@ describe('the providers a server machine offers', () => {
     // Not Pi or Mistral Vibe: Console has no login it can give them.
     expect(offered.map((button) => button.textContent)).toEqual(['OpenAI Codex', 'Cursor']);
     await act(async () => offered[0]!.click());
+    await vi.waitFor(() => expect(el.textContent).toMatch(/read from the machine itself/));
     const input = el.querySelector<HTMLInputElement>('input[aria-label="API key"]')!;
     await act(async () => {
       const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
@@ -466,6 +478,7 @@ describe('the providers a server machine offers', () => {
       machineId: 'controller-7',
       provider: 'codex',
       login: { source: 'typed', kind: 'api-key', credential: 'sk-proj-placeholder' },
+      fingerprint: '6668 7aad f862 bd77 6c8f c18b 8e9f 8e20',
     });
   });
 

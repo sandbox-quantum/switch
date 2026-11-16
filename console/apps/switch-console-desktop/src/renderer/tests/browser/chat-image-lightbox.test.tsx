@@ -8,9 +8,10 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { userEvent } from 'vitest/browser';
 
 const media = vi.hoisted(() => vi.fn());
+const saveAttachment = vi.hoisted(() => vi.fn());
 vi.mock('@renderer/lib/ipc', () => ({
   events: { on: () => () => {} },
-  rpc: { chats: { media } },
+  rpc: { chats: { media, saveAttachment } },
 }));
 
 import { ChatAttachments } from '@renderer/features/chats/components/chat-attachments';
@@ -25,6 +26,7 @@ afterEach(async () => {
   container = null;
   root = null;
   vi.restoreAllMocks();
+  saveAttachment.mockReset();
 });
 
 function samplePng(): string {
@@ -81,13 +83,16 @@ it('shows the download button on hover', async () => {
 
 it('downloads without opening the lightbox', async () => {
   const image = await render();
-  const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+  saveAttachment.mockResolvedValue('/Users/me/Downloads/shot.png');
   await userEvent.hover(image);
   await userEvent.click(downloadButton());
-  await expect.poll(() => click.mock.calls.length).toBe(1);
-  const link = click.mock.contexts[0] as HTMLAnchorElement;
-  expect(link.download).toBe('shot.png');
-  expect(link.href).toMatch(/^blob:/);
+  await expect.poll(() => saveAttachment.mock.calls.length).toBe(1);
+  expect(saveAttachment).toHaveBeenCalledWith({
+    serverId: 's',
+    roomId: 'r',
+    uri: 'mxc://example.org/shot',
+    filename: 'shot.png',
+  });
   expect(lightbox()).toBeNull();
 });
 

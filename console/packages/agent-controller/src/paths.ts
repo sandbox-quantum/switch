@@ -58,6 +58,40 @@ export async function ensureDataDir(dir: string): Promise<void> {
   if (mode !== 0o700) await chmod(dir, 0o700);
 }
 
+/**
+ * Where the agent hosts this controller runs keep their sessions' state, or
+ * null for the user's own folder (`~/.local/state/switch/sdk-sessions`).
+ *
+ * A controller named a data directory of its own (`--data-dir`, or
+ * `SWITCH_CONTROLLER_DATA_DIR`) keeps them in it, so a controller run apart,
+ * a second one on the machine or one under test, does not share the user's.
+ * Two exceptions keep the user's folder: a controller Switch Console runs,
+ * whose sessions Console reads there, and a data directory that ran agents
+ * before this folder existed, whose sessions are there and would otherwise
+ * not be found again.
+ */
+export async function controllerSessionsDir(input: {
+  dataDir: string;
+  named: boolean;
+  runByConsole: boolean;
+}): Promise<string | null> {
+  if (!input.named || input.runByConsole) return null;
+  const dir = join(input.dataDir, 'sdk-sessions');
+  if (await isDirectory(dir)) return dir;
+  if (await isDirectory(join(input.dataDir, 'watchers'))) return null;
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+  return dir;
+}
+
+async function isDirectory(path: string): Promise<boolean> {
+  try {
+    return (await stat(path)).isDirectory();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
 /** The well-known SID of the operating system's own account. */
 const LOCAL_SYSTEM_SID = 'S-1-5-18';
 

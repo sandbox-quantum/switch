@@ -162,6 +162,14 @@ describe('ownedMachines', () => {
     ]);
   });
 
+  it('offers no login to this computer, whatever key Switch reports for it', () => {
+    const [laptop] = ownedMachines(
+      [controller({ id: 'laptop', kind: 'console', sealingKey: { key: 'a2V5', keyId: 'id' } })],
+      { thisComputer: 'laptop', sshHosts: [] }
+    );
+    expect(laptop?.acceptsLogins).toBe(false);
+  });
+
   it('marks the owner’s Switch Cloud machine', () => {
     const [cloud] = ownedMachines([controller({ id: 'ec2', kind: 'ec2' })], {
       thisComputer: null,

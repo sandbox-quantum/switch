@@ -83,6 +83,7 @@ export {
   ensureSharedProcess,
   inProcessSupervision,
   liveSupervisor,
+  SDK_SESSIONS_DIR_ENV,
   sharedSessionRoot,
 } from './host/launch';
 export type { Supervision } from './host/launch';
@@ -154,6 +155,7 @@ export {
   SEALED_LOGIN_ALG,
   type SealedLogin,
   sealedLoginSchema,
+  sealingKeyFingerprint,
   sealingKeyId,
   sealProviderLogin,
   type SealingKeyPair,

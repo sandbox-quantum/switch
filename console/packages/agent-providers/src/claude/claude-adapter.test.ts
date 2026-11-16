@@ -165,8 +165,13 @@ describe('ClaudeAdapter session lifecycle', () => {
       switch: {
         type: 'http',
         url: 'http://127.0.0.1:4567/mcp',
-        headers: { Authorization: 'Bearer per-session' },
+        headers: { Authorization: '${SWITCH_MCP_SWITCH_AUTHORIZATION}' },
       },
+    });
+    expect(options.env).toEqual({
+      PATH: '/usr/bin',
+      HOME: '/home/agent',
+      SWITCH_MCP_SWITCH_AUTHORIZATION: 'Bearer per-session',
     });
     expect(options.settings).toEqual({
       enabledPlugins: { 'switch-connector@switch-plugins': false },
@@ -201,11 +206,12 @@ describe('ClaudeAdapter session lifecycle', () => {
         command: 'npx',
         args: ['-y', 'runtime'],
         env: {
-          HOME: '/explicit/home',
+          HOME: '${SWITCH_MCP_SWITCH_HOME}',
           SWITCH_API_TOKEN: '${SWITCH_API_TOKEN}',
         },
       },
     });
+    expect(sdk.options().env).toMatchObject({ SWITCH_MCP_SWITCH_HOME: '/explicit/home' });
   });
 
   it('disables only the duplicate Switch connector when the host supplies its server', async () => {

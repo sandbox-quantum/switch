@@ -37,7 +37,10 @@ export function machineProvider(report: ControllerProviderReport): MachineProvid
   };
 }
 
-function machineLocal(controller: ManagementController, local: LocalControllers): MachineLocal {
+export function machineLocal(
+  controller: ManagementController,
+  local: LocalControllers
+): MachineLocal {
   if (controller.id === local.thisComputer) return { kind: 'this-computer' };
   const sshHost = local.sshHosts.find((host) => host.controllerId === controller.id)?.sshHost;
   return sshHost ? { kind: 'ssh-host', sshHost } : null;
@@ -45,6 +48,7 @@ function machineLocal(controller: ManagementController, local: LocalControllers)
 
 function ownedMachine(controller: ManagementController, local: LocalControllers): OwnedMachine {
   const cloud = isCloudMachine(controller);
+  const where = machineLocal(controller, local);
   return {
     id: controller.id,
     // Older servers named the cloud machine "Switch cloud"; it is shown by the product's name.
@@ -52,11 +56,13 @@ function ownedMachine(controller: ManagementController, local: LocalControllers)
     kind: controller.kind,
     state: controller.state,
     providers: controller.providers.map(machineProvider),
-    acceptsLogins: controller.sealingKey !== null,
+    // This computer's controller runs on a credential Console hands it and
+    // keeps no key across starts, so a key Switch reports for it is not its own.
+    acceptsLogins: controller.sealingKey !== null && where?.kind !== 'this-computer',
     cloud,
     workspacesDir: controller.workspacesDir,
     os: controller.os,
-    local: machineLocal(controller, local),
+    local: where,
   };
 }
 

@@ -5,6 +5,7 @@ import {
   generateSealingKeyPair,
   openProviderLogin,
   parseVertexLogin,
+  sealingKeyFingerprint,
   sealingKeyId,
 } from '@switch-console/agent-providers';
 import {
@@ -18,14 +19,35 @@ const mocks = vi.hoisted(() => ({
   giveMachineLogin: vi.fn(),
   fetchMachineOperation: vi.fn(),
   readLocalProviderSignIn: vi.fn(),
+  pins: new Map<string, string>(),
+  thisComputer: null as string | null,
+  sshHosts: [] as { controllerId: string; sshHost: string }[],
+  hostKey: vi.fn(),
 }));
 
 vi.mock('@main/core/agent-migration/agent-migration', () => ({ agentMigrationService: {} }));
 vi.mock('@main/lib/logger', () => ({ log: { warn: vi.fn(), error: vi.fn(), info: vi.fn() } }));
 vi.mock('@main/core/embedded-controller/embedded-controllers', () => ({
-  embeddedControllerService: {},
+  embeddedControllerService: { enrolledControllerId: async () => mocks.thisComputer },
 }));
-vi.mock('@main/core/host-controllers/host-controllers', () => ({ hostControllerService: {} }));
+vi.mock('@main/core/host-controllers/host-controllers', () => ({
+  hostControllerService: {
+    recordsOn: async () => mocks.sshHosts,
+    record: async (sshHost: string) => ({ sshHost }),
+    sealingPublicKey: (record: { sshHost: string }) => mocks.hostKey(record.sshHost),
+  },
+}));
+vi.mock('./sealing-key-pins', () => ({
+  sealingKeyPins: {
+    get: async (serverId: string, controllerId: string) => {
+      const key = mocks.pins.get(`${serverId}|${controllerId}`);
+      return key === undefined ? null : { key, pinnedAt: '2026-11-16T00:00:00.000Z' };
+    },
+    set: async (serverId: string, controllerId: string, key: string) => {
+      mocks.pins.set(`${serverId}|${controllerId}`, key);
+    },
+  },
+}));
 vi.mock('@main/core/workspaces/workspaces-store', () => ({ requireWorkspaceForServer: vi.fn() }));
 vi.mock('@main/core/workspaces/workspace-session', () => ({
   withReachableServerWorkspaceSession: (_serverId: string, run: (server: unknown) => unknown) =>
@@ -53,6 +75,7 @@ vi.mock('@main/core/switch-servers/gateway-client', () => ({
 const { managedAgentsController } = await import('./controller');
 
 const keys = generateSealingKeyPair();
+const FINGERPRINT = sealingKeyFingerprint(keys.publicKey);
 
 function machine(sealingKey: { key: string; keyId: string } | null) {
   return { id: 'controller-1', name: 'build-box', sealingKey };
@@ -60,6 +83,9 @@ function machine(sealingKey: { key: string; keyId: string } | null) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.pins.clear();
+  mocks.thisComputer = null;
+  mocks.sshHosts = [];
   mocks.giveMachineLogin.mockResolvedValue({ operationId: 'op-1', revision: 1 });
 });
 
@@ -74,6 +100,7 @@ describe('giving a machine a provider login', () => {
         machineId: 'controller-1',
         provider: 'claude',
         login: { source: 'typed', kind: 'setup-token', credential: ' sk-ant-oat-given ' },
+        fingerprint: FINGERPRINT,
       })
     ).toEqual({ operationId: 'op-1' });
     const [, controllerId, provider, sealed] = mocks.giveMachineLogin.mock.calls[0]!;
@@ -94,6 +121,7 @@ describe('giving a machine a provider login', () => {
       machineId: 'controller-1',
       provider: 'codex',
       login: { source: 'this-computer' },
+      fingerprint: FINGERPRINT,
     });
     const [, , , sealed] = mocks.giveMachineLogin.mock.calls[0]!;
     expect(
@@ -105,6 +133,7 @@ describe('giving a machine a provider login', () => {
         machineId: 'controller-1',
         provider: 'claude',
         login: { source: 'this-computer' },
+        fingerprint: FINGERPRINT,
       })
     ).rejects.toThrow(/cannot be given/);
   });
@@ -120,6 +149,7 @@ describe('giving a machine a provider login', () => {
         machineId: 'controller-1',
         provider,
         login: { source: 'this-computer' },
+        fingerprint: FINGERPRINT,
       });
     await expect(give('codex')).rejects.toThrow(
       /OS keyring, which cannot be given.*cli_auth_credentials_store = "file"/
@@ -156,6 +186,7 @@ describe('giving a machine a provider login', () => {
         machineId: 'controller-1',
         provider,
         login: { source: 'vertex', project, region: 'global', credentials },
+        fingerprint: FINGERPRINT,
       });
 
     function given() {
@@ -215,6 +246,7 @@ describe('giving a machine a provider login', () => {
         machineId: 'controller-1',
         provider: 'claude',
         login: { source: 'typed', kind: 'api-key', credential: 'sk-ant-api-x' },
+        fingerprint: FINGERPRINT,
       });
     await expect(give()).rejects.toThrow(/no key/);
     mocks.fetchManagementControllers.mockResolvedValue([
@@ -222,6 +254,132 @@ describe('giving a machine a provider login', () => {
     ]);
     await expect(give()).rejects.toThrow(/does not match/);
     expect(mocks.giveMachineLogin).not.toHaveBeenCalled();
+  });
+
+  describe('the key it is sealed to', () => {
+    const attacker = generateSealingKeyPair();
+    const keyed = (publicKey: string) =>
+      machine({ key: publicKey, keyId: sealingKeyId(publicKey) });
+    const give = (fingerprint = FINGERPRINT) =>
+      managedAgentsController.giveMachineLogin({
+        serverId: 'server-1',
+        machineId: 'controller-1',
+        provider: 'claude',
+        login: { source: 'typed', kind: 'api-key', credential: 'sk-ant-api-given' },
+        fingerprint,
+      });
+    const shown = () =>
+      managedAgentsController.machineSealingKey({
+        serverId: 'server-1',
+        machineId: 'controller-1',
+      });
+    const sealedTo = () => {
+      const [, controllerId, provider, sealed] = mocks.giveMachineLogin.mock.calls.at(-1)!;
+      return { controllerId, provider, sealed };
+    };
+
+    it('is pinned the first time a login is given, and held to after', async () => {
+      mocks.fetchManagementControllers.mockResolvedValue([keyed(keys.publicKey)]);
+      expect(await shown()).toEqual({ state: 'first-use', fingerprint: FINGERPRINT });
+
+      await give();
+
+      expect(mocks.pins.get('server-1|controller-1')).toBe(keys.publicKey);
+      expect(await shown()).toEqual({
+        state: 'verified',
+        fingerprint: FINGERPRINT,
+        source: 'pinned',
+      });
+      expect(openProviderLogin({ keys, ...sealedTo() })).toEqual({
+        kind: 'api-key',
+        credential: 'sk-ant-api-given',
+      });
+    });
+
+    it('refuses a key the server swapped in for the pinned one, until the user trusts it', async () => {
+      mocks.pins.set('server-1|controller-1', keys.publicKey);
+      mocks.fetchManagementControllers.mockResolvedValue([keyed(attacker.publicKey)]);
+      const swapped = sealingKeyFingerprint(attacker.publicKey);
+
+      expect(await shown()).toEqual({
+        state: 'changed',
+        fingerprint: swapped,
+        previousFingerprint: FINGERPRINT,
+      });
+      await expect(give(swapped)).rejects.toThrow(/another key for build-box/);
+      expect(mocks.giveMachineLogin).not.toHaveBeenCalled();
+      expect(mocks.pins.get('server-1|controller-1')).toBe(keys.publicKey);
+
+      await expect(
+        managedAgentsController.trustMachineSealingKey({
+          serverId: 'server-1',
+          machineId: 'controller-1',
+          fingerprint: FINGERPRINT,
+        })
+      ).rejects.toThrow(/yet another key/);
+      await managedAgentsController.trustMachineSealingKey({
+        serverId: 'server-1',
+        machineId: 'controller-1',
+        fingerprint: swapped,
+      });
+      await give(swapped);
+      expect(openProviderLogin({ keys: attacker, ...sealedTo() }).credential).toBe(
+        'sk-ant-api-given'
+      );
+    });
+
+    it('refuses a key that changed after the user was shown one', async () => {
+      mocks.fetchManagementControllers.mockResolvedValue([keyed(attacker.publicKey)]);
+      await expect(give(FINGERPRINT)).rejects.toThrow(/changed while the login was being given/);
+      expect(mocks.giveMachineLogin).not.toHaveBeenCalled();
+      expect(mocks.pins.size).toBe(0);
+    });
+
+    it('refuses any key the server reports for this computer, whose controller keeps none', async () => {
+      mocks.thisComputer = 'controller-1';
+      mocks.fetchManagementControllers.mockResolvedValue([keyed(attacker.publicKey)]);
+
+      expect(await shown()).toMatchObject({ state: 'refused' });
+      await expect(give(sealingKeyFingerprint(attacker.publicKey))).rejects.toThrow(
+        /this computer, whose controller keeps no key.*not this computer’s/
+      );
+      expect(mocks.giveMachineLogin).not.toHaveBeenCalled();
+      expect(mocks.pins.size).toBe(0);
+    });
+
+    it('reads an SSH host’s key on the host, and refuses another from the server', async () => {
+      mocks.sshHosts = [{ controllerId: 'controller-1', sshHost: 'devbox' }];
+      mocks.hostKey.mockResolvedValue({ kind: 'key', publicKey: keys.publicKey });
+      mocks.pins.set('server-1|controller-1', attacker.publicKey);
+      mocks.fetchManagementControllers.mockResolvedValue([keyed(attacker.publicKey)]);
+
+      await expect(give(sealingKeyFingerprint(attacker.publicKey))).rejects.toThrow(
+        /another key for build-box .* than the machine holds/
+      );
+      expect(mocks.giveMachineLogin).not.toHaveBeenCalled();
+      expect(mocks.hostKey).toHaveBeenCalledWith('devbox');
+
+      mocks.fetchManagementControllers.mockResolvedValue([keyed(keys.publicKey)]);
+      expect(await shown()).toEqual({
+        state: 'verified',
+        fingerprint: FINGERPRINT,
+        source: 'machine',
+      });
+      await give();
+      expect(mocks.pins.get('server-1|controller-1')).toBe(keys.publicKey);
+      expect(openProviderLogin({ keys, ...sealedTo() }).credential).toBe('sk-ant-api-given');
+    });
+
+    it('holds an SSH host it cannot ask to the pinned key', async () => {
+      mocks.sshHosts = [{ controllerId: 'controller-1', sshHost: 'devbox' }];
+      mocks.hostKey.mockResolvedValue({ kind: 'unknown', reason: 'devbox is unreachable' });
+      mocks.pins.set('server-1|controller-1', keys.publicKey);
+      mocks.fetchManagementControllers.mockResolvedValue([keyed(attacker.publicKey)]);
+
+      expect(await shown()).toMatchObject({ state: 'changed', previousFingerprint: FINGERPRINT });
+      mocks.hostKey.mockResolvedValue({ kind: 'none' });
+      expect(await shown()).toMatchObject({ state: 'refused' });
+    });
   });
 
   it('says how the machine took the login up', async () => {
