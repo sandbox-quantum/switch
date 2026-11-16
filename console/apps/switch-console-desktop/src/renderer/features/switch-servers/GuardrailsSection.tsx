@@ -198,9 +198,10 @@ export const GuardrailsSection = observer(function GuardrailsSection({
           <div className={cn('flex flex-col gap-3 pt-3', !open && 'hidden')}>
             <p className="text-xs text-foreground-muted">
               Every message this server sends is checked before it goes out once an endpoint and an
-              API key are set, including the text inside attached files, of which only the first
-              20,000 characters are checked. Files with no text to read, such as images and
-              archives, are sent without being checked.
+              API key are set, and so is the text inside attached files. Only the first 20,000
+              characters of each are checked, and a note says so. Images, audio, video, archives,
+              and Office files other than Word documents can&apos;t be read, so they are sent
+              unchecked.
             </p>
             <FieldGroup>
               <Field>
