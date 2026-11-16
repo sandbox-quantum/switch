@@ -593,7 +593,7 @@ change it. A refusal says which of these it was; relay it rather than retrying.
 
   **Your owner confirms a change that widens what an agent may do on its
   own, or who may reach it**: turning `auto_approve` or `auto_mode` on,
-  `permissionMode: "bypassPermissions"` in `advanced_config`, a new
+  `permissionMode: "bypassPermissions"` or `"auto"` in `advanced_config`, a new
   `directory` (other than `""`), `machine` or `provider`, or `addressing`
   wider than it is now (`"anyone"`, or `"owner_and_owner_agents"` for an agent
   your owner's agents cannot address yet). That is not made by the call:
@@ -605,8 +605,8 @@ change it. A refusal says which of these it was; relay it rather than retrying.
   `managed` as the agent still is. Only the owner can confirm, never you or
   another agent, and one change per agent waits at a time. Tell the person
   what it changes and what to send, and do not report it as done. Turning
-  bypass or auto mode off, a narrower `addressing`, and every other field
-  apply at once.
+  bypass or auto mode off, any other `permissionMode`, a narrower
+  `addressing`, and every other field apply at once.
 
   **Renaming** needs "can manage agents", like the managed fields; without
   it the rename is refused with a sentence to relay. It changes the

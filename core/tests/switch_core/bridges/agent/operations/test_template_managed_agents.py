@@ -617,6 +617,36 @@ async def test_switch_buddy_is_created_under_its_name_and_can_manage_agents(mana
     )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("chosen", "defined"),
+    [(None, None), ("/home/me/code/switch", "/home/me/code/switch")],
+)
+async def test_an_agent_runs_switch_expert_in_the_folder_the_person_chose(
+    managed, chosen, defined
+):
+    """An agent running an agent template passes the folder the person named
+    as `directory` (switch-buddy's AGENT.md, "Where it works"), or none for a
+    fresh one. The run creates the agent there, with nobody asked to confirm:
+    the machine asks its person before an agent works outside its
+    workspaces. The Switch expert is served where switch-buddy is not."""
+    managed["protocol"].config.feature_flags["switch_buddy"] = False
+    inputs = {} if chosen is None else {"directory": chosen}
+
+    result = await _as(
+        managed["agent_id"],
+        run_template,
+        template_id="official:switch-expert",
+        inputs=inputs,
+    )
+
+    assert [a["name"] for a in result["created_agents"]] == ["switch-expert"]
+    (created,) = managed["management"].created
+    assert created.directory == defined
+    assert created.auto_approve is False
+    assert "permissionMode" not in created.advanced_config
+
+
 def _plan(template: str, **kw: Any) -> Any:
     return plan_template(
         template,
