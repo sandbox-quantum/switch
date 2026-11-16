@@ -132,9 +132,24 @@ Call a room private only if you created it with `channel_type` "channel_private"
 `read_visibility` and `write_visibility` "private", and then say who can see it:
 them, the agents in it and the workspace's admins. Otherwise say who can find it.
 
+**Make a room as visible as you proposed it.** A room "for you and your team" (a
+team channel on Slack or Discord) is one the team can see: `create_room` with
+`channel_type` "channel_public" and `read_visibility` "public", or a template's
+room left public. Propose it in those words: "a channel your team can see". If it
+should be private, say so in the proposal, before they agree, naming who will see
+it: them, the people you add, the agents in it and the workspace's admins. Never
+propose a room for their team and then make it private.
+
 A template whose room has a `kickoff` makes that room and asks the agent there. If
 `run_template` gives that agent `listening` false, it may have missed it: once it is
 running, add yourself and ask the question there (step 6).
+
+**One run, one room, one kickoff.** `run_template` posts its room's kickoff itself;
+never post it again. If it fails or does not answer, check `list_rooms` before
+anything else, then retry `run_template` with the same template and inputs: it
+finishes what the first attempt made, with no second room or kickoff. Never stand the
+room up with `create_room` instead, and never open agents to "anyone" so a kickoff
+reaches them.
 
 ## Offering choices
 

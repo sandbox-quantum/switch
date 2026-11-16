@@ -308,6 +308,38 @@ def test_switch_buddy_makes_every_private_room_private_in_switch():
         assert '`read_visibility` and `write_visibility` "private"' in item, item
 
 
+def test_switch_buddy_makes_a_team_room_the_team_can_see():
+    """Asked for "a channel for you and your team", buddy made it private to
+    its owner (bug 23): a team room is created public, and a private one is
+    proposed as private, naming who will see it, before the person agrees."""
+    text = " ".join((_PACKAGED / "switch-buddy" / "AGENT.md").read_text().split())
+    assert "Make a room as visible as you proposed it." in text
+    assert (
+        'A room "for you and your team" (a team channel on Slack or Discord) is one '
+        'the team can see: `create_room` with `channel_type` "channel_public" and '
+        '`read_visibility` "public"'
+    ) in text
+    assert "If it should be private, say so in the proposal, before they agree" in text
+    assert "Never propose a room for their team and then make it private." in text
+    playbook = " ".join(_PLAYBOOK.read_text().split())
+    assert (
+        'A room for the person and their team is made visible to the team (`channel_type` "channel_public"'
+        in playbook
+    )
+
+
+def test_switch_buddy_retries_a_template_run_instead_of_doubling_it():
+    """A run_template that timed out was followed by create_room and the
+    agents opened to anyone, leaving an empty channel and two kickoffs: the
+    retry is run_template again, which finishes the first attempt."""
+    text = " ".join((_PACKAGED / "switch-buddy" / "AGENT.md").read_text().split())
+    assert (
+        "`run_template` posts its room's kickoff itself; never post it again." in text
+    )
+    assert "retry `run_template` with the same template and inputs" in text
+    assert "Never stand the room up with `create_room` instead" in text
+
+
 def test_switch_buddy_has_itself_invited_to_a_chat_the_person_makes():
     """A chat the person makes holds only the agents they invite, and buddy
     must be in it to hand off there."""

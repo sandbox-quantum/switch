@@ -2262,6 +2262,13 @@ async def run_template(
     are deleted again. Confirm what will be created with the person asking
     first: it starts real agents on their machines.
 
+    Running the same template with the same inputs again, from the same room,
+    is a retry of that run: the agents and the room an earlier attempt made
+    are counted and finished, not refused as taken nor made a second time,
+    and the room's kickoff is posted only if it never was. After a failure or
+    no answer, check ``list_rooms``, then retry this rather than creating the
+    room yourself.
+
     Args:
         template_id: The id from ``list_templates``.
         inputs: Values for the template's params (see ``get_template``),

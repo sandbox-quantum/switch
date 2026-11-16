@@ -673,6 +673,25 @@ version of their own to them without also giving them a release of their own.
   of as well as the rooms.
 
 #### Fixed
+- **Creating or renaming an agent no longer waits on each messaging app.**
+  A new agent's identity on each connected app is made in the background, so
+  an app that is slow or not answering can't hold up or fail the create; the
+  identity follows when the app answers. A rename asks every app about the new
+  name at once, each with a short deadline: a clash still refuses it, but an
+  app that doesn't answer in time is listed as not yet updated instead of
+  turning the rename into a server error.
+- **Retrying a template run finishes it instead of failing on what exists.**
+  A run's caller can name it (`run_key` on `POST /rooms/from-template` and
+  `/rooms/from-template-document`, a query parameter older servers ignore);
+  a retry then counts the agents and finishes the room an earlier attempt
+  made, and posts its kickoff only if it never was. An agent's `run_template`
+  retry does the same. `GET /rooms/from-template/runs/{run_key}` says what a
+  run has made so far. A room that fails after its channel was made, before
+  the room is recorded, retires the channel instead of leaving it empty.
+- **switch-buddy makes a room as visible as it proposed.** A room for a
+  person and their team is one the team can see; a private one is proposed as
+  private first, naming who will see it. After a template run fails, it
+  retries the run rather than making the room itself.
 - **A sign-out that fails in the dashboard says so.** Signing out, or out of
   every device, from the account menu or the screens before a workspace said
   nothing when Switch didn't answer, and a failed sign-out of this browser
@@ -4308,6 +4327,16 @@ version of their own to them without also giving them a release of their own.
   agent"; it was the only place Console showed that name.
 
 #### Fixed
+- **A template run or a new agent that outlasts the wait says what was
+  made.** Switch Console stopped waiting after 30 seconds and said "Nothing
+  was created" while the server went on to make everything, and Retry then
+  failed on "already exists". It now reads back what the run made and shows
+  each step as done, still running or failed, opens a run the server finished,
+  and Retry finishes the rest. A new agent the server made is shown as
+  created, not as a server that could not be reached.
+- **A suggested display name follows the agent's name.** Taking the offered
+  name and then changing it left the agent labelled with the first name, so
+  two agents could look the same in the sidebar.
 - **Workspace settings opens the web dashboard's settings in its new
   layout.** On a server with the new layout on, Settings › Workspace settings
   landed on its Users page. It now opens the settings home, on the page you

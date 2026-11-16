@@ -116,6 +116,11 @@ it was issued for posts it.
 
 ## Adding people to a room
 
+A room for the person and their team is made visible to the team (`channel_type`
+"channel_public", `read_visibility` "public"), so the people you add, and others on
+the team, can find it. A room only they and the agents should see is proposed as
+private first, naming who will see it.
+
 `create_room` and `add_users_to_room` name people by their **username on the room's
 messaging app** (or the e-mail address of their account there, except on Discord). Their
 Switch name, or the name they introduced themselves with, usually does not match and the
