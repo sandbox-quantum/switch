@@ -230,6 +230,7 @@ class Actor[ConfigT: ClientConfig]:
         mentions: list[str] | None = None,
         thread_root_id: str | None = None,
         extra_content: dict[str, object] | None = None,
+        authored: str | None = None,
     ) -> str | None:
         try:
             result = await self._transport.send_message(
@@ -241,6 +242,7 @@ class Actor[ConfigT: ClientConfig]:
                 mentions=mentions,
                 thread_root_id=thread_root_id,
                 extra_content=extra_content,
+                authored=authored,
             )
         except TransportError as exc:
             logger.error("Failed to send message to %s: %s", room_id, exc)
@@ -282,6 +284,7 @@ class Actor[ConfigT: ClientConfig]:
         thread_root_id: str | None = None,
         group: dict[str, object] | None = None,
         extra_content: dict[str, object] | None = None,
+        authored: str | None = None,
     ) -> str | None:
         """Send an m.image / m.file event pointing at an uploaded media URI.
 
@@ -296,6 +299,9 @@ class Actor[ConfigT: ClientConfig]:
         carrying several files is sent as n events sharing a group id, which
         receivers coalesce back into one logical message. Absent the field, an
         event is simply a group of one.
+
+        `authored` is what the sender wrote of `caption`, where Switch wrote
+        into it too (`MessageTransport.send_message`).
         """
         try:
             result = await self._transport.send_media(
@@ -311,6 +317,7 @@ class Actor[ConfigT: ClientConfig]:
                 thread_root_id=thread_root_id,
                 group=group,
                 extra_content=extra_content,
+                authored=authored,
             )
         except TransportError as exc:
             logger.error("Failed to send media to %s: %s", room_id, exc)

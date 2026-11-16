@@ -1441,6 +1441,10 @@ class CollaborationCore:
             return None
 
         content = self._adapter.translate_inbound(msg.content)
+        # What the person wrote, which is what the length limit is held to:
+        # the `@name`, notes and Switch Trust annotation added below are
+        # Switch's, and the room makes space for them (`send_limits.py`).
+        authored = content
         if mention_target is not None and (
             mention_regex(mention_target).search(strip_emphasis(content)) is None
         ):
@@ -1527,6 +1531,7 @@ class CollaborationCore:
                         thread_root_id=thread_root_id,
                         metered=True,
                         extra_content=_inbound_extra_content(msg, check),
+                        authored=authored,
                     )
             except MessageRefused as refused:
                 await self._tell_message_refused(msg, refused, transport_room_id)
@@ -1684,6 +1689,7 @@ class CollaborationCore:
                         ),
                         metered=True,
                         extra_content=_inbound_extra_content(msg, caption_check),
+                        authored=authored if index == 0 else None,
                     )
                 if event_id is None:
                     logger.error(
@@ -1747,6 +1753,26 @@ class CollaborationCore:
             msg,
             f"🚫 Your message was not delivered to the room. {refused}",
             AdminMessageType.MESSAGE_REFUSED,
+        )
+
+    async def _tell_command_refused(
+        self, cmd: InboundCommand, refused: MessageRefused, transport_room_id: str
+    ) -> None:
+        """Tell the sender why Switch did not run their command: it came
+        faster than their allowance (`SendLimits.admit_command`), or its
+        arguments were too long. Told once for a run of refusals, as for a
+        message (`_tell_message_refused`)."""
+        if isinstance(refused, SendRateLimited) and not refused.first:
+            return
+        logger.warning(
+            "[BRIDGE-IN] command %s from %s not run in room %s: %s",
+            cmd.command,
+            cmd.sender_name,
+            transport_room_id,
+            refused.reason,
+        )
+        await self._adapter.answer_command(
+            cmd, f"🚫 Your `{cmd.command}` command was not run. {refused}"
         )
 
     async def _post_trust_notice(
@@ -1979,6 +2005,9 @@ class CollaborationCore:
                 event_id = await human_actor.send_event(
                     transport_room_id, "com.switch.command", content
                 )
+        except MessageRefused as refused:
+            await self._tell_command_refused(cmd, refused, transport_room_id)
+            return
         except TransportError as exc:
             logger.error(
                 "Failed to bridge command %s into %s: %s",

@@ -15,6 +15,7 @@ from switch_core.template_lint import lint_template
 from switch_core.template_v2 import compile_v2, is_v2_text
 from switch_core.template_yaml import (
     MAX_TEMPLATE_CHARS,
+    MAX_TEMPLATE_DEPTH,
     MAX_TEMPLATE_NODES,
     TemplateYamlRefused,
     load_template_yaml,
@@ -89,6 +90,41 @@ def test_a_document_with_too_many_values_is_refused():
     assert len(text) < MAX_TEMPLATE_CHARS
     with pytest.raises(TemplateYamlRefused, match="at most"):
         load_template_yaml(text)
+
+
+def test_deeply_nested_values_are_refused_rather_than_overflowing_the_stack():
+    """Composing recurses once per level of nesting, so a few kilobytes of
+    plain lists, under both other caps, used to end in a RecursionError that
+    no caller reports as a template that does not parse."""
+    text = "[" * 3000 + "1" + "]" * 3000
+    assert len(text) < MAX_TEMPLATE_CHARS
+
+    with pytest.raises(TemplateYamlRefused, match="at most 64 levels deep") as raised:
+        load_template_yaml(text)
+    assert raised.value.problem_mark is not None
+
+
+def test_nesting_is_refused_at_the_line_where_it_goes_too_deep():
+    lines = ["room:"] + [
+        "  " * level + f"k{level}:" for level in range(1, MAX_TEMPLATE_DEPTH + 2)
+    ]
+    text = "\n".join(lines) + " x\n"
+
+    with pytest.raises(TemplateYamlRefused) as raised:
+        load_template_yaml(text)
+    assert raised.value.problem_mark is not None
+    assert raised.value.problem_mark.line == MAX_TEMPLATE_DEPTH - 1
+
+
+def test_nesting_up_to_the_cap_reads_as_it_did():
+    text = "[" * (MAX_TEMPLATE_DEPTH - 1) + "1" + "]" * (MAX_TEMPLATE_DEPTH - 1)
+    assert load_template_yaml(text) == yaml.safe_load(text)
+
+
+def test_lint_reports_deep_nesting_as_invalid_yaml():
+    result = lint_template("[" * 3000 + "1" + "]" * 3000)
+    assert [f.code for f in result.errors] == ["invalid_yaml"]
+    assert "levels deep" in result.errors[0].message
 
 
 def test_the_refusal_is_a_yaml_error():

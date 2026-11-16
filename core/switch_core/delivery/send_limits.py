@@ -3,9 +3,15 @@ fast messages may come.
 
 A message a person or an agent sends is admitted (`SendLimits.admit`) before
 it reaches the router, so a refused one costs no room lock and no decision
-pass for the agents in the room. Every row the router writes is held to the
-length limit again (`require_length`), whoever wrote it, so no path into a
-room is left without it.
+pass for the agents in the room.
+
+The length limit is on what the sender wrote. Switch writes into some
+messages itself — a Switch Trust note, the `@name` of an agent picked in
+Console, a line for a file a bridge could not relay — and a sender who kept to
+the limit is never refused for that: a row may run past the limit by
+`SWITCH_ADDITIONS_MAX_CHARS`. Every row the router writes is held to the two
+together (`require_row_length`), whoever wrote it, so no path into a room is
+left without a limit.
 
 Refusals carry a reason the sender can act on, and are told to them: an
 agent's tool call fails with it, a Console chat answers 422 or 429, and a
@@ -13,15 +19,17 @@ bridged person gets a notice (`CollaborationCore`). Nothing is cut short or
 dropped quietly.
 
 The rate is a token bucket per sender, kept in this process's memory: a
-sender gets `burst` messages at once, then `per_second`. With several
-replicas, a sender whose messages reach more than one of them gets up to that
-many times the rate.
+sender gets `burst` messages at once, then `per_second`. It is one bucket per
+sender, not per room, on purpose: one allowance covers everything a sender
+writes, wherever they write it. With several replicas, a sender whose
+messages reach more than one of them gets up to that many times the rate.
 """
 
 from __future__ import annotations
 
+import contextlib
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar
 
@@ -33,6 +41,15 @@ if TYPE_CHECKING:
 
 # Past this many senders, ones whose allowance has refilled are forgotten.
 _FORGET_FULL_BUCKETS_PAST = 10_000
+
+# How far past the limit a row may run with what Switch wrote into it: a
+# Switch Trust note, a line per file, an `@name` per agent picked, which come
+# to a few hundred characters on an ordinary message.
+SWITCH_ADDITIONS_MAX_CHARS = 8 * 1024
+
+# The room commands that stop an agent's turn. No allowance holds one back,
+# so someone who has been sending fast can still stop an agent.
+STOP_COMMANDS = frozenset({"interrupt", "interrupt-all-agents"})
 
 
 class MessageRefused(Exception):
@@ -109,10 +126,23 @@ class SendLimits:
             clock=clock,
         )
 
+    @property
+    def max_row_chars(self) -> int:
+        """The longest row the router writes: the limit, and what Switch may
+        add to a message that keeps to it."""
+        return self.max_message_chars + SWITCH_ADDITIONS_MAX_CHARS
+
     def require_length(self, body: object) -> None:
-        """Raise `MessageTooLong` for a body longer than the limit."""
+        """Raise `MessageTooLong` for what a sender wrote, longer than the
+        limit."""
         if isinstance(body, str) and len(body) > self.max_message_chars:
             raise MessageTooLong(len(body), self.max_message_chars)
+
+    def require_row_length(self, body: object) -> None:
+        """Raise `MessageTooLong` for a row longer than any may be
+        (`max_row_chars`)."""
+        if isinstance(body, str) and len(body) > self.max_row_chars:
+            raise MessageTooLong(len(body), self.max_row_chars)
 
     def admit(
         self, sender: str, body: object, *, actor: str, starts_post: bool
@@ -120,15 +150,35 @@ class SendLimits:
         """Let `sender` send `body`, or raise why not: `MessageTooLong`, or
         `SendRateLimited` once their allowance is spent.
 
+        `body` is what the sender wrote, before Switch adds anything to it.
         `sender` is whoever is sending, the same id for each of their
         messages. A post with several files is written as several rows, and
         is one message: only the row that starts it (`starts_post`) takes
         from the allowance, so a post is never refused part way through.
         `actor` (`human` or `agent`) labels the refusal's metric."""
-        try:
+        with self._counted(actor):
             self.require_length(body)
             if starts_post:
                 self._take(sender)
+
+    def admit_command(
+        self, sender: str, command: object, args: object, *, actor: str
+    ) -> None:
+        """Let `sender` run the room command `command`, or raise why not, as
+        `admit` does for a message: `args` held to the length limit, and the
+        command drawn from the same allowance, since a command sets Switch to
+        work as a message does. A command that stops an agent
+        (`STOP_COMMANDS`) draws nothing, so stopping one always works."""
+        with self._counted(actor):
+            self.require_length(args)
+            if command not in STOP_COMMANDS:
+                self._take(sender)
+
+    @contextlib.contextmanager
+    def _counted(self, actor: str) -> Iterator[None]:
+        """Count a refusal by its reason and who it refused."""
+        try:
+            yield
         except MessageRefused as refused:
             metrics().increment(
                 MESSAGES_REFUSED, {"reason": refused.reason, "actor": actor}

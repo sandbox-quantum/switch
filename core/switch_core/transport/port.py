@@ -110,6 +110,7 @@ class MessageTransport(Protocol):
         mentions: list[str] | None = None,
         thread_root_id: str | None = None,
         extra_content: dict[str, object] | None = None,
+        authored: str | None = None,
     ) -> SendResult:
         """Post a text message. Raises `TransportError` if it is not accepted.
 
@@ -118,6 +119,12 @@ class MessageTransport(Protocol):
         command replies, automatic refusals — which the participant never chose
         to say. It is an argument rather than something read from the content,
         because a sender controls the content.
+
+        `authored` is what the sender wrote, where Switch has written into
+        `body` too (a Switch Trust note, a line for a file it could not relay)
+        or changed it (a redaction). A metered message is held to the length
+        limit on that, not on `body` (`send_limits.py`). None when `body` is
+        all the sender's.
         """
         ...
 
@@ -145,13 +152,15 @@ class MessageTransport(Protocol):
         thread_root_id: str | None = None,
         group: dict[str, object] | None = None,
         extra_content: dict[str, object] | None = None,
+        authored: str | None = None,
     ) -> SendResult:
         """Post an event pointing at an already-uploaded `uri`.
 
         `group` marks this as one part of a multi-attachment message —
         `{"id": ..., "index": i, "total": n}` — for transports that cannot
-        carry several files on one event. `metered` and `extra_content` are as
-        for `send_message`.
+        carry several files on one event. `metered`, `extra_content` and
+        `authored` (what the sender wrote of the caption) are as for
+        `send_message`.
         """
         ...
 

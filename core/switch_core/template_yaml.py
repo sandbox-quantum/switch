@@ -5,8 +5,10 @@ PyYAML builds an alias (``*name``) as a second reference to the anchored
 a structure that every walk over it (interpolation, validation, linting)
 visits billions of times, holding the event loop the whole while. A template
 has no need for shared structure, so an anchor or alias is refused while the
-document is composed, before any Python object exists. The document's length
-and its number of values are capped too.
+document is composed, before any Python object exists. The document's length,
+its number of values and how deeply they nest are capped too: composing
+recurses once per level, so a few kilobytes of `[[[...]]]` would otherwise
+end in a `RecursionError` rather than a refusal.
 
 Every reading of a template someone sent goes through ``load_template_yaml``.
 The refusal is a ``yaml.YAMLError``, so callers that already report a document
@@ -23,17 +25,20 @@ import yaml
 # values; the largest that come with Switch are about 11,000 and 200.
 MAX_TEMPLATE_CHARS = 256 * 1024
 MAX_TEMPLATE_NODES = 10_000
+# The deepest the shipped templates nest is under ten levels.
+MAX_TEMPLATE_DEPTH = 64
 
 
 class TemplateYamlRefused(yaml.MarkedYAMLError):
     """A template Switch will not read: it uses anchors or aliases, or it is
-    larger than a template may be."""
+    larger or more deeply nested than a template may be."""
 
 
 class _TemplateLoader(yaml.SafeLoader):
     def __init__(self, stream: str) -> None:
         super().__init__(stream)
         self._nodes = 0
+        self._depth = 0
 
     def compose_node(self, parent: Any, index: Any) -> Any:
         event = self.peek_event()
@@ -55,13 +60,25 @@ class _TemplateLoader(yaml.SafeLoader):
                 ),
                 problem_mark=event.start_mark,
             )
-        return super().compose_node(parent, index)
+        if self._depth >= MAX_TEMPLATE_DEPTH:
+            raise TemplateYamlRefused(
+                problem=(
+                    f"a template may nest values at most {MAX_TEMPLATE_DEPTH} "
+                    "levels deep, and this one nests them deeper"
+                ),
+                problem_mark=event.start_mark,
+            )
+        self._depth += 1
+        try:
+            return super().compose_node(parent, index)
+        finally:
+            self._depth -= 1
 
 
 def load_template_yaml(text: str) -> Any:
     """``yaml.safe_load`` for a template: the same result for any document
-    without anchors, aliases or excess size, and ``TemplateYamlRefused`` for
-    one with them."""
+    without anchors, aliases, excess size or excess nesting, and
+    ``TemplateYamlRefused`` for one with them."""
     if len(text) > MAX_TEMPLATE_CHARS:
         raise TemplateYamlRefused(
             problem=(

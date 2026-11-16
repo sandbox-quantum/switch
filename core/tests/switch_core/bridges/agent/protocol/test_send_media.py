@@ -41,6 +41,7 @@ class _FakeClient:
         caption: str | None = None,
         thread_root_id: str | None = None,
         group: dict[str, object] | None = None,
+        authored: str | None = None,
     ) -> str | None:
         self.sends.append(
             {
@@ -54,6 +55,7 @@ class _FakeClient:
                 "caption": caption,
                 "thread_root_id": thread_root_id,
                 "group": group,
+                "authored": authored,
             }
         )
         return f"$media-event-{len(self.sends)}"
