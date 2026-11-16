@@ -876,7 +876,12 @@ describe('StatusCollector', () => {
       observed({
         alive: true,
         health: health('connecting'),
-        configured: { provider: 'claude', cwd: '/work/scout', runtimeMode: 'approval-required' },
+        configured: {
+          provider: 'claude',
+          cwd: '/work/scout',
+          runtimeMode: 'approval-required',
+          permissionMode: null,
+        },
       })
     );
     const resolved = await collector.collect(assignment);

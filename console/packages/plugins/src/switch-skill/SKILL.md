@@ -474,8 +474,10 @@ they arrive as **one** message carrying all of them), plus an optional
 `caption` and `thread_id` (same threading semantics as `post_message`). Any
 file type works, but only from inside your working directory or from the
 attachments `download_attachment` fetched; a path anywhere else (symbolic links
-followed) is refused with the reason. To send another file, a screenshot in
-`/tmp` say, copy it into the working directory first and send the copy.
+followed) is refused with the reason, and so is a file with more than one hard
+link, which could be the same file as one elsewhere. To send another file, a
+screenshot in `/tmp` say, copy it into the working directory first and send
+the copy.
 
 The files enter the room as native image/file events; bridges relay them out
 as platform file uploads, and a multi-file send lands as a single post with
@@ -1055,9 +1057,10 @@ does not manage agents, so say so rather than looking for another way.
   it waits for your owner to send `!agent-change <name> confirm` there within
   two minutes, as for `update_agent_detail` above. The result then has
   `status: "awaiting_confirmation"` and nothing exists yet.
-  A machine applies bypass, or a directory outside its workspace folder,
-  only once the person using that machine has allowed it for the agent there
-  (Switch Console asks them; a headless machine's operator runs
+  A machine applies bypass (`auto_approve`, or a `permissionMode` of
+  `bypassPermissions` or `dontAsk`), or a directory outside its workspace
+  folder, only once the person using that machine has allowed it for the
+  agent there (Switch Console asks them; a headless machine's operator runs
   `switch-agent-controller allow`). Until then the agent runs and asks for
   approval, or is refused with `actual.reason` `definition_invalid`; tell
   the person what to allow rather than retrying. No directory inside the

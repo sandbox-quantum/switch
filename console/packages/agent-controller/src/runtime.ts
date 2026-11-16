@@ -51,9 +51,15 @@ export type AgentObservation = {
   alive: boolean;
   /**
    * The provider, working directory and runtime mode its saved configuration
-   * holds; the runtime mode is null in one written without it.
+   * holds, the runtime mode null in one written without it, and the
+   * permission mode the agent definition it runs as names, null for none.
    */
-  configured: { provider: string; cwd: string; runtimeMode: string | null } | null;
+  configured: {
+    provider: string;
+    cwd: string;
+    runtimeMode: string | null;
+    permissionMode: string | null;
+  } | null;
   flags: WatchFlags | null;
   /** `current` is false when the process that wrote it is gone. */
   health: (WatcherHealthFile & { current: boolean }) | null;
@@ -344,6 +350,7 @@ export async function readRoot(
       provider: parsed.start.provider,
       cwd: parsed.start.input.cwd,
       runtimeMode: parsed.start.input.runtimeMode ?? null,
+      permissionMode: parsed.start.input.agentDefinition?.permissionMode ?? null,
     };
   }
   let flags: WatchFlags | null = null;

@@ -2,11 +2,11 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, open, readdir, readFile, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import {
+  changeDevicePolicy,
   type DevicePolicy,
   replaceFile,
   WATCH_FLAGS_FILE,
   watchFlagsSchema,
-  writeDevicePolicy,
 } from '@switch-console/agent-providers';
 import { z } from 'zod';
 
@@ -295,10 +295,14 @@ export function denialsFor(
 }
 
 /**
- * Writes the device policy into a controller's data directory, made
+ * Changes the device policy in a controller's data directory, taking turns
+ * with any other writer of it (`changeDevicePolicy`), the directory made
  * owner-only first when the controller has not run yet to make it.
  */
-export async function writeControllerPolicy(dataDir: string, policy: DevicePolicy): Promise<void> {
+export async function changeControllerPolicy(
+  dataDir: string,
+  change: (policy: DevicePolicy) => DevicePolicy
+): Promise<DevicePolicy> {
   await mkdir(dataDir, { recursive: true, mode: 0o700 });
-  await writeDevicePolicy(dataDir, policy);
+  return changeDevicePolicy(dataDir, change);
 }

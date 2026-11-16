@@ -1,5 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import {
+  existsSync,
+  linkSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -9,7 +11,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -165,6 +167,78 @@ describe('the tool catalog', () => {
       expect(result.content[0]!.text).toContain('Refused to send innocent.txt');
       expect(uploads).toBe(0);
     });
+
+    it('refuses a hard link inside the working directory to a file outside it', async () => {
+      const { ctx, secret } = outsideFile();
+      linkSync(secret, join(ctx.cwd, 'innocuous.txt'));
+      expect(readFileSync(join(ctx.cwd, 'innocuous.txt'), 'utf8')).toBe('PRIVATE KEY');
+      const { result, uploads } = await send(ctx, { path: 'innocuous.txt' });
+      expect(result.isError).toBe(true);
+      expect(result.content[0]!.text).toContain(
+        'Refused to send innocuous.txt: it has 2 hard links'
+      );
+      expect(result.content[0]!.text).toContain('Copy it into the working directory');
+      expect(uploads).toBe(0);
+    });
+
+    it('refuses a file in the working directory once it has a hard link anywhere else', async () => {
+      const { ctx, secret } = outsideFile();
+      writeFileSync(join(ctx.cwd, 'notes.md'), 'hello');
+      linkSync(join(ctx.cwd, 'notes.md'), `${secret}.copy`);
+      const { result, uploads } = await send(ctx, { path: 'notes.md' });
+      expect(result.isError).toBe(true);
+      expect(result.content[0]!.text).toContain('hard links');
+      expect(uploads).toBe(0);
+    });
+
+    it('sends an attachment it downloaded, under any of its hard links', async () => {
+      const { ctx } = outsideFile();
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => new Response('downloaded'))
+      );
+      const download = await catalog.call(ctx, 'download_attachment', {
+        mxc: 'mxc://server/media-id',
+        filename: 'a.txt',
+      });
+      const downloaded = download.content[0]!.text;
+      linkSync(downloaded, join(ctx.cwd, 'a.txt'));
+      const { result, uploads } = await send(ctx, { paths: [downloaded, 'a.txt'] });
+      expect(result.isError).toBeUndefined();
+      expect(uploads).toBe(1);
+    });
+
+    it('refuses a file another took the name of a downloaded attachment for', async () => {
+      const { ctx, secret } = outsideFile();
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => new Response('downloaded'))
+      );
+      const download = await catalog.call(ctx, 'download_attachment', {
+        mxc: 'mxc://server/media-id',
+        filename: 'a.txt',
+      });
+      const downloaded = download.content[0]!.text;
+      rmSync(downloaded);
+      linkSync(secret, downloaded);
+      const { result, uploads } = await send(ctx, { path: downloaded });
+      expect(result.isError).toBe(true);
+      expect(result.content[0]!.text).toContain('hard links');
+      expect(uploads).toBe(0);
+    });
+
+    it.runIf(process.platform === 'darwin' || process.platform === 'win32')(
+      'sends a file in the working directory named in another case, as the file system reads it',
+      async ({ skip }) => {
+        const { ctx } = outsideFile();
+        writeFileSync(join(ctx.cwd, 'Notes.md'), 'hello');
+        const named = join(dirname(ctx.cwd), 'WORK', 'NOTES.MD');
+        if (!existsSync(named)) skip('this volume tells case apart');
+        const { result, uploads } = await send(ctx, { path: named });
+        expect(result.isError).toBeUndefined();
+        expect(uploads).toBe(1);
+      }
+    );
 
     it('sends nothing when one of several files is refused', async () => {
       const { ctx, secret } = outsideFile();
