@@ -132,6 +132,44 @@ public; a 404 means the path is missing or aimed at port 8000.
 Full walkthrough, including the Azure side:
 [`docs/old/bridges/TEAMS_SETUP.md`](../../../../docs/old/bridges/TEAMS_SETUP.md).
 
+### Network policies
+
+With `networkPolicy.enabled` (the default), the in-cluster Postgres admits only
+this release's switch-core, Mattermost and migration Jobs, on 5432. Nothing
+else in the namespace or the cluster can open a connection to it.
+
+switch-core, the gateway and Mattermost are reached from outside the cluster,
+through an ingress controller or load balancer the chart cannot name. They get
+a policy once you name it in `networkPolicy.ingressFrom` (NetworkPolicyPeer
+entries: your ingress controller's pods, a load balancer's address ranges, and
+wherever agents connect from). Each then admits those peers on the ports it
+serves, plus the release's own pods that call it, and nothing else. Without
+`ingressFrom` they get no policy. A policy admitting everyone would only widen a
+stricter policy of your own in the namespace.
+
+Policies need a CNI that enforces them. Without one they are accepted and
+ignored. The decision service has its own (`decision.networkPolicy`).
+
+---
+
+## Pods run unprivileged
+
+Every pod runs as a non-root user: the one its image runs as. switch-core and
+setup run as 10001, the gateway's nginx as 101, Postgres as 70 (the Alpine
+image's `postgres`) and Mattermost as 2000. Every pod also has privilege
+escalation off, every capability dropped, the runtime's default seccomp
+profile and a read-only root filesystem, with emptyDirs where the process
+writes. No pod mounts a ServiceAccount token: nothing in the chart calls the
+Kubernetes API. Workload identity and the Teams app's federated credential
+mount tokens of their own.
+
+Postgres needs no step on upgrade. A volume an earlier release started as
+root already belongs to the `postgres` user. If you point
+`postgresql.image` at the Debian image, set `postgresql.podSecurityContext`'s
+user, group and fsGroup to 999. Each component's `podSecurityContext` and
+`securityContext` can be overridden. On a platform that assigns its own user
+ids (OpenShift), remove `runAsUser`, `runAsGroup` and `fsGroup`.
+
 ---
 
 ## Ingress modes

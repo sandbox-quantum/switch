@@ -4,4 +4,10 @@ RUN pip install --quiet httpx
 
 COPY deploy/shared_resources/setup.py /setup.py
 
+# Runs as a user of its own, not root: it only makes HTTP calls.
+RUN groupadd --system --gid 10001 setup \
+    && useradd --system --uid 10001 --gid 10001 --no-create-home --home-dir /nonexistent \
+       --shell /usr/sbin/nologin setup
+USER 10001:10001
+
 CMD ["python", "/setup.py"]

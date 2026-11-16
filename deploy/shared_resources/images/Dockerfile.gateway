@@ -12,4 +12,13 @@ RUN npm run build
 FROM nginx:1.31.8-alpine@sha256:fed7e14be83cbd2661a75cdc5b872d936cf155d46c327084d30b8df19ae88d72
 COPY --from=build /app/dist /usr/share/nginx/html
 COPY deploy/shared_resources/gateway-nginx.conf /etc/nginx/conf.d/default.conf
+# nginx runs as its own user (101) rather than starting as root: its pid file
+# moves to /tmp and its cache directory becomes its own, and the `user`
+# directive, which only a root master obeys, goes. Checked, so a base image
+# that words nginx.conf differently fails the build instead of running as root.
+RUN sed -i -e '/^user /d' -e 's,^pid .*,pid /tmp/nginx.pid;,' /etc/nginx/nginx.conf \
+    && grep -q '^pid /tmp/nginx.pid;$' /etc/nginx/nginx.conf \
+    && ! grep -q '^user ' /etc/nginx/nginx.conf \
+    && chown -R 101:101 /var/cache/nginx
+USER 101:101
 EXPOSE 3000

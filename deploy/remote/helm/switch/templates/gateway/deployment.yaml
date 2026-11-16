@@ -20,6 +20,9 @@ spec:
       {{- if .Values.global.imagePullSecrets }}
       {{- include "switch.imagePullSecrets" . | nindent 6 }}
       {{- end }}
+      automountServiceAccountToken: false
+      securityContext:
+        {{- toYaml .Values.gateway.podSecurityContext | nindent 8 }}
       initContainers:
         {{- include "switch.waitForHttp" (dict "name" "switch-core" "url" (printf "http://%s:%v/health" (include "switch.switchCoreHost" .) (.Values.switchCore.service.port | toString))) | nindent 8 }}
       containers:
@@ -29,10 +32,18 @@ spec:
           ports:
             - containerPort: 3000
               protocol: TCP
+          securityContext:
+            {{- toYaml .Values.gateway.securityContext | nindent 12 }}
           volumeMounts:
             - name: nginx-config
               mountPath: /etc/nginx/conf.d/default.conf
               subPath: default.conf
+            # The root filesystem is read-only: nginx's temporary files and
+            # its pid file (/tmp/nginx.pid in the image) go here.
+            - name: cache
+              mountPath: /var/cache/nginx
+            - name: tmp
+              mountPath: /tmp
           {{- include "switch.preStopDrain" . | nindent 10 }}
           readinessProbe:
             httpGet:
@@ -49,6 +60,10 @@ spec:
           resources:
             {{- toYaml .Values.gateway.resources | nindent 12 }}
       volumes:
+        - name: cache
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
         - name: nginx-config
           configMap:
             name: {{ include "switch.fullname" . }}-gateway-nginx

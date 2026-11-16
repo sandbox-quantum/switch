@@ -86,6 +86,33 @@ ingress:
     - /api/messages
     - /api/teams/notifications
 
+# ── Network policies ──────────────────────────────────────────────────────────
+# NetworkPolicies that admit to each pod only who needs it. They need a CNI
+# that enforces NetworkPolicy; without one they are accepted and ignored. The
+# decision service has its own (decision.networkPolicy).
+#
+# The in-cluster Postgres (postgresql.mode: managed) admits only this
+# release's switch-core, Mattermost and migration Jobs, on 5432.
+#
+# switch-core, the gateway and Mattermost serve people, agents and webhooks
+# from outside the cluster, through whatever ingress controller or load
+# balancer you run, which the chart cannot name. So they get a policy only
+# once `ingressFrom` names who reaches them: then each admits, on the ports it
+# serves, those peers and the release's own pods that call it, and nothing
+# else. Left empty they get none, rather than one admitting everyone, which
+# would only widen a stricter policy of your own in the namespace. Kubelet
+# probes come from the node, which CNIs admit by default.
+networkPolicy:
+  enabled: true
+  # NetworkPolicyPeer entries: your ingress controller's pods, a load
+  # balancer's address ranges, and wherever your agents connect from. E.g.
+  #   ingressFrom:
+  #     - namespaceSelector:
+  #         matchLabels: {kubernetes.io/metadata.name: ingress-nginx}
+  #       podSelector:
+  #         matchLabels: {app.kubernetes.io/name: ingress-nginx}
+  ingressFrom: []
+
 # ── Secrets ───────────────────────────────────────────────────────────────────
 # Two ways to supply secrets:
 #
@@ -242,6 +269,25 @@ switchCore:
   # chart), Always otherwise. Set it to override.
   imagePullPolicy: ""
   logLevel: INFO
+
+  # Every pod that runs the switch-core image: the server and its migrate init
+  # container, and the migration Job. The image's user is 10001. The root
+  # filesystem is read-only; /tmp, where uploads spool, is an emptyDir. The
+  # pods mount no ServiceAccount token: switch-core never calls the Kubernetes
+  # API, and workload identity (IRSA, EKS Pod Identity, Azure) and the Teams
+  # app's federated credential mount tokens of their own.
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
+    fsGroup: 10001
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: [ALL]
 
   # The ServiceAccount switch-core runs as: one of its own, never the
   # namespace's `default`, which every pod that names no account shares.
@@ -872,6 +918,20 @@ gateway:
   # Empty: IfNotPresent when the image is pinned by digest (as in a published
   # chart), Always otherwise. Set it to override.
   imagePullPolicy: ""
+  # nginx as its own user (101), which the image runs as: the root filesystem
+  # is read-only, with emptyDirs for its cache and its pid file (/tmp).
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 101
+    runAsGroup: 101
+    fsGroup: 101
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: [ALL]
   replicaCount: 1
   service:
     type: ClusterIP
@@ -911,6 +971,24 @@ mattermost:
   # deletion setting below).
   image: mattermost/mattermost-team-edition:11.8.3@sha256:367ebf9621d8c2f4aa41da63143a9260cfa0670558cb840be583d7fc6d0da35b
   imagePullPolicy: IfNotPresent
+  # The image's own user, mattermost (2000), which owns the data volume. The
+  # root filesystem is read-only; config, logs, plugins and temporary files
+  # are emptyDirs. Mattermost rebuilds them on every start from its
+  # environment, the database and its bundled plugins, as it did when they
+  # were in the container's own layer.
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 2000
+    runAsGroup: 2000
+    fsGroup: 2000
+    fsGroupChangePolicy: OnRootMismatch
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: [ALL]
   adminUser: admin
   teamName: switch
   regularUser: user
@@ -1133,6 +1211,18 @@ setup:
   # Empty: IfNotPresent when the image is pinned by digest (as in a published
   # chart), Always otherwise. Set it to override.
   imagePullPolicy: ""
+  # The image's user is 10001; the Job writes nothing.
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: [ALL]
   backoffLimit: 5
 
 # ── PostgreSQL ────────────────────────────────────────────────────────────────
@@ -1333,6 +1423,24 @@ postgresql:
   # ── mode: managed ───────────────────────────────────────────────────────────
   image: postgres:16-alpine@sha256:81e77a4833487b8132fe4b00bedd39dc3f74b8641e387f19312a48f7de218c2e
   imagePullPolicy: IfNotPresent
+  # The image's postgres user (70 in the Alpine image; 999 in the Debian
+  # one), which owns the data directory: a volume first started by an older
+  # release, as root, was handed to it then. Also the create-runtime-role
+  # Job's. The root filesystem is read-only; the socket directory and /tmp
+  # are emptyDirs.
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 70
+    runAsGroup: 70
+    fsGroup: 70
+    fsGroupChangePolicy: OnRootMismatch
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: [ALL]
   database: switch
   persistence:
     size: 10Gi

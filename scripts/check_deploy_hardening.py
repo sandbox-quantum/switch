@@ -14,7 +14,14 @@ fails when a change breaks it:
 * every image Switch does not build itself is named by tag and digest: the
   bases of the images it ships, the third-party images the chart and the
   standalone compose run, and what CI runs with `docker run`. A tag can be
-  moved to other content; a digest cannot.
+  moved to other content; a digest cannot;
+* every pod the chart runs is unprivileged: not root (as the user its image
+  runs as), no privilege escalation, no capabilities, the runtime's seccomp
+  profile, a read-only root filesystem with emptyDirs where it writes, and no
+  ServiceAccount token, since nothing in it calls the Kubernetes API;
+* the in-cluster Postgres admits only the release's own clients, and
+  switch-core, the gateway and Mattermost admit only who `networkPolicy.
+  ingressFrom` names once it names anyone.
 
 Needs `helm` on PATH and PyYAML. Run from the repo root:
 
@@ -202,10 +209,164 @@ def test_third_party_images_are_pinned_by_digest() -> None:
     assert not bad, "named by tag alone, or by latest:\n  " + "\n  ".join(bad)
 
 
+INGRESS_FROM = [
+    "--set",
+    "networkPolicy.ingressFrom[0].namespaceSelector.matchLabels.name=ingress",
+]
+CALLBACKS = ["--set", "switchCore.collaborationCallback.enabled=true"]
+# Where each workload writes, over its read-only root filesystem.
+WRITABLE = {
+    "switch-core": {"/tmp"},
+    "migrate": {"/tmp"},
+    "create-runtime-role": {"/tmp"},
+    "gateway": {"/tmp", "/var/cache/nginx"},
+    "postgresql": {"/tmp", "/var/run/postgresql", "/var/lib/postgresql/data"},
+    "mattermost": {
+        "/tmp",
+        "/var/tmp",
+        "/mattermost/config",
+        "/mattermost/logs",
+        "/mattermost/plugins",
+        "/mattermost/client/plugins",
+        "/mattermost/data",
+    },
+}
+# The images the chart runs as the user they declare (`USER` in their Dockerfile).
+IMAGE_USERS = {
+    "switch-core": "Dockerfile.switch",
+    "migrate": "Dockerfile.switch",
+    "gateway": "Dockerfile.gateway",
+    "setup": "Dockerfile.setup",
+}
+
+
+def workloads(docs: list[dict[str, Any]]) -> dict[str, tuple[dict[str, Any], dict[str, Any]]]:
+    """Each pod-running object, by component: (object, pod spec)."""
+    found = {}
+    for doc in docs:
+        if doc["kind"] not in ("Deployment", "StatefulSet", "Job", "Pod"):
+            continue
+        spec = doc["spec"]
+        pod = spec["template"] if "template" in spec else doc
+        component = pod["metadata"]["labels"].get("app.kubernetes.io/component")
+        assert component, f"{doc['kind']}/{doc['metadata']['name']} names no component"
+        found[component] = (doc, pod["spec"])
+    return found
+
+
+def policies(docs: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    return {
+        doc["spec"]["podSelector"]["matchLabels"]["app.kubernetes.io/component"]: doc[
+            "spec"
+        ]
+        for doc in docs
+        if doc["kind"] == "NetworkPolicy"
+    }
+
+
+def image_user(dockerfile: str) -> tuple[int, int]:
+    users = re.findall(
+        r"^USER (\d+):(\d+)$", (Path("deploy/shared_resources/images") / dockerfile).read_text(), re.M
+    )
+    assert len(users) == 1, f"{dockerfile} declares no single numeric USER"
+    return int(users[0][0]), int(users[0][1])
+
+
+def test_every_pod_runs_unprivileged() -> None:
+    renders = (
+        render(),
+        render("-f", OPTIONAL, *CALLBACKS),
+        render("-f", OPTIONAL, "--set", "postgresql.mode=existing", "--set", "postgresql.external.host=db.example.com"),
+    )
+    seen: set[str] = set()
+    for docs in renders:
+        for component, (doc, pod) in workloads(docs).items():
+            where = f"{doc['kind']}/{doc['metadata']['name']}"
+            seen.add(component)
+            assert pod.get("automountServiceAccountToken") is False, f"{where} mounts a ServiceAccount token"
+            if component == "decision":
+                continue
+            pod_context = pod.get("securityContext") or {}
+            for container in [*(pod.get("initContainers") or []), *pod["containers"]]:
+                name = f"{where} {container['name']}"
+                context = {**pod_context, **(container.get("securityContext") or {})}
+                assert context.get("runAsNonRoot") is True, f"{name} may run as root"
+                assert context.get("runAsUser", 0) != 0, f"{name} names no non-root user"
+                assert context.get("seccompProfile") == {"type": "RuntimeDefault"}, name
+                assert context.get("allowPrivilegeEscalation") is False, name
+                assert context.get("readOnlyRootFilesystem") is True, name
+                assert context.get("capabilities", {}).get("drop") == ["ALL"], name
+            main = pod["containers"][0]
+            mounts = {m["mountPath"] for m in main.get("volumeMounts") or []}
+            missing = WRITABLE.get(component, set()) - mounts
+            assert not missing, f"{where} has nowhere to write {sorted(missing)}"
+            if component in IMAGE_USERS:
+                uid, gid = image_user(IMAGE_USERS[component])
+                assert (pod_context["runAsUser"], pod_context["runAsGroup"]) == (uid, gid), (
+                    f"{where} runs as {pod_context['runAsUser']}:{pod_context['runAsGroup']}, "
+                    f"its image as {uid}:{gid}"
+                )
+    expected = {
+        "switch-core", "gateway", "postgresql", "mattermost", "setup", "migrate",
+        "create-runtime-role", "teams-listener-test", "decision",
+    }
+    assert expected <= seen, f"never rendered: {sorted(expected - seen)}"
+
+
+def peers(rule: dict[str, Any]) -> list[str]:
+    return [
+        p["podSelector"]["matchLabels"]["app.kubernetes.io/component"]
+        if set(p) == {"podSelector"}
+        else "outside"
+        for p in rule["from"]
+    ]
+
+
+def test_postgres_admits_only_the_release_clients() -> None:
+    policy = policies(render())["postgresql"]
+    assert policy["policyTypes"] == ["Ingress"]
+    [rule] = policy["ingress"]
+    assert sorted(peers(rule)) == sorted(
+        ["switch-core", "create-runtime-role", "migrate", "mattermost"]
+    ), rule
+    assert rule["ports"] == [{"protocol": "TCP", "port": 5432}]
+    assert "postgresql" not in policies(
+        render("--set", "postgresql.mode=existing", "--set", "postgresql.external.host=db.example.com")
+    )
+
+
+def test_what_serves_the_outside_admits_only_who_ingress_from_names() -> None:
+    # Without ingressFrom: no policy that would admit everyone.
+    assert set(policies(render())) == {"postgresql"}
+    docs = render("-f", OPTIONAL, *CALLBACKS, *INGRESS_FROM)
+    found = policies(docs)
+    outside = [{"namespaceSelector": {"matchLabels": {"name": "ingress"}}}]
+    core = found["switch-core"]["ingress"]
+    assert core[0]["from"] == outside
+    assert {p["port"] for p in core[0]["ports"]} == {8000, 3978, 8081}
+    assert {tuple(peers(r)): {p["port"] for p in r["ports"]} for r in core[1:]} == {
+        ("gateway", "setup"): {8000},
+        ("mattermost",): {8081},
+        ("teams-listener-test",): {3978},
+    }
+    assert found["gateway"]["ingress"] == [
+        {"from": outside, "ports": [{"protocol": "TCP", "port": 3000}]}
+    ]
+    [mattermost] = found["mattermost"]["ingress"]
+    assert peers(mattermost) == ["outside", "switch-core", "setup"]
+    assert mattermost["ports"] == [{"protocol": "TCP", "port": 8065}]
+    # Off: none of the chart's own, the decision service's (its own switch) aside.
+    off = policies(render("-f", OPTIONAL, *INGRESS_FROM, "--set", "networkPolicy.enabled=false"))
+    assert set(off) == {"decision"}, off
+
+
 TESTS = [
     test_the_dashboard_files_carry_the_security_headers,
     test_the_chart_serves_the_images_nginx_config,
     test_third_party_images_are_pinned_by_digest,
+    test_every_pod_runs_unprivileged,
+    test_postgres_admits_only_the_release_clients,
+    test_what_serves_the_outside_admits_only_who_ingress_from_names,
 ]
 
 

@@ -53,6 +53,15 @@ RUN uv sync --frozen --no-dev
 COPY --from=gateway-ui /gateway/dist /app/gateway-ui
 ENV GATEWAY_UI_DIR=/app/gateway-ui
 
+# The server runs as a user of its own, not root. It writes nothing in the
+# image (uploads spool to /tmp), so everything above stays root's, read-only
+# to it; the Helm chart pins the same uid and mounts /tmp writable over a
+# read-only root.
+RUN groupadd --system --gid 10001 switch \
+    && useradd --system --uid 10001 --gid 10001 --no-create-home --home-dir /nonexistent \
+       --shell /usr/sbin/nologin switch
+USER 10001:10001
+
 # The commit and repository this image was built from, reported with every
 # metric and log so two builds of the same version can be told apart. Declared
 # last so a new commit does not invalidate the layers above. Left empty, the
