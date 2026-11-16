@@ -10,6 +10,7 @@ import {
   isStopMessage,
   PROVIDER_RECHECKED_KIND,
   type ProviderRecheckReply,
+  SDK_SESSIONS_DIR_ENV,
 } from '@switch-console/agent-providers';
 import {
   withWindowsAgyBinDir,
@@ -56,7 +57,14 @@ import {
   withUserBinDirs,
   withWindowsPathEntries,
 } from './login-path';
-import { dataLayout, ensureDataDir, resolveDataDir, serverWorkspacesDir } from './paths';
+import {
+  controllerSessionsDir,
+  DATA_DIR_ENV,
+  dataLayout,
+  ensureDataDir,
+  resolveDataDir,
+  serverWorkspacesDir,
+} from './paths';
 import { ProviderRechecks } from './provider-rechecks';
 import { readProviderSeed, writeProviderSeed } from './provider-seed';
 import { definitionProblem } from './reconcile';
@@ -608,6 +616,21 @@ async function runCommand(args: string[]): Promise<number> {
     credential !== null || values['updated-by-console'] === true ? 'console' : 'self';
   if (updatedBy === 'self') void announceUpdate(log);
   try {
+    // Before any agent host starts: each reads it, and passes it to the
+    // session hosts it starts.
+    if (!process.env[SDK_SESSIONS_DIR_ENV]) {
+      const sessionsDir = await controllerSessionsDir({
+        dataDir,
+        named: values['data-dir'] !== undefined || Boolean(process.env[DATA_DIR_ENV]),
+        runByConsole: updatedBy === 'console',
+      });
+      if (sessionsDir !== null) {
+        process.env[SDK_SESSIONS_DIR_ENV] = sessionsDir;
+        log.info("Keeping agent sessions in this controller's data directory", {
+          dir: sessionsDir,
+        });
+      }
+    }
     const selfUpdate =
       updatedBy === 'self'
         ? new SelfUpdater({

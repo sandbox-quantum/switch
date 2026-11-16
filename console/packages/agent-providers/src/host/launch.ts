@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { link, open, readFile, unlink } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { isProcessAlive } from '../process-alive';
 import { ensurePrivateDirectory } from './host-permissions';
@@ -14,8 +14,19 @@ import { sharedConfigSchema, type SharedHostConfig } from './shared-config';
 import { requestStop } from './stop-request';
 import { superviseSharedHost } from './supervisor';
 
+/**
+ * Names the folder session state roots are kept in, in place of the user's
+ * `~/.local/state/switch/sdk-sessions`: an agent controller with a data
+ * directory of its own sets it for the agent hosts it runs.
+ */
+export const SDK_SESSIONS_DIR_ENV = 'SWITCH_SDK_SESSIONS_DIR';
+
 export function sharedSessionsBase(): string {
-  return join(homedir(), '.local', 'state', 'switch', 'sdk-sessions');
+  const named = process.env[SDK_SESSIONS_DIR_ENV];
+  if (!named) return join(homedir(), '.local', 'state', 'switch', 'sdk-sessions');
+  if (!isAbsolute(named))
+    throw new Error(`${SDK_SESSIONS_DIR_ENV} must be an absolute path, not '${named}'.`);
+  return named;
 }
 
 export function sharedSessionRoot(sessionId: string): string {

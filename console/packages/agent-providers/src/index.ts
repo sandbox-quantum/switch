@@ -83,6 +83,7 @@ export {
   ensureSharedProcess,
   inProcessSupervision,
   liveSupervisor,
+  SDK_SESSIONS_DIR_ENV,
   sharedSessionRoot,
 } from './host/launch';
 export type { Supervision } from './host/launch';

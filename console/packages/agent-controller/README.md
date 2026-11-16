@@ -676,7 +676,13 @@ controller reports `machine.workspaces_dir`. A missing directory under that fold
 is made; any other must already exist.
 
 Sessions an agent host starts keep their state where the shared host puts it
-(`~/.local/state/switch/sdk-sessions/`), as they do under Console.
+(`~/.local/state/switch/sdk-sessions/`), as they do under Console, except under a
+data directory named with `--data-dir` or `SWITCH_CONTROLLER_DATA_DIR`: there they
+are kept in its `sdk-sessions/`, so a controller run apart shares no session state
+with the user's. A controller Switch Console runs keeps the user's folder, where
+Console reads its sessions, and so does a named data directory that ran agents
+before this version, so its sessions are found again. `SWITCH_SDK_SESSIONS_DIR`
+names the folder outright.
 
 ## The file secret store
 
