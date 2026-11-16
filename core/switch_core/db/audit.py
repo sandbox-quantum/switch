@@ -101,6 +101,13 @@ class OrganizationAuditAction(StrEnum):
     WORKSPACE_ARCHIVED = "organization.workspace_archived"
     WORKSPACE_RESTORED = "organization.workspace_restored"
     MEMBER_ADDED_TO_WORKSPACE = "organization.member_added_to_workspace"
+    # An org admin changed someone's role in one of its workspaces, from the
+    # organization's pages (Manage admins included), or removed them from one.
+    MEMBER_WORKSPACE_ROLE_CHANGED = "organization.member_workspace_role_changed"
+    MEMBER_REMOVED_FROM_WORKSPACE = "organization.member_removed_from_workspace"
+    # Someone new to the organization joined one of its workspaces.
+    MEMBER_JOINED_BY_INVITATION = "organization.member_joined_by_invitation"
+    MEMBER_JOINED_BY_DOMAIN = "organization.member_joined_by_domain"
     ROLE_CHANGED = "organization.role_changed"
     MEMBER_REMOVED = "organization.member_removed"
     CONNECTOR_APP_SAVED = "organization.connector_app_saved"

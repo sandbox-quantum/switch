@@ -1747,6 +1747,32 @@ async def _organization_to_join(
     return await session.get(Organization, tenant.organization_id)
 
 
+async def _record_organization_join(
+    session: AsyncSession,
+    organization: Organization | None,
+    tenant_id: str,
+    user_id: str,
+    action: OrganizationAuditAction,
+    details: dict[str, object],
+) -> None:
+    """Record `user_id` joining `organization` through workspace `tenant_id`
+    in the organization's audit log, when joining it made them new to it
+    (`_organization_to_join`)."""
+    if organization is None:
+        return
+    tenant = await session.get(Tenant, tenant_id)
+    assert tenant is not None
+    await record_organization_audit_event(
+        session,
+        organization_id=organization.id,
+        actor_user_id=user_id,
+        action=action,
+        target_type="user",
+        target_id=user_id,
+        details={"workspace": tenant_id, "workspace_name": tenant.name, **details},
+    )
+
+
 async def _join_in_directory(
     organization_directory: OrganizationDirectory,
     organization: Organization | None,
@@ -1818,6 +1844,14 @@ async def _join_through(
             current_telemetry(),
             "invitation_accepted",
             {"age_hours": age_hours(invitation.created_at)},
+        )
+        await _record_organization_join(
+            session,
+            joining,
+            tenant_id,
+            caller.id,
+            OrganizationAuditAction.MEMBER_JOINED_BY_INVITATION,
+            {"role": role, "invited_by": invitation.created_by},
         )
         await _join_in_directory(organization_directory, joining, caller.id)
     elif not already_member:
@@ -2203,6 +2237,14 @@ async def join_tenant_by_domain(
                 target_type="user",
                 target_id=caller.id,
                 details={"role": role, "domain": domain},
+            )
+            await _record_organization_join(
+                session,
+                joining,
+                tenant_id,
+                caller.id,
+                OrganizationAuditAction.MEMBER_JOINED_BY_DOMAIN,
+                {"role": role, "domain": domain},
             )
             await _join_in_directory(organization_directory, joining, caller.id)
         membership, user = await _enter(session, tenant_id, caller, user_store)

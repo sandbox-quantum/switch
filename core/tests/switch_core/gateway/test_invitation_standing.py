@@ -1,5 +1,6 @@
 """An invitation grants at most what its maker could, and only while they
-still can; and what accepting one does for someone already in the workspace.
+still can; what accepting one does for someone already in the workspace; and
+the organization's record of who joined it.
 
 Against real Postgres, with the app `test_tenant_api_routes.py` builds:
 demoting or removing an admin revokes the invitations they made, accepting
@@ -20,10 +21,12 @@ from switch_core.db.models import (
     TENANT_ZERO_ID,
     AuditEvent,
     Invitation,
+    OrganizationAuditEvent,
     TenantMember,
 )
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.invitation_store import InvitationStore
+from switch_core.db.stores.join_domain_store import JoinDomainStore
 from switch_core.gateway.tenants import INVITATION_MAKER_GONE
 from tests.switch_core.gateway.test_tenant_api_routes import (
     TENANT_A,
@@ -378,3 +381,87 @@ class TestPreview:
             response = await client.post("/invitations/preview", json={"token": link})
 
         assert response.status_code == 401, response.text
+
+
+async def _organization_joins(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> list[tuple[str, str | None, dict | None]]:
+    async with tenant_session(session_factory, TENANT_ZERO_ID) as session:
+        rows = await session.execute(
+            select(
+                OrganizationAuditEvent.action,
+                OrganizationAuditEvent.target_id,
+                OrganizationAuditEvent.details,
+            ).order_by(OrganizationAuditEvent.occurred_at)
+        )
+        return [tuple(row) for row in rows.all()]  # type: ignore[misc]
+
+
+class TestJoiningTheOrganizationIsRecorded:
+    """Someone new to an organization, joining one of its workspaces, is
+    written in the organization's audit log; someone already in it, joining
+    another of its workspaces, is not new to it."""
+
+    async def test_by_invitation(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        owner = await _make_member(
+            session_factory, name="owner", tenant_id=TENANT_ZERO_ID, role="admin"
+        )
+        _, link = await _mint(
+            session_factory, tenant_id=TENANT_ZERO_ID, maker_id=owner, role="member"
+        )
+        outsider = await _outsider(session_factory, "outsider")
+
+        async with _client(
+            _app(session_factory), _token(outsider, "outsider@example.invalid", None)
+        ) as client:
+            accepted = await client.post("/invitations/accept", json={"token": link})
+            again = await client.post("/invitations/accept", json={"token": link})
+
+        assert accepted.status_code == 200, accepted.text
+        assert again.status_code == 200, again.text
+        assert await _organization_joins(session_factory) == [
+            (
+                "organization.member_joined_by_invitation",
+                outsider,
+                {
+                    "workspace": TENANT_ZERO_ID,
+                    "workspace_name": "Default",
+                    "role": "member",
+                    "invited_by": owner,
+                },
+            )
+        ]
+
+    async def test_by_e_mail_domain(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        owner = await _make_member(
+            session_factory, name="owner", tenant_id=TENANT_ZERO_ID, role="admin"
+        )
+        async with tenant_session(session_factory, TENANT_ZERO_ID) as session:
+            await JoinDomainStore().add(
+                session, domain="example.invalid", created_by=owner
+            )
+            await session.commit()
+        outsider = await _outsider(session_factory, "outsider")
+
+        async with _client(
+            _app(session_factory), _token(outsider, "outsider@example.invalid", None)
+        ) as client:
+            joined = await client.post(f"/joinable-tenants/{TENANT_ZERO_ID}/join")
+
+        assert joined.status_code == 200, joined.text
+        assert await _organization_joins(session_factory) == [
+            (
+                "organization.member_joined_by_domain",
+                outsider,
+                {
+                    "workspace": TENANT_ZERO_ID,
+                    "workspace_name": "Default",
+                    "role": "member",
+                    "domain": "example.invalid",
+                },
+            )
+        ]

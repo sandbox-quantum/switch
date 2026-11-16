@@ -62,6 +62,54 @@ describe("OrganizationAuditSection", () => {
     expect(screen.queryByRole("button", { name: "Load older events" })).toBeNull();
   });
 
+  it("names member changes in a workspace and joins, with the workspace and role", async () => {
+    answerFetch({
+      [EVENTS]: [
+        200,
+        [
+          event("changed", {
+            action: "organization.member_workspace_role_changed",
+            target_type: "user",
+            target_name: "Bob",
+            details: { workspace: "w2", workspace_name: "Lab", from: "member", to: "admin" },
+          }),
+          event("removed", {
+            action: "organization.member_removed_from_workspace",
+            target_type: "user",
+            target_name: "Bob",
+            details: { workspace: "w2", workspace_name: "Lab", role: "member" },
+          }),
+          event("invited", {
+            action: "organization.member_joined_by_invitation",
+            actor_name: "Cy",
+            target_type: "user",
+            target_name: "Cy",
+            details: { workspace: "w1", workspace_name: "Core", role: "member", invited_by: "u1" },
+          }),
+          event("domain", {
+            action: "organization.member_joined_by_domain",
+            actor_name: "Di",
+            target_type: "user",
+            target_name: "Di",
+            details: { workspace: "w1", workspace_name: "Core", role: "member", domain: "acme.test" },
+          }),
+        ],
+      ],
+    });
+    render(<OrganizationAuditSection organizationName="Acme" />);
+
+    const changed = within(await screen.findByTestId("row-changed"));
+    expect(changed.getByText("Role in a workspace changed")).toBeTruthy();
+    expect(changed.getByText("Lab · Member → Workspace admin")).toBeTruthy();
+    const removed = within(screen.getByTestId("row-removed"));
+    expect(removed.getByText("Removed from a workspace")).toBeTruthy();
+    expect(removed.getByText("Lab · Member")).toBeTruthy();
+    expect(within(screen.getByTestId("row-invited")).getByText("Joined by invitation")).toBeTruthy();
+    const domain = within(screen.getByTestId("row-domain"));
+    expect(domain.getByText("Joined by e-mail domain")).toBeTruthy();
+    expect(domain.getByText("Core · Member · via acme.test")).toBeTruthy();
+  });
+
   it("loads older events after a full page, from the oldest shown", async () => {
     const full = Array.from({ length: ORGANIZATION_AUDIT_PAGE }, (_, i) =>
       event(`e${i}`, { occurred_at: `2026-11-12T10:${String(59 - i).padStart(2, "0")}:00Z` }),
