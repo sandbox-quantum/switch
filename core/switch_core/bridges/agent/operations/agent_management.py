@@ -293,22 +293,21 @@ async def create_agent(
         isolation="shared",
         start=start,
     )
-    if spec.auto_approve or spec.directory is not None:
-        placement = await port.check_new_agent(
-            permitted.tenant_id, permitted.owner.id, spec
+    placement = await port.check_new_agent(
+        permitted.tenant_id, permitted.owner.id, spec
+    )
+    confirming = new_agent_fields_to_confirm(spec, placement)
+    if confirming:
+        return await hold_new_agent(
+            protocol,
+            port,
+            room_id=await require_connected_room(),
+            caller_id=get_agent_id(),
+            owner=permitted.owner,
+            spec=spec,
+            placement=placement,
+            confirming=confirming,
         )
-        confirming = new_agent_fields_to_confirm(spec, placement)
-        if confirming:
-            return await hold_new_agent(
-                protocol,
-                port,
-                room_id=await require_connected_room(),
-                caller_id=get_agent_id(),
-                owner=permitted.owner,
-                spec=spec,
-                placement=placement,
-                confirming=confirming,
-            )
     created = await port.create_agent(
         permitted.tenant_id, permitted.owner.id, spec, protocol
     )
