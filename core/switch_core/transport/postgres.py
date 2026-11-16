@@ -1237,6 +1237,17 @@ class PostgresTransport:
             )
             return result
 
+        if metered and kind in _METERED_KINDS:
+            # What a person or an agent says, refused here when it is too long
+            # or comes too fast, before it costs a session or the room's lock.
+            group = parse_attachment_group(content)
+            self._router.send_limits.admit(
+                self.client_id,
+                content.get("body"),
+                actor=self._actor_role,
+                starts_post=group is None or group[1] == 0,
+            )
+
         try:
             room_id, tenant_id = await self._resolve_room_and_tenant(transport_room_id)
             async with tenant_session(self._session_factory, tenant_id) as session:

@@ -101,6 +101,7 @@ from switch_core.config import SwitchConfig
 from switch_core.content_disposition import untrusted_file_headers
 from switch_core.db.models import Agent
 from switch_core.db.stores.api_key_store import ApiKeyStore
+from switch_core.delivery.send_limits import MessageTooLong, SendRateLimited
 from switch_core.gateway.known_agents import known_agent
 from switch_core.observability.catalogue import AGENT_CONNECTIONS_REFUSED
 from switch_core.observability.metrics import metrics
@@ -489,9 +490,9 @@ async def send_message(
     logger.debug("Recieved message from agent %s: %s", agent.name, req.content)
     try:
         sent = await protocol.send_message(agent.id, req.room_id, req.content)
-    except BudgetExceeded as e:
+    except (BudgetExceeded, SendRateLimited) as e:
         raise HTTPException(status_code=429, detail=str(e)) from e
-    except GuardrailBlockedError as e:
+    except (GuardrailBlockedError, MessageTooLong) as e:
         raise HTTPException(status_code=422, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
@@ -581,9 +582,9 @@ async def upload_media(
             caption=caption,
             thread_id=thread_id,
         )
-    except BudgetExceeded as e:
+    except (BudgetExceeded, SendRateLimited) as e:
         raise HTTPException(status_code=429, detail=str(e)) from e
-    except GuardrailBlockedError as e:
+    except (GuardrailBlockedError, MessageTooLong) as e:
         raise HTTPException(status_code=422, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e

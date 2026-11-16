@@ -113,6 +113,7 @@ from switch_core.transport.invites import InviteBus
 from switch_core.transport.room_cache import RoomCacheLimits, RoomDeliveryCache
 from switch_core.trust.client import NullTrustClient
 from tests.ownership import process_lease_on
+from tests.routing import unlimited_sends
 
 # ── Mirrors deploy/local/docker-compose.yml — keep in sync ──────────────────────
 POSTGRES_IMAGE = "postgres:16-alpine"
@@ -656,6 +657,7 @@ async def harness(
             ),
             decisions=None,
             decision_max_age_seconds=120,
+            send_limits=unlimited_sends(),
         )
 
         provisioning: Provisioning = PostgresProvisioning(
