@@ -153,6 +153,13 @@ describe('classifyVersionDrift', () => {
     });
   });
 
+  it('reads prerelease tags, so a canary update is an upgrade and going back one is not', () => {
+    expect(classifyVersionDrift('0.32.0-rc.5', '0.32.0-rc.7')?.direction).toBe('upgrade');
+    expect(classifyVersionDrift('0.32.0-rc.7', '0.32.0')?.direction).toBe('upgrade');
+    expect(classifyVersionDrift('0.32.0-rc.9', '0.32.0-rc.7')?.direction).toBe('downgrade');
+    expect(classifyVersionDrift('0.32.0', '0.32.0-rc.7')?.direction).toBe('downgrade');
+  });
+
   it('surfaces an uncomparable pair rather than assuming it is safe', () => {
     expect(classifyVersionDrift('nightly', '0.11.0')).toEqual({
       deployed: 'nightly',

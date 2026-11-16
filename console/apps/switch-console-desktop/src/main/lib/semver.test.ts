@@ -18,6 +18,16 @@ describe('compareVersions', () => {
     expect(compareVersions('1.0.9', '1.0.10')).toBe(-1);
   });
 
+  it('orders prerelease versions by their tag, and before their release', () => {
+    expect(compareVersions('0.32.0-rc.5', '0.32.0-rc.7')).toBe(-1);
+    expect(compareVersions('0.32.0-rc.9', '0.32.0-rc.7')).toBe(1);
+    expect(compareVersions('0.32.0-rc.7', '0.32.0')).toBe(-1);
+    expect(compareVersions('0.32.0', '0.32.0-rc.7')).toBe(1);
+    expect(compareVersions('0.32.0-rc.7', '0.32.0-rc.7')).toBe(0);
+    expect(compareVersions('v0.32.0-rc.7', '0.32.0-rc.7')).toBe(0);
+    expect(compareVersions('0.31.0', '0.32.0-rc.1')).toBe(-1);
+  });
+
   it('returns null when either side is not a version', () => {
     expect(compareVersions('latest', '1.2.3')).toBeNull();
     expect(compareVersions('1.2.3', 'main')).toBeNull();
@@ -30,6 +40,7 @@ describe('isNewerVersion', () => {
     expect(isNewerVersion('1.2.3', '1.2.4')).toBe(true);
     expect(isNewerVersion('1.2.3', '1.2.3')).toBe(false);
     expect(isNewerVersion('1.2.4', '1.2.3')).toBe(false);
+    expect(isNewerVersion('2.0.0-beta.1', '2.0.0')).toBe(true);
   });
 
   it('keeps what it has when the pair is not comparable', () => {
