@@ -90,6 +90,7 @@ def _slack(web: _SlackWeb) -> SlackAdapter:
     adapter = SlackAdapter.__new__(SlackAdapter)
     adapter._web_client = web  # type: ignore[assignment]
     adapter._gateway_public_url = None
+    adapter._bot_user_id = "U-switch"
     return adapter
 
 

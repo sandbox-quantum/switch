@@ -52,7 +52,6 @@ from switch_core.bridges.collaboration.discord.chunking import (
     chunk_message,
 )
 from switch_core.bridges.collaboration.discord.connection import (
-    NO_MASS_MENTIONS,
     DiscordConnection,
 )
 from switch_core.bridges.collaboration.discord.members import (
@@ -189,9 +188,12 @@ _ABSENCE_CHECKS_PER_PASS = 20
 # thousands of new identities at once.
 _LIVE_JOINS_MAX = 500
 
-# The one exception, for a message the server marked as a room-wide mention.
-# Discord needs both halves: `@everyone` in the text and this on the request.
-_ROOM_WIDE_MENTION = discord.AllowedMentions(everyone=True)
+# A user mention, with the `!` older clients write for a nickname, and a role
+# mention: what Discord pings from a message's raw content.
+_USER_MENTION = re.compile(r"<@!?(\d+)>")
+_ROLE_MENTION = re.compile(r"<@&(\d+)>")
+# Discord takes at most this many ids in each list of `allowed_mentions`.
+_ALLOWED_MENTION_IDS_MAX = 100
 
 # Inserted after the `<` of anything that looks like a Discord entity. Discord
 # has no escape for `<`, so the syntax is broken rather than escaped — the same
@@ -1399,12 +1401,14 @@ class DiscordAdapter(PlatformAdapter):
             # DM channels have no webhooks, so no per-message identity — fall
             # back to a bot post with the agent name inlined.
             label = await self.agent_label_for_body(sender_name)
+            labelled = f"**{label}**: {content}"
+            dm_mentions = self._mentions_allowed(labelled, everyone=False)
             return await self._send_chunked(
-                f"**{label}**: {content}",
+                labelled,
                 lambda part: target.send(
                     part,
                     suppress_embeds=True,
-                    allowed_mentions=NO_MASS_MENTIONS,
+                    allowed_mentions=dm_mentions,
                 ),
                 where=f"DM {channel_id}",
             )
@@ -1435,7 +1439,7 @@ class DiscordAdapter(PlatformAdapter):
         # chunk and could split one message across two different avatars.
         agent = await self.agent_rendering(sender_name)
         identity = _WebhookIdentity(agent.field_label, sender_name)
-        allowed_mentions = _ROOM_WIDE_MENTION if room_wide_mention else NO_MASS_MENTIONS
+        allowed_mentions = self._mentions_allowed(content, everyone=room_wide_mention)
         return await self._send_chunked(
             content,
             lambda part: identity.send(
@@ -1482,8 +1486,8 @@ class DiscordAdapter(PlatformAdapter):
                     f"the card's text is {len(content)} characters, over Discord's "
                     f"{MAX_MESSAGE}"
                 )
-            allowed_mentions = (
-                _ROOM_WIDE_MENTION if room_wide_mention else NO_MASS_MENTIONS
+            allowed_mentions = self._mentions_allowed(
+                content, everyone=room_wide_mention
             )
             presses = self._on_interaction is not None
             if lobby:
@@ -1677,7 +1681,7 @@ class DiscordAdapter(PlatformAdapter):
                 msg = await target.send(
                     content,
                     file=discord.File(io.BytesIO(data), filename=filename),
-                    allowed_mentions=NO_MASS_MENTIONS,
+                    allowed_mentions=self._mentions_allowed(content, everyone=False),
                 )
                 return f"{msg.channel.id}:{msg.id}"
             except discord.HTTPException:
@@ -1717,7 +1721,7 @@ class DiscordAdapter(PlatformAdapter):
                     "content": body,
                     "avatar_url": agent.icon_url,
                     "file": discord.File(io.BytesIO(data), filename=filename),
-                    "allowed_mentions": NO_MASS_MENTIONS,
+                    "allowed_mentions": self._mentions_allowed(body, everyone=False),
                     "wait": True,
                     **kwargs,
                 },
@@ -1799,11 +1803,12 @@ class DiscordAdapter(PlatformAdapter):
                     command.command,
                 )
             else:
+                answer = self.translate_outbound(text)
                 try:
                     await interaction.followup.send(
-                        self.translate_outbound(text),
+                        answer,
                         ephemeral=True,
-                        allowed_mentions=NO_MASS_MENTIONS,
+                        allowed_mentions=self._mentions_allowed(answer, everyone=False),
                     )
                     return
                 except discord.HTTPException as e:
@@ -1851,11 +1856,12 @@ class DiscordAdapter(PlatformAdapter):
         try:
             user = await client.fetch_user(int(external_user_id))
             channel = await user.create_dm()
+            body = self.translate_outbound(prompt.text)
             message = await channel.send(
-                self.translate_outbound(prompt.text),
+                body,
                 view=view,
                 suppress_embeds=True,
-                allowed_mentions=NO_MASS_MENTIONS,
+                allowed_mentions=self._mentions_allowed(body, everyone=False),
             )
         except (ValueError, discord.NotFound) as e:
             raise DirectMessageUnavailable(
@@ -1880,10 +1886,11 @@ class DiscordAdapter(PlatformAdapter):
             channel = self._require_client().get_partial_messageable(
                 int(channel_id), type=discord.ChannelType.private
             )
+            settled = self.translate_outbound(text)
             await channel.get_partial_message(int(message_id)).edit(
-                content=self.translate_outbound(text),
+                content=settled,
                 view=None,
-                allowed_mentions=NO_MASS_MENTIONS,
+                allowed_mentions=self._mentions_allowed(settled, everyone=False),
             )
         except Exception as e:
             logger.warning(
@@ -1926,10 +1933,12 @@ class DiscordAdapter(PlatformAdapter):
             )
             return None
 
+        body = self._admin_body(self.translate_outbound(content), drawn)
+        mentions = self._mentions_allowed(body, everyone=False)
         return await self._send_chunked(
-            self._admin_body(self.translate_outbound(content), drawn),
+            body,
             lambda part: target.send(
-                part, suppress_embeds=True, allowed_mentions=NO_MASS_MENTIONS
+                part, suppress_embeds=True, allowed_mentions=mentions
             ),
             where=f"channel {channel_id}",
         )
@@ -1954,12 +1963,13 @@ class DiscordAdapter(PlatformAdapter):
             f"About your message in <#{channel_id}>:\n"
             f"{self.translate_outbound(content)}"
         )
+        mentions = self._mentions_allowed(body, everyone=False)
         try:
             for chunk in chunk_message(body):
                 await user.send(
                     chunk,
                     suppress_embeds=True,
-                    allowed_mentions=NO_MASS_MENTIONS,
+                    allowed_mentions=mentions,
                 )
         except discord.Forbidden as refused:
             raise PrivateNoticeRefused(str(refused)) from refused
@@ -1977,7 +1987,12 @@ class DiscordAdapter(PlatformAdapter):
             kwargs["thread"] = discord.Object(id=int(location_id))
         try:
             webhook = await self._get_webhook(int(channel_id))
-            await webhook.edit_message(int(message_id), content=new_content, **kwargs)
+            await webhook.edit_message(
+                int(message_id),
+                content=new_content,
+                allowed_mentions=self._mentions_allowed(new_content, everyone=False),
+                **kwargs,
+            )
             return
         except discord.NotFound:
             pass
@@ -1990,7 +2005,10 @@ class DiscordAdapter(PlatformAdapter):
         try:
             target = await self._get_channel(int(location_id or channel_id))
             msg = await target.fetch_message(int(message_id))
-            await msg.edit(content=new_content)
+            await msg.edit(
+                content=new_content,
+                allowed_mentions=self._mentions_allowed(new_content, everyone=False),
+            )
         except discord.HTTPException as e:
             logger.error("Failed to update Discord message %s: %s", message_ref, e)
 
@@ -2406,7 +2424,7 @@ class DiscordAdapter(PlatformAdapter):
                 sent = await target.send(
                     text,
                     suppress_embeds=True,
-                    allowed_mentions=NO_MASS_MENTIONS,
+                    allowed_mentions=self._mentions_allowed(text, everyone=False),
                     **kwargs,
                 )
             except Exception as error:
@@ -2440,7 +2458,7 @@ class DiscordAdapter(PlatformAdapter):
                 "content": text,
                 "avatar_url": agent.icon_url,
                 "suppress_embeds": True,
-                "allowed_mentions": NO_MASS_MENTIONS,
+                "allowed_mentions": self._mentions_allowed(text, everyone=False),
                 "wait": True,
             }
             if thread is not None:
@@ -2629,7 +2647,9 @@ class DiscordAdapter(PlatformAdapter):
                 target = await self._get_channel(int(location_id or channel_id))
                 message = await target.fetch_message(int(message_id))
                 await message.edit(
-                    content=text, view=view, allowed_mentions=NO_MASS_MENTIONS
+                    content=text,
+                    view=view,
+                    allowed_mentions=self._mentions_allowed(text, everyone=False),
                 )
                 return
             kwargs: dict[str, Any] = {}
@@ -2640,7 +2660,7 @@ class DiscordAdapter(PlatformAdapter):
                 int(message_id),
                 content=text,
                 view=view,
-                allowed_mentions=NO_MASS_MENTIONS,
+                allowed_mentions=self._mentions_allowed(text, everyone=False),
                 **kwargs,
             )
         except Exception as error:
@@ -3672,6 +3692,46 @@ class DiscordAdapter(PlatformAdapter):
             return f"<@&{role_id}>" if role_id else match.group(0)
 
         return re.sub(r"@([a-z0-9][a-z0-9._-]*)", _replace, content)
+
+    def _mentions_allowed(
+        self, text: str, *, everyone: bool
+    ) -> discord.AllowedMentions:
+        """Who `text` may notify: the people and agent roles named in it that
+        `_render_outbound` turns a name into, and nobody else.
+
+        Discord pings every `<@id>` and `<@&id>` in a message's raw content
+        unless the request lists the ones that may. Text Switch did not write
+        — an agent echoing a web page, or a message pasted into the room — can
+        carry one naming anybody, a role as wide as the whole server included.
+        Listed this way, such a mention is drawn but notifies nobody, while a
+        name Switch resolved notifies as it always did: a raw id this lets
+        through is one an `@name` could have reached anyway.
+
+        `everyone` is for a message the server marked as room-wide
+        (`render_room_wide_mention`), which needs `@everyone` permitted on the
+        request as well as written in the text. Nothing else sets it.
+        """
+        named_users = {int(found) for found in _USER_MENTION.findall(text)}
+        named_roles = {int(found) for found in _ROLE_MENTION.findall(text)}
+        users = (
+            sorted(named_users & set(self._username_to_id.values()))
+            if named_users
+            else []
+        )
+        roles = (
+            sorted(named_roles & set(self._agent_role_ids.values()))
+            if named_roles
+            else []
+        )
+        return discord.AllowedMentions(
+            everyone=everyone,
+            users=[
+                discord.Object(id=user) for user in users[:_ALLOWED_MENTION_IDS_MAX]
+            ],
+            roles=[
+                discord.Object(id=role) for role in roles[:_ALLOWED_MENTION_IDS_MAX]
+            ],
+        )
 
     def defuse_mass_mentions(self, text: str) -> str:
         """Defuse the words as prose: `allowed_mentions` is Discord's guard.

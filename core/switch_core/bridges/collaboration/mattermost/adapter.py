@@ -156,6 +156,13 @@ _CONNECT_WAIT_SECONDS = 15.0
 # becomes a room when someone actually writes in it.
 _JOINABLE_MM_CHANNEL_TYPES = frozenset({"O", "P"})
 
+# The channels Mattermost puts every account it adds to a team in, agents' bots
+# included, by the names it gives them. Being in one is not anyone's choice, so
+# it bridges nothing until a room is connected to the channel. Off-Topic can be
+# left; Town Square cannot, by anyone but a guest, so every bot stays in it.
+_TOWN_SQUARE = "town-square"
+_TEAM_DEFAULT_CHANNELS = frozenset({_TOWN_SQUARE, "off-topic"})
+
 # Emoji marking the message an agent is currently working on.
 _REACTION: dict[ActivityMark, str] = {
     "working": "eyes",
@@ -3453,6 +3460,9 @@ class MattermostAdapter(PlatformAdapter):
             mm_type = str(channel.get("type", ""))
             if not channel_id or mm_type not in _JOINABLE_MM_CHANNEL_TYPES:
                 continue
+            if self._unconnected_team_default(channel_id, str(channel.get("name", ""))):
+                await self._leave_team_default(channel, agent_name, bot_id)
+                continue
             try:
                 await self._on_agent_joined(
                     InboundAgentJoin(
@@ -3470,6 +3480,62 @@ class MattermostAdapter(PlatformAdapter):
                     channel_id,
                     agent_name,
                 )
+
+    def _unconnected_team_default(self, channel_id: str, channel_name: str) -> bool:
+        """Whether this is one of the team's default channels with no room
+        connected to it, which a bot's membership must not bridge."""
+        return (
+            channel_name in _TEAM_DEFAULT_CHANNELS
+            and channel_id not in self._bridged_channel_ids()
+        )
+
+    async def _leave_team_default(
+        self, channel: dict[str, Any], agent_name: str, bot_id: str
+    ) -> None:
+        """Take an agent's bot out of a default channel nobody connected.
+
+        Mattermost put it there when it was added to the team. Adding it back
+        is someone's choice, and bridges the channel as adding it to any
+        channel does. Town Square cannot be left, so the bot stays in it,
+        unbridged until someone connects it: a room made for it in Switch, or
+        a `!` command such as `!invite-agent` run in it.
+        """
+        channel_id = str(channel.get("id", ""))
+        label = str(channel.get("display_name", "")) or channel_id
+        if channel.get("name") == _TOWN_SQUARE:
+            logger.debug(
+                "Not bridging %s for agent %s: Mattermost keeps every team member "
+                "in it, and no room is connected to it",
+                label,
+                agent_name,
+            )
+            return
+        loop = self._main_loop
+        if loop is None or self._admin_driver is None:
+            raise RuntimeError("Cannot leave a channel: adapter not started")
+        try:
+            await loop.run_in_executor(
+                None,
+                self._admin_driver.channels.remove_channel_member,
+                channel_id,
+                bot_id,
+            )
+        except Exception as e:
+            logger.warning(
+                "Could not take agent %s's bot out of %s, which Mattermost put it "
+                "in when it joined the team (%s). The channel is not bridged.",
+                agent_name,
+                label,
+                e,
+            )
+            return
+        logger.info(
+            "Took agent %s's bot out of %s, which Mattermost put it in when it "
+            "joined the team and no room is connected to. Add the bot to the "
+            "channel to bridge it.",
+            agent_name,
+            label,
+        )
 
     async def _ensure_admin_bot(self) -> None:
         """Provision the dedicated Switch Admin bot used to post admin/system
@@ -3799,6 +3865,15 @@ class MattermostAdapter(PlatformAdapter):
 
         channel_id = post.get("channel_id", "")
         message = post.get("message", "")
+        if (
+            data.get("channel_name") == _TOWN_SQUARE
+            and not message.strip().startswith("!")
+            and self._unconnected_team_default(channel_id, _TOWN_SQUARE)
+        ):
+            # Every bot is in Town Square whether or not anyone wanted it there,
+            # so chatter there makes no room. A `!` command is someone talking
+            # to Switch, and connects it the way it would any channel.
+            return
         # Mattermost sets root_id to the thread root for replies, "" otherwise.
         root_id = post.get("root_id", "") or None
         mm_channel_type = data.get("channel_type", "")
@@ -4040,6 +4115,12 @@ class MattermostAdapter(PlatformAdapter):
         if agent_name:
             if not self._on_agent_joined:
                 logger.error("No on agent joined available for bridge")
+                return
+            if channel.get("name") == _TOWN_SQUARE and self._unconnected_team_default(
+                channel_id, _TOWN_SQUARE
+            ):
+                # Nobody adds a bot to Town Square: Mattermost does, to every
+                # account added to the team, and another bot overheard it.
                 return
             coro = self._on_agent_joined(
                 InboundAgentJoin(
