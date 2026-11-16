@@ -83,6 +83,15 @@ TENANT_SELECTION_INVALID = "tenant_selection_invalid"
 TENANT_MEMBERSHIP_UNRESOLVED = "tenant_membership_unresolved"
 # The workspace a member's session names, or their only one, was archived.
 TENANT_ARCHIVED = "tenant_archived"
+# A write from a dashboard tab showing another workspace than the session's.
+WORKSPACE_MISMATCH = "workspace_mismatch"
+
+# The workspace the dashboard page sending a request shows. The session's
+# workspace is a claim in a cookie every tab shares, so a tab left open after
+# another tab switched workspace would otherwise write into the new one while
+# still showing the old. Only the dashboard sends it; a request without it is
+# bound as it always was.
+WORKSPACE_HEADER = "X-Switch-Workspace"
 
 
 SIGNUP_REFUSED_DETAIL = "New Switch accounts are not available in your country."
@@ -1279,6 +1288,32 @@ async def _resolve_tenant_id(
     )
 
 
+def _refuse_a_write_from_another_workspace(
+    request: Request, user_id: str, tenant_id: str
+) -> None:
+    """409 for a write whose `WORKSPACE_HEADER` names another workspace than
+    the one this request binds. Reads go ahead: they change nothing, and the
+    tab showing them is told when it next writes."""
+    if request.method in _SAFE_METHODS:
+        return
+    shown = request.headers.get(WORKSPACE_HEADER)
+    if shown is None or shown == tenant_id:
+        return
+    logger.info(
+        "Refused a write from a tab showing workspace %s; user %s's session is in %s",
+        shown,
+        user_id,
+        tenant_id,
+    )
+    raise HTTPException(
+        status_code=409,
+        detail={
+            "error": WORKSPACE_MISMATCH,
+            "message": "This tab is showing another workspace. Reload to continue.",
+        },
+    )
+
+
 @asynccontextmanager
 async def _bound_user(
     request: Request,
@@ -1298,6 +1333,7 @@ async def _bound_user(
         tenant_claim,
         config.gateway_tenant_choice_enabled,
     )
+    _refuse_a_write_from_another_workspace(request, user_id, tenant_id)
     request.state.tenant_id = tenant_id
 
     with tenant_scope(tenant_id), log_context(user_id=user_id, tenant_id=tenant_id):
