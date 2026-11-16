@@ -6,6 +6,19 @@ import { icon } from './icon';
 const GOOSE_INSTALL_COMMAND =
   'curl -fsSL https://github.com/block/goose/releases/download/stable/download_cli.sh | CONFIGURE=false bash';
 
+/**
+ * Goose's documented Windows install is its `download_cli.ps1`
+ * (https://goose-docs.ai/docs/getting-started/installation), which the release does not
+ * host, so it is fetched from the repository as the docs do. The script reads
+ * `CONFIGURE=false` from the environment like the shell one; it is set with
+ * `[Environment]::SetEnvironmentVariable` rather than `$env:CONFIGURE`, so the command has no
+ * `$` or `%` and runs from cmd.exe as well as PowerShell.
+ */
+export const GOOSE_INSTALL_WINDOWS =
+  'powershell -ExecutionPolicy ByPass -c "' +
+  "[Environment]::SetEnvironmentVariable('CONFIGURE', 'false', 'Process'); " +
+  'irm https://raw.githubusercontent.com/aaif-goose/goose/main/download_cli.ps1 | iex"';
+
 export const plugin = definePlugin(
   {
     id: 'goose',
@@ -35,6 +48,12 @@ export const plugin = definePlugin(
           {
             method: 'curl',
             command: GOOSE_INSTALL_COMMAND,
+          },
+        ],
+        windows: [
+          {
+            method: 'powershell',
+            command: GOOSE_INSTALL_WINDOWS,
           },
         ],
       },
