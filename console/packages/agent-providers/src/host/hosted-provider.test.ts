@@ -116,6 +116,7 @@ it('keeps the prepared Codex home and refreshes its auth before provider startup
     sessionId: 'session',
     sourceHome,
     config: 'model = "fixture-model"',
+    defaultSandbox: null,
   });
   expect(keyringLogin).toBe(false);
   env.CODEX_HOME = home;
