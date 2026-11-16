@@ -32,7 +32,7 @@ describe('Factory Droid host dependency', () => {
   });
 
   it('runs the Windows installer through PowerShell from either shell', () => {
-    expect(DROID_INSTALL_WINDOWS).toContain('https://app.factory.ai/cli.ps1');
+    expect(DROID_INSTALL_WINDOWS).toContain('irm https://app.factory.ai/cli/windows | iex');
     expect(DROID_INSTALL_WINDOWS).not.toMatch(/[$%]/);
   });
 
