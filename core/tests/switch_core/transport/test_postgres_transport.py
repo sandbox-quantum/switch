@@ -46,6 +46,7 @@ from switch_core.delivery.send_limits import (
     SendLimits,
     SendRateLimited,
 )
+from switch_core.events import COMMAND_EVENT_TYPE
 from switch_core.observability.catalogue import MESSAGES_REFUSED
 from switch_core.observability.metrics import MetricsRegistry, install, uninstall
 from switch_core.observability.throttle import WarningThrottle
@@ -484,6 +485,50 @@ class TestSendLimits:
         await transport.send_message(
             transport_room_id, "two", sender_name="a", metered=True
         )
+
+    async def test_a_room_command_takes_a_turn_and_a_stop_never_waits(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """A `!` command a person types on a platform is written as a command
+        event, which sets Switch to work as a message does."""
+        async with session_factory() as session:
+            room_id, transport_room_id, client_id, user_id = await _make_room(session)
+            await session.commit()
+        transport = _transport(
+            session_factory,
+            client_id=client_id,
+            user_id=user_id,
+            actor_role="human",
+            send_limits=_limits(max_message_chars=100, burst=2),
+        )
+
+        def command(name: str) -> dict[str, object]:
+            return {"command": name, "args": "@helper", "user_id": user_id}
+
+        await transport.send_event(
+            transport_room_id, COMMAND_EVENT_TYPE, command("invite-agent")
+        )
+        await transport.send_message(
+            transport_room_id, "hello", sender_name="a", metered=True
+        )
+        with pytest.raises(SendRateLimited):
+            await transport.send_event(
+                transport_room_id, COMMAND_EVENT_TYPE, command("set-alias")
+            )
+        await transport.send_event(
+            transport_room_id, COMMAND_EVENT_TYPE, command("interrupt")
+        )
+
+        async with session_factory() as session:
+            rows = await session.scalars(
+                select(Message).where(Message.room_id == room_id).order_by(Message.seq)
+            )
+            written = [(r.event_type, (r.content or {}).get("command")) for r in rows]
+        assert written == [
+            (COMMAND_EVENT_TYPE, "invite-agent"),
+            ("m.room.message", None),
+            (COMMAND_EVENT_TYPE, "interrupt"),
+        ]
 
     async def test_the_files_of_one_post_take_one_turn(
         self, session_factory: async_sessionmaker[AsyncSession]

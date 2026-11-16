@@ -57,6 +57,7 @@ from switch_core.db.models import (
     UsageMetric,
 )
 from switch_core.db.session_scope import tenant_session
+from switch_core.events import COMMAND_EVENT_TYPE
 from switch_core.logging_context import log_context
 from switch_core.messages.recorded_types import EPHEMERAL
 from switch_core.messages.row import (
@@ -1266,6 +1267,15 @@ class PostgresTransport:
                 content.get("body") if authored is None else authored,
                 actor=self._actor_role,
                 starts_post=group is None or group[1] == 0,
+            )
+        elif event_type == COMMAND_EVENT_TYPE:
+            # A room command a person typed on a messaging platform: held to
+            # the same allowance as what they say, and refused the same way.
+            self._router.send_limits.admit_command(
+                self.client_id,
+                content.get("command"),
+                content.get("args"),
+                actor=self._actor_role,
             )
 
         try:

@@ -27,8 +27,9 @@ messages reach more than one of them gets up to that many times the rate.
 
 from __future__ import annotations
 
+import contextlib
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar
 
@@ -45,6 +46,10 @@ _FORGET_FULL_BUCKETS_PAST = 10_000
 # Switch Trust note, a line per file, an `@name` per agent picked, which come
 # to a few hundred characters on an ordinary message.
 SWITCH_ADDITIONS_MAX_CHARS = 8 * 1024
+
+# The room commands that stop an agent's turn. No allowance holds one back,
+# so someone who has been sending fast can still stop an agent.
+STOP_COMMANDS = frozenset({"interrupt", "interrupt-all-agents"})
 
 
 class MessageRefused(Exception):
@@ -151,10 +156,29 @@ class SendLimits:
         is one message: only the row that starts it (`starts_post`) takes
         from the allowance, so a post is never refused part way through.
         `actor` (`human` or `agent`) labels the refusal's metric."""
-        try:
+        with self._counted(actor):
             self.require_length(body)
             if starts_post:
                 self._take(sender)
+
+    def admit_command(
+        self, sender: str, command: object, args: object, *, actor: str
+    ) -> None:
+        """Let `sender` run the room command `command`, or raise why not, as
+        `admit` does for a message: `args` held to the length limit, and the
+        command drawn from the same allowance, since a command sets Switch to
+        work as a message does. A command that stops an agent
+        (`STOP_COMMANDS`) draws nothing, so stopping one always works."""
+        with self._counted(actor):
+            self.require_length(args)
+            if command not in STOP_COMMANDS:
+                self._take(sender)
+
+    @contextlib.contextmanager
+    def _counted(self, actor: str) -> Iterator[None]:
+        """Count a refusal by its reason and who it refused."""
+        try:
+            yield
         except MessageRefused as refused:
             metrics().increment(
                 MESSAGES_REFUSED, {"reason": refused.reason, "actor": actor}
