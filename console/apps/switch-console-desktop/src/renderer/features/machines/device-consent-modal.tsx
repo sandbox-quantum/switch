@@ -41,7 +41,9 @@ export const DeviceConsentModal = observer(function DeviceConsentModal({
   const [busy, setBusy] = useState<'allow' | 'deny' | null>(null);
   const [error, setError] = useState<string | null>(null);
   const server = serverForConsent(switchServersStore.serverById(serverId));
-  const label = ask.displayName && ask.displayName !== ask.name ? ask.displayName : ask.name;
+  // The unique name leads: the display name is the owner's to set to anything,
+  // so it only follows, marked as what the agent is shown as.
+  const shownAs = ask.displayName && ask.displayName !== ask.name ? ask.displayName : null;
   const choice = { bypass: ask.bypass, directory: ask.directory };
 
   const answer = async (allow: boolean) => {
@@ -61,11 +63,17 @@ export const DeviceConsentModal = observer(function DeviceConsentModal({
   return (
     <>
       <DialogHeader showCloseButton={false}>
-        <DialogTitle>Allow {label} on this computer?</DialogTitle>
+        <DialogTitle>
+          Allow {ask.name} from {server} on this computer?
+        </DialogTitle>
       </DialogHeader>
       <DialogContentArea className="space-y-3 pt-0 text-sm">
         <p>
-          <span className="font-medium">{ask.name}</span>, an agent from {server}, asks to:
+          <span className="font-medium">{ask.name}</span>
+          {shownAs !== null && (
+            <span className="text-foreground-muted"> (shown as “{shownAs}”)</span>
+          )}{' '}
+          asks to:
         </p>
         <ul className="list-disc space-y-1 pl-5">
           {askLines(ask).map((line) => (
