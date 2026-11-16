@@ -4099,6 +4099,15 @@ class MattermostAdapter(PlatformAdapter):
         )
 
     @classmethod
+    def unlink_account_instructions(
+        cls, name: str, connection_config: Mapping[str, object]
+    ) -> str:
+        return (
+            f"post `!unlink-account {name}` in a Mattermost channel that has a "
+            "Switch agent in it"
+        )
+
+    @classmethod
     def unlinkable_account_reason(cls, external_user_id: str) -> str | None:
         if external_user_id.startswith(_WEBHOOK_STAND_IN_PREFIX):
             return (

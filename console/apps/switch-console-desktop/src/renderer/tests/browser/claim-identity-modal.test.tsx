@@ -78,6 +78,7 @@ const SLACK: RemoteBridge = {
   channelCreationSupported: true,
   canCreateChannels: true,
   directorySearchSupported: true,
+  directorySearchHint: 'Your name or handle',
   attention: null,
   teamPlacementSupported: false,
   channelIdsRefused: null,
@@ -93,6 +94,7 @@ const PERSON = {
   username: 'ada',
   displayName: 'Ada Lovelace',
   email: null,
+  hasHandle: true,
   knownExternalUserId: 'eu-1',
   claimedBy: [],
 };
@@ -704,6 +706,53 @@ describe('a server that messages the account a number to tap', () => {
       )
     );
     expect(button(el, 'Start again')).toBeDefined();
+  });
+});
+
+describe('the search says only what it can find', () => {
+  async function typeInto(el: HTMLElement, text: string): Promise<void> {
+    const input = el.querySelector('input') as HTMLInputElement;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')!.set!.call(
+        input,
+        text
+      );
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+  }
+
+  it('takes its placeholder from the connection, so email is offered only where it matches', async () => {
+    listBridges.mockResolvedValue([{ ...SLACK, directorySearchHint: 'Your name or handle' }]);
+    const el = await render();
+
+    expect((el.querySelector('input') as HTMLInputElement).placeholder).toBe('Your name or handle');
+  });
+
+  it('names a Telegram user without a username by their name, with no made-up @handle', async () => {
+    listBridges.mockResolvedValue([
+      { ...SLACK, type: 'telegram', displayName: 'Our Telegram', directorySearchSupported: false },
+    ]);
+    searchBridgeDirectory.mockResolvedValue({
+      kind: 'results',
+      note: 'Telegram has no searchable user directory.',
+      users: [
+        {
+          ...PERSON,
+          externalUserId: '42',
+          username: 'MM_42',
+          displayName: 'M M',
+          hasHandle: false,
+          knownExternalUserId: 'eu-42',
+        },
+      ],
+    });
+    const el = await render();
+
+    await typeInto(el, 'M M');
+
+    await vi.waitFor(() => expect(button(el, 'This is me')).toBeDefined());
+    expect(el.textContent).toContain('M M');
+    expect(el.textContent).not.toContain('@MM_42');
   });
 });
 

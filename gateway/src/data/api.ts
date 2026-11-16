@@ -288,6 +288,9 @@ export interface BridgeDetail {
   // (Telegram), only people who have written in a connected chat can be
   // found.
   directory_search_supported: boolean;
+  // What the account search can find a person by here, as its placeholder
+  // ("Your name or handle"): only what really matches.
+  directory_search_hint: string;
 }
 
 export interface ExternalUserSummary {
@@ -1307,6 +1310,9 @@ export interface DirectoryPerson {
   username: string;
   display_name: string;
   email: string | null;
+  /** False when `username` is a handle Switch made up for someone the
+   *  platform gave none (Telegram without a username): show the name alone. */
+  has_handle: boolean;
   /** The account's row id when Switch has seen it, else null. */
   known_external_user_id: string | null;
   claimed_by: IdentityClaimant[];

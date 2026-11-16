@@ -202,6 +202,9 @@ class _CollabLifecycle:
     def supports_directory_search(self, bridge_type: str) -> bool:
         return True
 
+    def directory_search_hint(self, bridge_id: str, bridge_type: str) -> str:
+        return "Your name or handle"
+
     def unlinkable_account_reason(
         self, bridge_type: str, external_user_id: str
     ) -> str | None:

@@ -120,6 +120,7 @@ export const LinkAccountsStep = observer(function LinkAccountsStep({
               bridgeDisplayName={bridge.displayName}
               platform={platform}
               directorySearchSupported={bridge.directorySearchSupported}
+              directorySearchHint={bridge.directorySearchHint}
               autoFocus
               onClaimed={goBack}
               onConfirmationNeeded={(target, code) =>

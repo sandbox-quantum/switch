@@ -45,6 +45,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core import messaging_platforms
 from switch_core.addressing import allows_on_behalf_of, parse_policy
 from switch_core.authz import (
     ORGANIZATION_ADMIN_ROLE,
@@ -1657,10 +1658,22 @@ class ChatService:
                     if bridge_id is not None
                     else None
                 )
-                if bridge_id is not None and name is None:
+                bridged_description: str | None = None
+                if bridge_id is not None:
                     bridge = await session.get(CollaborationBridge, bridge_id)
                     assert bridge is not None  # _linked_account found it
-                    name = f"{agents[0].display_name or agents[0].name} · {bridge.display_name}"
+                    agent_label = agents[0].display_name or agents[0].name
+                    if name is None:
+                        name = f"{agent_label} · {bridge.display_name}"
+                    # What the room is, for Console's room details and for
+                    # the run trace a later kickoff repeats: a channel on the
+                    # platform, not a Switch Console chat.
+                    platform = messaging_platforms.lookup(bridge.type)
+                    bridged_description = (
+                        f"Private "
+                        f"{platform.display_name if platform else bridge.display_name}"
+                        f" channel with {agent_label}"
+                    )
                 if operation is None:
                     claimed = await self._claim(
                         session,
@@ -1699,6 +1712,7 @@ class ChatService:
                             RoomCreateConfig(
                                 name=name or "New Chat",
                                 description=description
+                                or bridged_description
                                 or (
                                     f"Switch Console chat with {names}"
                                     if names

@@ -80,6 +80,9 @@ class _Adapter:
     def direct_prompt_link(self, message_ref: str) -> str | None:
         return f"https://chat.example/{message_ref}"
 
+    def unlink_account_instructions(self, name: str, _config: object) -> str:
+        return f"type `/unlink-account {name}` anywhere in Acme Slack"
+
     async def settle_direct_prompt(self, message_ref: str, text: str) -> None:
         self.settled.append((message_ref, text))
 
@@ -390,6 +393,11 @@ class TestTappingAPrompt:
         assert ref == "D-U-ada:1"
         assert "Linked this Acme Slack account" in text
         assert "Ada" in text
+        # The platform's own command and where it works: the conversation the
+        # prompt arrived in may take no commands.
+        assert text.endswith(
+            "If that isn't you, type `/unlink-account Ada` anywhere in Acme Slack."
+        )
         async with world.session_factory() as session:
             event = (
                 await session.execute(

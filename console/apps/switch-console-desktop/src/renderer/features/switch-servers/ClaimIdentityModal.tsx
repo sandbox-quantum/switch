@@ -12,7 +12,11 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@renderer/lib/ui/dialog';
-import type { LinkCode, LinkedIdentity } from '@shared/core/switch-servers/switch-servers';
+import {
+  DEFAULT_DIRECTORY_SEARCH_HINT,
+  type LinkCode,
+  type LinkedIdentity,
+} from '@shared/core/switch-servers/switch-servers';
 import { AccountLinkConfirmation, type AccountLinkTarget } from './account-link-confirmation';
 import { BridgeIdentitySearch } from './bridge-identity-search';
 import { linkedIdentityOn } from './messaging-apps-warning';
@@ -153,6 +157,9 @@ export const ClaimIdentityModal = observer(function ClaimIdentityModal({
             bridgeDisplayName={bridgeDisplayName}
             platform={bridgePlatformLabel(selectedBridge?.type ?? '')}
             directorySearchSupported={selectedBridge?.directorySearchSupported ?? true}
+            directorySearchHint={
+              selectedBridge?.directorySearchHint ?? DEFAULT_DIRECTORY_SEARCH_HINT
+            }
             autoFocus
             onClaimed={(identity) => onSuccess({ identity })}
             onConfirmationNeeded={(target, code) => setWaiting({ target, code })}

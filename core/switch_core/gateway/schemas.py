@@ -895,6 +895,10 @@ class BridgeDetail(BaseModel):
     # nobody has used yet — a question worth not asking rather than asking
     # badly.
     directory_search_supported: bool = True
+    # What the account search can find a person by on this connection, as its
+    # field's placeholder ("Your name or handle"). Only what really matches:
+    # Slack offers email only when the app may read addresses.
+    directory_search_hint: str
     # Whether this connection receives its platform's events on an address of
     # its own, and that address — the one the operator gives the platform. The
     # address is None where the deployment has not set `MESSAGING_PUBLIC_URL`,
@@ -1048,6 +1052,10 @@ class DirectoryUserSummary(BaseModel):
     username: str
     display_name: str
     email: str | None = None
+    # False where `username` is a handle Switch made up for a person the
+    # platform gave none (a Telegram account without a username): shown by
+    # `display_name` alone, never as `@username`.
+    has_handle: bool = True
     # Set when this person has already spoken on the bridge and so has an
     # ExternalUser row; claiming reuses it rather than creating a duplicate.
     known_external_user_id: str | None = None

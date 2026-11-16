@@ -699,6 +699,14 @@ export type RemoteBridge = {
    */
   directorySearchSupported: boolean;
   /**
+   * What the account search can find a person by on this connection, as its
+   * placeholder ("Your name or handle"): only what really matches, so Slack
+   * offers email only when the app may read addresses. A server predating
+   * the field gets `DEFAULT_DIRECTORY_SEARCH_HINT`, which every platform
+   * matches.
+   */
+  directorySearchHint: string;
+  /**
    * Plain-text description of something only the platform's side can fix —
    * the organisation's admin withdrew approval, or blocked the app outright.
    * Shown as a visible warning on the connection regardless of its type. Null
@@ -1165,6 +1173,10 @@ export type IdentityClaimant = {
   verified: boolean;
 };
 
+/** The account-search placeholder for a server that does not say its own:
+ * what every platform's search matches. */
+export const DEFAULT_DIRECTORY_SEARCH_HINT = 'Your name or handle';
+
 /**
  * Someone found in a messaging platform's own user directory (mirrors the
  * gateway `DirectoryUserSummary`).
@@ -1179,6 +1191,10 @@ export type BridgeDirectoryUser = {
   username: string;
   displayName: string;
   email: string | null;
+  /** False when `username` is a handle Switch made up for someone the
+   * platform gave none (a Telegram account without a username), so it is not
+   * shown as theirs. True for a server predating the field. */
+  hasHandle: boolean;
   /** The `ExternalUser` row id when Switch has already seen this person, else
    * null. Present rows are reused on claim rather than duplicated. */
   knownExternalUserId: string | null;

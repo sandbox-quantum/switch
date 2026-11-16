@@ -17,6 +17,7 @@ from switch_core.authz import Principal
 from switch_core.bridges.collaboration.adapter import (
     ConfigEditRefused,
     DirectorySearchBusy,
+    PlatformAdapter,
 )
 from switch_core.bridges.collaboration.lifecycle_service import (
     BridgeClaimConflict,
@@ -287,6 +288,9 @@ async def _detail(
         channel_ids_refused=_channel_ids_refused(bridge.id, collab_lifecycle),
         directory_search_supported=collab_lifecycle.supports_directory_search(
             bridge.type
+        ),
+        directory_search_hint=collab_lifecycle.directory_search_hint(
+            bridge.id, bridge.type
         ),
         attention=await _attention(bridge.id, collab_lifecycle),
         team_placement_supported=_places_app_in_teams(bridge.id, collab_lifecycle),
@@ -752,7 +756,7 @@ async def search_bridge_directory(
     except NotImplementedError as e:
         source = "known"
         note = str(e)
-        found = _known_as_directory_users(known.values(), query)
+        found = _known_as_directory_users(known.values(), query, adapter)
     except DirectorySearchBusy as e:
         raise _search_busy(e) from e
     except RuntimeError as e:
@@ -771,6 +775,7 @@ async def search_bridge_directory(
                 username=person.username,
                 display_name=person.display_name,
                 email=person.email,
+                has_handle=person.has_handle,
                 known_external_user_id=(
                     known[person.external_user_id].id
                     if person.external_user_id in known
@@ -792,31 +797,43 @@ async def search_bridge_directory(
 
 
 def _known_as_directory_users(
-    known: Iterable[ExternalUser], query: str
+    known: Iterable[ExternalUser], query: str, adapter: PlatformAdapter
 ) -> list[DirectoryUser]:
     """The accounts Switch has already seen, shaped like a directory answer.
 
     Substring rather than prefix matching, because this list is what someone
     falls back to when the platform cannot be searched, and being unable to
-    find yourself there is the end of the road. No email: an account is
-    recorded from a message, which carries no address.
+    find yourself there is the end of the road. Spaces are ignored on both
+    sides, so "M M" finds a person stored as "MM_123". Each is named as the
+    adapter names them, so a handle Switch made up is not shown as theirs. No
+    email: an account is recorded from a message, which carries no address.
     """
-    needle = query.strip().casefold()
+    needle = _spaceless(query)
     if not needle:
         return []
-    return sorted(
-        (
+    found: list[DirectoryUser] = []
+    for u in known:
+        label = adapter.known_user_label(u.external_user_id, u.external_username)
+        if not any(
+            needle in _spaceless(name)
+            for name in (u.external_username, label.display_name)
+        ):
+            continue
+        found.append(
             DirectoryUser(
                 external_user_id=u.external_user_id,
                 username=u.external_username,
-                display_name=u.external_username,
+                display_name=label.display_name,
                 email=None,
+                has_handle=label.has_handle,
             )
-            for u in known
-            if needle in u.external_username.casefold()
-        ),
-        key=lambda u: u.display_name.casefold(),
-    )
+        )
+    return sorted(found, key=lambda u: u.display_name.casefold())
+
+
+def _spaceless(text: str) -> str:
+    """`text` for matching a name: case folded, with every space dropped."""
+    return "".join(text.casefold().split())
 
 
 def _search_busy(e: DirectorySearchBusy) -> HTTPException:

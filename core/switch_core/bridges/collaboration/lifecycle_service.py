@@ -776,6 +776,16 @@ class CollaborationBridgeLifecycleService:
             return True
         return adapter_cls.supports_directory_search
 
+    def directory_search_hint(self, bridge_id: str, bridge_type: str) -> str:
+        """What a bridge's account search can find a person by, as its
+        placeholder: the running adapter's own answer, which can depend on
+        what the connection was granted, else the platform's."""
+        bridge = self._bridges.get(bridge_id)
+        if bridge is not None:
+            return bridge.adapter.account_search_hint()
+        adapter_cls = self._adapter_registry.get(bridge_type) or PlatformAdapter
+        return adapter_cls.directory_search_hint
+
     def link_code_instructions(
         self, bridge_type: str, connection_config: Mapping[str, object], code: str
     ) -> str:
