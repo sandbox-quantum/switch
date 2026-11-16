@@ -208,7 +208,11 @@ def test_third_party_images_are_pinned_by_digest() -> None:
         compose = yaml.safe_load(path.read_text())
         for name, service in compose["services"].items():
             image = service.get("image", "")
-            if image and "build" not in service and not image.startswith("${SWITCH_REGISTRY"):
+            if (
+                image
+                and "build" not in service
+                and not image.startswith("${SWITCH_REGISTRY")
+            ):
                 refs[f"{path} {name}"] = image
     for args in ((), ("-f", OPTIONAL)):
         for where, image in chart_images(render(*args)):
