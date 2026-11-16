@@ -9,6 +9,7 @@ import {
 } from "../../data/api";
 import { useRoom } from "../../data/hooks";
 import { useGraphCanvasTheme } from "../graphCanvasTheme";
+import { graphTooltip } from "../graphTooltip";
 
 interface GraphNode {
   id: string;
@@ -332,9 +333,7 @@ export default function RoomGraphView({ roomId }: { roomId: string }) {
           onNodeClick={(n) => handleNodeClick(n as GraphNode)}
           nodeLabel={(n) => {
             const node = n as GraphNode;
-            return node.description
-              ? `${node.label}\n${node.description}`
-              : node.label;
+            return graphTooltip(node.label, node.description);
           }}
           cooldownTicks={60}
           enableZoomInteraction

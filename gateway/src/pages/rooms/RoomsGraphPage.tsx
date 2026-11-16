@@ -18,6 +18,7 @@ import { useLoad } from "../workspace/useLoad";
 import { branchColor, buildGroupIndex, topAncestor } from "./groupTree";
 import { RoomFilters, filterRooms, useRoomFilterState } from "./roomFilters";
 import { useGraphCanvasTheme } from "../graphCanvasTheme";
+import { graphTooltip } from "../graphTooltip";
 
 interface GraphNode {
   id: string;
@@ -344,9 +345,7 @@ export default function RoomsGraphPage() {
           onNodeClick={(n) => handleNodeClick(n as GraphNode)}
           nodeLabel={(n) => {
             const node = n as GraphNode;
-            return node.description
-              ? `${node.label}\n${node.description}`
-              : node.label;
+            return graphTooltip(node.label, node.description);
           }}
           cooldownTicks={120}
           enableZoomInteraction
