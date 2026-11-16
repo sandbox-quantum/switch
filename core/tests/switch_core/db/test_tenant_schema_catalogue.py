@@ -143,6 +143,13 @@ class TestEveryTableIsScopedUnlessItIsNamedGlobal:
             # Changes to the server as a whole, such as setting up one of those
             # apps: no tenant owns them, so `audit_events` cannot hold them.
             "server_audit_events",
+            # Password sign-ins and sign-ups counted against the email typed
+            # and the client's address, before there is a workspace to file
+            # them under.
+            "auth_attempts",
+            # Sessions signed out of: a session is a person's, across their
+            # workspaces, and the row holds only its random id.
+            "revoked_sessions",
         }
 
     async def test_the_history_tables_are_exactly_these(self) -> None:
