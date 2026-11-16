@@ -69,6 +69,9 @@ describe("OrganizationGuardrails", () => {
     ).toBeTruthy();
     expect(screen.getByText("pol_123")).toBeTruthy();
     expect(screen.getByText(/Connected by Olga/)).toBeTruthy();
+    const said = screen.getByText("Switch Trust is connected with Baseline Monitoring (Alert).");
+    // A plain success is the snackbar's, not a notice left on the page.
+    expect(said.closest(".MuiAlert-root")).toBeNull();
   });
 
   it("shows Switch Trust's refusal and keeps the form", async () => {

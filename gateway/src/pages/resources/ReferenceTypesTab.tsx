@@ -25,6 +25,7 @@ import DataTable, {
 } from "../../components/DataTable";
 import RowActionsMenu, { type RowAction } from "../../components/RowActionsMenu";
 import { TransferOwnershipDialog } from "../../components/TransferOwnershipSection";
+import { useAuth } from "../../data/AuthContext";
 import {
   deleteReferenceType,
   loadOwnedReferenceTypes,
@@ -73,7 +74,7 @@ const NOUN = { one: "reference type", other: "reference types" };
 const SELECT_FILTERS: SelectFilter[] = [{ field: "owner", label: "Owner", allLabel: "All owners" }];
 
 const SEARCH = {
-  label: "Search reference types",
+  label: "Search by slug, name, value hint or owner",
   text: (row: TypeRow) => [row.type, row.display_name, row.value_hint, row.owner].join(" "),
 };
 
@@ -83,6 +84,9 @@ const PINNED = ["actions"];
 const accessValue = (row: TypeRow) => (row.detail ? toAccessLevel(row.detail) : BUILT_IN);
 
 export default function ReferenceTypesTab({ refreshKey }: Props) {
+  const { session, capabilities } = useAuth();
+  const workspace = session?.tenant?.name ?? "this workspace";
+  const administers = capabilities.administersWorkspace;
   const visible = useLoad(loadReferenceTypes);
   const stored = useLoad(loadOwnedReferenceTypes);
   const refetchVisible = visible.refetch;
@@ -235,9 +239,18 @@ export default function ReferenceTypesTab({ refreshKey }: Props) {
           selectFilters={SELECT_FILTERS}
           pinnedRight={PINNED}
           emptyState={
-            <TableEmptyState title="No reference types yet">
-              Create one to describe a new kind of reference.
-            </TableEmptyState>
+            // An admin is shown every type; anyone else their own and the
+            // public ones, unlike references, where admins are no different.
+            administers ? (
+              <TableEmptyState title={`No reference types in ${workspace} yet`}>
+                Create one to describe a new kind of reference.
+              </TableEmptyState>
+            ) : (
+              <TableEmptyState title="No reference types yet">
+                Yours and the public ones in {workspace} show here. Create one to describe a new kind of
+                reference.
+              </TableEmptyState>
+            )
           }
         />
       </ListBody>

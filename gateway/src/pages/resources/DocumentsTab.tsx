@@ -17,6 +17,7 @@ import {
   descriptionColumn,
   nameColumn,
   ownerColumn,
+  RESOURCE_SEARCH_LABEL,
   resourceSearchText,
   useRefetchOnRefresh,
 } from "./resourceList";
@@ -29,7 +30,7 @@ const NOUN = { one: "document", other: "documents" };
 
 const SELECT_FILTERS: SelectFilter[] = [{ field: "owner_name", label: "Owner", allLabel: "All owners" }];
 
-const SEARCH = { label: "Search documents", text: resourceSearchText };
+const SEARCH = { label: RESOURCE_SEARCH_LABEL, text: resourceSearchText };
 
 const documentPath = (doc: { id: string }) => `/resources/documents/${doc.id}`;
 

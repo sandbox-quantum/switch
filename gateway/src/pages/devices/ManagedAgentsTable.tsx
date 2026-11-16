@@ -73,7 +73,7 @@ const NOT_PLACED = "\u0000not-placed";
 const PINNED = ["actions"];
 const TABLE_CHROME = 108;
 const ROW = 56;
-const PAGE_SIZE = 10;
+const PAGE_SIZE = 25;
 
 /**
  * Managed agents, each with its owner when `showOwner`, and its workspace
@@ -116,7 +116,7 @@ export default function ManagedAgentsTable({
     return [
       {
         field: "name",
-        headerName: showOwner ? "Agent and owner" : "Agent",
+        headerName: "Agent",
         flex: 1,
         minWidth: 180,
         // Its owner is under its name, so the column filters by owner.
@@ -134,6 +134,22 @@ export default function ManagedAgentsTable({
           </Stack>
         ),
       },
+      {
+        field: "provider",
+        headerName: "Provider",
+        width: 150,
+        filter: { value: (row) => row.provider, options: providers },
+        valueGetter: (_value, row) => providerLabel(row.provider),
+        renderCell: ({ row }) => <Chip size="small" variant="outlined" label={providerLabel(row.provider)} />,
+      },
+      {
+        field: "controller_name",
+        headerName: "Device",
+        flex: 1,
+        minWidth: 150,
+        filter: { value: (row) => row.controller_id ?? NOT_PLACED, options: devices },
+        valueGetter: (_value, row) => row.controller_name ?? "Not placed",
+      },
       ...(showWorkspace
         ? [
             {
@@ -144,21 +160,6 @@ export default function ManagedAgentsTable({
             } satisfies TableColumn<ManagedAgentTableRow>,
           ]
         : []),
-      {
-        field: "provider",
-        headerName: "Agent provider",
-        width: 150,
-        filter: { value: (row) => row.provider, options: providers },
-        valueGetter: (_value, row) => providerLabel(row.provider),
-      },
-      {
-        field: "controller_name",
-        headerName: "Device",
-        flex: 1,
-        minWidth: 150,
-        filter: { value: (row) => row.controller_id ?? NOT_PLACED, options: devices },
-        valueGetter: (_value, row) => row.controller_name ?? "Not placed",
-      },
       {
         field: "desired_state",
         headerName: "Wanted",
@@ -209,26 +210,27 @@ export default function ManagedAgentsTable({
       ...(showWorkspace ? [{ field: "workspace_name", label: "Workspace", allLabel: "All workspaces" }] : []),
       ...(showOwner ? [{ field: "name", label: "Owner", allLabel: "All owners" }] : []),
       { field: "controller_name", label: "Device", allLabel: "All devices" },
-      { field: "provider", label: "Agent provider", allLabel: "All agent providers" },
+      { field: "provider", label: "Provider", allLabel: "All providers" },
     ],
     [showOwner, showWorkspace],
   );
 
   const search = useMemo(
     () => ({
-      label: "Search managed agents",
+      label: "Search agents",
       text: (row: ManagedAgentTableRow) =>
         [row.name, row.display_name ?? "", row.owner_name, row.controller_name ?? "", row.workspace_name ?? ""].join(" "),
     }),
     [],
   );
 
-  if (rows.length === 0) return <>{emptyState}</>;
+  // Empty, the table keeps its headers and says why inside them.
   return (
     <DataTable
       rows={rows}
       columns={columns}
-      height={TABLE_CHROME + ROW * Math.min(rows.length, PAGE_SIZE)}
+      emptyState={emptyState}
+      height={TABLE_CHROME + ROW * Math.max(1, Math.min(rows.length, PAGE_SIZE))}
       pageSize={PAGE_SIZE}
       noun={{ one: "managed agent", other: "managed agents" }}
       search={search}

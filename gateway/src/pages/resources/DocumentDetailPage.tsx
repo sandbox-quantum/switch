@@ -35,6 +35,8 @@ import {
   DetailLoading,
   InPackagesSection,
   InfoLine,
+  ReadOnlyBanner,
+  ownerCanChange,
   requiredHelper,
   useAfterTransfer,
   useResourceDetail,
@@ -45,13 +47,13 @@ const LIST_PATH = "/resources?tab=documents";
 export default function DocumentDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { data: doc, setData: setDoc, error, loading, reload } = useResourceDetail(id, loadDocument);
+  const { data: doc, setData: setDoc, error, errorStatus, loading, reload } = useResourceDetail(id, loadDocument);
   const { afterTransfer, refreshNotice } = useAfterTransfer(id, loadDocument, setDoc, LIST_PATH);
   const [deleteOpen, setDeleteOpen] = useState(false);
 
   if (doc === null && loading) return <DetailLoading />;
   if (doc === null || !id) {
-    return <DetailLoadFailed what="document" listPath={LIST_PATH} error={error} onRetry={reload} />;
+    return <DetailLoadFailed what="document" listPath={LIST_PATH} error={error} errorStatus={errorStatus} onRetry={reload} />;
   }
 
   return (
@@ -61,7 +63,7 @@ export default function DocumentDetailPage() {
         <IconButton
           onClick={() => navigate(LIST_PATH)}
           size="small"
-          aria-label="Back"
+          aria-label="Back to resources"
         >
           <ArrowBack />
         </IconButton>
@@ -70,6 +72,15 @@ export default function DocumentDetailPage() {
         </Typography>
         <AccessChip pair={doc} />
       </Stack>
+      {!doc.can_edit && (
+        <ReadOnlyBanner
+          whose={
+            doc.scope === "room"
+              ? "This is a room's own document, so it is changed in its room, not here."
+              : ownerCanChange("document", doc.owner_id, doc.owner_name)
+          }
+        />
+      )}
 
       <Stack spacing={4}>
         <DocInfoSection doc={doc} />

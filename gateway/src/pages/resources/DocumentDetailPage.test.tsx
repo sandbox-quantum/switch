@@ -81,6 +81,8 @@ describe("DocumentDetailPage", () => {
     showWith({ can_edit: false, can_manage: false, can_transfer: false });
     await screen.findByDisplayValue("Runbook");
     expect(field("Name").disabled).toBe(true);
+    // Disabled fields alone read as a page that failed to load.
+    expect(screen.getByText("This document belongs to Bob. Only they or a workspace admin can change it.")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Transfer ownership" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Delete document" })).toBeNull();
   });
@@ -89,6 +91,7 @@ describe("DocumentDetailPage", () => {
     showWith({ can_edit: true, can_manage: false, can_transfer: false });
     await screen.findByDisplayValue("Runbook");
     expect(field("Name").disabled).toBe(false);
+    expect(screen.queryByText(/Only they or a workspace admin can change it/)).toBeNull();
     expect(screen.getByLabelText("Access").getAttribute("aria-disabled")).toBe("true");
     expect(
       screen.getByText(
@@ -133,6 +136,12 @@ describe("DocumentDetailPage", () => {
     showWith({ can_edit: true, can_manage: false, can_transfer: false });
     fireEvent.change(await screen.findByDisplayValue("Step one"), { target: { value: "" } });
     expect((screen.getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("says a room's own document is changed in its room", async () => {
+    showWith({ can_edit: false, can_manage: false, can_transfer: false, scope: "room", room_id: "room1" });
+    await screen.findByDisplayValue("Runbook");
+    expect(screen.getByText("This is a room's own document, so it is changed in its room, not here.")).toBeTruthy();
   });
 
   it("offers no attaching for a document that belongs to one room", async () => {

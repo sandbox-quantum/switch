@@ -82,7 +82,7 @@ export const PAGES: readonly MatrixPage[] = [
   page("/connectors/:connectorId", EVERYONE),
 
   page("/settings/general", EVERYONE),
-  page("/workspace/private-channel-rooms", ADMINS),
+  page("/settings/general/private-channel-rooms", ADMINS),
   page("/settings/users", EVERYONE),
   page("/settings/messaging-apps", EVERYONE),
   page("/settings/connectors", EVERYONE),
@@ -120,14 +120,15 @@ export const REDIRECTS: readonly MatrixRedirect[] = [
   { from: "/collaborations", to: "/settings/messaging-apps" },
   { from: "/registration-keys", to: "/settings/api-keys" },
   { from: "/workspace", to: "/settings/users" },
+  { from: "/workspace/private-channel-rooms", to: "/settings/general/private-channel-rooms" },
   { from: "/organization", to: "/settings/org" },
   { from: "/users", to: "/platform/users" },
   { from: "/operator/workspaces", to: "/platform/workspaces" },
 ];
 
-// The ecosystem graph has no rail item of its own: Overview links to it.
+// The ecosystem graph has no rail item of its own: Home links to it.
 const RAIL_EVERYONE = [
-  "Overview",
+  "Home",
   "Agents",
   "Rooms",
   "Templates",
@@ -146,16 +147,21 @@ export const RAIL: Record<Persona, readonly string[]> = {
 
 export type MatrixSettingsArea = "workspace" | "organization" | "platform";
 
-const WORKSPACE_MENU_MEMBER = [
+const WORKSPACE_MENU_EVERYONE = [
   "General",
   "Users",
   "Messaging apps",
   "Connectors",
   "API keys",
   "Guardrails",
-  "Devices",
 ];
-const WORKSPACE_MENU_ADMIN = [...WORKSPACE_MENU_MEMBER, "Usage & budget", "Your account"];
+const WORKSPACE_MENU_MEMBER = [...WORKSPACE_MENU_EVERYONE, "Devices", "Your account"];
+const WORKSPACE_MENU_ADMIN = [
+  ...WORKSPACE_MENU_EVERYONE,
+  "Usage & budget",
+  "Devices",
+  "Your account",
+];
 
 /** Each settings area's menu, in order: the pages it lists, not the link
  * across to the other area. Null where the role may not
@@ -165,7 +171,7 @@ export const SETTINGS_MENUS: Record<MatrixSettingsArea, Record<Persona, readonly
     workspace: {
       orgAdmin: WORKSPACE_MENU_ADMIN,
       workspaceAdmin: WORKSPACE_MENU_ADMIN,
-      member: [...WORKSPACE_MENU_MEMBER, "Your account"],
+      member: WORKSPACE_MENU_MEMBER,
       operator: WORKSPACE_MENU_ADMIN,
     },
     organization: {
@@ -173,7 +179,7 @@ export const SETTINGS_MENUS: Record<MatrixSettingsArea, Record<Persona, readonly
         "General",
         "Workspaces",
         "Users",
-        "Connectors and apps",
+        "Connectors",
         "Guardrails",
         "Devices",
         "Audit log",

@@ -2,7 +2,7 @@ import { expect } from 'vitest';
 import { ROLE_MATRIX_SCENARIOS } from './role-matrix/index.ts';
 import { browserHeader, type BrowserScenario } from './scenario.ts';
 
-/** The login form signs the admin in, and the app opens on Overview. */
+/** The login form signs the admin in, and the app opens on Home. */
 const signIn: BrowserScenario = {
   header: browserHeader('gateway-sign-in', [
     'GET /gateway/auth/config',
@@ -12,7 +12,7 @@ const signIn: BrowserScenario = {
   async run({ ui }) {
     await ui.signIn();
     await expect
-      .poll(() => ui.page.getByRole('heading', { name: 'Overview', level: 5 }).isVisible())
+      .poll(() => ui.page.getByRole('heading', { name: 'Home', level: 5 }).isVisible())
       .toBe(true);
     await ui.settled();
   },

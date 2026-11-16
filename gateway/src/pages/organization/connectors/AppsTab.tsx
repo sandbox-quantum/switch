@@ -114,7 +114,7 @@ function AppRow({
 }
 
 /**
- * Organization settings › Connectors and apps › Apps & accounts: the vendor
+ * Organization settings › Connectors › Apps & accounts: the vendor
  * apps the organization's workspaces sign in through, one row each, and the
  * row's detail in a panel beside the page. The panel is today's card, with
  * its checks, secret updates, switching and removal: the job is done rarely,

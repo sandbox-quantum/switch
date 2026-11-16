@@ -278,13 +278,15 @@ export class GatewayUi {
     return 'page';
   }
 
-  /** The links in a navigation landmark, by label, in order. */
+  /** The links in a navigation landmark, by label, in order. A link shown
+   * as a glyph alone, such as the rail's Settings, is labelled by its
+   * accessible name. */
   async linksIn(nav: Locator): Promise<{ label: string; path: string }[]> {
     await expect.poll(() => nav.getByRole('link').count(), { timeout: 15_000 }).toBeGreaterThan(0);
     const links: { label: string; path: string }[] = [];
     for (const link of await nav.getByRole('link').all()) {
       const href = await link.getAttribute('href');
-      const label = (await link.innerText()).trim();
+      const label = (await link.getAttribute('aria-label')) ?? (await link.innerText()).trim();
       if (href !== null && href.startsWith('/')) links.push({ label, path: href });
     }
     return links;

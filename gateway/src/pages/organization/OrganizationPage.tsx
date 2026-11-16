@@ -1,8 +1,9 @@
-import { Alert, Box, CircularProgress, Snackbar, Stack, Typography } from "@mui/material";
+import { Alert, Box, CircularProgress, Stack, Typography } from "@mui/material";
 import { useCallback, useState } from "react";
 import { ORGANIZATION_NAME_MAX, fetchCurrentOrganization, renameOrganization } from "../../data/api";
 import { announceOrganizationRenamed } from "../../data/organizationEvents";
 import EditableField from "../../components/EditableField";
+import SuccessSnackbar from "../../components/SuccessSnackbar";
 import { useLoad } from "../workspace/useLoad";
 import OrganizationAuditSection from "./OrganizationAuditSection";
 import OrganizationConnectorsSettings from "./connectors/OrganizationConnectorsSettings";
@@ -22,17 +23,13 @@ function useOrganization() {
 
 export function OrganizationGeneralPage() {
   const { data: organization, error, refetch } = useOrganization();
-  // Kept after the message closes, so it still names the organization while
-  // it fades out.
-  const [renamedTo, setRenamedTo] = useState("");
-  const [noticeOpen, setNoticeOpen] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const rename = async (draft: string) => {
     const { name } = await renameOrganization(draft);
     announceOrganizationRenamed();
     await refetch();
-    setRenamedTo(name);
-    setNoticeOpen(true);
+    setNotice(`Organization renamed to ${name}.`);
   };
 
   return (
@@ -58,16 +55,7 @@ export function OrganizationGeneralPage() {
           />
         </Stack>
       )}
-      <Snackbar
-        open={noticeOpen}
-        autoHideDuration={5000}
-        onClose={() => setNoticeOpen(false)}
-        anchorOrigin={{ vertical: "bottom", horizontal: "left" }}
-      >
-        <Alert severity="success" onClose={() => setNoticeOpen(false)}>
-          Organization renamed to {renamedTo}.
-        </Alert>
-      </Snackbar>
+      <SuccessSnackbar message={notice} onClose={() => setNotice(null)} />
     </Box>
   );
 }
@@ -115,5 +103,8 @@ export function OrganizationConnectorsPage() {
 }
 
 export function OrganizationAuditLogPage() {
-  return <OrganizationAuditSection />;
+  const { data: organization, error } = useOrganization();
+  if (error) return <Alert severity="error">{error}</Alert>;
+  if (organization === null) return <CircularProgress />;
+  return <OrganizationAuditSection organizationName={organization.name} />;
 }

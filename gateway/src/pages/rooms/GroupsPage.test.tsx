@@ -42,6 +42,7 @@ function authState(canAdminTenant: boolean) {
     staleError: null,
     linkNotice: null,
     dismissLinkNotice: vi.fn(),
+    workspaceMismatch: null,
     recheck: vi.fn(),
     refresh: vi.fn(async () => {}),
     login: vi.fn(async () => {}),

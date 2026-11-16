@@ -99,7 +99,7 @@ describe("OrganizationDevicesSettings", () => {
     });
     render(<OrganizationDevicesSettings organizationName="Acme" />);
 
-    expect(await screen.findByText("The devices that run agents across Acme.")).toBeTruthy();
+    expect(await screen.findByText("Computers running an agents controller across Acme.")).toBeTruthy();
     expect(within(await screen.findByTestId("row-laptop")).getByText("Core")).toBeTruthy();
     expect(within(screen.getByTestId("row-lab-box")).getByText("Lab")).toBeTruthy();
     expect(within(screen.getByTestId("row-scout")).getByText("Lab")).toBeTruthy();

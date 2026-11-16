@@ -78,7 +78,7 @@ function renderAt(path = "/settings/org/connectors") {
   );
 }
 
-describe("Organization settings › Connectors and apps", () => {
+describe("Organization settings › Connectors", () => {
   afterEach(() => {
     cleanup();
     vi.unstubAllGlobals();
@@ -146,6 +146,7 @@ describe("Organization settings › Connectors and apps", () => {
       ),
     );
     expect(screen.queryByRole("dialog")).toBeNull();
+    expect(await screen.findByText("Each workspace now decides whether to use GitHub.")).toBeTruthy();
   });
 
   it("sets the other settings from the menu beside the switch", async () => {

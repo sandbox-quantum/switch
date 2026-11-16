@@ -123,9 +123,9 @@ describe("DevicesPage", () => {
     serve([device("laptop"), THEIRS]);
     render(<DevicesPage />);
 
-    expect(await screen.findByText("The devices that run agents in Acme.")).toBeTruthy();
+    expect(await screen.findByText("Computers running an agents controller in Acme.")).toBeTruthy();
     expect(within(screen.getByTestId("row-grace-laptop")).getByText("Grace")).toBeTruthy();
-    expect(within(screen.getByTestId("row-laptop")).getByText("1 of 1 running")).toBeTruthy();
+    expect(within(screen.getByTestId("row-laptop")).getByLabelText("1 of 1 running").textContent).toBe("1");
     expect(await menuOf("grace-laptop", "grace-laptop")).toEqual(["Details", "Remove"]);
   });
 
@@ -150,7 +150,7 @@ describe("DevicesPage", () => {
     serve([device("laptop", { state: "offline" })]);
     render(<DevicesPage />);
 
-    expect(await screen.findByText("Your devices that run agents in Acme.")).toBeTruthy();
+    expect(await screen.findByText("Your computers running an agents controller in Acme.")).toBeTruthy();
     expect(await menuOf("laptop", "laptop")).toEqual(["Details", "Refreshlaptop is offline.", "Edit", "Remove"]);
   });
 

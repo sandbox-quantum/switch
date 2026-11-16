@@ -3,11 +3,13 @@ import AccountTreeIcon from "@mui/icons-material/AccountTree";
 import ArchiveOutlined from "@mui/icons-material/ArchiveOutlined";
 import DeleteOutline from "@mui/icons-material/DeleteOutline";
 import FolderOutlined from "@mui/icons-material/FolderOutlined";
+import ForumOutlined from "@mui/icons-material/ForumOutlined";
 import UnarchiveOutlined from "@mui/icons-material/UnarchiveOutlined";
 import {
   Alert,
   Box,
   Button,
+  Card,
   Chip,
   CircularProgress,
   Stack,
@@ -16,13 +18,14 @@ import {
   Typography,
 } from "@mui/material";
 import type { GridRowId } from "@mui/x-data-grid";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router";
 import ConfirmDialog from "../../components/ConfirmDialog";
-import DataTable, { type TableColumn, TableEmptyState } from "../../components/DataTable";
+import DataTable, { type SelectFilter, type TableColumn, TableEmptyState } from "../../components/DataTable";
 import RowActionsMenu, { type RowAction } from "../../components/RowActionsMenu";
 import { useAuth } from "../../data/AuthContext";
 import {
+  type BulkRoomRefusal,
   type RoomSummary,
   archiveRoom,
   bulkArchiveRooms,
@@ -33,7 +36,7 @@ import {
 } from "../../data/api";
 import { useRoomGroups } from "../../data/hooks";
 import { type ListScope, listScopeOf, roomsInScope } from "../../data/listScope";
-import { EM_DASH, MONO_SX, channelTypeLabel, formatDate } from "../../theme/format";
+import { EM_DASH, channelTypeLabel, formatDate } from "../../theme/format";
 import { useLoad } from "../workspace/useLoad";
 import { buildGroupIndex, effectiveColor } from "./groupTree";
 import { RoomAccessChip } from "./RoomAccessChip";
@@ -51,6 +54,24 @@ import {
 
 const NOUN = { one: "room", other: "rooms" };
 
+/** The table's header and footer, and a row, in pixels; a page of rows. */
+const TABLE_CHROME = 108;
+const ROW = 52;
+const PAGE_SIZE = 25;
+
+/** Kept stable: a fresh array each render would rebuild the grid's columns. */
+const PINNED = ["actions"];
+
+/** The design's dropdowns over the table. Status is the tabs, not one of them. */
+const SELECT_FILTERS: SelectFilter[] = [
+  { field: "group_id", label: "Group", allLabel: "All groups" },
+  { field: "owner_name", label: "Owner", allLabel: "All owners" },
+  { field: "bridge_display_name", label: "Bridge", allLabel: "All bridges" },
+  { field: "connected_user_count", label: "Connected users", allLabel: "Anyone" },
+];
+
+const INITIAL_SORT = { field: "created_at", sort: "desc" } as const;
+
 type View = "active" | "archived";
 
 /** What the confirm dialog is asking about. */
@@ -63,19 +84,44 @@ export interface RoomsNotice {
 }
 
 function Missing() {
+  return <MutedText>{EM_DASH}</MutedText>;
+}
+
+function MutedText({ children }: { children: string }) {
   return (
     <Typography component="span" variant="body2" sx={{ color: "text.secondary" }}>
-      {EM_DASH}
+      {children}
     </Typography>
   );
 }
 
 function ColorDot({ color }: { color: string }) {
-  return <Box sx={{ width: 10, height: 10, borderRadius: "50%", bgcolor: color, flexShrink: 0 }} />;
+  return <Box sx={{ width: 8, height: 8, borderRadius: "50%", bgcolor: color, flexShrink: 0 }} />;
 }
 
-const newestFirst = (rooms: readonly RoomSummary[]) =>
-  [...rooms].sort((a, b) => (a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : 0));
+/** In place of the table when there is nothing in it to filter, as the
+ * design has it: what is missing, and what to do about it. */
+function EmptyCard({
+  icon: Icon,
+  title,
+  children,
+  action,
+}: {
+  icon: typeof ForumOutlined;
+  title: string;
+  children: string;
+  action?: ReactNode;
+}) {
+  return (
+    <Card variant="outlined" sx={{ borderRadius: "16px" }}>
+      <Stack spacing={2} sx={{ alignItems: "center", px: 3, py: 8 }}>
+        <Icon aria-hidden sx={{ fontSize: 24, color: "text.secondary" }} />
+        <TableEmptyState title={title}>{children}</TableEmptyState>
+        {action}
+      </Stack>
+    </Card>
+  );
+}
 
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : "unknown error";
@@ -107,6 +153,20 @@ function DeleteDescription({ room }: { room: RoomSummary }) {
   );
 }
 
+/** What a bulk action did, and each room it left alone with why. */
+function partlyDone(
+  done: string,
+  count: number,
+  targets: RoomSummary[],
+  refused: BulkRoomRefusal[],
+): string {
+  const names = new Map(targets.map((room) => [room.id, room.name]));
+  const why = refused.map(
+    (refusal) => `${names.get(refusal.room_id) ?? refusal.room_id}: ${refusal.reason}`,
+  );
+  return [`${done} ${count} of ${targets.length}.`, ...why].join(" ");
+}
+
 export default function RoomsPage() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -123,7 +183,7 @@ export default function RoomsPage() {
     return passed ? { severity: "warning", text: passed } : null;
   });
 
-  // A member's list is narrowed to their own rooms, as Overview counts them.
+  // A member's list is narrowed to their own rooms, as Home counts them.
   // Narrowing is a view, not a permission.
   const scope: ListScope = listScopeOf(capabilities);
   const workspace = session?.tenant?.name ?? "this workspace";
@@ -148,7 +208,7 @@ export default function RoomsPage() {
   }, [administers, refetchRooms]);
 
   const { visible, active, archived } = useMemo(() => {
-    const all = newestFirst(roomsInScope(rooms.data ?? [], scope));
+    const all = roomsInScope(rooms.data ?? [], scope);
     return { visible: all, active: all.filter((r) => !r.archived), archived: all.filter((r) => r.archived) };
   }, [rooms.data, scope]);
   const rows = view === "archived" ? archived : active;
@@ -172,10 +232,10 @@ export default function RoomsPage() {
             targets.map((r) => r.id),
             false,
           );
-          if (result.updated < targets.length) {
+          if (result.refused.length > 0) {
             setNotice({
               severity: "warning",
-              text: `Unarchived ${result.updated} of ${targets.length}; ${targets.length - result.updated} you can't change or no longer exist.`,
+              text: partlyDone("Unarchived", result.updated, targets, result.refused),
             });
           }
         }
@@ -198,30 +258,46 @@ export default function RoomsPage() {
     } else if (pending.rooms.length === 1) {
       await archiveRoom(pending.rooms[0].id);
     } else {
-      const ids = pending.rooms.map((r) => r.id);
-      const result = await bulkArchiveRooms(ids, true);
+      const result = await bulkArchiveRooms(
+        pending.rooms.map((r) => r.id),
+        true,
+      );
       // The server skips, without failing, any room the viewer can't change
-      // or that is gone, and says how many it did change.
-      if (result.updated < ids.length) {
+      // or that is gone, and names each with the reason.
+      if (result.refused.length > 0) {
         setNotice({
           severity: "warning",
-          text: `Archived ${result.updated} of ${ids.length}; ${ids.length - result.updated} you can't change or no longer exist.`,
+          text: partlyDone("Archived", result.updated, pending.rooms, result.refused),
         });
       }
     }
     void refetchRooms();
   }, [pending, refetchRooms]);
 
-  // Filters offer what either view holds, so a pick survives switching views.
+  // Filters offer what this view's rooms hold, so none returns nothing.
   const columns = useMemo<TableColumn<RoomSummary>[]>(() => {
-    const viewRooms = visible;
+    const viewRooms = rows;
     return [
-      { field: "name", headerName: "Name", flex: 1, minWidth: 160 },
+      {
+        field: "name",
+        headerName: "Name",
+        flex: 1,
+        minWidth: 160,
+        renderCell: ({ value }) => (
+          <Box
+            component="span"
+            title={value}
+            sx={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", fontWeight: 500 }}
+          >
+            {value}
+          </Box>
+        ),
+      },
       {
         field: "group_id",
         headerName: "Group",
         flex: 1,
-        minWidth: 160,
+        minWidth: 140,
         valueGetter: (_value, row) => roomGroupLabel(row, byId),
         renderCell: ({ row }) =>
           row.group_id ? (
@@ -247,16 +323,9 @@ export default function RoomsPage() {
         field: "owner_name",
         headerName: "Owner",
         flex: 1,
-        minWidth: 150,
-        renderCell: ({ value, row }) =>
-          value ??
-          (row.owner_id ? (
-            <Typography component="span" sx={MONO_SX}>
-              {row.owner_id}
-            </Typography>
-          ) : (
-            <Missing />
-          )),
+        minWidth: 140,
+        // An owner whose name can't be found is still an owner.
+        renderCell: ({ value, row }) => value ?? <MutedText>{row.owner_id ? "Unknown" : "No owner"}</MutedText>,
         filter: { value: roomOwnerValue, options: ownerOptions(viewRooms) },
       },
       {
@@ -268,7 +337,7 @@ export default function RoomsPage() {
       {
         field: "channel_type",
         headerName: "Type",
-        width: 150,
+        width: 140,
         renderCell: ({ value }) =>
           value ? <Chip label={channelTypeLabel(value as string)} size="small" /> : <Missing />,
       },
@@ -282,7 +351,7 @@ export default function RoomsPage() {
         field: "connected_user_count",
         headerName: "Connected users",
         description: "People in the room through a messaging app or a Switch Console chat.",
-        width: 150,
+        width: 160,
         type: "number",
         align: "left",
         headerAlign: "left",
@@ -292,8 +361,8 @@ export default function RoomsPage() {
       {
         field: "bridge_display_name",
         headerName: "Bridge",
-        width: 130,
-        renderCell: ({ value }) => (value ? <Chip label={value} size="small" /> : <Missing />),
+        width: 120,
+        renderCell: ({ value }) => (value ? <Chip label={value} size="small" variant="outlined" /> : <Missing />),
         filter: { value: roomBridgeValue, options: bridgeOptions(viewRooms) },
       },
       {
@@ -336,7 +405,7 @@ export default function RoomsPage() {
         },
       },
     ];
-  }, [visible, byId, groupList, unarchive, ask]);
+  }, [rows, byId, groupList, unarchive, ask]);
 
   const search = useMemo(
     () => ({ label: "Search rooms", text: (row: RoomSummary) => roomSearchText(row, byId) }),
@@ -349,22 +418,23 @@ export default function RoomsPage() {
     </Button>
   );
 
-  const emptyState =
+  // Two different nothings: the workspace has no rooms, or it has some and
+  // none are this member's. Which it is depends on the rooms, not the
+  // viewer's role.
+  const workspaceHasRooms = (rooms.data ?? []).some((r) => !r.archived);
+  const emptyCard =
     view === "archived" ? (
-      <TableEmptyState title="No archived rooms">Rooms you archive are listed here.</TableEmptyState>
+      <EmptyCard icon={ArchiveOutlined} title="No archived rooms">
+        Rooms you archive are listed here.
+      </EmptyCard>
+    ) : workspaceHasRooms ? (
+      <EmptyCard icon={ForumOutlined} title={`You’re not in any rooms in ${workspace} yet`} action={newRoom}>
+        Create a room of your own, or ask a workspace admin to add you to one.
+      </EmptyCard>
     ) : (
-      <Stack spacing={2} sx={{ alignItems: "center" }}>
-        {capabilities.administersWorkspace ? (
-          <TableEmptyState title={`No rooms in ${workspace} yet`}>
-            Create a room to give people and agents somewhere to work together.
-          </TableEmptyState>
-        ) : (
-          <TableEmptyState title={`You're not in any rooms in ${workspace} yet`}>
-            Create a room of your own, or ask a workspace admin to add you to one.
-          </TableEmptyState>
-        )}
-        {newRoom}
-      </Stack>
+      <EmptyCard icon={ForumOutlined} title={`No rooms in ${workspace} yet`} action={newRoom}>
+        Create a room to give people and agents somewhere to work together.
+      </EmptyCard>
     );
 
   const viewingArchived = view === "archived";
@@ -440,6 +510,10 @@ export default function RoomsPage() {
         >
           Couldn't load the rooms: {rooms.error}
         </Alert>
+      ) : visible.length === 0 ? (
+        // Nothing in either view: no tabs to choose between, and nothing to
+        // filter, so the card stands in for them and the table.
+        emptyCard
       ) : (
         <>
           <Tabs
@@ -453,20 +527,29 @@ export default function RoomsPage() {
             <Tab value="active" label={tabLabel("Active", active.length)} />
             <Tab value="archived" label={tabLabel("Archived", archived.length)} />
           </Tabs>
-          <DataTable
-            rows={rows}
-            columns={columns}
-            fillHeight
-            noun={NOUN}
-            search={search}
-            pinnedRight={["actions"]}
-            emptyState={emptyState}
-            checkboxSelection
-            isRowSelectable={(room) => canArchiveRoom(room)}
-            onRowSelectionModelChange={setSelected}
-            onRowClick={(params) => navigate(`/rooms/${params.id}`)}
-            sx={{ "& .MuiDataGrid-row": { cursor: "pointer" } }}
-          />
+          {rows.length === 0 ? (
+            emptyCard
+          ) : (
+            <DataTable
+              rows={rows}
+              columns={columns}
+              // Sized to a page of rows, as the design's table is: the page
+              // scrolls, not the table, and a short list ends at its last row.
+              height={TABLE_CHROME + ROW * Math.min(rows.length, PAGE_SIZE)}
+              pageSize={PAGE_SIZE}
+              noun={NOUN}
+              search={search}
+              selectFilters={SELECT_FILTERS}
+              initialSort={INITIAL_SORT}
+              yours={scope === "yours"}
+              pinnedRight={PINNED}
+              checkboxSelection
+              isRowSelectable={(room) => canArchiveRoom(room)}
+              onRowSelectionModelChange={setSelected}
+              onRowClick={(params) => navigate(`/rooms/${params.id}`)}
+              sx={{ "& .MuiDataGrid-row": { cursor: "pointer" } }}
+            />
+          )}
         </>
       )}
 

@@ -1,11 +1,11 @@
 import AdminPanelSettingsOutlined from "@mui/icons-material/AdminPanelSettingsOutlined";
-import DashboardOutlined from "@mui/icons-material/DashboardOutlined";
-import DescriptionOutlined from "@mui/icons-material/DescriptionOutlined";
-import FolderOutlined from "@mui/icons-material/FolderOutlined";
+import HomeOutlined from "@mui/icons-material/HomeOutlined";
+import LocalLibraryOutlined from "@mui/icons-material/LocalLibraryOutlined";
 import MeetingRoomOutlined from "@mui/icons-material/MeetingRoomOutlined";
 import PowerOutlined from "@mui/icons-material/PowerOutlined";
 import SettingsOutlined from "@mui/icons-material/SettingsOutlined";
 import SmartToyOutlined from "@mui/icons-material/SmartToyOutlined";
+import ViewQuiltOutlined from "@mui/icons-material/ViewQuiltOutlined";
 import type { ComponentType, ReactNode } from "react";
 import {
   type Access,
@@ -114,7 +114,7 @@ export interface AreaDefinition {
 
 export const AREAS: Record<SettingsArea, AreaDefinition> = {
   workspace: {
-    title: "Workspace settings",
+    title: "Settings",
     access: everyone,
     first: "/settings/general",
     outsideWorkspace: false,
@@ -158,6 +158,12 @@ function personalSettingsPage(
   return { ...settingsPage(path, "workspace", menu, access, element), personal: true };
 }
 
+/** A page of a settings area reached from one of its pages rather than its
+ * menu: the area's chrome, with no menu row of its own. */
+function withinArea(route: PageRoute, area: SettingsArea): PageRoute {
+  return { ...route, area };
+}
+
 function areaIndex(path: string, area: SettingsArea): AreaRoute {
   return { kind: "area", path, area };
 }
@@ -196,13 +202,12 @@ export const ROUTES: readonly AppRoute[] = [
   page("/connectors", serviceConnections, <ConnectorsPage />),
   page("/connectors/:connectorId", serviceConnections, <ConnectorPage />),
 
-  page("/workspace/private-channel-rooms", workspaceAdmins, <PrivateChannelRoomsPage />),
-
   // Where the pages were before the settings areas.
   redirect("/machines", "/settings/devices"),
   redirect("/collaborations", "/settings/messaging-apps"),
   redirect("/registration-keys", "/settings/api-keys"),
   redirect("/workspace", "/settings/users"),
+  redirect("/workspace/private-channel-rooms", "/settings/general/private-channel-rooms"),
   redirect("/organization", "/settings/org"),
   redirect("/users", "/platform/users"),
   redirect("/operator/workspaces", "/platform/workspaces"),
@@ -211,6 +216,11 @@ export const ROUTES: readonly AppRoute[] = [
   // rebuilt, and sits here in the meantime.
   areaIndex("/settings", "workspace"),
   settingsPage("/settings/general", "workspace", "General", everyone, <WorkspaceGeneralPage />),
+  // Opened from General's "Public rooms on private channels" warning.
+  withinArea(
+    page("/settings/general/private-channel-rooms", workspaceAdmins, <PrivateChannelRoomsPage />),
+    "workspace",
+  ),
   settingsPage("/settings/users", "workspace", "Users", everyone, <WorkspaceUsersPage />),
   settingsPage(
     "/settings/messaging-apps",
@@ -228,8 +238,8 @@ export const ROUTES: readonly AppRoute[] = [
   ),
   settingsPage("/settings/api-keys", "workspace", "API keys", everyone, <ApiKeysPage />),
   settingsPage("/settings/guardrails", "workspace", "Guardrails", everyone, <WorkspaceGuardrailsPage />),
-  settingsPage("/settings/devices", "workspace", "Devices", agentManagement, <DevicesPage />),
   settingsPage("/usage", "workspace", "Usage & budget", workspaceAdmins, <UsagePage />),
+  settingsPage("/settings/devices", "workspace", "Devices", agentManagement, <DevicesPage />),
   personalSettingsPage("/settings/account", "Your account", everyone, <AccountPage />),
 
   // Organization settings: the area admits the organization's admins, and
@@ -253,7 +263,7 @@ export const ROUTES: readonly AppRoute[] = [
   settingsPage(
     "/settings/org/connectors",
     "organization",
-    "Connectors and apps",
+    "Connectors",
     orgConnectors,
     <OrganizationConnectorsPage />,
   ),
@@ -315,10 +325,30 @@ export function areaOf(pathname: string): SettingsArea | null {
   return null;
 }
 
-/** Whether `pathname` is in an area outside the workspace. */
-export function outsideWorkspace(pathname: string): boolean {
+/** The settings area `pathname` (a page's own URL) is in, where `caps` may
+ * enter it, or null. A refused area, or a URL that is no page, is shown in
+ * the workspace's own chrome rather than the area's. */
+export function enteredArea(pathname: string, caps: Capabilities): SettingsArea | null {
   const area = areaOf(pathname);
+  return area !== null && AREAS[area].access(caps).allowed ? area : null;
+}
+
+/** Whether `pathname` is shown, to someone with `caps`, as a place outside
+ * the workspace. */
+export function outsideWorkspace(pathname: string, caps: Capabilities): boolean {
+  const area = enteredArea(pathname, caps);
   return area !== null && AREAS[area].outsideWorkspace;
+}
+
+/** Whether `pathname` is under the URL of an area outside the workspace,
+ * whether or not there is a page at it. */
+export function underAreaOutsideWorkspace(pathname: string): boolean {
+  return ROUTES.some(
+    (route) =>
+      route.kind === "area" &&
+      AREAS[route.area].outsideWorkspace &&
+      (pathname === route.path || pathname.startsWith(`${route.path}/`)),
+  );
 }
 
 /** The pages of `area`'s menu that `caps` may open, in order. */
@@ -343,32 +373,41 @@ export interface RailItem {
   /** Kept at the foot of the rail, beside the account button: an area for
    * settings rather than for work. */
   bottom: boolean;
+  /** Whether the label shows under the glyph. Unshown, it is still the
+   * item's accessible name. */
+  labelled: boolean;
 }
 
 function railItem(
   label: string,
   to: string,
   icon: ComponentType<{ sx?: object }>,
-  { activeFor = [to], bottom = false }: { activeFor?: readonly string[]; bottom?: boolean } = {},
+  {
+    activeFor = [to],
+    bottom = false,
+    labelled = true,
+  }: { activeFor?: readonly string[]; bottom?: boolean; labelled?: boolean } = {},
 ): RailItem {
-  return { label, to, icon, activeFor, bottom };
+  return { label, to, icon, activeFor, bottom, labelled };
 }
 
 /** The rail, in order. An item shows only to someone who may open the page
- * it leads to (`accessTo`). The ecosystem graph is opened from Overview,
- * which shows as current there. */
+ * it leads to (`accessTo`). The ecosystem graph is opened from Home, which
+ * shows as current there. Each glyph is the outline of the thing the page
+ * holds. The Settings cog needs no label, like the account button below it. */
 export const RAIL: readonly RailItem[] = [
-  railItem("Overview", "/overview", DashboardOutlined, {
+  railItem("Home", "/overview", HomeOutlined, {
     activeFor: ["/overview", "/ecosystem"],
   }),
   railItem("Agents", "/agents", SmartToyOutlined),
   railItem("Rooms", "/rooms", MeetingRoomOutlined),
-  railItem("Templates", "/templates", DescriptionOutlined),
+  railItem("Templates", "/templates", ViewQuiltOutlined),
   railItem("Connectors", "/connectors", PowerOutlined),
-  railItem("Resources", "/resources", FolderOutlined),
+  railItem("Resources", "/resources", LocalLibraryOutlined),
   railItem("Settings", "/settings", SettingsOutlined, {
     activeFor: ["/settings", "/usage"],
     bottom: true,
+    labelled: false,
   }),
   railItem("Platform", "/platform", AdminPanelSettingsOutlined, { bottom: true }),
 ];

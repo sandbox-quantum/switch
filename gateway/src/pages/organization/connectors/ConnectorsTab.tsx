@@ -33,6 +33,7 @@ import {
   available,
   needsConfirming,
   offConfirmation,
+  policyChanged,
   policyChip,
   policyForSwitch,
   policyOf,
@@ -133,8 +134,7 @@ export default function ConnectorsTab({
         ? await clearOrganizationService(service.slug)
         : await setOrganizationService(service.slug, setting);
     setWarning(left);
-    const label = POLICIES.find((p) => p.value === to)!.label;
-    onChanged(`${service.name}: ${label.toLowerCase()}.`);
+    onChanged(policyChanged(service.name, to));
   };
 
   const choose = async (service: OrganizationService, to: Policy) => {
@@ -195,7 +195,7 @@ export default function ConnectorsTab({
                 meta={reachText(service, services.workspaces)}
                 onOpen={() =>
                   navigate(`/connectors/${service.slug}`, {
-                    state: { back: { label: "Connectors and apps", to: "/settings/org/connectors" } },
+                    state: { back: { label: "Connectors", to: "/settings/org/connectors" } },
                   })
                 }
                 trailing={
@@ -217,7 +217,7 @@ export default function ConnectorsTab({
                         available={available(policy)}
                         connectorName={service.name}
                         scopeName={organizationName}
-                        turnedOffBy={null}
+                        blocked={null}
                         onChange={(on) => void choose(service, policyForSwitch(on))}
                       />
                       <PolicyMenu

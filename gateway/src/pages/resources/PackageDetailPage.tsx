@@ -35,6 +35,8 @@ import {
   DetailLoadFailed,
   DetailLoading,
   InfoLine,
+  ReadOnlyBanner,
+  ownerCanChange,
   requiredHelper,
   useAfterTransfer,
   useResourceDetail,
@@ -45,13 +47,13 @@ const LIST_PATH = "/resources?tab=packages";
 export default function PackageDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { data: pkg, setData: setPkg, error, loading, reload } = useResourceDetail(id, loadPackage);
+  const { data: pkg, setData: setPkg, error, errorStatus, loading, reload } = useResourceDetail(id, loadPackage);
   const { afterTransfer, refreshNotice } = useAfterTransfer(id, loadPackage, setPkg, LIST_PATH);
   const [deleteOpen, setDeleteOpen] = useState(false);
 
   if (pkg === null && loading) return <DetailLoading />;
   if (pkg === null || !id) {
-    return <DetailLoadFailed what="package" listPath={LIST_PATH} error={error} onRetry={reload} />;
+    return <DetailLoadFailed what="package" listPath={LIST_PATH} error={error} errorStatus={errorStatus} onRetry={reload} />;
   }
 
   return (
@@ -61,7 +63,7 @@ export default function PackageDetailPage() {
         <IconButton
           onClick={() => navigate(LIST_PATH)}
           size="small"
-          aria-label="Back"
+          aria-label="Back to resources"
         >
           <ArrowBack />
         </IconButton>
@@ -70,6 +72,7 @@ export default function PackageDetailPage() {
         </Typography>
         <AccessChip pair={pkg} />
       </Stack>
+      {!pkg.can_edit && <ReadOnlyBanner whose={ownerCanChange("package", pkg.owner_id, pkg.owner_name)} />}
 
       <Stack spacing={4}>
         <InfoSection pkg={pkg} />

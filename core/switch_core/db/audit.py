@@ -76,6 +76,9 @@ class AuditAction(StrEnum):
     SERVICE_GRANT_SET = "service_grant.set"
     SERVICE_GRANT_REMOVED = "service_grant.removed"
     AGENT_DELETION_REQUESTED = "agent.deletion_requested"
+    # Someone other than its owner, a workspace admin, narrowed who may
+    # address an agent.
+    AGENT_ADDRESSING_CHANGED = "agent.addressing_changed"
     AGENT_DELETED = "agent.deleted"
     WORKSPACE_SERVICE_ENABLED = "workspace_service.enabled"
     WORKSPACE_SERVICE_DISABLED = "workspace_service.disabled"

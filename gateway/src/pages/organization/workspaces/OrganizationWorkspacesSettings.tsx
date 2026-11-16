@@ -1,7 +1,8 @@
 import Add from "@mui/icons-material/Add";
-import { Alert, Box, Button, CircularProgress, Snackbar, Stack, Typography } from "@mui/material";
+import { Alert, Box, Button, CircularProgress, Stack, Typography } from "@mui/material";
 import { useCallback, useState } from "react";
 import InfoTip from "../../../components/InfoTip";
+import SuccessSnackbar from "../../../components/SuccessSnackbar";
 import { useAuth } from "../../../data/AuthContext";
 import { fetchCurrentOrganization, fetchOrganizationWorkspaces } from "../../../data/api";
 import { useLoad } from "../../workspace/useLoad";
@@ -44,10 +45,11 @@ export default function OrganizationWorkspacesSettings() {
           <Typography variant="h5">Workspaces</Typography>
           <Stack direction="row" spacing={0.5} sx={{ alignItems: "center" }}>
             <Typography variant="body2" color="text.secondary">
-              The workspaces in {organization.data?.name ?? ""}.
+              The workspaces in {organization.data?.name ?? "this organization"}.
             </Typography>
             <InfoTip>
-              Org admins administer every workspace, so they aren't listed under Admins.
+              Org admins administer every workspace, so they aren't listed under Admins, and each
+              workspace's users include them.
             </InfoTip>
           </Stack>
         </Stack>
@@ -89,12 +91,7 @@ export default function OrganizationWorkspacesSettings() {
           }}
         />
       )}
-      <Snackbar
-        open={notice !== null}
-        autoHideDuration={5000}
-        onClose={() => setNotice(null)}
-        message={notice}
-      />
+      <SuccessSnackbar message={notice} onClose={() => setNotice(null)} />
     </Box>
   );
 }

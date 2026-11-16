@@ -47,6 +47,12 @@ describe("the route table's reach", () => {
     expect(dangling).toEqual([]);
   });
 
+  it("lights Home on the ecosystem graph, which Home opens, and Settings on Usage & budget", () => {
+    const standsFor = (label: string) => RAIL.find((item) => item.label === label)?.activeFor ?? [];
+    expect(standsFor("Home")).toContain("/ecosystem");
+    expect(standsFor("Settings")).toContain("/usage");
+  });
+
   it("keeps only the settings areas at the foot of the rail", () => {
     expect(RAIL.filter((item) => item.bottom).map((item) => item.to)).toEqual([
       "/settings",

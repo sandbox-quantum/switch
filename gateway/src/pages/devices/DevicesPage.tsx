@@ -23,6 +23,7 @@ import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } fro
 import ConfirmDialog from "../../components/ConfirmDialog";
 import DataTable, { TableEmptyState } from "../../components/DataTable";
 import InfoTip from "../../components/InfoTip";
+import SuccessSnackbar from "../../components/SuccessSnackbar";
 import PageBanner from "../../components/PageBanner";
 import type { RowAction } from "../../components/RowActionsMenu";
 import { useAuth } from "../../data/AuthContext";
@@ -486,11 +487,7 @@ function Devices({
     </Card>
   );
   const emptyAgents = (
-    <Card variant="outlined" sx={{ borderRadius: "16px" }}>
-      <Box sx={{ px: 3, py: 6, textAlign: "center" }}>
-        <TableEmptyState title="No managed agents yet">Place one on a device to get started.</TableEmptyState>
-      </Box>
-    </Card>
+    <TableEmptyState title="No managed agents yet">Place one on a device to get started.</TableEmptyState>
   );
 
   let body: ReactNode;
@@ -575,8 +572,8 @@ function Devices({
           <Typography variant="h5">Devices</Typography>
           <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
             {showOwner
-              ? `The devices that run agents in ${workspace}.`
-              : `Your devices that run agents in ${workspace}.`}
+              ? `Computers running an agents controller in ${workspace}.`
+              : `Your computers running an agents controller in ${workspace}.`}
           </Typography>
         </Box>
         <Button variant="contained" startIcon={<AddCircleOutline />} onClick={() => setAddOpen(true)}>
@@ -601,7 +598,7 @@ function Devices({
           <PageBanner tone="warning">Couldn't read your cloud device, so it may be missing: {cloudError}</PageBanner>
         )}
         {providersError !== null && <PageBanner tone="warning">{providersError}</PageBanner>}
-        {notice && (
+        {notice && notice.severity !== "success" && (
           <Alert severity={notice.severity} onClose={() => setNotice(null)}>
             {notice.text}
           </Alert>
@@ -723,6 +720,10 @@ function Devices({
               : { severity: "success", text: `Deleted ${name}.` },
           );
         }}
+      />
+      <SuccessSnackbar
+        message={notice?.severity === "success" ? notice.text : null}
+        onClose={() => setNotice(null)}
       />
     </Box>
   );

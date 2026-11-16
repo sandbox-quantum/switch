@@ -96,7 +96,7 @@ export default function DeviceDetailsDialog({
                             {!report.installed ? (
                               EM_DASH
                             ) : (
-                              <Tooltip title={report.reason ?? ""}>
+                              <Tooltip title={report.auth_problem ?? report.reason ?? ""}>
                                 <Chip
                                   size="small"
                                   variant="outlined"

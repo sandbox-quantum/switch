@@ -40,7 +40,6 @@ export default function WorkspaceUsersPage() {
           <Typography variant="h5">Users</Typography>
           <Typography variant="body2" color="text.secondary">
             Everyone in {tenant.name}.
-            {!administers && " Ask a workspace admin to invite someone."}
           </Typography>
         </Stack>
         {administers && (
