@@ -673,6 +673,13 @@ version of their own to them without also giving them a release of their own.
   of as well as the rooms.
 
 #### Fixed
+- **Channels Switch makes have readable names.** A room named "switch - Code
+  Review", as the official room templates name theirs, got `#switch---code-review`
+  on Slack. Runs of dashes are now one dash, with none at either end, on Slack
+  and Discord, and in Mattermost's and Rocket.Chat's channel URL names, so the
+  room gets `#switch-code-review`. Existing channels keep their names, and a
+  room from before Switch kept how it was named still follows its channel's
+  renames whether the channel has the old form or the new one.
 - **A sign-out that fails in the dashboard says so.** Signing out, or out of
   every device, from the account menu or the screens before a workspace said
   nothing when Switch didn't answer, and a failed sign-out of this browser
