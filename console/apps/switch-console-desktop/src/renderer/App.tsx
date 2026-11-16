@@ -5,6 +5,7 @@ import { AppMenuEvents } from './app/app-menu-events';
 import { HostSetupEvents } from './app/host-setup-events';
 import { Workspace } from './app/workspace';
 import { ConsoleLinkListener } from './features/deeplinks/console-link-listener';
+import { HostKeyPromptGate } from './features/remote-hosts/host-key-prompt';
 import { SessionDeeplinkListener } from './features/switch-rooms/session-deeplink-listener';
 import { BridgePlatformsLoader } from './features/switch-servers/bridge-platforms-loader';
 import { LocalMattermostListener } from './features/switch-servers/local-mattermost-listener';
@@ -32,6 +33,7 @@ function AppContent() {
           <RightSidebarProvider>
             <ThemeProvider>
               <ModalRenderer />
+              <HostKeyPromptGate />
               {/* The first-run pages say it themselves when they are on. */}
               {!BUILD_FEATURE_FLAGS.onboarding && <TelemetryConsentGate />}
               <Workspace />

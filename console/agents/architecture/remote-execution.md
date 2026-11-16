@@ -14,6 +14,7 @@ silently does less on a remote host. This page is the map of the remote half.
 | SSH host records, keyed by `~/.ssh/config` alias | `src/main/core/remote-hosts/`, table `remote_hosts` |
 | Reachability state machine | `remote-hosts/host-reachability-service.ts`, `src/shared/core/remote-hosts/reachability.ts`, table `remote_host_reachability` |
 | SSH config, connection, transport | `src/main/core/ssh/` |
+| SSH host key verification | `src/main/core/ssh/host-keys/`, `src/shared/core/ssh/host-keys.ts` |
 | Where a command runs | `src/main/core/execution-context/` — `local-execution-context.ts` / `ssh-execution-context.ts` |
 | How a session is launched | `src/main/core/sdk-host/shared-agent-runtime.ts` |
 | Remote dependency detection and install | `dependencies/remote-dependency-manager.ts`, `dependencies/ssh-install-runner.ts` |
@@ -37,6 +38,8 @@ host-dependent path consults up front:
   checking so recovery is automatic.
 - `suspended` — **authentication** failed. Retrying a rejected key never self-heals, so
   there is no automatic probing; the user must fix auth and retry explicitly.
+- `untrusted` — the host's **SSH key** was refused (see below). No automatic probing
+  either; the user decides about the key, then retries.
 
 The backoff is `1s, 5s, 15s, 30s, 60s, 300s` (capped and repeated). Early steps are tight
 because the common cause is a credential the user is actively re-establishing (VPN,
@@ -46,6 +49,31 @@ retry short-circuits the schedule.
 **When adding a host-dependent path, gate it on reachability rather than discovering the
 failure yourself.** The distinction between `unreachable` and `suspended` is the point: one
 is worth retrying automatically and the other is not.
+
+### Every connection checks the host's key
+
+ssh2 accepts any host key unless it is given a verifier, and it does not read
+`known_hosts`. `resolveSshConnectConfig` therefore always takes a host key check
+(`ssh/host-keys/`), built from what `ssh -G` resolved for the alias: the user's
+`UserKnownHostsFile` and `GlobalKnownHostsFile` (hashed entries, `[host]:port`,
+wildcards, negations and `@revoked` honoured, `@cert-authority` not, since ssh2
+negotiates no host certificates), `HostKeyAlias`, and Console's own known_hosts file
+under user data. Host key algorithms already on record for the host are offered first,
+as OpenSSH does, so a host with several keys presents one that can be checked; a key of
+any other type for a host with keys on record counts as **changed**.
+
+Only a key on record connects. Anything else fails the connection at once with
+`SshHostKeyError` — the handshake is not held open on a prompt, because ssh2's ready
+timeout and the server's login grace period would both run out under a user reading a
+fingerprint. `HostKeyTrustService` keeps the refused key and the renderer's
+`HostKeyPromptGate` asks: trust a first-contact key, or, for a changed key, replace it
+after an explicit confirmation. Only that answer writes Console's known_hosts (never the
+user's); the reconnect then uses it. So nothing — a background reconnect, a probe,
+session restore — ever accepts a key the user did not confirm. `StrictHostKeyChecking
+yes` means no offer to trust an unknown host; `no` and `accept-new` are deliberately not
+honoured. An explicit check (Add host, Retry) waits for the answer and carries on.
+
+Agent forwarding follows the alias's own `ForwardAgent` and nothing else.
 
 ### Never report "fine" for something you did not observe
 

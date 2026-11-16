@@ -70,7 +70,9 @@ function describeHostUnreachable(error: RpcError, fallback: string): FailureDesc
   const headline =
     reachability.status === 'suspended'
       ? `Switch Console could not authenticate to ${host}. It will not keep retrying on its own — fix the host's SSH credentials, then retry.`
-      : `Switch Console cannot reach ${host} at the moment. It keeps probing in the background, so this clears on its own once the host answers.`;
+      : reachability.status === 'untrusted'
+        ? `Switch Console refused the SSH host key of ${host}, so it is not connecting. Review the key, then retry.`
+        : `Switch Console cannot reach ${host} at the moment. It keeps probing in the background, so this clears on its own once the host answers.`;
 
   return { headline, detail: reachability.lastError };
 }
