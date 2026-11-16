@@ -6,6 +6,7 @@ import { log } from '@main/lib/logger';
 import { registerExternalLinkHandlers, registerGuestLinkHandlers } from '@main/utils/externalLinks';
 import { PRODUCT_NAME } from '@shared/app-identity';
 import { appCommandNavigateChannel } from '@shared/events/appEvents';
+import { DEVTOOLS_ENABLED } from './devtools';
 import { APP_ORIGIN } from './protocol';
 
 let mainWindow: BrowserWindow | null = null;
@@ -30,6 +31,7 @@ export function createMainWindow(): BrowserWindow {
       // constrained in the will-attach-webview handler below, which is what
       // actually keeps this from widening the app's attack surface.
       webviewTag: true,
+      devTools: DEVTOOLS_ENABLED,
     },
     ...(process.platform === 'darwin'
       ? {
