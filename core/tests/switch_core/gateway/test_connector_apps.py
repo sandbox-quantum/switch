@@ -407,12 +407,12 @@ class TestOnlyTheOperator:
         assert apps[AIRTABLE]["redirect_uris"] == [AIRTABLE_CALLBACK]
         assert apps[AIRTABLE]["redirect_uri"] == AIRTABLE_CALLBACK
         assert apps[AIRTABLE]["needs_public_url"] is True
-        # GitLab's application lists the scopes of both levels, which the
-        # operator ticks when creating it.
+        # GitLab's application lists the scopes a sign-in asks for, which
+        # the operator ticks when creating it.
         gitlab = f"{PUBLIC}/gateway/service-connections/gitlab/flows/callback"
         assert apps["gitlab"]["redirect_uris"] == [gitlab]
         assert apps["gitlab"]["needs_public_url"] is True
-        assert apps["gitlab"]["scopes"] == ["mcp", "read_api", "read_user", "api"]
+        assert apps["gitlab"]["scopes"] == ["mcp", "api", "read_user"]
         assert apps[AIRTABLE]["scopes"] == [
             "data.records:read",
             "schema.bases:read",

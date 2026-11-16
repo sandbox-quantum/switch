@@ -8,6 +8,7 @@ cheap enough to run everywhere and catch exactly that class of mistake.
 
 from __future__ import annotations
 
+import ast
 import re
 from collections import defaultdict
 from pathlib import Path
@@ -83,3 +84,122 @@ def test_filename_matches_revision_id() -> None:
     assert not mismatched, (
         f"migration filenames disagree with their revision ids: {mismatched}"
     )
+
+
+_HOT_TABLES = frozenset({"messages", "agent_events"})
+
+# Revisions that built an index on a hot table before the rule below existed,
+# and are applied everywhere now. Two created the table itself, so it was empty.
+_INDEXED_A_HOT_TABLE_BEFORE_THE_RULE = frozenset(
+    {
+        "a3f7c91b8e24",
+        "a7e3c1d9f204",
+        "b5d2e08c17af",
+        "c4d8e2f6a913",
+        "d8b4f2a6c1e9",
+    }
+)
+
+_CREATE_INDEX_SQL_RE = re.compile(
+    r"CREATE\s+(?:UNIQUE\s+)?INDEX\s+(?:CONCURRENTLY\s+)?(IF\s+NOT\s+EXISTS\s+)?"
+    r"\S+\s+ON\s+(?:ONLY\s+)?(?:public\.)?(\w+)",
+    re.IGNORECASE,
+)
+
+
+def _literal_text(node: ast.AST | None) -> str | None:
+    """A string literal's text, with an f-string's placeholders as `{}`."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.JoinedStr):
+        return "".join(
+            part.value if isinstance(part, ast.Constant) else "{}"
+            for part in node.values
+        )
+    return None
+
+
+def _unguarded_hot_index_builds(source: str) -> list[str]:
+    tree = ast.parse(source)
+    upgrade = next(
+        (
+            node
+            for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "upgrade"
+        ),
+        None,
+    )
+    if upgrade is None:
+        return []
+    found: list[str] = []
+    for node in ast.walk(upgrade):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in {"create_index", "create_unique_constraint"}
+        ):
+            keywords = {kw.arg: kw.value for kw in node.keywords}
+            table = _literal_text(
+                node.args[1] if len(node.args) > 1 else keywords.get("table_name")
+            )
+            if table not in _HOT_TABLES:
+                continue
+            guard = keywords.get("if_not_exists")
+            guarded = isinstance(guard, ast.Constant) and guard.value is True
+            if node.func.attr == "create_unique_constraint" or not guarded:
+                found.append(f"line {node.lineno}: {node.func.attr} on {table}")
+        text = _literal_text(node)
+        if text is None:
+            continue
+        for match in _CREATE_INDEX_SQL_RE.finditer(text):
+            if match.group(2) in _HOT_TABLES and match.group(1) is None:
+                found.append(f"line {node.lineno}: CREATE INDEX on {match.group(2)}")
+    return found
+
+
+def test_an_index_on_a_hot_table_can_be_built_ahead_of_the_upgrade() -> None:
+    """Building an index inside a revision blocks every write to its table
+    until the migration commits, and on `messages` that is every send. An
+    operator with a large table builds it `CONCURRENTLY` by hand first, which
+    only helps if the revision then skips it: `IF NOT EXISTS` in SQL,
+    `if_not_exists=True` on `op.create_index`. A unique constraint cannot be
+    skipped that way; add a unique index instead.
+
+    Reads the revision's source, so a table name held in a variable is not
+    seen. `b8f2d0c41e57` is the pattern to copy, docstring included.
+    """
+    offenders: dict[str, list[str]] = {}
+    for path in sorted(_VERSIONS.glob("*.py")):
+        source = path.read_text()
+        match = _REVISION_RE.search(source)
+        if match is None or match.group(1) in _INDEXED_A_HOT_TABLE_BEFORE_THE_RULE:
+            continue
+        builds = _unguarded_hot_index_builds(source)
+        if builds:
+            offenders[path.name] = builds
+    assert not offenders, (
+        f"index builds on {sorted(_HOT_TABLES)} an operator cannot do ahead "
+        f"of the upgrade: {offenders}"
+    )
+
+
+def test_the_hot_table_check_sees_each_shape_of_index_build() -> None:
+    unguarded = """
+def upgrade():
+    op.create_index("ix_a", "messages", ["room_id"])
+    op.create_index("ix_b", table_name="agent_events", columns=["agent_id"])
+    op.create_unique_constraint("uq_c", "messages", ["room_id", "seq"])
+    op.execute(f"CREATE UNIQUE INDEX {_INDEX} ON messages (seq)")
+    op.execute("CREATE INDEX CONCURRENTLY ix_d ON agent_events (seq)")
+"""
+    guarded = """
+def upgrade():
+    op.create_index("ix_a", "messages", ["room_id"], if_not_exists=True)
+    op.execute(f"CREATE INDEX IF NOT EXISTS {_INDEX} ON messages (seq)")
+    op.create_index("ix_e", "rooms", ["tenant_id"])
+
+def downgrade():
+    op.create_index("ix_a", "messages", ["room_id"])
+"""
+    assert len(_unguarded_hot_index_builds(unguarded)) == 5
+    assert _unguarded_hot_index_builds(guarded) == []

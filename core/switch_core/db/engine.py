@@ -158,6 +158,10 @@ def create_engine_from_config(
         "pool_pre_ping": config.db_pool_pre_ping,
         "pool_timeout": config.db_pool_timeout,
         "connect_args": connect_args,
+        # A database error's text is what lands in the logs, so it must not
+        # carry the bound values (emails, message text, tokens). They are still
+        # on the exception as `.params` for anyone debugging in a shell.
+        "hide_parameters": True,
     }
     defaults.update(engine_kwargs)
     engine = create_async_engine(config.database_url, **defaults)
@@ -200,6 +204,7 @@ def create_unpooled_engine(config: SwitchConfig) -> AsyncEngine:
             config.database_url,
             poolclass=NullPool,
             connect_args=app_connect_args(config),
+            hide_parameters=True,
         ),
         config,
     )
