@@ -7,6 +7,7 @@ from switch_core.bridges.collaboration.collaboration_core import CollaborationCo
 from switch_core.bridges.collaboration.models import InboundMessage
 from switch_core.clients.admin_messages import AdminMessageType
 from switch_core.trust.client import (
+    TRUST_MESSAGE_TEXT_LIMIT,
     GuardrailsCheckError,
     TrustCheckResult,
     TrustFinding,
@@ -84,12 +85,14 @@ class _FixedTrustClient:
         self._result = result
         self.room_ids: list[str] = []
         self.tenant_ids: list[str] = []
+        self.contents: list[str] = []
 
     async def check(
         self, *, tenant_id: str, role: str, content: str, room_id: str
     ) -> TrustCheckResult:
         self.room_ids.append(room_id)
         self.tenant_ids.append(tenant_id)
+        self.contents.append(content)
         return self._result
 
 
@@ -346,4 +349,27 @@ async def test_trust_check_failure_fails_open_and_annotates_instead_of_blocking(
     assert len(adapter.admin_messages) == 1
     _, body, _, message_type = adapter.admin_messages[0]
     assert "Switch Trust could not check" in body
+    assert message_type == AdminMessageType.TRUST_ERRORED.value
+
+
+_OK = TrustCheckResult(outcome="ok", policy_id=None, policy_name=None)
+
+
+async def test_a_long_message_is_checked_in_part_and_room_and_sender_are_told() -> None:
+    """Padding a message cannot make Switch Trust time out: only its start is
+    sent, and the room and the sender both see that the rest went unchecked."""
+    human_actor = _FakeHumanActor()
+    adapter = _FakeAdapter()
+    trust = _FixedTrustClient(_OK)
+    bridge = _bridge(human_actor, adapter, trust)
+    content = "a" * TRUST_MESSAGE_TEXT_LIMIT + "b" * 5_000
+
+    await CollaborationCore._handle_inbound_message(bridge, _message(content))
+
+    assert trust.contents == ["a" * TRUST_MESSAGE_TEXT_LIMIT]
+    [(_, sent)] = human_actor.sent
+    assert sent.startswith(content)
+    assert "checked only the first 20,000 characters" in sent
+    [(_, body, _, message_type)] = adapter.admin_messages
+    assert "checked only the first 20,000 characters" in body
     assert message_type == AdminMessageType.TRUST_ERRORED.value

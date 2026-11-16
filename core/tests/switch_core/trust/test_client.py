@@ -12,7 +12,10 @@ import httpx
 import pytest
 
 from switch_core.keys import UndecryptableError
+from switch_core.observability.catalogue import TRUST_CHECK_FAILURES
+from switch_core.observability.metrics import MetricsRegistry, install, uninstall
 from switch_core.trust.client import (
+    TRUST_MESSAGE_TEXT_LIMIT,
     DynamicTrustClient,
     GuardrailBlockedError,
     GuardrailsCheckError,
@@ -600,6 +603,136 @@ def test_trust_annotation_names_the_categories_for_an_alert():
 def test_trust_annotation_covers_errored_the_same_way_as_degraded():
     errored = TrustCheckResult(outcome="errored", policy_id=None, policy_name=None)
     assert trust_annotation(errored) is not None
+
+
+def _posted_contents(handler_result: dict) -> tuple[list[str], Callable]:
+    posted: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        posted.append(json.loads(request.content)["messages"][0]["content"])
+        return httpx.Response(200, json=handler_result)
+
+    return posted, handler
+
+
+@pytest.mark.asyncio
+async def test_a_long_message_is_cut_before_the_check_and_says_so():
+    """A message padded past the cap cannot push its check into a timeout:
+    only its start is sent, and the result says the rest went unchecked."""
+    posted, handler = _posted_contents({"outcome": "GUARDRAIL_RESULT_OUTCOME_OK"})
+    content = "a" * TRUST_MESSAGE_TEXT_LIMIT + "b" * 100_000
+
+    result = await check_message(
+        _dynamic_client(_ROW, handler),
+        tenant_id="tenant-1",
+        role="user",
+        content=content,
+        room_id="room-1",
+    )
+
+    assert posted == ["a" * TRUST_MESSAGE_TEXT_LIMIT]
+    assert result.outcome == "ok"
+    assert result.checked_part == "the first 20,000 characters"
+    annotation = trust_annotation(result)
+    assert annotation is not None
+    assert "checked only the first 20,000 characters" in annotation
+
+
+@pytest.mark.asyncio
+async def test_a_message_within_the_cap_is_checked_whole_with_no_note():
+    posted, handler = _posted_contents({"outcome": "GUARDRAIL_RESULT_OUTCOME_OK"})
+    content = "a" * TRUST_MESSAGE_TEXT_LIMIT
+
+    result = await check_message(
+        _dynamic_client(_ROW, handler),
+        tenant_id="tenant-1",
+        role="user",
+        content=content,
+        room_id="room-1",
+    )
+
+    assert posted == [content]
+    assert result.checked_part is None
+    assert trust_annotation(result) is None
+
+
+@pytest.mark.asyncio
+async def test_redacting_a_cut_message_keeps_its_unchecked_rest():
+    _, handler = _posted_contents(
+        {
+            "outcome": "GUARDRAIL_RESULT_OUTCOME_REDACTED",
+            "findings": [
+                {
+                    "category": "pii/email",
+                    "detector_name": "PiiDetector",
+                    "detected_string": "user@example.com",
+                }
+            ],
+        }
+    )
+    head = "user@example.com " + "a" * (TRUST_MESSAGE_TEXT_LIMIT - 17)
+
+    result = await check_message(
+        _dynamic_client(_ROW, handler),
+        tenant_id="tenant-1",
+        role="user",
+        content=head + "the rest",
+        room_id="room-1",
+    )
+
+    assert result.redacted_content == "[redacted] " + head[17:] + "the rest"
+    assert result.checked_part is not None
+
+
+def test_a_flag_on_a_message_checked_in_part_says_both():
+    annotation = trust_annotation(
+        TrustCheckResult(
+            outcome="alerted",
+            policy_id=None,
+            policy_name=None,
+            findings=(TrustFinding("pii/email", "PiiDetector", None),),
+            checked_part="the first 20,000 characters",
+        )
+    )
+    assert annotation is not None
+    assert "flagged" in annotation
+    assert "checked only the first 20,000 characters" in annotation
+
+
+@pytest.mark.asyncio
+async def test_a_timeout_is_counted_apart_from_other_failures():
+    def timeout(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("slow", request=request)
+
+    def unreachable(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("refused", request=request)
+
+    registry = MetricsRegistry()
+    install(registry)
+    try:
+        for handler in (
+            timeout,
+            timeout,
+            lambda request: httpx.Response(503, text="unavailable"),
+            unreachable,
+        ):
+            result = await check_message(
+                _dynamic_client(_ROW, handler),
+                tenant_id="tenant-1",
+                role="user",
+                content="hi",
+                room_id="room-1",
+            )
+            assert result.outcome == "errored"
+        counted = {
+            dict(point.attributes)["reason"]: point.value
+            for payload in registry.collect()
+            if payload.name == TRUST_CHECK_FAILURES.name
+            for point in payload.numbers
+        }
+    finally:
+        uninstall()
+    assert counted == {"timeout": 2, "refused": 1, "error": 1}
 
 
 def test_trust_annotation_is_none_for_ok_blocked_and_redacted():
