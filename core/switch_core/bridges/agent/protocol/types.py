@@ -262,7 +262,7 @@ class AttachmentRef(BaseModel):
     msgtype: str
 
 
-FollowUp = Literal["thread_follow_up", "channel_follow_up", "main_agent"]
+FollowUp = Literal["thread_follow_up", "channel_follow_up", "main_agent", "one_to_one"]
 
 
 class MessagePayload(BaseModel):
@@ -307,7 +307,9 @@ class MessagePayload(BaseModel):
     # nobody (`delivery/conversation.py`): "thread_follow_up", a reply in a
     # thread the agent spoke or was tagged in last; "channel_follow_up", the
     # sender's next channel message in an exchange with the agent;
-    # "main_agent", the agent is the room's assigned agent. The agent may stay
+    # "main_agent", the agent is the room's assigned agent; "one_to_one", the
+    # agent is the only one in an auto-route room whose only person sent it.
+    # The agent may stay
     # silent on such a message. None when the message named the agent, or was
     # routed (`routed_reason`).
     follow_up: FollowUp | None = None
