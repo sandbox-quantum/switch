@@ -340,6 +340,10 @@ export const deepseekHarnessAcp: AcpProviderHooks = {
   launch: dshLaunch,
   loginCommand: DSH_LOGIN,
   inheritEnv: [KEY, 'DEEPSEEK_BASE_URL', 'DSH_HOME'],
+  unsupportedPlatforms: {
+    win32:
+      'DeepSeek Harness has not been verified with Switch on Windows, where its sandbox only partly confines commands.',
+  },
   // `initialize` advertises no auth methods whether or not a key is set, so
   // the check reads where the key comes from instead of starting the agent.
   checkSignIn: async ({ cwd, env }) => checkDshSignIn({ cwd, env }),

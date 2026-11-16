@@ -182,7 +182,7 @@ it('launches the ACP profile in workspace-write, gated unless the session is in 
     'DEEPSEEK_BASE_URL',
     'DSH_HOME',
   ]);
-  expect(deepseekHarnessAcp.unsupportedPlatforms).toBeUndefined();
+  expect(deepseekHarnessAcp.unsupportedPlatforms?.win32).toContain('not been verified');
 });
 
 it('keeps its state private, quotes the plugin path, and leaves no older gate behind', async () => {

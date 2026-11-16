@@ -79,7 +79,7 @@ describe('mistral-vibe Windows install', () => {
 describe('deepseek-harness install', () => {
   const { installCommands } = deepseekHarness.capabilities.hostDependency;
 
-  it.each(['macos', 'linux', 'windows'] as const)(
+  it.each(['macos', 'linux'] as const)(
     'installs from npm with its install scripts allowed on %s',
     (platform) => {
       expect(installCommands[platform]?.[0]).toMatchObject({
@@ -91,9 +91,12 @@ describe('deepseek-harness install', () => {
     }
   );
 
-  it('allows the scripts the sandbox and shell need, without `$` or `%`', () => {
+  it('allows the scripts its spawn helper and shell need', () => {
     for (const pkg of ['@deepseek-ai/dsh-subprocess-local', 'koffi', 'node-pty'])
       expect(DSH_ALLOW_SCRIPTS.split('=')[1]?.split(',')).toContain(pkg);
-    expect(installCommands.windows?.[0]?.command).not.toMatch(/[$%"]/);
+  });
+
+  it('is not offered on Windows until a Switch session has run there', () => {
+    expect(installCommands.windows).toBeUndefined();
   });
 });
