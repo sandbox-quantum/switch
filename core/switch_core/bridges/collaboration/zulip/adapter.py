@@ -36,6 +36,7 @@ from switch_core.bridges.collaboration.adapter import (
     ActivityMark,
     ActivityMarkRefused,
     AgentIdentity,
+    MessagePartlySent,
     PlatformAdapter,
     RequestCard,
     RichContent,
@@ -626,20 +627,61 @@ class ZulipAdapter(PlatformAdapter):
             else _new_topic(content, self._topic_limit)
         )
         body = await self._labelled(sender_name, content, room_wide_mention)
+        parts = _split(body, self._message_limit)
         first: str | None = None
-        for part in _split(body, self._message_limit):
-            sent = await self._call(
-                "POST",
-                "/api/v1/messages",
-                data={
-                    "type": "stream",
-                    "to": channel_id,
-                    "topic": topic,
-                    "content": part,
-                },
-            )
+        for index, part in enumerate(parts):
+            try:
+                sent = await self._post_to_topic(channel_id, topic, part)
+            except (ZulipError, httpx.HTTPError) as exc:
+                if first is None:
+                    raise
+                logger.error(
+                    "Only %d of %d parts of a message reached Zulip stream %s: %s",
+                    index,
+                    len(parts),
+                    channel_id,
+                    exc,
+                )
+                await self._note_truncation(channel_id, topic, index, len(parts))
+                raise MessagePartlySent(
+                    platform="Zulip",
+                    first_ref=first,
+                    delivered=index,
+                    total=len(parts),
+                ) from exc
             first = first or str(sent["id"])
         return first
+
+    async def _post_to_topic(
+        self, channel_id: str, topic: str, content: str
+    ) -> dict[str, Any]:
+        return await self._call(
+            "POST",
+            "/api/v1/messages",
+            data={
+                "type": "stream",
+                "to": channel_id,
+                "topic": topic,
+                "content": content,
+            },
+        )
+
+    async def _note_truncation(
+        self, channel_id: str, topic: str, delivered: int, total: int
+    ) -> None:
+        notice = (
+            f"_Only {delivered} of {total} parts of this message could be "
+            "delivered; Zulip refused the rest._"
+        )
+        try:
+            await self._post_to_topic(channel_id, topic, notice)
+        except (ZulipError, httpx.HTTPError) as exc:
+            logger.error(
+                "Could not tell Zulip stream %s that a message is cut short; "
+                "nothing there says so: %s",
+                channel_id,
+                exc,
+            )
 
     async def send_attachment(
         self,

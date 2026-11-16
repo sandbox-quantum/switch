@@ -19,6 +19,7 @@ from pydantic import ValidationError
 
 from switch_core.bridges.collaboration.adapter import (
     ActivityMarkRefused,
+    MessagePartlySent,
     PlatformAdapter,
     RequestCard,
     RichContentFailed,
@@ -626,6 +627,42 @@ async def test_a_person_or_group_mention_an_agent_wrote_notifies_nobody(
     assert "@*oncall*" not in content
     assert "@\u200b**Org Owner**" in content
     assert "@_**Test Person**" in content
+
+
+async def test_a_refusal_part_way_through_a_long_post_says_so_and_raises(
+    server: Zulip,
+) -> None:
+    answers = iter(
+        [
+            _ok(id=50),
+            httpx.Response(
+                400,
+                json={"result": "error", "code": "BAD_REQUEST", "msg": "Not allowed"},
+            ),
+        ]
+    )
+    server.on("POST", "/api/v1/messages", lambda r: next(answers, _ok(id=99)))
+    server.on(
+        "GET", "/api/v1/messages/30", lambda r: _ok(message={"subject": "deploys"})
+    )
+    adapter, _ = await _started(server)
+
+    with pytest.raises(MessagePartlySent) as raised:
+        await adapter.send_message(
+            str(STREAM_ID),
+            "helper",
+            "\n".join("word " * 20 for _ in range(500)),
+            thread_root_id="30",
+        )
+
+    partial = raised.value
+    assert (partial.first_ref, partial.delivered) == ("50", 1)
+    notice = _form(server.sent("POST", "/api/v1/messages")[-1])
+    assert notice["content"] == (
+        f"_Only 1 of {partial.total} parts of this message could be delivered; "
+        "Zulip refused the rest._"
+    )
+    assert notice["topic"] == "deploys"
 
 
 def test_the_apps_own_mention_in_a_notice_still_reads_as_one() -> None:
