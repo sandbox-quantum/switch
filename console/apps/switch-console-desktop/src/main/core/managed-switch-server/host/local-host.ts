@@ -4,12 +4,13 @@ import { dirname, join } from 'node:path';
 import { LocalExecutionContext } from '@main/core/execution-context/local-execution-context';
 import type { IExecutionContext } from '@main/core/execution-context/types';
 import { restrictWindowsFileToOwner } from '@main/core/fs/windows-owner-acl';
+import { writeSecretFile } from '@main/core/providers/plugin-fs';
 import type { DockerAvailability } from '@shared/core/managed-switch-server/managed-switch-server';
 import { LOCAL_SERVER_PROJECT_NAME } from '../constants';
 import { detectDocker, dockerExecutable } from '../docker';
 import { type LocalServerPorts, pickFreePorts } from '../free-port';
 import { localServerDir } from '../paths';
-import type { ServerHost } from './types';
+import { SECRET_FILE_MODE, type ServerHost } from './types';
 
 /**
  * The managed stack running on this machine's Docker daemon — the CHOO-1428
@@ -32,6 +33,12 @@ export class LocalServerHost implements ServerHost {
 
   async writeFile(relPath: string, content: string, mode?: number): Promise<void> {
     const path = join(this.workingDir, relPath);
+    // Rewriting an existing file keeps its old permissions until the chmod
+    // below, so an owner-only file is written to a 0600 temporary and renamed.
+    if (mode === SECRET_FILE_MODE) {
+      await writeSecretFile(path, content);
+      return;
+    }
     await mkdir(dirname(path), { recursive: true });
     await writeFile(path, content, mode !== undefined ? { encoding: 'utf8', mode } : 'utf8');
     if (mode === undefined) return;
