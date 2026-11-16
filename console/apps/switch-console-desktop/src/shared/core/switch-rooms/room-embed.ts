@@ -70,19 +70,9 @@ export function channelUrlFromDeeplink(deeplink: string, mattermostOrigin: strin
   }
 }
 
-const MATTERMOST_PARTITION_PREFIX = 'persist:switch-mattermost:';
-
 /** Per-server partition, so each server's Mattermost session stays isolated. */
 export function mattermostPartition(serverId: string): string {
-  return `${MATTERMOST_PARTITION_PREFIX}${serverId}`;
-}
-
-/** Whether `partition` is one {@link mattermostPartition} makes. */
-export function isMattermostPartition(partition: string): boolean {
-  return (
-    partition.startsWith(MATTERMOST_PARTITION_PREFIX) &&
-    partition.length > MATTERMOST_PARTITION_PREFIX.length
-  );
+  return `persist:switch-mattermost:${serverId}`;
 }
 
 /**

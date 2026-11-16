@@ -1,5 +1,4 @@
 import type { WebPreferences } from 'electron';
-import { isMattermostPartition } from '@shared/core/switch-rooms/room-embed';
 
 /**
  * Overwrite what a `<webview>` the renderer is about to attach asked for, and
@@ -9,14 +8,17 @@ import { isMattermostPartition } from '@shared/core/switch-rooms/room-embed';
  * webPreferences it likes, so the markup is not trusted: every setting that
  * widens what the guest can do is pinned here, whatever the tag said. The only
  * guest the app makes is the room view's Mattermost, so that is the only one
- * allowed: real web content, in a Mattermost partition, never the app's own
- * session.
+ * allowed: real web content, in the partition the main process prepared for
+ * it and from the origin it signed in to there — never the app's own session,
+ * nor one the markup chose. `embedOrigin` answers which origin a prepared
+ * partition loads (`roomEmbedOrigin`).
  */
 export function constrainGuest(
   webPreferences: WebPreferences,
   params: Record<string, string>,
   guestPreload: string,
-  devTools: boolean
+  devTools: boolean,
+  embedOrigin: (partition: string) => string | undefined
 ): string | null {
   // Never honour a preload named in markup — pin it to the one we ship.
   webPreferences.preload = guestPreload;
@@ -43,8 +45,10 @@ export function constrainGuest(
     protocol = null;
   }
   if (protocol !== 'http:' && protocol !== 'https:') return 'its source is not an http(s) page';
-  if (!isMattermostPartition(params.partition ?? '')) {
-    return 'its partition is not a room view partition';
+  const origin = params.partition ? embedOrigin(params.partition) : undefined;
+  if (origin === undefined) return 'its partition is not one prepared for a room view';
+  if (new URL(params.src!).origin !== origin) {
+    return 'its source is not the Mattermost its partition was prepared for';
   }
   return null;
 }
