@@ -458,15 +458,21 @@ version of their own to them without also giving them a release of their own.
 - **Messages have a length limit and a pace limit.** A message is at most
   65,536 characters by default (`MAX_MESSAGE_CHARS`), and one sender, person
   or agent, gets 30 messages at once and then 2 a second
-  (`MESSAGE_RATE_BURST`, `MESSAGE_RATE_PER_SECOND`), counted in each server
-  process. A message over either limit is refused before anything is written
-  and the sender is told why: a Console chat answers 422 `MESSAGE_TOO_LONG` or
-  429 `RATE_LIMITED`, an agent's tool call fails with the reason (422 or 429
-  over HTTP), and someone writing from Slack or another messaging app gets a
-  notice, once for a run of refused messages, instead of their message
-  disappearing. A post with several files counts as one message. Refusals are
-  counted in the new `switch.messages.refused` metric, which the core
-  dashboard shows.
+  (`MESSAGE_RATE_BURST`, `MESSAGE_RATE_PER_SECOND`). That is one allowance per
+  sender, shared by every room they write in, counted in each server process.
+  The length limit applies to what the sender wrote: a note Switch adds, such
+  as a Switch Trust note, the `@name` of an agent picked in Console, or a line
+  for a file that couldn't be relayed, never pushes a message over it. A room
+  command such as `!invite-agent`, typed in Console or on a messaging app,
+  draws on the same allowance. `!interrupt` and `!interrupt-all-agents` never
+  do, so an agent can always be stopped. A message or command over either
+  limit is refused before anything is written and the sender is told why: a
+  Console chat answers 422 `MESSAGE_TOO_LONG` or 429 `RATE_LIMITED`, an
+  agent's tool call fails with the reason (422 or 429 over HTTP), and someone
+  writing from Slack or another messaging app gets a notice, once for a run of
+  refusals, instead of their message disappearing. A post with several files
+  counts as one message. Refusals are counted in the new
+  `switch.messages.refused` metric, which the core dashboard shows.
 
 #### Changed
 - **Switch Trust guardrails are set per organization instead of once for
@@ -907,10 +913,12 @@ version of their own to them without also giving them a release of their own.
   nested YAML anchors and aliases expanded into billions of values while the
   template was read, holding up every request and message on that server
   process for as long as it took. Templates that use anchors or aliases
-  (`&name`, `*name`, `<<:`) are now refused with the line they are on, and a
-  template may be at most 256 KB and 10,000 values. No template that comes
-  with Switch uses them. Reading and planning a template also no longer
-  holds up the server while it runs.
+  (`&name`, `*name`, `<<:`) are now refused with the line they are on. A
+  template may be at most 256 KB and 10,000 values, nested at most 64 levels
+  deep. A more deeply nested one is refused with its line too, where it used
+  to fail with a server error. No template that comes with Switch uses anchors
+  or aliases, or nests deeper than 8 levels. Reading and planning a template
+  also no longer holds up the server while it runs.
 - **Slack no longer drops an agent's reply it refuses.** A reply longer than
   Slack takes, one sent while Slack was rate-limiting the workspace, or one
   for a channel that was archived or that the app was taken out of was
@@ -919,20 +927,21 @@ version of their own to them without also giving them a release of their own.
   after the wait Slack names, and a message Slack stops part way through
   says in the channel how much of it arrived.
 - **Raw mention codes in an agent's reply no longer notify anyone on Slack,
-  Discord, Google Chat or Zulip.** An agent quoting text that already held
-  a platform's mention code, such as `<@U…>` or `<!subteam^…>` on Slack, a
-  role or user code on Discord, `<users/all>` on Google Chat, or
-  `@**Name**` or `@*group*` on Zulip, notified whoever the code named. The
-  code is now shown as written, or on Discord drawn without notifying
-  anyone. Names Switch resolves (`@name`) notify as before.
+  Discord, Google Chat or Zulip.** An agent quoting text that already held a
+  platform's mention code, such as `<@U…>` or `<!subteam^…>` on Slack, a role
+  or user code on Discord, `<users/all>` on Google Chat, or `@**Name**` or
+  `@*group*` on Zulip, notified whoever the code named. The code is now shown
+  as written, even when it names someone who has posted in the channel. Names
+  Switch resolves (`@name`) notify as before, and a request card on Discord
+  still notifies the person it is for.
 - **New Mattermost agents are no longer bridged into Town Square and
   Off-Topic.** Mattermost puts every account added to a team in its default
-  channels, so each new agent's bot was bridged into both, with their
-  chatter relayed into Switch. A bot is now taken out of Off-Topic, and
-  neither channel is bridged until a room is connected to it, by adding
-  the bot to Off-Topic again or running a `!` command such as
-  `!invite-agent` in Town Square. A default channel that already has a
-  room is left as it is.
+  channels, so each new agent's bot was bridged into both, with their chatter
+  relayed into Switch. A bot is now taken out of Off-Topic (tried again at the
+  next start if Mattermost refuses), and neither channel is bridged until a
+  room is connected to it, whoever is in it. Running a `!` command such as
+  `!invite-agent` in either channel connects it. A default channel that
+  already has a room is left as it is.
 - **Rocket.Chat, Webex, Google Chat and Zulip say when a long message is cut
   short.** A refused later part of a split message used to leave the
   channel showing only the first parts, with no sign the rest was missing.
@@ -1132,9 +1141,10 @@ version of their own to them without also giving them a release of their own.
   it, and an organization whose members come from a WorkOS directory keeps it a
   member however the directory lists it, recording the conflict in its audit
   log.
-- **Database errors no longer put the values bound into a query in the
-  logs.** switch-core's engines set SQLAlchemy's `hide_parameters`, so a
-  logged constraint violation or similar shows the SQL statement but not the
+- **Database errors no longer put the values bound into a query in the logs.**
+  Every database engine switch-core builds, including the ones for migrations,
+  the boot lock and the schema checks, sets SQLAlchemy's `hide_parameters`, so
+  a logged constraint violation or similar shows the SQL statement but not the
   emails, message text or tokens it carried. Postgres's own `DETAIL` line,
   which can name a duplicate key's value, is unchanged.
 - **A refused telemetry value is no longer written to the error log.** When an
@@ -1145,26 +1155,31 @@ version of their own to them without also giving them a release of their own.
   opentelemetry-api 1.45.2, dnspython 2.9.2, certifi 2026.10.23 and multidict
   6.9.1. Pull requests now fail on a known advisory in core's locked
   dependencies.
-- **An agent's change that widens what another agent may do on its own, or
-  who may reach it, waits for the owner.** When an agent turns another
-  agent's bypass mode or auto mode on, sets its Claude Code permission mode to
-  bypass, moves its working folder, machine or provider, or opens who may
-  address it (to anyone, or to the owner's agents when they could not reach
-  it before), or creates an agent with bypass on or a folder of its own,
-  nothing changes yet. Switch checks the request, posts it in the room the
-  agent is connected to, and makes it only when the agent's owner, in person,
-  sends `!agent-change <name> confirm` there within two minutes;
-  `!agent-change <name> drop` throws it away, and anyone in the room can see
-  it with `!agent-change <name>`. The agent is told it is waiting and what to
-  send. Only one change per agent waits at a time, so what the owner confirms
-  is what they were shown. Waiting requests are kept in memory, as an agent's
+- **An agent's change that widens what another agent may do on its own, or who
+  may reach it, waits for the owner.** When an agent turns another agent's
+  bypass mode or auto mode on, sets its Claude Code permission mode to bypass
+  or to auto, moves its working folder, machine or provider, or opens who may
+  address it (to anyone, or to the owner's agents when they could not reach it
+  before), or creates an agent with bypass on or a folder of its own, nothing
+  changes yet. Switch checks the request, posts it in the room the agent is
+  connected to, and makes it only when the agent's owner, in person, sends
+  `!agent-change <name> confirm` there within two minutes; `!agent-change
+  <name> drop` throws it away, and anyone in the room can see it with
+  `!agent-change <name>`. The agent is told it is waiting and what to send.
+  Only one change per agent waits at a time, so what the owner confirms is
+  what they were shown. Waiting requests are kept in memory, as an agent's
   request to delete another agent is: a restart drops them, and the request
   and its confirmation must reach the same server process. A change in the
   safer direction (bypass or auto mode off, a narrower addressing policy)
   applies at once, as do a person's own changes in Switch Console or the
-  dashboard and an agent's other changes. A template an agent runs can no
-  longer create an agent with bypass on; a person runs such a template
-  themselves.
+  dashboard and an agent's other changes. A new agent waits for its owner
+  whichever of these it asks for, including only `permissionMode:
+  bypassPermissions` in its advanced settings. Setting `permissionMode: auto`
+  on an existing agent waits as turning auto mode on does; turning it off, or
+  any other mode, applies at once. A new agent is made in auto mode unless it
+  says otherwise, so neither waits when an agent creates one. A template an
+  agent runs can no longer create an agent with bypass on; a person runs such
+  a template themselves.
 - **Every change an agent makes to another agent is in the audit log.**
   Changes it makes at once, changes it asks for, the owner's confirmation of
   one, and every agent it creates, each with the agent that did it.
@@ -1188,16 +1203,34 @@ version of their own to them without also giving them a release of their own.
   password being checked, and a successful sign-in clears the count. An email
   address with no account locks out exactly as one with an account does, so
   the lock says nothing about which addresses are registered. One client
-  address may fail 50 times in the window before it is locked out too, as
-  many people can share one. The numbers are `GATEWAY_LOGIN_MAX_FAILURES`,
+  address may fail 50 times in the window before it is locked out too, as many
+  people can share one. The numbers are `GATEWAY_LOGIN_MAX_FAILURES`,
   `GATEWAY_LOGIN_MAX_FAILURES_PER_ADDRESS`,
   `GATEWAY_LOGIN_FAILURE_WINDOW_MINUTES` and `GATEWAY_LOGIN_LOCK_MINUTES`. The
   counts are kept in Postgres (a new `auth_attempts` table, holding digests
   rather than emails or addresses; the same migration adds
-  `revoked_sessions`), so they hold across replicas. The
-  operator can lift an account's lock at once with
-  `DELETE /gateway/users/{user_id}/sign-in-lock`, recorded in the server's
-  audit log.
+  `revoked_sessions`), so they hold across replicas. The operator can lift an
+  account's lock at once with `DELETE /gateway/users/{user_id}/sign-in-lock`,
+  recorded in the server's audit log. Since failures from anywhere count,
+  anyone who knows a person's email can pause that person's password sign-in
+  for `GATEWAY_LOGIN_LOCK_MINUTES` by failing `GATEWAY_LOGIN_MAX_FAILURES`
+  times with it, and keep it paused by repeating that. This is the price of
+  stopping guessing spread across many addresses, and it is deliberate: the
+  lock never ends a session already signed in, never stops that session
+  refreshing, and never refuses single sign-on. To make such a lock cheaper to
+  sit out and costlier to keep up, raise `GATEWAY_LOGIN_MAX_FAILURES` or
+  shorten `GATEWAY_LOGIN_LOCK_MINUTES`; that also allows more guesses at a
+  password. A lock-out's 429 now says that password sign-in for this email
+  address (or from this network) is paused, when to try again, that single
+  sign-on still works where the server offers it, and, for an email, that an
+  administrator can lift the pause sooner. It reads the same for an email with
+  an account as for one without.
+- **Sign-in lock-outs are counted.** `switch.auth.sign_in_lockouts` counts
+  each password sign-in lock-out by `limit` (`email` or `client_address`),
+  never the email or the address, once the attempt that reached the limit has
+  failed. The main dashboard has a panel for it. Email lock-outs that keep
+  arriving with no `client_address` lock-outs beside them look like someone
+  keeping one person out on purpose.
 - **Behind a proxy, the per-address limits need the proxy trusted.** The
   client address is the one uvicorn resolves: its peer, or the address a
   proxy listed in `FORWARDED_ALLOW_IPS` forwarded for in `X-Forwarded-For`.
@@ -4816,17 +4849,21 @@ version of their own to them without also giving them a release of their own.
 - **Agents can send files only from their working directory.** A file sent
   with `send_attachment` must be inside the session's working directory or
   among the attachments it downloaded, with links followed; anything else is
-  refused with the reason, in every permission mode. Before, a manipulated
-  agent could post a key or credential file from anywhere on the machine
-  without asking. To send a file from elsewhere, a screenshot in `/tmp` say,
-  the agent copies it into its working directory first.
+  refused with the reason, in every permission mode. A file with more than one
+  hard link is refused too, unless it is an attachment the session downloaded,
+  since a hard link in the working directory can be the same file as a key
+  kept elsewhere. Before, a manipulated agent could post a key or credential
+  file from anywhere on the machine without asking. To send a file from
+  elsewhere, a screenshot in `/tmp` say, the agent copies it into its working
+  directory first.
 - **Pi asks before touching files outside its working directory.** In auto
   mode Pi used to change any file without asking, and in every mode it read
-  any file. It now changes files on its own only inside its working
-  directory, and asks before changing anything else: files outside it,
-  git's hooks and config, the dot files in your home folder, and Switch's own
-  settings, including the one that sets the agent's permission mode. Unless
-  bypass is on, it also asks before reading outside its working directory.
+  any file. It now changes files on its own only inside its working directory,
+  and asks before changing anything else: files outside it, git's hooks and
+  config, the dot files in your home folder, and Switch's own settings,
+  including the one that sets the agent's permission mode. Unless bypass is
+  on, it also asks before reading outside its working directory. A file with
+  another hard link counts as outside, wherever it is.
 - **Session folders and downloaded room files are private to you.** Each
   session's folder is created readable by you alone, and one an earlier
   version left open is tightened when the session next starts. Files an agent
@@ -4866,32 +4903,49 @@ version of their own to them without also giving them a release of their own.
   template is from and, for each agent, whether it runs every command without
   asking, who can talk to it, and its instructions. When an agent would run
   without asking or answer anyone in the workspace, Create asks first and
-  names the risks.
+  names the risks. What it shows is what the run creates. A version 1
+  template's `auto_approve` or `addressing` written as a list of `if:` cases,
+  which only version 2 reads, is shown as the default the agent actually gets.
 - **Files saved from a chat are marked as downloaded.** On macOS a saved
   attachment now carries the quarantine mark a browser gives a download, so
   Gatekeeper checks it the first time it is opened; on Windows it is marked
   as coming from the Internet zone. If the mark cannot be written, the file
   is still saved and the log says so.
-- **Console asks before making your computer a managed-agent machine.** Opening
-  the New agent form or switch-buddy's setup, including from a link in a chat or
-  on a web page, no longer enrolls the computer. A button and a confirmation that
-  names the server do.
+- **Console asks before making your computer a managed-agent machine.**
+  Opening the New agent form or switch-buddy's setup, including from a link in
+  a chat or on a web page, no longer enrolls the computer. A button and a
+  confirmation that names the server do. On Meet switch-buddy, picking a
+  provider signed in on this computer while it is not yet a machine asks the
+  same question, and starts switch-buddy once you confirm.
 - **You decide on this computer whether a managed agent may skip approvals or
-  work outside its folder.** The agents controller Console runs no longer applies
-  either just because the server's copy of the agent asks for it. Console asks
-  you, naming the agent, the server and what it could then do, and this
-  computer's page under Machines lists what you allowed, with Revoke. Until you
-  allow it, an agent that asks for bypass runs and asks for approval, and one
-  that asks for a folder outside `~/.switch/agents` does not start. Agents that
-  ran with bypass or in their own folder before this release need allowing once.
+  work outside its folder.** The agents controller Console runs no longer
+  applies either just because the server's copy of the agent asks for it.
+  Console asks you, naming the agent, the server and what it could then do,
+  and this computer's page under Machines lists what you allowed, with Revoke.
+  Until you allow it, an agent that asks for bypass runs and asks for
+  approval, and one that asks for a folder outside `~/.switch/agents` does not
+  start. Agents that ran with bypass or in their own folder before this
+  release need allowing once. The question names the agent by its unique name
+  and its server; a display name its owner set follows, marked as what the
+  agent is shown as.
 - **Images from other computers load only when you ask.** Remote images in
   chats, room documents and library items show as a placeholder naming their
   host until you click Load image, and are then fetched without a Referer.
 - **Room references show where they go and ask before opening.** The Resources
-  tab shows each link's host, and opening one, or a link on a reference's page,
-  goes through the same confirmation as chat links, showing the whole address.
+  tab shows each link's host, and opening one, or a link on a reference's
+  page, goes through the same confirmation as chat links, showing the whole
+  address. A reference whose link is not a web link is refused with a notice,
+  as in chat.
 - **Only your own switch-buddy wears switch-buddy's picture.** Another agent
-  using the buddy's icon address is drawn as if it had no picture.
+  using the buddy's icon address is drawn as if it had no picture. That holds
+  in each workspace you belong to on a server: reading another workspace's
+  agents no longer takes the picture from your buddy.
+- **Chats show an agent's unique name beside its display name.** An agent's
+  owner can set its display name to anything, including switch-buddy or
+  another agent's name. Messages, an agent's work, kickoff cards and the chat
+  header now show the agent's unique name, muted, after a display name that
+  differs from it, and a display name that reads as switch-buddy's is shown
+  only for your own buddy: any other agent goes by its unique name.
 - **Question cards always say which agent is asking.** Each open card names the
   agent by its unique name and whose it is, quotes its title, and says a typed
   answer goes to that agent, not to Switch.
@@ -7018,7 +7072,8 @@ tags; see RELEASING.md.
   compromised server could return every controller to one with a known flaw.
   It now installs only newer releases, and reports a refused one as a failed
   update with the reason. To roll back, install the older release on the
-  machine yourself.
+  machine yourself. A version it cannot compare, its own included, is reported
+  as that, naming the version, rather than as an older release.
 - **Refuses a working directory inside its own data directory.** An agent whose
   definition names the data directory, anything in it, or a link leading there
   fails as `definition_invalid` and is never started, so its tools cannot read
@@ -7029,13 +7084,16 @@ tags; see RELEASING.md.
   them.** What the machine's own user allowed is kept in `device-policy.json`
   in the data directory, never sent to Switch, and managed with
   `switch-agent-controller allow`, `disallow` and `policy` (or by Switch
-  Console for the controller it runs). Until allowed, an agent asking for
-  bypass runs with approvals and its status says why, and one asking for a
-  directory outside the workspaces folder fails as `definition_invalid` with
-  the command that would allow it. A change is applied within seconds.
-  Agents run as Linux users of their own (`--separate-users`) are contained by
-  their units and are not affected. Existing bypass agents and agents with
-  their own directory on other controllers need allowing once after updating.
+  Console for the controller it runs), which take turns, so changes made at
+  once all land. Until allowed, an agent asking for bypass (its definition's
+  `auto_approve`, or a Claude Code `permissionMode` of `bypassPermissions` or
+  `dontAsk` in its advanced configuration, which is then left out) runs with
+  approvals and its status says why, and one asking for a directory outside
+  the workspaces folder fails as `definition_invalid` with the command that
+  would allow it. A change is applied within seconds. Agents run as Linux
+  users of their own (`--separate-users`) are contained by their units and are
+  not affected. Existing bypass agents and agents with their own directory on
+  other controllers need allowing once after updating.
 - **The macOS keychain store quotes its data directory.** A `--data-dir`
   holding a quote, backslash or newline no longer breaks, or adds a second
   command to, the `security -i` line that stores a secret. Entries for any
@@ -7105,10 +7163,12 @@ The Switch protocol client and MCP runtime
 
 #### Security
 - **`send_attachment` sends only files inside the session's working
-  directory** or its downloaded attachments, with links followed, and
-  refuses any other path with the reason. `download_attachment` saves each
-  file readable by you alone, and replaces a link planted at its name rather
-  than writing through it.
+  directory** or its downloaded attachments, with links followed, and refuses
+  any other path with the reason. A file with more than one hard link is
+  refused as well, unless it is an attachment the session downloaded, and a
+  path named in another case is accepted on macOS and Windows.
+  `download_attachment` saves each file readable by you alone, and replaces a
+  link planted at its name rather than writing through it.
 - **Requires the MCP TypeScript SDK 1.32.2 or later**, past its advisories for
   the Streamable HTTP server transport the session's Switch tools are served
   over.
@@ -7321,8 +7381,9 @@ published on its own.
 - **Shell setup can no longer add environment variables beyond the inherited
   allowlist**, as in Switch Console.
 - **Applies bypass and outside directories only where the host allows them**,
-  as the agent-controller does: an SSH host's controller needs
-  `switch-agent-controller allow` run on that host.
+  as the agent-controller does, a Claude Code `permissionMode` that skips
+  approvals included: an SSH host's controller needs `switch-agent-controller
+  allow` run on that host.
 
 #### Fixed
 - **An agent's sessions move with its folder**, as in Switch Console.
