@@ -137,7 +137,7 @@ export function MachineProviderPicker({
           <CircleAlert className="mt-0.5 size-3.5 shrink-0 text-amber-500" />
           <span>
             {machine.name} couldn’t check whether {picked.name} is signed in
-            {pickedDetail ? `: ${pickedDetail}` : '.'} You can still create the agent. If{' '}
+            {pickedDetail ? `: ${sentence(pickedDetail)}` : '.'} You can still create the agent. If{' '}
             {picked.name} isn’t signed in there, the agent won’t start until it is.
           </span>
         </div>
@@ -171,6 +171,11 @@ export function MachineProviderPicker({
       )}
     </Field>
   );
+}
+
+/** `text` ending as a sentence does, so another can follow it. */
+function sentence(text: string): string {
+  return /[.!?]$/.test(text.trim()) ? text.trim() : `${text.trim()}.`;
 }
 
 function capitalize(text: string): string {

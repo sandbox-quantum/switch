@@ -420,7 +420,7 @@ describe('the providers a server machine offers', () => {
       />
     );
     expect(picked.querySelector('[role="status"]')?.textContent).toMatch(
-      /build-box couldn’t check whether Cursor is signed in: The sign-in check failed: exited 1/
+      /build-box couldn’t check whether Cursor is signed in: The sign-in check failed: exited 1\. You can still create the agent\./
     );
   });
 
