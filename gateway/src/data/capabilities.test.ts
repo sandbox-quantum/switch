@@ -50,6 +50,7 @@ describe("featureFlagsFrom", () => {
       agent_management: true,
       service_connections: false,
       organization_connector_apps: false,
+      switch_buddy: false,
     });
   });
 });

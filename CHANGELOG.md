@@ -475,6 +475,20 @@ version of their own to them without also giving them a release of their own.
   `FEATURE_FLAGS_ENABLED`, so a deployment that names it keeps starting,
   and the server always reports it on, which is how Switch Console picks
   its links into the dashboard.
+- **The dashboard's Templates page is a card library.** All, Official and
+  Workspace tabs with live counts, one search (name, description, use case
+  and owner), type chips and Only mine; the workspace's own templates come
+  first, then the official ones (six, with See all), most used first. Each
+  card says what the template is for, how many agents and rooms it creates
+  and when it was last used, and Use hands it to Switch Console. Create
+  template offers your personal agent, Switch Console, or writing the YAML
+  in the dashboard. A template's page gains Use and Duplicate as my own, and
+  says plainly when a template isn't available to you. Templates carry a
+  `use_case` from a fixed list (engineering, product, support, research,
+  ops, personal, sales, marketing), set in the dashboard or through `POST`
+  and `PATCH /gateway/templates`, and every official template has one;
+  template listings and details add `agent_count`, `room_count` and
+  `last_run_at`.
 - **Switch Trust guardrails are set per organization instead of once for
   the whole server.** Each organization's admins connect its own policy, with
   a policy ID and an API key, under Organization settings › Guardrails. Switch

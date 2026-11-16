@@ -3261,6 +3261,17 @@ export async function detachPackageFromRoom(
 
 // ── Templates ────────────────────────────────────────────────────────────────
 
+/** What a template is for, from the server's fixed list. */
+export type TemplateUseCase =
+  | "engineering"
+  | "product"
+  | "support"
+  | "research"
+  | "ops"
+  | "personal"
+  | "sales"
+  | "marketing";
+
 export interface TemplateSummary {
   id: string;
   /** Null for a template that comes with Switch. */
@@ -3271,6 +3282,12 @@ export interface TemplateSummary {
   name: string;
   description: string;
   kind: string;
+  /** Null when nobody said. */
+  use_case: TemplateUseCase | null;
+  /** How many agents and rooms its document describes, conditional ones
+   * included; null for a document the server could not read. */
+  agent_count: number | null;
+  room_count: number | null;
   read_visibility: "public" | "private";
   write_visibility: "public" | "private";
   /** What the signed-in user may do with it, as the server judges it. */
@@ -3280,8 +3297,9 @@ export interface TemplateSummary {
    * Console sets up itself); null when nothing stands in the way. */
   run_blocked_reason: string | null;
   /** How many times it has been run in this workspace, since runs were
-   * first counted. */
+   * first counted, and when last (ISO 8601); null if never. */
   run_count: number;
+  last_run_at: string | null;
   version: number;
   size_bytes: number;
   created_at: string;
@@ -3297,6 +3315,7 @@ export interface TemplateCreateInput {
   description: string;
   kind: string;
   content: string;
+  use_case: TemplateUseCase | null;
   read_visibility?: "public" | "private";
   write_visibility?: "public" | "private";
 }
@@ -3306,6 +3325,8 @@ export interface TemplateUpdateInput {
   description?: string;
   kind?: string;
   content?: string;
+  /** Null clears it; left out, it stays as it is. */
+  use_case?: TemplateUseCase | null;
   read_visibility?: "public" | "private";
   write_visibility?: "public" | "private";
 }

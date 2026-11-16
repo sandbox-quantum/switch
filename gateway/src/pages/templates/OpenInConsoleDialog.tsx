@@ -15,29 +15,30 @@ export const GET_SWITCH_CONSOLE_URL =
   "https://docs.switchagents.ai/flintai/switch/getting-started/install-switch-console";
 
 /**
- * Run a template: in Switch Console, where its inputs are filled in and its
- * agents are given somewhere to run. The browser cannot tell whether Console
- * is installed, and opening its link without it does nothing at all, so the
- * way to get it is offered beside the link rather than after a silent click.
+ * Hand something over to Switch Console: using a template, where its inputs
+ * are filled in and its agents are given somewhere to run, or making one.
+ * The browser cannot tell whether Console is installed, and opening its link
+ * without it does nothing at all, so the way to get it is offered beside the
+ * link rather than after a silent click.
  */
-export default function RunInConsoleDialog({
-  templateName,
+export default function OpenInConsoleDialog({
+  title,
+  description,
   link,
   onClose,
 }: {
-  templateName: string;
-  /** The Switch Console link that opens the template's Use form. */
+  title: string;
+  /** What happens in Switch Console once it opens. */
+  description: string;
+  /** The Switch Console link to open. */
   link: string;
   onClose: () => void;
 }) {
   return (
     <Dialog open onClose={onClose} fullWidth maxWidth="xs">
-      <DialogTitle>Run {templateName}</DialogTitle>
+      <DialogTitle>{title}</DialogTitle>
       <DialogContent>
-        <DialogContentText>
-          Templates run in Switch Console, where you fill in what the template asks for and
-          choose where its agents run.
-        </DialogContentText>
+        <DialogContentText>{description}</DialogContentText>
         <DialogContentText sx={{ mt: 2 }}>
           Don’t have Switch Console?{" "}
           <Link href={GET_SWITCH_CONSOLE_URL} target="_blank" rel="noreferrer">
@@ -59,5 +60,25 @@ export default function RunInConsoleDialog({
         </Button>
       </DialogActions>
     </Dialog>
+  );
+}
+
+/** Using a template: the same words wherever it is offered. */
+export function UseInConsoleDialog({
+  templateName,
+  link,
+  onClose,
+}: {
+  templateName: string;
+  link: string;
+  onClose: () => void;
+}) {
+  return (
+    <OpenInConsoleDialog
+      title={`Use ${templateName}`}
+      description="Templates are used in Switch Console, where you fill in what the template asks for and choose where its agents run."
+      link={link}
+      onClose={onClose}
+    />
   );
 }
