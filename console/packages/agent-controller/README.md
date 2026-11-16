@@ -349,8 +349,8 @@ When Switch names a release for this controller, `run` follows it; otherwise
 `update` does it by hand.
 
 **The release Switch names.** A status response can carry
-`controller_release: {"version", "url", "sha256"}`. When it names a version other
-than the one running (newer or older: Switch can roll back), the controller:
+`controller_release: {"version", "url", "sha256"}`. When it names a version newer
+than the one running, the controller:
 
 1. waits until no session on the machine is in the middle of a turn, checking at
    each status report and every few seconds while it waits, and reports
@@ -376,6 +376,12 @@ than the one running (newer or older: Switch can roll back), the controller:
    says `--version` is that version, checks again that no turn started
    meanwhile, and switches to it;
 4. exits with code `7`, and its service starts it again on the new release.
+
+An older version is refused, reported as `update: {"target", "state": "failed",
+"problem"}` and logged: old releases stay validly signed, so following Switch
+back to one would let a server return every controller to a release with a
+fixed vulnerability. Rolling back is done on the machine, by installing the
+older release there.
 
 A failed attempt is reported (`update: {"target", "state": "failed", "problem"}`)
 and logged, and the same release is not tried again for an hour; the last

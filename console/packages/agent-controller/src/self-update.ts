@@ -10,7 +10,7 @@ import { errorMessage, type Logger } from './log';
 import type { TrustedReleaseKey } from './release-keys';
 import { assertTrustedKeys, verifyDownloadedRelease } from './release-signing';
 import { pointCurrent, prefixBin, pruneReleases, readCurrent } from './releases';
-import { RELEASE_VERSION } from './update';
+import { isNewer, RELEASE_VERSION } from './update';
 
 /**
  * Updating this controller to the release Switch names in its status
@@ -374,10 +374,13 @@ export type UpdateHost = {
 };
 
 /**
- * Follows the release Switch names: a version other than this one (newer or
- * older, so Switch can roll back) is installed while no session is mid-turn, and
- * the controller restarts into it. A failed attempt is not repeated for an
- * hour; what stands in the way is reported (`status()`).
+ * Follows the release Switch names: a newer version than this one is
+ * installed while no session is mid-turn, and the controller restarts into
+ * it. An older one is refused and reported: old releases stay validly
+ * signed, so a server that could roll a controller back could take it back
+ * to a release with a fixed vulnerability; rolling back is for whoever runs
+ * the machine. A failed attempt is not repeated for an hour; what stands in
+ * the way is reported (`status()`).
  */
 export class SelfUpdater {
   private report: UpdateReport | null = null;
@@ -425,6 +428,14 @@ export class SelfUpdater {
       return;
     }
     const target = release.version;
+    if (!isNewer(target, version)) {
+      this.fail(
+        target,
+        `Switch names ${target}, which is older than the ${version} this controller runs; a controller does not install an older release on Switch's word. To roll back, install ${target} on this machine yourself.`,
+        false
+      );
+      return;
+    }
     if (this.report?.target === target && this.report.state === 'restart_needed') return;
     if (installer.unavailable) {
       this.fail(target, installer.unavailable, false);
