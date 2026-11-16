@@ -1,7 +1,7 @@
 import type { EcosystemGraphData } from "../../data/api";
 
 /** The graph as a member is shown it: only their own agents, as the Agents
- * list and Overview count them, and only the agent types they have one of.
+ * list and Home count them, and only the agent types they have one of.
  * Each type says how many of theirs it holds. Messaging apps stay: they are
  * the workspace's, like its users. `ownAgentIds` is null to show everything. */
 export function graphInScope(

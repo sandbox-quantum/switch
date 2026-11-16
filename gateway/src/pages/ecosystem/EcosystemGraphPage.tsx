@@ -1,8 +1,10 @@
+import ArrowBack from "@mui/icons-material/ArrowBack";
 import {
   Alert,
   Box,
   CircularProgress,
   FormControlLabel,
+  IconButton,
   Stack,
   Switch,
   Typography,
@@ -51,6 +53,10 @@ const RADII: Record<GraphNode["kind"], number> = {
   owner: 8,
 };
 
+function counted(n: number, noun: string): string {
+  return `${n} ${noun}${n === 1 ? "" : "s"}`;
+}
+
 // Make raw connector_type keys (e.g. "claude_code") presentable.
 function prettyType(key: string): string {
   return key.replace(/[_-]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
@@ -60,7 +66,7 @@ export default function EcosystemGraphPage() {
   const { session, capabilities } = useAuth();
   const graph = useEcosystemGraph();
   const navigate = useNavigate();
-  // A member sees their own agents, as Overview counts them and the Agents
+  // A member sees their own agents, as Home counts them and the Agents
   // list shows them; which those are comes from that same list.
   const scope = listScopeOf(capabilities);
   const loadOwn = useCallback(
@@ -243,6 +249,9 @@ export default function EcosystemGraphPage() {
   return (
     <Box sx={{ display: "flex", flexDirection: "column", height: "100%" }}>
       <Stack direction="row" alignItems="center" spacing={1} mb={2}>
+        <IconButton onClick={() => navigate("/overview")} size="small" aria-label="Back to Home">
+          <ArrowBack />
+        </IconButton>
         <Typography variant="h5" sx={{ flexGrow: 1 }}>
           Ecosystem
         </Typography>
@@ -259,7 +268,11 @@ export default function EcosystemGraphPage() {
         />
         <Typography variant="caption" color="text.secondary">
           {data
-            ? `${counts.agents} agents · ${counts.types} types · ${counts.bridges} apps`
+            ? [
+                counted(counts.agents, "agent"),
+                counted(counts.types, "type"),
+                counted(counts.bridges, "messaging app"),
+              ].join(" · ")
             : null}
         </Typography>
       </Stack>
@@ -309,7 +322,7 @@ export default function EcosystemGraphPage() {
             }}
           >
             <Typography variant="body2" color="text.secondary">
-              No agents or collaboration apps yet.
+              No agents or messaging apps yet.
             </Typography>
           </Box>
         )}
