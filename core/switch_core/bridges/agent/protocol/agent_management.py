@@ -156,6 +156,20 @@ class AgentManagementPort(Protocol):
         or None when the agent is not managed."""
         ...
 
+    async def check_managed_agent_changes(
+        self,
+        tenant_id: str,
+        owner_id: str,
+        agent_id: str,
+        changes: ManagedAgentChanges,
+    ) -> dict[str, Any]:
+        """Every check `update_managed_agent` makes before it changes anything
+        (the agent is one of the owner's managed agents, the machine is theirs
+        and can take it, the definition validates), without changing
+        anything. Returns the agent as `managed_agent` shows it now; refused
+        as `update_managed_agent` would be."""
+        ...
+
     async def update_managed_agent(
         self,
         tenant_id: str,

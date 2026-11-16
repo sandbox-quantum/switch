@@ -129,6 +129,7 @@ the same job once installed — the differences are all in `settings` and
             { "command": "/unlink-account", "url": "https://HOST/messaging/slack/commands", "description": "List or remove the Switch users this chat account is linked to", "usage_hint": "[name]", "should_escape": true },
             { "command": "/rename-agent", "url": "https://HOST/messaging/slack/commands", "description": "Rename an agent (owner or admin)", "usage_hint": "@agent-name new-name [Display Name]", "should_escape": true },
             { "command": "/delete-agent", "url": "https://HOST/messaging/slack/commands", "description": "Delete an agent (owner or admin)", "usage_hint": "@agent-name [confirm]", "should_escape": true },
+            { "command": "/agent-change", "url": "https://HOST/messaging/slack/commands", "description": "Confirm or drop a change an agent asked to make to one of your agents", "usage_hint": "@agent-name [confirm|drop]", "should_escape": true },
             { "command": "/agents-greet", "url": "https://HOST/messaging/slack/commands", "description": "Have agents in the room introduce themselves", "should_escape": false },
             { "command": "/room-url", "url": "https://HOST/messaging/slack/commands", "description": "Show the frontend URL for this room", "should_escape": false },
             { "command": "/follow-ups", "url": "https://HOST/messaging/slack/commands", "description": "Turn follow-ups without an @ on or off for this room", "usage_hint": "on | off", "should_escape": false },

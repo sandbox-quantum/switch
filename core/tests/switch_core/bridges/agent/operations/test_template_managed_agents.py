@@ -513,6 +513,35 @@ agent:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "line",
+    ["  auto_approve: true\n", "  advanced_config:\n    permissionMode: acceptEdits\n"],
+)
+async def test_an_agent_cannot_make_a_bypass_agent_through_a_template(managed, line):
+    """Bypass waits for the owner when an agent asks for it with create_agent;
+    a template an agent runs is refused it rather than let it skip that."""
+    template_id = await _stored(
+        managed,
+        "agent:\n"
+        "  name: solo\n"
+        "  instructions: Work alone.\n"
+        "  provider: claude\n"
+        "  machine: laptop\n"
+        "  directory: /srv/solo\n" + line,
+        kind="agent",
+    )
+
+    with pytest.raises(AgentsNotCreated) as e:
+        await _as(managed["agent_id"], run_template, template_id=template_id)
+
+    assert {(p.slot, p.code) for p in e.value.problems} == {
+        ("solo", "needs_owner_confirmation")
+    }
+    assert "create_agent" in str(e.value)
+    assert managed["management"].created == []
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(("written", "expected"), [("true", True), (None, False)])
 async def test_a_template_says_whether_its_agent_can_manage_agents(
     managed, written, expected

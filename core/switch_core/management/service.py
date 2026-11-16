@@ -1560,6 +1560,44 @@ class ManagementService:
             expected_revision=None,
         )
 
+    async def check_managed_agent_patch(
+        self,
+        session: AsyncSession,
+        tenant_id: str,
+        owner_id: str,
+        agent_id: str,
+        *,
+        definition: DefinitionV1 | None,
+        desired_state: str | None,
+        controller_id: str | None,
+        controller_id_given: bool,
+    ) -> None:
+        """The checks `patch_managed_agent` makes before it writes anything,
+        raising as it would, with nothing changed."""
+        existing, _agent = await self._owned_definition(
+            session, tenant_id, owner_id, agent_id
+        )
+        target_controller_id = (
+            controller_id if controller_id_given else existing.controller_id
+        )
+        target_state = desired_state or existing.desired_state
+        provider = (
+            definition.provider
+            if definition is not None
+            else str(existing.definition.get("provider"))
+        )
+        if existing.definition.get("provider") != provider:
+            self._require_offered(provider)
+        await self._check_target(
+            session,
+            tenant_id,
+            owner_id,
+            target_controller_id,
+            provider,
+            check_placement=existing.controller_id != target_controller_id
+            or (target_state == "running" and existing.desired_state != "running"),
+        )
+
     async def patch_managed_agent(
         self,
         session: AsyncSession,

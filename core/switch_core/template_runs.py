@@ -181,6 +181,26 @@ def _directory(
     return plan.directory.replace(AGENTS_DIR, root), None
 
 
+def owner_confirmation_problems(plans: Sequence[NewAgentPlan]) -> list[Problem]:
+    """The agents of a run that would have bypass mode on, or a permission
+    mode of the provider's own, which its owner confirms when an agent asks
+    for them with `create_agent` (`agent_change_requests`). A run an agent
+    asks for is refused for them rather than held, since its rooms are made
+    with its agents; a person runs such a template themselves."""
+    return [
+        Problem(
+            plan.slot,
+            "needs_owner_confirmation",
+            "it would be created with bypass mode or a permission mode of its "
+            "own, which your owner has to confirm. Create it with "
+            "create_agent, which asks them, or ask them to run the template "
+            "themselves.",
+        )
+        for plan in plans
+        if plan.auto_approve or plan.advanced_config.get("permissionMode") is not None
+    ]
+
+
 def pending_addressing(
     plans: Sequence[NewAgentPlan],
     owner_id: str,

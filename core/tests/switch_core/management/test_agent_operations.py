@@ -13,7 +13,9 @@ from __future__ import annotations
 import hashlib
 import secrets
 from collections.abc import AsyncIterator, Iterator
+from dataclasses import dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
@@ -23,23 +25,37 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 import switch_core.official_templates as official_templates_package
 from switch_core.addressing import default_agent_policy, parse_policy
+from switch_core.bridges.agent.commands import _cmd_agent_change
 from switch_core.bridges.agent.mcp.server import mcp
+from switch_core.bridges.agent.operations import agent_management as agent_ops
 from switch_core.bridges.agent.operations import all_operations, definitions
 from switch_core.bridges.agent.operations import context as op_context
 from switch_core.bridges.agent.operations.agent_management import (
     disable_agent_management,
 )
 from switch_core.bridges.agent.protocol.agent_detail import addressing_policy_for
+from switch_core.chats import MEMBER_CLIENT_TYPE
+from switch_core.clients import agent_admin
+from switch_core.clients.actor import SystemActor
+from switch_core.clients.agent_admin import AgentRequests
+from switch_core.clients.command_consumer import CommandConsumer
 from switch_core.db.models import (
     Agent,
     AgentDefinition,
     ApiKey,
+    AuditEvent,
     Client,
+    Room,
     ServiceGrant,
     Template,
     TemplateInstall,
     User,
 )
+from switch_core.db.stores.agent_store import AgentStore
+from switch_core.db.stores.client_store import ClientStore
+from switch_core.db.stores.external_user_store import ExternalUserStore
+from switch_core.db.stores.room_role_store import RoomRoleStore
+from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.template_install_store import TemplateInstallStore
 from switch_core.gateway import dependencies as gw_deps
 from switch_core.gateway import rooms as gateway_rooms
@@ -49,6 +65,7 @@ from switch_core.official_templates import (
     official_template,
     revisions,
 )
+from switch_core.transport import RoomRef
 from tests.switch_core.connections.github_seed import connect_github
 from tests.switch_core.management.harness import (
     TEST_KEYRING,
@@ -88,6 +105,116 @@ def harness(session_factory: async_sessionmaker[AsyncSession]) -> Iterator[Harne
 async def client(harness: Harness) -> AsyncIterator[httpx.AsyncClient]:
     async with harness.client() as client:
         yield client
+
+
+@dataclass
+class OwnersDesk:
+    """The room an agent asks its owner in, as the process wiring sets it up:
+    what Switch posts there, and `!agent-change` sent by whoever a test says,
+    answered by the command the Switch app runs."""
+
+    harness: Harness
+    room_id: str
+    transport_room_id: str
+    host: CommandConsumer
+    posted: list[str] = field(default_factory=list)
+    replies: list[str] = field(default_factory=list)
+
+    async def in_person(self, user: User) -> str:
+        """The sender id of `user` writing in Switch Console."""
+        sender = f"@{user.name}-member:test"
+        async with self.harness.session_factory() as session:
+            if await ClientStore().get_by_transport_user_id(session, sender) is None:
+                session.add(
+                    Client(
+                        transport_user_id=sender,
+                        display_name=user.name,
+                        type=MEMBER_CLIENT_TYPE,
+                        user_id=user.id,
+                    )
+                )
+                await session.commit()
+        return sender
+
+    async def send(self, sender: str, args: str) -> str:
+        await _cmd_agent_change(
+            self.host,  # type: ignore[arg-type]
+            RoomRef(room_id=self.transport_room_id),
+            SimpleNamespace(  # type: ignore[arg-type]
+                command="agent-change",
+                args=args,
+                user_id=sender,
+                user_name="someone",
+                thread_id=None,
+            ),
+            False,
+        )
+        return self.replies[-1]
+
+
+@pytest.fixture
+async def desk(harness: Harness, monkeypatch: pytest.MonkeyPatch) -> OwnersDesk:
+    async with harness.session_factory() as session:
+        room = Room(transport_room_id="!desk:test", name="desk", description="desk")
+        session.add(room)
+        await session.commit()
+        room_id = room.id
+
+    async def connected() -> str:
+        return room_id
+
+    monkeypatch.setattr(definitions, "require_connected_room", connected)
+    monkeypatch.setattr(agent_ops, "require_connected_room", connected)
+    harness.protocol.agent_requests = AgentRequests()
+    host = object.__new__(CommandConsumer)
+    seat = OwnersDesk(
+        harness=harness, room_id=room_id, transport_room_id="!desk:test", host=host
+    )
+
+    admin = object.__new__(SystemActor)
+
+    async def send_admin(_room: str, body: str, **_kw: Any) -> str:
+        seat.posted.append(body)
+        return "$posted"
+
+    admin.send_admin = send_admin  # type: ignore[method-assign]
+    harness.protocol.client_lifecycle.get_by_type = (  # type: ignore[attr-defined]
+        lambda client_type, _tenant: [admin] if client_type == "admin" else []
+    )
+
+    async def reply_command(_room: str, body: str, **_kw: Any) -> None:
+        seat.replies.append(body)
+
+    async def resolve_room_meta(_transport_room_id: str) -> Any:
+        return SimpleNamespace(room_id=room_id)
+
+    host.actor = SimpleNamespace(  # type: ignore[assignment]
+        session_factory=harness.session_factory, client_store=ClientStore()
+    )
+    host._agent_requests = harness.protocol.agent_requests
+    host._agent_store = AgentStore()
+    host._room_store = RoomStore()
+    host._room_role_store = RoomRoleStore()
+    host._external_user_store = ExternalUserStore()
+    host._connections = harness.protocol.connections
+    host._resolve_room_meta = resolve_room_meta  # type: ignore[method-assign]
+    host.reply_command = reply_command  # type: ignore[method-assign]
+    return seat
+
+
+async def _audited(harness: Harness, action: str) -> list[AuditEvent]:
+    async with harness.session_factory() as session:
+        return list(
+            (
+                await session.execute(
+                    select(AuditEvent)
+                    .where(AuditEvent.action == action)
+                    .order_by(AuditEvent.occurred_at)
+                )
+            )
+            .scalars()
+            .all()
+        )
 
 
 async def _agent_with_key(
@@ -396,7 +523,6 @@ class TestCreateAgent:
             _create_body(
                 "laptop",
                 instructions="Build it.",
-                directory="/work/builder",
                 model="sonnet",
                 advanced_config={"effort": "high", "tools": ["Read", "Grep"]},
                 display_name="Builder",
@@ -444,7 +570,7 @@ class TestCreateAgent:
             "tools": ["Read", "Grep"],
         }
         assert row.definition["instructions"] == "Build it."
-        assert row.definition["directory"] == "/work/builder"
+        assert row.definition["directory"] == f"{WORKSPACES_DIR}/builder"
         assert row.definition["auto_mode"] is True
         assert row.definition["auto_approve"] is False
         binding = harness.protocol.connections.controllers.binding(created.id)
@@ -680,7 +806,17 @@ class TestCreateAgent:
             bearer(key),
             _create_body("laptop", name="helper"),
         )
+        climbing = await _call(
+            client,
+            agent_id,
+            "create_agent",
+            bearer(key),
+            _create_body("laptop", directory="/work/../etc"),
+        )
 
+        assert climbing.status_code == 400, climbing.text
+        assert climbing.json()["detail"].startswith("Nothing was created: ")
+        assert "'..' segment" in climbing.json()["detail"]
         assert bad_provider.status_code == 400
         assert "provider" in bad_provider.json()["detail"]
         assert "(validation_error)" not in bad_provider.json()["detail"]
@@ -857,14 +993,13 @@ class TestUpdateAgentDetail:
                 "model": "opus",
                 "advanced_config": {"effort": "high"},
                 "instructions": "Build carefully.",
-                "auto_approve": True,
-                "directory": "/work/next",
                 "desired_state": "stopped",
             },
         )
 
         assert response.status_code == 200, response.text
         result = response.json()["result"]
+        assert "awaiting_confirmation" not in result
         assert result["description"] == "Builds better things"
         managed = result["managed"]
         assert managed["model"] == "opus"
@@ -877,12 +1012,10 @@ class TestUpdateAgentDetail:
         assert after["definition"]["model"] == "opus"
         assert after["definition"]["advanced_config"] == {"effort": "high"}
         assert after["definition"]["instructions"] == "Build carefully."
-        assert after["definition"]["auto_approve"] is True
-        assert after["definition"]["directory"] == "/work/next"
         assert after["definition"]["provider"] == "claude"
 
     async def test_auto_mode_alone_can_be_turned_off_and_on(
-        self, harness: Harness, client: httpx.AsyncClient
+        self, harness: Harness, client: httpx.AsyncClient, desk: OwnersDesk
     ) -> None:
         owner = await add_member(harness.session_factory, "ada")
         controller = await enroll_console(harness, client, owner, name="laptop")
@@ -891,6 +1024,7 @@ class TestUpdateAgentDetail:
             harness, owner, "helper", can_manage_agents=True
         )
         new_id = await _created(client, helper_id, key, "laptop")
+        in_person = await desk.in_person(owner)
 
         async def set_auto_mode(on: bool) -> dict[str, Any]:
             response = await _call(
@@ -901,7 +1035,16 @@ class TestUpdateAgentDetail:
                 {"agent_id": new_id, "auto_mode": on},
             )
             assert response.status_code == 200, response.text
-            return response.json()["result"]["managed"]
+            assert "awaiting_confirmation" in response.json()["result"]
+            await desk.send(in_person, "builder confirm")
+            [listed] = [
+                entry
+                for entry in (
+                    await _call(client, helper_id, "list_managed_agents", bearer(key))
+                ).json()["result"]
+                if entry["agent_id"] == new_id
+            ]
+            return listed
 
         off = await set_auto_mode(False)
         assigned_off = (await _assigned(client, controller))[new_id]["definition"]
@@ -966,7 +1109,7 @@ class TestUpdateAgentDetail:
         assert (after["model"], after["auto_mode"]) == ("opus", False)
 
     async def test_moves_the_agent_to_another_machine(
-        self, harness: Harness, client: httpx.AsyncClient
+        self, harness: Harness, client: httpx.AsyncClient, desk: OwnersDesk
     ) -> None:
         owner = await add_member(harness.session_factory, "ada")
         laptop = await enroll_console(harness, client, owner, name="laptop")
@@ -985,9 +1128,16 @@ class TestUpdateAgentDetail:
             bearer(key),
             {"agent_id": new_id, "machine": "desktop"},
         )
+        waiting = await _assigned(client, laptop)
+        await desk.send(await desk.in_person(owner), "builder confirm")
 
         assert response.status_code == 200, response.text
-        assert response.json()["result"]["managed"]["machine"] == {
+        assert response.json()["result"]["managed"]["machine"]["name"] == "laptop"
+        assert new_id in waiting
+        [listed] = (
+            await _call(client, helper_id, "list_managed_agents", bearer(key))
+        ).json()["result"]
+        assert listed["machine"] == {
             "id": desktop.controller_id,
             "name": "desktop",
             "state": "online",
@@ -1137,7 +1287,7 @@ class TestUpdateAgentDetail:
             _create_body("laptop", name="other", advanced_config={"color": "teal"}),
         )
         set_for_claude = await update(
-            {"advanced_config": {"effort": "high", "permissionMode": "plan"}}
+            {"advanced_config": {"effort": "high", "maxTurns": 10}}
         )
         leftover = await update({"provider": "codex"})
 
@@ -1158,13 +1308,375 @@ class TestUpdateAgentDetail:
         assert await _agent_row(harness, "other") is None
         assert set_for_claude.status_code == 200, set_for_claude.text
         assert leftover.status_code == 400, leftover.text
-        assert "codex has no setting 'permissionMode'" in leftover.json()["detail"]
+        assert "codex has no setting 'maxTurns'" in leftover.json()["detail"]
         definition = (await _assigned(client, controller))[new_id]["definition"]
         assert definition["provider"] == "claude"
-        assert definition["advanced_config"] == {
-            "effort": "high",
-            "permissionMode": "plan",
+        assert definition["advanced_config"] == {"effort": "high", "maxTurns": 10}
+
+
+class TestTheOwnerConfirms:
+    """An agent may ask to change what another agent may do on its own; only
+    the owner, in person, makes it so (`agent_change_requests`)."""
+
+    async def _builder(
+        self, harness: Harness, client: httpx.AsyncClient
+    ) -> tuple[User, EnrolledController, str, str, str]:
+        owner = await add_member(harness.session_factory, "ada")
+        controller = await enroll_console(harness, client, owner, name="laptop")
+        await _online(client, controller)
+        helper_id, key = await _agent_with_key(
+            harness, owner, "helper", can_manage_agents=True
+        )
+        new_id = await _created(client, helper_id, key, "laptop")
+        return owner, controller, helper_id, key, new_id
+
+    async def test_bypass_and_a_folder_wait_for_the_owner(
+        self, harness: Harness, client: httpx.AsyncClient, desk: OwnersDesk
+    ) -> None:
+        owner, controller, helper_id, key, new_id = await self._builder(harness, client)
+        before = (await _assigned(client, controller))[new_id]
+
+        response = await _call(
+            client,
+            helper_id,
+            "update_agent_detail",
+            bearer(key),
+            {
+                "agent_id": new_id,
+                "auto_approve": True,
+                "directory": "/home/ada/.ssh",
+                "model": "opus",
+                "description": "Reads everything",
+            },
+        )
+
+        assert response.status_code == 200, response.text
+        result = response.json()["result"]
+        held = result["awaiting_confirmation"]
+        assert held["status"] == "awaiting_confirmation"
+        assert held["owner"] == "ada"
+        assert held["confirm_with"] == "!agent-change builder confirm"
+        assert held["needs_confirmation_for"] == ["auto_approve", "directory"]
+        assert set(held["fields"]) == {"auto_approve", "directory", "model"}
+        assert "ada" in held["message"]
+        # The managed change waits whole; the description is not managed.
+        assert result["description"] == "Reads everything"
+        assert result["managed"]["auto_approve"] is False
+        assert result["managed"]["model"] is None
+        after = (await _assigned(client, controller))[new_id]
+        assert after["revision"] == before["revision"]
+        assert after["definition"]["auto_approve"] is False
+        [notice] = desk.posted
+        assert "asks to change" in notice
+        assert "bypass mode on" in notice
+        assert "`/home/ada/.ssh`" in notice
+        assert "`!agent-change builder confirm`" in notice
+        [asked] = await _audited(harness, "agent.change_requested")
+        assert asked.target_id == new_id
+        assert asked.actor_user_id is None
+        assert asked.details["requested_by_agent_id"] == helper_id
+        assert asked.details["needs_confirmation_for"] == ["auto_approve", "directory"]
+
+    async def test_the_owner_confirming_makes_it_so(
+        self, harness: Harness, client: httpx.AsyncClient, desk: OwnersDesk
+    ) -> None:
+        owner, controller, helper_id, key, new_id = await self._builder(harness, client)
+        await _call(
+            client,
+            helper_id,
+            "update_agent_detail",
+            bearer(key),
+            {"agent_id": new_id, "auto_approve": True, "directory": "/srv/builds"},
+        )
+
+        shown = await desk.send(await desk.in_person(owner), "builder")
+        reply = await desk.send(await desk.in_person(owner), "@builder confirm")
+
+        assert "bypass mode on" in shown
+        assert reply.startswith("Changed `builder`, as helper asked")
+        definition = (await _assigned(client, controller))[new_id]["definition"]
+        assert (definition["auto_approve"], definition["directory"]) == (
+            True,
+            "/srv/builds",
+        )
+        [confirmed] = await _audited(harness, "agent.change_confirmed")
+        assert confirmed.actor_user_id == owner.id
+        assert confirmed.details["requested_by_agent_name"] == "helper"
+        assert await desk.send(await desk.in_person(owner), "builder confirm") == (
+            "No change to `builder` is waiting to be confirmed in this room. A "
+            "change an agent asks for lapses after 2 minutes."
+        )
+
+    async def test_nobody_but_the_owner_confirms(
+        self, harness: Harness, client: httpx.AsyncClient, desk: OwnersDesk
+    ) -> None:
+        owner, controller, helper_id, key, new_id = await self._builder(harness, client)
+        admin = await add_member(harness.session_factory, "root")
+        async with harness.session_factory() as session:
+            await session.execute(
+                update(User).where(User.id == admin.id).values(role="admin")
+            )
+            helper = await session.get(Agent, helper_id)
+            assert helper is not None
+            helper_client = await session.get(Client, helper.client_id)
+            assert helper_client is not None
+            await session.commit()
+        await _call(
+            client,
+            helper_id,
+            "update_agent_detail",
+            bearer(key),
+            {"agent_id": new_id, "auto_approve": True},
+        )
+
+        by_itself = await desk.send(helper_client.transport_user_id, "builder confirm")
+        by_an_admin = await desk.send(await desk.in_person(admin), "builder confirm")
+        by_nobody = await desk.send("@nobody:test", "builder drop")
+
+        for refused in (by_itself, by_an_admin, by_nobody):
+            assert "Only the agent's owner" in refused
+            assert "Nothing was changed" in refused
+        assert (await _assigned(client, controller))[new_id]["definition"][
+            "auto_approve"
+        ] is False
+        assert desk.host._agent_requests.waiting_change(desk.room_id, "builder")
+
+    async def test_the_owner_may_drop_it(
+        self, harness: Harness, client: httpx.AsyncClient, desk: OwnersDesk
+    ) -> None:
+        owner, controller, helper_id, key, new_id = await self._builder(harness, client)
+        await _call(
+            client,
+            helper_id,
+            "update_agent_detail",
+            bearer(key),
+            {"agent_id": new_id, "auto_approve": True},
+        )
+
+        reply = await desk.send(await desk.in_person(owner), "builder drop")
+
+        assert reply.startswith("Dropped the change helper asked for")
+        assert desk.host._agent_requests.waiting_change(desk.room_id, "builder") is None
+        assert (await _assigned(client, controller))[new_id]["definition"][
+            "auto_approve"
+        ] is False
+
+    async def test_it_lapses(
+        self,
+        harness: Harness,
+        client: httpx.AsyncClient,
+        desk: OwnersDesk,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        owner, controller, helper_id, key, new_id = await self._builder(harness, client)
+        now = [1000.0]
+        monkeypatch.setattr(agent_admin.time, "monotonic", lambda: now[0])
+        await _call(
+            client,
+            helper_id,
+            "update_agent_detail",
+            bearer(key),
+            {"agent_id": new_id, "auto_approve": True},
+        )
+
+        now[0] += agent_admin.CONFIRM_SECONDS
+        reply = await desk.send(await desk.in_person(owner), "builder confirm")
+
+        assert reply.startswith("No change to `builder` is waiting")
+        assert (await _assigned(client, controller))[new_id]["definition"][
+            "auto_approve"
+        ] is False
+
+    async def test_one_change_waits_per_agent(
+        self, harness: Harness, client: httpx.AsyncClient, desk: OwnersDesk
+    ) -> None:
+        """So the owner confirms what they were shown, not what an agent
+        swapped in after."""
+        owner, controller, helper_id, key, new_id = await self._builder(harness, client)
+        first = await _call(
+            client,
+            helper_id,
+            "update_agent_detail",
+            bearer(key),
+            {"agent_id": new_id, "directory": "/srv/builds"},
+        )
+        second = await _call(
+            client,
+            helper_id,
+            "update_agent_detail",
+            bearer(key),
+            {"agent_id": new_id, "directory": "/home/ada/.ssh"},
+        )
+        await desk.send(await desk.in_person(owner), "builder confirm")
+
+        assert first.status_code == 200, first.text
+        assert second.status_code == 400, second.text
+        assert "already waiting" in second.json()["detail"]
+        assert (await _assigned(client, controller))[new_id]["definition"][
+            "directory"
+        ] == "/srv/builds"
+
+    async def test_without_a_room_to_ask_in_nothing_changes(
+        self, harness: Harness, client: httpx.AsyncClient
+    ) -> None:
+        owner, controller, helper_id, key, new_id = await self._builder(harness, client)
+        harness.protocol.agent_requests = AgentRequests()
+
+        response = await _call(
+            client,
+            helper_id,
+            "update_agent_detail",
+            bearer(key),
+            {"agent_id": new_id, "auto_approve": True, "description": "x"},
+        )
+
+        assert response.status_code == 400, response.text
+        assert "Not connected to a room" in response.json()["detail"]
+        row = await _agent_row(harness, "builder")
+        assert row is not None
+        assert row.description == "Builds things"
+        assert (await _assigned(client, controller))[new_id]["definition"][
+            "auto_approve"
+        ] is False
+
+    async def test_a_change_that_would_be_refused_is_refused_rather_than_held(
+        self, harness: Harness, client: httpx.AsyncClient, desk: OwnersDesk
+    ) -> None:
+        owner, controller, helper_id, key, new_id = await self._builder(harness, client)
+
+        climbing = await _call(
+            client,
+            helper_id,
+            "update_agent_detail",
+            bearer(key),
+            {"agent_id": new_id, "directory": "../../etc"},
+        )
+
+        assert climbing.status_code == 400, climbing.text
+        assert climbing.json()["detail"].startswith("Nothing was changed: ")
+        assert "absolute path" in climbing.json()["detail"]
+        assert desk.posted == []
+
+    async def test_other_changes_apply_at_once_and_are_audited(
+        self, harness: Harness, client: httpx.AsyncClient, desk: OwnersDesk
+    ) -> None:
+        owner, controller, helper_id, key, new_id = await self._builder(harness, client)
+
+        response = await _call(
+            client,
+            helper_id,
+            "update_agent_detail",
+            bearer(key),
+            {
+                "agent_id": new_id,
+                "model": "opus",
+                "auto_mode": True,
+                "description": "Builds better",
+            },
+        )
+
+        assert response.status_code == 200, response.text
+        assert "awaiting_confirmation" not in response.json()["result"]
+        assert desk.posted == []
+        definition = (await _assigned(client, controller))[new_id]["definition"]
+        assert definition["model"] == "opus"
+        [changed] = await _audited(harness, "agent.changed_by_agent")
+        assert changed.target_id == new_id
+        assert changed.actor_user_id is None
+        assert changed.details["changed_by_agent_id"] == helper_id
+        assert set(changed.details["fields"]) == {"description", "model", "auto_mode"}
+        [created] = await _audited(harness, "agent.created_by_agent")
+        assert created.target_id == new_id
+        assert created.details["created_by_agent_name"] == "helper"
+
+    async def test_a_new_agent_with_bypass_or_its_own_folder_waits(
+        self, harness: Harness, client: httpx.AsyncClient, desk: OwnersDesk
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        controller = await enroll_console(harness, client, owner, name="laptop")
+        await _online(client, controller)
+        helper_id, key = await _agent_with_key(
+            harness, owner, "helper", can_manage_agents=True
+        )
+
+        bypass = await _call(
+            client,
+            helper_id,
+            "create_agent",
+            bearer(key),
+            _create_body("laptop", auto_approve=True),
+        )
+        folder = await _call(
+            client,
+            helper_id,
+            "create_agent",
+            bearer(key),
+            _create_body("laptop", name="reader", directory="/home/ada/project"),
+        )
+        own = await _call(
+            client,
+            helper_id,
+            "create_agent",
+            bearer(key),
+            _create_body("laptop", name="plain", directory=f"{WORKSPACES_DIR}/plain"),
+        )
+
+        assert bypass.status_code == 200, bypass.text
+        assert bypass.json()["result"]["status"] == "awaiting_confirmation"
+        assert bypass.json()["result"]["machine"] == {
+            "id": controller.controller_id,
+            "name": "laptop",
         }
+        assert folder.json()["result"]["needs_confirmation_for"] == ["directory"]
+        assert await _agent_row(harness, "builder") is None
+        assert await _agent_row(harness, "reader") is None
+        assert own.json()["result"]["name"] == "plain"
+        assert len(desk.posted) == 2
+        assert "asks to create the agent `builder`" in desk.posted[0]
+
+        reply = await desk.send(await desk.in_person(owner), "builder confirm")
+
+        assert reply.startswith("Created `builder`, as helper asked")
+        created = await _agent_row(harness, "builder")
+        assert created is not None
+        assert (await _assigned(client, controller))[created.id]["definition"][
+            "auto_approve"
+        ] is True
+        [confirmed] = await _audited(harness, "agent.change_confirmed")
+        assert confirmed.details["agent_name"] == "builder"
+
+    async def test_a_new_agent_that_would_be_refused_is_refused_rather_than_held(
+        self, harness: Harness, client: httpx.AsyncClient, desk: OwnersDesk
+    ) -> None:
+        owner = await add_member(harness.session_factory, "ada")
+        controller = await enroll_console(harness, client, owner, name="laptop")
+        await _online(client, controller)
+        helper_id, key = await _agent_with_key(
+            harness, owner, "helper", can_manage_agents=True
+        )
+
+        offline = await _call(
+            client,
+            helper_id,
+            "create_agent",
+            bearer(key),
+            _create_body("nowhere", auto_approve=True),
+        )
+        taken = await _call(
+            client,
+            helper_id,
+            "create_agent",
+            bearer(key),
+            _create_body("laptop", name="helper", auto_approve=True),
+        )
+
+        assert offline.status_code == 400, offline.text
+        assert (
+            "has no machine with the id or name 'nowhere'" in (offline.json()["detail"])
+        )
+        assert taken.status_code == 400, taken.text
+        assert "already exists" in taken.json()["detail"]
+        assert desk.posted == []
 
 
 class TestGetAdvancedConfig:
