@@ -81,6 +81,7 @@ from switch_core.gateway.hosted_machines import (
     ensure_machine,
     hosted_settings,
 )
+from switch_core.gateway.password_work import check_login_rate
 from switch_core.gateway.schemas import (
     AccountDeletionCheck,
     AuthConfigResponse,
@@ -173,6 +174,7 @@ async def login(
     if not config.gateway_password_login_enabled:
         raise HTTPException(status_code=403, detail="Password login is disabled")
 
+    check_login_rate(req.email)
     user = await user_store.get_by_email(session, req.email)
     # One connection at a time, and none held across bcrypt.
     await session.commit()
