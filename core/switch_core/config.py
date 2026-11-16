@@ -875,10 +875,12 @@ class SwitchConfig(BaseSettings):
     # of being truncated or silently dropped.
     agent_media_max_bytes: int = 20 * 1024 * 1024
 
-    # The longest message, in characters, written to a room. Every room row is
-    # copied to each agent in the room, so one message costs this many times
-    # the agents there. A longer message is refused with a reason its sender
-    # can act on, never cut short (`delivery/send_limits.py`).
+    # The longest message, in characters, a sender may write to a room. Every
+    # room row is copied to each agent in the room, so one message costs this
+    # many times the agents there. A longer message is refused with a reason
+    # its sender can act on, never cut short. What Switch writes into a
+    # message (a Switch Trust note, a line for a file it could not relay) is
+    # not counted against its sender (`delivery/send_limits.py`).
     max_message_chars: int = Field(default=64 * 1024, ge=1)
 
     # How fast one sender's messages are accepted: `message_rate_burst` at

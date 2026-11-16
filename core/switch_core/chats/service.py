@@ -1939,7 +1939,9 @@ class ChatService:
         message from any other platform, and a refusal of either raises
         ChatError TRUST_BLOCKED with nothing posted. Before that, a message
         longer than any may be raises MESSAGE_TOO_LONG, and one sent faster
-        than one sender's allowance RATE_LIMITED (`send_limits.py`).
+        than one sender's allowance RATE_LIMITED (`send_limits.py`). The
+        length is of `body` as typed: the notes and mentions Switch adds to it
+        below do not count against the person.
         """
         self._admit(user.id, body)
         mentions = sorted(set(mention_agent_ids))
@@ -2096,8 +2098,9 @@ class ChatService:
                         attachments=attachments_in(content),
                     )
                 except MessageTooLong as error:
-                    # Within the limit as typed, past it with the notes and
-                    # mentions Switch wrote into it.
+                    # Within the limit as typed (`_admit`), and past even the
+                    # room a row keeps for the notes and mentions Switch wrote
+                    # into it (`SWITCH_ADDITIONS_MAX_CHARS`).
                     raise ChatError(422, "MESSAGE_TOO_LONG", str(error)) from error
                 routed.append(stored)
                 posted.append(message)

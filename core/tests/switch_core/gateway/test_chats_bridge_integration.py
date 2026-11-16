@@ -253,6 +253,7 @@ async def _fake_collab_core_full(
             thread_root_id: str | None = None,
             metered: bool = False,
             extra_content: dict[str, Any] | None = None,
+            authored: str | None = None,
         ) -> str:
             # Use the real provisioning to send the message
             from switch_core.messages.row import message_row, new_event_id
