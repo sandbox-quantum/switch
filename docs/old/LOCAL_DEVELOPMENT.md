@@ -1,8 +1,10 @@
 # Running Switch locally for development
 
 This covers the local-development path only: everything runs on your own
-machine, with hot-reload on the backend and the frontend. It's a different
-shape from the two paths the published docs cover —
+machine. The frontend hot-reloads; restart the backend after Python changes.
+For the first-run walkthrough, use the
+[contributor quickstart](../contributing/quickstart.md). It's a different shape
+from the two paths the published docs cover —
 [`standalone`](../official/deploy/self-host.md) (single Docker Compose stack,
 built images, no host toolchain) and the Helm chart — so don't reach for
 those commands here; `just standalone-up` runs a whole different set of
@@ -90,8 +92,9 @@ just gateway-dev   # run the gateway frontend, in a separate terminal (:5173)
 that provisions the Mattermost team/bot/admin accounts named by the
 `MATTERMOST_*` variables. It does **not** start switch-core and does **not**
 start the gateway frontend — you run both of those yourself, in their own
-terminals, so each gets hot-reload while you work. `just down` stops the
-stack; `just reset` also wipes its volumes (Postgres data included).
+terminals. Restart Core after Python changes; the gateway hot-reloads.
+`just down` stops the stack; `just reset` also wipes its volumes (Postgres
+data included).
 
 switch-core refuses to connect to a private address at a URL a bridge config
 names, unless `OUTBOUND_ALLOWED_PRIVATE_HOSTS` lists it. The `.env.example`
