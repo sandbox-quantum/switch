@@ -119,6 +119,40 @@ def _literal_text(node: ast.AST | None) -> str | None:
     return None
 
 
+def _batch_tables(upgrade: ast.FunctionDef) -> dict[ast.Call, str | None]:
+    """The table each call on a `batch_alter_table` block's operations object
+    acts on: `with op.batch_alter_table("messages") as batch_op:` names it
+    once, and `batch_op.create_index(name, columns)` does not name it at all."""
+    tables: dict[ast.Call, str | None] = {}
+    for node in ast.walk(upgrade):
+        if not isinstance(node, ast.With | ast.AsyncWith):
+            continue
+        for item in node.items:
+            opened = item.context_expr
+            if not (
+                isinstance(opened, ast.Call)
+                and isinstance(opened.func, ast.Attribute)
+                and opened.func.attr == "batch_alter_table"
+                and isinstance(item.optional_vars, ast.Name)
+            ):
+                continue
+            keywords = {kw.arg: kw.value for kw in opened.keywords}
+            table = _literal_text(
+                opened.args[0] if opened.args else keywords.get("table_name")
+            )
+            name = item.optional_vars.id
+            for statement in node.body:
+                for call in ast.walk(statement):
+                    if (
+                        isinstance(call, ast.Call)
+                        and isinstance(call.func, ast.Attribute)
+                        and isinstance(call.func.value, ast.Name)
+                        and call.func.value.id == name
+                    ):
+                        tables[call] = table
+    return tables
+
+
 def _unguarded_hot_index_builds(source: str) -> list[str]:
     tree = ast.parse(source)
     upgrade = next(
@@ -131,6 +165,7 @@ def _unguarded_hot_index_builds(source: str) -> list[str]:
     )
     if upgrade is None:
         return []
+    batch_tables = _batch_tables(upgrade)
     found: list[str] = []
     for node in ast.walk(upgrade):
         if (
@@ -139,8 +174,12 @@ def _unguarded_hot_index_builds(source: str) -> list[str]:
             and node.func.attr in {"create_index", "create_unique_constraint"}
         ):
             keywords = {kw.arg: kw.value for kw in node.keywords}
-            table = _literal_text(
-                node.args[1] if len(node.args) > 1 else keywords.get("table_name")
+            table = (
+                batch_tables[node]
+                if node in batch_tables
+                else _literal_text(
+                    node.args[1] if len(node.args) > 1 else keywords.get("table_name")
+                )
             )
             if table not in _HOT_TABLES:
                 continue
@@ -202,4 +241,32 @@ def downgrade():
     op.create_index("ix_a", "messages", ["room_id"])
 """
     assert len(_unguarded_hot_index_builds(unguarded)) == 5
+    assert _unguarded_hot_index_builds(guarded) == []
+
+
+def test_the_hot_table_check_sees_an_index_built_in_a_batch_block() -> None:
+    """`batch_alter_table` names the table once, and its operations take the
+    columns where `op.create_index` takes the table, so the table has to be
+    read from the block."""
+    unguarded = """
+def upgrade():
+    with op.batch_alter_table("messages") as batch_op:
+        batch_op.create_index("ix_a", ["room_id"])
+        batch_op.create_unique_constraint("uq_b", ["room_id", "seq"])
+    with op.batch_alter_table(table_name="agent_events") as events:
+        events.create_index("ix_c", ["agent_id"], unique=True)
+"""
+    guarded = """
+def upgrade():
+    with op.batch_alter_table("messages") as batch_op:
+        batch_op.create_index("ix_a", ["room_id"], if_not_exists=True)
+    with op.batch_alter_table("rooms") as batch_op:
+        batch_op.create_index("ix_d", ["tenant_id"])
+        op.create_index("ix_e", "rooms", ["name"])
+"""
+    assert _unguarded_hot_index_builds(unguarded) == [
+        "line 4: create_index on messages",
+        "line 5: create_unique_constraint on messages",
+        "line 7: create_index on agent_events",
+    ]
     assert _unguarded_hot_index_builds(guarded) == []
