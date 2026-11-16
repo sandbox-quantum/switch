@@ -397,7 +397,7 @@
     },
     {
       "route": "GET /gateway/agents/known-types",
-      "auth": "none",
+      "auth": "session",
       "flags": []
     },
     {

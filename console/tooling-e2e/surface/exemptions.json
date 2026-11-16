@@ -61,7 +61,6 @@
     "GET /gateway/rooms/{room_id}/admins": "A room's room admins. Covered by core's test_room_admin_routes.py and test_room_admins.py against real Postgres, and by the role matrix; no fast-lane scenario stages a second person in a room yet."
   },
   "unauthenticated": {
-    "GET /gateway/agents/known-types": "The catalogue of agent types this server can register and their option schemas; no tenant data. Public since the initial import, and nothing records whether that is deliberate.",
     "GET /gateway/auth/config": "Read by the login page before any session exists, to choose which sign-in methods to offer.",
     "GET /gateway/auth/oidc/callback": "The OIDC sign-in round trip, before any session exists.",
     "GET /gateway/auth/oidc/login": "The OIDC sign-in round trip, before any session exists.",
