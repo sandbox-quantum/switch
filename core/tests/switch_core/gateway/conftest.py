@@ -38,6 +38,7 @@ from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.switch_core_process_store import SwitchCoreProcessStore
 from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
+from switch_core.gateway import password_work
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.chats import (
     chat_error_response,
@@ -341,6 +342,11 @@ def _chat_service(
     )
     room_service.on_room_agents_changed(service.sync_room)
     return service, room_service
+
+
+@pytest.fixture(autouse=True)
+def reset_password_attempts() -> None:
+    password_work._ATTEMPTS.clear()
 
 
 @pytest.fixture

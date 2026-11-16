@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import datetime
 import logging
 from collections.abc import AsyncIterator
@@ -43,6 +42,7 @@ from switch_core.gateway.dependencies import (
     get_session_factory,
     get_user_store,
 )
+from switch_core.gateway.password_work import password_work
 from switch_core.gateway.schemas import (
     OrganizationSummary,
     SessionStateResponse,
@@ -117,13 +117,13 @@ async def hash_password_off_loop(password: str) -> str:
     the process waits behind one login. Call it with no transaction open, too,
     or the connection waits with them.
     """
-    return await asyncio.to_thread(hash_password, password)
+    return await password_work(hash_password, password)
 
 
 async def verify_password_off_loop(password: str, password_hash: str | None) -> bool:
     """`verify_password` on a worker thread, for the same reason as
     `hash_password_off_loop`."""
-    return await asyncio.to_thread(verify_password, password, password_hash)
+    return await password_work(verify_password, password, password_hash)
 
 
 def create_jwt(
