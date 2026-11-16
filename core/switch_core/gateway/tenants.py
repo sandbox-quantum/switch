@@ -1160,13 +1160,18 @@ async def clear_retention_policy(
     session: Annotated[AsyncSession, Depends(get_session)],
     retention_store: Annotated[RetentionStore, Depends(get_retention_store)],
     user: Annotated[User, Depends(require_tenant_admin)],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
 ) -> RetentionPolicyResponse:
-    """Keep the bound tenant's messages forever. Admins only.
+    """Keep the bound tenant's messages forever. Admins only, by their own
+    admin membership, the same as setting a policy.
 
     Messages already deleted stay deleted. Clearing a policy that is not set
     succeeds and records nothing.
     """
     _require_bound_tenant(tenant_id)
+    await _require_admin_membership(
+        session, user_store, tenant_id, user, "change when messages are deleted"
+    )
     previous = await retention_store.get_policy(session)
     if previous is not None:
         previous_days = previous.message_retention_days
