@@ -49,11 +49,11 @@ type ChannelSource = "existing" | "new";
 
 export default function RoomCreateFormBody() {
   const navigate = useNavigate();
-  const { data: agents } = useAgents();
+  const { data: agents, error: agentsError } = useAgents();
   // Only the agents the server's invite rule lets the viewer put in a new room.
-  const { data: candidates } = useRoomAgentCandidates();
-  const { data: bridges } = useBridges();
-  const { data: groups } = useRoomGroups();
+  const { data: candidates, error: candidatesError } = useRoomAgentCandidates();
+  const { data: bridges, error: bridgesError } = useBridges();
+  const { data: groups, error: groupsError } = useRoomGroups();
   // Only a workspace admin may put a room in a group.
   const { canAdminTenant } = useAuth();
 
@@ -78,7 +78,20 @@ export default function RoomCreateFormBody() {
   const [groupId, setGroupId] = useState("");
   const [roles, setRoles] = useState<RoomRoleSpec[]>([]);
 
-  const { data: bridgeUsers } = useBridgeUsers(bridgeId || undefined);
+  const { data: bridgeUsers, error: bridgeUsersError } = useBridgeUsers(bridgeId || undefined);
+
+  // What the form could not load, said rather than offered as an empty
+  // choice: no agents, no messaging apps or no groups would read as there
+  // being none.
+  const loadErrors = (
+    [
+      ["the agents", agentsError],
+      ["which agents you may add", candidatesError],
+      ["the messaging apps", bridgesError],
+      ["the room groups", canAdminTenant ? groupsError : null],
+      ["the messaging app's people", bridgeUsersError],
+    ] satisfies [string, string | null][]
+  ).filter((entry): entry is [string, string] => entry[1] !== null);
 
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -285,6 +298,11 @@ export default function RoomCreateFormBody() {
   return (
     <Stack spacing={2}>
       {error && <Alert severity="error">{error}</Alert>}
+      {loadErrors.map(([what, message]) => (
+        <Alert key={what} severity="error">
+          Couldn't load {what}: {message}
+        </Alert>
+      ))}
       <TextField
         label="Name"
         value={name}

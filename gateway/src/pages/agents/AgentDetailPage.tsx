@@ -31,6 +31,7 @@ import {
   sentenceCase,
 } from "../../theme/format";
 import { useAuth } from "../../data/AuthContext";
+import { mayBeInAnotherWorkspace } from "../../data/workspaceLink";
 import AddressingPolicySection from "./AddressingPolicySection";
 import RenameAgentDialog from "./RenameAgentDialog";
 import AgentManagementSection from "./AgentManagementSection";
@@ -76,7 +77,7 @@ export default function AgentDetailPage() {
   const { agentId } = useParams<{ agentId: string }>();
   const navigate = useNavigate();
   const { capabilities } = useAuth();
-  const { data: agent, loading, error, refetch } = useAgent(agentId);
+  const { data: agent, loading, error, errorStatus, refetch } = useAgent(agentId);
   const [renameOpen, setRenameOpen] = useState(false);
   const [renameNotice, setRenameNotice] = useState<{
     severity: "success" | "warning";
@@ -99,6 +100,11 @@ export default function AgentDetailPage() {
         </Button>
         <Alert severity="error" sx={{ mt: 2 }}>
           {error ?? "Agent not found"}
+          {mayBeInAnotherWorkspace(errorStatus) !== null && (
+            <Box component="span" sx={{ display: "block", mt: 0.5 }}>
+              {mayBeInAnotherWorkspace(errorStatus)}
+            </Box>
+          )}
         </Alert>
       </Box>
     );
@@ -118,7 +124,9 @@ export default function AgentDetailPage() {
         <IconButton onClick={() => navigate("/agents")} size="small" aria-label="Back to agents">
           <ArrowBack />
         </IconButton>
-        <Typography variant="h5">{agent.name}</Typography>
+        <Typography variant="h5" sx={{ minWidth: 0, overflowWrap: "anywhere" }}>
+          {agent.name}
+        </Typography>
         {agent.can_rename && (
           <Tooltip title="Rename agent">
             <IconButton
@@ -328,7 +336,7 @@ function OptionsSection({
   canEdit: boolean;
   onUpdated: () => void;
 }) {
-  const { data: knownTypes } = useKnownAgentTypes();
+  const { data: knownTypes, loading: typesLoading, error: typesError } = useKnownAgentTypes();
   const spec = knownTypes?.find((t) => t.key === agent.known_agent_type);
 
   const initial = useMemo(() => {
@@ -373,7 +381,13 @@ function OptionsSection({
       <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
         Options
       </Typography>
-      {!spec ? (
+      {typesLoading ? (
+        <CircularProgress size={20} />
+      ) : typesError !== null ? (
+        <Alert severity="error">
+          Couldn't load the agent types, so this agent's options can't be shown: {typesError}
+        </Alert>
+      ) : !spec ? (
         <Alert severity="warning">
           Unknown agent type "{agent.known_agent_type}" — Switch no longer
           describes its options.

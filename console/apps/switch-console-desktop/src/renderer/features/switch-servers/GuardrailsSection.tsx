@@ -1,5 +1,6 @@
 import { observer } from 'mobx-react-lite';
 import { useEffect, useState } from 'react';
+import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { Button } from '@renderer/lib/ui/button';
@@ -13,9 +14,9 @@ import {
   type FetchTrustSettingsResult,
   type TrustSettings,
   type UpdateTrustSettingsResult,
-  dashboardOrigin,
 } from '@shared/core/switch-servers/switch-servers';
 import { openServerPage } from './open-server-page';
+import { organizationGuardrailsWay } from './organization-guardrails';
 import { switchServersStore } from './switch-servers-store';
 
 type FormState = {
@@ -48,7 +49,9 @@ function recoverableResultText(result: { kind: string; message?: string }): stri
  * Switch Trust's one server-global guardrails settings, in Admin under
  * Server, for a server that still has them. A newer server has each
  * organization connect its own policy in the dashboard, and answers the read
- * with where to go instead, which this shows with a way there.
+ * with where to go instead. This shows that, with a way to the organization's
+ * guardrails for an operator who is also one of its admins, and why there is
+ * none for one who isn't (`organizationGuardrailsWay`).
  *
  * Admin-only (a deployment operator, not a workspace admin) — one policy
  * covers the whole deployment, not a workspace, so `switchServersStore`'s
@@ -156,6 +159,9 @@ export const GuardrailsSection = observer(function GuardrailsSection({
   const formValid = form !== null && form.endpoint.trim() !== '';
 
   const server = switchServersStore.serverById(serverId);
+  const guardrailsWay = server
+    ? organizationGuardrailsWay(server, workspacesStore.onServerInScope(serverId))
+    : null;
 
   return (
     <div className={className}>
@@ -164,19 +170,17 @@ export const GuardrailsSection = observer(function GuardrailsSection({
       {moved && (
         <div className="flex flex-col items-start gap-2">
           <p className="text-xs text-foreground-muted">{moved}</p>
-          {server && (
+          {guardrailsWay?.kind === 'open' && (
             <Button
               variant="outline"
               size="sm"
-              onClick={() =>
-                void openServerPage(
-                  serverId,
-                  `${dashboardOrigin(server).replace(/\/+$/, '')}/settings/org/guardrails`
-                )
-              }
+              onClick={() => void openServerPage(serverId, guardrailsWay.url)}
             >
               Open organization guardrails
             </Button>
+          )}
+          {guardrailsWay?.kind === 'not-an-admin' && (
+            <p className="text-xs text-foreground-muted">{guardrailsWay.text}</p>
           )}
         </div>
       )}

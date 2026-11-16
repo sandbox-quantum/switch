@@ -59,18 +59,15 @@ import {
 } from "./connectorProfile";
 import KeyDialog from "./KeyDialog";
 import PasteDialog from "./PasteDialog";
-import { useLeaveToSignIn } from "./signIn";
+import { type Back, takeBackAfterSignIn, useLeaveToSignIn } from "./signIn";
 
 /** Where the back button goes: the page that opened this one, when it said,
  * else the connector catalogue. */
-interface Back {
-  label: string;
-  to: string;
-}
+const CATALOGUE: Back = { label: "Connectors", to: "/connectors" };
 
-function backOf(state: unknown): Back {
+function backOf(state: unknown): Back | null {
   const back = (state as { back?: Back } | null)?.back;
-  return back && typeof back.to === "string" ? back : { label: "Connectors", to: "/connectors" };
+  return back && typeof back.to === "string" ? back : null;
 }
 
 function Fact({ label, quiet, children }: { label: string; quiet?: boolean; children: ReactNode }) {
@@ -255,7 +252,6 @@ export default function ConnectorPage() {
   const { connectorId = "" } = useParams();
   const location = useLocation();
   const navigate = useNavigate();
-  const back = backOf(location.state);
   const { session, capabilities } = useAuth();
   const meId = session?.user.id ?? "";
   const workspaceName = session?.tenant?.name ?? "this workspace";
@@ -285,6 +281,13 @@ export default function ConnectorPage() {
   const [signInError, setSignInError] = useState<string | null>(null);
   const [params, setParams] = useSearchParams();
   const returnedFrom = params.get("sign_in");
+  // Back from the vendor's sign-in, the page arrives with no history state:
+  // where Back led was kept for the way back.
+  const [backAfterSignIn] = useState(() =>
+    returnedFrom !== null && backOf(location.state) === null ? takeBackAfterSignIn(connectorId) : null,
+  );
+  const opener = backOf(location.state) ?? backAfterSignIn;
+  const back = opener ?? CATALOGUE;
   // The sign-in already read: its outcome is dropped once read, so reading
   // it twice (a re-render, or React's development double effect) would say
   // it had expired.
@@ -365,13 +368,13 @@ export default function ConnectorPage() {
         void load();
         const rest = new URLSearchParams(params);
         rest.delete("sign_in");
-        setParams(rest, { replace: true, state: location.state });
+        setParams(rest, { replace: true, state: opener === null ? location.state : { ...location.state, back: opener } });
       });
-  }, [returnedFrom, connectorId, connection, load, params, setParams, location.state]);
+  }, [returnedFrom, connectorId, connection, load, params, setParams, location.state, opener]);
 
   const connect = () => {
     setSignInError(null);
-    leave(connectorId).catch((err: unknown) =>
+    leave(connectorId, opener).catch((err: unknown) =>
       setSignInError(err instanceof Error ? err.message : String(err)),
     );
   };

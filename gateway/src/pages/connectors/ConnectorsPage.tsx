@@ -172,7 +172,7 @@ export default function ConnectorsPage() {
       setPasteFor(connection);
       return;
     }
-    leave(connection.slug).catch((err: unknown) =>
+    leave(connection.slug, null).catch((err: unknown) =>
       setConnectError(err instanceof Error ? err.message : String(err)),
     );
   };

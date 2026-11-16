@@ -53,13 +53,13 @@ export default function ReferenceDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { data: types } = useReferenceTypes();
-  const { data: ref, setData: setRef, error, loading, reload } = useResourceDetail(id, loadReference);
+  const { data: ref, setData: setRef, error, errorStatus, loading, reload } = useResourceDetail(id, loadReference);
   const { afterTransfer, refreshNotice } = useAfterTransfer(id, loadReference, setRef, LIST_PATH);
   const [deleteOpen, setDeleteOpen] = useState(false);
 
   if (ref === null && loading) return <DetailLoading />;
   if (ref === null || !id) {
-    return <DetailLoadFailed what="reference" listPath={LIST_PATH} error={error} onRetry={reload} />;
+    return <DetailLoadFailed what="reference" listPath={LIST_PATH} error={error} errorStatus={errorStatus} onRetry={reload} />;
   }
 
   // Visibility-filtered, so it may miss a type this reference legitimately

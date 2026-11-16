@@ -103,7 +103,7 @@ export default function OrganizationAuditSection({ organizationName }: { organiz
       {error && <Alert severity="error">{error}</Alert>}
       {loading && events.length === 0 ? (
         <CircularProgress />
-      ) : (
+      ) : error !== null && events.length === 0 ? null : (
         <DataTable
           rows={events}
           columns={COLUMNS}

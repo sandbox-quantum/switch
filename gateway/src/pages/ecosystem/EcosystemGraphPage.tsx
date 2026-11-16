@@ -93,8 +93,8 @@ export default function EcosystemGraphPage() {
 
   // "Show owners" inserts an owner node between each agent-type and its agents
   // (type -> owner -> agent). Owner names come from the ecosystem payload,
-  // which only carries them when the server `ecosystem.show_owners` flag is ON —
-  // so with the flag off this toggle reveals nothing.
+  // which only carries them when the server `ecosystem.show_owners` flag is ON,
+  // so the toggle is offered only then.
   const [showOwners, setShowOwners] = useState(false);
 
   const containerRef = useRef<HTMLDivElement>(null);
@@ -256,17 +256,19 @@ export default function EcosystemGraphPage() {
         <Typography variant="h5" sx={{ flexGrow: 1 }}>
           Ecosystem
         </Typography>
-        <FormControlLabel
-          control={
-            <Switch
-              size="small"
-              checked={showOwners}
-              onChange={(e) => setShowOwners(e.target.checked)}
-            />
-          }
-          label="Show owners"
-          sx={{ mr: 1 }}
-        />
+        {data?.show_owners && (
+          <FormControlLabel
+            control={
+              <Switch
+                size="small"
+                checked={showOwners}
+                onChange={(e) => setShowOwners(e.target.checked)}
+              />
+            }
+            label="Show owners"
+            sx={{ mr: 1 }}
+          />
+        )}
         <Typography variant="caption" color="text.secondary">
           {data
             ? [
@@ -280,7 +282,7 @@ export default function EcosystemGraphPage() {
 
       {error && (
         <Alert severity="error" sx={{ mb: 2 }}>
-          {error}
+          Couldn't load the ecosystem: {error}
         </Alert>
       )}
 
@@ -311,7 +313,7 @@ export default function EcosystemGraphPage() {
             <CircularProgress />
           </Box>
         )}
-        {!loading && isEmpty && (
+        {!loading && error === null && isEmpty && (
           <Box
             sx={{
               position: "absolute",

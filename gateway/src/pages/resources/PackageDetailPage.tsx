@@ -47,13 +47,13 @@ const LIST_PATH = "/resources?tab=packages";
 export default function PackageDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { data: pkg, setData: setPkg, error, loading, reload } = useResourceDetail(id, loadPackage);
+  const { data: pkg, setData: setPkg, error, errorStatus, loading, reload } = useResourceDetail(id, loadPackage);
   const { afterTransfer, refreshNotice } = useAfterTransfer(id, loadPackage, setPkg, LIST_PATH);
   const [deleteOpen, setDeleteOpen] = useState(false);
 
   if (pkg === null && loading) return <DetailLoading />;
   if (pkg === null || !id) {
-    return <DetailLoadFailed what="package" listPath={LIST_PATH} error={error} onRetry={reload} />;
+    return <DetailLoadFailed what="package" listPath={LIST_PATH} error={error} errorStatus={errorStatus} onRetry={reload} />;
   }
 
   return (

@@ -26,7 +26,6 @@ const SECTION_LABELS: [prefix: string, label: string][] = [
   ["/templates", "Templates"],
   ["/connectors", "Connectors"],
   ["/resources", "Resources"],
-  ["/workspace", "Workspace"],
   ["/usage", "Usage"],
   ["/settings/org", "Organization settings"],
   ["/settings", "Settings"],

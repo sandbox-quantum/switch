@@ -140,4 +140,26 @@ describe("EcosystemGraphPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "Back to Home" }));
     await waitFor(() => expect(screen.getByText("Home page")).toBeTruthy());
   });
+
+  it("offers Show owners only where the server sends owners", async () => {
+    answerGraph({ show_owners: false, nodes: [SWITCH], edges: [] });
+    renderPage();
+    await screen.findByText("No agents or messaging apps yet.");
+    expect(screen.queryByLabelText("Show owners")).toBeNull();
+    cleanup();
+
+    answerGraph({ show_owners: true, nodes: [SWITCH], edges: [] });
+    renderPage();
+    expect(await screen.findByLabelText("Show owners")).toBeTruthy();
+  });
+
+  it("says the graph couldn't be loaded, and not that there is nothing in it", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ detail: "database unavailable" }), { status: 503 })),
+    );
+    renderPage();
+    expect(await screen.findByText("Couldn't load the ecosystem: database unavailable")).toBeTruthy();
+    expect(screen.queryByText("No agents or messaging apps yet.")).toBeNull();
+  });
 });

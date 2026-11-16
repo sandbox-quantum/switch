@@ -17,6 +17,7 @@ import { useNavigate, useParams } from "react-router";
 import ConfirmDialog from "../../components/ConfirmDialog";
 import { detachDocumentFromRoom } from "../../data/api";
 import { useRoomDocument } from "../../data/hooks";
+import { mayBeInAnotherWorkspace } from "../../data/workspaceLink";
 
 export default function RoomScopedDocumentView() {
   const { roomId, documentId } = useParams<{
@@ -24,7 +25,7 @@ export default function RoomScopedDocumentView() {
     documentId: string;
   }>();
   const navigate = useNavigate();
-  const { data: doc, loading, error } = useRoomDocument(roomId, documentId);
+  const { data: doc, loading, error, errorStatus } = useRoomDocument(roomId, documentId);
   const [confirming, setConfirming] = useState(false);
 
   if (loading) {
@@ -46,6 +47,11 @@ export default function RoomScopedDocumentView() {
         </Button>
         <Alert severity="error" sx={{ mt: 2 }}>
           {error ?? "Document not found"}
+          {mayBeInAnotherWorkspace(errorStatus) !== null && (
+            <Box component="span" sx={{ display: "block", mt: 0.5 }}>
+              {mayBeInAnotherWorkspace(errorStatus)}
+            </Box>
+          )}
         </Alert>
       </Box>
     );

@@ -36,7 +36,7 @@ interface Props {
 }
 
 export default function BudgetDialog({ tenantId, budget, open, onClose, onSaved }: Props) {
-  const { data: agents } = useAgents();
+  const { data: agents, error: agentsError } = useAgents();
   const [agentId, setAgentId] = useState(WHOLE_WORKSPACE);
   const [metric, setMetric] = useState<UsageMetric>("output_tokens");
   const [model, setModel] = useState("");
@@ -95,6 +95,11 @@ export default function BudgetDialog({ tenantId, budget, open, onClose, onSaved 
       <DialogContent>
         <Stack spacing={2} sx={{ mt: 1 }}>
           {error && <Alert severity="error">{error}</Alert>}
+          {agentsError && !budget && (
+            <Alert severity="error">
+              Couldn't load the agents, so a budget can only cover the whole workspace: {agentsError}
+            </Alert>
+          )}
           {budget && (
             <Alert severity="info">
               What a budget covers is fixed. To cover something else, add another budget.

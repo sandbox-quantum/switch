@@ -226,10 +226,19 @@ export default function AddressingPolicySection({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const { data: rooms } = useRooms();
-  const { data: groups } = useRoomGroups();
-  const { data: agents } = useAgents();
-  const { data: users } = useAllExternalUsers();
+  const { data: rooms, error: roomsError } = useRooms();
+  const { data: groups, error: groupsError } = useRoomGroups();
+  const { data: agents, error: agentsError } = useAgents();
+  const { data: users, error: usersError } = useAllExternalUsers();
+  // What the rules' pickers could not load, said rather than offered empty.
+  const loadErrors = (
+    [
+      ["the rooms", roomsError],
+      ["the room groups", groupsError],
+      ["the agents", agentsError],
+      ["the people on messaging apps", usersError],
+    ] satisfies [string, string | null][]
+  ).filter((entry): entry is [string, string] => entry[1] !== null);
 
   const roomOptions: Option[] = useMemo(
     () => (rooms ?? []).map((r) => ({ id: r.id, label: r.name })),
@@ -324,6 +333,11 @@ export default function AddressingPolicySection({
 
       {restricted && (
         <Stack spacing={2}>
+          {loadErrors.map(([what, message]) => (
+            <Alert key={what} severity="error">
+              Couldn't load {what} to choose from: {message}
+            </Alert>
+          ))}
           {rules.map((rule, index) => (
             <Paper key={index} variant="outlined" sx={{ p: 2, borderRadius: 2 }}>
               <Stack direction="row" alignItems="center" mb={1}>

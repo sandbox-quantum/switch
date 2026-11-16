@@ -158,6 +158,12 @@ function personalSettingsPage(
   return { ...settingsPage(path, "workspace", menu, access, element), personal: true };
 }
 
+/** A page of a settings area reached from one of its pages rather than its
+ * menu: the area's chrome, with no menu row of its own. */
+function withinArea(route: PageRoute, area: SettingsArea): PageRoute {
+  return { ...route, area };
+}
+
 function areaIndex(path: string, area: SettingsArea): AreaRoute {
   return { kind: "area", path, area };
 }
@@ -196,13 +202,12 @@ export const ROUTES: readonly AppRoute[] = [
   page("/connectors", serviceConnections, <ConnectorsPage />),
   page("/connectors/:connectorId", serviceConnections, <ConnectorPage />),
 
-  page("/workspace/private-channel-rooms", workspaceAdmins, <PrivateChannelRoomsPage />),
-
   // Where the pages were before the settings areas.
   redirect("/machines", "/settings/devices"),
   redirect("/collaborations", "/settings/messaging-apps"),
   redirect("/registration-keys", "/settings/api-keys"),
   redirect("/workspace", "/settings/users"),
+  redirect("/workspace/private-channel-rooms", "/settings/general/private-channel-rooms"),
   redirect("/organization", "/settings/org"),
   redirect("/users", "/platform/users"),
   redirect("/operator/workspaces", "/platform/workspaces"),
@@ -211,6 +216,11 @@ export const ROUTES: readonly AppRoute[] = [
   // rebuilt, and sits here in the meantime.
   areaIndex("/settings", "workspace"),
   settingsPage("/settings/general", "workspace", "General", everyone, <WorkspaceGeneralPage />),
+  // Opened from General's "Public rooms on private channels" warning.
+  withinArea(
+    page("/settings/general/private-channel-rooms", workspaceAdmins, <PrivateChannelRoomsPage />),
+    "workspace",
+  ),
   settingsPage("/settings/users", "workspace", "Users", everyone, <WorkspaceUsersPage />),
   settingsPage(
     "/settings/messaging-apps",

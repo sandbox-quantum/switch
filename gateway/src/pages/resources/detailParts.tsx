@@ -6,6 +6,7 @@ import { useNavigate } from "react-router";
 import PageBanner from "../../components/PageBanner";
 import { useAuth } from "../../data/AuthContext";
 import { ApiError, loadPackages } from "../../data/api";
+import { mayBeInAnotherWorkspace } from "../../data/workspaceLink";
 import { EM_DASH, MONO_SX } from "../../theme/format";
 import { useLoad } from "../workspace/useLoad";
 
@@ -14,6 +15,7 @@ import { useLoad } from "../workspace/useLoad";
 export function useResourceDetail<T>(id: string | undefined, load: (id: string) => Promise<T>) {
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [errorStatus, setErrorStatus] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   // Only the latest load is kept, so moving between two resources cannot
   // leave the first one's answer on the second one's page.
@@ -28,10 +30,12 @@ export function useResourceDetail<T>(id: string | undefined, load: (id: string) 
       if (mine !== latest.current) return;
       setData(loaded);
       setError(null);
+      setErrorStatus(null);
     } catch (err) {
       if (mine !== latest.current) return;
       setData(null);
       setError(err instanceof Error ? err.message : "Failed to load");
+      setErrorStatus(err instanceof ApiError ? err.status : null);
     }
     setLoading(false);
   }, [id, load]);
@@ -44,7 +48,7 @@ export function useResourceDetail<T>(id: string | undefined, load: (id: string) 
     void reload();
   }, [reload]);
 
-  return { data, setData, error, loading, reload };
+  return { data, setData, error, errorStatus, loading, reload };
 }
 
 /** What a page does once its resource has been handed to someone else: it
@@ -114,14 +118,17 @@ export function DetailLoadFailed({
   what,
   listPath,
   error,
+  errorStatus,
   onRetry,
 }: {
   what: string;
   listPath: string;
   error: string | null;
+  errorStatus: number | null;
   onRetry: () => void;
 }) {
   const navigate = useNavigate();
+  const elsewhere = mayBeInAnotherWorkspace(errorStatus);
   return (
     <Box>
       <Button startIcon={<ArrowBack />} onClick={() => navigate(listPath)}>
@@ -137,6 +144,11 @@ export function DetailLoadFailed({
         }
       >
         Couldn't open this {what}: {error ?? "unknown error"}
+        {elsewhere !== null && (
+          <Box component="span" sx={{ display: "block", mt: 0.5 }}>
+            {elsewhere}
+          </Box>
+        )}
       </Alert>
     </Box>
   );
