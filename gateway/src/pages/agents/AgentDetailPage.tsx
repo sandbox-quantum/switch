@@ -110,8 +110,9 @@ export default function AgentDetailPage() {
     );
   }
 
-  // Every control follows the server's answer for this agent. Who may address
-  // it is open to whoever may manage it (its owner or an admin); agent
+  // Every control follows the server's answer for this agent. Whoever may
+  // manage it (its owner or an admin) may narrow who may address it, and only
+  // its owner may widen that; agent
   // management and service access stay with the owner alone, because the
   // agent then acts on the owner's own machines and credentials. Service
   // access shows only to its owner: the server answers anyone else's request
@@ -198,6 +199,7 @@ export default function AgentDetailPage() {
         <AddressingPolicySection
           agent={agent}
           canEdit={canManage}
+          canWiden={agent.can_widen_addressing}
           onUpdated={refetch}
         />
         <MidTurnDeliverySection

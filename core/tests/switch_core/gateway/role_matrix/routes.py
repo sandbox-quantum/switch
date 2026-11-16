@@ -156,12 +156,13 @@ ROUTES: dict[str, Case] = {
     ),
     "POST /gateway/agents/register-known-bulk": post(
         f"{G}/agents/register-known-bulk",
-        owner_or_admins(),
+        owner(refused=403),
         json={
             "agent_type": "claude-code",
             "parent_agent_id": "{agent}",
             "subagents": [{"subagent_name": "reviewer", "description": ""}],
         },
+        why="Its owner's alone: the subagents sit under the parent, in its working directory.",
     ),
     "GET /gateway/agent-sessions/approvals": get(f"{G}/agent-sessions/approvals", SELF),
     "POST /gateway/agent-sessions/{agent_id}/{session_id}/approvals/{request_id}/answer": post(

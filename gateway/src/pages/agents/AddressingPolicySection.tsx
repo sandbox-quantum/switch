@@ -209,10 +209,15 @@ function DimensionField({
 export default function AddressingPolicySection({
   agent,
   canEdit,
+  canWiden,
   onUpdated,
 }: {
   agent: AgentDetail;
   canEdit: boolean;
+  // Letting more people or agents address it is its owner's alone. Anyone
+  // else who may edit it may only take away: remove a rule, or restrict it
+  // to its owner.
+  canWiden: boolean;
   onUpdated: () => void;
 }) {
   // A policy with no rules lets anyone in, so it is shown as Open, which is
@@ -220,6 +225,9 @@ export default function AddressingPolicySection({
   const savedRules = agent.addressing_policy?.rules ?? [];
   const initialRestricted = savedRules.length > 0;
   const initialRules: RuleState[] = savedRules.map(toRuleState);
+
+  const narrowOnly = canEdit && !canWiden;
+  const canEditRules = canEdit && !narrowOnly;
 
   const [restricted, setRestricted] = useState(initialRestricted);
   const [rules, setRules] = useState<RuleState[]>(initialRules);
@@ -312,7 +320,7 @@ export default function AddressingPolicySection({
       >
         <FormControlLabel
           value="open"
-          disabled={!canEdit}
+          disabled={!canEdit || (narrowOnly && initialRestricted)}
           control={<Radio size="small" />}
           label="Open — anyone in the room can address this agent"
         />
@@ -323,6 +331,26 @@ export default function AddressingPolicySection({
           label="Restricted — only senders matching a rule below"
         />
       </RadioGroup>
+
+      {narrowOnly && (
+        <Alert
+          severity="info"
+          action={
+            restricted ? (
+              <Button
+                color="inherit"
+                size="small"
+                onClick={() => setRules(OWNER_ONLY_RULES)}
+              >
+                Restrict to its owner
+              </Button>
+            ) : undefined
+          }
+        >
+          Only its owner can let more people or agents address this agent. You can
+          remove rules, or restrict it to its owner.
+        </Alert>
+      )}
 
       {savedEmpty && !restricted && (
         <Alert severity="info">
@@ -374,7 +402,7 @@ export default function AddressingPolicySection({
                   state={rule.rooms}
                   options={roomOptions}
                   allowNone={false}
-                  disabled={!canEdit}
+                  disabled={!canEditRules}
                   onChange={(rooms) => updateRule(index, { ...rule, rooms })}
                 />
                 <DimensionField
@@ -383,7 +411,7 @@ export default function AddressingPolicySection({
                   state={rule.room_groups}
                   options={groupOptions}
                   allowNone={false}
-                  disabled={!canEdit}
+                  disabled={!canEditRules}
                   onChange={(room_groups) =>
                     updateRule(index, { ...rule, room_groups })
                   }
@@ -394,7 +422,7 @@ export default function AddressingPolicySection({
                   state={rule.users}
                   options={userOptions}
                   allowNone
-                  disabled={!canEdit}
+                  disabled={!canEditRules}
                   onChange={(users) => updateRule(index, { ...rule, users })}
                 />
                 <DimensionField
@@ -403,7 +431,7 @@ export default function AddressingPolicySection({
                   state={rule.agents}
                   options={agentOptions}
                   allowNone
-                  disabled={!canEdit}
+                  disabled={!canEditRules}
                   onChange={(agents) => updateRule(index, { ...rule, agents })}
                 />
                 <FormControlLabel
@@ -411,7 +439,7 @@ export default function AddressingPolicySection({
                     <Checkbox
                       size="small"
                       checked={rule.owner === true}
-                      disabled={!canEdit}
+                      disabled={!canEditRules}
                       onChange={(e) =>
                         updateRule(index, { ...rule, owner: e.target.checked })
                       }
@@ -424,7 +452,7 @@ export default function AddressingPolicySection({
                     <Checkbox
                       size="small"
                       checked={rule.owner_agents === true}
-                      disabled={!canEdit}
+                      disabled={!canEditRules}
                       onChange={(e) =>
                         updateRule(index, { ...rule, owner_agents: e.target.checked })
                       }
@@ -437,7 +465,7 @@ export default function AddressingPolicySection({
                     <Checkbox
                       size="small"
                       checked={rule.platform}
-                      disabled={!canEdit}
+                      disabled={!canEditRules}
                       onChange={(e) =>
                         updateRule(index, { ...rule, platform: e.target.checked })
                       }
@@ -454,7 +482,7 @@ export default function AddressingPolicySection({
               </Stack>
             </Paper>
           ))}
-          {canEdit && (
+          {canEditRules && (
             <Box>
               <Button
                 size="small"

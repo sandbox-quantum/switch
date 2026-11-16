@@ -339,8 +339,16 @@ describe("RoomsPage rows and actions", () => {
     );
   });
 
-  it("says when a bulk archive changed only some rooms", async () => {
-    vi.mocked(api.bulkArchiveRooms).mockResolvedValue({ updated: 1 });
+  it("says which rooms a bulk archive left alone, and why", async () => {
+    vi.mocked(api.bulkArchiveRooms).mockResolvedValue({
+      updated: 1,
+      refused: [
+        {
+          room_id: "open",
+          reason: "Only the room's owner, a room admin or a workspace admin can archive or unarchive this room.",
+        },
+      ],
+    });
     render(<RoomsPage />);
     fireEvent.click(await screen.findByRole("checkbox", { name: "select mine" }));
     fireEvent.click(screen.getByRole("checkbox", { name: "select open" }));
@@ -351,12 +359,15 @@ describe("RoomsPage rows and actions", () => {
 
     await waitFor(() => expect(api.bulkArchiveRooms).toHaveBeenCalledWith(["mine", "open"], true));
     expect((await screen.findByRole("alert")).textContent).toContain(
-      "Archived 1 of 2; 1 you can't change or no longer exist.",
+      "Archived 1 of 2. open: Only the room's owner, a room admin or a workspace admin can archive or unarchive this room.",
     );
   });
 
   it("clears an earlier notice once a later action succeeds", async () => {
-    vi.mocked(api.bulkArchiveRooms).mockResolvedValue({ updated: 1 });
+    vi.mocked(api.bulkArchiveRooms).mockResolvedValue({
+      updated: 1,
+      refused: [{ room_id: "open", reason: "Room not found" }],
+    });
     vi.mocked(api.archiveRoom).mockResolvedValue({} as never);
     render(<RoomsPage />);
     fireEvent.click(await screen.findByRole("checkbox", { name: "select mine" }));

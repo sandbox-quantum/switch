@@ -72,6 +72,7 @@ from switch_core.gateway.schemas import (
     BulkArchiveResponse,
     BulkDeleteRequest,
     BulkDeleteResponse,
+    BulkRoomRefusal,
     RoomAdminEntry,
     RoomAgentsRequest,
     RoomAgentUpdateRequest,
@@ -994,6 +995,8 @@ async def _run_as_person(
             await rooms_yaml.check_entity_params(parsed, reader=reader)
             await rooms_yaml.check_bridges(parsed, creator=builtins["$creator"])
         checked = await creator.check(tenant_id, user.id, plans)
+        if parsed is not None:
+            await rooms_yaml.check_invites(parsed, user_id=user.id, agent_id=None)
         created = await creator.create(tenant_id, user.id, checked)
         room: ProvisionResult | GroupProvisionResult | None = None
         room_made = opening_rooms_as_made(creator, tenant_id, created, room_addressing)
@@ -2016,21 +2019,17 @@ async def bulk_delete_rooms(
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> BulkDeleteResponse:
+    """Delete many rooms at once. Each room is authorized as the single
+    delete route does it; a room the caller may not delete, or that is gone,
+    is left alone and named in ``refused`` with the reason."""
     principal = Principal(user.id, is_admin)
     deleted = 0
     channels: dict[str, RetireOutcome] = {}
+    refused: list[BulkRoomRefusal] = []
     for room_id in req.room_ids:
-        room = await room_store.get(session, room_id)
-        if room is None:
-            logger.warning("Skipping unknown room %s during bulk delete", room_id)
-            continue
-        decision = await decide_room_action(
-            session, room_store, room, principal, "delete"
-        )
-        if not decision.allowed:
-            logger.warning(
-                "Skipping room %s during bulk delete: not authorized", room_id
-            )
+        refusal = await _bulk_refusal(session, room_store, room_id, principal, "delete")
+        if refusal is not None:
+            refused.append(refusal)
             continue
         # See `_require_room_released`.
         await session.commit()
@@ -2040,7 +2039,7 @@ async def bulk_delete_rooms(
         if channel is not None:
             channels[room_id] = channel
         deleted += 1
-    return BulkDeleteResponse(deleted=deleted, channels=channels)
+    return BulkDeleteResponse(deleted=deleted, channels=channels, refused=refused)
 
 
 @router.post("/bulk-archive")
@@ -2053,25 +2052,40 @@ async def bulk_archive_rooms(
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> BulkArchiveResponse:
     """Archive or unarchive many rooms at once. Each room is authorized
-    individually with the same check as the single archive endpoint; rooms
-    the caller may not archive (or that no longer exist) are skipped."""
+    individually with the same check as the single archive endpoint; a room
+    the caller may not archive, or that is gone, is left alone and named in
+    ``refused`` with the reason."""
     principal = Principal(user.id, is_admin)
     updated = 0
+    refused: list[BulkRoomRefusal] = []
     for room_id in req.room_ids:
-        room = await room_store.get(session, room_id)
-        if room is None:
-            logger.warning("Skipping unknown room %s during bulk archive", room_id)
-            continue
-        decision = await decide_room_action(
-            session, room_store, room, principal, "archive"
+        refusal = await _bulk_refusal(
+            session, room_store, room_id, principal, "archive"
         )
-        if not decision.allowed:
-            logger.warning(
-                "Skipping room %s during bulk archive: not authorized", room_id
-            )
+        if refusal is not None:
+            refused.append(refusal)
             continue
         # See `_require_room_released`.
         await session.commit()
         await room_service.set_room_archived(room_id, req.archived)
         updated += 1
-    return BulkArchiveResponse(updated=updated)
+    return BulkArchiveResponse(updated=updated, refused=refused)
+
+
+async def _bulk_refusal(
+    session: AsyncSession,
+    room_store: RoomStore,
+    room_id: str,
+    principal: Principal,
+    action: RoomAction,
+) -> BulkRoomRefusal | None:
+    """Why a bulk action leaves this room alone, as the route for the one
+    room would answer; None when it may go ahead."""
+    room = await room_store.get(session, room_id)
+    if room is None:
+        return BulkRoomRefusal(room_id=room_id, reason="Room not found")
+    decision = await decide_room_action(session, room_store, room, principal, action)
+    if decision.allowed:
+        return None
+    assert decision.reason is not None, "room_policy gives every refusal a reason"
+    return BulkRoomRefusal(room_id=room_id, reason=decision.reason)

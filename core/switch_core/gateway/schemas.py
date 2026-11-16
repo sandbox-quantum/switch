@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import unicodedata
 from datetime import datetime
 from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
@@ -14,7 +13,6 @@ from pydantic import (
     field_validator,
     model_validator,
 )
-from pydantic_core import PydanticCustomError
 
 from switch_core.addressing import AddressingKind, AddressingPolicy
 from switch_core.bridges.agent.protocol.types import OverallStatus
@@ -30,6 +28,7 @@ from switch_core.db.models import (
     MAX_MESSAGE_RETENTION_DAYS,
     UsageMetric,
 )
+from switch_core.names import Name, OneLineName, no_hidden_characters
 
 # ── Rooms ─────────────────────────────────────────────────────────────────────
 
@@ -216,7 +215,7 @@ class RoomDetail(RoomSummary):
 
 
 class RoomCreateRequest(BaseModel):
-    name: str
+    name: Name
     description: str
     instructions: str | None = None
     channel_type: str | None = None
@@ -244,7 +243,7 @@ class RoomCreateRequest(BaseModel):
 
 
 class RoomUpdateRequest(BaseModel):
-    name: str | None = None
+    name: Name | None = None
     description: str | None = None
     instructions: str | None = None
     admin_mode: bool | None = None
@@ -311,11 +310,20 @@ class RoomDeleteResponse(BaseModel):
     channel: RetireOutcome | None
 
 
+class BulkRoomRefusal(BaseModel):
+    """A room a bulk action left alone, and why: in the words the route for
+    that one room would refuse it with."""
+
+    room_id: str
+    reason: str
+
+
 class BulkDeleteResponse(BaseModel):
     deleted: int
     # Per deleted room id, what became of its platform channel. Rooms without
     # one are absent.
     channels: dict[str, RetireOutcome]
+    refused: list[BulkRoomRefusal]
 
 
 class BulkArchiveRequest(BaseModel):
@@ -326,6 +334,7 @@ class BulkArchiveRequest(BaseModel):
 
 class BulkArchiveResponse(BaseModel):
     updated: int
+    refused: list[BulkRoomRefusal]
 
 
 # ── Room groups ───────────────────────────────────────────────────────────────
@@ -343,7 +352,7 @@ class RoomGroupDetail(BaseModel):
 
 
 class RoomGroupCreateRequest(BaseModel):
-    name: str
+    name: Name
     description: str | None = None
     color: str | None = None
     parent_group_id: str | None = None
@@ -364,7 +373,7 @@ class RoomGroupUpdateRequest(BaseModel):
     # the request body, so callers can reparent to a group, reparent to top-level
     # (`null`), or leave the parent unchanged (omit the key entirely). The
     # endpoint distinguishes these via `model_fields_set`.
-    name: str | None = None
+    name: Name | None = None
     description: str | None = None
     color: str | None = None
     parent_group_id: str | None = None
@@ -486,7 +495,8 @@ class AgentCapabilities(BaseModel):
     """
 
     # Edit its icon, display name, description and who may address it, and
-    # delete it: its owner or a workspace admin.
+    # delete it: its owner or a workspace admin. Only its owner lets more
+    # people or agents address it (`can_widen_addressing`).
     can_manage: bool
     # Edit its options: `can_manage`, for an agent Switch Console runs from a
     # spec it knows. Any other agent has no options to edit.
@@ -540,6 +550,9 @@ class GatewayAgentDetail(AgentDetail, AgentCapabilities):
     # Its owner only, not an admin: turning on that it may manage its
     # owner's agents.
     can_change_manage_agents: bool
+    # Its owner only: letting more people or agents address it. Anyone with
+    # `can_manage` may narrow who can.
+    can_widen_addressing: bool
     # Granting it service access: its owner only, since a grant is made on
     # the owner's own connections, while service connections are switched on,
     # and for an agent Switch Console runs from a spec it knows, since nothing
@@ -1263,7 +1276,9 @@ class UpdateMeRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     name: Annotated[
-        str, StringConstraints(strip_whitespace=True, min_length=1, max_length=255)
+        str,
+        StringConstraints(strip_whitespace=True, min_length=1, max_length=255),
+        AfterValidator(no_hidden_characters),
     ]
 
 
@@ -1287,7 +1302,9 @@ class SignupRequest(BaseModel):
     password: Password
     display_name: (
         Annotated[
-            str, StringConstraints(strip_whitespace=True, min_length=1, max_length=255)
+            str,
+            StringConstraints(strip_whitespace=True, min_length=1, max_length=255),
+            AfterValidator(no_hidden_characters),
         ]
         | None
     ) = None
@@ -1406,13 +1423,13 @@ class CurrentTenantResponse(TenantMembershipResponse):
 
 
 class TenantCreateRequest(BaseModel):
-    name: str
+    name: OneLineName
 
 
 class OrganizationCreateRequest(BaseModel):
-    name: str
+    name: OneLineName
     # The first workspace's name; the organization's when left out.
-    workspace_name: str | None = None
+    workspace_name: OneLineName | None = None
 
 
 class OrganizationSummary(BaseModel):
@@ -1481,7 +1498,7 @@ class OrganizationCreateResponse(BaseModel):
 
 
 class WorkspaceCreateRequest(BaseModel):
-    name: str
+    name: OneLineName
 
 
 class TenantDeleteRequest(BaseModel):
@@ -1489,35 +1506,12 @@ class TenantDeleteRequest(BaseModel):
     name: str
 
 
-def _shown_on_one_line(name: str) -> str:
-    """A name shown on one line, as a breadcrumb or a switcher shows it: with
-    a character in it that can be seen, so it is never blank there, and no
-    control character, such as a line break, to break the line."""
-    if any(unicodedata.category(char) == "Cc" for char in name):
-        raise PydanticCustomError(
-            "control_character", "A name can't contain a line break or a tab."
-        )
-    if not any(char.isprintable() and not char.isspace() for char in name):
-        raise PydanticCustomError(
-            "nothing_visible", "A name needs at least one visible character."
-        )
-    return name
-
-
 class TenantRenameRequest(BaseModel):
-    name: Annotated[
-        str,
-        StringConstraints(strip_whitespace=True, min_length=1, max_length=255),
-        AfterValidator(_shown_on_one_line),
-    ]
+    name: OneLineName
 
 
 class OrganizationRenameRequest(BaseModel):
-    name: Annotated[
-        str,
-        StringConstraints(strip_whitespace=True, min_length=1, max_length=255),
-        AfterValidator(_shown_on_one_line),
-    ]
+    name: OneLineName
 
 
 class OrganizationRenameResponse(BaseModel):
@@ -1917,7 +1911,7 @@ class ReferenceCreateRequest(BaseModel):
     read_visibility: str = "private"
     write_visibility: str = "private"
     type: str
-    name: str
+    name: Name
     description: str
     instructions: str
     value: dict[str, Any]
@@ -1926,7 +1920,7 @@ class ReferenceCreateRequest(BaseModel):
 class ReferenceUpdateRequest(BaseModel):
     read_visibility: str | None = None
     write_visibility: str | None = None
-    name: str | None = None
+    name: Name | None = None
     description: str | None = None
     instructions: str | None = None
     value: dict[str, Any] | None = None
@@ -2181,7 +2175,7 @@ class RoomDocumentSummary(DocumentSummary):
 class DocumentCreateRequest(BaseModel):
     read_visibility: str = "private"
     write_visibility: str = "private"
-    name: str
+    name: Name
     description: str
     instructions: str
     content: str
@@ -2190,7 +2184,7 @@ class DocumentCreateRequest(BaseModel):
 class DocumentUpdateRequest(BaseModel):
     read_visibility: str | None = None
     write_visibility: str | None = None
-    name: str | None = None
+    name: Name | None = None
     description: str | None = None
     instructions: str | None = None
     content: str | None = None
@@ -2235,7 +2229,7 @@ class PackageDetail(BaseModel):
 class PackageCreateRequest(BaseModel):
     read_visibility: str = "private"
     write_visibility: str = "private"
-    name: str
+    name: Name
     description: str
     instructions: str
 
@@ -2243,7 +2237,7 @@ class PackageCreateRequest(BaseModel):
 class PackageUpdateRequest(BaseModel):
     read_visibility: str | None = None
     write_visibility: str | None = None
-    name: str | None = None
+    name: Name | None = None
     description: str | None = None
     instructions: str | None = None
 

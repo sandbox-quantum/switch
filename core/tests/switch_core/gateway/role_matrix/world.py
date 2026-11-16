@@ -274,6 +274,20 @@ class World:
 
         return str(await self._once("open_agent", make))
 
+    async def restricted_agent(self) -> str:
+        """An agent of the owner's that only the owner may address, so only
+        the owner may open it to anyone else."""
+
+        async def make(session: AsyncSession) -> str:
+            agent_id = await self._agent("restricted-agent")(session)
+            agent = await session.get(Agent, agent_id)
+            assert agent is not None
+            agent.addressing_policy = addressing_policy_for("owner_only")
+            await session.flush()
+            return agent_id
+
+        return str(await self._once("restricted_agent", make))
+
     async def other_agent(self) -> str:
         return str(await self._once("other_agent", self._agent("other-agent")))
 

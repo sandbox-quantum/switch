@@ -25,6 +25,7 @@ import DataTable, { type SelectFilter, type TableColumn, TableEmptyState } from 
 import RowActionsMenu, { type RowAction } from "../../components/RowActionsMenu";
 import { useAuth } from "../../data/AuthContext";
 import {
+  type BulkRoomRefusal,
   type RoomSummary,
   archiveRoom,
   bulkArchiveRooms,
@@ -152,6 +153,20 @@ function DeleteDescription({ room }: { room: RoomSummary }) {
   );
 }
 
+/** What a bulk action did, and each room it left alone with why. */
+function partlyDone(
+  done: string,
+  count: number,
+  targets: RoomSummary[],
+  refused: BulkRoomRefusal[],
+): string {
+  const names = new Map(targets.map((room) => [room.id, room.name]));
+  const why = refused.map(
+    (refusal) => `${names.get(refusal.room_id) ?? refusal.room_id}: ${refusal.reason}`,
+  );
+  return [`${done} ${count} of ${targets.length}.`, ...why].join(" ");
+}
+
 export default function RoomsPage() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -217,10 +232,10 @@ export default function RoomsPage() {
             targets.map((r) => r.id),
             false,
           );
-          if (result.updated < targets.length) {
+          if (result.refused.length > 0) {
             setNotice({
               severity: "warning",
-              text: `Unarchived ${result.updated} of ${targets.length}; ${targets.length - result.updated} you can't change or no longer exist.`,
+              text: partlyDone("Unarchived", result.updated, targets, result.refused),
             });
           }
         }
@@ -243,14 +258,16 @@ export default function RoomsPage() {
     } else if (pending.rooms.length === 1) {
       await archiveRoom(pending.rooms[0].id);
     } else {
-      const ids = pending.rooms.map((r) => r.id);
-      const result = await bulkArchiveRooms(ids, true);
+      const result = await bulkArchiveRooms(
+        pending.rooms.map((r) => r.id),
+        true,
+      );
       // The server skips, without failing, any room the viewer can't change
-      // or that is gone, and says how many it did change.
-      if (result.updated < ids.length) {
+      // or that is gone, and names each with the reason.
+      if (result.refused.length > 0) {
         setNotice({
           severity: "warning",
-          text: `Archived ${result.updated} of ${ids.length}; ${ids.length - result.updated} you can't change or no longer exist.`,
+          text: partlyDone("Archived", result.updated, pending.rooms, result.refused),
         });
       }
     }

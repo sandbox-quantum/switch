@@ -190,6 +190,9 @@ export interface AgentDetail extends AgentSummary {
   // has needs only ownership.
   can_change_manage_agents: boolean;
   can_grant_services: boolean;
+  // Its owner's alone: letting more people or agents address it. Whoever has
+  // `can_manage` may still narrow who can.
+  can_widen_addressing: boolean;
 }
 
 // Scoped agent-addressing permissions (CHOO-1585). Each dimension is "*" (any)
@@ -713,17 +716,25 @@ export async function deleteRoom(
   return jsonRequest(`/rooms/${roomId}?retire_channel=${retireChannel}`, "DELETE");
 }
 
+/** A room a bulk action left alone, and why, in the words the action on
+ * that one room would be refused with. */
+export interface BulkRoomRefusal {
+  room_id: string;
+  reason: string;
+}
+
 /** Archive or unarchive many rooms. The server skips, without failing, any
- * room the viewer may not change or that is gone, and says how many it did
- * change. */
+ * room the viewer may not change or that is gone, says how many it did
+ * change, and names each it skipped with the reason. */
 export async function bulkArchiveRooms(
   roomIds: string[],
   archived: boolean,
-): Promise<{ updated: number }> {
-  return jsonRequest<{ updated: number }>("/rooms/bulk-archive", "POST", {
-    room_ids: roomIds,
-    archived,
-  });
+): Promise<{ updated: number; refused: BulkRoomRefusal[] }> {
+  return jsonRequest<{ updated: number; refused: BulkRoomRefusal[] }>(
+    "/rooms/bulk-archive",
+    "POST",
+    { room_ids: roomIds, archived },
+  );
 }
 
 // ── Room groups ──────────────────────────────────────────────────────────────
