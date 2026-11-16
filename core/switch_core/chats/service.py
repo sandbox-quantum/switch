@@ -1943,7 +1943,7 @@ class ChatService:
         length is of `body` as typed: the notes and mentions Switch adds to it
         below do not count against the person.
         """
-        self._admit(user.id, body)
+        self._admit(user.id, body, None if command is None else command[0])
         mentions = sorted(set(mention_agent_ids))
         people = sorted(set(mention_user_ids))
         if people or mention_spans:
@@ -2488,12 +2488,16 @@ class ChatService:
             body = f"{body}\n\n{notes_text}" if body.strip() else notes_text
         return body
 
-    def _admit(self, user_id: str, body: str) -> None:
-        """Refuse a message too long or sent too fast, as a ChatError."""
+    def _admit(self, user_id: str, body: str, command: str | None) -> None:
+        """Refuse a message too long or sent too fast, as a ChatError. A
+        typed room command is held to the same allowance, except one that
+        stops an agent (`SendLimits.admit_command`)."""
+        limits = self._router.send_limits
         try:
-            self._router.send_limits.admit(
-                user_id, body, actor="human", starts_post=True
-            )
+            if command is None:
+                limits.admit(user_id, body, actor="human", starts_post=True)
+            else:
+                limits.admit_command(user_id, command, body, actor="human")
         except MessageTooLong as error:
             raise ChatError(422, "MESSAGE_TOO_LONG", str(error)) from error
         except SendRateLimited as error:

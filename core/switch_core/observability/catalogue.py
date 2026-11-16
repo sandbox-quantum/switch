@@ -232,18 +232,18 @@ SEND_FAILURES = _spec(
     "kind",
     "actor",
 )
-# A message a person or an agent sent that was refused before it reached the
-# router (`delivery/send_limits.py`). `reason` is `too_long` or
+# A message or room command a person or an agent sent that was refused before
+# it reached the router (`delivery/send_limits.py`). `reason` is `too_long` or
 # `rate_limited`; `actor` is `human` or `agent`.
 MESSAGES_REFUSED = _spec(
     "switch.messages.refused",
     "sum",
     "{message}",
-    "Messages a person or an agent sent that were refused before they were "
-    "written: `reason:too_long` for one longer than MAX_MESSAGE_CHARS, "
-    "`reason:rate_limited` for one sent faster than one sender's allowance "
-    "(MESSAGE_RATE_BURST, MESSAGE_RATE_PER_SECOND). The sender is told why. "
-    "`actor` is who sent it: human or agent.",
+    "Messages and room commands a person or an agent sent that were refused "
+    "before they were written: `reason:too_long` for one longer than "
+    "MAX_MESSAGE_CHARS, `reason:rate_limited` for one sent faster than one "
+    "sender's allowance (MESSAGE_RATE_BURST, MESSAGE_RATE_PER_SECOND). The "
+    "sender is told why. `actor` is who sent it: human or agent.",
     "reason",
     "actor",
 )

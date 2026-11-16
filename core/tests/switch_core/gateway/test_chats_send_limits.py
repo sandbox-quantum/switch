@@ -4,7 +4,11 @@ Switch Trust or the router sees it, and nothing is posted."""
 
 from __future__ import annotations
 
+from sqlalchemy import select
+
+from switch_core.db.models import Message
 from switch_core.delivery.send_limits import SendLimits
+from switch_core.events import COMMAND_EVENT_TYPE
 from tests.switch_core.gateway.conftest import _Harness
 from tests.switch_core.gateway.test_chats_trust import _chat
 
@@ -110,3 +114,28 @@ async def test_the_mention_console_adds_to_a_message_at_the_limit_does_not_refus
     assert [row.body for row in await chats.message_rows(room_id)] == [
         f"@helper {body}"
     ]
+
+
+async def test_a_typed_command_takes_a_turn_and_interrupt_never_waits(
+    chats: _Harness,
+) -> None:
+    """A room command typed in a chat draws on the person's allowance as a
+    message does, except one that stops an agent: stopping always works."""
+    room_id, _trust = await _chat(chats)
+    _limits(chats, max_message_chars=1000, burst=1)
+
+    assert (await chats.send(chats.alice, room_id, "s1", "one")).status_code == 200
+    refused = await chats.send(chats.alice, room_id, "s2", "!invite-agent @helper")
+    stopped = await chats.send(chats.alice, room_id, "s3", "!interrupt @helper")
+
+    assert refused.status_code == 429
+    assert refused.json()["detail"]["code"] == "RATE_LIMITED"
+    assert stopped.status_code == 200, stopped.text
+    async with chats.factory() as session:
+        commands = await session.scalars(
+            select(Message.content).where(
+                Message.room_id == room_id,
+                Message.event_type == COMMAND_EVENT_TYPE,
+            )
+        )
+        assert [content["command"] for content in commands] == ["interrupt"]

@@ -4,6 +4,7 @@ from types import MethodType, SimpleNamespace
 
 from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
 from switch_core.bridges.collaboration.models import InboundCommand
+from switch_core.delivery.send_limits import SendRateLimited
 from switch_core.transport import SendResult, TransportError
 
 
@@ -299,3 +300,49 @@ async def test_link_account_in_an_unbridged_channel_does_not_make_it_a_room() ->
 
     assert created == []
     assert handled == [command]
+
+
+async def test_a_command_sent_too_fast_is_refused_and_its_sender_told_once() -> None:
+    """A command draws on its sender's allowance as a message does
+    (`SendLimits.admit_command`). Refused, it is not run, nothing is mapped,
+    and the sender hears why once for a run of refusals, as for messages."""
+
+    def limited(first: bool) -> SendRateLimited:
+        return SendRateLimited(retry_after=2.0, burst=30, per_second=2.0, first=first)
+
+    refusals = [limited(True), limited(False)]
+    answers: list[tuple[str, str]] = []
+
+    async def answer_command(command: InboundCommand, text: str) -> None:
+        answers.append((command.command, text))
+
+    bridge = _fake_bridge(
+        SendResult(event_id="$never", event_type="com.switch.command", content={})
+    )
+    bridge._adapter.answer_command = answer_command
+    bridge._tell_command_refused = MethodType(
+        CollaborationCore._tell_command_refused, bridge
+    )
+
+    async def _ensure_human_in_room(**_kw: object) -> SimpleNamespace:
+        async def _send_event(_room_id: str, _type: str, _content: dict) -> str:
+            raise refusals.pop(0)
+
+        return SimpleNamespace(
+            transport_user_id="@human actor:switch.local",
+            client_id="human-actor-1",
+            send_event=_send_event,
+        )
+
+    bridge._ensure_human_in_room = _ensure_human_in_room
+
+    for ref in ("mm-post-1", "mm-post-2"):
+        await CollaborationCore._handle_inbound_command(
+            bridge, _cmd(message_ref=ref, command="invite-agent", args="@helper")
+        )
+
+    assert bridge.recorded == []
+    [(command, text)] = answers
+    assert command == "invite-agent"
+    assert "was not run" in text
+    assert "Wait 2 seconds" in text
