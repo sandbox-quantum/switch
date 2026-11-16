@@ -4,6 +4,7 @@ import { err, ok, type Result } from '@switch-console/shared';
 import { BrowserWindow, session as electronSession, shell } from 'electron';
 import { z } from 'zod';
 import { appReturnUrl, bringToFront } from '@main/app/deeplinks';
+import { DEVTOOLS_ENABLED } from '@main/app/devtools';
 import { LOCAL_SERVER_ADMIN_EMAIL } from '@main/core/managed-switch-server/constants';
 import { managedServerSecretsKey } from '@main/core/managed-switch-server/host/host-for-server';
 import { readSecrets } from '@main/core/managed-switch-server/secrets';
@@ -605,7 +606,12 @@ async function oidcWindowLogin(
     height: 720,
     title: `Sign in to ${server.name}`,
     autoHideMenuBar: true,
-    webPreferences: { partition, nodeIntegration: false, contextIsolation: true },
+    webPreferences: {
+      partition,
+      nodeIntegration: false,
+      contextIsolation: true,
+      devTools: DEVTOOLS_ENABLED,
+    },
   });
   registerServerPageLinkHandlers(win.webContents);
 

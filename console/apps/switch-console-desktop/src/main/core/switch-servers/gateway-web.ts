@@ -1,4 +1,5 @@
 import { BrowserWindow, session as electronSession } from 'electron';
+import { DEVTOOLS_ENABLED } from '@main/app/devtools';
 import { log } from '@main/lib/logger';
 import { registerServerPageLinkHandlers } from '@main/utils/externalLinks';
 import { dashboardOrigin, type SwitchServer } from '@shared/core/switch-servers/switch-servers';
@@ -74,7 +75,12 @@ export async function openAuthenticatedGatewayPage(
     height: 860,
     title: server.name,
     autoHideMenuBar: true,
-    webPreferences: { partition, nodeIntegration: false, contextIsolation: true },
+    webPreferences: {
+      partition,
+      nodeIntegration: false,
+      contextIsolation: true,
+      devTools: DEVTOOLS_ENABLED,
+    },
   });
   registerServerPageLinkHandlers(win.webContents);
   await win.loadURL(url);
