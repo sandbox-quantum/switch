@@ -24,7 +24,11 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 import switch_core.official_templates as official_templates_package
-from switch_core.addressing import default_agent_policy, parse_policy
+from switch_core.addressing import (
+    default_agent_policy,
+    owner_only_policy,
+    parse_policy,
+)
 from switch_core.bridges.agent.commands import _cmd_agent_change
 from switch_core.bridges.agent.mcp.server import mcp
 from switch_core.bridges.agent.operations import agent_management as agent_ops
@@ -1035,8 +1039,12 @@ class TestUpdateAgentDetail:
                 {"agent_id": new_id, "auto_mode": on},
             )
             assert response.status_code == 200, response.text
-            assert "awaiting_confirmation" in response.json()["result"]
-            await desk.send(in_person, "builder confirm")
+            # Off is the safer direction and applies at once; on waits for
+            # the owner.
+            waits = "awaiting_confirmation" in response.json()["result"]
+            assert waits is on
+            if waits:
+                await desk.send(in_person, "builder confirm")
             [listed] = [
                 entry
                 for entry in (
@@ -1538,6 +1546,97 @@ class TestTheOwnerConfirms:
         assert (await _assigned(client, controller))[new_id]["definition"][
             "auto_approve"
         ] is False
+
+    async def test_turning_bypass_off_applies_at_once(
+        self, harness: Harness, client: httpx.AsyncClient, desk: OwnersDesk
+    ) -> None:
+        owner, controller, helper_id, key, new_id = await self._builder(harness, client)
+        await _call(
+            client,
+            helper_id,
+            "update_agent_detail",
+            bearer(key),
+            {"agent_id": new_id, "auto_approve": True},
+        )
+        await desk.send(await desk.in_person(owner), "builder confirm")
+
+        off = await _call(
+            client,
+            helper_id,
+            "update_agent_detail",
+            bearer(key),
+            {"agent_id": new_id, "auto_approve": False},
+        )
+
+        assert off.status_code == 200, off.text
+        assert "awaiting_confirmation" not in off.json()["result"]
+        assert off.json()["result"]["managed"]["auto_approve"] is False
+        assert (await _assigned(client, controller))[new_id]["definition"][
+            "auto_approve"
+        ] is False
+        assert len(desk.posted) == 1
+
+    async def test_opening_who_may_address_an_agent_waits_and_narrowing_does_not(
+        self, harness: Harness, client: httpx.AsyncClient, desk: OwnersDesk
+    ) -> None:
+        """Addressing is any agent's to change on a sibling, capability or
+        not, so opening it is held like the managed settings are."""
+        owner = await add_member(harness.session_factory, "ada")
+        helper_id, key = await _agent_with_key(
+            harness, owner, "helper", can_manage_agents=False
+        )
+        target_id, _ = await _agent_with_key(
+            harness, owner, "plain", can_manage_agents=False
+        )
+        async with harness.session_factory() as session:
+            await session.execute(
+                update(Agent)
+                .where(Agent.id == target_id)
+                .values(addressing_policy=default_agent_policy().model_dump())
+            )
+            await session.commit()
+
+        opened = await _call(
+            client,
+            helper_id,
+            "update_agent_detail",
+            bearer(key),
+            {"agent_id": target_id, "addressing": "anyone", "description": "Open"},
+        )
+
+        assert opened.status_code == 200, opened.text
+        held = opened.json()["result"]["awaiting_confirmation"]
+        assert held["fields"] == ["addressing"]
+        assert held["needs_confirmation_for"] == ["addressing"]
+        assert "who may address it: anyone" in desk.posted[0]
+        row = await _agent_row(harness, "plain")
+        assert row is not None
+        assert row.description == "Open"
+        assert row.addressing_policy == default_agent_policy().model_dump()
+        [changed] = await _audited(harness, "agent.changed_by_agent")
+        assert changed.details["fields"] == ["description"]
+
+        reply = await desk.send(await desk.in_person(owner), "plain confirm")
+
+        assert reply.startswith("Changed `plain`, as helper asked")
+        row = await _agent_row(harness, "plain")
+        assert row is not None
+        assert row.addressing_policy is None
+
+        narrowed = await _call(
+            client,
+            helper_id,
+            "update_agent_detail",
+            bearer(key),
+            {"agent_id": target_id, "addressing": "owner_only"},
+        )
+
+        assert narrowed.status_code == 200, narrowed.text
+        assert "awaiting_confirmation" not in narrowed.json()["result"]
+        row = await _agent_row(harness, "plain")
+        assert row is not None
+        assert parse_policy(row.addressing_policy) == owner_only_policy([])
+        assert len(desk.posted) == 1
 
     async def test_a_change_that_would_be_refused_is_refused_rather_than_held(
         self, harness: Harness, client: httpx.AsyncClient, desk: OwnersDesk

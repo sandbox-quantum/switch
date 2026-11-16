@@ -85,11 +85,11 @@ class AgentRequests:
     An agent may ask, never decide. A deletion waits until the agent's owner
     or a workspace admin confirms it with `!delete-agent <name> confirm` in
     the same room, which the admin client checks like any other delete. A
-    change to what another agent may do on its own, or a new agent that may
-    do more than usual, waits until the owner, and only the owner, confirms
-    it with `!agent-change <name> confirm` there (`agent_change_requests`
-    says which). Kept in memory, so a restart drops every pending request,
-    which errs on the side of doing nothing.
+    change that widens what another agent may do on its own or who may reach
+    it, or a new agent that may do more than usual, waits until the owner,
+    and only the owner, confirms it with `!agent-change <name> confirm` there
+    (`agent_change_requests` says which). Kept in memory, so a restart drops
+    every pending request, which errs on the side of doing nothing.
     """
 
     def __init__(self) -> None:

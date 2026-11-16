@@ -515,7 +515,10 @@ agent:
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "line",
-    ["  auto_approve: true\n", "  advanced_config:\n    permissionMode: acceptEdits\n"],
+    [
+        "  auto_approve: true\n",
+        "  advanced_config:\n    permissionMode: bypassPermissions\n",
+    ],
 )
 async def test_an_agent_cannot_make_a_bypass_agent_through_a_template(managed, line):
     """Bypass waits for the owner when an agent asks for it with create_agent;

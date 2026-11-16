@@ -1,18 +1,20 @@
 """Changes an agent makes to its owner's other agents, and the ones the owner
 has to confirm first.
 
-An agent with "can manage agents" changes its owner's other agents through
-`update_agent_detail` and makes new ones through `create_agent`. Most of that
-applies at once. A change to another agent's bypass mode, auto mode, working
-folder, machine, provider or the provider's own permission mode, and a new
-agent with bypass mode on, a permission mode of its own or a folder other than
-its machine's own workspace for it, is held instead: posted in the
-room the asking agent is connected to, and kept (`AgentRequests`) until the
-owner confirms it there with `!agent-change <name> confirm` within two
-minutes. Those settings decide what an agent may do on its own and where, so
-a prompt injected into anything an agent reads can make it ask for one, and
-only its owner can make it so. A person's own changes, in Switch Console or
-the gateway, do not come through here.
+An agent changes its owner's other agents through `update_agent_detail`
+and, with "can manage agents", makes new ones through `create_agent`. Most of
+that applies at once. A change that widens what another agent may do on its
+own, or who may reach it, is held instead: turning its bypass mode or auto
+mode on, setting the provider's own permission mode to bypass, moving its
+working folder, machine or provider, or opening who may address it; and a new
+agent with bypass on or a folder other than its machine's own workspace for
+it. It is posted in the room the asking agent is connected to and kept
+(`AgentRequests`, in memory, like a deletion request) until the owner
+confirms it there with `!agent-change <name> confirm` within two minutes. A
+prompt injected into anything an agent reads can make it ask for one; only
+its owner can make it so. A change in the safer direction (bypass or auto
+mode off, a narrower addressing policy) applies at once, as do a person's own
+changes in Switch Console or the gateway, which do not come through here.
 
 Every change an agent makes to another agent, held or not, is written to the
 audit log.
@@ -27,7 +29,9 @@ from typing import TYPE_CHECKING, Any
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.addressing import ANY, AddressingPolicy, parse_policy
 from switch_core.agent_display_name import agent_label_with_identifier
+from switch_core.bridges.agent.protocol.agent_detail import addressing_policy_for
 from switch_core.bridges.agent.protocol.agent_management import (
     AgentManagementPort,
     CheckedPlacement,
@@ -52,9 +56,10 @@ logger = logging.getLogger(__name__)
 CONFIRM_COMMAND = "agent-change"
 
 # The advanced setting that sets a provider's own permission mode (Claude
-# Code's `permissionMode`, which can bypass every check as `auto_approve`
-# does), so it waits for the owner as `auto_approve` does.
+# Code's `permissionMode`), and the value of it that skips every check as
+# `auto_approve` does, so it waits for the owner as `auto_approve` does.
 PERMISSION_MODE = "permissionMode"
+BYPASS_PERMISSION_MODE = "bypassPermissions"
 
 # How much of an agent's text the owner is shown in a request.
 _SHOWN_CHARS = 200
@@ -95,21 +100,21 @@ def changed_fields(changes: ManagedAgentChanges) -> tuple[str, ...]:
 def fields_to_confirm(
     changes: ManagedAgentChanges, current: Mapping[str, Any]
 ) -> tuple[str, ...]:
-    """What, among bypass, auto mode, the working folder, the machine, the
-    provider and the provider's own permission mode, `changes` would change
-    on the agent `current` shows (as `AgentManagementPort.managed_agent`
-    does).
+    """What in `changes` widens what the agent `current` shows (as
+    `AgentManagementPort.managed_agent` does) may do on its own: bypass or
+    auto mode turned on, the provider's permission mode set to bypass, or a
+    new working folder, machine or provider.
 
-    A value it already has is no change. A directory of "" puts the agent back
-    in its machine's own workspace for it, which needs no confirmation."""
+    Turning bypass or auto mode off, or any other permission mode, only
+    narrows it, and a value it already has is no change. A directory of ""
+    puts the agent back in its machine's own workspace for it, which needs no
+    confirmation."""
     machine = current.get("machine") or {}
     current_advanced = current.get("advanced_config") or {}
     held = []
-    if changes.auto_approve is not None and changes.auto_approve != current.get(
-        "auto_approve"
-    ):
+    if changes.auto_approve and not current.get("auto_approve"):
         held.append("auto_approve")
-    if changes.auto_mode is not None and changes.auto_mode != current.get("auto_mode"):
+    if changes.auto_mode and not current.get("auto_mode"):
         held.append("auto_mode")
     if changes.directory and changes.directory != current.get("directory"):
         held.append("directory")
@@ -120,11 +125,41 @@ def fields_to_confirm(
         held.append("machine")
     if changes.provider is not None and changes.provider != current.get("provider"):
         held.append("provider")
-    if changes.advanced_config is not None and changes.advanced_config.get(
-        PERMISSION_MODE
-    ) != current_advanced.get(PERMISSION_MODE):
+    if (
+        changes.advanced_config is not None
+        and changes.advanced_config.get(PERMISSION_MODE) == BYPASS_PERMISSION_MODE
+        and current_advanced.get(PERMISSION_MODE) != BYPASS_PERMISSION_MODE
+    ):
         held.append("advanced_config")
     return tuple(held)
+
+
+def _admits_owner_agents_everywhere(policy: AddressingPolicy) -> bool:
+    return any(
+        rule.rooms == ANY
+        and rule.room_groups == ANY
+        and (rule.owner_agents or rule.agents == ANY)
+        for rule in policy.rules
+    )
+
+
+def addressing_widens(current: dict[str, Any] | None, choice: str) -> bool:
+    """Whether setting an agent's addressing to `choice` (one of the choices
+    `update_agent_detail` takes) could let someone address it whom its
+    current policy (`current`, as stored) turns away.
+
+    "anyone" opens it, unless it is open already. "owner_and_owner_agents"
+    opens it to the owner's agents wherever its current policy does not
+    already admit them everywhere. "owner_only" admits nobody but the owner,
+    so it never opens it to anyone else."""
+    policy = parse_policy(current)
+    if policy.is_open():
+        return False
+    if choice == "anyone":
+        return True
+    if choice == "owner_and_owner_agents":
+        return not _admits_owner_agents_everywhere(policy)
+    return False
 
 
 def _own_workspace(placement: CheckedPlacement, name: str) -> set[str]:
@@ -139,8 +174,8 @@ def _own_workspace(placement: CheckedPlacement, name: str) -> set[str]:
 def new_agent_fields_to_confirm(
     spec: NewManagedAgent, placement: CheckedPlacement
 ) -> tuple[str, ...]:
-    """What makes a new agent wait for its owner: bypass mode, a permission
-    mode of the provider's own, or a folder other than its machine's own
+    """What makes a new agent wait for its owner: bypass mode, the provider's
+    permission mode set to bypass, or a folder other than its machine's own
     workspace for it."""
     held = []
     if spec.auto_approve:
@@ -149,7 +184,7 @@ def new_agent_fields_to_confirm(
         placement, spec.name
     ):
         held.append("directory")
-    if spec.advanced_config.get(PERMISSION_MODE) is not None:
+    if spec.advanced_config.get(PERMISSION_MODE) == BYPASS_PERMISSION_MODE:
         held.append("advanced_config")
     return tuple(held)
 
@@ -159,6 +194,13 @@ def _advanced_line(config: Mapping[str, Any]) -> str:
         return "advanced settings cleared"
     settings = ", ".join(f"{key}={value}" for key, value in config.items())
     return f"advanced settings {_code(_shown(settings))}"
+
+
+_ADDRESSING_LINES = {
+    "owner_only": "who may address it: only its owner",
+    "owner_and_owner_agents": "who may address it: its owner and the owner's agents",
+    "anyone": "who may address it: anyone",
+}
 
 
 def _change_lines(changes: ManagedAgentChanges) -> tuple[str, ...]:
@@ -241,21 +283,48 @@ async def _caller_and_room(
     return caller, room.transport_room_id
 
 
+async def owner_of(protocol: AgentCore, agent_id: str) -> User:
+    """The person who owns the agent `agent_id`."""
+    async with protocol.session_factory() as session:
+        agent = await protocol.agent_store.get(session, agent_id)
+        owner = (
+            await session.get(User, agent.owner_id)
+            if agent is not None and agent.owner_id is not None
+            else None
+        )
+    if owner is None:
+        raise ValueError(f"Agent {agent_id} has no owner to confirm a change")
+    return owner
+
+
+async def current_addressing(
+    protocol: AgentCore, agent_id: str
+) -> dict[str, Any] | None:
+    """The addressing policy the agent `agent_id` has stored now."""
+    async with protocol.session_factory() as session:
+        agent = await protocol.agent_store.get(session, agent_id)
+    if agent is None:
+        raise ValueError(f"Agent not found: {agent_id}")
+    return agent.addressing_policy
+
+
 async def hold_change(
     protocol: AgentCore,
-    port: AgentManagementPort,
+    port: AgentManagementPort | None,
     *,
     room_id: str,
     caller_id: str,
     owner: User,
     agent_id: str,
-    changes: ManagedAgentChanges,
+    changes: ManagedAgentChanges | None,
+    addressing: str | None,
     confirming: Sequence[str],
 ) -> dict[str, Any]:
-    """Hold `changes` to the agent `agent_id` for its owner to confirm in
-    `room_id`, and return what the asking agent is told. Every change in the
-    call is held together: a provider and its model, or a machine and the run
-    state, only make sense as one.
+    """Hold, for its owner to confirm in `room_id`, the managed `changes` to
+    the agent `agent_id` and its new `addressing`, either of which may be
+    None, and return what the asking agent is told. Every managed change in
+    the call is held together: a provider and its model, or a machine and the
+    run state, only make sense as one.
 
     Raises `ChangeAlreadyWaiting` while another change to the agent waits."""
     tenant_id = require_tenant_id()
@@ -264,12 +333,29 @@ async def hold_change(
         target = await protocol.agent_store.get(session, agent_id)
     if target is None:
         raise ValueError(f"Agent not found: {agent_id}")
+    if changes is not None and port is None:
+        raise RuntimeError("A managed change was held with no agent management")
 
     async def apply() -> None:
-        await port.update_managed_agent(
-            tenant_id, owner.id, agent_id, changes, protocol
-        )
+        if changes is not None:
+            assert port is not None
+            await port.update_managed_agent(
+                tenant_id, owner.id, agent_id, changes, protocol
+            )
+        if addressing is not None:
+            async with protocol.session_factory() as session:
+                await protocol.agent_store.update(
+                    session,
+                    agent_id,
+                    addressing_policy=addressing_policy_for(addressing),
+                )
+                await session.commit()
 
+    fields = changed_fields(changes) if changes is not None else ()
+    summary = _change_lines(changes) if changes is not None else ()
+    if addressing is not None:
+        fields += ("addressing",)
+        summary += (_ADDRESSING_LINES[addressing],)
     return await _hold(
         protocol,
         room_id=room_id,
@@ -286,8 +372,8 @@ async def hold_change(
             owner_id=owner.id,
             agent_name=target.name,
             agent_id=agent_id,
-            fields=changed_fields(changes),
-            summary=_change_lines(changes),
+            fields=fields,
+            summary=summary,
             apply=apply,
         ),
     )

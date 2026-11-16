@@ -582,19 +582,22 @@ change it. A refusal says which of these it was; relay it rather than retrying.
   Returns the agent's detail plus `managed`, its `list_managed_agents` entry
   (null when it is not managed).
 
-  **Your owner confirms the settings that decide what an agent may do on its
-  own.** A change to `auto_approve`, `auto_mode`, `directory` (other than
-  `""`), `machine`, `provider` or the `permissionMode` in `advanced_config`
-  is not made by the call: Switch posts it in
-  your connected room (connect to one first), with the other managed fields
-  of the same call, and it waits for your owner to send
+  **Your owner confirms a change that widens what an agent may do on its
+  own, or who may reach it**: turning `auto_approve` or `auto_mode` on,
+  `permissionMode: "bypassPermissions"` in `advanced_config`, a new
+  `directory` (other than `""`), `machine` or `provider`, or `addressing`
+  wider than it is now (`"anyone"`, or `"owner_and_owner_agents"` for an agent
+  your owner's agents cannot address yet). That is not made by the call:
+  Switch posts it in your connected room (connect to one first), with the
+  other managed fields of the same call, and it waits for your owner to send
   `!agent-change <name> confirm` there within two minutes (or
   `!agent-change <name> drop`); otherwise it lapses. The response carries
   `awaiting_confirmation` (`owner`, `fields`, `confirm_with`, `message`) and
   `managed` as the agent still is. Only the owner can confirm, never you or
   another agent, and one change per agent waits at a time. Tell the person
-  what it changes and what to send, and do not report it as done. Every
-  other field applies at once.
+  what it changes and what to send, and do not report it as done. Turning
+  bypass or auto mode off, a narrower `addressing`, and every other field
+  apply at once.
 
   **Renaming** needs "can manage agents", like the managed fields; without
   it the rename is refused with a sentence to relay. It changes the
@@ -744,8 +747,9 @@ resources naming each other by key, and `if:` as the one conditional.
   entry says `allow_existing: true` can take an existing agent instead, in
   `agents: {slot name: agent name}`. Everything is checked first and nothing
   is created on a refusal; agents made before a later failure are deleted
-  again. An agent with `auto_approve` on, or a `permissionMode` in its
-  `advanced_config`, is refused (`needs_owner_confirmation`): your owner
+  again. An agent with `auto_approve` on, or `permissionMode:
+  "bypassPermissions"` in its `advanced_config`, is refused
+  (`needs_owner_confirmation`): your owner
   confirms those, so create it with `create_agent` or ask them to run the
   template. Confirm what it will create
   with the person asking, then check the agents with `list_managed_agents` as
@@ -1036,8 +1040,8 @@ does not manage agents, so say so rather than looking for another way.
   `directory` null and Switch fills in the machine's own workspace for the
   agent, which the machine makes; any other directory must be an absolute
   path with no `..` in it and already exist there. Change it later with
-  `update_agent_detail`. An agent with `auto_approve` on, a `permissionMode`
-  in `advanced_config`, or a directory of its own is not created by the call: after every check passes, Switch posts
+  `update_agent_detail`. An agent with `auto_approve` on (or `permissionMode:
+  "bypassPermissions"`), or a directory of its own, is not created by the call: after every check passes, Switch posts
   it in your connected room and it waits for your owner to send
   `!agent-change <name> confirm` there within two minutes, as for
   `update_agent_detail` above. The result then has `status:
@@ -1386,7 +1390,7 @@ Every Switch tool you call in normal operation, one line each.
 - `list_agents` — every agent on the instance, with optional filters.
 - `get_agent_detail`: one agent's config, capabilities, sessions and who may
   address it.
-- `update_agent_detail` — change an agent you own; bypass, auto mode, folder, machine and provider wait for your owner to confirm.
+- `update_agent_detail` — change an agent you own; turning bypass or auto mode on, a new folder, machine or provider, or wider addressing waits for your owner to confirm.
 - `request_agent_deletion` — ask for an agent to be deleted; a person confirms.
 - `list_machines` — your owner's machines, where agent management runs.
 - `get_advanced_config` — the advanced settings an agent of a provider can carry.

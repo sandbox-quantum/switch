@@ -212,10 +212,10 @@ async def create_agent(
     Confirm the name, machine and provider with the person asking before you
     call this: it creates a real agent on their computer.
 
-    An agent with bypass mode on (`auto_approve`), a permission mode of the
-    provider's own (`permissionMode` in `advanced_config`), or a `directory`
-    other than its machine's own workspace for it, is not created by this
-    call: your owner confirms it themselves. Every check is made first, then
+    An agent with bypass mode on (`auto_approve`, or `permissionMode`
+    "bypassPermissions" in `advanced_config`), or a `directory` other than
+    its machine's own workspace for it, is not created by this call: your
+    owner confirms it themselves. Every check is made first, then
     the request is posted in the room you are connected to (connect to one
     first) and waits for your owner to send `!agent-change <name> confirm`
     there within two minutes; otherwise it lapses and nothing is created.

@@ -12,7 +12,15 @@ from typing import Any
 
 import pytest
 
+from switch_core.addressing import (
+    ANY,
+    AddressingPolicy,
+    AddressingRule,
+    owner_and_owner_agents_policy,
+    owner_only_policy,
+)
 from switch_core.bridges.agent.agent_change_requests import (
+    addressing_widens,
     changed_fields,
     confirm_with,
     fields_to_confirm,
@@ -86,7 +94,6 @@ class TestWhatWaitsForTheOwner:
         ("given", "held"),
         [
             ({"auto_approve": True}, ("auto_approve",)),
-            ({"auto_mode": False}, ("auto_mode",)),
             ({"directory": "/home/ada/.ssh"}, ("directory",)),
             ({"machine": "desktop"}, ("machine",)),
             ({"provider": "codex", "model": ""}, ("provider",)),
@@ -112,6 +119,11 @@ class TestWhatWaitsForTheOwner:
             {"instructions": "Be careful."},
             {"advanced_config": {"effort": "high"}},
             {"advanced_config": {}},
+            # The safer direction.
+            {"auto_mode": False},
+            {"auto_approve": False},
+            {"advanced_config": {"permissionMode": "plan"}},
+            {"advanced_config": {"permissionMode": "acceptEdits"}},
             {"desired_state": "stopped"},
             {"isolation": "isolated"},
             # Values it already has are no change.
@@ -125,6 +137,25 @@ class TestWhatWaitsForTheOwner:
     )
     def test_anything_else_applies_at_once(self, given: dict[str, Any]) -> None:
         assert fields_to_confirm(_changes(**given), CURRENT) == ()
+
+    def test_turning_auto_mode_on_waits(self) -> None:
+        manual = {**CURRENT, "auto_mode": False}
+
+        assert fields_to_confirm(_changes(auto_mode=True), manual) == ("auto_mode",)
+
+    def test_turning_bypass_off_does_not_wait(self) -> None:
+        bypassing = {
+            **CURRENT,
+            "auto_approve": True,
+            "advanced_config": {"permissionMode": "bypassPermissions"},
+        }
+
+        assert (
+            fields_to_confirm(
+                _changes(auto_approve=False, advanced_config={}), bypassing
+            )
+            == ()
+        )
 
     def test_placing_an_unplaced_agent_waits(self) -> None:
         unplaced = {**CURRENT, "machine": None}
@@ -151,36 +182,60 @@ class TestWhatANewAgentWaitsFor:
             "auto_approve",
         )
 
-    def test_a_permission_mode_of_its_own_waits(self) -> None:
+    def test_a_bypass_permission_mode_waits(self) -> None:
         spec = _spec(advanced_config={"permissionMode": "bypassPermissions"})
 
         assert new_agent_fields_to_confirm(spec, PLACEMENT) == ("advanced_config",)
-        assert (
-            new_agent_fields_to_confirm(
-                _spec(advanced_config={"effort": "high"}), PLACEMENT
+        for safer in ({"effort": "high"}, {"permissionMode": "acceptEdits"}):
+            assert (
+                new_agent_fields_to_confirm(_spec(advanced_config=safer), PLACEMENT)
+                == ()
             )
-            == ()
-        )
 
-    @pytest.mark.parametrize("own", ["/work/agents/builder", "/work/agents\\builder"])
-    def test_its_own_workspace_written_out_does_not_wait(self, own: str) -> None:
-        assert new_agent_fields_to_confirm(_spec(directory=own), PLACEMENT) == ()
 
-    def test_a_folder_of_its_own_waits(self) -> None:
-        assert new_agent_fields_to_confirm(
-            _spec(directory="/home/ada/project"), PLACEMENT
-        ) == ("directory",)
+OWNER_ONLY = owner_only_policy([]).model_dump()
+OWNER_AND_AGENTS = owner_and_owner_agents_policy().model_dump()
 
-    def test_any_folder_waits_on_a_machine_that_has_not_said_where_it_keeps_them(
-        self,
+
+class TestWhoMayAddressIt:
+    @pytest.mark.parametrize(
+        ("current", "choice", "widens"),
+        [
+            (OWNER_ONLY, "anyone", True),
+            (OWNER_ONLY, "owner_and_owner_agents", True),
+            (OWNER_ONLY, "owner_only", False),
+            (OWNER_AND_AGENTS, "anyone", True),
+            (OWNER_AND_AGENTS, "owner_and_owner_agents", False),
+            (OWNER_AND_AGENTS, "owner_only", False),
+            # Open already: nothing is wider.
+            (None, "anyone", False),
+            (None, "owner_and_owner_agents", False),
+            (None, "owner_only", False),
+        ],
+    )
+    def test_only_a_wider_choice_waits(
+        self, current: dict[str, Any] | None, choice: str, widens: bool
     ) -> None:
-        unknown = CheckedPlacement(
-            machine_id="m-1", machine_name="laptop", workspaces_dir=None
-        )
+        assert addressing_widens(current, choice) is widens
 
-        assert new_agent_fields_to_confirm(
-            _spec(directory="/work/agents/builder"), unknown
-        ) == ("directory",)
+    def test_owner_agents_in_one_room_are_widened_to_everywhere(self) -> None:
+        one_room = AddressingPolicy(
+            rules=[
+                AddressingRule(
+                    rooms=["room-1"], users=[], agents=[], owner=True, owner_agents=True
+                )
+            ]
+        ).model_dump()
+
+        assert addressing_widens(one_room, "owner_and_owner_agents") is True
+
+    def test_a_policy_admitting_every_agent_is_narrowed_to_the_owners(self) -> None:
+        all_agents = AddressingPolicy(
+            rules=[AddressingRule(rooms=ANY, users=[], agents=ANY)]
+        ).model_dump()
+
+        assert addressing_widens(all_agents, "owner_and_owner_agents") is False
+        assert addressing_widens(all_agents, "anyone") is True
 
 
 def _request(name: str = "builder", by: str = "triage") -> ChangeRequest:
