@@ -5,6 +5,8 @@
 // the source of truth. The manual-agent (no-alias hostname lookup) and
 // credential-service password paths from Switch Console are dropped.
 import { readFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { getWindowsEnvValue } from '@switch-console/core/exec';
 import ssh2, { type BaseAgent, type ConnectConfig } from 'ssh2';
 import { detectWindowsOpenSshAgentPipe } from '@main/utils/shellEnv';
@@ -13,6 +15,11 @@ import {
   resolveSshConfig as defaultResolveSshConfig,
   type ResolvedSshConfig,
 } from '../config/resolve-ssh-config';
+import type {
+  HostKeyTarget,
+  PreparedHostKeyCheck,
+  SshHostKeyError,
+} from '../host-keys/host-key-check';
 import {
   spawnProxyCommand as defaultSpawnProxyCommand,
   spawnProxyJump as defaultSpawnProxyJump,
@@ -28,7 +35,15 @@ export interface SshConnectResult {
   config: ConnectConfig;
   cleanup: () => void;
   debugLogs: string[];
+  /**
+   * Why the host key check refused the connection, if it did. ssh2 reports a
+   * refused key only as a generic handshake error.
+   */
+  hostKeyRejection: () => SshHostKeyError | undefined;
 }
+
+/** Builds the host key check for one connection attempt. */
+export type HostKeyChecker = (target: HostKeyTarget) => Promise<PreparedHostKeyCheck>;
 
 export type TransientConnectInput = {
   kind: 'transient';
@@ -79,8 +94,49 @@ function defaultDeps(): SshConnectDeps {
   };
 }
 
+function expandHome(path: string): string {
+  return path === '~' || path.startsWith('~/') ? join(homedir(), path.slice(1)) : path;
+}
+
+/**
+ * What the host key is checked against. With an alias it is whatever `ssh -G`
+ * resolved for it — the user's own known_hosts files, `HostKeyAlias` and
+ * `StrictHostKeyChecking` — so Console agrees with `ssh` about the host.
+ */
+function hostKeyTarget(
+  sshHost: string,
+  host: string,
+  port: number,
+  resolved: ResolvedSshConfig | undefined
+): HostKeyTarget {
+  if (!resolved) {
+    return {
+      sshHost,
+      hostname: host,
+      port,
+      hostKeyAlias: undefined,
+      userKnownHostsFiles: [
+        join(homedir(), '.ssh', 'known_hosts'),
+        join(homedir(), '.ssh', 'known_hosts2'),
+      ],
+      globalKnownHostsFiles: ['/etc/ssh/ssh_known_hosts', '/etc/ssh/ssh_known_hosts2'],
+      strictHostKeyChecking: 'ask',
+    };
+  }
+  return {
+    sshHost,
+    hostname: host,
+    port,
+    hostKeyAlias: resolved.hostKeyAlias,
+    userKnownHostsFiles: resolved.userKnownHostsFiles.map(expandHome),
+    globalKnownHostsFiles: resolved.globalKnownHostsFiles.map(expandHome),
+    strictHostKeyChecking: resolved.strictHostKeyChecking,
+  };
+}
+
 export async function resolveSshConnectConfig(
   input: SshConnectInput,
+  checkHostKey: HostKeyChecker,
   depsOverride: Partial<SshConnectDeps> = {}
 ): Promise<SshConnectResult> {
   const deps = { ...defaultDeps(), ...depsOverride };
@@ -92,6 +148,7 @@ export async function resolveSshConnectConfig(
   const port = resolved?.port ?? base.port;
   const username = resolved?.user || base.username;
   const authResult = await buildAuthConfig(input, base, resolved, deps);
+  const hostKeyCheck = await checkHostKey(hostKeyTarget(alias ?? base.host, host, port, resolved));
 
   const config: ConnectConfig = {
     host,
@@ -106,10 +163,13 @@ export async function resolveSshConnectConfig(
     keepaliveInterval: resolved?.serverAliveInterval ? resolved.serverAliveInterval * 1000 : 15_000,
     keepaliveCountMax: resolved?.serverAliveCountMax ?? 3,
     ...authResult.config,
+    hostVerifier: hostKeyCheck.hostVerifier,
+    algorithms: { serverHostKey: hostKeyCheck.serverHostKeyAlgorithms },
   };
 
-  const forwardAgent = resolved?.forwardAgent ?? base.forwardAgent === true;
-  applyForwardAgent(config, forwardAgent, resolved, authResult, deps);
+  // Only the host's own SSH config turns forwarding on: a connection with no
+  // alias resolved never forwards the user's agent.
+  applyForwardAgent(config, resolved?.forwardAgent === true, resolved, authResult, deps);
 
   let debugLogs: string[] = [];
   let cleanup = () => {};
@@ -130,10 +190,10 @@ export async function resolveSshConnectConfig(
     debugLogs = transport.debugLogs;
   }
 
-  return { config, cleanup, debugLogs };
+  return { config, cleanup, debugLogs, hostKeyRejection: hostKeyCheck.rejection };
 }
 
-export function createSshConnectConfigResolver(deps: SshConnectDeps) {
+export function createSshConnectConfigResolver(deps: SshConnectDeps, checkHostKey: HostKeyChecker) {
   return async (input: SshConnectInput): Promise<SshConnectResult> =>
-    await resolveSshConnectConfig(input, deps);
+    await resolveSshConnectConfig(input, checkHostKey, deps);
 }

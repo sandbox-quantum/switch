@@ -18,7 +18,13 @@ import {
 /** Persisted shape of a reachability record — everything except live probe state. */
 export type PersistedHostReachability = Omit<HostReachability, 'nextProbeAt' | 'probing'>;
 
-const STATUSES: HostReachabilityStatus[] = ['unknown', 'reachable', 'unreachable', 'suspended'];
+const STATUSES: HostReachabilityStatus[] = [
+  'unknown',
+  'reachable',
+  'unreachable',
+  'suspended',
+  'untrusted',
+];
 
 function toStatus(raw: string, sshHost: string): HostReachabilityStatus {
   const status = STATUSES.find((s) => s === raw);

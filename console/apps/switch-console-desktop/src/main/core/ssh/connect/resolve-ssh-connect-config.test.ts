@@ -1,14 +1,29 @@
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import type { IdentityCallback, ParsedKey, SignCallback } from 'ssh2';
 import { BaseAgent, utils } from 'ssh2';
 import { describe, expect, it } from 'vitest';
 import type { SshConfig } from '@shared/core/ssh/ssh';
+import type { HostKeyTarget } from '../host-keys/host-key-check';
 import {
   createSshConnectConfigResolver,
-  resolveSshConnectConfig,
-  sshConnectEnv,
+  type HostKeyChecker,
   type SshConnectDeps,
+  type SshConnectInput,
+  resolveSshConnectConfig as resolveWithHostKeyCheck,
+  sshConnectEnv,
 } from './resolve-ssh-connect-config';
+
+const acceptingHostKeyCheck: HostKeyChecker = async () => ({
+  serverHostKeyAlgorithms: ['ssh-ed25519'],
+  hostVerifier: () => true,
+  rejection: () => undefined,
+});
+
+function resolveSshConnectConfig(input: SshConnectInput, connectDeps: Partial<SshConnectDeps>) {
+  return resolveWithHostKeyCheck(input, acceptingHostKeyCheck, connectDeps);
+}
 
 function baseConfig(partial: Partial<SshConfig> = {}): SshConfig {
   return {
@@ -33,6 +48,9 @@ function deps(overrides: Partial<SshConnectDeps> = {}): SshConnectDeps {
       identityAgent: '/tmp/resolved-agent.sock',
       identityAgentDisabled: false,
       identitiesOnly: false,
+      userKnownHostsFiles: [],
+      globalKnownHostsFiles: [],
+      strictHostKeyChecking: 'ask',
       proxyCommand: undefined,
       proxyJump: undefined,
       forwardAgent: false,
@@ -111,6 +129,9 @@ describe('resolveSshConnectConfig', () => {
           identityAgent: '/tmp/agent.sock',
           identityAgentDisabled: false,
           identitiesOnly: false,
+          userKnownHostsFiles: [],
+          globalKnownHostsFiles: [],
+          strictHostKeyChecking: 'ask',
           proxyCommand: 'cloudflared access ssh --hostname %h',
           proxyJump: 'ignored-because-command-wins',
           forwardAgent: true,
@@ -138,7 +159,7 @@ describe('resolveSshConnectConfig', () => {
     expect(result.debugLogs).toEqual(['command debug']);
   });
 
-  it('ignores manual ProxyCommand but supports manual ProxyJump and ForwardAgent', async () => {
+  it('ignores manual ProxyCommand and ForwardAgent but supports manual ProxyJump', async () => {
     const jumps: string[] = [];
     const result = await resolveSshConnectConfig(
       {
@@ -146,12 +167,12 @@ describe('resolveSshConnectConfig', () => {
         config: {
           ...baseConfig({
             authType: 'password',
-            forwardAgent: true,
             proxyJump: 'bastion',
           }),
           password: 'secret',
           proxyCommand: 'not part of SshConfig but should not execute',
-        } as SshConfig & { password: string; proxyCommand: string },
+          forwardAgent: true,
+        } as SshConfig & { password: string; proxyCommand: string; forwardAgent: boolean },
       },
       deps({
         spawnProxyCommand: () => {
@@ -173,9 +194,8 @@ describe('resolveSshConnectConfig', () => {
       port: 22,
       username: 'alice',
       password: 'secret',
-      agentForward: true,
-      agent: '/tmp/default-agent.sock',
     });
+    expect(result.config.agentForward).toBeUndefined();
     expect(jumps).toEqual(['bastion->manual.example.com:22']);
     expect(result.debugLogs).toEqual(['jump debug']);
   });
@@ -196,6 +216,9 @@ describe('resolveSshConnectConfig', () => {
             identityAgent: undefined,
             identityAgentDisabled: true,
             identitiesOnly: false,
+            userKnownHostsFiles: [],
+            globalKnownHostsFiles: [],
+            strictHostKeyChecking: 'ask',
             proxyCommand: undefined,
             proxyJump: undefined,
             forwardAgent: false,
@@ -220,6 +243,9 @@ describe('resolveSshConnectConfig', () => {
             identityAgent: 'SSH_AUTH_SOCK',
             identityAgentDisabled: false,
             identitiesOnly: false,
+            userKnownHostsFiles: [],
+            globalKnownHostsFiles: [],
+            strictHostKeyChecking: 'ask',
             proxyCommand: undefined,
             proxyJump: undefined,
             forwardAgent: false,
@@ -269,6 +295,9 @@ describe('resolveSshConnectConfig', () => {
           identityAgent: 'SSH_AUTH_SOCK',
           identityAgentDisabled: false,
           identitiesOnly: true,
+          userKnownHostsFiles: [],
+          globalKnownHostsFiles: [],
+          strictHostKeyChecking: 'ask',
           proxyCommand: undefined,
           proxyJump: undefined,
           forwardAgent: false,
@@ -333,6 +362,9 @@ describe('resolveSshConnectConfig', () => {
           identityAgent: 'SSH_AUTH_SOCK',
           identityAgentDisabled: false,
           identitiesOnly: true,
+          userKnownHostsFiles: [],
+          globalKnownHostsFiles: [],
+          strictHostKeyChecking: 'ask',
           proxyCommand: undefined,
           proxyJump: undefined,
           forwardAgent: true,
@@ -376,6 +408,9 @@ describe('resolveSshConnectConfig', () => {
           identityAgent: 'SSH_AUTH_SOCK',
           identityAgentDisabled: false,
           identitiesOnly: true,
+          userKnownHostsFiles: [],
+          globalKnownHostsFiles: [],
+          strictHostKeyChecking: 'ask',
           proxyCommand: undefined,
           proxyJump: undefined,
           forwardAgent: false,
@@ -407,6 +442,9 @@ describe('resolveSshConnectConfig', () => {
             identityAgent: '/tmp/auth-agent.sock',
             identityAgentDisabled: false,
             identitiesOnly: true,
+            userKnownHostsFiles: [],
+            globalKnownHostsFiles: [],
+            strictHostKeyChecking: 'ask',
             proxyCommand: undefined,
             proxyJump: undefined,
             forwardAgent: false,
@@ -436,6 +474,9 @@ describe('resolveSshConnectConfig', () => {
             identityAgent: undefined,
             identityAgentDisabled: true,
             identitiesOnly: false,
+            userKnownHostsFiles: [],
+            globalKnownHostsFiles: [],
+            strictHostKeyChecking: 'ask',
             proxyCommand: undefined,
             proxyJump: undefined,
             forwardAgent: true,
@@ -491,16 +532,71 @@ describe('resolveSshConnectConfig', () => {
         })
       )
     ).rejects.toThrow('SSH agent socket not found');
+  });
 
-    await expect(
-      resolveSshConnectConfig(
-        {
-          kind: 'transient',
-          config: { ...baseConfig({ authType: 'password', forwardAgent: true }), password: 'pw' },
+  it('forwards the agent only when the host SSH config says ForwardAgent', async () => {
+    const noForwarding = await resolveSshConnectConfig(
+      {
+        kind: 'transient',
+        config: {
+          ...baseConfig({ sshConfigAlias: 'corp-dev', authType: 'password' }),
+          password: 'pw',
         },
-        deps({ env: {} })
-      )
-    ).rejects.toThrow('no SSH agent socket is available');
+      },
+      deps()
+    );
+    expect(noForwarding.config.agentForward).toBeUndefined();
+
+    const noAlias = await resolveSshConnectConfig(
+      { kind: 'transient', config: { ...baseConfig({ authType: 'password' }), password: 'pw' } },
+      deps()
+    );
+    expect(noAlias.config.agentForward).toBeUndefined();
+  });
+
+  it('checks the host key on every connection, against what ssh -G resolved for the alias', async () => {
+    const targets: HostKeyTarget[] = [];
+    const verifier = () => false;
+    const result = await resolveWithHostKeyCheck(
+      {
+        kind: 'transient',
+        config: {
+          ...baseConfig({ sshConfigAlias: 'corp-dev', authType: 'password' }),
+          password: 'pw',
+        },
+      },
+      async (target) => {
+        targets.push(target);
+        return {
+          serverHostKeyAlgorithms: ['ecdsa-sha2-nistp256', 'ssh-ed25519'],
+          hostVerifier: verifier,
+          rejection: () => undefined,
+        };
+      },
+      deps({
+        resolveSshConfig: async () => ({
+          ...(await deps().resolveSshConfig('x')),
+          hostKeyAlias: 'corp-box',
+          userKnownHostsFiles: ['~/.ssh/known_hosts'],
+          globalKnownHostsFiles: ['/etc/ssh/ssh_known_hosts'],
+          strictHostKeyChecking: 'yes',
+        }),
+      })
+    );
+
+    expect(result.config.hostVerifier).toBe(verifier);
+    expect(result.config.algorithms?.serverHostKey).toEqual(['ecdsa-sha2-nistp256', 'ssh-ed25519']);
+    expect(targets).toEqual([
+      {
+        sshHost: 'corp-dev',
+        hostname: 'resolved.internal',
+        port: 2201,
+        hostKeyAlias: 'corp-box',
+        userKnownHostsFiles: [join(homedir(), '.ssh', 'known_hosts')],
+        globalKnownHostsFiles: ['/etc/ssh/ssh_known_hosts'],
+        strictHostKeyChecking: 'yes',
+      },
+    ]);
   });
 
   it('uses ForwardAgent socket values from ssh config instead of the default agent', async () => {
@@ -523,6 +619,9 @@ describe('resolveSshConnectConfig', () => {
             identityAgent: undefined,
             identityAgentDisabled: false,
             identitiesOnly: false,
+            userKnownHostsFiles: [],
+            globalKnownHostsFiles: [],
+            strictHostKeyChecking: 'ask',
             proxyCommand: undefined,
             proxyJump: undefined,
             forwardAgent: true,
@@ -554,6 +653,9 @@ describe('resolveSshConnectConfig', () => {
             identityAgent: '/tmp/auth-agent.sock',
             identityAgentDisabled: false,
             identitiesOnly: false,
+            userKnownHostsFiles: [],
+            globalKnownHostsFiles: [],
+            strictHostKeyChecking: 'ask',
             proxyCommand: undefined,
             proxyJump: undefined,
             forwardAgent: true,
@@ -582,6 +684,9 @@ describe('resolveSshConnectConfig', () => {
             identityAgent: '/tmp/auth-agent.sock',
             identityAgentDisabled: false,
             identitiesOnly: true,
+            userKnownHostsFiles: [],
+            globalKnownHostsFiles: [],
+            strictHostKeyChecking: 'ask',
             proxyCommand: undefined,
             proxyJump: undefined,
             forwardAgent: true,
@@ -593,7 +698,7 @@ describe('resolveSshConnectConfig', () => {
   });
 
   it('creates a production resolver with explicit dependencies', async () => {
-    const resolver = createSshConnectConfigResolver(deps());
+    const resolver = createSshConnectConfigResolver(deps(), acceptingHostKeyCheck);
 
     await expect(
       resolver({
@@ -640,6 +745,9 @@ describe('resolveSshConnectConfig', () => {
           identityAgent: '/tmp/agent.sock',
           identityAgentDisabled: false,
           identitiesOnly: false,
+          userKnownHostsFiles: [],
+          globalKnownHostsFiles: [],
+          strictHostKeyChecking: 'ask',
           proxyCommand: undefined,
           proxyJump: undefined,
           forwardAgent: false,
@@ -674,6 +782,9 @@ describe('resolveSshConnectConfig', () => {
           identityAgent: undefined,
           identityAgentDisabled: false,
           identitiesOnly: true,
+          userKnownHostsFiles: [],
+          globalKnownHostsFiles: [],
+          strictHostKeyChecking: 'ask',
           proxyCommand: undefined,
           proxyJump: undefined,
           forwardAgent: false,
@@ -713,6 +824,9 @@ describe('resolveSshConnectConfig', () => {
           identityAgent: 'SSH_AUTH_SOCK',
           identityAgentDisabled: false,
           identitiesOnly: false,
+          userKnownHostsFiles: [],
+          globalKnownHostsFiles: [],
+          strictHostKeyChecking: 'ask',
           proxyCommand: undefined,
           proxyJump: undefined,
           forwardAgent: false,
@@ -745,6 +859,9 @@ describe('resolveSshConnectConfig', () => {
           identityAgent: 'SSH_AUTH_SOCK',
           identityAgentDisabled: false,
           identitiesOnly: false,
+          userKnownHostsFiles: [],
+          globalKnownHostsFiles: [],
+          strictHostKeyChecking: 'ask',
           proxyCommand: undefined,
           proxyJump: undefined,
           forwardAgent: false,
@@ -776,6 +893,9 @@ describe('resolveSshConnectConfig', () => {
           identityAgent: undefined,
           identityAgentDisabled: false,
           identitiesOnly: true,
+          userKnownHostsFiles: [],
+          globalKnownHostsFiles: [],
+          strictHostKeyChecking: 'ask',
           proxyCommand: undefined,
           proxyJump: undefined,
           forwardAgent: false,
@@ -837,6 +957,9 @@ describe('sshConnectEnv', () => {
           identityAgent: undefined,
           identityAgentDisabled: false,
           identitiesOnly: false,
+          userKnownHostsFiles: [],
+          globalKnownHostsFiles: [],
+          strictHostKeyChecking: 'ask',
           proxyCommand: undefined,
           proxyJump: undefined,
           forwardAgent: false,
