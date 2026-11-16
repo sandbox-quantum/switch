@@ -10,7 +10,7 @@ mangles, so it makes the trip here for real.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
@@ -951,9 +951,12 @@ class TestLastRun:
 
         listing = {t["id"]: t for t in (await client.get("/templates")).json()}
         last = datetime.fromisoformat(listing[created["id"]]["last_run_at"])
-        assert before <= last <= datetime.now(UTC)
+        # Stamped by the database's clock, which may run a little apart from
+        # this process's; the order of the runs is the database's alone.
+        skew = timedelta(seconds=5)
+        assert before - skew <= last <= datetime.now(UTC) + skew
         official_last = listing["official:switch-expert"]["last_run_at"]
-        assert before <= datetime.fromisoformat(official_last) <= last
+        assert before - skew <= datetime.fromisoformat(official_last) <= last
         detail = (await client.get(f"/templates/{created['id']}")).json()
         assert detail["last_run_at"] == listing[created["id"]]["last_run_at"]
 
