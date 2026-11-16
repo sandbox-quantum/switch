@@ -311,11 +311,20 @@ class RoomDeleteResponse(BaseModel):
     channel: RetireOutcome | None
 
 
+class BulkRoomRefusal(BaseModel):
+    """A room a bulk action left alone, and why: in the words the route for
+    that one room would refuse it with."""
+
+    room_id: str
+    reason: str
+
+
 class BulkDeleteResponse(BaseModel):
     deleted: int
     # Per deleted room id, what became of its platform channel. Rooms without
     # one are absent.
     channels: dict[str, RetireOutcome]
+    refused: list[BulkRoomRefusal]
 
 
 class BulkArchiveRequest(BaseModel):
@@ -326,6 +335,7 @@ class BulkArchiveRequest(BaseModel):
 
 class BulkArchiveResponse(BaseModel):
     updated: int
+    refused: list[BulkRoomRefusal]
 
 
 # ── Room groups ───────────────────────────────────────────────────────────────
