@@ -8,7 +8,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import {
   DEVICE_CONSENT_NEEDED_KIND,
   DEVICE_POLICY_CHANGED_KIND,
@@ -651,11 +651,11 @@ describe('what agents ask of this device', () => {
     if (process.platform !== 'win32') expect(written.mode).toBe(0o600);
     expect(written.body).toEqual({
       version: 1,
-      agents: { 'agent-1': { bypass: true, directories: ['/srv/repo'] } },
+      agents: { 'agent-1': { bypass: true, directories: [resolve('/srv/repo')] } },
     });
     expect(calls[0]!.child.sent).toContainEqual({ kind: DEVICE_POLICY_CHANGED_KIND });
     expect(await created.deviceGrants(SERVER)).toEqual([
-      { agentId: 'agent-1', bypass: true, directories: ['/srv/repo'] },
+      { agentId: 'agent-1', bypass: true, directories: [resolve('/srv/repo')] },
     ]);
   });
 
@@ -666,7 +666,7 @@ describe('what agents ask of this device', () => {
     await created.revokeForAgent(SERVER, 'agent-1', { bypass: true, directory: null });
     expect(policyFile().body).toEqual({
       version: 1,
-      agents: { 'agent-1': { directories: ['/srv/repo'] } },
+      agents: { 'agent-1': { directories: [resolve('/srv/repo')] } },
     });
     await created.revokeForAgent(SERVER, 'agent-1', 'all');
     expect(policyFile().body).toEqual({ version: 1, agents: {} });

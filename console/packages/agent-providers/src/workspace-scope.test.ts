@@ -16,7 +16,7 @@ let home: string;
 let work: string;
 
 beforeEach(() => {
-  home = realpathSync(mkdtempSync(join(tmpdir(), 'scope-home-')));
+  home = realpathSync.native(mkdtempSync(join(tmpdir(), 'scope-home-')));
   work = join(home, 'projects', 'app');
   mkdirSync(join(work, 'src'), { recursive: true });
   writeFileSync(join(work, 'src', 'a.ts'), 'export {};');

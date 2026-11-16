@@ -195,6 +195,10 @@ _RAW_SESSION_FACTORY_MODULES = {
     "switch_core.bridges.agent.operations.definitions",
     "switch_core.bridges.agent.operations.agent_management",
     "switch_core.bridges.agent.mediation",
+    # An agent's risky change is held from its authenticated operation and
+    # applied from the owner's `!agent-change` command, which `commands`
+    # below runs with the room's tenant bound.
+    "switch_core.bridges.agent.agent_change_requests",
     # Reached only from the gateway's rooms endpoints, so the same holds.
     "switch_core.rooms_yaml",
     # Runs: reached from the gateway's run endpoints and from an agent's room
