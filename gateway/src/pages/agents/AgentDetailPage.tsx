@@ -31,6 +31,7 @@ import {
   sentenceCase,
 } from "../../theme/format";
 import { useAuth } from "../../data/AuthContext";
+import { mayBeInAnotherWorkspace } from "../../data/workspaceLink";
 import AddressingPolicySection from "./AddressingPolicySection";
 import RenameAgentDialog from "./RenameAgentDialog";
 import AgentManagementSection from "./AgentManagementSection";
@@ -76,7 +77,7 @@ export default function AgentDetailPage() {
   const { agentId } = useParams<{ agentId: string }>();
   const navigate = useNavigate();
   const { capabilities } = useAuth();
-  const { data: agent, loading, error, refetch } = useAgent(agentId);
+  const { data: agent, loading, error, errorStatus, refetch } = useAgent(agentId);
   const [renameOpen, setRenameOpen] = useState(false);
   const [renameNotice, setRenameNotice] = useState<{
     severity: "success" | "warning";
@@ -99,6 +100,11 @@ export default function AgentDetailPage() {
         </Button>
         <Alert severity="error" sx={{ mt: 2 }}>
           {error ?? "Agent not found"}
+          {mayBeInAnotherWorkspace(errorStatus) !== null && (
+            <Box component="span" sx={{ display: "block", mt: 0.5 }}>
+              {mayBeInAnotherWorkspace(errorStatus)}
+            </Box>
+          )}
         </Alert>
       </Box>
     );

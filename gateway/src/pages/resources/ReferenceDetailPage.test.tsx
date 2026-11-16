@@ -89,6 +89,8 @@ describe("ReferenceDetailPage", () => {
     show();
 
     expect(await screen.findByText("Couldn't open this reference: You can't read this reference.")).toBeTruthy();
+    // A link naming no workspace opens in the browser's last one.
+    expect(screen.getByText("This may be in another workspace — switch workspace or check the link.")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Back to references" }));
     expect(screen.getByTestId("where").textContent).toBe("/resources?tab=references");
   });

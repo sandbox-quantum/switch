@@ -47,13 +47,13 @@ const LIST_PATH = "/resources?tab=documents";
 export default function DocumentDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { data: doc, setData: setDoc, error, loading, reload } = useResourceDetail(id, loadDocument);
+  const { data: doc, setData: setDoc, error, errorStatus, loading, reload } = useResourceDetail(id, loadDocument);
   const { afterTransfer, refreshNotice } = useAfterTransfer(id, loadDocument, setDoc, LIST_PATH);
   const [deleteOpen, setDeleteOpen] = useState(false);
 
   if (doc === null && loading) return <DetailLoading />;
   if (doc === null || !id) {
-    return <DetailLoadFailed what="document" listPath={LIST_PATH} error={error} onRetry={reload} />;
+    return <DetailLoadFailed what="document" listPath={LIST_PATH} error={error} errorStatus={errorStatus} onRetry={reload} />;
   }
 
   return (

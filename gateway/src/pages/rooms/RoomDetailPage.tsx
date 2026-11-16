@@ -51,6 +51,7 @@ import {
 } from "../../data/api";
 import { useAgents, useBridgeUsers, useRoom, useRoomAgentCandidates } from "../../data/hooks";
 import { useAuth } from "../../data/AuthContext";
+import { mayBeInAnotherWorkspace } from "../../data/workspaceLink";
 import { AccessSelect } from "../../components/AccessControls";
 import type { AccessLevel } from "../../data/visibility";
 import {
@@ -97,7 +98,7 @@ export default function RoomDetailPage() {
   // Who is looking, to offer taking out their own agent and unlinking their
   // own resources: the server allows those by ownership alone.
   const viewerId = session?.user.id ?? null;
-  const { data: room, loading, error, refetch } = useRoom(roomId);
+  const { data: room, loading, error, errorStatus, refetch } = useRoom(roomId);
   const [exportOpen, setExportOpen] = useState(false);
 
   if (loading) {
@@ -116,6 +117,11 @@ export default function RoomDetailPage() {
         </Button>
         <Alert severity="error" sx={{ mt: 2 }}>
           {error ?? "Room not found"}
+          {mayBeInAnotherWorkspace(errorStatus) !== null && (
+            <Box component="span" sx={{ display: "block", mt: 0.5 }}>
+              {mayBeInAnotherWorkspace(errorStatus)}
+            </Box>
+          )}
         </Alert>
       </Box>
     );

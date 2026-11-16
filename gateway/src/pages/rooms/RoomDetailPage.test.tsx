@@ -614,3 +614,29 @@ describe("RoomDetailPage archive, delete and roles", () => {
     await waitFor(() => expect(refetchRoom).toHaveBeenCalled());
   });
 });
+
+describe("RoomDetailPage when the room can't be opened", () => {
+  afterEach(() => {
+    cleanup();
+    vi.clearAllMocks();
+  });
+
+  function failWith(error: string, errorStatus: number | null) {
+    vi.mocked(hooks.useRoom).mockReturnValue({ data: null, loading: false, error, errorStatus, refetch: vi.fn() });
+    render(<RoomDetailPage />);
+  }
+
+  it.each([404, 403])("says a room the server answers %s for may be in another workspace", (status) => {
+    failWith("Room not found", status);
+    expect(screen.getByText("Room not found")).toBeTruthy();
+    expect(
+      screen.getByText("This may be in another workspace — switch workspace or check the link."),
+    ).toBeTruthy();
+  });
+
+  it("says nothing of another workspace for a server fault", () => {
+    failWith("500 Internal Server Error", 500);
+    expect(screen.getByText("500 Internal Server Error")).toBeTruthy();
+    expect(screen.queryByText(/another workspace/)).toBeNull();
+  });
+});
