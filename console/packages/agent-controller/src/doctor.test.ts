@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ControllerApiError } from './api';
+import { CliOutput } from './cli-output';
 import { type DoctorInputs, formatChecks, runDoctor } from './doctor';
 import { MemorySecretStore } from './secrets';
 
@@ -38,7 +39,7 @@ describe('doctor', () => {
   it('passes a machine that is ready', async () => {
     const checks = await runDoctor(inputs());
     expect(checks.filter((check) => check.status !== 'ok')).toEqual([]);
-    expect(formatChecks(checks)).toContain('ok    claude');
+    expect(formatChecks(checks, new CliOutput({}, {}))).toMatch(/\[OK\]\s+claude/);
   });
 
   it('passes a ready Windows machine, which Console runs rather than a service', async () => {
@@ -72,6 +73,10 @@ describe('doctor', () => {
     expect(status(checks, 'Node')).toBe('fail');
     expect(status(checks, 'claude')).toBe('warn');
     expect(status(checks, 'Providers')).toBe('fail');
+    for (const check of checks.filter((check) => check.status !== 'ok')) {
+      expect(check.fix).toEqual(expect.any(String));
+      expect(check.fix!.length).toBeGreaterThan(10);
+    }
   });
 
   it('points at the proxy when the server answers, but not as the Switch API', async () => {
