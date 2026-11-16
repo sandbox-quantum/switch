@@ -61,6 +61,7 @@ from switch_core.db.models import CollaborationBridge, User, require_tenant_id
 from switch_core.db.session_scope import shared_tenant_session
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.feature_flags import AGENT_MANAGEMENT, SWITCH_BUDDY
+from switch_core.names import refuse_hidden_characters
 from switch_core.providers.registry import offered_provider_ids
 from switch_core.rooms_yaml import GroupSpec, RoomReader, template_json_schema
 from switch_core.template_guide import TEMPLATE_GUIDE
@@ -1070,6 +1071,7 @@ async def create_room(
         after the room was created (race-time failures only; predictable
         errors like missing ids abort creation upfront).
     """
+    refuse_hidden_characters(name)
     agent_id = get_agent_id()
     protocol = get_protocol()
     async with _refusals_reported("create_room"):
@@ -1855,6 +1857,7 @@ async def create_room_group(
         member_rooms, child_groups} for the new group (room_count 0, empty
         member_rooms/child_groups). `path` is the root-first ancestry.
     """
+    refuse_hidden_characters(name)
     agent_id = get_agent_id()
     protocol = get_protocol()
     return await protocol.create_room_group(
@@ -2882,6 +2885,8 @@ async def update_room(
         The full, updated room detail (same shape as get_room_detail),
         including the room's current `aliases` map.
     """
+    if name is not None:
+        refuse_hidden_characters(name)
     agent_id = get_agent_id()
     protocol = get_protocol()
     detail = await protocol.update_room(

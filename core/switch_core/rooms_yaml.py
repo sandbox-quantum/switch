@@ -47,6 +47,7 @@ from switch_core.bridges.resource.registry import validate_reference_value
 from switch_core.clients.actor import SystemActor
 from switch_core.clients.admin_messages import OnBehalfOf
 from switch_core.db.models import User, require_tenant_id
+from switch_core.names import Name
 from switch_core.room_invites import (
     require_agent_may_add_to_new_room,
     require_user_may_add_to_new_room,
@@ -458,7 +459,7 @@ class DocSpec(BaseModel):
 
 
 class RoomSpec(BaseModel):
-    name: str
+    name: Name
     description: str
     instructions: str | None = None
     # Collaboration bridge display name; omit for an internal-only room.
@@ -495,7 +496,7 @@ class GroupLinkSpec(BaseModel):
 
 class GroupMeta(BaseModel):
     model_config = {"extra": "forbid"}
-    name: str
+    name: Name
     description: str | None = None
     color: str | None = None
 
