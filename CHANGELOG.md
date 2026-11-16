@@ -53,6 +53,14 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **Devices say how each device is doing.** Beside a device's state, a
+  warning when its controller is behind the release Switch names (or is
+  waiting to update, needs a restart or failed to) or a provider it has
+  installed is not signed in; on the state's hover, when it connected or
+  when and why it went; and a Details dialog with its controller and each
+  provider's install, sign-in, version and when it last checked. A managed
+  agent's state says why, and that its device is still applying the latest
+  change. On Workspace and Organization settings › Devices.
 - **An organization's admins can archive one of its workspaces, and restore
   it.** An archived workspace keeps everything in it but is closed: its
   members can no longer open it and are told it is archived (their open
@@ -449,6 +457,16 @@ version of their own to them without also giving them a release of their own.
   already refused both, so the current Workspace page no longer offers them.
 
 #### Changed
+- **The dashboard has one layout: the one built behind `gateway_v2`.**
+  Overview, Agents, Rooms, Templates, Connectors and Resources on the rail,
+  Workspace and Organization settings as their own areas, and the
+  operator's pages under Platform, on every server. The earlier layout's
+  pages are gone, and each of their URLs redirects to the page that
+  replaced it, so links from older Switch Console versions, the docs and
+  bookmarks still land. `gateway_v2` is still accepted in
+  `FEATURE_FLAGS_ENABLED`, so a deployment that names it keeps starting,
+  and the server always reports it on, which is how Switch Console picks
+  its links into the dashboard.
 - **Switch Trust guardrails are set per organization instead of once for
   the whole server.** Each organization's admins connect its own policy, with
   a policy ID and an API key, under Organization settings › Guardrails. Switch
