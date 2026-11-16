@@ -41,8 +41,13 @@ async function render(props: React.ComponentProps<typeof StartChoices>) {
   await act(async () => root!.render(<StartChoices {...props} />));
 }
 
+/** The choices offered: every button but the heading's explanation of what a provider is. */
+function choices(): HTMLButtonElement[] {
+  return [...container!.querySelectorAll('button')].filter((button) => !button.closest('h2'));
+}
+
 function buttons(): string[] {
-  return [...container!.querySelectorAll('button')].map((button) => button.textContent ?? '');
+  return choices().map((button) => button.textContent ?? '');
 }
 
 describe('Meet switch-buddy start choices', () => {
@@ -68,7 +73,7 @@ describe('Meet switch-buddy start choices', () => {
         icon.getAttribute('data-provider-icon')
       )
     ).toEqual(['claude', 'codex']);
-    await act(async () => container!.querySelectorAll('button')[1]!.click());
+    await act(async () => choices()[1]!.click());
     expect(on.onStart).toHaveBeenCalledWith('codex');
   });
 
@@ -76,7 +81,7 @@ describe('Meet switch-buddy start choices', () => {
     const on = handlers();
     await render({ checking: false, ready: [], starting: null, ...on });
     expect(buttons()).toEqual(['Set up AI provider', 'Skip']);
-    await act(async () => container!.querySelectorAll('button')[1]!.click());
+    await act(async () => choices()[1]!.click());
     expect(on.onSkip).toHaveBeenCalled();
   });
 
