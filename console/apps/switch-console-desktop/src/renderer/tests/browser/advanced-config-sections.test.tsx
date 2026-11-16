@@ -179,7 +179,7 @@ describe('the add-agent modal’s advanced sections', () => {
     advancedConfigSchema.mockResolvedValue({ claude: [] });
 
     const on = await render('codex');
-    expect(alertText(on)).toMatch(/does not list Codex/);
+    expect(alertText(on)).toMatch(/does not list OpenAI Codex/);
   });
 
   it('names a server field this Console cannot apply, rather than offering it', async () => {
@@ -187,7 +187,7 @@ describe('the add-agent modal’s advanced sections', () => {
     advancedConfigSchema.mockResolvedValue({ codex: [EFFORT] });
 
     const on = await render('codex');
-    expect(alertText(on)).toMatch(/cannot apply for Codex: Reasoning effort/);
+    expect(alertText(on)).toMatch(/cannot apply for OpenAI Codex: Reasoning effort/);
     expect(await openedLabels(on)).toEqual(['Model (optional)']);
   });
 });

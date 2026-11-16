@@ -73,7 +73,8 @@ function codexHostDependency(): HostDependencyDescriptor {
 export const plugin = definePlugin(
   {
     id: 'codex',
-    name: 'Codex',
+    name: 'OpenAI Codex',
+    shortName: 'Codex',
     description:
       'CLI that connects to OpenAI models for project-aware code assistance and terminal workflows.',
     websiteUrl: 'https://github.com/openai/codex',

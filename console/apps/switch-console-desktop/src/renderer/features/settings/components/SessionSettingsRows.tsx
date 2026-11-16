@@ -1,7 +1,7 @@
 import React from 'react';
 import { useSessionSettings } from '@renderer/features/sessions/hooks/useSessionSettings';
+import { InfoTooltip } from '@renderer/lib/components/info-tooltip';
 import { Switch } from '@renderer/lib/ui/switch';
-import { InfoTooltip } from './InfoTooltip';
 import { ResetToDefaultButton } from './ResetToDefaultButton';
 import { SettingRow } from './SettingRow';
 

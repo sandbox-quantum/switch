@@ -367,12 +367,12 @@ describe('the providers a server machine offers', () => {
     );
     expect(tile(el, 'Claude Code').disabled).toBe(false);
     expect(tile(el, 'Claude Code').textContent).toMatch(/Ready/);
-    expect(tile(el, 'Codex').disabled).toBe(true);
-    expect(tile(el, 'Codex').textContent).toMatch(/Not logged in/);
+    expect(tile(el, 'OpenAI Codex').disabled).toBe(true);
+    expect(tile(el, 'OpenAI Codex').textContent).toMatch(/Not logged in/);
     expect(tile(el, 'OpenCode').textContent).toMatch(/Not installed/);
     expect(tile(el, 'Cursor').disabled).toBe(true);
     expect(tile(el, 'Cursor').textContent).toMatch(/Not checked yet/);
-    await act(async () => tile(el, 'Codex').click());
+    await act(async () => tile(el, 'OpenAI Codex').click());
     expect(onChange).not.toHaveBeenCalled();
   });
 
@@ -442,11 +442,13 @@ describe('the providers a server machine offers', () => {
     );
     expect(el.textContent).toMatch(/Give build-box a login for/);
     const offered = [...el.querySelectorAll('button')].filter((button) =>
-      ['Codex', 'Cursor', 'OpenCode', 'Pi', 'Mistral Vibe'].includes(button.textContent ?? '')
+      ['OpenAI Codex', 'Cursor', 'OpenCode', 'Pi', 'Mistral Vibe'].includes(
+        button.textContent ?? ''
+      )
     );
     // Not OpenCode: it is not installed there, and no login would change that.
     // Not Pi or Mistral Vibe: Console has no login it can give them.
-    expect(offered.map((button) => button.textContent)).toEqual(['Codex', 'Cursor']);
+    expect(offered.map((button) => button.textContent)).toEqual(['OpenAI Codex', 'Cursor']);
     await act(async () => offered[0]!.click());
     const input = el.querySelector<HTMLInputElement>('input[aria-label="API key"]')!;
     await act(async () => {
@@ -458,7 +460,7 @@ describe('the providers a server machine offers', () => {
       (button) => button.textContent === 'Give login'
     )!;
     await act(async () => giveButton.click());
-    await vi.waitFor(() => expect(el.textContent).toMatch(/Codex signs in on build-box/));
+    await vi.waitFor(() => expect(el.textContent).toMatch(/OpenAI Codex signs in on build-box/));
     expect(giveMachineLogin).toHaveBeenCalledWith({
       serverId: 'server-1',
       machineId: 'controller-7',

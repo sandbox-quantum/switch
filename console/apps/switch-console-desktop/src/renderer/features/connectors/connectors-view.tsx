@@ -83,13 +83,23 @@ const ConnectorsPanel = observer(function ConnectorsPanel() {
 
   if (access === 'unreadable')
     return (
-      <ServerPage width={LIST_PAGE_WIDTH} title="Connectors" description={DESCRIPTION}>
+      <ServerPage
+        width={LIST_PAGE_WIDTH}
+        title="Connectors"
+        term="connector"
+        description={DESCRIPTION}
+      >
         <FlagsUnreadable flags={flags} />
       </ServerPage>
     );
   if (access !== 'shown' || workspaceId === null)
     return (
-      <ServerPage width={LIST_PAGE_WIDTH} title="Connectors" description={DESCRIPTION}>
+      <ServerPage
+        width={LIST_PAGE_WIDTH}
+        title="Connectors"
+        term="connector"
+        description={DESCRIPTION}
+      >
         <Spinner />
       </ServerPage>
     );
@@ -202,6 +212,7 @@ function Connectors({
     <ServerPage
       width={LIST_PAGE_WIDTH}
       title="Connectors"
+      term="connector"
       description={DESCRIPTION}
       action={
         // Turning a service on or off for everyone is the Admin page's; only

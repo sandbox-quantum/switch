@@ -15,9 +15,10 @@ function platformList(): string {
 
 /**
  * The first message switch-buddy posts in its Welcome chat: who it is, that
- * Switch brings agents to the messaging apps a team already uses, and what it
- * can help with. Written here, posted as the buddy, so it is there the moment
- * the chat opens rather than after the buddy's first session starts.
+ * Switch brings agents to the messaging apps a team already uses, what it can
+ * help with, and what teams use rooms for. Written here, posted as the buddy,
+ * so it is there the moment the chat opens rather than after the buddy's first
+ * session starts.
  *
  * The apps' logos are drawn by Console's chat; the Welcome chat is read there.
  */
@@ -39,6 +40,11 @@ export function buddyWelcomeMessage({
     '- 🤖 Create agents and bring them into your channels',
     '- 🏠 Set up rooms where your team and agents work together',
     '- 💬 Answer anything about Switch',
+    '',
+    'For example, teams use rooms to:',
+    '- 🔍 Review pull requests, with an agent working alongside the engineers',
+    '- 🎫 Triage support questions in a shared channel with the ops team',
+    '- 🚀 Build a feature together, with agents taking on parts of the work',
     '',
     'Tell me which app your team uses, and I’ll walk you through connecting it.',
   ].join('\n');
