@@ -1,4 +1,4 @@
-"""The sign-in limits' settings at their defaults, for a test's
+"""The sign-in and sign-up limits' settings at their defaults, for a test's
 stand-in config (`gateway/login_limits.py` reads them on every sign-in)."""
 
 from __future__ import annotations
@@ -12,5 +12,6 @@ LOGIN_LIMIT_DEFAULTS = {
         "gateway_login_max_failures_per_address",
         "gateway_login_failure_window_minutes",
         "gateway_login_lock_minutes",
+        "gateway_signup_max_per_hour_per_address",
     )
 }

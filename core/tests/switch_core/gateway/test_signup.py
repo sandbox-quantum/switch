@@ -537,6 +537,81 @@ async def test_concurrent_signups_cannot_overrun_the_cap(signup_app):
     assert await _user_count(app) == 1
 
 
+async def _signup_from(app, address: str, email: str) -> httpx.Response:
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app.app, client=(address, 4321)),
+        base_url="https://switch.example.com",
+    ) as client:
+        return await client.post(
+            "/auth/signup", json={"email": email, "password": PASSWORD}
+        )
+
+
+async def test_one_address_cannot_spend_everyones_sign_ups(signup_app):
+    """The hourly cap is one budget for the whole deployment, so a limit per
+    client address stands in front of it: one client's burst leaves the rest
+    of the budget to everyone else."""
+    app = signup_app
+    app.config.gateway_signup_max_per_hour_per_address = 3
+    for n in range(3):
+        response = await _signup_from(app, "203.0.113.7", f"burst{n}@example.com")
+        assert response.status_code == 201, response.text
+
+    refused = await _signup_from(app, "203.0.113.7", "burst3@example.com")
+    assert refused.status_code == 429, refused.text
+    assert refused.json()["detail"] == (
+        "Too many sign-ups from your network. Try again in 60 minutes."
+    )
+    assert 3590 <= int(refused.headers["Retry-After"]) <= 3600
+    newcomer = await _signup_from(app, "198.51.100.9", "newcomer@example.com")
+    assert newcomer.status_code == 201, newcomer.text
+    assert await _user_count(app) == 4
+
+
+async def test_the_deployment_wide_cap_still_holds_across_addresses(signup_app):
+    app = signup_app
+    app.config.gateway_signup_max_per_hour = 2
+    app.config.gateway_signup_max_per_hour_per_address = 5
+    assert (await _signup_from(app, "203.0.113.1", "a@example.com")).status_code == 201
+    assert (await _signup_from(app, "203.0.113.2", "b@example.com")).status_code == 201
+    refused = await _signup_from(app, "203.0.113.3", "c@example.com")
+    assert refused.status_code == 429
+    assert refused.json()["detail"] == (
+        "Too many sign-ups in the last hour. Try again later."
+    )
+
+
+async def test_an_address_signs_up_again_once_its_hour_is_over(signup_app):
+    app = signup_app
+    app.config.gateway_signup_max_per_hour_per_address = 1
+    assert (await _signup_from(app, "203.0.113.7", "a@example.com")).status_code == 201
+    assert (await _signup_from(app, "203.0.113.7", "b@example.com")).status_code == 429
+
+    async with app.factory() as session:
+        await session.execute(
+            text(
+                "UPDATE auth_attempts SET"
+                " window_started_at = window_started_at - interval '61 minutes',"
+                " locked_until = locked_until - interval '61 minutes',"
+                " expires_at = expires_at - interval '61 minutes'"
+            )
+        )
+        await session.commit()
+
+    response = await _signup_from(app, "203.0.113.7", "b@example.com")
+    assert response.status_code == 201, response.text
+
+
+async def test_sign_ups_through_a_proxy_are_left_to_the_deployment_wide_cap(
+    signup_app,
+):
+    """From a private address, every client behind the proxy shares it."""
+    app = signup_app
+    app.config.gateway_signup_max_per_hour_per_address = 1
+    assert (await _signup_from(app, "10.0.0.7", "a@example.com")).status_code == 201
+    assert (await _signup_from(app, "10.0.0.7", "b@example.com")).status_code == 201
+
+
 @pytest.fixture
 def reported(monkeypatch):
     """What sign-up and the cloud machine routes report."""

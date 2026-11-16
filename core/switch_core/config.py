@@ -353,6 +353,9 @@ class SwitchConfig(BaseSettings):
     # OIDC first sign-in alike), read from the users table so it holds across
     # replicas. Sign-up is refused once the count reaches this.
     gateway_signup_max_per_hour: int = Field(default=20, ge=1)
+    # Sign-ups from one client address in an hour, in front of the cap above,
+    # so that one client cannot spend everyone's (`gateway/login_limits.py`).
+    gateway_signup_max_per_hour_per_address: int = Field(default=5, ge=1)
     # Password sign-in guessing (`gateway/login_limits.py`). Failures with one
     # email address, whether or not an account has it, lock it out for
     # `gateway_login_lock_minutes` once there are this many within the window,

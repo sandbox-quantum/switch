@@ -85,6 +85,9 @@ from switch_core.gateway.hosted_machines import (
 from switch_core.gateway.login_limits import (
     admit_login,
     clear_login_failures,
+    count_signup,
+    counted_address,
+    refuse_signup_from,
 )
 from switch_core.gateway.schemas import (
     AccountDeletionCheck,
@@ -283,9 +286,11 @@ async def signup(
         emit_safely(current_telemetry(), "signup_refused", {"reason": "country"})
         raise HTTPException(status_code=403, detail=SIGNUP_REFUSED_DETAIL)
 
+    address = counted_address(request)
     with tenant_scope(TENANT_ZERO_ID):
         # Checked before the hash so a refusal stays cheap, and again under the
         # lock after it; neither the lock nor a connection is held across bcrypt.
+        await refuse_signup_from(session, address)
         await _refuse_signup(session, user_store, req.email, config)
         await session.rollback()
         password_hash = await hash_password_off_loop(req.password)
@@ -294,6 +299,7 @@ async def signup(
             text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
             {"key": "gateway-signup"},
         )
+        await refuse_signup_from(session, address)
         await _refuse_signup(session, user_store, req.email, config)
         user = User(
             name=req.display_name or req.email.split("@")[0],
@@ -314,6 +320,7 @@ async def signup(
             raise HTTPException(
                 status_code=409, detail="Email already registered"
             ) from None
+        await count_signup(session, config, address)
         await session.commit()
         logger.info("Signed up user %s", user.id)
         emit_safely(current_telemetry(), "account_created", {"method": "signup"})
