@@ -83,6 +83,7 @@ export {
   ensureSharedProcess,
   inProcessSupervision,
   liveSupervisor,
+  sessionsBaseIn,
   sharedSessionRoot,
 } from './host/launch';
 export type { Supervision } from './host/launch';
@@ -145,7 +146,7 @@ export {
   hostedCredentialSchema,
   providerLoginEnvironment,
 } from './host/provider-login';
-export { materializeHostedProvider } from './host/hosted-provider';
+export { clearHostedProvider, materializeHostedProvider } from './host/hosted-provider';
 export {
   generateSealingKeyPair,
   openProviderLogin,

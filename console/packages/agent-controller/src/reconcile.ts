@@ -253,7 +253,7 @@ export async function startAgent(
       provider,
       definition,
       cwd,
-      credentialsPath: deps.runtime.credentialsPath(agentId),
+      credentialsPath: deps.runtime.credentialsPath(agentId, provider),
       binaryPath,
     });
     // A login Switch gave the machine: its environment goes in the agent's

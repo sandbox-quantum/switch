@@ -182,6 +182,16 @@ export async function ensureRelayCredentials(
       deps.relay.register(agentId, current.token);
     return false;
   }
+  // A login withdrawn or replaced: what the agent host wrote of it goes now,
+  // even for an agent that is not started again.
+  if (current?.providerLogin && !loginCurrent)
+    await deps.runtime.forgetProviderLogin(agentId).catch((error: unknown) => {
+      deps.log.error('Could not remove a provider login Switch no longer gives an agent', {
+        agentId,
+        provider: current.providerLogin?.provider,
+        error: errorMessage(error),
+      });
+    });
   const token = current && relayCurrent ? current.token : deps.relay.mint(agentId);
   if (current && relayCurrent && !deps.relay.isRegistered(agentId, token))
     deps.relay.register(agentId, token);

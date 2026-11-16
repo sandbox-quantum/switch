@@ -1,4 +1,5 @@
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -8,7 +9,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { silentLogger } from './log';
 import type { SeparateUsersConfig } from './separate-users';
@@ -71,13 +72,19 @@ function makeRuntime(): SystemdRuntime {
     env,
     log: silentLogger,
     now: () => 1_000,
+    codexTemplate: true,
   });
 }
 
-function template(agentId: string, cwd: string, binaryPath = '/usr/bin/claude') {
+function template(
+  agentId: string,
+  cwd: string,
+  binaryPath = '/usr/bin/claude',
+  provider = 'claude'
+) {
   return buildWatcherTemplate({
     agentId,
-    provider: 'claude',
+    provider,
     definition: {
       name: agentId,
       model: null,
@@ -87,7 +94,7 @@ function template(agentId: string, cwd: string, binaryPath = '/usr/bin/claude') 
       auto_mode: false,
     },
     cwd,
-    credentialsPath: runtime.credentialsPath(agentId),
+    credentialsPath: runtime.credentialsPath(agentId, provider),
     binaryPath,
   });
 }
@@ -139,7 +146,7 @@ describe.skipIf(process.platform === 'win32')('SystemdRuntime', () => {
     // As the agent sees it, whichever user it runs as.
     expect(cwd).toBe(join(config.agentsDir, 'agent', 'workspace'));
     expect(systemctl.verbs()).toEqual([`start switch-agent-${config.uid}@01.service`]);
-    expect(runtime.credentialsPath('agent-1')).toBe(
+    expect(runtime.credentialsPath('agent-1', 'claude')).toBe(
       `/run/credentials/switch-agent-${config.uid}@01.service/relay`
     );
     expect(await runtime.readCredentials('agent-1')).toEqual(RELAY);
@@ -202,7 +209,8 @@ describe.skipIf(process.platform === 'win32')('SystemdRuntime', () => {
     const cwd = await runtime.workingDirectory('agent-1', 'agent-1', null);
     await runtime.launch('agent-1', template('agent-1', cwd), { ...LAUNCH, restart: true });
     const unit = `switch-agent-${config.uid}@01.service`;
-    expect(systemctl.verbs()).toEqual([`stop ${unit}`, `start ${unit}`]);
+    const codex = `switch-agent-${config.uid}-codex@01.service`;
+    expect(systemctl.verbs()).toEqual([`stop ${unit}`, `stop ${codex}`, `start ${unit}`]);
   });
 
   it('starts a failed unit again after clearing its failure', async () => {
@@ -269,7 +277,8 @@ describe.skipIf(process.platform === 'win32')('SystemdRuntime', () => {
     systemctl.calls.length = 0;
     await runtime.deleteCredentials('agent-1');
     const unit = `switch-agent-${config.uid}@01.service`;
-    expect(systemctl.verbs()).toEqual([`stop ${unit}`]);
+    const codex = `switch-agent-${config.uid}-codex@01.service`;
+    expect(systemctl.verbs()).toEqual([`stop ${unit}`, `stop ${codex}`]);
     expect(store.agentUser('agent-1')).toBeNull();
     expect(existsSync(join(config.agentsDir, '01'))).toBe(false);
     expect(existsSync(join(config.dataDir, 'units', '01'))).toBe(false);
@@ -303,13 +312,144 @@ describe.skipIf(process.platform === 'win32')('SystemdRuntime', () => {
     systemctl.calls.length = 0;
     await runtime.stop('agent-1', { wait: false });
     const unit = `switch-agent-${config.uid}@01.service`;
-    expect(systemctl.verbs()).toEqual([`--no-block stop ${unit}`]);
+    const codex = `switch-agent-${config.uid}-codex@01.service`;
+    expect(systemctl.verbs()).toEqual([`--no-block stop ${unit}`, `--no-block stop ${codex}`]);
     expect(
       JSON.parse(readFileSync(join(config.agentsDir, '01', 'watcher', 'watch.json'), 'utf8'))
     ).toEqual({ enabled: false, spawn: false });
     systemctl.calls.length = 0;
     await runtime.stop('agent-unknown', { wait: true });
     expect(systemctl.verbs()).toEqual([]);
+  });
+
+  it('runs a Codex agent as the template its sandbox can run in', async () => {
+    await start('agent-1');
+    const unit = `switch-agent-${config.uid}@01.service`;
+    const codex = `switch-agent-${config.uid}-codex@01.service`;
+    expect(runtime.credentialsPath('agent-1', 'codex')).toBe(`/run/credentials/${codex}/relay`);
+    systemctl.calls.length = 0;
+    const cwd = await runtime.workingDirectory('agent-1', 'agent-1', null);
+    // Its provider changed: a new identity, and the other template's unit stopped.
+    await runtime.launch('agent-1', template('agent-1', cwd, '/usr/bin/codex', 'codex'), {
+      ...LAUNCH,
+      replaceIdentity: true,
+    });
+    expect(systemctl.verbs()).toEqual([`stop ${unit}`, `stop ${codex}`, `start ${codex}`]);
+    expect((await runtime.observe('agent-1')).alive).toBe(true);
+  });
+
+  it('stops a Codex agent an older controller ran as the other template before starting it', async () => {
+    const older = new SystemdRuntime({
+      config,
+      store,
+      systemctl: systemctl.run,
+      env,
+      log: silentLogger,
+      now: () => 1_000,
+      codexTemplate: false,
+    });
+    const current = runtime;
+    runtime = older;
+    await older.writeCredentials('agent-1', RELAY);
+    const cwd = await older.workingDirectory('agent-1', 'agent-1', null);
+    await older.launch('agent-1', template('agent-1', cwd, '/usr/bin/codex', 'codex'), LAUNCH);
+    runtime = current;
+    const unit = `switch-agent-${config.uid}@01.service`;
+    const codex = `switch-agent-${config.uid}-codex@01.service`;
+    expect(systemctl.units.get(unit)?.activeState).toBe('active');
+    systemctl.calls.length = 0;
+    await runtime.launch('agent-1', template('agent-1', cwd, '/usr/bin/codex', 'codex'), LAUNCH);
+    expect(systemctl.verbs()).toEqual([`stop ${unit}`, `start ${codex}`]);
+  });
+
+  it('runs a Codex agent as the one template where the setup has no other', async () => {
+    runtime = new SystemdRuntime({
+      config,
+      store,
+      systemctl: systemctl.run,
+      env,
+      log: silentLogger,
+      now: () => 1_000,
+      codexTemplate: false,
+    });
+    const unit = `switch-agent-${config.uid}@01.service`;
+    expect(runtime.credentialsPath('agent-1', 'codex')).toBe(`/run/credentials/${unit}/relay`);
+    await runtime.writeCredentials('agent-1', RELAY);
+    const cwd = await runtime.workingDirectory('agent-1', 'agent-1', null);
+    await runtime.launch('agent-1', template('agent-1', cwd, '/usr/bin/codex', 'codex'), LAUNCH);
+    expect(systemctl.verbs()).toEqual([`start ${unit}`]);
+  });
+
+  it('removes a given login’s files and token when the agent is removed, keeping its work', async () => {
+    await start('agent-1');
+    const watcher = join(config.agentsDir, '01', 'watcher');
+    // As the agent host writes them (`materializeHostedProvider`).
+    const files = [
+      'provider-home/auth.json',
+      'provider-home/auth.json.switch-credential',
+      'provider-data/opencode/auth.json',
+      'provider-home/google-credentials.json',
+    ];
+    for (const file of files) {
+      mkdirSync(dirname(join(watcher, file)), { recursive: true });
+      writeFileSync(join(watcher, file), 'login-placeholder');
+    }
+    const configPath = join(watcher, 'config.json');
+    const saved = JSON.parse(readFileSync(configPath, 'utf8'));
+    saved.start.input.env = {
+      ...saved.start.input.env,
+      CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat-given',
+      KEPT: 'yes',
+    };
+    writeFileSync(configPath, JSON.stringify(saved));
+    writeFileSync(join(config.agentsDir, '01', 'workspace', 'notes.md'), 'kept');
+
+    await runtime.deleteCredentials('agent-1');
+    const released = join(config.agentsDir, 'released', 'agent-1');
+    for (const file of files) expect(existsSync(join(released, 'watcher', file))).toBe(false);
+    const env = JSON.parse(readFileSync(join(released, 'watcher', 'config.json'), 'utf8')).start
+      .input.env;
+    expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+    expect(env.KEPT).toBe('yes');
+    expect(readFileSync(join(released, 'workspace', 'notes.md'), 'utf8')).toBe('kept');
+  });
+
+  it('removes a withdrawn login’s files from a stopped agent’s directory', async () => {
+    await start('agent-1');
+    await runtime.stop('agent-1', { wait: true });
+    const auth = join(config.agentsDir, '01', 'watcher', 'provider-home', 'auth.json');
+    mkdirSync(dirname(auth), { recursive: true });
+    writeFileSync(auth, 'login-placeholder');
+    await runtime.forgetProviderLogin('agent-1');
+    expect(existsSync(auth)).toBe(false);
+    // An agent with no user here has nothing to remove.
+    await runtime.forgetProviderLogin('agent-unknown');
+  });
+
+  it('logs a login it could not remove as an error, and still removes the agent', async () => {
+    await start('agent-1');
+    const home = join(config.agentsDir, '01', 'watcher', 'provider-home');
+    mkdirSync(home, { recursive: true });
+    writeFileSync(join(home, 'auth.json'), 'login-placeholder');
+    // A directory an older agent host made private to the agent's user.
+    chmodSync(home, 0o500);
+    const errors: string[] = [];
+    runtime = new SystemdRuntime({
+      config,
+      store,
+      systemctl: systemctl.run,
+      env,
+      log: { ...silentLogger, error: (message) => void errors.push(message) },
+      now: () => 1_000,
+      codexTemplate: true,
+    });
+    try {
+      await runtime.deleteCredentials('agent-1');
+    } finally {
+      chmodSync(join(config.agentsDir, 'released', 'agent-1', 'watcher', 'provider-home'), 0o700);
+    }
+    expect(errors).toEqual(['Could not remove the provider login of an agent no longer here']);
+    expect(store.agentUser('agent-1')).toBeNull();
   });
 });
 

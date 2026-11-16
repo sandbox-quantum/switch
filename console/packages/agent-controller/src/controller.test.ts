@@ -883,4 +883,47 @@ describe('ensureRelayCredentials', () => {
       providerLogin: null,
     });
   });
+
+  it('removes what the agent host wrote of a login withdrawn or replaced, and only then', async () => {
+    const runtime = new FakeRuntime();
+    const { relay } = fakeRelay();
+    const deps = { runtime, relay, log: silentLogger };
+    const forgotten = () => runtime.calls.filter((call) => call.kind === 'forgetProviderLogin');
+    await ensureRelayCredentials('agent-1', null, deps);
+    await ensureRelayCredentials('agent-1', login, deps);
+    await ensureRelayCredentials('agent-1', login, deps);
+    // Given for the first time, or unchanged: nothing to remove.
+    expect(forgotten()).toEqual([]);
+    await ensureRelayCredentials('agent-1', { ...login, revision: '2' }, deps);
+    expect(forgotten()).toHaveLength(1);
+    await ensureRelayCredentials('agent-1', null, deps);
+    expect(forgotten()).toEqual([
+      { kind: 'forgetProviderLogin', agentId: 'agent-1' },
+      { kind: 'forgetProviderLogin', agentId: 'agent-1' },
+    ]);
+    await ensureRelayCredentials('agent-1', null, deps);
+    expect(forgotten()).toHaveLength(2);
+  });
+
+  it('logs a login it could not remove as an error, and still rewrites the file', async () => {
+    const runtime = new FakeRuntime();
+    const { relay } = fakeRelay();
+    const errors: { message: string; fields?: Record<string, unknown> }[] = [];
+    const log = {
+      ...silentLogger,
+      error: (message: string, fields?: Record<string, unknown>) =>
+        void errors.push({ message, fields }),
+    };
+    const deps = { runtime, relay, log };
+    await ensureRelayCredentials('agent-1', login, deps);
+    runtime.failNextForget = new Error('EACCES: permission denied');
+    expect(await ensureRelayCredentials('agent-1', null, deps)).toBe(true);
+    expect(runtime.credentials.get('agent-1')?.providerLogin).toBeNull();
+    expect(errors).toEqual([
+      {
+        message: 'Could not remove a provider login Switch no longer gives an agent',
+        fields: { agentId: 'agent-1', provider: 'claude', error: 'EACCES: permission denied' },
+      },
+    ]);
+  });
 });
