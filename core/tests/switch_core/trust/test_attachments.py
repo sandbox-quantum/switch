@@ -2,10 +2,14 @@
 together. The two call sites (inbound bridge, agent send_media) are tested
 separately; this covers the decisions they share."""
 
+import ast
 import io
+import json
 import logging
+import subprocess
 import sys
 import zipfile
+from pathlib import Path
 
 import pytest
 from pypdf import PdfReader, PdfWriter
@@ -694,3 +698,49 @@ def test_a_dtd_in_utf16_is_still_refused() -> None:
     ).encode("utf-16")
     file_text = extract_file_text(_docx_with(document), _DOCX_TYPE, "evil.docx")
     assert file_text.text is None
+
+
+# Windows has no `resource` (nor the other Unix-only modules below); a
+# module-level import of one stops switch-core from starting there (CHOO-4461).
+_UNIX_ONLY_MODULES = {"resource", "fcntl", "pwd", "grp", "termios", "tty", "pty"}
+
+_WITHOUT_RESOURCE = """
+import json, runpy, sys
+sys.modules["resource"] = None  # as on Windows: importing it fails
+import switch_core.file_text
+sys.argv = ["file_text", "docx", str(256 * 1024 * 1024)]
+runpy.run_module("switch_core.file_text", run_name="__main__")
+"""
+
+
+def test_the_reader_imports_and_its_worker_runs_without_resource() -> None:
+    completed = subprocess.run(
+        [sys.executable, "-c", _WITHOUT_RESOURCE],
+        input=_docx("the body"),
+        capture_output=True,
+        timeout=60,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr.decode()
+    assert "the body" in json.loads(completed.stdout)["text"]
+
+
+def test_switch_core_imports_no_unix_only_module_at_load_time() -> None:
+    """Only module-level imports count: one inside a function, guarded for
+    the platform, does not stop switch-core from loading."""
+    import switch_core
+
+    offenders = []
+    for path in Path(switch_core.__file__).parent.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in tree.body:
+            if isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.level == 0:
+                names = [node.module or ""]
+            else:
+                continue
+            for name in names:
+                if name.split(".")[0] in _UNIX_ONLY_MODULES:
+                    offenders.append(f"{path.name}:{node.lineno} {name}")
+    assert offenders == []
