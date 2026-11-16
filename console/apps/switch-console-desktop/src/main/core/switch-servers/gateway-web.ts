@@ -1,6 +1,8 @@
 import { BrowserWindow, session as electronSession } from 'electron';
+import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
 import { dashboardOrigin, type SwitchServer } from '@shared/core/switch-servers/switch-servers';
+import { gatewayWindowClosedChannel } from '@shared/events/switchServerEvents';
 import { reauthenticateManagedServer } from './auth';
 import { consoleIdentityHeaders } from './console-identity';
 import { getSessionCookie } from './servers-store';
@@ -75,5 +77,6 @@ export async function openAuthenticatedGatewayPage(
     autoHideMenuBar: true,
     webPreferences: { partition, nodeIntegration: false, contextIsolation: true },
   });
+  win.on('closed', () => events.emit(gatewayWindowClosedChannel, { serverId: server.id }));
   await win.loadURL(url);
 }

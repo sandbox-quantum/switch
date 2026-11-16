@@ -8,11 +8,16 @@ const fromPartition = vi.hoisted(() =>
   vi.fn(() => ({ cookies: { set: cookiesSet }, webRequest: { onBeforeSendHeaders } }))
 );
 const loadURL = vi.hoisted(() => vi.fn(async () => {}));
+const windowEvents = vi.hoisted(() => new Map<string, () => void>());
+const on = vi.hoisted(() =>
+  vi.fn((event: string, listener: () => void) => windowEvents.set(event, listener))
+);
 const BrowserWindow = vi.hoisted(() =>
   vi.fn(function () {
-    return { loadURL };
+    return { loadURL, on };
   })
 );
+const emit = vi.hoisted(() => vi.fn());
 
 vi.mock('electron', () => ({ BrowserWindow, session: { fromPartition } }));
 vi.mock('./servers-store', () => ({ getSessionCookie }));
@@ -24,6 +29,7 @@ vi.mock('./console-identity', () => ({
       : {},
 }));
 vi.mock('@main/lib/logger', () => ({ log: { warn: vi.fn(), error: vi.fn() } }));
+vi.mock('@main/lib/events', () => ({ events: { emit } }));
 
 const { openAuthenticatedGatewayPage } = await import('./gateway-web');
 
@@ -53,6 +59,19 @@ describe('openAuthenticatedGatewayPage', () => {
     ).rejects.toThrow(/dashboard origin/);
     expect(BrowserWindow).not.toHaveBeenCalled();
     expect(cookiesSet).not.toHaveBeenCalled();
+  });
+
+  it('says when the window is closed, so what was set up in it is read again', async () => {
+    getSessionCookie.mockResolvedValue('stored-jwt');
+
+    await openAuthenticatedGatewayPage(SERVER, 'http://127.0.0.1:8080/connectors');
+    expect(emit).not.toHaveBeenCalled();
+    windowEvents.get('closed')!();
+
+    expect(emit).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'switch-servers:gateway-window-closed' }),
+      { serverId: 'srv-1' }
+    );
   });
 
   it('injects the stored cookie for the gateway origin and opens the page', async () => {

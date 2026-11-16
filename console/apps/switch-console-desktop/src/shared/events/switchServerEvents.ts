@@ -9,3 +9,11 @@ import { defineEvent } from '@shared/lib/ipc/events';
 export const gatewaySessionEndedChannel = defineEvent<{ serverId: string }>(
   'switch-servers:session-ended'
 );
+
+/**
+ * A window Console opened on this server's gateway pages was closed: what was
+ * set up there (a connector's app, say) may have changed what Console shows.
+ */
+export const gatewayWindowClosedChannel = defineEvent<{ serverId: string }>(
+  'switch-servers:gateway-window-closed'
+);

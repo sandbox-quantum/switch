@@ -2,7 +2,11 @@ import { LoaderCircle } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { cn } from '@renderer/utils/utils';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
-import { type ManagedTone, managedServerState } from './managed-server-state';
+import {
+  type ManagedServerState,
+  type ManagedTone,
+  managedServerState,
+} from './managed-server-state';
 
 export const TONE_DOT: Record<ManagedTone, string> = {
   running: 'bg-[var(--srv-running)]',
@@ -63,11 +67,16 @@ export function ToneDot({ tone, size }: { tone: ManagedTone; size: 6 | 7 }) {
   );
 }
 
+/** What a managed server's dot says, for its tooltip and screen readers. */
+export function serverStatusLabel(state: ManagedServerState): string {
+  return `Server status: ${state.label}`;
+}
+
 /**
  * A managed server's state as a dot — or a spinner while it changes state —
- * with no words: the switcher and the sidebar say how a server is with colour
- * alone. Nothing for a server this Console does not run, or before its state
- * has been read.
+ * with no words beside it: the switcher and the sidebar show how a server is
+ * by colour, and say it in the dot's tooltip and label. Nothing for a server
+ * this Console does not run, or before its state has been read.
  */
 export const ManagedServerDot = observer(function ManagedServerDot({
   server,
@@ -79,7 +88,12 @@ export const ManagedServerDot = observer(function ManagedServerDot({
   const state = managedServerState(server);
   if (!state || !state.known) return null;
   return (
-    <span role="img" aria-label={state.label} title={state.label} className="flex shrink-0">
+    <span
+      role="img"
+      aria-label={serverStatusLabel(state)}
+      title={serverStatusLabel(state)}
+      className="flex shrink-0"
+    >
       <ToneDot tone={state.tone} size={size} />
     </span>
   );

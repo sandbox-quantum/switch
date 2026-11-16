@@ -46,8 +46,17 @@ const featureFlags = vi.hoisted(() => ({
   })),
 }));
 
+const eventListeners = vi.hoisted(() => new Map<string, Set<(data: unknown) => void>>());
+
 vi.mock('@renderer/lib/ipc', () => ({
-  events: { on: () => () => {} },
+  events: {
+    on: (channel: { name: string }, listener: (data: unknown) => void) => {
+      const listeners = eventListeners.get(channel.name) ?? new Set();
+      listeners.add(listener);
+      eventListeners.set(channel.name, listeners);
+      return () => listeners.delete(listener);
+    },
+  },
   rpc: {
     workspaces,
     featureFlags,
@@ -426,6 +435,40 @@ it("opens the gateway's connector apps to set an app up on a server with a web g
   expect(switchServers.openGatewayPage).toHaveBeenCalledTimes(2);
   expect(switchServers.openGatewayPage).toHaveBeenLastCalledWith(connectorApps);
   expect(navigation.view()).toBe('connectors');
+});
+
+it('shows a connector set up in the gateway window as set up once that window closes', async () => {
+  admin.operator = true;
+  server.servesGateway = true;
+  const page = await discover([NOT_SET_UP]);
+  expect(button(/^Example/, grid(page)!)!.textContent).toMatch(/Needs setup/);
+  await act(async () =>
+    page.querySelector<HTMLButtonElement>('button[aria-label="Set up Example"]')!.click()
+  );
+
+  workspaces.getServiceConnections.mockResolvedValue([entry({ slug: 'example', name: 'Example' })]);
+  await act(async () => {
+    for (const listener of eventListeners.get('switch-servers:gateway-window-closed') ?? [])
+      listener({ serverId: 'server' });
+  });
+
+  await vi.waitFor(() =>
+    expect(button(/^Example/, grid(page)!)!.textContent).not.toMatch(/Needs setup/)
+  );
+  expect(navigation.view()).toBe('connectors');
+});
+
+it('reads the connectors again when Console’s window regains focus', async () => {
+  admin.operator = true;
+  const page = await discover([NOT_SET_UP]);
+  expect(button(/^Example/, grid(page)!)!.textContent).toMatch(/Needs setup/);
+
+  workspaces.getServiceConnections.mockResolvedValue([entry({ slug: 'example', name: 'Example' })]);
+  await act(async () => window.dispatchEvent(new Event('focus')));
+
+  await vi.waitFor(() =>
+    expect(button(/^Example/, grid(page)!)!.textContent).not.toMatch(/Needs setup/)
+  );
 });
 
 it('opens connector apps at the path a gateway in the current layout serves', async () => {

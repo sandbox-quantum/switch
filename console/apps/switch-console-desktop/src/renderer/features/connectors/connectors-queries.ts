@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { events, rpc } from '@renderer/lib/ipc';
 import type { ServerFeatureFlags } from '@shared/core/feature-flags/feature-flags';
 import { featureFlagsChangedChannel } from '@shared/events/featureFlagEvents';
+import { gatewayWindowClosedChannel } from '@shared/events/switchServerEvents';
 
 /** The workspace's catalog, shared with an agent's Connections tab and Service access row. */
 export const catalogKey = (workspaceId: string) => ['workspace-service-connections', workspaceId];
@@ -73,6 +74,28 @@ export function useReloadConnectors(workspaceId: string): () => Promise<void> {
       ].map((queryKey) => queryClient.invalidateQueries({ queryKey }))
     );
   }, [queryClient, workspaceId]);
+}
+
+/**
+ * Re-reads the connectors when the person comes back to the page: when a
+ * window Console opened on the server's gateway (where a connector's app is
+ * set up) is closed, and whenever Console's window regains focus, as it does
+ * after setting something up in the browser. The page then shows a
+ * connector's new state without being left and opened again.
+ */
+export function useReloadConnectorsOnReturn(serverId: string, workspaceId: string): void {
+  const reload = useReloadConnectors(workspaceId);
+  useEffect(() => {
+    const onFocus = () => void reload();
+    window.addEventListener('focus', onFocus);
+    const off = events.on(gatewayWindowClosedChannel, (closed) => {
+      if (closed.serverId === serverId) void reload();
+    });
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      off();
+    };
+  }, [reload, serverId]);
 }
 
 /**

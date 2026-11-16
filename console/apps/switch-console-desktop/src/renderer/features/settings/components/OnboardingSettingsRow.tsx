@@ -1,4 +1,5 @@
 import React from 'react';
+import { sidebarChecklistCanAppear } from '@renderer/features/onboarding/sidebar-checklist-shown';
 import { useAppSettingsKey } from '@renderer/features/settings/use-app-settings-key';
 import { Switch } from '@renderer/lib/ui/switch';
 import { ResetToDefaultButton } from './ResetToDefaultButton';
@@ -7,7 +8,7 @@ import { SettingRow } from './SettingRow';
 /**
  * The way back after dismissing the setup checklist (CHOO-2022). Dismissal
  * removes the only control that could restore it, so it has to live somewhere
- * else — here.
+ * else — here. Not offered in a build whose sidebar can't show the checklist.
  */
 export const OnboardingChecklistRow: React.FC = () => {
   const {
@@ -21,6 +22,7 @@ export const OnboardingChecklistRow: React.FC = () => {
 
   const showChecklist = value?.showChecklist ?? true;
 
+  if (!sidebarChecklistCanAppear()) return null;
   return (
     <SettingRow
       title="Onboarding checklist"

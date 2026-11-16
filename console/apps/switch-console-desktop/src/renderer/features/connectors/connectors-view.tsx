@@ -42,6 +42,7 @@ import {
 import {
   useConnectorCatalog,
   useReloadConnectors,
+  useReloadConnectorsOnReturn,
   useServerFeatureFlags,
 } from './connectors-queries';
 import { FlagsUnreadable } from './flags-unreadable';
@@ -148,6 +149,7 @@ function Connectors({
   const openProfile = (slug: string) => navigate('connectors', { serverId, connector: slug });
   const connect = useConnectService(serverId, workspaceId);
   const reload = useReloadConnectors(workspaceId);
+  useReloadConnectorsOnReturn(serverId, workspaceId);
   const [turningOn, setTurningOn] = useState<ReadonlySet<string>>(new Set());
   const turnOn = async (entry: ConnectionCatalogEntry) => {
     setTurningOn((now) => new Set(now).add(entry.slug));

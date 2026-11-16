@@ -12,8 +12,15 @@ import {
 import { observer } from 'mobx-react-lite';
 import { adminGroupsInScope } from '@renderer/features/admin/admin-frame';
 import { useRoomHealth } from '@renderer/features/switch-rooms/connection-health';
-import { ManagedServerDot } from '@renderer/features/switch-servers/managed-server-dot';
-import { FROZEN, isFrozenServer } from '@renderer/features/switch-servers/managed-server-state';
+import {
+  ManagedServerDot,
+  serverStatusLabel,
+} from '@renderer/features/switch-servers/managed-server-dot';
+import {
+  FROZEN,
+  isFrozenServer,
+  managedServerState,
+} from '@renderer/features/switch-servers/managed-server-state';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { isCurrentView, useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
@@ -50,6 +57,7 @@ export const WorkspaceNav = observer(function WorkspaceNav() {
     health.data?.agents.filter((agent) => connectionNeedsAttention(agent.state)).length ?? 0;
   // While the server can't answer, only Settings — where it is operated — stays live.
   const frozen = active !== null && isFrozenServer(active);
+  const activeState = active?.managed ? managedServerState(active) : null;
 
   const destinations: Record<
     WorkspaceNavView,
@@ -105,7 +113,11 @@ export const WorkspaceNav = observer(function WorkspaceNav() {
         // A Switch this Console runs that is not answering is started from
         // System status, so that is where Settings opens while it is down.
         onClick={() => (frozen ? navigate('settings', { tab: 'status' }) : navigate('settings'))}
-        aria-label="Settings"
+        aria-label={
+          activeState?.known
+            ? `Settings, ${serverStatusLabel(activeState).toLowerCase()}`
+            : 'Settings'
+        }
       >
         <Settings className="size-[15px] shrink-0" />
         Settings
