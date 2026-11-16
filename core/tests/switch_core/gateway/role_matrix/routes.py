@@ -240,7 +240,11 @@ ROUTES: dict[str, Case] = {
         json={"message_retention_days": 30},
         why="Deleting messages can't be undone: its admins by their own membership.",
     ),
-    "DELETE /gateway/tenants/{tenant_id}/retention": delete(f"{W}/retention", admins()),
+    "DELETE /gateway/tenants/{tenant_id}/retention": delete(
+        f"{W}/retention",
+        admin_by_membership(),
+        why="As setting a policy: its admins by their own membership.",
+    ),
     "GET /gateway/tenants/{tenant_id}/private-channel-rooms": get(
         f"{W}/private-channel-rooms", admins()
     ),
@@ -333,6 +337,12 @@ ROUTES: dict[str, Case] = {
         json={"token": "no-such-invitation"},
         why="Whoever holds the token; this one matches no invitation.",
     ),
+    "POST /gateway/invitations/preview": post(
+        f"{G}/invitations/preview",
+        anyone(ok=404),
+        json={"token": "no-such-invitation"},
+        why="Whoever holds the token; this one matches no invitation.",
+    ),
     "GET /gateway/invitations/mine": get(f"{G}/invitations/mine", SELF),
     "POST /gateway/invitations/mine/accept": post(
         f"{G}/invitations/mine/accept",
@@ -365,6 +375,14 @@ ROUTES: dict[str, Case] = {
     ),
     # ── Organizations ────────────────────────────────────────────────────
     "GET /gateway/organizations": get(f"{G}/organizations", SELF),
+    "GET /gateway/organizations/without-workspace": get(
+        f"{G}/organizations/without-workspace", SELF
+    ),
+    "POST /gateway/organizations/{organization_id}/leave": post(
+        f"{G}/organizations/no-such-organization/leave",
+        anyone(ok=404),
+        why="Your own membership; nobody here is in this organization.",
+    ),
     "POST /gateway/organizations": post(
         f"{G}/organizations", SELF, json={"name": "{tag}-org"}
     ),
@@ -515,6 +533,11 @@ ROUTES: dict[str, Case] = {
     "DELETE /gateway/users/{user_id}": delete(f"{G}/users/{{user_target}}", operator()),
     "POST /gateway/users/{user_id}/sessions/revoke": post(
         f"{G}/users/{{user_target}}/sessions/revoke", operator()
+    ),
+    "POST /gateway/users/{user_id}/demote": post(
+        f"{G}/users/{{user_target}}/demote",
+        operator(ok=409),
+        why="The operator's; this account is no operator, which is what they're told.",
     ),
     "POST /gateway/auth/sessions/revoke": post(
         f"{G}/auth/sessions/revoke",

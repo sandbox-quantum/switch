@@ -198,12 +198,13 @@ export default function OrganizationUsersSettings({
     const rowActions = (row: Row): RowAction[] => {
       const self = row.user_id === selfId;
       const actions: RowAction[] = [];
-      if (row.can_change_role) {
+      if (row.can_change_role || row.change_role_blocked_reason !== null) {
         if (row.role === "org_admin") {
           actions.push({
             label: self ? "Step down to Member" : "Make Member",
             icon: <ManageAccountsOutlined fontSize="small" />,
             onClick: () => setPending({ kind: "demote", member: row }),
+            disabledReason: row.change_role_blocked_reason,
           });
         } else {
           actions.push({
@@ -220,6 +221,12 @@ export default function OrganizationUsersSettings({
       }
       if (administers) {
         const orgAdmin = row.role === "org_admin";
+        // The organization's only org admin can't step down, so "Make them a
+        // Member first" would send them round in a circle.
+        const orgAdminStays =
+          row.change_role_blocked_reason !== null
+            ? `An org admin stays in every workspace while they are one. ${row.change_role_blocked_reason}`
+            : "An org admin stays in every workspace while they are one. Make them a Member first.";
         actions.push(
           {
             label: "Add to a workspace",
@@ -247,14 +254,14 @@ export default function OrganizationUsersSettings({
             onClick: () => setPending({ kind: "remove-workspace", member: row }),
             destructive: true,
             disabledReason: orgAdmin
-              ? "An org admin stays in every workspace while they are one. Make them a Member first."
+              ? orgAdminStays
               : row.workspaces.length === 0
                 ? "They're in no workspace."
                 : null,
           },
         );
       }
-      if (row.can_remove) {
+      if (row.can_remove || row.remove_blocked_reason !== null) {
         const names = row.workspaces.map((w) => w.name).join(", ");
         actions.push({
           label: self ? "Leave organization" : "Remove from organization",
@@ -262,9 +269,10 @@ export default function OrganizationUsersSettings({
           onClick: () => setPending({ kind: "remove-organization", member: row }),
           destructive: true,
           disabledReason:
-            row.workspaces.length > 0
+            row.remove_blocked_reason ??
+            (row.workspaces.length > 0
               ? `Remove ${self ? "yourself" : "them"} from the organization's workspaces first: ${names}.`
-              : null,
+              : null),
         });
       }
       return actions;

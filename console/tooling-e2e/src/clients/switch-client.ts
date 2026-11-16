@@ -500,8 +500,9 @@ export class SwitchClient {
   }
 
   /**
-   * `POST /gateway/users` — a user in the signed-in admin's workspace. `role: 'admin'` makes a deployment operator.
-   * The account signs in with `password` for as long as it lasts, so it goes to the run's issued secrets.
+   * `POST /gateway/users` — an account in no workspace. `role: 'admin'` makes a deployment operator, who
+   * administers no workspace by being one. The account signs in with `password` for as long as it lasts,
+   * so it goes to the run's issued secrets.
    */
   async createUser(params: {
     name: string;
@@ -511,6 +512,23 @@ export class SwitchClient {
   }): Promise<{ id: string }> {
     this.issued.record(params.password);
     return this.gateway<{ id: string }>("POST", "/users", params);
+  }
+
+  /**
+   * A new account made a member of this client's workspace: `createUser`, then an invitation from this
+   * client that the account accepts. Returns its id and a client signed in as it, acting in that workspace.
+   */
+  async createMember(params: {
+    name: string;
+    email: string;
+    password: string;
+    role: "user" | "admin";
+  }): Promise<{ id: string; client: SwitchClient }> {
+    const { id } = await this.createUser(params);
+    const token = await this.createInvitation(await this.tenantId(), "member");
+    const client = this.as(params.email, params.password);
+    await client.acceptInvitation(token);
+    return { id, client };
   }
 
   /**

@@ -282,6 +282,20 @@ class TestChoosingAdmins:
                 )
             )
         assert changes == sorted([(org.bob, "admin"), (org.carol, "member")])
+        recorded = await _organization_events(
+            session_factory,
+            org.second,
+            OrganizationAuditAction.MEMBER_WORKSPACE_ROLE_CHANGED,
+        )
+        assert sorted(
+            (d["workspace"], d["workspace_name"], d["from"], d["to"]) for d in recorded
+        ) == sorted(
+            [
+                (org.second, "Second", "admin", "member"),
+                (org.second, "Second", "member", "admin"),
+            ]
+        )
+        assert all(d["workspace_id"] == org.first for d in recorded)
 
     async def test_none_of_it_happens_when_the_last_admin_would_go(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -405,6 +419,19 @@ class TestItsMembers:
         }
         assert org_admin.status_code == 409
         assert unknown.status_code == 404
+        assert await _organization_events(
+            session_factory,
+            org.second,
+            OrganizationAuditAction.MEMBER_WORKSPACE_ROLE_CHANGED,
+        ) == [
+            {
+                "workspace": org.second,
+                "workspace_name": "Second",
+                "from": "member",
+                "to": "admin",
+                "workspace_id": org.first,
+            }
+        ]
 
     async def test_an_org_admin_removes_someone_from_another_workspace(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -431,6 +458,18 @@ class TestItsMembers:
         assert await _role(session_factory, org.second, org.bob) is None
         [bob] = [row for row in members.json() if row["user_id"] == org.bob]
         assert bob["workspaces"] == []
+        assert await _organization_events(
+            session_factory,
+            org.second,
+            OrganizationAuditAction.MEMBER_REMOVED_FROM_WORKSPACE,
+        ) == [
+            {
+                "workspace": org.second,
+                "workspace_name": "Second",
+                "role": "member",
+                "workspace_id": org.first,
+            }
+        ]
 
 
 class TestInviting:

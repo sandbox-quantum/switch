@@ -4,7 +4,6 @@ import { Alert, Box, Button, Chip, CircularProgress, Stack, Typography } from "@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import PageBanner from "../../components/PageBanner";
-import { useAuth } from "../../data/AuthContext";
 import { ApiError, loadPackages } from "../../data/api";
 import { mayBeInAnotherWorkspace } from "../../data/workspaceLink";
 import { EM_DASH, MONO_SX } from "../../theme/format";
@@ -180,13 +179,11 @@ export function InfoLine({
 }
 
 /** The packages a reference or document is in. The package list holds the
- * viewer's own and public ones, admins included, so another person's private
- * package is not in it: counted, never named, as private rooms are, for
- * anyone who cannot open it. A workspace admin can, so each is offered to
- * them as a link instead. */
+ * viewer's own and public ones, and every package for an admin, so another
+ * person's private package is missing from it only for a member: counted,
+ * never named, as private rooms are. */
 export function InPackagesSection({ packageIds }: { packageIds: string[] }) {
   const navigate = useNavigate();
-  const { capabilities } = useAuth();
   const { data: packages, error, loading } = useLoad(loadPackages);
   const nameById = useMemo(
     () => new Map((packages ?? []).map((p) => [p.id, p.name || p.description])),
@@ -194,7 +191,6 @@ export function InPackagesSection({ packageIds }: { packageIds: string[] }) {
   );
   const named = packageIds.filter((pid) => nameById.has(pid));
   const unnamed = packageIds.filter((pid) => !nameById.has(pid));
-  const canOpenUnnamed = capabilities.administersWorkspace;
   return (
     <Stack spacing={1}>
       <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
@@ -223,24 +219,13 @@ export function InPackagesSection({ packageIds }: { packageIds: string[] }) {
               sx={{ cursor: "pointer" }}
             />
           ))}
-          {canOpenUnnamed
-            ? unnamed.map((pid) => (
-                <Chip
-                  key={pid}
-                  label="Someone's private package"
-                  size="small"
-                  variant="outlined"
-                  onClick={() => navigate(`/resources/packages/${pid}`)}
-                  sx={{ cursor: "pointer" }}
-                />
-              ))
-            : unnamed.length > 0 && (
-                <Chip
-                  size="small"
-                  variant="outlined"
-                  label={`${unnamed.length} private package${unnamed.length === 1 ? "" : "s"} you can't open`}
-                />
-              )}
+          {unnamed.length > 0 && (
+            <Chip
+              size="small"
+              variant="outlined"
+              label={`${unnamed.length} private package${unnamed.length === 1 ? "" : "s"} you can't open`}
+            />
+          )}
         </Stack>
       )}
     </Stack>

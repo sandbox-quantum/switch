@@ -37,15 +37,13 @@ export const organizationMembers: FastScenario = {
   async run({ names, switchClient }) {
     const password = `e2e-${names.runId}-${crypto.randomUUID()}`;
     const email = `${names.name('colleague')}@e2e.invalid`;
-    const { id } = await switchClient.createUser({
+    // A member of the harness admin's workspace, and so of its organization.
+    const { id, client: colleague } = await switchClient.createMember({
       name: 'E2E colleague',
       email,
       password,
       role: 'user',
     });
-    const colleague = switchClient.as(email, password);
-    // Signing in joins the default workspace, and so its organization.
-    await colleague.tenantId();
 
     const refused = async (): Promise<number> => {
       try {

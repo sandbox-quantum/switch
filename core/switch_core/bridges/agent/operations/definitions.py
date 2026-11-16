@@ -326,7 +326,7 @@ async def connect_to_room(
         bridge,
         include_general=include_general_instructions,
     )
-    resources = await protocol.list_room_resources(room.id)
+    resources = await protocol.list_room_resources(agent_id, room.id)
     linked_rooms = await _decorate_linked_rooms(
         protocol, agent_id, resources["linked_rooms"]
     )
@@ -505,13 +505,17 @@ async def list_references() -> dict[str, Any]:
 
     Packages bundle other refs and documents and have their own
     `instructions`; their `references` and `documents` arrays mirror the
-    same shape as the top-level fields.
+    same shape as the top-level fields. An entry in a package marked
+    `"withheld": true` is someone else's, which they keep private: the
+    package's owner cannot share it, so it comes without its `value` or
+    `instructions` and cannot be loaded. Say so if you need it, rather than
+    guessing at what it holds.
     """
     agent_id = get_agent_id()
     room_id = await require_connected_room()
     protocol = get_protocol()
     await protocol.require_room_member(agent_id, room_id)
-    return await protocol.list_room_resources(room_id)
+    return await protocol.list_room_resources(agent_id, room_id)
 
 
 @operation
@@ -536,7 +540,7 @@ async def list_linked_rooms() -> list[dict[str, Any]]:
     room_id = await require_connected_room()
     protocol = get_protocol()
     await protocol.require_room_member(agent_id, room_id)
-    resources = await protocol.list_room_resources(room_id)
+    resources = await protocol.list_room_resources(agent_id, room_id)
     return await _decorate_linked_rooms(protocol, agent_id, resources["linked_rooms"])
 
 
@@ -551,7 +555,7 @@ async def load_internal_documents(ids: list[str]) -> list[dict[str, Any]]:
     Returns:
         List of {id, description, content} entries in the same order as
         the requested ids. Raises an error if any id is not attached to the
-        current room.
+        current room, or is withheld in the package it reaches the room by.
 
     """
     agent_id = get_agent_id()
@@ -2518,6 +2522,9 @@ async def list_agents(
         connection_model, tool_count, model_count, owner_id, owner_name,
         oauth_client_id, created_at, parent_agent_id, known_agent_type,
         known_agent_options}.
+        `known_agent_options` and `oauth_client_id`, how an agent is set up
+        on its owner's machine, are null unless your owner owns the agent or
+        administers the workspace.
         `icon_url` is null when the agent has no icon set. `display_name` is
         null when the agent has no display name set; fall back to `name`.
         Address agents by `name`: `display_name` is a human label that routes
@@ -2537,7 +2544,10 @@ async def get_agent_detail(agent_id: str) -> dict[str, Any]:
 
     Readable for any agent (not just your own). Use it to inspect another
     agent's configuration, capabilities, room memberships, and live sessions.
-    A room your owner cannot read is not named in it.
+    A room your owner cannot read is not named in it, and nor is a session
+    there. Unless your owner owns the agent or administers the workspace,
+    `known_agent_options`, `oauth_client_id` and a session's `controller_id`
+    (how and where it is set up on its owner's machine) are null.
 
     Args:
         agent_id: The target agent's id (from `list_participants` or

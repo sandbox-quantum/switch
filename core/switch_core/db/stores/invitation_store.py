@@ -210,6 +210,30 @@ class InvitationStore:
         )
         return int(result.scalar_one())
 
+    async def revoke_made_by(
+        self, session: AsyncSession, tenant_id: str, user_id: str
+    ) -> list[Invitation]:
+        """Revoke every invitation of `tenant_id` that `user_id` made and that
+        could still be accepted, shareable links included, returning them.
+
+        Names its tenant in the `WHERE` as well as relying on the policy, for
+        the reason `list_live_addressed_to` gives: on a connection the policy
+        does not bind, the same statement would revoke what they made in
+        every other workspace too.
+        """
+        result = await session.execute(
+            update(Invitation)
+            .where(
+                Invitation.tenant_id == tenant_id,
+                Invitation.created_by == user_id,
+                _usable(),
+            )
+            .values(revoked_at=func.now())
+            .returning(Invitation)
+            .execution_options(populate_existing=True)
+        )
+        return list(result.scalars().all())
+
     async def revoke(self, session: AsyncSession, invitation_id: str) -> Invitation:
         """Revoke an invitation that could still be accepted.
 

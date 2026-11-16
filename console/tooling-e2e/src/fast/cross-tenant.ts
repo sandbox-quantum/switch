@@ -68,7 +68,12 @@ export async function otherTenantAndProber(
     password,
     role: 'admin',
   });
-  await admin.createUser({ name: 'E2E prober', email: proberEmail, password, role: 'user' });
+  const { client: prober } = await admin.createMember({
+    name: 'E2E prober',
+    email: proberEmail,
+    password,
+    role: 'user',
+  });
   const owner = admin.as(ownerEmail, password);
   const tenantId = await owner.createTenant(names.name('space'));
   const agent = await owner.registerAgentAsUser({
@@ -88,7 +93,7 @@ export async function otherTenantAndProber(
   fixtures.defer(`the other workspace's room ${room.name} (${room.id})`, () =>
     owner.deleteRoom(room.id)
   );
-  return { other: { tenantId, room, agent }, prober: admin.as(proberEmail, password) };
+  return { other: { tenantId, room, agent }, prober };
 }
 
 /** 0 for a read, 1 for a write, 2 for a delete; ties keep the snapshot's order. */

@@ -21,6 +21,8 @@ import {
   type RoomGraphData,
   type EcosystemGraphData,
   type PackageDetail,
+  type PackageDocument,
+  type PackageReference,
   type ReferenceDetail,
   type ReferenceTypeDetail,
   type ReferenceTypeInfo,
@@ -381,7 +383,7 @@ export function usePackageRooms(
 
 export function usePackageReferences(
   packageId: string | undefined,
-): UseQueryResult<ReferenceDetail[]> {
+): UseQueryResult<PackageReference[]> {
   const fetcher = useCallback(
     () => (packageId ? fetchPackageReferences(packageId) : Promise.resolve(null)),
     [packageId],
@@ -391,7 +393,7 @@ export function usePackageReferences(
 
 export function usePackageDocuments(
   packageId: string | undefined,
-): UseQueryResult<DocumentSummary[]> {
+): UseQueryResult<PackageDocument[]> {
   const fetcher = useCallback(
     () => (packageId ? fetchPackageDocuments(packageId) : Promise.resolve(null)),
     [packageId],

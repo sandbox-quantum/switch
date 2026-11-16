@@ -91,6 +91,8 @@ export interface AgentSummary {
   model_count: number;
   owner_id: string | null;
   owner_name: string | null;
+  // How it is set up on its owner's machine: null to anyone who may not
+  // manage it (`can_manage`), as `known_agent_options` is.
   oauth_client_id: string | null;
   created_at: string;
   parent_agent_id: string | null;
@@ -159,7 +161,8 @@ export interface AgentSessionDetail {
   lifecycle: string;
   state: string;
   last_seen_at: string;
-  // The agent controller running it, for a `controller` session; else null.
+  // The agent controller running it, for a `controller` session, named to
+  // whoever may manage the agent; else null.
   controller_id: string | null;
 }
 
@@ -1567,8 +1570,10 @@ export interface UserInfo {
 
 /** A user on the operator's list. */
 export interface ListedUser extends UserInfo {
-  // Deleting the account: never your own, nor another operator's.
+  // Deleting the account, or making an operator a regular account: never
+  // your own, nor the server's administrator account.
   can_delete: boolean;
+  can_demote: boolean;
 }
 
 export async function login(email: string, password: string): Promise<UserInfo> {
@@ -1858,12 +1863,15 @@ export interface OrganizationMember {
   // The account agents added with the shared registration token are owned
   // by: not a person, and never made an admin.
   service_account: boolean;
-  /** What you may do with them, as the server decides it: never on your own
-   * row; making them Org Admin not where the members come from account
-   * settings Switch cannot change; removing them as an Org Admin only. */
+  /** What you may do with them, as the server decides it: making them Org
+   * Admin not where the members come from account settings Switch cannot
+   * change; removing them as an Org Admin only; neither for the
+   * organization's only Org Admin, which the `_blocked_reason` says. */
   can_change_role: boolean;
+  change_role_blocked_reason: string | null;
   can_grant_org_admin: boolean;
   can_remove: boolean;
+  remove_blocked_reason: string | null;
 }
 
 export interface OrganizationAuditEvent {
@@ -2200,6 +2208,23 @@ export async function fetchOrganizationAuditEvents(
   );
 }
 
+/** An organization you're still a member of, though in none of its
+ * workspaces: someone removed from their last one is left in it. */
+export interface OrganizationWithoutWorkspace {
+  id: string;
+  name: string;
+}
+
+export async function fetchOrganizationsWithoutWorkspace(): Promise<
+  OrganizationWithoutWorkspace[]
+> {
+  return jsonRequest<OrganizationWithoutWorkspace[]>("/organizations/without-workspace", "GET");
+}
+
+export async function leaveOrganization(organizationId: string): Promise<void> {
+  await jsonRequest(`/organizations/${encodeURIComponent(organizationId)}/leave`, "POST");
+}
+
 /** Every workspace on the server; the platform operator only. */
 export async function fetchOperatorWorkspaces(): Promise<OperatorWorkspace[]> {
   return jsonRequest<OperatorWorkspace[]>("/operator/workspaces", "GET");
@@ -2448,8 +2473,26 @@ export async function revokeInvitation(
   );
 }
 
-export async function acceptInvitation(token: string): Promise<TenantMembership> {
-  return jsonRequest<TenantMembership>("/invitations/accept", "POST", { token });
+/** `already_member`: they were in the workspace already at the invitation's
+ * role or above, so nothing changed and the invitation wasn't spent. */
+export interface InvitationAcceptResult extends TenantMembership {
+  already_member: boolean;
+}
+
+export async function acceptInvitation(token: string): Promise<InvitationAcceptResult> {
+  return jsonRequest<InvitationAcceptResult>("/invitations/accept", "POST", { token });
+}
+
+/** What an invitation is to, and nothing else. */
+export interface InvitationPreview {
+  workspace_name: string;
+  organization_name: string | null;
+  role: TenantRole;
+}
+
+/** Refused exactly as accepting it now would be; changes nothing. */
+export async function previewInvitation(token: string): Promise<InvitationPreview> {
+  return jsonRequest<InvitationPreview>("/invitations/preview", "POST", { token });
 }
 
 // Unauthenticated: tells the login page which methods to offer.
@@ -2527,6 +2570,12 @@ export async function endUserSessions(userId: string): Promise<void> {
 // account and the caller's own.
 export async function deleteUser(userId: string): Promise<void> {
   await jsonRequest(`/users/${encodeURIComponent(userId)}`, "DELETE");
+}
+
+// Deployment operator only. Makes another platform operator a regular
+// account, keeping their workspaces and roles in them.
+export async function demoteUser(userId: string): Promise<ListedUser> {
+  return jsonRequest<ListedUser>(`/users/${encodeURIComponent(userId)}/demote`, "POST");
 }
 
 // ── Resources (References & Documents) ─────────────────────────────────────
@@ -2610,10 +2659,19 @@ export interface ReferenceDetail {
   // it, and handing it to someone else.
   can_edit: boolean;
   can_manage: boolean;
-  // Whether the viewer may open its page. A package's or a room's list names
-  // a private item to everyone who may read the package or room.
+  // Whether what is in it came with it, and so whether its page opens for
+  // the viewer. Always true here: only a package's list withholds anything
+  // (`PackageReference`).
   can_read: boolean;
 }
+
+/** A reference as a package lists it. Someone else's private item in a
+ * package, which its owner cannot share, comes with `can_read` false and
+ * what is in it null. */
+export type PackageReference = Omit<ReferenceDetail, "instructions" | "value"> & {
+  instructions: string | null;
+  value: Record<string, unknown> | null;
+};
 
 export interface ReferenceCreateInput {
   read_visibility: "public" | "private";
@@ -2667,6 +2725,11 @@ export interface DocumentSummary {
 export interface DocumentDetail extends DocumentSummary {
   content: string;
 }
+
+/** A document as a package lists it, withheld as `PackageReference` is. */
+export type PackageDocument = Omit<DocumentSummary, "instructions"> & {
+  instructions: string | null;
+};
 
 // Whether the viewer may remove a document from a room it is in: delete it if
 // it is room-scoped (its creator, the room's owner, a workspace admin), unlink
@@ -3120,22 +3183,22 @@ export async function loadPackageRooms(id: string): Promise<ResourceRoom[]> {
 
 export async function fetchPackageReferences(
   id: string,
-): Promise<ReferenceDetail[] | null> {
-  return fetchJson<ReferenceDetail[]>(`/packages/${id}/references`);
+): Promise<PackageReference[] | null> {
+  return fetchJson<PackageReference[]>(`/packages/${id}/references`);
 }
 
 export async function fetchPackageDocuments(
   id: string,
-): Promise<DocumentSummary[] | null> {
-  return fetchJson<DocumentSummary[]>(`/packages/${id}/documents`);
+): Promise<PackageDocument[] | null> {
+  return fetchJson<PackageDocument[]>(`/packages/${id}/documents`);
 }
 
-export async function loadPackageReferences(id: string): Promise<ReferenceDetail[]> {
-  return jsonRequest<ReferenceDetail[]>(`/packages/${id}/references`, "GET");
+export async function loadPackageReferences(id: string): Promise<PackageReference[]> {
+  return jsonRequest<PackageReference[]>(`/packages/${id}/references`, "GET");
 }
 
-export async function loadPackageDocuments(id: string): Promise<DocumentSummary[]> {
-  return jsonRequest<DocumentSummary[]>(`/packages/${id}/documents`, "GET");
+export async function loadPackageDocuments(id: string): Promise<PackageDocument[]> {
+  return jsonRequest<PackageDocument[]>(`/packages/${id}/documents`, "GET");
 }
 
 export async function addReferenceToPackage(

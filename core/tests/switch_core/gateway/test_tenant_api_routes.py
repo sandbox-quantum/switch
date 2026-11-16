@@ -2683,6 +2683,8 @@ class TestWorkspaceCountsRoute:
     async def test_counts_each_workspace_of_a_member_on_its_own(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
+        """Agents as the caller's agent list holds them: every one where they
+        administer the workspace, else only their own."""
         await _make_tenant(session_factory, TENANT_A)
         await _make_tenant(session_factory, TENANT_B)
         member_id = await _make_member(
@@ -2700,6 +2702,12 @@ class TestWorkspaceCountsRoute:
             await _make_agent_with_key(
                 session_factory, tenant_id=TENANT_A, owner_id=other_id
             )
+            await _make_agent_with_key(
+                session_factory, tenant_id=TENANT_B, owner_id=other_id
+            )
+        await _make_agent_with_key(
+            session_factory, tenant_id=TENANT_A, owner_id=member_id
+        )
         await _make_agent_with_key(
             session_factory, tenant_id=TENANT_B, owner_id=member_id
         )
@@ -2710,8 +2718,8 @@ class TestWorkspaceCountsRoute:
 
         assert response.status_code == 200, response.text
         assert sorted(response.json(), key=lambda row: row["id"]) == [
-            {"id": TENANT_A, "users": 2, "agents": 2},
-            {"id": TENANT_B, "users": 1, "agents": 1},
+            {"id": TENANT_A, "users": 2, "agents": 1},
+            {"id": TENANT_B, "users": 1, "agents": 3},
         ]
 
     async def test_counts_an_org_admin_once_whether_or_not_they_are_a_member(
@@ -3606,6 +3614,45 @@ class TestRetentionRoutes:
         assert written.json()["detail"] == (
             "Only a workspace admin may set when messages are deleted"
         )
+
+    async def test_an_operator_without_admin_membership_cannot_clear_it(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        admin_id, admin = await self._member(
+            session_factory, "retention-clear-admin", "admin"
+        )
+        operator_id = await _make_member(
+            session_factory,
+            name="retention-clear-operator",
+            tenant_id=TENANT_A,
+            role="member",
+            user_role="admin",
+        )
+        operator = create_jwt(
+            operator_id,
+            "retention-clear-operator@example.invalid",
+            "admin",
+            _KEYRING,
+            TENANT_A,
+            session_version=0,
+            auth_time=datetime.now(UTC),
+        )
+        async with _client(_app(session_factory), admin) as client:
+            set_by_admin = await client.put(
+                f"/tenants/{TENANT_A}/retention", json={"message_retention_days": 30}
+            )
+
+        async with _client(_app(session_factory), operator) as client:
+            cleared = await client.delete(f"/tenants/{TENANT_A}/retention")
+            read = await client.get(f"/tenants/{TENANT_A}/retention")
+
+        assert set_by_admin.status_code == 200
+        assert cleared.status_code == 403
+        assert cleared.json()["detail"] == (
+            "Only a workspace admin may change when messages are deleted"
+        )
+        assert read.json()["message_retention_days"] == 30
+        assert read.json()["updated_by_user_id"] == admin_id
 
     @pytest.mark.parametrize("days", [0, 3651])
     async def test_a_window_out_of_range_is_refused(

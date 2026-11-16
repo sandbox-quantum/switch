@@ -19,6 +19,7 @@ import { type Me, changeMyName, fetchMe } from "../../data/api";
 import ChangePasswordDialog from "../../layout/ChangePasswordDialog";
 import { tokenVar } from "../../theme/tokens";
 import DeleteAccountDialog from "./DeleteAccountDialog";
+import OrganizationsWithoutWorkspace from "./OrganizationsWithoutWorkspace";
 
 // What `PATCH /auth/me` accepts.
 const NAME_MAX = 255;
@@ -113,6 +114,7 @@ function AccountSections({ me, onRenamed }: { me: Me; onRenamed: (me: Me) => voi
       </Stack>
 
       <Stack spacing={2} sx={{ mt: 4 }}>
+        <OrganizationsWithoutWorkspace />
         {/* An account made through single sign-on has no password here. */}
         {me.has_password && (
           <AccountCard

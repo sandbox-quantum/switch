@@ -17,6 +17,7 @@ function user(name: string, role: "user" | "admin"): ListedUser {
     role,
     created_at: "2026-10-01T00:00:00Z",
     can_delete: role === "user",
+    can_demote: false,
   };
 }
 

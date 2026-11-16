@@ -1,6 +1,7 @@
 import AddCircleOutline from "@mui/icons-material/AddCircleOutline";
 import DeleteOutline from "@mui/icons-material/DeleteOutline";
 import LogoutOutlined from "@mui/icons-material/LogoutOutlined";
+import PersonOutline from "@mui/icons-material/PersonOutline";
 import {
   Alert,
   Box,
@@ -19,7 +20,7 @@ import DataTable, {
   TableEmptyState,
 } from "../../components/DataTable";
 import RowActionsMenu, { type RowAction } from "../../components/RowActionsMenu";
-import { type ListedUser, endUserSessions } from "../../data/api";
+import { type ListedUser, demoteUser, endUserSessions } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
 import { useUsers } from "../../data/hooks";
 import { formatDate } from "../../theme/format";
@@ -52,14 +53,28 @@ export default function UsersPage() {
   // Kept after the dialog closes, so its text does not empty as it fades.
   const [signingOut, setSigningOut] = useState<ListedUser | null>(null);
   const [signOutOpen, setSignOutOpen] = useState(false);
+  const [demoting, setDemoting] = useState<ListedUser | null>(null);
+  const [demoteOpen, setDemoteOpen] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
 
   // Your own sessions end from the account menu, which signs you out here
-  // too. The server refuses deleting administrator accounts and your own,
-  // and says which rows it would refuse; you delete your own account from
-  // your account settings.
+  // too. The server refuses deleting or demoting the server's administrator
+  // account and your own, and says which rows it would refuse; you delete
+  // your own account from your account settings.
   const actionsFor = useCallback(
     (row: ListedUser): RowAction[] => [
+      ...(row.can_demote
+        ? [
+            {
+              label: "Make regular account",
+              icon: <PersonOutline fontSize="small" />,
+              onClick: () => {
+                setDemoting(row);
+                setDemoteOpen(true);
+              },
+            },
+          ]
+        : []),
       ...(row.id === selfId
         ? []
         : [
@@ -200,6 +215,28 @@ export default function UsersPage() {
           setNotice(`Signed ${signingOut.name} out of all devices.`);
         }}
         onClose={() => setSignOutOpen(false)}
+      />
+      <ConfirmDialog
+        open={demoteOpen}
+        title={`Make ${demoting?.name ?? ""} a regular account?`}
+        description={
+          demoting && (
+            <>
+              {demoting.name} ({demoting.email}) stops being a platform operator: no more Platform
+              pages, and no entering workspaces they aren't in. They're signed out everywhere.
+              Their own workspaces and roles in them stay as they are.
+            </>
+          )
+        }
+        confirmLabel="Make regular account"
+        tone="plain"
+        onConfirm={async () => {
+          if (demoting === null) return;
+          await demoteUser(demoting.id);
+          setNotice(`${demoting.name} is now a regular account.`);
+          refetch();
+        }}
+        onClose={() => setDemoteOpen(false)}
       />
       <Snackbar
         open={notice !== null}

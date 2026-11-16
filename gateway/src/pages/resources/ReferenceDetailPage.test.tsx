@@ -171,13 +171,23 @@ describe("ReferenceDetailPage", () => {
     expect(await screen.findByDisplayValue("Roadmap")).toBeTruthy();
   });
 
-  it("offers a workspace admin each private package it is in as a link, as they can open it", async () => {
+  it("names every package it is in to a workspace admin, whose package list holds them all", async () => {
     signedInAs({ admin: true });
-    answerFetch({ "GET /references/r1": [200, REF], ...PAGE_READS });
+    answerFetch({
+      "GET /references/r1": [200, REF],
+      ...PAGE_READS,
+      "GET /packages": [
+        200,
+        [
+          { id: "p1", name: "Onboarding", description: "" },
+          { id: "p-hidden", name: "Grace's kit", description: "" },
+        ],
+      ],
+    });
     show();
 
     expect(await screen.findByText("Onboarding")).toBeTruthy();
-    expect(screen.getByText("Someone's private package")).toBeTruthy();
+    expect(screen.getByText("Grace's kit")).toBeTruthy();
     expect(screen.queryByText(/you can't open/)).toBeNull();
   });
 
