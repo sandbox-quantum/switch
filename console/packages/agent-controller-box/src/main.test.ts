@@ -34,9 +34,22 @@ vi.mock('./secrets', async (importOriginal) => {
 let dir: string;
 let bundle: string;
 let stderr: string[];
+/** The process-wide listeners there were before the test, so the ones `run` adds can be taken off after it. */
+let listenersBefore: Map<string, unknown[]>;
+/** What `run` hooks onto the process: its stop signals, and the IPC channel's messages. */
+const PROCESS_EVENTS = ['message', 'SIGINT', 'SIGTERM'] as const;
+/** The process as a plain emitter, for listener bookkeeping across event names. */
+const emitter: NodeJS.EventEmitter = process;
 
 beforeEach(() => {
   osKeyStoresAsked.count = 0;
+  // `run` unrefs the IPC channel it is started with, so a controller Console
+  // starts can exit on its own. Under vitest that channel is the test worker's
+  // own: unreffed, the worker exits as soon as it is idle, part-way through
+  // this file ("Worker exited unexpectedly with exit code 0"). So it is kept.
+  if (process.channel)
+    vi.spyOn(process.channel, 'unref').mockImplementation(() => process.channel!);
+  listenersBefore = new Map(PROCESS_EVENTS.map((event) => [event, emitter.listeners(event)]));
   dir = mkdtempSync(join(tmpdir(), 'controller-main-'));
   bundle = join(dir, 'shared-host.mjs');
   writeFileSync(bundle, '');
@@ -50,6 +63,12 @@ beforeEach(() => {
 
 afterEach(() => {
   expect(osKeyStoresAsked.count, 'a test reached an OS keychain or keyring').toBe(0);
+  for (const event of PROCESS_EVENTS) {
+    const before = listenersBefore.get(event) ?? [];
+    for (const listener of emitter.listeners(event))
+      if (!before.includes(listener))
+        emitter.removeListener(event, listener as (...args: unknown[]) => void);
+  }
   vi.restoreAllMocks();
   rmSync(dir, { recursive: true, force: true });
 });
