@@ -178,23 +178,47 @@ async def test_the_operators_own_account_is_refused(
     assert event.details is not None and "your own account" in event.details["reason"]
 
 
-async def test_another_administrator_account_is_refused_and_logged(
+async def test_another_platform_operator_is_deleted(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
+    """Only the account at the configured admin address is the server's
+    administrator account; another operator's is deleted like anyone's."""
     operator, _ = await _people(session_factory)
-    other_admin = await _make_member(
+    other_operator = await _make_member(
         session_factory,
-        name="second-admin",
+        name="second-operator",
         tenant_id=TENANT_ZERO_ID,
         role="member",
         user_role="admin",
     )
     async with _client(_app(session_factory), operator, ADMIN_EMAIL) as client:
-        response = await client.delete(f"/users/{other_admin}")
+        response = await client.delete(f"/users/{other_operator}")
+    assert response.status_code == 200, response.text
+    async with session_factory() as session:
+        assert await session.get(User, other_operator) is None
+    [event] = await _server_events(session_factory)
+    assert event.action == "user.deleted"
+
+
+async def test_the_configured_administrator_account_is_refused_and_logged(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    configured, _ = await _people(session_factory)
+    other_operator = await _make_member(
+        session_factory,
+        name="second-operator",
+        tenant_id=TENANT_ZERO_ID,
+        role="member",
+        user_role="admin",
+    )
+    async with _client(
+        _app(session_factory), other_operator, "second-operator@example.invalid"
+    ) as client:
+        response = await client.delete(f"/users/{configured}")
     assert response.status_code == 409, response.text
     assert "administrator account" in response.json()["detail"]
     async with session_factory() as session:
-        assert await session.get(User, other_admin) is not None
+        assert await session.get(User, configured) is not None
     [event] = await _server_events(session_factory)
     assert event.action == "user.deletion_refused"
     assert event.details is not None and event.details["outcome"] == "refused"

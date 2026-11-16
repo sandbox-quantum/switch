@@ -1601,8 +1601,10 @@ export interface UserInfo {
 
 /** A user on the operator's list. */
 export interface ListedUser extends UserInfo {
-  // Deleting the account: never your own, nor another operator's.
+  // Deleting the account, or making an operator a regular account: never
+  // your own, nor the server's administrator account.
   can_delete: boolean;
+  can_demote: boolean;
 }
 
 export async function login(email: string, password: string): Promise<UserInfo> {
@@ -2561,6 +2563,12 @@ export async function endUserSessions(userId: string): Promise<void> {
 // account and the caller's own.
 export async function deleteUser(userId: string): Promise<void> {
   await jsonRequest(`/users/${encodeURIComponent(userId)}`, "DELETE");
+}
+
+// Deployment operator only. Makes another platform operator a regular
+// account, keeping their workspaces and roles in them.
+export async function demoteUser(userId: string): Promise<ListedUser> {
+  return jsonRequest<ListedUser>(`/users/${encodeURIComponent(userId)}/demote`, "POST");
 }
 
 // ── Resources (References & Documents) ─────────────────────────────────────

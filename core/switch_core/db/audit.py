@@ -139,6 +139,10 @@ class ServerAuditAction(StrEnum):
     CONNECTOR_APP_SAVED = "connector_app.saved"
     CONNECTOR_APP_IMPORTED = "connector_app.imported"
     CONNECTOR_APP_REMOVED = "connector_app.removed"
+    # The operator added an account from Platform › Users, in no workspace.
+    USER_CREATED = "user.created"
+    # The operator made another operator a regular account.
+    USER_DEMOTED = "user.demoted"
     USER_DELETED = "user.deleted"
     USER_DELETION_REFUSED = "user.deletion_refused"
     USER_DELETION_FAILED = "user.deletion_failed"

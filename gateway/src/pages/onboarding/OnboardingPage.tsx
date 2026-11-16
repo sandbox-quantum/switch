@@ -1,5 +1,17 @@
-import { Alert, Button, Divider, Stack, TextField, Typography } from "@mui/material";
-import { useState } from "react";
+import {
+  Alert,
+  Button,
+  CircularProgress,
+  Divider,
+  List,
+  ListItemButton,
+  ListItemText,
+  Stack,
+  TextField,
+  Typography,
+} from "@mui/material";
+import { useEffect, useState } from "react";
+import { type OperatorWorkspace, fetchOperatorWorkspaces } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
 import { inviteTokenFrom, storePendingInvite } from "../../data/sessionState";
 import CenteredCard from "./CenteredCard";
@@ -35,6 +47,8 @@ export default function OnboardingPage() {
       }
     >
       <Stack spacing={3}>
+        {session?.user.is_operator && <OperatorWorkspaces />}
+        {session?.user.is_operator && <Divider>or</Divider>}
         {canCreate && <CreateWorkspaceForm />}
         {canCreate && <Divider>or</Divider>}
         <Stack component="form" onSubmit={joinWithInvite} spacing={2}>
@@ -55,5 +69,61 @@ export default function OnboardingPage() {
         </Stack>
       </Stack>
     </CenteredCard>
+  );
+}
+
+/** A platform operator in no workspace of their own, as one the operator adds
+ * starts, opens any workspace on the operator flag, which is how they reach
+ * the Platform pages. */
+function OperatorWorkspaces() {
+  const { switchTo } = useAuth();
+  const [workspaces, setWorkspaces] = useState<OperatorWorkspace[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [pending, setPending] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetchOperatorWorkspaces().then(
+      (found) => setWorkspaces(found.filter((w) => w.archived_at === null)),
+      (err: unknown) =>
+        setError(err instanceof Error ? err.message : "Could not load the workspaces"),
+    );
+  }, []);
+
+  const open = async (tenantId: string) => {
+    setPending(tenantId);
+    setError(null);
+    try {
+      await switchTo(tenantId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not open that workspace");
+      setPending(null);
+    }
+  };
+
+  return (
+    <Stack spacing={1}>
+      <Typography variant="subtitle2">Open a workspace as the platform operator</Typography>
+      {error && <Alert severity="error">{error}</Alert>}
+      {workspaces === null ? (
+        error === null && <CircularProgress size={20} />
+      ) : workspaces.length === 0 ? (
+        <Typography variant="body2" color="text.secondary">
+          There are no workspaces on this server yet.
+        </Typography>
+      ) : (
+        <List disablePadding dense>
+          {workspaces.map((workspace) => (
+            <ListItemButton
+              key={workspace.id}
+              onClick={() => open(workspace.id)}
+              disabled={pending !== null}
+              sx={{ borderRadius: 1 }}
+            >
+              <ListItemText primary={workspace.name} secondary={workspace.organization_name} />
+            </ListItemButton>
+          ))}
+        </List>
+      )}
+    </Stack>
   );
 }

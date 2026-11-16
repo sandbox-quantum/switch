@@ -348,10 +348,23 @@ class Workspace:
 
 
 def is_server_administrator(user: User, admin_email: str) -> bool:
-    """The server's administrator account: an operator, or the account at the
-    configured admin e-mail, which the server recreates every time it starts,
-    so it is never deleted."""
-    return user.role == "admin" or user.email.lower() == admin_email.lower()
+    """The server's administrator account: the one at the configured admin
+    e-mail, which the server recreates every time it starts, so it is never
+    deleted or made a regular account. Any other platform operator may be
+    either, by another operator."""
+    return user.email.lower() == admin_email.lower()
+
+
+async def operators_besides(session: AsyncSession, user_id: str) -> int:
+    """How many platform operator accounts there are other than `user_id`.
+    `users` carries no tenant, so any session reads it."""
+    return (
+        await session.scalar(
+            select(func.count())
+            .select_from(User)
+            .where(User.role == "admin", User.id != user_id)
+        )
+    ) or 0
 
 
 @dataclass
@@ -418,6 +431,14 @@ class AccountDeletion:
                 "This is Switch's administrator account, which can't be "
                 "deleted. Switch recreates it every time it starts."
             )
+        if user.role == "admin":
+            async with self.session_factory() as session:
+                others = await operators_besides(session, user.id)
+            if others == 0:
+                return (
+                    "This is the server's only platform operator account. Add "
+                    "another platform operator first."
+                )
         for workspace in workspaces:
             reason = await self._workspace_refusal(user, workspace)
             if reason is not None:
