@@ -1474,9 +1474,13 @@ class CollaborationCore:
             )
             content = f"{content}\n{notes}" if content.strip() else notes
 
+        # The room's own workspace, whose organization's policy applies: a
+        # channel's first message runs in the bridge's until its room exists.
+        tenant_id = await self._room_tenant(room_id)
         if not msg.attachments:
             check = await check_message(
                 self._trust_client,
+                tenant_id=tenant_id,
                 role="user",
                 content=content,
                 room_id=room_id,
@@ -1565,15 +1569,20 @@ class CollaborationCore:
         # leaves nothing of the message in the room.
         caption_check: TrustCheckResult | None = None
         files_check = AttachmentsVerdict()
-        if await trust_is_active(self._trust_client):
+        if await trust_is_active(self._trust_client, tenant_id):
             files = [(a.data, a.filename, a.mimetype) for a in msg.attachments]
             files_check_task = check_attachments(
-                self._trust_client, role="user", files=files, room_id=room_id
+                self._trust_client,
+                tenant_id=tenant_id,
+                role="user",
+                files=files,
+                room_id=room_id,
             )
             if content.strip():
                 caption_check, files_check = await asyncio.gather(
                     check_message(
                         self._trust_client,
+                        tenant_id=tenant_id,
                         role="user",
                         content=content,
                         room_id=room_id,

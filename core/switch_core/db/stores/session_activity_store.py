@@ -305,6 +305,7 @@ class AgentSessionActivityStore:
                 "room_id",
                 "thread_id",
                 "message_id",
+                "delivery",
                 "occurred_at",
             )
         }

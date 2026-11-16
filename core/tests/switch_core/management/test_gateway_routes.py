@@ -140,7 +140,7 @@ class TestOwnerIsolation:
             return found
 
         routes = [r for r in gateway_router.routes if hasattr(r, "dependant")]
-        assert len(routes) == 16
+        assert len(routes) == 17
         for route in routes:
             assert get_current_user in calls(route.dependant), route.path  # type: ignore[attr-defined]
 
@@ -303,6 +303,41 @@ class TestManagedAgents:
         assert agent.metadata_["known_agent_type"] == "codex"
         assert agent.metadata_["known_agent_options"]["auto_session"] is True
         assert agent.metadata_["known_agent_options"]["repo_dir"] == "/srv/example"
+
+    async def test_an_additional_provider_needs_its_flag_for_a_new_agent(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        offered = build_harness(session_factory)
+        owner = await add_member(session_factory, "ada")
+        async with offered.client() as client:
+            existing = await create_managed_agent(
+                client,
+                owner,
+                name="gander",
+                controller_id=None,
+                definition_body=definition("goose"),
+            )
+        assert existing.status_code == 201, existing.text
+
+        withheld = build_harness(session_factory, additional_agent_providers=False)
+        async with withheld.client() as client:
+            refused = await create_managed_agent(
+                client,
+                owner,
+                name="goose-two",
+                controller_id=None,
+                definition_body=definition("goose"),
+            )
+            edited = await client.patch(
+                f"/gateway/management/agents/{existing.json()['agent_id']}",
+                json={"definition": definition("goose", instructions="Honk.")},
+                cookies=cookies_for(owner),
+            )
+        assert refused.status_code == 422
+        assert refused.json()["error"]["code"] == "validation_error"
+        assert "additional_agent_providers" in refused.json()["error"]["message"]
+        assert edited.status_code == 200, edited.text
+        assert edited.json()["definition"]["instructions"] == "Honk."
 
     async def test_create_gives_the_generated_icon_unless_one_is_chosen(
         self, harness: Harness
@@ -823,7 +858,7 @@ class TestTheWorkingDirectory:
 
 
 class TestRevocation:
-    async def test_revoking_nudges_keeps_definitions_and_refuses_the_token(
+    async def test_revoking_nudges_takes_its_agents_off_and_refuses_the_token(
         self, harness: Harness
     ) -> None:
         owner = await add_member(harness.session_factory, "ada")
@@ -859,11 +894,15 @@ class TestRevocation:
         assert [event for event, _ in subscription.drain()] == [CREDENTIAL_REVOKED]
         assert listed.json()[0]["state"] == "revoked"
         assert listed.json()[0]["revoked_at"] is not None
+        # The agent stays managed, as it was, and placed nowhere until its
+        # owner places it again; the workspace its device made for it goes.
         [agent] = agents.json()
         assert agent["agent_id"] == created.json()["agent_id"]
-        assert agent["controller_state"] == "revoked"
-        assert agent["controller_name"] == listed.json()[0]["name"]
-        assert agent["controller_kind"] == listed.json()[0]["kind"]
+        assert agent["controller_id"] is None
+        assert agent["controller_state"] is None
+        assert agent["desired_state"] == created.json()["desired_state"]
+        assert created.json()["definition"]["directory"] == f"{WORKSPACES_DIR}/reviewer"
+        assert agent["definition"]["directory"] is None
         assert refused.status_code == 401
         assert refused.json()["error"]["code"] == "controller_revoked"
 

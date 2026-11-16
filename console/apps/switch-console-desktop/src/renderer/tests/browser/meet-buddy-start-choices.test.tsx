@@ -1,6 +1,6 @@
 /**
  * How Meet switch-buddy offers to start the buddy: with a provider already
- * signed in, those and another provider, no Skip; with none, set one up or
+ * signed in, a tile for each and a link to the others, no Skip; with none, set one up or
  * skip.
  */
 import { act } from 'react';
@@ -57,9 +57,12 @@ describe('Meet switch-buddy start choices', () => {
       starting: null,
       ...on,
     });
-    expect(container!.textContent).toContain('How’d you like to power switch-buddy?');
-    expect(container!.textContent).toContain('Already signed in:');
-    expect(buttons()).toEqual(['Claude Code', 'Codex', 'Use other AI providers']);
+    expect(container!.textContent).toContain('Pick an AI provider to get started');
+    expect(buttons()).toEqual([
+      'Claude CodeSigned in locally',
+      'CodexSigned in locally',
+      'use other providers',
+    ]);
     expect(
       [...container!.querySelectorAll('[data-provider-icon]')].map((icon) =>
         icon.getAttribute('data-provider-icon')
@@ -72,8 +75,8 @@ describe('Meet switch-buddy start choices', () => {
   it('offers to set one up, or skip, when none is signed in', async () => {
     const on = handlers();
     await render({ checking: false, ready: [], starting: null, ...on });
-    expect(buttons()).toEqual(['Skip', 'Set up AI provider']);
-    await act(async () => container!.querySelectorAll('button')[0]!.click());
+    expect(buttons()).toEqual(['Set up AI provider', 'Skip']);
+    await act(async () => container!.querySelectorAll('button')[1]!.click());
     expect(on.onSkip).toHaveBeenCalled();
   });
 

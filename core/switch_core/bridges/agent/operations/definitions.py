@@ -61,6 +61,7 @@ from switch_core.db.models import CollaborationBridge, User, require_tenant_id
 from switch_core.db.session_scope import shared_tenant_session
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.feature_flags import AGENT_MANAGEMENT, SWITCH_BUDDY
+from switch_core.providers.registry import offered_provider_ids
 from switch_core.rooms_yaml import GroupSpec, RoomReader, template_json_schema
 from switch_core.template_guide import TEMPLATE_GUIDE
 from switch_core.template_installs import InstallSource, record_install, source_of
@@ -72,6 +73,7 @@ from switch_core.template_runs import (
     NewAgentPlan,
     Problem,
     TemplateAgents,
+    opening_rooms_as_made,
     pending_addressing,
     room_ids_of,
 )
@@ -1595,10 +1597,12 @@ async def list_bridges() -> list[dict[str, Any]]:
         (at most one).
 
         `can_create_channels` is false when Switch cannot make a channel on
-        that bridge — either the platform has no such call (Telegram) or an
-        operator has withheld it. Creating a room on one of those fails, so
-        offer an existing channel instead: the chat is made on the platform,
-        the Switch app is added to it, and the room is adopted from that.
+        that bridge — the platform has no such call (Telegram), an operator
+        has withheld it, or a Microsoft Teams connection has no default team
+        yet, which it gets when Switch is added to a team. Creating a room on
+        one of those fails, so offer an existing channel instead: the chat is
+        made on the platform, the Switch app is added to it, and the room is
+        adopted from that.
 
         `can_create_private_channels` says whether `channel_type`
         "channel_private" can be asked for there. Where
@@ -2053,6 +2057,7 @@ async def _provision_as_agent(
             if creator is None
             else await creator.create(tenant_id, owner.id, checked)
         )
+        room_made = opening_rooms_as_made(creator, tenant_id, created, room_addressing)
         try:
             if isinstance(parsed.spec, GroupSpec):
                 group_result = await rooms_yaml.provision_group(
@@ -2062,6 +2067,7 @@ async def _provision_as_agent(
                     creator_name=builtins["$creator"],
                     origin=origin,
                     template_name=template_name,
+                    on_room_made=room_made,
                 )
                 result = group_result.model_dump()
             else:
@@ -2073,6 +2079,7 @@ async def _provision_as_agent(
                     creator_name=builtins["$creator"],
                     origin=origin,
                     template_name=template_name,
+                    on_room_made=room_made,
                 )
                 result = room_result.model_dump()
             if creator is not None and room_addressing:
@@ -2326,6 +2333,7 @@ async def _run_document(
         inputs or {},
         builtins=builtins,
         machines=await _owners_machines(),
+        providers=offered_provider_ids(protocol.config.feature_flags),
     )
     result = await _provision_as_agent(
         plan.document,
@@ -2610,6 +2618,7 @@ async def update_agent_detail(
     display_name: str | None = None,
     icon_url: str | None = None,
     addressing: str | None = None,
+    mid_turn_delivery: str | None = None,
     provider: str | None = None,
     model: str | None = None,
     advanced_config: dict[str, Any] | None = None,
@@ -2646,6 +2655,11 @@ async def update_agent_detail(
         addressing: Who can address it: "owner_only" (your owner alone, not
             even their other agents, you included), "owner_and_owner_agents"
             (your owner and any agent they own) or "anyone".
+        mid_turn_delivery: What a message sent while it is working does:
+            "steer" (the default) hands it to the running turn, whoever sent
+            it and from wherever; "queue" always runs it as a turn of its own
+            once the running one ends. Providers that cannot steer always
+            queue.
 
     A managed agent (one `list_managed_agents` shows) only, and only with the
     "can manage agents" capability:
@@ -2696,6 +2710,7 @@ async def update_agent_detail(
         display_name=display_name,
         icon_url=icon_url,
         addressing=addressing,
+        mid_turn_delivery=mid_turn_delivery,
         third_party_avatars=protocol.config.third_party_avatars_enabled,
     )
     changes = ManagedAgentChanges(

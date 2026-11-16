@@ -32,6 +32,7 @@ from switch_core.db.models import (
     ClientRoom,
     ExternalUser,
     ExternalUserClaim,
+    Message,
     Room,
     RoomAdmin,
     RoomGroup,
@@ -354,6 +355,19 @@ class RoomStore:
         result = await session.execute(stmt.limit(limit))
         return [row[0] for row in result.all()]
 
+    async def count(self, session: AsyncSession) -> int:
+        """How many rooms the bound tenant has that are not archived, as the
+        rooms list shows them."""
+        return (
+            await session.scalar(
+                select(sa_func.count())
+                .select_from(Room)
+                .where(
+                    Room.tenant_id == require_tenant_id(), Room.archived_at.is_(None)
+                )
+            )
+        ) or 0
+
     async def get_all(
         self, session: AsyncSession, *, include_archived: bool = False
     ) -> list[Room]:
@@ -455,6 +469,27 @@ class RoomStore:
             select(Room.id).where(Room.id.in_(room_ids), involves(user_id))
         )
         return set(result.scalars().all())
+
+    async def last_message_at(
+        self, session: AsyncSession, room_ids: Collection[str]
+    ) -> dict[str, datetime]:
+        """When each of `room_ids` last had a message, from any platform; a
+        room with none is left out. One newest-row lookup per room on
+        `ix_messages_room_sent_at`, not a scan of its history."""
+        if not room_ids:
+            return {}
+        newest = (
+            select(Message.sent_at)
+            .where(Message.room_id == Room.id, Message.event_type == "m.room.message")
+            .order_by(Message.sent_at.desc())
+            .limit(1)
+            .correlate(Room)
+            .scalar_subquery()
+        )
+        result = await session.execute(
+            select(Room.id, newest).where(Room.id.in_(room_ids))
+        )
+        return {room_id: at for room_id, at in result.all() if at is not None}
 
     async def admin_room_ids(
         self, session: AsyncSession, user_id: str, room_ids: Collection[str]

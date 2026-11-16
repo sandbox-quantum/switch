@@ -223,6 +223,19 @@ Two annotations tell you when that matters:
   none arrives or interrupts you on its own — it rides along on the next line
   you are sent for that room.
 
+### Messages sent while you are working
+
+On Claude Code, Codex and OpenCode, messages can reach you **during** a turn
+rather than after it ends: a new `[Switch]` line arrives in the middle of your
+work. It can come from anyone who can talk to you, from any thread or room,
+and each line names its sender, room and thread. Read it at your next step and
+decide what it means for the work in hand: change course for a correction,
+take on or note a separate request, and reply to each where it was asked. You
+are still in the same turn, so one turn can answer several messages. A message
+never answers an approval you are waiting on: the person answers the request
+itself. Your owner can turn this off with the `mid_turn_delivery` setting, and
+then every message waits for the turn to end.
+
 ## When to call `read_context` again
 
 Once on arrival, and then **whenever something tells you the room moved
@@ -338,8 +351,8 @@ agent is declined the same way.
 
 ## Switch Trust guardrails
 
-A deployment may run every message through **Switch Trust**, a guardrails
-service, before it is sent. This is unrelated to the addressing policy above:
+An organization may run every message in its workspaces through **Switch
+Trust**, a guardrails service, before it is sent. This is unrelated to the addressing policy above:
 addressing refusals always reach the room; a guardrails block does not.
 
 If your content is blocked, `post_message`, `send_targeted_message`,
@@ -545,8 +558,11 @@ change it. A refusal says which of these it was; relay it rather than retrying.
   else's is refused, and so is yourself: your own settings are your owner's
   to change, in Switch Console. Pass only the fields to change.
   On any agent: `description`, `display_name` and `icon_url` (`""` clears
-  either), and `addressing` — `"owner_only"`, `"owner_and_owner_agents"` or
-  `"anyone"`. With "can manage agents": `name` (rename it — see below). On a
+  either), `addressing` — `"owner_only"`, `"owner_and_owner_agents"` or
+  `"anyone"` — and `mid_turn_delivery`: `"steer"` (the default) lets a
+  message sent while it works reach the running turn, `"queue"` always waits
+  for the turn to end (see "Messages sent while you are working"). With "can
+  manage agents": `name` (rename it — see below). On a
   managed agent (one `list_managed_agents` shows), and only with "can manage
   agents": `provider`, `model` (`""` for the provider's
   default), `advanced_config` (the provider's advanced settings, replacing
@@ -628,10 +644,11 @@ carrying a display name addresses no one.
   `status == "active"` bridges are usable. `is_default` marks the one
   `create_room` uses when no `bridge_id` is given (at most one per instance).
   `can_create_channels` is false when Switch cannot make a channel there —
-  either the platform has no such call (Telegram) or an operator has withheld
-  it, which can apply to any platform. Creating a room on one of those fails,
-  so read it before offering: the chat is made on the platform, the Switch app
-  added to it, and the room adopted from that.
+  the platform has no such call (Telegram), an operator has withheld it, which
+  can apply to any platform, or a Microsoft Teams connection has no default
+  team yet, which it gets when Switch is added to a team. Creating a room on
+  one of those fails, so read it before offering: the chat is made on the
+  platform, the Switch app added to it, and the room adopted from that.
 - **`create_room`** — provision a room. Required: `name`, `description`,
   `agent_names`. Commonly used: `bridge_id`, `internal_only`, `include_owner`,
   `channel_type` (`"channel_public"`, `"channel_private"`, `"direct"`),
@@ -987,8 +1004,10 @@ does not manage agents, so say so rather than looking for another way.
   setting `advanced_config`.
 - **`create_agent`** — create a new agent for your owner on one of those
   machines: `name`, `description`, `machine` (its id, or its exact name),
-  `provider` (`claude`, `codex`, `opencode`, `antigravity`, `cursor`,
-  `deepseek-harness`, `pi`, `mistral-vibe`, `junie`), and
+  `provider` (`claude`, `codex`, `opencode`, `antigravity`, `cursor`, and,
+  on a server that offers them, `deepseek-harness`, `pi`, `copilot`, `kiro`,
+  `mistral-vibe`, `goose`, `qwen`, `droid`, `cline` and `junie`; a server that
+  does not refuses them, naming the feature flag they need), and
   optionally `model`, `advanced_config` (e.g. `{"effort": "high"}`; keys from
   `get_advanced_config`), `instructions`, `directory`, `auto_mode` (on by
   default: the provider's automatic review runs safe actions and asks before

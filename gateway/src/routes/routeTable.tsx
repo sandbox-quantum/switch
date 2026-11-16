@@ -32,19 +32,25 @@ import {
   workspaceAdmins,
 } from "../data/capabilities";
 import type { SettingsArea } from "../data/settingsLanding";
+import AccountPage from "../pages/account/AccountPage";
 import AgentDetailPage from "../pages/agents/AgentDetailPage";
+import ApiKeysPage from "../pages/api-keys/ApiKeysPage";
 import AgentListPage from "../pages/agents/AgentListPage";
 import AgentsPage from "../pages/agents/AgentsPage";
 import CollaborationsPage from "../pages/collaborations/CollaborationsPage";
 import ConnectorAppsPage from "../pages/connector-apps/ConnectorAppsPage";
 import EcosystemGraphPage from "../pages/ecosystem/EcosystemGraphPage";
 import MachinesPage from "../pages/machines/MachinesPage";
+import MessagingAppsPage from "../pages/messaging-apps/MessagingAppsPage";
 import OperatorWorkspacesPage from "../pages/operator/OperatorWorkspacesPage";
 import ConnectorPage from "../pages/connectors/ConnectorPage";
+import ConnectorsPage from "../pages/connectors/ConnectorsPage";
 import OrganizationPage, {
   OrganizationAuditLogPage,
   OrganizationConnectorsPage,
   OrganizationGeneralPage,
+  OrganizationDevicesPage,
+  OrganizationGuardrailsPage,
   OrganizationUsersPage,
   OrganizationWorkspacesPage,
 } from "../pages/organization/OrganizationPage";
@@ -55,7 +61,9 @@ import PackageDetailPage from "../pages/resources/PackageDetailPage";
 import ReferenceDetailPage from "../pages/resources/ReferenceDetailPage";
 import ResourcesPage from "../pages/resources/ResourcesPage";
 import TemplateDetailPage from "../pages/resources/TemplateDetailPage";
+import DevicesPage from "../pages/devices/DevicesPage";
 import CreateRoomPage from "../pages/rooms/CreateRoomPage";
+import WorkspaceGuardrailsPage from "../pages/guardrails/WorkspaceGuardrailsPage";
 import GroupsPage from "../pages/rooms/GroupsPage";
 import RoomDetailPage from "../pages/rooms/RoomDetailPage";
 import RoomScopedDocumentView from "../pages/rooms/RoomScopedDocumentView";
@@ -66,11 +74,8 @@ import UsagePage from "../pages/usage/UsagePage";
 import UsersPage from "../pages/users/UsersPage";
 import PrivateChannelRoomsPage from "../pages/workspace/PrivateChannelRoomsPage";
 import WorkspaceConnectorsPage from "../pages/workspace/WorkspaceConnectorsPage";
-import WorkspacePage, {
-  WorkspaceGeneralPage,
-  WorkspaceUsersPage,
-} from "../pages/workspace/WorkspacePage";
-import { PlannedPage } from "./StatusPages";
+import WorkspacePage, { WorkspaceGeneralPage } from "../pages/workspace/WorkspacePage";
+import WorkspaceUsersPage from "../pages/workspace/WorkspaceUsersPage";
 
 /** Every page the signed-in dashboard has, in one table: its URL, who may
  * open it, and which layout it belongs to. The routes, their guards, the
@@ -102,6 +107,8 @@ export interface PageRoute {
   /** The settings area the page sits in, with its label in that area's menu. */
   area?: SettingsArea;
   menu?: string;
+  /** About the person rather than the area, so its menu row sits apart. */
+  personal?: true;
 }
 
 /** An area's own URL, which opens the page last used there. */
@@ -126,16 +133,30 @@ export interface AreaDefinition {
   access: Rule;
   /** Where the area opens when no remembered page may be used. */
   first: string;
+  /** A place of its own, reaching past the current workspace: no rail
+   * there, and the top bar leads back to the workspace. */
+  outsideWorkspace: boolean;
 }
 
 export const AREAS: Record<SettingsArea, AreaDefinition> = {
-  workspace: { title: "Workspace settings", access: everyone, first: "/settings/general" },
+  workspace: {
+    title: "Workspace settings",
+    access: everyone,
+    first: "/settings/general",
+    outsideWorkspace: false,
+  },
   organization: {
     title: "Organization settings",
     access: organizationAdmins,
     first: "/settings/org/general",
+    outsideWorkspace: true,
   },
-  platform: { title: "Platform", access: operators, first: "/platform/workspaces" },
+  platform: {
+    title: "Platform",
+    access: operators,
+    first: "/platform/workspaces",
+    outsideWorkspace: true,
+  },
 };
 
 function page(
@@ -155,6 +176,17 @@ function settingsPage(
   element: ReactNode,
 ): PageRoute {
   return { kind: "page", path, layouts: V2, access, element, area, menu };
+}
+
+/** A page about the signed-in person, listed in the workspace settings menu
+ * below the area's own pages, in a group of its own. */
+function personalSettingsPage(
+  path: string,
+  menu: string,
+  access: Rule,
+  element: ReactNode,
+): PageRoute {
+  return { ...settingsPage(path, "workspace", menu, access, element), personal: true };
 }
 
 function areaIndex(path: string, area: SettingsArea): AreaRoute {
@@ -201,7 +233,7 @@ export const ROUTES: readonly AppRoute[] = [
   // new layout it is everyone's connector catalogue, and the operator's page
   // moves to the Platform area.
   page("/connectors", CURRENT, operators, <ConnectorAppsPage />),
-  page("/connectors", V2, serviceConnections, <PlannedPage title="Connectors" />),
+  page("/connectors", V2, serviceConnections, <ConnectorsPage />),
   page("/connectors/:connectorId", V2, serviceConnections, <ConnectorPage />),
 
   page("/machines", CURRENT, agentManagement, <MachinesPage />),
@@ -239,7 +271,7 @@ export const ROUTES: readonly AppRoute[] = [
     "workspace",
     "Messaging apps",
     everyone,
-    <CollaborationsPage />,
+    <MessagingAppsPage />,
   ),
   redirect("/settings/messaging-apps", CURRENT, "/collaborations"),
   settingsPage(
@@ -249,25 +281,13 @@ export const ROUTES: readonly AppRoute[] = [
     serviceConnections,
     <WorkspaceConnectorsPage />,
   ),
-  settingsPage("/settings/api-keys", "workspace", "API keys", everyone, <RegistrationKeysPage />),
+  settingsPage("/settings/api-keys", "workspace", "API keys", everyone, <ApiKeysPage />),
   redirect("/settings/api-keys", CURRENT, "/registration-keys"),
-  settingsPage(
-    "/settings/guardrails",
-    "workspace",
-    "Guardrails",
-    everyone,
-    <PlannedPage title="Guardrails" />,
-  ),
-  settingsPage("/settings/devices", "workspace", "Devices", agentManagement, <MachinesPage />),
+  settingsPage("/settings/guardrails", "workspace", "Guardrails", everyone, <WorkspaceGuardrailsPage />),
+  settingsPage("/settings/devices", "workspace", "Devices", agentManagement, <DevicesPage />),
   redirect("/settings/devices", CURRENT, "/machines"),
   settingsPage("/usage", "workspace", "Usage & budget", workspaceAdmins, <UsagePage />),
-  settingsPage(
-    "/settings/account",
-    "workspace",
-    "Your account",
-    everyone,
-    <PlannedPage title="Your account" />,
-  ),
+  personalSettingsPage("/settings/account", "Your account", everyone, <AccountPage />),
 
   // Organization settings: the area admits the organization's admins, and
   // the operator to restore one; its pages beyond that are the admins' alone.
@@ -304,15 +324,17 @@ export const ROUTES: readonly AppRoute[] = [
     "organization",
     "Guardrails",
     organizationAdminsOnly,
-    <PlannedPage title="Guardrails" />,
+    <OrganizationGuardrailsPage />,
   ),
+  redirect("/settings/org/guardrails", CURRENT, "/organization"),
   settingsPage(
     "/settings/org/devices",
     "organization",
     "Devices",
-    organizationAdminsOnly,
-    <PlannedPage title="Devices" />,
+    allOf(organizationAdminsOnly, agentManagement),
+    <OrganizationDevicesPage />,
   ),
+  redirect("/settings/org/devices", CURRENT, "/organization"),
   settingsPage(
     "/settings/org/audit-log",
     "organization",
@@ -322,20 +344,21 @@ export const ROUTES: readonly AppRoute[] = [
   ),
   redirect("/settings/org/audit-log", CURRENT, "/organization"),
 
-  // The platform operator's pages.
+  // The platform operator's pages. Each holds the operator rule itself, not
+  // only through the area, so a page moved out of it stays the operator's.
   areaIndex("/platform", "platform"),
   redirect("/platform", CURRENT, "/operator/workspaces"),
   settingsPage(
     "/platform/workspaces",
     "platform",
     "All workspaces",
-    everyone,
+    operators,
     <OperatorWorkspacesPage />,
   ),
   redirect("/platform/workspaces", CURRENT, "/operator/workspaces"),
-  settingsPage("/platform/users", "platform", "Users", everyone, <UsersPage />),
+  settingsPage("/platform/users", "platform", "Users", operators, <UsersPage />),
   redirect("/platform/users", CURRENT, "/users"),
-  settingsPage("/platform/connectors", "platform", "Connectors", everyone, <ConnectorAppsPage />),
+  settingsPage("/platform/connectors", "platform", "Connectors", operators, <ConnectorAppsPage />),
   redirect("/platform/connectors", CURRENT, "/connectors"),
 ];
 
@@ -365,19 +388,25 @@ export function areaOf(pathname: string, layout: Layout): SettingsArea | null {
   return null;
 }
 
+/** Whether `pathname` is in an area outside the workspace, in `layout`. */
+export function outsideWorkspace(pathname: string, layout: Layout): boolean {
+  const area = areaOf(pathname, layout);
+  return area !== null && AREAS[area].outsideWorkspace;
+}
+
 /** The pages of `area`'s menu that `caps` may open, in order. */
 export function menuOf(
   area: SettingsArea,
   layout: Layout,
   caps: Capabilities,
-): { label: string; path: string }[] {
+): { label: string; path: string; personal: boolean }[] {
   return routesFor(layout)
     .filter(
       (r): r is PageRoute & { menu: string } =>
         r.kind === "page" && r.area === area && r.menu !== undefined,
     )
     .filter((r) => r.access(caps).allowed)
-    .map((r) => ({ label: r.menu, path: r.path }));
+    .map((r) => ({ label: r.menu, path: r.path, personal: r.personal === true }));
 }
 
 export interface RailItem {

@@ -16,6 +16,7 @@ import json
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
@@ -23,6 +24,8 @@ import pytest
 from sqlalchemy import delete, func, select, update
 
 from switch_core.addressing import owner_only_policy
+from switch_core.agent_runs import TRACE_OPENING
+from switch_core.clients.consumer import Consumer
 from switch_core.db.models import (
     Agent,
     AgentEventRow,
@@ -43,6 +46,7 @@ from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
+from switch_core.events import CommandEvent
 from switch_core.gateway import chats as chats_module
 from switch_core.gateway.auth import session_is_current
 from switch_core.gateway.chats import (
@@ -51,7 +55,9 @@ from switch_core.gateway.chats import (
 )
 from switch_core.observability.metrics import MetricsRegistry, install, uninstall
 from switch_core.session_activity.listener import Change
+from switch_core.transport import RoomRef
 from switch_core.transport.observer import ParticipantMessage
+from switch_core.transport.stored import to_inbound
 from tests.switch_core.gateway.conftest import _Harness, _Process
 from tests.telemetry_records import recording_telemetry
 
@@ -2354,3 +2360,158 @@ async def test_a_step_reaches_the_activity_streams_of_every_process(
         name, item = await events.next()
         assert (name, item["roomId"], item["turnId"]) == ("activity", room_id, "t1")
         await events.stream.aclose()  # type: ignore[attr-defined]
+
+
+async def test_a_kickoff_reads_back_as_the_agent_that_ran_the_template(
+    chats: _Harness,
+) -> None:
+    """Switch posts a template's kickoff for whoever ran it. Switch Console is
+    told whose it is, and gets the run history for the agents apart from the
+    request, so it can show the request as theirs and fold the history away."""
+    agent = await chats.agent("helper", owner=chats.alice)
+    room_id = await chats.new_chat(chats.alice, agent, "c1")
+    sent_ids = []
+    for txn, text in (("s1", "Kickoff from switch-buddy"), ("s2", "request")):
+        sent = await chats.send(chats.alice, room_id, txn, text)
+        assert sent.status_code == 200, sent.text
+        sent_ids.append(sent.json()["messages"][0]["messageId"])
+
+    buddy = await chats.agent("switch-buddy", owner=chats.alice)
+    async with chats.factory() as session:
+        await session.execute(
+            update(Agent)
+            .where(Agent.id == buddy.id)
+            .values(
+                display_name="Switch Buddy", icon_url="https://example.test/buddy.png"
+            )
+        )
+        await session.commit()
+    on_behalf_of = {
+        "user_id": chats.alice.id,
+        "name": "switch-buddy",
+        "agent_id": buddy.id,
+    }
+    request = f"Sprint room is live.\n\n{TRACE_OPENING}Welcome. So far: ..."
+    async with chats.factory() as session:
+        rows = {
+            row.transport_event_id: row
+            for row in (
+                await session.execute(
+                    select(Message).where(Message.transport_event_id.in_(sent_ids))
+                )
+            ).scalars()
+        }
+        headline, kickoff = (rows[i] for i in sent_ids)
+        # As the platform posts them: no sender client, the marker in content.
+        headline.sender_client_id = None
+        headline.content = {"com.switch.platform": {"on_behalf_of": on_behalf_of}}
+        kickoff.sender_client_id = None
+        kickoff.body = request
+        kickoff.content = {
+            "com.switch.platform": {
+                "on_behalf_of": on_behalf_of,
+                "reply_in_channel": True,
+            }
+        }
+        await session.commit()
+
+    page = await chats.client.get(
+        f"/chats/{room_id}/messages", headers=chats.as_user(chats.alice)
+    )
+    by_id = {m["messageId"]: m for m in page.json()["messages"]}
+    first, second = (by_id[i] for i in sent_ids)
+    assert first["sender"]["kind"] == "system"
+    assert first["kickoff"] is None
+    assert second["sender"]["kind"] == "system"
+    assert second["body"] == "Sprint room is live."
+    assert second["kickoff"] == {
+        "name": "switch-buddy",
+        "agentId": buddy.id,
+        "userId": chats.alice.id,
+        "agentNote": f"{TRACE_OPENING}Welcome. So far: ...",
+        # Its own look, though it is not in the room.
+        "displayName": "Switch Buddy",
+        "iconUrl": "https://example.test/buddy.png",
+    }
+
+
+async def test_a_typed_room_command_is_run_as_one(chats: _Harness) -> None:
+    """`!set-alias` typed in Console is the command event a platform bridge
+    writes for it, so the room's command handling runs it; the agents do not
+    read it as a message."""
+    agent = await chats.agent("helper", owner=chats.alice)
+    room_id = await chats.new_chat(chats.alice, agent, "c1")
+
+    sent = await chats.send(chats.alice, room_id, "s1", "  !set-alias @helper @h ")
+    assert sent.status_code == 200, sent.text
+    [shown] = sent.json()["messages"]
+    # Shown as the person's, as on the platform they could have typed it on.
+    assert shown["sender"]["kind"] == "human"
+    assert shown["sender"]["name"] == "alice"
+    assert shown["body"] == "!set-alias @helper @h"
+
+    assert await chats.message_rows(room_id) == []
+    async with chats.factory() as session:
+        row = (
+            await session.execute(
+                select(Message).where(Message.transport_event_id == shown["messageId"])
+            )
+        ).scalar_one()
+    assert row.event_type == "com.switch.command"
+
+    # What a room's command handling receives from that row: the command and
+    # its arguments, from alice, the same event a bridge's typed one makes.
+    async with chats.factory() as session:
+        room = await session.get(Room, room_id)
+    assert room is not None
+    received: list[CommandEvent] = []
+
+    async def on_command(_room: RoomRef, event: CommandEvent) -> None:
+        received.append(event)
+
+    consumer = SimpleNamespace(
+        _EVENT_DISPATCH=Consumer._EVENT_DISPATCH,
+        _should_ignore=lambda _room, _event: False,
+        on_command=on_command,
+    )
+    await Consumer._handle_custom_event(
+        consumer,  # type: ignore[arg-type]
+        RoomRef(room.transport_room_id),
+        to_inbound(row, [], transport_room_id=room.transport_room_id),
+    )
+    [event] = received
+    assert (event.command, event.args, event.user_name) == (
+        "set-alias",
+        "@helper @h",
+        "alice",
+    )
+
+
+async def test_a_message_that_only_starts_with_a_bang_stays_a_message(
+    chats: _Harness,
+) -> None:
+    agent = await chats.agent("helper", owner=chats.alice)
+    room_id = await chats.new_chat(chats.alice, agent, "c1")
+
+    sent = await chats.send(chats.alice, room_id, "s1", "!important: read this")
+    assert sent.status_code == 200, sent.text
+    [row] = await chats.message_rows(room_id)
+    assert row.body == "!important: read this"
+
+
+async def test_a_person_added_after_the_room_exists_finds_it_in_their_list(
+    chats: _Harness,
+) -> None:
+    """Someone added to a room already under way sees it among their chats,
+    which is the list Switch Console's sidebar is built from."""
+    agent = await chats.agent("helper", owner=chats.alice)
+    room_id = await chats.new_chat(chats.alice, agent, "c1")
+    assert (await chats.send(chats.alice, room_id, "s1", "hello")).status_code == 200
+
+    before = await chats.client.get("/chats", headers=chats.as_user(chats.bob))
+    assert room_id not in {c["roomId"] for c in before.json()["chats"]}
+
+    assert (await chats.invite(chats.alice, room_id, chats.bob)).status_code == 200
+
+    after = await chats.client.get("/chats", headers=chats.as_user(chats.bob))
+    assert room_id in {c["roomId"] for c in after.json()["chats"]}

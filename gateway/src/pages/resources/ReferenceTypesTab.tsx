@@ -10,35 +10,48 @@ import {
   Dialog,
   DialogActions,
   DialogContent,
-  DialogContentText,
   DialogTitle,
-  IconButton,
   Stack,
   TextField,
 } from "@mui/material";
-import type { GridColDef } from "@mui/x-data-grid";
-import { useEffect, useMemo, useState } from "react";
-import DataTable, { TableEmptyState } from "../../components/DataTable";
-import { TransferOwnershipDialog } from "../../components/TransferOwnershipSection";
+import { useCallback, useMemo, useState } from "react";
 import { AccessChip, AccessSelect } from "../../components/AccessControls";
+import ConfirmDialog from "../../components/ConfirmDialog";
+import DataTable, {
+  type FilterOption,
+  type SelectFilter,
+  type TableColumn,
+  TableEmptyState,
+} from "../../components/DataTable";
+import RowActionsMenu, { type RowAction } from "../../components/RowActionsMenu";
+import { TransferOwnershipDialog } from "../../components/TransferOwnershipSection";
 import {
   deleteReferenceType,
+  loadOwnedReferenceTypes,
+  loadReferenceTypes,
   type ReferenceTypeDetail,
   updateReferenceType,
 } from "../../data/api";
-import { useOwnedReferenceTypes, useReferenceTypes } from "../../data/hooks";
 import {
   ACCESS_HELPERS_FOR_OTHERS,
+  ACCESS_LEVELS,
+  ACCESS_META,
   type AccessLevel,
   fromAccessLevel,
   toAccessLevel,
 } from "../../data/visibility";
+import { MONO_SX } from "../../theme/format";
+import { useLoad } from "../workspace/useLoad";
 import { INSTRUCTIONS_DISCLOSURE } from "./CreateReferenceTypeDialog";
-import { formatDate } from "../../theme/format";
+import { ListBody, TruncatedText, createdColumn, useRefetchOnRefresh } from "./resourceList";
 
 interface Props {
   refreshKey: number;
 }
+
+/** Filter values for a built-in, which has no owner and no access level of
+ * its own. Neither can be a user id or an access level. */
+const BUILT_IN = "built-in";
 
 interface TypeRow {
   /** A row shadowed by a built-in shares its slug with the built-in entry, so
@@ -55,36 +68,36 @@ interface TypeRow {
   detail: ReferenceTypeDetail | null;
 }
 
+const NOUN = { one: "reference type", other: "reference types" };
+
+const SELECT_FILTERS: SelectFilter[] = [{ field: "owner", label: "Owner", allLabel: "All owners" }];
+
+const SEARCH = {
+  label: "Search reference types",
+  text: (row: TypeRow) => [row.type, row.display_name, row.value_hint, row.owner].join(" "),
+};
+
+/** Kept stable: a fresh array each render would rebuild the grid's columns. */
+const PINNED = ["actions"];
+
+const accessValue = (row: TypeRow) => (row.detail ? toAccessLevel(row.detail) : BUILT_IN);
+
 export default function ReferenceTypesTab({ refreshKey }: Props) {
-  const {
-    data: visible,
-    loading: visibleLoading,
-    error: visibleError,
-    refetch: refetchVisible,
-  } = useReferenceTypes();
-  const {
-    data: owned,
-    loading: ownedLoading,
-    error: ownedError,
-    refetch: refetchOwned,
-  } = useOwnedReferenceTypes();
+  const visible = useLoad(loadReferenceTypes);
+  const stored = useLoad(loadOwnedReferenceTypes);
+  const refetchVisible = visible.refetch;
+  const refetchStored = stored.refetch;
+  const refreshBoth = useCallback(() => {
+    void refetchVisible();
+    void refetchStored();
+  }, [refetchVisible, refetchStored]);
+  useRefetchOnRefresh(refreshKey, refreshBoth);
   const [editing, setEditing] = useState<ReferenceTypeDetail | null>(null);
   const [deleting, setDeleting] = useState<ReferenceTypeDetail | null>(null);
   const [transferring, setTransferring] = useState<ReferenceTypeDetail | null>(null);
 
-  useEffect(() => {
-    refetchVisible();
-    refetchOwned();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [refreshKey]);
-
-  const refreshBoth = () => {
-    refetchVisible();
-    refetchOwned();
-  };
-
   const rows = useMemo<TypeRow[]>(() => {
-    const builtins: TypeRow[] = (visible ?? [])
+    const builtins: TypeRow[] = (visible.data ?? [])
       .filter((t) => t.is_builtin)
       .map((t) => ({
         id: `builtin:${t.type}`,
@@ -96,7 +109,7 @@ export default function ReferenceTypesTab({ refreshKey }: Props) {
         shadowed_by_builtin: false,
         detail: null,
       }));
-    const mine: TypeRow[] = (owned ?? []).map((t) => ({
+    const rest: TypeRow[] = (stored.data ?? []).map((t) => ({
       id: `row:${t.type}`,
       type: t.type,
       display_name: t.display_name,
@@ -106,115 +119,128 @@ export default function ReferenceTypesTab({ refreshKey }: Props) {
       shadowed_by_builtin: t.shadowed_by_builtin,
       detail: t,
     }));
-    return [...builtins, ...mine];
-  }, [visible, owned]);
+    return [...builtins, ...rest];
+  }, [visible.data, stored.data]);
 
-  const columns = useMemo<GridColDef<TypeRow>[]>(
-    () => [
+  const actionsFor = useCallback((row: TypeRow): RowAction[] => {
+    const detail = row.detail;
+    if (!detail) return [];
+    return [
+      ...(detail.can_edit
+        ? [{ label: "Edit", icon: <EditOutlined fontSize="small" />, onClick: () => setEditing(detail) }]
+        : []),
+      ...(detail.can_manage
+        ? [
+            { label: "Transfer ownership", icon: <SwapHoriz fontSize="small" />, onClick: () => setTransferring(detail) },
+            {
+              label: "Delete",
+              icon: <DeleteOutline fontSize="small" />,
+              destructive: true,
+              onClick: () => setDeleting(detail),
+            },
+          ]
+        : []),
+    ];
+  }, []);
+
+  const columns = useMemo<TableColumn<TypeRow>[]>(() => {
+    const owners = new Map<string, string>();
+    for (const row of rows) {
+      if (row.detail) owners.set(row.detail.owner_id, row.owner);
+    }
+    const ownerOptions: FilterOption[] = [
+      ...(rows.some((row) => !row.detail) ? [{ value: BUILT_IN, label: "Built-in" }] : []),
+      ...[...owners.entries()]
+        .map(([value, label]) => ({ value, label }))
+        .sort((a, b) => a.label.localeCompare(b.label)),
+    ];
+    const held = new Set(rows.map(accessValue));
+    const accessOptions: FilterOption[] = [
+      ...(held.has(BUILT_IN) ? [{ value: BUILT_IN, label: "Built-in" }] : []),
+      ...ACCESS_LEVELS.filter((level) => held.has(level)).map((level) => ({
+        value: level,
+        label: ACCESS_META[level].label,
+      })),
+    ];
+    return [
       {
         field: "type",
         headerName: "Slug",
-        width: 200,
+        width: 220,
         renderCell: ({ row }) => (
-          <Stack direction="row" alignItems="center" spacing={1}>
-            <Box component="span" sx={{ fontFamily: "monospace" }}>
+          <Stack direction="row" alignItems="center" spacing={1} sx={{ minWidth: 0, height: "100%" }}>
+            <Box component="span" title={row.type} sx={{ ...MONO_SX, overflow: "hidden", textOverflow: "ellipsis" }}>
               {row.type}
             </Box>
-            {row.shadowed_by_builtin && (
-              <Chip label="shadowed by built-in" size="small" color="warning" />
-            )}
+            {row.shadowed_by_builtin && <Chip label="shadowed by built-in" size="small" color="warning" />}
           </Stack>
         ),
       },
       { field: "display_name", headerName: "Name", width: 180 },
-      { field: "value_hint", headerName: "Value hint", flex: 1, minWidth: 240 },
+      {
+        field: "value_hint",
+        headerName: "Value hint",
+        flex: 1,
+        minWidth: 220,
+        sortable: false,
+        renderCell: ({ row }) => <TruncatedText text={row.value_hint} />,
+      },
       {
         field: "access",
         headerName: "Access",
-        width: 110,
-        sortable: false,
-        filterable: false,
-        renderCell: ({ row }) =>
-          row.detail ? (
-            <AccessChip pair={row.detail} />
-          ) : (
-            <Chip label="Built-in" size="small" />
-          ),
+        width: 120,
+        valueGetter: (_value, row) => (row.detail ? ACCESS_META[toAccessLevel(row.detail)].label : "Built-in"),
+        filter: { value: accessValue, options: accessOptions },
+        renderCell: ({ row }) => (row.detail ? <AccessChip pair={row.detail} /> : <Chip label="Built-in" size="small" />),
       },
-      { field: "owner", headerName: "Owner", width: 150 },
       {
-        field: "created_at",
-        headerName: "Created",
-        width: 116,
-        valueFormatter: (value) => (value ? formatDate(value as string) : "—"),
+        field: "owner",
+        headerName: "Owner",
+        width: 160,
+        filter: { value: (row) => row.detail?.owner_id ?? BUILT_IN, options: ownerOptions },
       },
+      createdColumn(),
       {
         field: "actions",
         headerName: "",
-        width: 128,
+        width: 56,
         sortable: false,
-        filterable: false,
-        renderCell: ({ row }) =>
-          row.detail ? (
-            <>
-              {row.detail.can_edit && (
-                <IconButton
-                  size="small"
-                  onClick={() => setEditing(row.detail)}
-                  aria-label={`Edit ${row.display_name}`}
-                >
-                  <EditOutlined fontSize="small" />
-                </IconButton>
-              )}
-              {row.detail.can_manage && (
-                <>
-                  <IconButton
-                    size="small"
-                    onClick={() => setTransferring(row.detail)}
-                    aria-label={`Transfer ${row.display_name}`}
-                  >
-                    <SwapHoriz fontSize="small" />
-                  </IconButton>
-                  <IconButton
-                    size="small"
-                    onClick={() => setDeleting(row.detail)}
-                    aria-label={`Delete ${row.display_name}`}
-                  >
-                    <DeleteOutline fontSize="small" />
-                  </IconButton>
-                </>
-              )}
-            </>
-          ) : null,
+        disableColumnMenu: true,
+        renderCell: ({ row, tabIndex }) => (
+          <RowActionsMenu label={`Actions for ${row.display_name}`} actions={actionsFor(row)} tabIndex={tabIndex} />
+        ),
       },
-    ],
-    [],
-  );
+    ];
+  }, [rows, actionsFor]);
 
-  const error = visibleError ?? ownedError;
+  // The two lists are one table: it waits for both, and says which failed.
+  const loaded = visible.data !== null && stored.data !== null;
+  const error = visible.error ?? stored.error;
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0 }}>
-      {error && (
-        <Alert severity="error" sx={{ mb: 2 }}>
-          {error}
-        </Alert>
-      )}
-
-      {visibleLoading || ownedLoading ? (
-        <CircularProgress />
-      ) : (
+      <ListBody
+        what="reference types"
+        loaded={loaded}
+        error={error}
+        loading={visible.loading || stored.loading}
+        onRetry={refreshBoth}
+      >
         <DataTable
           rows={rows}
           columns={columns}
           fillHeight
+          noun={NOUN}
+          search={SEARCH}
+          selectFilters={SELECT_FILTERS}
+          pinnedRight={PINNED}
           emptyState={
             <TableEmptyState title="No reference types yet">
               Create one to describe a new kind of reference.
             </TableEmptyState>
           }
         />
-      )}
+      </ListBody>
 
       {editing && (
         <EditReferenceTypeDialog
@@ -239,16 +265,26 @@ export default function ReferenceTypesTab({ refreshKey }: Props) {
           }}
         />
       )}
-      {deleting && (
-        <DeleteReferenceTypeDialog
-          referenceType={deleting}
-          onClose={() => setDeleting(null)}
-          onDeleted={() => {
-            setDeleting(null);
-            refreshBoth();
-          }}
-        />
-      )}
+      <ConfirmDialog
+        open={deleting !== null}
+        title="Delete reference type"
+        tone="destructive"
+        confirmLabel="Delete"
+        description={
+          deleting && (
+            <>
+              Delete <b>{deleting.display_name}</b> (<code>{deleting.type}</code>)? This cannot be undone. A
+              type still used by references cannot be deleted.
+            </>
+          )
+        }
+        onConfirm={async () => {
+          if (!deleting) return;
+          await deleteReferenceType(deleting.type);
+          refreshBoth();
+        }}
+        onClose={() => setDeleting(null)}
+      />
     </Box>
   );
 }
@@ -293,7 +329,13 @@ function EditReferenceTypeDialog({
     }
   };
 
+  const changed =
+    displayName !== referenceType.display_name ||
+    instructions !== referenceType.instructions ||
+    valueHint !== referenceType.value_hint ||
+    access !== toAccessLevel(referenceType);
   const canSubmit =
+    changed &&
     displayName.trim().length > 0 &&
     instructions.trim().length > 0 &&
     valueHint.trim().length > 0 &&
@@ -360,69 +402,6 @@ function EditReferenceTypeDialog({
           startIcon={submitting ? <CircularProgress size={16} /> : undefined}
         >
           Save
-        </Button>
-      </DialogActions>
-    </Dialog>
-  );
-}
-
-function DeleteReferenceTypeDialog({
-  referenceType,
-  onClose,
-  onDeleted,
-}: {
-  referenceType: ReferenceTypeDetail;
-  onClose: () => void;
-  onDeleted: () => void;
-}) {
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const handleClose = () => {
-    if (submitting) return;
-    onClose();
-  };
-
-  const handleDelete = async () => {
-    setSubmitting(true);
-    setError(null);
-    try {
-      await deleteReferenceType(referenceType.type);
-      onDeleted();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to delete reference type");
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  return (
-    <Dialog open onClose={handleClose} fullWidth maxWidth="xs">
-      <DialogTitle>Delete reference type</DialogTitle>
-      <DialogContent>
-        <DialogContentText>
-          Delete <b>{referenceType.display_name}</b> (<code>{referenceType.type}</code>
-          )? This cannot be undone. A type still used by references cannot be
-          deleted.
-        </DialogContentText>
-        {error && (
-          <Alert severity="error" sx={{ mt: 2 }}>
-            {error}
-          </Alert>
-        )}
-      </DialogContent>
-      <DialogActions>
-        <Button onClick={handleClose} disabled={submitting}>
-          Cancel
-        </Button>
-        <Button
-          color="error"
-          variant="contained"
-          onClick={handleDelete}
-          disabled={submitting}
-          startIcon={submitting ? <CircularProgress size={16} /> : undefined}
-        >
-          Delete
         </Button>
       </DialogActions>
     </Dialog>

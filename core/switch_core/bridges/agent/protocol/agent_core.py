@@ -102,6 +102,7 @@ from switch_core.db.models import (
     AgentRuntimeState,
     ApiKey,
     Client,
+    CollaborationBridge,
     Message,
     MessageAttachment,
     Model,
@@ -1778,6 +1779,7 @@ class AgentCore:
         content."""
         check = await check_message(
             self.trust_client,
+            tenant_id=require_tenant_id(),
             role="assistant",
             content=content,
             room_id=room.id,
@@ -1822,12 +1824,18 @@ class AgentCore:
         as the body would. A card it redacts is dropped (returned as None) —
         a card has no redacted form, and its words must not reach the room —
         and the body goes alone. Its alert or error notes join the body's."""
+        tenant_id = require_tenant_id()
         body_check, card_check = await asyncio.gather(
             check_message(
-                self.trust_client, role="assistant", content=content, room_id=room.id
+                self.trust_client,
+                tenant_id=tenant_id,
+                role="assistant",
+                content=content,
+                room_id=room.id,
             ),
             check_message(
                 self.trust_client,
+                tenant_id=tenant_id,
                 role="assistant",
                 content=trust_text(ui),
                 room_id=room.id,
@@ -2128,14 +2136,20 @@ class AgentCore:
         trust_notes: list[str] = []
         file_notes: tuple[str, ...] = ()
         flagged = False
-        if await trust_is_active(self.trust_client):
+        tenant_id = require_tenant_id()
+        if await trust_is_active(self.trust_client, tenant_id):
             files_check_task = check_attachments(
-                self.trust_client, role="assistant", files=files, room_id=room.id
+                self.trust_client,
+                tenant_id=tenant_id,
+                role="assistant",
+                files=files,
+                room_id=room.id,
             )
             if caption_text is not None:
                 caption_check, files_check = await asyncio.gather(
                     check_message(
                         self.trust_client,
+                        tenant_id=tenant_id,
                         role="assistant",
                         content=caption_text,
                         room_id=room.id,
@@ -3179,12 +3193,14 @@ class AgentCore:
                 "display_name": b.display_name,
                 "status": b.status,
                 "is_default": b.is_default,
-                # The platform's ceiling and the operator's switch, ANDed: an
+                # The platform's ceiling, the operator's switch and what the
+                # connection still lacks (a Teams default team), ANDed: an
                 # agent asking "can I make a room here?" wants one answer, and
                 # gets it before spending a create_room call to find out.
                 "can_create_channels": (
                     b.channel_creation_enabled
                     and self.collab_lifecycle.supports_channel_creation(b.type)
+                    and self._channel_creation_unblocked(b)
                 ),
                 # Whether create_room may ask for channel_private here, and
                 # whether that needs the room's owner to have linked their
@@ -3193,6 +3209,7 @@ class AgentCore:
                 "can_create_private_channels": (
                     b.channel_creation_enabled
                     and self.collab_lifecycle.supports_private_channels(b.type)
+                    and self._channel_creation_unblocked(b)
                 ),
                 "private_channel_needs_linked_account": (
                     self.collab_lifecycle.supports_private_channels(b.type)
@@ -3200,6 +3217,14 @@ class AgentCore:
             }
             for b in bridges
         ]
+
+    def _channel_creation_unblocked(self, bridge: CollaborationBridge) -> bool:
+        return (
+            self.collab_lifecycle.channel_creation_blocker(
+                bridge.type, bridge.connection_config or {}
+            )
+            is None
+        )
 
     async def create_moderation_room(
         self,

@@ -185,6 +185,13 @@ class Tenant(Base):
     workspace deletes this row (`accounts/workspace_deletion.py`); a
     `deleted_at` that nothing honours would read as a guarantee the code does
     not make.
+
+    `archived_at` is the one state it has, and everything that reaches into a
+    workspace honours it (`workspace_archive.py`): while it is set, nobody
+    but its organization's `org_admin`s (and the platform operator) may enter
+    the workspace, its agents may not connect, its messaging apps relay
+    nothing, and it can't be joined. `archived_by` is cleared when that
+    account is deleted; the audit logs keep who archived it.
     """
 
     __tablename__ = "tenants"
@@ -208,6 +215,14 @@ class Tenant(Base):
     organization_id: Mapped[str | None] = mapped_column(
         Text,
         ForeignKey("organizations.id", name="fk_tenants_organization"),
+        nullable=True,
+    )
+    archived_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    archived_by: Mapped[str | None] = mapped_column(
+        Text,
+        ForeignKey("users.id", ondelete="SET NULL", name="fk_tenants_archived_by"),
         nullable=True,
     )
 
@@ -920,6 +935,10 @@ class Agent(TenantScoped, Base):
             name="fk_agents_parent_agent",
             ondelete="SET NULL (parent_agent_id)",
         ),
+        CheckConstraint(
+            "mid_turn_delivery IN ('steer', 'queue')",
+            name="ck_agents_mid_turn_delivery",
+        ),
     )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
@@ -964,6 +983,12 @@ class Agent(TenantScoped, Base):
     # agent operations: list the owner's machines and managed agents, and
     # create managed agents on those machines. Off unless the owner turns it
     # on, and never inherited by an agent it creates.
+    # What a message sent while the agent is working does: "steer" hands it
+    # to the running turn where the sender may, "queue" always runs it as a
+    # turn of its own. The owner's choice: re-registration never touches it.
+    mid_turn_delivery: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default="steer", default="steer"
+    )
     can_manage_agents: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default="false", default=False
     )
@@ -2380,7 +2405,7 @@ class ExternalUserClaim(TenantScoped, Base):
         ForeignKey("users.id", ondelete="CASCADE"),
         primary_key=True,
     )
-    created_at: Mapped[str] = mapped_column(
+    created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     verified_at: Mapped[datetime | None] = mapped_column(
@@ -2935,12 +2960,12 @@ class DirectoryEventCursor(Base):
 
 
 class TrustSettings(Base):
-    """Server-global Switch Trust guardrails configuration — one row.
+    """The Switch Trust policy the whole server was checked against before
+    each organization had its own (`OrganizationTrustSettings`).
 
-    No row, or one with ``policy_id``/``api_key_encrypted`` unset, means the
-    check is off (see ``switch_core.trust.client.DynamicTrustClient``). ``id``
-    is a fixed constant (``db/stores/trust_settings_store.py``) rather than a
-    generated key, since there is exactly one row by construction.
+    Nothing reads it now. Migration `b7d24e9c1f53` copied it into every
+    organization, and it is kept, unread, only for a release from before that
+    still running beside this one during an upgrade; a later release drops it.
     """
 
     __tablename__ = "trust_settings"
@@ -2949,6 +2974,44 @@ class TrustSettings(Base):
     endpoint: Mapped[str] = mapped_column(Text, nullable=False)
     policy_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     api_key_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+class OrganizationTrustSettings(OrganizationScoped, Base):
+    """The Switch Trust policy every message in an organization's workspaces
+    is checked against (`trust/client.py`). A row is a connected policy; an
+    organization with none is not checked.
+
+    `policy_name` is what Switch Trust called the policy in its answer to the
+    check made when it was connected, and None when it gave no name. `endpoint`
+    is Switch Trust's address: the default for a policy connected here, and
+    whatever the server's own setting named for one copied from it.
+    `updated_by` is cleared when that account is deleted, as on
+    `OrganizationAppCredential`; the organization's audit log keeps who
+    connected it.
+    """
+
+    __tablename__ = "organization_trust_settings"
+    __table_args__ = (PrimaryKeyConstraint("organization_id"),)
+
+    endpoint: Mapped[str] = mapped_column(Text, nullable=False)
+    policy_id: Mapped[str] = mapped_column(Text, nullable=False)
+    policy_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    api_key_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_by: Mapped[str | None] = mapped_column(
+        Text,
+        ForeignKey(
+            "users.id",
+            ondelete="SET NULL",
+            name="fk_organization_trust_settings_updated_by",
+        ),
+        nullable=True,
+    )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -4165,6 +4228,11 @@ class AgentSessionActivityItem(TenantScoped, Base):
             "'tool-activity', 'notice')",
             name="ck_session_activity_items_kind",
         ),
+        CheckConstraint(
+            "delivery IS NULL OR (kind = 'user-message' "
+            "AND delivery IN ('steered', 'queued'))",
+            name="ck_session_activity_items_delivery",
+        ),
         Index("ix_session_activity_items_updated_at", "updated_at"),
     )
 
@@ -4186,6 +4254,9 @@ class AgentSessionActivityItem(TenantScoped, Base):
     thread_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     # The Switch message that asked, where a platform puts its work marker.
     message_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # On a user message sent while another turn ran: "steered" into that turn,
+    # or "queued" behind it. Null on every other row.
+    delivery: Mapped[str | None] = mapped_column(Text, nullable=True)
     occurred_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
     )
@@ -4298,6 +4369,50 @@ class TurnStatusPost(TenantScoped, Base):
     reaction_message_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
     mark: Mapped[str | None] = mapped_column(Text, nullable=True)
     attention_post_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+class SteeredMessageMark(TenantScoped, Base):
+    """The work marker on a message steered into a running turn, per bridge.
+
+    A steered message has no turn of its own, so `turn_status_posts` has no
+    row to carry its marker: it is kept here, under the turn it joined, and
+    taken off when that turn ends.
+    """
+
+    __tablename__ = "steered_message_marks"
+    __table_args__ = (
+        PrimaryKeyConstraint(
+            "tenant_id", "bridge_id", "agent_id", "session_id", "turn_id", "message_id"
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "bridge_id"],
+            ["collaboration_bridges.tenant_id", "collaboration_bridges.id"],
+            name="fk_steered_message_marks_bridge",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["tenant_id", "agent_id"],
+            ["agents.tenant_id", "agents.id"],
+            name="fk_steered_message_marks_agent",
+            ondelete="CASCADE",
+        ),
+    )
+
+    bridge_id: Mapped[str] = mapped_column(Text, nullable=False)
+    agent_id: Mapped[str] = mapped_column(Text, nullable=False)
+    session_id: Mapped[str] = mapped_column(Text, nullable=False)
+    turn_id: Mapped[str] = mapped_column(Text, nullable=False)
+    message_id: Mapped[str] = mapped_column(Text, nullable=False)
+    external_channel_id: Mapped[str] = mapped_column(Text, nullable=False)
+    reaction_message_ref: Mapped[str] = mapped_column(Text, nullable=False)
+    # True while the marker is (or may be) on the message; false once taken off.
+    marked: Mapped[bool] = mapped_column(Boolean, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),

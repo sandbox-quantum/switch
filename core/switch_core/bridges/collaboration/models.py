@@ -65,9 +65,10 @@ class CreatedChannel(BaseModel):
 class ChannelCreationUnsupported(ValueError):
     """Raised when a bridge will not create a channel for a new room.
 
-    Either the platform has no such call — a Telegram bot cannot create a chat
-    — or an operator has withheld it from this connection. Both are answers to
-    a caller's request rather than faults, so this is a ``ValueError``: every
+    The platform has no such call — a Telegram bot cannot create a chat — an
+    operator has withheld it from this connection, or the connection lacks
+    what a channel needs, such as a Teams default team. All are answers to a
+    caller's request rather than faults, so this is a ``ValueError``: every
     door into room creation already turns one into a 4xx carrying the message,
     where an unexpected exception becomes an opaque 500 and the explanation
     never leaves the server.

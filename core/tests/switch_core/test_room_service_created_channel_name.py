@@ -107,6 +107,11 @@ class _Lifecycle:
     def rooms_changed(self, bridge_id: str) -> None:
         return None
 
+    def channel_creation_blocker(
+        self, bridge_type: str, connection_config: object
+    ) -> str | None:
+        return None
+
 
 class _NoClients:
     def get_by_agent_id(self, agent_id: str) -> Any:

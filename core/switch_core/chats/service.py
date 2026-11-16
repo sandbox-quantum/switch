@@ -1918,6 +1918,7 @@ class ChatService:
         mention_agent_ids: list[str],
         mention_user_ids: list[str],
         mention_spans: list[ChatMention],
+        command: tuple[str, str] | None,
     ) -> tuple[Room, list[Message]]:
         """Post the user's message, every part of it in one transaction.
 
@@ -1994,6 +1995,12 @@ class ChatService:
                 for upload_id in upload_ids
             ]
             root = await self._thread_root(session, room, thread_root_id)
+            # `!set-alias @helper @h`, typed here as on any platform, is a room
+            # command: written as the command event a bridge writes for it, so
+            # the room's command handling runs it, rather than as a message the
+            # agents read. Its mentions are its arguments, written as typed.
+            if command is not None:
+                mentions, people, mention_spans, typed = [], [], [], []
             shift = 0
             if mentions:
                 written = body
@@ -2047,6 +2054,21 @@ class ChatService:
                 contents[0][MENTIONS_KEY] = named_people
             posted: list[Message] = []
             routed: list[Routed] = []
+            if command is not None:
+                name, args = command
+                contents = [
+                    {
+                        "command": name,
+                        "args": args,
+                        "user_id": client.transport_user_id,
+                        "user_name": user.name,
+                        **(
+                            {"m.relates_to": contents[0]["m.relates_to"]}
+                            if "m.relates_to" in contents[0]
+                            else {}
+                        ),
+                    }
+                ]
             for index, content in enumerate(contents):
                 message = message_row(
                     room_id=room.id,
@@ -2054,7 +2076,9 @@ class ChatService:
                     sender_id=client.transport_user_id,
                     sender_client_id=client.id,
                     sender_name=user.name,
-                    event_type=MESSAGE_EVENT_TYPE,
+                    event_type=MESSAGE_EVENT_TYPE
+                    if command is None
+                    else COMMAND_EVENT_TYPE,
                     content=content,
                     client_txn_id=f"{request_id}:{index}",
                 )
@@ -2352,7 +2376,7 @@ class ChatService:
         (`trust/attachments.py`): redacted if it redacted the text, with a
         note for anything flagged or not checked. Runs before the send's own
         transaction, so no database work waits on Switch Trust."""
-        if not await trust_is_active(self._trust_client):
+        if not await trust_is_active(self._trust_client, tenant_id):
             return body
         async with tenant_session(self.session_factory, tenant_id) as session:
             room, _ = await self.require_member(session, tenant_id, user, room_id)
@@ -2376,19 +2400,35 @@ class ChatService:
         if body.strip() and files:
             text_check, files_check = await asyncio.gather(
                 check_message(
-                    self._trust_client, role="user", content=body, room_id=room.id
+                    self._trust_client,
+                    tenant_id=tenant_id,
+                    role="user",
+                    content=body,
+                    room_id=room.id,
                 ),
                 check_attachments(
-                    self._trust_client, role="user", files=files, room_id=room.id
+                    self._trust_client,
+                    tenant_id=tenant_id,
+                    role="user",
+                    files=files,
+                    room_id=room.id,
                 ),
             )
         elif body.strip():
             text_check = await check_message(
-                self._trust_client, role="user", content=body, room_id=room.id
+                self._trust_client,
+                tenant_id=tenant_id,
+                role="user",
+                content=body,
+                room_id=room.id,
             )
         elif files:
             files_check = await check_attachments(
-                self._trust_client, role="user", files=files, room_id=room.id
+                self._trust_client,
+                tenant_id=tenant_id,
+                role="user",
+                files=files,
+                room_id=room.id,
             )
 
         if text_check is not None and (

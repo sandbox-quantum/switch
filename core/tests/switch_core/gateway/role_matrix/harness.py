@@ -242,6 +242,11 @@ class _Bridges:
     def supports_private_channels(self, bridge_type: str) -> bool:
         return True
 
+    def channel_creation_blocker(
+        self, bridge_type: str, connection_config: object
+    ) -> str | None:
+        return None
+
     def adds_creator_to_public_channel(self, bridge_type: str) -> bool:
         return True
 
@@ -298,6 +303,7 @@ def _management(
         status_interval_seconds=STATUS_INTERVAL,
         server_url=SERVER_URL,
         third_party_avatars=True,
+        feature_flags=settings.feature_flags,
         controller_release=None,
         session_factory=session_factory,
         presence=protocol.connections.controllers,
@@ -316,6 +322,11 @@ def _management(
 
 def config() -> SwitchConfig:
     return SURFACE._config(frozenset(KNOWN_FEATURE_FLAGS))  # type: ignore[no-any-return]
+
+
+async def _trust_connection_check(**_: Any) -> Any:
+    """Switch Trust, asked to check a policy an organization connects."""
+    raise Reached("trust_connection_check")
 
 
 def build_gateway(session_factory: async_sessionmaker[AsyncSession]) -> FastAPI:
@@ -373,6 +384,7 @@ def build_gateway(session_factory: async_sessionmaker[AsyncSession]) -> FastAPI:
             ConnectorApps, "connector_apps", github_app=lambda: None
         ),
         config=settings,
+        trust_connection_check=_trust_connection_check,  # type: ignore[arg-type]
     )
     management = _management(session_factory, protocol, settings)
     init_management_dependencies(
@@ -390,6 +402,7 @@ def build_gateway(session_factory: async_sessionmaker[AsyncSession]) -> FastAPI:
         _store=OrganizationAppCredentialStore(settings.keyring),
     )
     gateway.state.controller_revoker = management.service
+    gateway.state.workspace_archive = Fake("workspace_archive")
     # Auto-route's decision client, asking nothing: the decision settings
     # routes read and save the workspace's row, and Test meets a service that
     # is down.
