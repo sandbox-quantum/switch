@@ -550,7 +550,7 @@ async def test_a_retry_after_the_workspaces_went_still_purges_the_organization(
     purge = app.state.organization_purge
     original = purge._delete_organization
 
-    async def interrupted(plan, request):
+    async def interrupted(plan, request, boxes_awaiting_removal):
         monkeypatch.setattr(purge, "_delete_organization", original)
         raise RuntimeError("interrupted")
 
