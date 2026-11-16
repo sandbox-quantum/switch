@@ -219,6 +219,8 @@ function entry(overrides: Partial<ConnectionCatalogEntry>): ConnectionCatalogEnt
     status: 'not_connected',
     unavailable_reason: null,
     unavailable_code: null,
+    sign_in_unavailable_reason: null,
+    server_setup_needed: false,
     read_only_reason: null,
     pass_through: true,
     token_lifetime: 3600,
@@ -384,7 +386,7 @@ it("offers the server's operator to set up an app that is not set up, on the car
 
   navigation.navigate('connectors', { connector: 'example' });
   await vi.waitFor(() => expect(page.querySelector('h1')?.textContent).toBe('Example'));
-  expect(button(/^Connect to Switch$/, page)).toBeUndefined();
+  expect(button(/^Connect Example$/, page)).toBeUndefined();
   await act(async () => button(/^Set up$/, page)!.click());
   expect(navigation.view()).toBe('admin');
   expect(navigation.params()).toEqual({ serverId: 'server', section: 'apps', app: 'example' });
@@ -460,7 +462,7 @@ it('tells anyone else who sets the app up, with no button to press', async () =>
   await act(async () => card.click());
   await vi.waitFor(() => expect(page.querySelector('h1')?.textContent).toBe('Example'));
   expect(button(/^Set up$/, page)).toBeUndefined();
-  expect(button(/^Connect to Switch$/, page)).toBeUndefined();
+  expect(button(/^Connect Example$/, page)).toBeUndefined();
 });
 
 it("says GitHub can't work on a server without https, and offers this computer's sign-in instead", async () => {
@@ -600,6 +602,24 @@ async function disconnect(page: HTMLElement): Promise<void> {
   await vi.waitFor(() => expect(dialog()).toBeNull());
 }
 
+it('shows the warning a disconnect gives, with the page it names as a link', async () => {
+  serveDisconnect();
+  const page_url = 'https://vendor.example.test/settings/tokens';
+  workspaces.disconnectService.mockResolvedValue({
+    warning: `Switch cannot revoke it. Delete it there: ${page_url}`,
+  });
+  const page = await render();
+  await openAtlassian(page);
+
+  await act(async () => button(/^Disconnect$/, page)!.click());
+  const dialog = () => document.querySelector<HTMLElement>('[data-slot="dialog-content"]');
+  await vi.waitFor(() => expect(dialog()?.textContent).toContain('M1 loses Atlassian.'));
+  await act(async () => button(/^Disconnect$/, dialog()!)!.click());
+  await vi.waitFor(() => expect(dialog()?.querySelector('a')?.getAttribute('href')).toBe(page_url));
+  // Shown without its scheme, and with hyphens a line cannot end at.
+  expect(dialog()!.querySelector('a')!.textContent).toBe('vendor.example.test/settings/tokens');
+});
+
 it('offers Connect on the profile after a disconnect, made in the workspace shown', async () => {
   serveDisconnect();
   const page = await render();
@@ -610,7 +630,7 @@ it('offers Connect on the profile after a disconnect, made in the workspace show
     workspaceId: 'workspace',
     service: 'atlassian',
   });
-  expect(button(/^Connect to Switch$/, page)).toBeDefined();
+  expect(button(/^Connect Atlassian$/, page)).toBeDefined();
   expect(button(/^Disconnect$/, page)).toBeUndefined();
   expect(page.textContent).not.toContain('Connected as ada');
   expect(page.textContent).toContain('None of your agents use Atlassian yet.');
@@ -633,7 +653,7 @@ it('says on the profile when re-reading the catalog fails, with Retry', async ()
 
   workspaces.getServiceConnections.mockImplementation(serve);
   await act(async () => button(/^retry$/i, page)!.click());
-  await vi.waitFor(() => expect(button(/^Connect to Switch$/, page)).toBeDefined());
+  await vi.waitFor(() => expect(button(/^Connect Atlassian$/, page)).toBeDefined());
   expect(page.querySelector('[role="alert"]')).toBeNull();
 });
 
@@ -799,6 +819,7 @@ const PASTED_TOKEN = {
     { name: 'pat', label: 'Personal access token', secret: true, help: null, choices: null },
   ],
   help_url: null,
+  create_url: null,
   expires: 'vendor' as const,
   access_note: 'Reaches what your token allows.',
 };

@@ -8,7 +8,8 @@ import {
   initialSignInChoices,
   lifetimeText,
   pasteAgainMethod,
-  pasteLinks,
+  connectWays,
+  prefilledAccess,
   pasteReady,
   pastedConnection,
   safetyLine,
@@ -86,6 +87,8 @@ function entry(overrides: Partial<ConnectionCatalogEntry> = {}): ConnectionCatal
     status: 'not_connected',
     unavailable_reason: null,
     unavailable_code: null,
+    sign_in_unavailable_reason: null,
+    server_setup_needed: false,
     read_only_reason: null,
     pass_through: true,
     token_lifetime: 3600,
@@ -186,6 +189,21 @@ describe('what each person is told about a connector that cannot be used', () =>
     connectable: false,
     unavailable_reason: 'Example is not set up on this server.',
     unavailable_code: 'app_not_set_up',
+  });
+
+  it('offers the operator to set up an app a pasted token works without', () => {
+    const tokenOnly = entry({
+      slug: 'github',
+      name: 'GitHub',
+      sign_in_unavailable_reason: "GitHub's connector app isn't set up on this server yet.",
+      server_setup_needed: true,
+    });
+    expect(connectorCardState(tokenOnly, OPERATOR)).toMatchObject({
+      kind: 'connect',
+      fix: 'set_up',
+    });
+    for (const viewer of [ADMIN, MEMBER])
+      expect(connectorCardState(tokenOnly, viewer)).toMatchObject({ kind: 'connect', fix: null });
   });
   const github = entry({
     slug: 'github',
@@ -511,7 +529,30 @@ describe('the profile', () => {
   it('names the sign-in type and how long access lasts', () => {
     expect(signInLabel(entry())).toBe('Sign in at Example');
     expect(signInLabel(entry({ auth_type: 'api_key' }))).toBe('Key');
-    expect(signInLabel(entry({ slug: 'github' }))).toBe('GitHub App');
+    expect(signInLabel(entry({ slug: 'github', pass_through: false }))).toBe('GitHub App');
+    const pat: ServicePasteMethod = {
+      method: 'token',
+      label: 'Personal access token',
+      fields: [{ name: 'pat', label: 'Token', secret: true, help: null, choices: null }],
+      help_url: null,
+      create_url: null,
+      expires: 'vendor',
+      access_note: 'Reaches what your token allows.',
+    };
+    const github = entry({ slug: 'github', name: 'GitHub', pass_through: false, paste: [pat] });
+    expect(signInLabel(github)).toBe('Switch GitHub App, or a personal access token');
+    expect(signInLabel({ ...github, status: 'connected' })).toBe('GitHub App');
+    expect(signInLabel({ ...github, sign_in_unavailable_reason: 'Not set up.' })).toBe(
+      'A personal access token (the Switch GitHub App isn’t set up here)'
+    );
+    expect(
+      signInLabel({
+        ...github,
+        status: 'connected',
+        method: 'token',
+        access_note: 'Reaches what your token allows.',
+      })
+    ).toBe('Personal access token');
     expect(tokenLifetimeLabel(entry({ token_lifetime: 3600 }))).toBe('1 hour');
     expect(tokenLifetimeLabel(entry({ token_lifetime: 28_800 }))).toBe('8 hours');
     expect(tokenLifetimeLabel(entry({ token_lifetime: 900 }))).toBe('15 minutes');
@@ -569,6 +610,7 @@ describe('the profile', () => {
         { name: 'pat', label: 'Personal access token', secret: true, help: null, choices: null },
       ],
       help_url: null,
+      create_url: null,
       expires: 'vendor',
       access_note: 'Reaches what your token allows.',
     };
@@ -628,6 +670,7 @@ describe('the profile', () => {
           label: 'Personal access token',
           fields: [{ name: 'pat', label: 'Token', secret: true, help: null, choices: null }],
           help_url: null,
+          create_url: null,
           expires: 'vendor',
           access_note: 'Reaches what your token allows.',
         },
@@ -998,6 +1041,7 @@ describe('the paste step', () => {
       { name: 'pat', label: 'Personal access token', secret: true, help: null, choices: null },
     ],
     help_url: null,
+    create_url: null,
     expires: 'vendor',
     access_note: 'Reaches what your token allows.',
   };
@@ -1015,6 +1059,7 @@ describe('the paste step', () => {
       },
     ],
     help_url: null,
+    create_url: null,
     expires: 'never',
     access_note: 'Reaches what your keys allow.',
   };
@@ -1053,13 +1098,44 @@ describe('the paste step', () => {
     });
   });
 
-  it('is offered under the sign-in for each way the server lists', () => {
-    expect(pasteLinks([token, keys])).toEqual([
-      { method: 'token', text: 'Use a token instead' },
-      { method: 'keys', text: 'Use API keys instead' },
+  it('lists the sign-in first, then each way the server lists, with who each suits', () => {
+    const datadog = entry({
+      slug: 'datadog',
+      name: 'Datadog',
+      token_lifetime: 3600,
+      paste: [token, keys],
+    });
+    const ways = connectWays(datadog);
+    expect(ways.map((way) => way.way)).toEqual(['sign_in', 'token', 'keys']);
+    expect(ways[0]).toMatchObject({
+      title: 'Sign in with Datadog',
+      lasts: 'Expires: 1 hour, refreshed by Switch',
+      bestFor: 'Best for most people',
+      recommended: true,
+    });
+    expect(ways.slice(1).map((way) => way.recommended)).toEqual([false, false]);
+    expect(ways[2]).toMatchObject({
+      title: keys.label,
+      line: keys.access_note,
+      lasts: 'Never expires; only Datadog can revoke it',
+    });
+    // A server that does not take keys that never expire lists only the token.
+    expect(connectWays({ ...datadog, paste: [token] }).map((way) => way.way)).toEqual([
+      'sign_in',
+      'token',
     ]);
-    expect(pasteLinks([token])).toEqual([{ method: 'token', text: 'Use a token instead' }]);
-    expect(pasteLinks([])).toEqual([]);
+    expect(connectWays(entry({ slug: 'other', paste: [token] }))[1]!.bestFor).toBeNull();
+  });
+
+  it('reads what a prefilled form for a new token asks for off its link', () => {
+    expect(
+      prefilledAccess(
+        'https://github.com/settings/personal-access-tokens/new?name=Switch&expires_in=30&contents=write&pull_requests=read'
+      )
+    ).toEqual(['Code: read and write', 'Pull requests: read', 'Expires in 30 days']);
+    expect(prefilledAccess('https://vendor.example.test/new?expires_in=none&issues=write')).toEqual(
+      ['Issues: read and write']
+    );
   });
 
   it('says in one line how long what Switch keeps lasts, each way', () => {
@@ -1181,12 +1257,18 @@ describe('the disconnect dialog', () => {
     expect(disconnectCopy(entry({ auth_type: 'oauth' }), ['M1']).lines).not.toContain(note);
   });
 
-  it('describes a pasted credential as pasted rather than a sign-in', () => {
+  it('says a pasted credential is forgotten, not revoked, and keeps working until deleted', () => {
+    const until = {
+      token: 'it expires or you delete it there',
+      keys: 'you delete it there',
+    } as const;
     for (const auth_type of ['oauth', 'api_key'] as const) {
       for (const method of ['token', 'keys'] as const) {
         const lines = disconnectCopy(entry({ auth_type, method }), ['M1']).lines;
-        expect(lines).toContain('Switch removes what you pasted for Example.');
-        expect(lines).not.toContain('Switch removes the sign-in it keeps for Example.');
+        expect(lines).toEqual([
+          'M1 loses Example.',
+          `Switch forgets what you pasted for Example but can't revoke it, so it keeps working in Example until ${until[method]}.`,
+        ]);
       }
     }
   });
@@ -1194,7 +1276,8 @@ describe('the disconnect dialog', () => {
   it('keeps the vendor-revocation warning for pasted API-key credentials', () => {
     for (const method of ['token', 'keys']) {
       const lines = disconnectCopy(entry({ auth_type: 'api_key', method }), ['M1']).lines;
-      expect(lines).toContain("Switch can't revoke this key at Example; delete it there.");
+      expect(lines.join(' ')).toContain("can't revoke it");
+      expect(lines).not.toContain("Switch can't revoke this key at Example; delete it there.");
     }
   });
 

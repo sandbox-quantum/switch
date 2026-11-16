@@ -3,7 +3,10 @@ import {
   FLAGS_NOT_READ_YET,
   type ServerFeatureFlags,
 } from '@shared/core/feature-flags/feature-flags';
-import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
+import {
+  type ConnectionCatalogEntry,
+  githubThroughApp,
+} from '@shared/core/switch-servers/connection-catalog';
 import { lifetimeText, pasteAgainMethod, pastedConnection } from './connect-flow';
 import type { ConnectorCardState, ConnectorFix } from './connector-card-state';
 
@@ -172,9 +175,16 @@ export function keyAccessText(entry: ConnectionCatalogEntry): string | null {
 
 /** How the service is connected, for the profile's side column. */
 export function signInLabel(entry: ConnectionCatalogEntry): string {
-  if (entry.slug === 'github') return 'GitHub App';
   const pasted = pastedConnection(entry);
   if (pasted !== null) return pasted.way;
+  if (githubThroughApp(entry)) {
+    if (entry.sign_in_unavailable_reason !== null)
+      return 'A personal access token (the Switch GitHub App isn’t set up here)';
+    const token = entry.paste.find((way) => way.method === 'token');
+    return token && !isYours(entry)
+      ? `Switch GitHub App, or a ${token.label.toLowerCase()}`
+      : 'GitHub App';
+  }
   return entry.auth_type === 'api_key' ? 'Key' : `Sign in at ${entry.name}`;
 }
 

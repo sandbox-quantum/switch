@@ -459,6 +459,8 @@ export const switchServersController = createRPCController({
     const connection = await withReachableServerWorkspaceSession(serverId, (server) =>
       getGitHubConnection(server)
     );
+    if (connection.install_url === null)
+      throw new Error('The Switch GitHub App is not set up on this server.');
     if (
       !/^https:\/\/github\.com\/apps\/[a-z0-9-]+\/installations\/new$/.test(connection.install_url)
     )
