@@ -267,12 +267,15 @@ contracts:
     # Revision 4 adds the paste route of a service connection (`PasteBody`)
     # and the `choices` a sign-in starts with (`StartFlow`).
     #
+    # Revision 5 adds a template's `use_case` to the bodies that create and
+    # change one (`TemplateCreateRequest`, `TemplateUpdateRequest`).
+    #
     # A strict request body changing is the change most easily missed, so
     # core/tests/switch_core/gateway/test_gateway_api_revision.py fails until
     # it is recorded against a raised `speaks`.
     artifacts:
-      switch-core: { speaks: 4, accepts: 2 }
-      switch-console: { speaks: 4, accepts: 1 }
+      switch-core: { speaks: 5, accepts: 2 }
+      switch-console: { speaks: 5, accepts: 1 }
 
   stack-compose:
     description: >-
