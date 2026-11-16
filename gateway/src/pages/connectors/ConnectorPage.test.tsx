@@ -611,6 +611,47 @@ describe("connecting from a connector's page", () => {
     expect(await screen.findByText("That Example sign-in has expired. Connect again.")).toBeTruthy();
   });
 
+  it("keeps Back leading to the page that opened it across the vendor's sign-in", async () => {
+    signedIn();
+    server(serviceConnection({ web_sign_in: true }), [], null, {
+      "POST /service-connections/example/flows/web": { id: "flow-1", url: "https://switch.example.test/authorize?state=flow-1" },
+      "GET /service-connections/example/flows/flow-1": {
+        status: "connected",
+        account: "ada@example.test",
+        error: null,
+        warning: null,
+      },
+      "DELETE /service-connections/example/flows/flow-1": {},
+    });
+    renderPage("example", { back: { label: "planner", to: "/agents/a1" } });
+    fireEvent.click(await screen.findByRole("button", { name: "Connect" }));
+    await waitFor(() => expect(assign).toHaveBeenCalled());
+    cleanup();
+
+    // The vendor sends the browser back by a fresh load, with no history state.
+    renderPage("example", null, "?sign_in=flow-1");
+    expect(await screen.findByText("Connected to Example as ada@example.test.")).toBeTruthy();
+    await waitFor(() => expect(screen.getByTestId("query").textContent).toBe(""));
+    fireEvent.click(screen.getByRole("button", { name: "planner" }));
+    await waitFor(() => expect(screen.getByTestId("where").textContent).toBe("/agents/a1"));
+  });
+
+  it("doesn't take the Back kept for another connector's sign-in", async () => {
+    signedIn();
+    window.sessionStorage.setItem(
+      "switch.connectorBackAfterSignIn",
+      JSON.stringify({ service: "other", back: { label: "planner", to: "/agents/a1" }, at: Date.now() }),
+    );
+    server(serviceConnection({ web_sign_in: true }), [], null, {
+      "GET /service-connections/example/flows/flow-1": { status: "connected", account: null, error: null, warning: null },
+      "DELETE /service-connections/example/flows/flow-1": {},
+    });
+    renderPage("example", null, "?sign_in=flow-1");
+
+    expect(await screen.findByRole("button", { name: "Connectors" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "planner" })).toBeNull();
+  });
+
   it("reads GitHub's outcome from its own flow", async () => {
     signedIn();
     server(serviceConnection({ slug: "github", name: "GitHub", web_sign_in: true }), [], null, {
