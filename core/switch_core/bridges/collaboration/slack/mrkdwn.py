@@ -22,6 +22,25 @@ def escape_mrkdwn(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+# An `&` that does not already start one of the three entities Slack decodes.
+_BARE_AMPERSAND = re.compile(r"&(?!(?:amp|lt|gt);)")
+
+
+def escape_body_markup(text: str) -> str:
+    """`escape_mrkdwn` for a body that may already carry Slack's entities.
+
+    A message body arrives holding pieces escaped on their way in — a display
+    name through `escape_label_for_body`, a card's text through
+    `escape_mrkdwn` — and escaping those a second time would show the reader
+    `&lt;` where the name had a `<`. So an `&` that already starts `&amp;`,
+    `&lt;` or `&gt;` is left as it is; every other `&`, and every `<` and `>`,
+    is escaped. An entity an agent typed therefore shows as its character,
+    which is all it ever did, and it cannot open markup: Slack never parses
+    the text an entity decodes to.
+    """
+    return _BARE_AMPERSAND.sub("&amp;", text).replace("<", "&lt;").replace(">", "&gt;")
+
+
 def plain_text(text: str) -> str:
     """Strip Switch's markup for somewhere that renders none.
 

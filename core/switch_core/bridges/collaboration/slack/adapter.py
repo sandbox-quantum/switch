@@ -83,7 +83,10 @@ from switch_core.bridges.collaboration.slack.avatar import (
     on_slack_background,
     slack_icon_argument,
 )
-from switch_core.bridges.collaboration.slack.mrkdwn import escape_mrkdwn
+from switch_core.bridges.collaboration.slack.mrkdwn import (
+    escape_body_markup,
+    escape_mrkdwn,
+)
 from switch_core.bridges.collaboration.slack.ui_blocks import ui_spec_to_blocks
 from switch_core.chat_account_links import ACCOUNT_COMMANDS
 from switch_core.room_wide_mention import (
@@ -3739,7 +3742,23 @@ class SlackAdapter(PlatformAdapter):
     # ── Translation ──────────────────────────────────────────────────────────
 
     def _render_outbound(self, content: str) -> str:
-        return self._markdown_to_mrkdwn(self._translate_mentions_to_slack(content))
+        """Switch Markdown as mrkdwn, where only this bridge's markup is live.
+
+        Slack's own syntax already in the body is escaped before anything is
+        translated, the order `_card_mrkdwn` keeps for a card: a `<@U…>` or
+        `<!subteam^…>` an agent echoed from a web page or a pasted message
+        would otherwise reach whoever it names. What the translation writes
+        after that — the `<@U…>` for a name it resolved, a link from Markdown
+        — is the only markup Slack reads.
+
+        The app's own mention is put back: it is how a notice from the bridge
+        core names the app (`render_app_mention`), and it pages nobody."""
+        escaped = escape_body_markup(content)
+        if self._bot_user_id:
+            escaped = escaped.replace(
+                f"&lt;@{self._bot_user_id}&gt;", f"<@{self._bot_user_id}>"
+            )
+        return self._markdown_to_mrkdwn(self._translate_mentions_to_slack(escaped))
 
     def defuse_mass_mentions(self, text: str) -> str:
         """Escape Slack's own channel-wide syntax; defuse the words as prose.
