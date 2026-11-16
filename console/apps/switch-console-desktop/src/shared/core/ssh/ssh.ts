@@ -19,7 +19,6 @@ export interface SshConfig {
   authType: 'password' | 'key' | 'agent';
   privateKeyPath?: string;
   useAgent?: boolean;
-  forwardAgent?: boolean;
   proxyJump?: string;
 }
 

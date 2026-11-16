@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as WorkspaceSession from '@main/core/workspaces/workspace-session';
 import { HostUnreachableError } from '@shared/core/remote-hosts/reachability';
+import type * as ServerAddress from './server-address';
 
 const fetchMe = vi.hoisted(() => vi.fn());
 const getServer = vi.hoisted(() => vi.fn());
@@ -114,7 +115,9 @@ vi.mock('./gateway-client', () => ({
   registerKnownAgent: vi.fn(),
   GatewayError: class GatewayError extends Error {},
 }));
-vi.mock('./server-address', () => ({
+vi.mock('./server-address', async (importOriginal) => ({
+  assertEncryptedOrConfirmed: (await importOriginal<typeof ServerAddress>())
+    .assertEncryptedOrConfirmed,
   assertServerAddress,
   assertServesDashboard,
   NotTheServerAddressError,
@@ -680,6 +683,7 @@ describe('editing a server', () => {
       id: 'srv',
       name: 'S',
       url: 'https://switch.example.com',
+      allowUnencrypted: false,
     });
 
     expect(result.propagation.urlChanged).toBe(true);
@@ -697,6 +701,7 @@ describe('editing a server', () => {
       id: 'srv',
       name: 'Renamed',
       url: 'http://localhost:8000/',
+      allowUnencrypted: false,
     });
 
     expect(result.propagation).toEqual({ urlChanged: false, agents: [] });
@@ -714,15 +719,31 @@ describe('editing a server', () => {
         id: 'srv',
         name: 'S',
         url: 'https://switch-gateway.example.com',
+        allowUnencrypted: false,
       })
     ).rejects.toThrow('answered with a web page');
     expect(updateServer).not.toHaveBeenCalled();
     expect(propagateServerApiUrl).not.toHaveBeenCalled();
   });
+
+  it('saves nothing when the new address is plain http to another machine and not confirmed', async () => {
+    getServer.mockResolvedValue(server({ url: 'https://switch.example.com' }));
+
+    await expect(
+      switchServersController.updateServer({
+        id: 'srv',
+        name: 'S',
+        url: 'http://switch.example.com',
+        allowUnencrypted: false,
+      })
+    ).rejects.toThrow(/not encrypted/);
+    expect(updateServer).not.toHaveBeenCalled();
+    expect(assertServerAddress).not.toHaveBeenCalled();
+  });
 });
 
 describe('adding a server by URL', () => {
-  const params = { name: 'S', url: 'http://switch' };
+  const params = { name: 'S', url: 'http://switch', allowUnencrypted: true };
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -746,6 +767,25 @@ describe('adding a server by URL', () => {
       outcome: 'success',
       failure_reason: 'none',
     });
+  });
+
+  it('refuses plain http to another machine unless the user confirmed it', async () => {
+    await expect(
+      switchServersController.addServer({ ...params, allowUnencrypted: false })
+    ).rejects.toThrow(/not encrypted/);
+    expect(addServer).not.toHaveBeenCalled();
+  });
+
+  it('adds plain http to this computer without asking', async () => {
+    addServer.mockResolvedValue(server({ id: 'local' }));
+
+    await switchServersController.addServer({
+      name: 'S',
+      url: 'http://127.0.0.1:8000',
+      allowUnencrypted: false,
+    });
+
+    expect(addServer).toHaveBeenCalledWith({ name: 'S', url: 'http://127.0.0.1:8000' });
   });
 
   it('describes an address that failed to register by the address itself', async () => {

@@ -1,5 +1,6 @@
 import { getDomain } from 'tldts';
 import { log } from '@main/lib/logger';
+import { isUnencryptedRemoteUrl } from '@shared/core/switch-servers/loopback';
 import {
   dashboardOrigin,
   type SwitchServer,
@@ -23,6 +24,29 @@ export class NotTheServerAddressError extends Error {
         `connect to, often the same host on port 8000.`
     );
     this.name = 'NotTheServerAddressError';
+  }
+}
+
+/** A plain http address for a server on another machine, not confirmed by the user. */
+export class UnencryptedServerAddressError extends Error {
+  constructor(url: string) {
+    super(
+      `${url} is not encrypted: a password, the session and agents' tokens sent to it would ` +
+        `cross the network in the clear. Use the server's https address, or confirm that you ` +
+        `want to connect without encryption.`
+    );
+    this.name = 'UnencryptedServerAddressError';
+  }
+}
+
+/**
+ * Refuse plain http to another machine unless the user confirmed it. http to
+ * this computer itself is fine: nothing in between can read it, and it is
+ * where a server Console runs is reached.
+ */
+export function assertEncryptedOrConfirmed(url: string, allowUnencrypted: boolean): void {
+  if (isUnencryptedRemoteUrl(url) && !allowUnencrypted) {
+    throw new UnencryptedServerAddressError(url);
   }
 }
 

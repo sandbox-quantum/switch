@@ -13,6 +13,7 @@ import {
   SWITCH_CONSOLE_ISSUES_NEW_URL,
   SWITCH_CONSOLE_RELEASES_URL,
 } from '@shared/urls';
+import { DEVTOOLS_ENABLED } from './devtools';
 import { selectAll } from './select-all';
 import { getMainWindow } from './window';
 
@@ -135,7 +136,7 @@ export function setupApplicationMenu(): void {
       submenu: [
         { role: 'reload' as const },
         { role: 'forceReload' as const },
-        { role: 'toggleDevTools' as const },
+        ...(DEVTOOLS_ENABLED ? [{ role: 'toggleDevTools' as const }] : []),
         { type: 'separator' as const },
         { role: 'resetZoom' as const },
         { role: 'zoomIn' as const },
