@@ -182,3 +182,22 @@ describe("a read-only agent page", () => {
     expect(screen.queryByText(/only its owner and this workspace's admins/)).toBeNull();
   });
 });
+
+describe("agent options when the agent types couldn't be loaded", () => {
+  it("says the types couldn't be loaded, not that Switch no longer knows this one", () => {
+    showPageWith(MANAGER);
+    cleanup();
+    vi.mocked(hooks.useKnownAgentTypes).mockReturnValue({
+      data: null,
+      loading: false,
+      error: "503 Service Unavailable",
+      refetch: vi.fn(),
+    });
+    render(<AgentDetailPage />);
+
+    expect(
+      screen.getByText("Couldn't load the agent types, so this agent's options can't be shown: 503 Service Unavailable"),
+    ).toBeTruthy();
+    expect(screen.queryByText(/Switch no longer describes its options/)).toBeNull();
+  });
+});

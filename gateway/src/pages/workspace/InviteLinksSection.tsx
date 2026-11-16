@@ -185,7 +185,7 @@ export default function InviteLinksSection({ tenantId, inOrganization, members }
       {error && <Alert severity="error">{error}</Alert>}
       {loading ? (
         <CircularProgress />
-      ) : (
+      ) : error !== null && rows.length === 0 ? null : (
         <DataTable
           rows={rows}
           columns={columns}

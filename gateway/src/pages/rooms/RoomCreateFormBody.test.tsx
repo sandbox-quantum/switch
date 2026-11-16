@@ -140,3 +140,21 @@ describe("New room: why Create is disabled", () => {
     expect(create().disabled).toBe(true);
   });
 });
+
+describe("New room: lists that could not be loaded", () => {
+  it("says so, rather than offering no agents and no messaging apps", () => {
+    vi.mocked(hooks.useAgents).mockReturnValue({ data: null, loading: false, error: "Not authenticated", refetch: vi.fn() });
+    vi.mocked(hooks.useBridges).mockReturnValue({ data: null, loading: false, error: "500 Internal Server Error", refetch: vi.fn() });
+    render(<RoomCreateFormBody />);
+
+    expect(screen.getByText("Couldn't load the agents: Not authenticated")).toBeTruthy();
+    expect(screen.getByText("Couldn't load the messaging apps: 500 Internal Server Error")).toBeTruthy();
+  });
+
+  it("says nothing of the room groups to someone who may not file a room in one", () => {
+    vi.mocked(hooks.useRoomGroups).mockReturnValue({ data: null, loading: false, error: "Forbidden", refetch: vi.fn() });
+    showForm();
+
+    expect(screen.queryByText(/Couldn't load the room groups/)).toBeNull();
+  });
+});

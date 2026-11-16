@@ -328,7 +328,7 @@ function OptionsSection({
   canEdit: boolean;
   onUpdated: () => void;
 }) {
-  const { data: knownTypes } = useKnownAgentTypes();
+  const { data: knownTypes, loading: typesLoading, error: typesError } = useKnownAgentTypes();
   const spec = knownTypes?.find((t) => t.key === agent.known_agent_type);
 
   const initial = useMemo(() => {
@@ -373,7 +373,13 @@ function OptionsSection({
       <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
         Options
       </Typography>
-      {!spec ? (
+      {typesLoading ? (
+        <CircularProgress size={20} />
+      ) : typesError !== null ? (
+        <Alert severity="error">
+          Couldn't load the agent types, so this agent's options can't be shown: {typesError}
+        </Alert>
+      ) : !spec ? (
         <Alert severity="warning">
           Unknown agent type "{agent.known_agent_type}" — Switch no longer
           describes its options.

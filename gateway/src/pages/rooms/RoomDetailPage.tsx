@@ -800,9 +800,13 @@ function ParticipantsSection({
   viewerId: string | null;
   onChanged: () => void;
 }) {
-  const { data: allAgents, loading: agentsLoading } = useAgents();
+  const { data: allAgents, loading: agentsLoading, error: agentsError } = useAgents();
   // Only the agents the server's invite rule lets the viewer bring in.
-  const { data: candidates, loading: candidatesLoading } = useRoomAgentCandidates(room.id);
+  const {
+    data: candidates,
+    loading: candidatesLoading,
+    error: candidatesError,
+  } = useRoomAgentCandidates(room.id);
   const [addUserOpen, setAddUserOpen] = useState(false);
   const [addAgentOpen, setAddAgentOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -932,6 +936,11 @@ function ParticipantsSection({
         Participants
       </Typography>
       {error && <Alert severity="error">{error}</Alert>}
+      {agentsError && (
+        <Alert severity="error">
+          Couldn't load the agents, so those in the room show by id: {agentsError}
+        </Alert>
+      )}
 
       <Box>
         <Typography variant="body2" gutterBottom>
@@ -980,6 +989,7 @@ function ParticipantsSection({
               submitLabel="Add"
               options={addableAgentOptions}
               loading={agentsLoading || candidatesLoading}
+              loadError={agentsError ?? candidatesError}
               subToggleCount={(id) => childCountByParent.get(id) ?? 0}
               subToggleLabel={(n) => `Also add ${n} subagent(s)`}
               onClose={() => setAddAgentOpen(false)}
@@ -1070,7 +1080,7 @@ function BridgeUserPicker({
   onClose: () => void;
   onSubmit: (names: string[]) => Promise<void>;
 }) {
-  const { data: bridgeUsers, loading } = useBridgeUsers(bridgeId);
+  const { data: bridgeUsers, loading, error } = useBridgeUsers(bridgeId);
   const options = useMemo<PickerOption[]>(
     () =>
       (bridgeUsers ?? [])
@@ -1091,6 +1101,7 @@ function BridgeUserPicker({
       submitLabel="Add"
       options={options}
       loading={loading}
+      loadError={error}
       onClose={onClose}
       onSubmit={onSubmit}
     />

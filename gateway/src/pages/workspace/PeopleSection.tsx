@@ -150,7 +150,7 @@ export default function PeopleSection({ tenantId }: { tenantId: string }) {
       />
       {people.loading ? (
         <CircularProgress />
-      ) : (
+      ) : people.error !== null ? null : (
         <DataTable
           rows={rows}
           columns={columns}

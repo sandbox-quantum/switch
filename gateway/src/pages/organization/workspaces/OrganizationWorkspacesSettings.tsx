@@ -45,7 +45,7 @@ export default function OrganizationWorkspacesSettings() {
           <Typography variant="h5">Workspaces</Typography>
           <Stack direction="row" spacing={0.5} sx={{ alignItems: "center" }}>
             <Typography variant="body2" color="text.secondary">
-              The workspaces in {organization.data?.name ?? ""}.
+              The workspaces in {organization.data?.name ?? "this organization"}.
             </Typography>
             <InfoTip>
               Org admins administer every workspace, so they aren't listed under Admins, and each

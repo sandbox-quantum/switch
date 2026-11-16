@@ -41,4 +41,14 @@ describe("PrivateChannelRoomsSection", () => {
     expect(screen.queryByText(/Public room/)).toBeNull();
     expect(screen.queryByRole("link", { name: "Review" })).toBeNull();
   });
+
+  it("says so when the count can't be read, rather than hiding the warning", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ detail: "database unavailable" }), { status: 503 })),
+    );
+    show();
+
+    await screen.findByText("Couldn't check for Public rooms on private channels: database unavailable");
+  });
 });

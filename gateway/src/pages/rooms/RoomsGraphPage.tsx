@@ -62,7 +62,7 @@ export default function RoomsGraphPage() {
   const scope: ListScope = listScopeOf(capabilities);
   const { data: allRooms, loading: roomsLoading, error: roomsError } = useLoad(loadRoomsWithArchived);
   const rooms = useMemo(() => (allRooms ? roomsInScope(allRooms, scope) : null), [allRooms, scope]);
-  const { data: groups } = useRoomGroups();
+  const { data: groups, error: groupsError } = useRoomGroups();
   const { data: graph, loading: graphLoading, error: graphError } = useRoomGraph();
 
   const loading = roomsLoading || graphLoading;
@@ -217,16 +217,23 @@ export default function RoomsGraphPage() {
         <Typography variant="h5" sx={{ flexGrow: 1 }}>
           Rooms graph
         </Typography>
-        <Typography variant="caption" color="text.secondary">
-          {[count(nodes.length, "room"), count(links.length, "link"), count(legend.length, "group")].join(" · ")}
-        </Typography>
+        {!loading && error === null && (
+          <Typography variant="caption" color="text.secondary">
+            {[count(nodes.length, "room"), count(links.length, "link"), count(legend.length, "group")].join(" · ")}
+          </Typography>
+        )}
       </Stack>
 
       <RoomFilters rooms={rooms ?? []} groups={groupList} byId={groupIndex} state={filters} />
 
       {error && (
         <Alert severity="error" sx={{ mb: 2 }}>
-          {error}
+          Couldn't load the rooms graph: {error}
+        </Alert>
+      )}
+      {groupsError && (
+        <Alert severity="warning" sx={{ mb: 2 }}>
+          Couldn't load the room groups, so rooms aren't coloured by group: {groupsError}
         </Alert>
       )}
 
@@ -305,7 +312,7 @@ export default function RoomsGraphPage() {
             </Stack>
           </Box>
         )}
-        {!loading && nodes.length === 0 && (
+        {!loading && error === null && nodes.length === 0 && (
           <Box
             sx={{
               position: "absolute",
