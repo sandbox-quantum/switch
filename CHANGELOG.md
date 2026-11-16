@@ -264,7 +264,8 @@ version of their own to them without also giving them a release of their own.
   `POST /templates/{id}/runs` counts a run of a template the caller may read.
   Switch Console reports each finished run there, and the agent operation
   `run_template` counts its own, as does `POST /rooms/from-template-document`
-  when it is given the template's id. Nothing checks that a reported run
+  when it is given the template's id and runs that template's own document.
+  Nothing checks that a reported run
   happened, so a person's report counts at most once per template in ten
   minutes, and not at all just after a run the server counted for them; the
   answer's `counted` says which. Runs from before this release are not
@@ -510,7 +511,9 @@ version of their own to them without also giving them a release of their own.
   bookmarks still land. `gateway_v2` is still accepted in
   `FEATURE_FLAGS_ENABLED`, so a deployment that names it keeps starting,
   and the server always reports it on, which is how Switch Console picks
-  its links into the dashboard.
+  its links into the dashboard. Entries in this release that describe a
+  page behind `gateway_v2`, or with it on, describe this layout, which every
+  server now has.
 - **The dashboard's Templates page is a card library.** All, Official and
   Workspace tabs with live counts, one search (name, description, use case
   and owner), type chips and Only mine; the workspace's own templates come
@@ -1261,7 +1264,8 @@ version of their own to them without also giving them a release of their own.
   making it an organization admin handed them every workspace in the
   organization. `PATCH /gateway/tenants/{id}/members/{user_id}` and
   `PATCH /gateway/organizations/current/members/{user_id}` now refuse it with
-  409, the workspace members list says why and the organization's never offers
+  409, and so does accepting an admin invitation as it; the workspace members
+  list says why and the organization's never offers
   it, and an organization whose members come from a WorkOS directory keeps it a
   member however the directory lists it, recording the conflict in its audit
   log.
@@ -1292,10 +1296,12 @@ version of their own to them without also giving them a release of their own.
   directory with keys of the admin's.
 - **Names refuse characters that change how they read without showing.**
   Bidirectional controls (U+202A-U+202E, U+2066-U+2069) and zero-width or
-  invisible characters (U+200B-U+200F, U+2060, U+FEFF) are refused with a
-  422 naming the character when a room, room group, reference, document,
-  package, workspace or organization is created or renamed, and in a
-  person's name at sign-up and in their profile; a room "fe-rtl" followed by
+  invisible characters (U+200B, U+200E, U+200F, U+2060, U+FEFF) are refused
+  with a 422 naming the character when a room, room group, reference,
+  document, package, workspace or organization is created or renamed, and in
+  a person's name at sign-up, in their profile and when an operator creates
+  their account. The zero-width joiners (U+200C, U+200D) are kept, as emoji
+  and Persian and Indic names need them. A room "fe-rtl" followed by
   a right-to-left override showed "exe.perls" for "slrep.exe". Agent display
   names refuse them as they refuse other unsafe text (400), and so do room
   and group names in templates and an agent's `create_room`, `update_room`
@@ -1321,14 +1327,11 @@ version of their own to them without also giving them a release of their own.
   and status.
 
 #### Added
-- **The dashboard's new layout, behind the `gateway_v2` flag.** Overview,
-  Templates and Connectors on the rail; Workspace and Organization settings
-  as areas of their own, each with a menu of only the pages you may open,
-  reopening the page you last used; and the operator's pages under Platform.
-  Today's pages move into it, and their old URLs lead there. It is still
-  being built, so turn it on for development and staging only. With it off,
-  the dashboard is laid out as before, and the new URLs lead back to today's
-  pages.
+- **The dashboard's new layout.** Overview, Templates and Connectors on the
+  rail; Workspace and Organization settings as areas of their own, each with
+  a menu of only the pages you may open, reopening the page you last used;
+  and the operator's pages under Platform. Today's pages move into it, and
+  their old URLs lead there.
 - **The new layout's Overview counts the workspace's agents, users and
   rooms.** Each card opens its list, and View graph opens the ecosystem
   graph, which leaves the new rail. A workspace's admins see its totals; a

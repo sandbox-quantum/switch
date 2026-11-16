@@ -6,13 +6,13 @@ import type { FastScenario } from "./scenario.ts";
  * What ends: ownership, a workspace and an account. The harness admin hands a
  * package to a colleague, who cannot hand on what is not theirs. A second
  * person makes a workspace of their own and deletes it, once they type its
- * name right. Asked before deleting, the colleague's account could go and the
- * operator's own could not. The colleague cannot delete anyone's account; the
- * operator deletes theirs, which ends their sign-in.
+ * name right. Asked before deleting, the colleague's account could go, and so
+ * could the operator's own while another operator remains: only the server's
+ * administrator account is kept. The colleague cannot delete anyone's
+ * account; the operator deletes theirs, which ends their sign-in.
  *
  * The workspace maker is a deployment operator, so they can make a
- * workspace, and an operator's account cannot be deleted, so this runs only
- * on a stack thrown away after the run.
+ * workspace, and this runs only on a stack thrown away after the run.
  */
 export const accountLifecycle: FastScenario = {
   header: {
