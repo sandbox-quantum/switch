@@ -743,7 +743,10 @@ async def _audit_history_sessions(
         await check_purge_privilege(engine, owner=False)
         return None, session_factory
     owner_engine = create_async_engine(
-        owner_url, poolclass=NullPool, connect_args=app_connect_args(config)
+        owner_url,
+        poolclass=NullPool,
+        connect_args=app_connect_args(config),
+        hide_parameters=True,
     )
     await check_purge_privilege(owner_engine, owner=True)
     return owner_engine, create_session_factory(owner_engine)
