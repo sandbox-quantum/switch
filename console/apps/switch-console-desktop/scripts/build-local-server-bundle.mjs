@@ -157,6 +157,25 @@ async function unpackPinned(archive, destination) {
   tar(args);
 }
 
+/**
+ * Copy the VC++ runtime DLLs into `dir` from this build machine's System32,
+ * keeping any `dir` already has. A clean Windows lacks them, and the
+ * PostgreSQL binaries and Python's C++ extensions (greenlet) do not load
+ * without them; shipping them app-local is what the Redistributable's licence
+ * allows.
+ */
+async function copyVcRuntime(dir) {
+  const system32 = path.win32.join(process.env.SystemRoot, 'System32');
+  for (const dll of pins.VC_RUNTIME_DLLS) {
+    if (existsSync(path.join(dir, dll))) continue;
+    const source = path.win32.join(system32, dll);
+    if (!existsSync(source)) {
+      throw new Error(`${source} is missing; the bundle needs it to run on a clean Windows.`);
+    }
+    await copyFile(source, path.join(dir, dll));
+  }
+}
+
 const stage = path.join(work, 'bundle');
 await mkdir(stage, { recursive: true });
 
@@ -200,21 +219,7 @@ if (postgres) {
   for (const drop of ['share/doc', 'share/man', 'share/locale']) {
     await rm(path.join(dir, drop), { recursive: true, force: true });
   }
-  // The Windows build links against the VC++ runtime, which a clean Windows
-  // lacks. Ship it next to the binaries (app-local deployment, which the
-  // Redistributable's licence allows) so they load without it installed.
-  if (process.platform === 'win32') {
-    const system32 = path.win32.join(process.env.SystemRoot, 'System32');
-    for (const dll of pins.VC_RUNTIME_DLLS) {
-      const source = path.win32.join(system32, dll);
-      if (!existsSync(source)) {
-        throw new Error(
-          `${source} is missing; the bundled PostgreSQL needs it on a clean Windows.`
-        );
-      }
-      await copyFile(source, path.join(dir, 'bin', dll));
-    }
-  }
+  if (process.platform === 'win32') await copyVcRuntime(path.join(dir, 'bin'));
   // Recreate the shared-library links npm packaging cannot carry.
   const linksFile = path.join(dir, 'pg-symlinks.json');
   if (existsSync(linksFile)) {
@@ -253,6 +258,7 @@ await cp(path.join(pythons, pythonDir.name), path.join(stage, 'python'), {
   recursive: true,
   verbatimSymlinks: true,
 });
+if (process.platform === 'win32') await copyVcRuntime(path.join(stage, 'python'));
 const python =
   process.platform === 'win32'
     ? path.join(stage, 'python', 'python.exe')

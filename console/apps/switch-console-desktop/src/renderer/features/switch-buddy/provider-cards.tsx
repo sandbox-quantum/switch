@@ -167,24 +167,23 @@ export function SelectedPanel({
                   : `Install ${provider.name}`}
             </Button>
             {installFailed && (
-              <>
-                <Button
-                  variant="outline"
-                  onClick={() =>
-                    void openExternalUrl(docUrl, `Could not open how to install ${provider.name}`)
-                  }
-                >
-                  <ExternalLink className="size-3.5" />
-                  How to install {provider.name}
-                </Button>
-                <Button variant="ghost" onClick={onCheckAgain} disabled={busy !== null}>
-                  {busy === 'check' && <Spinner className="size-3.5" />}
-                  Check again
-                </Button>
-              </>
+              <Button
+                variant="outline"
+                onClick={() =>
+                  void openExternalUrl(docUrl, `Could not open how to install ${provider.name}`)
+                }
+              >
+                <ExternalLink className="size-3.5" />
+                How to install {provider.name}
+              </Button>
             )}
+            {/* Also when nothing failed: a CLI installed outside Console is only found on a check. */}
+            <Button variant="ghost" onClick={onCheckAgain} disabled={busy !== null}>
+              {busy === 'check' && <Spinner className="size-3.5" />}
+              Check again
+            </Button>
           </div>
-          {installFailed && checked && <p className="text-xs text-foreground-muted">{checked}</p>}
+          {checked && <p className="text-xs text-foreground-muted">{checked}</p>}
         </>
       );
     case 'sign-in': {
