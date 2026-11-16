@@ -119,7 +119,7 @@ export function useManagedAgents(serverId: string | null) {
     queryKey: [MANAGED_AGENTS_KEY, serverId, workspaceId, user?.id ?? null],
     queryFn: async () => {
       const agents = await rpc.managedAgents.list(serverId!);
-      recordOwnBuddy(serverId!, agents);
+      recordOwnBuddy(serverId!, workspaceId, agents);
       return agents;
     },
     enabled: signedIn,
