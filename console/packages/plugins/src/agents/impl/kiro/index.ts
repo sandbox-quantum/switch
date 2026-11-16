@@ -6,7 +6,8 @@ const KIRO_INSTALL_COMMAND = 'curl -fsSL https://cli.kiro.dev/install | bash';
 export const plugin = definePlugin(
   {
     id: 'kiro',
-    name: 'Kiro',
+    name: 'AWS Kiro',
+    shortName: 'Kiro',
     description:
       "Kiro's agent CLI over ACP, with its own sign-in, model choice, approvals and persistent conversations.",
     websiteUrl: 'https://kiro.dev/docs/cli/acp/',

@@ -66,6 +66,7 @@ describe('a provider added as a plugin and a runtime', () => {
       description: 'A made-up agent CLI.',
       docUrl: 'https://dummy.example.com',
       cliLabel: 'Dummy CLI',
+      shortName: 'Dummy',
       loginCommand: 'dummy-agent login',
       knownAgentType: 'dummy',
     });

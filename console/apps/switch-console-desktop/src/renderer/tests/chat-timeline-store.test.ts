@@ -191,8 +191,9 @@ describe('ChatTimeline', () => {
     const timeline = new ChatTimeline('room-1', value);
     const requestId = timeline.send(input([file('ok.txt'), file('big.bin')]));
     await vi.waitFor(() => expect(timeline.pending[0]?.state).toBe('failed'));
-    expect(timeline.pending[0]?.error).toBe('big.bin could not be attached: Too large');
+    expect(timeline.pending[0]?.error).toBeNull();
     expect(timeline.pending[0]?.files.map((each) => each.state)).toEqual(['uploaded', 'refused']);
+    expect(timeline.pending[0]?.files[1]?.error).toBe('Too large');
     expect(timeline.pending[0]?.posted).toBe(false);
     expect(calls.send).toHaveLength(0);
 

@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { type GlossaryTerm, TermInfo } from '@renderer/lib/components/term-info';
 import { cn } from '@renderer/utils/utils';
 
 /**
@@ -9,6 +10,7 @@ import { cn } from '@renderer/utils/utils';
 export function ServerPage({
   width,
   title,
+  term,
   description,
   action,
   footer,
@@ -17,6 +19,8 @@ export function ServerPage({
   /** The column's maximum width, in pixels. */
   width: number;
   title: string;
+  /** The Switch term the page is about, explained beside its title. */
+  term?: GlossaryTerm;
   description: string;
   /** Header-level action, where the page has one. Agents' add affordance is
    * not one: it is the first tile of its grid. */
@@ -32,7 +36,10 @@ export function ServerPage({
         <div className="mx-auto w-full space-y-6 p-6" style={{ maxWidth: width }}>
           <header className="flex items-start justify-between gap-3">
             <div className="min-w-0">
-              <h2 className="truncate text-2xl font-semibold text-foreground">{title}</h2>
+              <h2 className="flex items-center gap-2 text-2xl font-semibold text-foreground">
+                <span className="truncate">{title}</span>
+                {term && <TermInfo term={term} />}
+              </h2>
               <p className="mt-1 text-sm text-foreground-muted">{description}</p>
             </div>
             {action && <div className="flex shrink-0 items-center gap-2">{action}</div>}
