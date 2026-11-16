@@ -21,6 +21,7 @@ function signedInAs(role: Role) {
     role: role === "workspace_admin" ? ("admin" as const) : ("member" as const),
     organization_role: role === "org_admin" ? ("org_admin" as const) : ("member" as const),
     organization_id: "o1",
+    archived_at: null,
   };
   const session: Session = {
     user: { id: "u1", name: "Ada", email: "ada@example.com", is_operator: false },

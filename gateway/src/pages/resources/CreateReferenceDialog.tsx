@@ -11,10 +11,10 @@ import {
   TextField,
 } from "@mui/material";
 import { useState } from "react";
-import { createReference } from "../../data/api";
+import { createReference, loadReferenceTypes } from "../../data/api";
 import { AccessSelect } from "../../components/AccessControls";
 import { type AccessLevel, fromAccessLevel } from "../../data/visibility";
-import { useReferenceTypes } from "../../data/hooks";
+import { useLoad } from "../workspace/useLoad";
 import UrlsValueForm from "./value_forms/UrlsValueForm";
 
 interface Props {
@@ -24,7 +24,7 @@ interface Props {
 }
 
 export default function CreateReferenceDialog({ open, onClose, onCreated }: Props) {
-  const { data: types } = useReferenceTypes();
+  const { data: types, error: typesError, loading: typesLoading } = useLoad(loadReferenceTypes);
   const [type, setType] = useState<string>("");
   const [value, setValue] = useState<Record<string, unknown>>({});
   const [name, setName] = useState("");
@@ -73,8 +73,10 @@ export default function CreateReferenceDialog({ open, onClose, onCreated }: Prop
 
   // The slug was picked from this very list, so it always resolves.
   const selectedType = (types ?? []).find((t) => t.type === type);
+  // A reference points at something: one URL at least, as the server holds it to.
+  const hasUrl = Array.isArray(value.urls) && value.urls.length > 0;
   const canSubmit =
-    !!type && name.trim().length > 0 && description.trim().length > 0 && !submitting;
+    !!type && hasUrl && name.trim().length > 0 && description.trim().length > 0 && !submitting;
 
   return (
     <Dialog open={open} onClose={handleClose} fullWidth maxWidth="sm">
@@ -89,7 +91,8 @@ export default function CreateReferenceDialog({ open, onClose, onCreated }: Prop
               setType(e.target.value);
               setValue({});
             }}
-            disabled={submitting}
+            disabled={submitting || types === null}
+            helperText={typesLoading && types === null ? "Loading types…" : undefined}
           >
             {(types ?? []).map((t) => (
               <MenuItem key={t.type} value={t.type}>
@@ -100,8 +103,14 @@ export default function CreateReferenceDialog({ open, onClose, onCreated }: Prop
             ))}
           </TextField>
 
+          {typesError && types === null && (
+            <Alert severity="error">Couldn't load the reference types: {typesError}</Alert>
+          )}
+
           {selectedType && (
             <UrlsValueForm
+              // A fresh box for each type: what was typed for another goes with it.
+              key={selectedType.type}
               value={value}
               onChange={setValue}
               disabled={submitting}

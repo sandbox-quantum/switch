@@ -351,8 +351,8 @@ class TestTheTriageAgent:
 
         await _run(host, "on")
         assert posted[-1] == (
-            "Only the room's owner or a workspace admin can change this room's "
-            "settings. Nothing was changed."
+            "Only the room's owner, a room admin or a workspace admin can change "
+            "this room's settings. Nothing was changed."
         )
         assert not await _on(session_factory, room_id)
 
@@ -369,7 +369,7 @@ class TestTheTriageAgent:
 
         await _run(host, "fallback @triage")
         assert posted[-1].startswith(
-            "Only the room's owner or a workspace admin can change"
+            "Only the room's owner, a room admin or a workspace admin can change"
         )
         assert "Nothing was changed" in posted[-1]
         assert await _fallback(session_factory, room_id) is None
@@ -377,7 +377,9 @@ class TestTheTriageAgent:
         owner, _ = _host(session_factory, room_id)
         await _run(owner, "fallback @triage")
         await _run(host, "fallback off")
-        assert posted[-1].startswith("Only the room's owner or a workspace admin")
+        assert posted[-1].startswith(
+            "Only the room's owner, a room admin or a workspace admin"
+        )
         assert await _fallback(session_factory, room_id) == agents["triage"].id
 
         await _run(host, "fallback")

@@ -218,6 +218,30 @@ class CollaborationBridgeStore:
         bridge.connection_config = config
         await session.flush()
 
+    async def replace_team(
+        self,
+        session: AsyncSession,
+        bridge_id: str,
+        *,
+        expected: str | None,
+        team_id: str | None,
+    ) -> CollaborationBridge | None:
+        """Store ``team_id`` as the bridge's default team (None clears it) if
+        the stored one is ``expected`` (None for no default team).
+
+        The bridge as stored, or None when its default team was something
+        else. Checked under the row lock, so a default team chosen at the same
+        moment is never overwritten."""
+        bridge = await self._locked_for_config_update(session, bridge_id)
+        if ((bridge.connection_config or {}).get("team_id") or None) != expected:
+            return None
+        bridge.connection_config = {
+            **(bridge.connection_config or {}),
+            "team_id": team_id,
+        }
+        await session.flush()
+        return bridge
+
     async def delete(self, session: AsyncSession, bridge_id: str) -> None:
         bridge = await session.get(CollaborationBridge, bridge_id)
         if bridge:

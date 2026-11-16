@@ -11,7 +11,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.authz import (
     Principal,
     can,
-    can_manage,
     require,
     require_visibility_change,
     validate_visibility_pair,
@@ -260,20 +259,21 @@ class ResourceService:
     ) -> list[ReferenceTypeRow]:
         """The management list: database rows only, never built-ins.
 
-        A principal manages the rows it owns; an admin manages every row, per
-        ``can_manage``. A row shadowed by a built-in stays here, and stays
-        editable and deletable, flagged rather than hidden.
+        Every row the principal may read: its own and the public ones, or
+        every row for an admin. What it may do to each is the caller's to
+        report, row by row, so a public type someone else owns is listed even
+        where it may only be read, and can be edited where it is publicly
+        writable. A row shadowed by a built-in stays here, and stays editable
+        and deletable, flagged rather than hidden.
         """
         rows = (
             await self._reference_types.list_all(session)
             if is_admin
             else await self._reference_types.list_for_user(session, user_id)
         )
-        principal = Principal(user_id, is_admin)
         return [
             ReferenceTypeRow(row=row, shadowed_by_builtin=is_builtin_type(row.type))
             for row in sorted(rows, key=lambda r: r.type)
-            if can_manage(principal, row.owner_id)
         ]
 
     async def resolve_display_names(

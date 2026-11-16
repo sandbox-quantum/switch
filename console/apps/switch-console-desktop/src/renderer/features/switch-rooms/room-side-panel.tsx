@@ -1,5 +1,13 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { ChevronDown, ChevronRight, FileText, Loader2, MoreHorizontal, Plus } from 'lucide-react';
+import {
+  ChevronDown,
+  ChevronRight,
+  FileText,
+  Loader2,
+  MoreHorizontal,
+  Plus,
+  UserPlus,
+} from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { type ReactNode, useState } from 'react';
 import { chatMembersQueryKey } from '@renderer/features/chats/chat-people';
@@ -36,7 +44,13 @@ import {
 import { cn } from '@renderer/utils/utils';
 import { chatAgentLabel } from '@shared/core/chats/chats';
 import type { RemoteRoomDetail } from '@shared/core/switch-servers/switch-servers';
-import { AddAgentPanel, AddPeoplePanel, ChatAddParticipantPanel } from './room-add-participants';
+import {
+  AddAgentPanel,
+  AddPeoplePanel,
+  AddRoomAdminPanel,
+  ChatAddParticipantPanel,
+} from './room-add-participants';
+import { roomAdminAction, roomAdminStandingOf } from './room-admins';
 import { roomAgentPresence } from './room-agent-presence';
 import { linkedNamesByUsername } from './room-labels';
 import { roomInviteability } from './room-membership';
@@ -66,6 +80,8 @@ type RosterControls = {
   removeAgent: (agentId: string) => (() => Promise<void>) | null;
   /** Null for someone who may not remove people, or for a person who cannot be removed. */
   removePerson: (key: string) => (() => Promise<void>) | null;
+  /** Making someone a room admin or taking them off; null where the room has none. */
+  setRoomAdmin: ((userId: string, admin: boolean) => Promise<void>) | null;
   /** Whether the agent is told when someone joins, and the way to change it; null where it cannot be. */
   joinEvents: {
     listening: (agentId: string) => boolean;
@@ -81,6 +97,7 @@ const NO_CONTROLS: RosterControls = {
   peopleNote: null,
   removeAgent: () => null,
   removePerson: () => null,
+  setRoomAdmin: null,
   joinEvents: null,
 };
 
@@ -100,7 +117,7 @@ export const RoomSidePanel = observer(function RoomSidePanel({ roomId }: { roomI
     switchRoomsStore.roomServerId(roomId) ?? (chat ? chatsStore.serverId : null) ?? null;
   const groupChats = useFeatureFlags(serverId).group_chats;
   const showAddAgentsToRoomModal = useShowModal('addAgentsToRoomModal');
-  const [adding, setAdding] = useState<'agents' | 'people' | null>(null);
+  const [adding, setAdding] = useState<'agents' | 'people' | 'admins' | null>(null);
   const [error, setError] = useState<string | null>(null);
   // Anyone taking part may read the room, so this answers for a chat's members too.
   const detail = useRoomDetail(workspaceId, roomId, true);
@@ -131,6 +148,10 @@ export const RoomSidePanel = observer(function RoomSidePanel({ roomId }: { roomI
     retry: false,
   });
   const linkedNames = linkedNamesByUsername(bridgePeople.data ?? []);
+  const linkedIds = new Map(
+    (bridgePeople.data ?? []).map((person) => [person.username, person.linkedUserIds])
+  );
+  const viewerId = serverId ? (switchServersStore.statusFor(serverId)?.user?.id ?? null) : null;
   // A room that could not be read is not an empty one: say so, rather than "no agents yet".
   const unreadable = !consoleChat && detail.isError;
   const agentIds = chat ? chat.agents.map((agent) => agent.id) : (room?.agentIds ?? []);
@@ -142,6 +163,7 @@ export const RoomSidePanel = observer(function RoomSidePanel({ roomId }: { roomI
         fullName: null,
         detail: member.isOwner ? 'owner' : null,
         isOwner: member.isOwner,
+        userIds: [member.userId],
       }))
     : (room?.connectedUserNames ?? []).map((name) => ({
         key: name,
@@ -149,12 +171,21 @@ export const RoomSidePanel = observer(function RoomSidePanel({ roomId }: { roomI
         fullName: linkedNames.get(name) ?? null,
         detail: null,
         isOwner: false,
+        userIds: linkedIds.get(name) ?? [],
       }));
 
   async function refreshRoom() {
     await queryClient.invalidateQueries({ queryKey: roomDetailKey(workspaceId ?? '', roomId) });
     await switchRoomsStore.refreshRoomState();
   }
+
+  const adminViewer = {
+    userId: viewerId,
+    canManageAdmins:
+      room !== null && workspaceId !== null
+        ? switchRoomsStore.roomPermissions(workspaceId, room).canManageAdmins
+        : false,
+  };
 
   let controls = NO_CONTROLS;
   if (consoleChat && chat && serverId && isConsoleGroupChatSummary(chat) && chat.canManage) {
@@ -186,7 +217,6 @@ export const RoomSidePanel = observer(function RoomSidePanel({ roomId }: { roomI
       permissions.canAddPeople && inviteability.canInvite ? () => setAdding('people') : null;
     // Anyone may take out their own agent, outside a direct or group
     // conversation, whose platform fixes who is in it.
-    const viewerId = serverId ? (switchServersStore.statusFor(serverId)?.user?.id ?? null) : null;
     const fixedMembers = room.channelType === 'direct' || room.channelType === 'group';
     const ownerOf = new Map((workspaceAgents.data ?? []).map((agent) => [agent.id, agent.ownerId]));
     const removeAgent = (agentId: string) =>
@@ -199,6 +229,16 @@ export const RoomSidePanel = observer(function RoomSidePanel({ roomId }: { roomI
         : null;
     const peopleNote =
       permissions.canAddPeople && !inviteability.canInvite ? inviteability.reason : null;
+    // The server says who may do what (`canManageAdmins`, or stepping down);
+    // the answer is the room as it now stands.
+    const setRoomAdmin = async (userId: string, admin: boolean) => {
+      queryClient.setQueryData(
+        roomDetailKey(workspaceId, roomId),
+        await rpc.workspaces.setRoomAdmin({ workspaceId, roomId, userId, admin })
+      );
+      // Stepping down changes what the viewer may do with the room.
+      if (userId === viewerId) await switchRoomsStore.refreshRoomState();
+    };
     // The room's owner or an admin, or the agent's own owner, may change
     // whether it hears joins.
     const joinEvents: RosterControls['joinEvents'] = {
@@ -218,7 +258,15 @@ export const RoomSidePanel = observer(function RoomSidePanel({ roomId }: { roomI
       },
     };
     if (!permissions.canWrite) {
-      controls = { ...NO_CONTROLS, addAgents, addPeople, peopleNote, removeAgent, joinEvents };
+      controls = {
+        ...NO_CONTROLS,
+        addAgents,
+        addPeople,
+        peopleNote,
+        removeAgent,
+        setRoomAdmin,
+        joinEvents,
+      };
     } else {
       controls = {
         addAgents,
@@ -227,6 +275,7 @@ export const RoomSidePanel = observer(function RoomSidePanel({ roomId }: { roomI
         removeAgent,
         // Switch only knows the people it saw or added; it cannot take them out of a channel.
         removePerson: () => null,
+        setRoomAdmin,
         joinEvents,
       };
     }
@@ -246,11 +295,24 @@ export const RoomSidePanel = observer(function RoomSidePanel({ roomId }: { roomI
       aria-label="Room"
       className="flex w-[260px] shrink-0 flex-col gap-3 overflow-y-auto border-r border-border p-2"
     >
+      {/* A Console room takes people as well as agents, so its add is its own
+      button, not the + beside Agents, which reads as agents only. */}
+      {consoleChat && controls.addAgents && (
+        <Button
+          variant="outline"
+          size="sm"
+          className="w-full justify-start"
+          onClick={controls.addAgents}
+        >
+          <UserPlus />
+          Add participants
+        </Button>
+      )}
       <Fold
         title="Agents"
         count={agentIds.length}
-        onAdd={controls.addAgents}
-        addLabel={consoleChat ? 'Add participants' : 'Add agents'}
+        onAdd={consoleChat ? null : controls.addAgents}
+        addLabel="Add agents"
       >
         {unreadable ? (
           <Note>{failureText(detail.error, 'Could not read who is in this room.')}</Note>
@@ -283,16 +345,44 @@ export const RoomSidePanel = observer(function RoomSidePanel({ roomId }: { roomI
         {unreadable ? null : people.length === 0 ? (
           <Note>{consoleChat ? 'Nobody else is here yet.' : 'Nobody has been seen here yet.'}</Note>
         ) : (
-          people.map((person) => (
-            <PersonRow
-              key={person.key}
-              name={person.name}
-              fullName={person.fullName}
-              detail={person.detail}
-              onRemove={controls.removePerson(person.key)}
-              act={act}
-            />
-          ))
+          people.map((person) => {
+            const standing =
+              room && controls.setRoomAdmin ? roomAdminStandingOf(room, person) : null;
+            const adminAction = standing && roomAdminAction(standing, adminViewer);
+            const setRoomAdmin = controls.setRoomAdmin;
+            const remove = controls.removePerson(person.key);
+            return (
+              <PersonRow
+                key={person.key}
+                name={person.name}
+                userId={person.userIds[0] ?? null}
+                fullName={person.fullName}
+                detail={standing?.isAdmin ? 'room admin' : person.detail}
+                actions={[
+                  ...(standing && adminAction && setRoomAdmin
+                    ? [
+                        {
+                          label: adminAction.label,
+                          run: () => setRoomAdmin(standing.userId, adminAction.admin),
+                          failure: adminAction.failure,
+                        },
+                      ]
+                    : []),
+                  ...(remove
+                    ? [
+                        {
+                          label: 'Remove from room',
+                          run: remove,
+                          failure: `Could not remove ${person.name}.`,
+                          destructive: true,
+                        },
+                      ]
+                    : []),
+                ]}
+                act={act}
+              />
+            );
+          })
         )}
         {!consoleChat && (
           // Switch only knows the people who posted here or were added through it.
@@ -308,13 +398,71 @@ export const RoomSidePanel = observer(function RoomSidePanel({ roomId }: { roomI
         {controls.peopleNote !== null && <Note>{controls.peopleNote}</Note>}
       </Fold>
 
+      {room &&
+        controls.setRoomAdmin &&
+        (room.roomAdmins.length > 0 || adminViewer.canManageAdmins) && (
+          <Fold
+            title="Room admins"
+            count={room.roomAdmins.length}
+            onAdd={
+              adminViewer.canManageAdmins && room.roomAdminCandidates.length > 0
+                ? () => setAdding('admins')
+                : null
+            }
+            addLabel="Add room admin"
+          >
+            {room.roomAdmins.length === 0 && <Note>No room admins yet.</Note>}
+            {room.roomAdmins.map((admin) => {
+              const name = admin.name ?? 'Someone';
+              const action = roomAdminAction(
+                { userId: admin.userId, name, isAdmin: true },
+                adminViewer
+              );
+              const setRoomAdmin = controls.setRoomAdmin;
+              return (
+                <PersonRow
+                  key={admin.userId}
+                  name={name}
+                  userId={admin.userId}
+                  fullName={null}
+                  detail={admin.userId === viewerId ? 'you' : null}
+                  actions={
+                    action && setRoomAdmin
+                      ? [
+                          {
+                            label: action.label,
+                            run: () => setRoomAdmin(admin.userId, false),
+                            failure: action.failure,
+                          },
+                        ]
+                      : []
+                  }
+                  act={act}
+                />
+              );
+            })}
+            {adminViewer.canManageAdmins && (
+              <Note>
+                Room admins change the room as its owner does, but cannot delete it, change who can
+                see it or choose room admins.
+              </Note>
+            )}
+          </Fold>
+        )}
+
       {error !== null && <p className="px-2 text-xs text-destructive">{error}</p>}
 
       <Dialog open={adding !== null} onOpenChange={(open) => !open && setAdding(null)}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>
-              {adding === 'people' ? 'Add people' : consoleChat ? 'Add participants' : 'Add agents'}
+              {adding === 'admins'
+                ? 'Add room admin'
+                : adding === 'people'
+                  ? 'Add people'
+                  : consoleChat
+                    ? 'Add participants'
+                    : 'Add agents'}
             </DialogTitle>
           </DialogHeader>
           <DialogContentArea className="flex flex-col gap-3 pt-0">
@@ -343,6 +491,9 @@ export const RoomSidePanel = observer(function RoomSidePanel({ roomId }: { roomI
                   From a template
                 </Button>
               </>
+            )}
+            {adding === 'admins' && room && workspaceId && (
+              <AddRoomAdminPanel workspaceId={workspaceId} room={room} />
             )}
             {adding === 'people' && room && workspaceId && room.bridgeId !== null && (
               <AddPeoplePanel workspaceId={workspaceId} room={room} bridgeId={room.bridgeId} />
@@ -481,30 +632,42 @@ const AgentRow = observer(function AgentRow({
   );
 });
 
+type PersonAction = {
+  label: string;
+  run: () => Promise<void>;
+  /** What to say when it fails. */
+  failure: string;
+  destructive?: boolean;
+};
+
 function PersonRow({
   name,
+  userId,
   fullName,
   detail,
-  onRemove,
+  actions,
   act,
 }: {
   name: string;
+  /** Their Switch user, when known, for their colour. */
+  userId: string | null;
   /** For a messaging-app username, the name of the Switch user who linked it, shown in brackets. */
   fullName: string | null;
   detail: string | null;
-  onRemove: (() => Promise<void>) | null;
+  /** What the viewer may do about this person; no menu when there is nothing. */
+  actions: PersonAction[];
   act: (action: () => Promise<void>, fallback: string) => Promise<void>;
 }) {
   const [busy, setBusy] = useState(false);
   return (
     <div className="group flex items-center gap-2 rounded-md px-2 py-1 hover:bg-[var(--sel-soft)]">
-      <PersonMark name={name} size="sm" />
+      <PersonMark name={name} userId={userId} size="sm" />
       <span className="min-w-0 flex-1 truncate text-[13px] text-foreground">
         {name}
         {fullName !== null && <span className="text-foreground-muted"> ({fullName})</span>}
       </span>
       {detail && <span className="shrink-0 text-xs text-foreground-muted">{detail}</span>}
-      {onRemove && (
+      {actions.length > 0 && (
         <DropdownMenu>
           <DropdownMenuTrigger
             render={
@@ -519,15 +682,18 @@ function PersonRow({
             }
           />
           <DropdownMenuContent align="end">
-            <DropdownMenuItem
-              variant="destructive"
-              onClick={() => {
-                setBusy(true);
-                void act(onRemove, `Could not remove ${name}.`).finally(() => setBusy(false));
-              }}
-            >
-              Remove from room
-            </DropdownMenuItem>
+            {actions.map((action) => (
+              <DropdownMenuItem
+                key={action.label}
+                variant={action.destructive ? 'destructive' : 'default'}
+                onClick={() => {
+                  setBusy(true);
+                  void act(action.run, action.failure).finally(() => setBusy(false));
+                }}
+              >
+                {action.label}
+              </DropdownMenuItem>
+            ))}
           </DropdownMenuContent>
         </DropdownMenu>
       )}

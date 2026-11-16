@@ -17,14 +17,25 @@ import type { ThisComputer } from './use-this-computer';
  * hands each its state and handlers from `useProviderSetup`.
  */
 
-export function ComputerNote({ computer }: { computer: ThisComputer }) {
+export function ComputerNote({
+  computer,
+  onRetry,
+}: {
+  computer: ThisComputer;
+  onRetry: () => void;
+}) {
   if (computer.kind === 'ready') return null;
   if (computer.kind === 'failed')
     return (
-      <p role="alert" className="flex items-start gap-2 text-sm text-destructive">
-        <CircleAlert className="mt-0.5 size-4 shrink-0" />
-        <span>{computer.error}</span>
-      </p>
+      <div className="flex flex-wrap items-center gap-3">
+        <p role="alert" className="flex items-start gap-2 text-sm text-destructive">
+          <CircleAlert className="mt-0.5 size-4 shrink-0" />
+          <span>{computer.error}</span>
+        </p>
+        <Button variant="outline" size="sm" onClick={onRetry}>
+          Try again
+        </Button>
+      </div>
     );
   return (
     <p className="flex items-center gap-2 text-sm text-foreground-muted">
@@ -92,6 +103,7 @@ export function SelectedPanel({
   onSignIn,
   onCancelSignIn,
   onInstall,
+  installFailed = false,
   onCheckAgain,
   checked,
 }: {
@@ -104,9 +116,11 @@ export function SelectedPanel({
   onSignIn: () => void;
   onCancelSignIn: () => void;
   onInstall: () => void;
+  /** The last install of this provider failed: offer installing it by hand. */
+  installFailed?: boolean;
   onCheckAgain: () => void;
 }) {
-  const loginCommand = requireProvider(provider.id).loginCommand;
+  const { loginCommand, docUrl } = requireProvider(provider.id);
   switch (provider.state) {
     case 'ready':
       return (
@@ -134,15 +148,43 @@ export function SelectedPanel({
               {provider.name} isn’t installed on this computer
             </p>
             <p className="text-xs text-foreground-muted">
-              Switch Console can install it for you. You’ll sign in to it next.
+              {installFailed
+                ? `You can install it yourself instead, then press Check again.`
+                : 'Switch Console can install it for you. You’ll sign in to it next.'}
             </p>
           </div>
-          <div>
-            <Button onClick={onInstall} disabled={busy !== null}>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              variant={installFailed ? 'outline' : 'default'}
+              onClick={onInstall}
+              disabled={busy !== null}
+            >
               {busy === 'install' && <Spinner className="size-3.5" />}
-              {busy === 'install' ? `Installing ${provider.name}…` : `Install ${provider.name}`}
+              {busy === 'install'
+                ? `Installing ${provider.name}…`
+                : installFailed
+                  ? 'Try again'
+                  : `Install ${provider.name}`}
             </Button>
+            {installFailed && (
+              <>
+                <Button
+                  variant="outline"
+                  onClick={() =>
+                    void openExternalUrl(docUrl, `Could not open how to install ${provider.name}`)
+                  }
+                >
+                  <ExternalLink className="size-3.5" />
+                  How to install {provider.name}
+                </Button>
+                <Button variant="ghost" onClick={onCheckAgain} disabled={busy !== null}>
+                  {busy === 'check' && <Spinner className="size-3.5" />}
+                  Check again
+                </Button>
+              </>
+            )}
           </div>
+          {installFailed && checked && <p className="text-xs text-foreground-muted">{checked}</p>}
         </>
       );
     case 'sign-in': {

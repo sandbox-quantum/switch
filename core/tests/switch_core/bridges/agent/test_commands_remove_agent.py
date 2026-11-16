@@ -114,6 +114,9 @@ class _Harness:
         async def _remove_agents_from_room(room_id, agent_ids, **_kw):  # type: ignore[no-untyped-def]
             self.removed.append((room_id, list(agent_ids)))
 
+        async def _admin_room_ids(*_a: object, **_kw: object) -> set[str]:
+            return set()
+
         self.client = SimpleNamespace(
             session_factory=None,
             tenant_id="tenant-1",
@@ -124,6 +127,7 @@ class _Harness:
             _room_store=SimpleNamespace(
                 get_agent_ids=_get_agent_ids,
                 get_agent_id_by_alias=_get_agent_id_by_alias,
+                admin_room_ids=_admin_room_ids,
             ),
             _room_role_store=None,
             _external_user_store=None,
@@ -216,7 +220,7 @@ class TestRemoveAgentCommand:
         await h.run("@alice-agent")
         assert h.removed == []
         assert h.posted == [
-            "Only the room's owner or a workspace admin, or the agent's own owner "
+            "Only the room's owner, a room admin or a workspace admin, or the agent's own owner "
             "for their agent, can remove agents or people from this room. "
             "Nothing was changed."
         ]

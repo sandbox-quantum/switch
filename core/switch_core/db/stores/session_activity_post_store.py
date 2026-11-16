@@ -10,7 +10,11 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy import func, or_, select
 
-from switch_core.db.models import ApprovalRequestPost, TurnStatusPost
+from switch_core.db.models import (
+    ApprovalRequestPost,
+    SteeredMessageMark,
+    TurnStatusPost,
+)
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -183,3 +187,61 @@ class TurnStatusPostStore:
     async def create(self, session: AsyncSession, post: TurnStatusPost) -> None:
         session.add(post)
         await session.flush()
+
+
+class SteeredMessageMarkStore:
+    """The work markers on messages steered into running turns, per bridge."""
+
+    async def of_turn(
+        self,
+        session: AsyncSession,
+        bridge_id: str,
+        agent_id: str,
+        session_id: str,
+        turn_id: str,
+    ) -> list[SteeredMessageMark]:
+        result = await session.execute(
+            select(SteeredMessageMark).where(
+                SteeredMessageMark.bridge_id == bridge_id,
+                SteeredMessageMark.agent_id == agent_id,
+                SteeredMessageMark.session_id == session_id,
+                SteeredMessageMark.turn_id == turn_id,
+            )
+        )
+        return list(result.scalars())
+
+    async def record(self, session: AsyncSession, mark: SteeredMessageMark) -> None:
+        """Store whether the marker is (or may be) on the message, before or
+        after the platform is asked, so a failure leaves it counted."""
+        await session.merge(mark)
+        await session.flush()
+
+    async def marked(
+        self, session: AsyncSession, bridge_id: str
+    ) -> list[SteeredMessageMark]:
+        """Steered messages still carrying a marker of ours."""
+        result = await session.execute(
+            select(SteeredMessageMark).where(
+                SteeredMessageMark.bridge_id == bridge_id,
+                SteeredMessageMark.marked.is_(True),
+            )
+        )
+        return list(result.scalars())
+
+    async def holders(
+        self,
+        session: AsyncSession,
+        bridge_id: str,
+        channel_id: str,
+        reaction_message_ref: str,
+    ) -> list[SteeredMessageMark]:
+        """Every steered marker held on one platform message."""
+        result = await session.execute(
+            select(SteeredMessageMark).where(
+                SteeredMessageMark.bridge_id == bridge_id,
+                SteeredMessageMark.external_channel_id == channel_id,
+                SteeredMessageMark.reaction_message_ref == reaction_message_ref,
+                SteeredMessageMark.marked.is_(True),
+            )
+        )
+        return list(result.scalars())

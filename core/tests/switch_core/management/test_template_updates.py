@@ -68,6 +68,7 @@ def harness(session_factory: async_sessionmaker[AsyncSession]) -> Iterator[Harne
     harness.protocol.config.feature_flags = {  # type: ignore[attr-defined]
         "agent_management": True,
         "switch_buddy": True,
+        "additional_agent_providers": True,
     }
     previous = op_context._protocol
     op_context.init_operations_protocol(harness.protocol)

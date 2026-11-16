@@ -38,6 +38,7 @@ import {
   addRoomAgents,
   addRoomUsers,
   archiveRoom,
+  canArchiveRoom,
   createRoomRole,
   deleteRoom,
   deleteRoomRole,
@@ -59,6 +60,7 @@ import {
   formatDateTime,
   sentenceCase,
 } from "../../theme/format";
+import RoomAdminsSection from "./RoomAdminsSection";
 import RoomAutoRouteSection from "./RoomAutoRouteSection";
 import RoomGroupSection from "./RoomGroupSection";
 import RoomGraphView from "./RoomGraphView";
@@ -67,6 +69,12 @@ import RoomResourcesSection from "./RoomResourcesSection";
 import ExportRoomYamlDialog from "./ExportRoomYamlDialog";
 import type { RoomsNotice } from "./RoomsPage";
 import { RoomAccessChip } from "./RoomAccessChip";
+import {
+  ROOM_STANDING_LABELS,
+  type RoomViewer,
+  roomStanding,
+  roomStandingText,
+} from "./roomStanding";
 import {
   ROOM_ACCESS_HELPERS,
   ROOM_ACCESS_LEVELS,
@@ -85,7 +93,7 @@ import {
 export default function RoomDetailPage() {
   const { roomId } = useParams<{ roomId: string }>();
   const navigate = useNavigate();
-  const { canAdminTenant, session } = useAuth();
+  const { canAdminTenant, capabilities, session } = useAuth();
   // Who is looking, to offer taking out their own agent and unlinking their
   // own resources: the server allows those by ownership alone.
   const viewerId = session?.user.id ?? null;
@@ -140,7 +148,17 @@ export default function RoomDetailPage() {
       </Stack>
 
       <Stack spacing={4}>
-        <RoomInfoSection room={room} />
+        <RoomInfoSection
+          room={room}
+          viewer={{
+            id: viewerId,
+            administersOrganization: capabilities.administersOrganization,
+            isOperator: capabilities.isOperator,
+            adminMember:
+              session?.tenants.some((t) => t.id === session.tenant?.id && t.role === "admin") ??
+              false,
+          }}
+        />
         <Divider />
         <RoomGroupSection
           room={room}
@@ -153,12 +171,7 @@ export default function RoomDetailPage() {
         <Divider />
         {room.auto_route && (
           <>
-            <RoomAutoRouteSection
-              room={room}
-              autoRoute={room.auto_route}
-              canWrite={canWrite}
-              canManage={canManage}
-            />
+            <RoomAutoRouteSection room={room} autoRoute={room.auto_route} canWrite={canWrite} />
             <Divider />
           </>
         )}
@@ -175,6 +188,12 @@ export default function RoomDetailPage() {
           viewerId={viewerId}
           onChanged={refetch}
         />
+        {showRoomAdmins(room) && (
+          <>
+            <Divider />
+            <RoomAdminsSection room={room} viewerId={viewerId} onChanged={refetch} />
+          </>
+        )}
         <Divider />
         <RoomResourcesSection
           roomId={room.id}
@@ -193,7 +212,7 @@ export default function RoomDetailPage() {
             <BridgeSection room={room} />
           </>
         )}
-        {canWrite && (
+        {canArchiveRoom(room) && (
           <>
             <Divider />
             <ArchiveSection room={room} onChanged={refetch} />
@@ -235,6 +254,25 @@ export default function RoomDetailPage() {
   );
 }
 
+/** Room admins are shown on servers that have them, to whoever may choose
+ * them or once there are any. */
+function showRoomAdmins(room: RoomDetail): boolean {
+  if (room.room_admins === undefined) return false;
+  return Boolean(room.can_manage_admins) || room.room_admins.length > 0;
+}
+
+/** The names of the room's room admins, to mark them where the room lists
+ * its people by name. */
+function roomAdminNames(room: RoomDetail): Set<string> {
+  return new Set(
+    (room.room_admins ?? []).flatMap((admin) => (admin.name ? [admin.name] : [])),
+  );
+}
+
+function personLabel(name: string, adminNames: Set<string>): string {
+  return adminNames.has(name) ? `${name} · Room admin` : name;
+}
+
 // ── Room info (read-only) ───────────────────────────────────────────────────
 
 
@@ -247,7 +285,8 @@ const BRIDGED_ROOM_ACCESS_HELPERS: Partial<Record<AccessLevel, string>> = Object
   ]),
 );
 
-function RoomInfoSection({ room }: { room: RoomDetail }) {
+function RoomInfoSection({ room, viewer }: { room: RoomDetail; viewer: RoomViewer }) {
+  const standing = roomStanding(room, viewer);
   return (
     <Stack spacing={1}>
       <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
@@ -255,6 +294,11 @@ function RoomInfoSection({ room }: { room: RoomDetail }) {
       </Typography>
       <Stack direction="row" spacing={2} flexWrap="wrap" alignItems="center">
         <RoomAccessChip room={room} />
+        <InfoChip
+          label="Owner"
+          value={ownerLabel(room)}
+          mono={room.owner_id !== null && room.owner_name === null}
+        />
         {room.channel_type && (
           <InfoChip
             label="Channel type"
@@ -271,8 +315,18 @@ function RoomInfoSection({ room }: { room: RoomDetail }) {
           />
         )}
       </Stack>
+      <Typography variant="body2" color="text.secondary">
+        <strong>Your access:</strong> {ROOM_STANDING_LABELS[standing]}.{" "}
+        {roomStandingText(room, standing)}
+      </Typography>
     </Stack>
   );
+}
+
+/** An owner with no name shows by id, as the rooms list shows them. */
+function ownerLabel(room: RoomDetail): string {
+  if (room.owner_id === null) return "No owner";
+  return room.owner_name ?? room.owner_id;
 }
 
 function InfoChip({
@@ -666,11 +720,7 @@ function EditableFieldsSection({
       <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
         Settings
       </Typography>
-      {!canWrite && (
-        <Alert severity="info">
-          Only this room's owner and admins can change these settings.
-        </Alert>
-      )}
+      {!canWrite && <Alert severity="info">{settingsNotice(room)}</Alert>}
       {error && <Alert severity="error">{error}</Alert>}
       <TextField
         label="Name"
@@ -709,6 +759,11 @@ function EditableFieldsSection({
         optionLabels={ROOM_ACCESS_OPTION_LABELS}
         sx={{ maxWidth: 360 }}
       />
+      {canWrite && !canManage && (
+        <Typography variant="caption" color="text.secondary">
+          Only the room's owner or a workspace admin can change who can see it.
+        </Typography>
+      )}
       <Box>
         <Button
           variant="contained"
@@ -721,6 +776,15 @@ function EditableFieldsSection({
       </Box>
     </Stack>
   );
+}
+
+/** Who may change the settings, naming the owner as Switch Console does. */
+function settingsNotice(room: RoomDetail): string {
+  if (room.owner_id === null) {
+    return "This room has no owner, so only its room admins and workspace admins can change these settings.";
+  }
+  const owner = room.owner_name ?? "this room's owner";
+  return `Only ${owner}, a room admin or a workspace admin can change these settings.`;
 }
 
 // ── Participants ─────────────────────────────────────────────────────────────
@@ -858,6 +922,7 @@ function ParticipantsSection({
   const platformMembership = room.channel_type === "group" || room.channel_type === "direct";
   const canInviteAgents = room.can_invite_agents;
   const canAddPeople = room.can_add_people;
+  const adminNames = roomAdminNames(room);
   const canRemove = (agentId: string) =>
     !platformMembership && (room.can_remove_members || ownAgentIds.has(agentId));
 
@@ -881,7 +946,7 @@ function ParticipantsSection({
               status={room.agent_statuses[id]}
               receivesJoinEvents={room.join_event_listeners.includes(id)}
               onToggleJoinEvents={
-                // The room's owner or an admin, or the agent's own owner.
+                // Whoever may change the room, or the agent's own owner.
                 !(canWrite || ownAgentIds.has(id)) || working
                   ? undefined
                   : (next) => handleToggleJoinEvents(id, next)
@@ -937,7 +1002,11 @@ function ParticipantsSection({
           <Stack direction="row" spacing={1} flexWrap="wrap" sx={{ mb: 1 }}>
             {/* Two people may share a name, so a name alone does not key a chip. */}
             {room.connected_user_names.map((name, index) => (
-              <Chip key={`${index}:${name}`} label={name} size="small" />
+              <Chip
+                key={`${index}:${name}`}
+                label={personLabel(name, adminNames)}
+                size="small"
+              />
             ))}
           </Stack>
           <Typography variant="caption" color="text.secondary">
@@ -953,7 +1022,7 @@ function ParticipantsSection({
           </Typography>
           <Stack direction="row" spacing={1} flexWrap="wrap" sx={{ mb: 1 }}>
             {room.connected_user_names.map((name) => (
-              <Chip key={name} label={name} size="small" />
+              <Chip key={name} label={personLabel(name, adminNames)} size="small" />
             ))}
             {room.connected_user_names.length === 0 && (
               <Typography variant="body2" color="text.secondary">

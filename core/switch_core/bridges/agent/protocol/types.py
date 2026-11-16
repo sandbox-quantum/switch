@@ -285,6 +285,9 @@ class MessagePayload(BaseModel):
     # arrived: "admin" or "member". None for an agent, the platform,
     # or a person no Switch user has claimed.
     sender_role: str | None = None
+    # The receiving agent's setting for messages sent while it works: "steer"
+    # into the running turn, or "queue" behind it.
+    mid_turn_delivery: Literal["steer", "queue"] = "steer"
     # What Switch has to tell the agent before this message, such as that
     # its template has a new revision it was not brought fully up to; told
     # with every message until the agent reads about it. None for nothing.

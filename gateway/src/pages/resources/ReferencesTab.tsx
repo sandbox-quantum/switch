@@ -1,133 +1,101 @@
-import { Alert, Box, Chip, CircularProgress } from "@mui/material";
-import type { GridColDef } from "@mui/x-data-grid";
-import { useEffect, useMemo, useState } from "react";
+import { Box } from "@mui/material";
+import { useMemo } from "react";
 import { useNavigate } from "react-router";
-import DataTable, { TableEmptyState } from "../../components/DataTable";
-import { AccessChip } from "../../components/AccessControls";
-import type { ReferenceDetail } from "../../data/api";
-import { useReferences, useReferenceTypes } from "../../data/hooks";
-import ResourceFiltersBar from "./ResourceFiltersBar";
-import { formatDate } from "../../theme/format";
+import DataTable, {
+  type SelectFilter,
+  type TableColumn,
+  TableEmptyState,
+} from "../../components/DataTable";
+import { useAuth } from "../../data/AuthContext";
+import { type ReferenceDetail, loadReferences } from "../../data/api";
+import { useLoad } from "../workspace/useLoad";
+import {
+  CategoryChip,
+  ListBody,
+  accessColumn,
+  countColumn,
+  createdColumn,
+  descriptionColumn,
+  nameColumn,
+  ownerColumn,
+  resourceSearchText,
+  useRefetchOnRefresh,
+} from "./resourceList";
 
 interface Props {
   refreshKey: number;
 }
 
+const NOUN = { one: "reference", other: "references" };
+
+const SELECT_FILTERS: SelectFilter[] = [
+  { field: "owner_name", label: "Owner", allLabel: "All owners" },
+  { field: "type", label: "Type", allLabel: "All types" },
+];
+
+const SEARCH = { label: "Search references", text: resourceSearchText };
+
+/** What a reference's type reads as: its name, or the slug when no type of
+ * that slug exists any more. */
+export function referenceTypeLabel(ref: Pick<ReferenceDetail, "type" | "type_display_name">): string {
+  return ref.type_display_name ?? `${ref.type} (unknown type)`;
+}
+
+export const referencePath = (ref: { id: string }) => `/resources/references/${ref.id}`;
+
 export default function ReferencesTab({ refreshKey }: Props) {
   const navigate = useNavigate();
-  const { data: refs, loading, error, refetch } = useReferences();
-  const { data: types } = useReferenceTypes();
-  const [search, setSearch] = useState("");
-  const [ownerId, setOwnerId] = useState<string>("");
-  const [typeFilter, setTypeFilter] = useState<string>("");
+  const { session } = useAuth();
+  const { data, error, loading, refetch } = useLoad(loadReferences);
+  useRefetchOnRefresh(refreshKey, refetch);
+  const rows = useMemo(() => data ?? [], [data]);
+  const workspace = session?.tenant?.name ?? "this workspace";
 
-  useEffect(() => {
-    refetch();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [refreshKey]);
-
-  const owners = useMemo(() => {
-    const m = new Map<string, string>();
-    for (const r of refs ?? []) {
-      m.set(r.owner_id, r.owner_name ?? r.owner_id);
-    }
-    return [...m.entries()].map(([id, name]) => ({ id, name }));
-  }, [refs]);
-
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return (refs ?? []).filter((r) => {
-      if (ownerId && r.owner_id !== ownerId) return false;
-      if (typeFilter && r.type !== typeFilter) return false;
-      if (q && !r.name.toLowerCase().includes(q)) return false;
-      return true;
-    });
-  }, [refs, search, ownerId, typeFilter]);
-
-  const columns = useMemo<GridColDef<ReferenceDetail>[]>(
-    () => [
-      { field: "name", headerName: "Name", flex: 1, minWidth: 180 },
+  const columns = useMemo<TableColumn<ReferenceDetail>[]>(() => {
+    // Offered from the rows, so an unknown type is offered too, as it reads.
+    const labels = new Map(rows.map((ref) => [ref.type, referenceTypeLabel(ref)]));
+    const typeOptions = [...labels.entries()]
+      .map(([value, label]) => ({ value, label }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+    return [
+      nameColumn<ReferenceDetail>(referencePath),
       {
         field: "type",
         headerName: "Type",
-        width: 150,
-        renderCell: ({ row }) => (
-          <Chip
-            label={row.type_display_name ?? `${row.type} (unknown type)`}
-            size="small"
-          />
-        ),
+        width: 160,
+        valueGetter: (_value, row) => referenceTypeLabel(row),
+        filter: { value: (row) => row.type, options: typeOptions },
+        renderCell: ({ value }) => <CategoryChip label={value as string} />,
       },
-      { field: "description", headerName: "Description", flex: 2, minWidth: 240 },
-      {
-        field: "read_visibility",
-        headerName: "Access",
-        width: 110,
-        renderCell: ({ row }) => <AccessChip pair={row} />,
-      },
-      {
-        field: "owner_name",
-        headerName: "Owner",
-        width: 150,
-        renderCell: ({ value, row }) => value ?? row.owner_id,
-      },
-      {
-        field: "attached_rooms_count",
-        headerName: "Rooms",
-        width: 90,
-        type: "number",
-      },
-      {
-        field: "created_at",
-        headerName: "Created",
-        width: 116,
-        valueFormatter: (value) => formatDate(value as string),
-      },
-    ],
-    [],
-  );
+      descriptionColumn(),
+      accessColumn(rows),
+      ownerColumn(rows),
+      countColumn("attached_rooms_count", "Rooms", 90),
+      createdColumn(),
+    ];
+  }, [rows]);
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0 }}>
-      <ResourceFiltersBar
-        search={search}
-        onSearchChange={setSearch}
-        ownerId={ownerId}
-        onOwnerChange={setOwnerId}
-        owners={owners}
-        typeFilter={typeFilter}
-        onTypeChange={setTypeFilter}
-        types={(types ?? []).map((t) => ({ value: t.type, label: t.display_name }))}
-      />
-
-      {error && (
-        <Alert severity="error" sx={{ mb: 2 }}>
-          {error}
-        </Alert>
-      )}
-
-      {loading ? (
-        <CircularProgress />
-      ) : (
+      <ListBody what="references" loaded={data !== null} error={error} loading={loading} onRetry={refetch}>
         <DataTable
-          rows={filtered}
+          rows={rows}
           columns={columns}
           fillHeight
+          noun={NOUN}
+          search={SEARCH}
+          selectFilters={SELECT_FILTERS}
+          initialSort={{ field: "created_at", sort: "desc" }}
           emptyState={
-            search || ownerId || typeFilter ? (
-              <TableEmptyState title="No references match these filters">
-                Clear the search or filters to see them all.
-              </TableEmptyState>
-            ) : (
-              <TableEmptyState title="No references yet">Create one to point agents at a page or repository elsewhere.</TableEmptyState>
-            )
+            <TableEmptyState title="No references yet">
+              Yours and the public ones in {workspace} show here. Create one to point agents at a page or
+              repository elsewhere.
+            </TableEmptyState>
           }
-          onRowClick={(params) =>
-            navigate(`/resources/references/${params.id}`)
-          }
+          onRowClick={(params) => navigate(referencePath(params.row))}
           sx={{ "& .MuiDataGrid-row": { cursor: "pointer" } }}
         />
-      )}
+      </ListBody>
     </Box>
   );
 }

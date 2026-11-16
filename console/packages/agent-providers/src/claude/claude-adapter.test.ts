@@ -719,7 +719,20 @@ describe('ClaudeAdapter turn attribution', () => {
     const query = sdk.latest();
     const [first] = await query.waitForSent(1);
 
-    const steer = await adapter.sendTurn({ sessionId: SESSION, turnId: 'turn-2', text: 'stop' });
+    await expect(
+      adapter.sendTurn({
+        sessionId: SESSION,
+        turnId: 'stale',
+        expectedTurnId: 'other',
+        text: 'wrong',
+      })
+    ).rejects.toThrow('authorized turn');
+    const steer = await adapter.sendTurn({
+      sessionId: SESSION,
+      turnId: 'turn-2',
+      expectedTurnId: 'turn-1',
+      text: 'stop',
+    });
     expect(steer.turnId).toBe('turn-2');
     expect(steer.steeredInto).toBe('turn-1');
     const sent = await query.waitForSent(2);

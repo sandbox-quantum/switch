@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
+from switch_core.feature_flags import ADDITIONAL_AGENT_PROVIDERS
 from switch_core.management.advanced_config import validate_advanced_config
 from switch_core.management.schemas import DefinitionV1
 from switch_core.providers.schema import advanced_config_schema, providers_schema
@@ -23,7 +24,7 @@ def test_a_definition_refuses_a_provider_switch_does_not_run() -> None:
 
 
 def test_the_served_provider_list() -> None:
-    providers = providers_schema()["providers"]
+    providers = providers_schema({ADDITIONAL_AGENT_PROVIDERS: True})["providers"]
 
     assert [(provider["id"], provider["label"]) for provider in providers] == [
         ("claude", "Claude Code"),
@@ -49,6 +50,18 @@ def test_the_served_provider_list() -> None:
     assert by_id["cursor"]["advanced_fields"] == []
     assert by_id["kiro"]["advanced_fields"] == []
     assert by_id["droid"]["advanced_fields"] == []
+
+
+def test_the_served_provider_list_without_the_additional_providers() -> None:
+    providers = providers_schema({ADDITIONAL_AGENT_PROVIDERS: False})["providers"]
+
+    assert [provider["id"] for provider in providers] == [
+        "claude",
+        "codex",
+        "opencode",
+        "antigravity",
+        "cursor",
+    ]
 
 
 def test_the_served_schema() -> None:

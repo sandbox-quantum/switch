@@ -34,6 +34,7 @@ import { useAuth } from "../../data/AuthContext";
 import AddressingPolicySection from "./AddressingPolicySection";
 import RenameAgentDialog from "./RenameAgentDialog";
 import AgentManagementSection from "./AgentManagementSection";
+import MidTurnDeliverySection from "./MidTurnDeliverySection";
 import ServiceAccessSection from "./ServiceAccessSection";
 import { extractDefaults, renderOptionFields } from "./optionFields";
 import { sessionPlace, sessionRunner } from "./sessionLabels";
@@ -187,6 +188,11 @@ export default function AgentDetailPage() {
         )}
         <Divider />
         <AddressingPolicySection
+          agent={agent}
+          canEdit={canManage}
+          onUpdated={refetch}
+        />
+        <MidTurnDeliverySection
           agent={agent}
           canEdit={canManage}
           onUpdated={refetch}

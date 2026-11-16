@@ -96,14 +96,15 @@ export default function RoomCreateFormBody() {
     [bridges, bridgeId],
   );
 
-  // True when this connection cannot be used to create a new channel, either
-  // because the platform has no such capability or because an admin has
-  // turned it off for this connection.
+  // True when this connection cannot be used to create a new channel: the
+  // platform has no such capability, an admin has turned it off for this
+  // connection, or the connection lacks something it needs first.
   const channelCreationBlocked =
     !!selectedBridge &&
     !(
       selectedBridge.channel_creation_supported &&
-      selectedBridge.channel_creation_enabled
+      selectedBridge.channel_creation_enabled &&
+      !selectedBridge.channel_creation_blocker
     );
 
   // A connection whose chats arrive only one way takes no channel id either,
@@ -127,7 +128,10 @@ export default function RoomCreateFormBody() {
     if (!selectedBridge.channel_creation_supported) {
       return `${selectedBridge.display_name} cannot create channels from Switch. Create the channel on the platform, then add the app to it.`;
     }
-    return "Channel creation is turned off for this messaging app. An admin can turn it on in the workspace's messaging apps.";
+    if (!selectedBridge.channel_creation_enabled) {
+      return "Channel creation is turned off for this messaging app. An admin can turn it on in the workspace's messaging apps.";
+    }
+    return selectedBridge.channel_creation_blocker ?? null;
   }, [selectedBridge, channelCreationBlocked]);
 
   // If the user had "Create new channel" selected and then picks a bridge

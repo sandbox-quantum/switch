@@ -43,6 +43,9 @@ class _FakeRoomStore:
         self._client_ids = client_ids
         self._member_users = member_users or []
         self.update_calls: list[dict[str, Any]] = []
+        # Users taking part in every room, and the room admins among them.
+        self.involved: set[str] = set()
+        self.room_admins: set[str] = set()
 
     async def get(self, session: Any, room_id: str) -> Any:
         return self._rooms.get(room_id)
@@ -50,7 +53,12 @@ class _FakeRoomStore:
     async def involved_room_ids(
         self, session: Any, user_id: str, room_ids: list[str]
     ) -> set[str]:
-        return set()
+        return set(room_ids) if user_id in self.involved else set()
+
+    async def admin_room_ids(
+        self, session: Any, user_id: str, room_ids: list[str]
+    ) -> set[str]:
+        return set(room_ids) if user_id in self.room_admins else set()
 
     async def get_agent_ids(self, session: Any, room_id: str) -> list[str]:
         return list(self._agent_ids)
@@ -455,12 +463,47 @@ class TestUpdateRoom:
         )
 
         with pytest.raises(
-            RoomPermissionError, match="owner or a workspace admin can change"
+            RoomPermissionError, match="a room admin or a workspace admin can change"
         ):
             await svc.update_room("agent-1", "room-1", name="Hijacked")
 
         store = svc.room_store
         assert isinstance(store, _FakeRoomStore)
+        assert store.update_calls == []
+
+    async def test_an_agent_of_a_room_admin_changes_the_room(self) -> None:
+        room = _room(owner_id="u-alice")
+        svc = _build_service(
+            room=room,
+            agent_ids=["agent-1"],
+            agents={
+                "agent-1": SimpleNamespace(name="claude-code.bob", owner_id="u-bob")
+            },
+        )
+        store = svc.room_store
+        assert isinstance(store, _FakeRoomStore)
+        store.involved.add("u-bob")
+        store.room_admins.add("u-bob")
+
+        await svc.update_room("agent-1", "room-1", name="Renamed by Bob")
+
+        assert store.update_calls
+
+    async def test_an_agent_of_someone_in_the_room_is_still_refused(self) -> None:
+        room = _room(owner_id="u-alice")
+        svc = _build_service(
+            room=room,
+            agent_ids=["agent-1"],
+            agents={
+                "agent-1": SimpleNamespace(name="claude-code.bob", owner_id="u-bob")
+            },
+        )
+        store = svc.room_store
+        assert isinstance(store, _FakeRoomStore)
+        store.involved.add("u-bob")
+
+        with pytest.raises(RoomPermissionError):
+            await svc.update_room("agent-1", "room-1", name="Hijacked")
         assert store.update_calls == []
 
     @pytest.mark.parametrize(

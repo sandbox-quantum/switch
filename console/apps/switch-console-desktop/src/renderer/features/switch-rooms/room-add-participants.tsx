@@ -161,7 +161,8 @@ export const ChatAddParticipantPanel = observer(function ChatAddParticipantPanel
             inputId={ADD_PARTICIPANT_INPUT}
             autoFocus={false}
             busy={adding}
-            overlay
+            // It is shown in a dialog, which clips a list floating past its edge.
+            overlay={false}
             candidates={candidates}
             picked={picked}
             onChange={setPicked}
@@ -276,7 +277,7 @@ export const AddPeoplePanel = observer(function AddPeoplePanel({
         loadError={people.isError ? failureText(people.error, 'Could not list the people.') : null}
         candidates={addableBridgePeople(people.data ?? [], present).map((person) => ({
           ...person,
-          mark: <PersonMark name={person.name} size="sm" />,
+          mark: <PersonMark name={person.name} userId={null} size="sm" />,
         }))}
         footer={
           <p className="px-1 text-xs text-foreground-muted">
@@ -301,6 +302,50 @@ export const AddPeoplePanel = observer(function AddPeoplePanel({
     </>
   );
 });
+
+/**
+ * Make someone in the room one of its room admins: the people in it with a
+ * Switch account, less its owner and those who already are, as the server
+ * lists them for whoever may choose.
+ */
+export function AddRoomAdminPanel({
+  workspaceId,
+  room,
+}: {
+  workspaceId: string;
+  room: RemoteRoomDetail;
+}) {
+  const queryClient = useQueryClient();
+  return (
+    <AddParticipantPanel
+      noun="person"
+      searchPlaceholder="Search people in this room…"
+      allInText="Everyone here who can be a room admin already is."
+      loading={false}
+      loadError={null}
+      candidates={room.roomAdminCandidates.map((person) => ({
+        id: person.userId,
+        name: person.name,
+        mark: <PersonMark name={person.name} userId={person.userId} size="sm" />,
+        detail: '',
+      }))}
+      footer={
+        <p className="px-1 text-xs text-foreground-muted">
+          Only people in the room with a Switch account can be room admins.
+        </p>
+      }
+      onAdd={async (userId) => {
+        const updated = await rpc.workspaces.setRoomAdmin({
+          workspaceId,
+          roomId: room.id,
+          userId,
+          admin: true,
+        });
+        queryClient.setQueryData(roomDetailKey(workspaceId, room.id), updated);
+      }}
+    />
+  );
+}
 
 type Candidate = { id: string; name: string; mark: React.ReactNode; detail: string };
 

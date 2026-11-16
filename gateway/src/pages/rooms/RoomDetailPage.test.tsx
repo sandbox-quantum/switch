@@ -12,7 +12,11 @@ vi.mock("react-router", () => ({
 }));
 
 vi.mock("../../data/AuthContext", () => ({
-  useAuth: () => ({ canAdminTenant: false, session: { user: { id: "u-me" } } }),
+  useAuth: () => ({
+    canAdminTenant: false,
+    capabilities: { administersOrganization: false, isOperator: false },
+    session: { user: { id: "u-me" }, tenant: null, tenants: [] },
+  }),
 }));
 
 vi.mock("../../data/hooks", () => ({
@@ -65,6 +69,7 @@ const room = {
   connected_user_names: [],
   bridge_id: "b1",
   bridge_display_name: "Slack",
+  bridge_type: "slack",
   group_id: null,
   group_name: null,
   owner_id: "owner",
@@ -74,6 +79,9 @@ const room = {
   created_at: "2026-10-01T00:00:00Z",
   archived: false,
   viewer_is_member: false,
+  viewer_is_room_admin: false,
+  room_admins: [],
+  room_admin_candidates: [],
   channel_on_delete: null,
   transport_room_id: "!r1:example.test",
   matrix_room_id: "!r1:example.test",
@@ -88,6 +96,8 @@ const room = {
   archived_at: null,
   can_write: true,
   can_manage: false,
+  can_archive: true,
+  can_manage_admins: false,
   can_unlink: false,
   can_transfer: false,
   can_attach: true,
@@ -98,8 +108,8 @@ const room = {
 
 const agent = { id: "a1", name: "planner", parent_agent_id: null } as AgentSummary;
 
-// Adding to the room and taking members out follow `can_write` unless a
-// test sets otherwise; the server decides each of them.
+// Adding to the room, taking members out and archiving it follow `can_write`
+// unless a test sets otherwise; the server decides each of them.
 const refetchRoom = vi.fn();
 
 function viewAs(
@@ -112,6 +122,7 @@ function viewAs(
       can_invite_agents: can.can_write,
       can_add_people: can.can_write,
       can_remove_members: can.can_write,
+      can_archive: can.can_write,
       ...can,
     },
     loading: false,
@@ -301,10 +312,13 @@ describe("RoomDetailPage permissions", () => {
   it("offers a reader nothing to change", () => {
     viewAs({ can_write: false, can_manage: false, can_unlink: false });
 
-    screen.getByText(/Only this room's owner and admins can change these settings/);
+    screen.getByText("Only ada, a room admin or a workspace admin can change these settings.");
+    screen.getByText(/^View only\. You can see this room but not change it or add to it\. To take part, join its Slack channel/);
     expect(accessSelect().getAttribute("aria-disabled")).toBe("true");
     expect(nameField().disabled).toBe(true);
     expect(screen.queryByRole("button", { name: "Delete room" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Archive room" })).toBeNull();
+    expect(screen.queryByText("Room admins")).toBeNull();
     expect(screen.queryByRole("button", { name: "Add agent" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Remove planner" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Add user" })).toBeNull();
@@ -312,6 +326,37 @@ describe("RoomDetailPage permissions", () => {
     expect(joinEventsSwitch().disabled).toBe(true);
     expect(screen.getByTestId("resources").dataset.canAttach).toBe("false");
     expect(screen.getByTestId("linked-rooms").dataset.canWrite).toBe("false");
+  });
+
+  it("names the room's owner to everyone, and tells its owner they own it", () => {
+    viewAs({ can_write: true, can_manage: true, can_unlink: true, owner_id: "u-me" });
+
+    screen.getByText("Owner:", { exact: false });
+    screen.getByText("ada");
+    screen.getByText(/^Owner\. You own this room/);
+  });
+
+  it("says a room with no owner has none, and who changes it then", () => {
+    viewAs({ can_write: false, can_manage: false, can_unlink: false, owner_id: null, owner_name: null });
+
+    screen.getByText("No owner");
+    screen.getByText(
+      "This room has no owner, so only its room admins and workspace admins can change these settings.",
+    );
+  });
+
+  it("tells someone in the room what they may add, and who changes it", () => {
+    viewAs({
+      can_write: false,
+      can_manage: false,
+      can_unlink: false,
+      viewer_is_member: true,
+      can_attach: true,
+      can_invite_agents: true,
+      can_add_people: true,
+    });
+
+    screen.getByText(/^In the room\. You can add agents, people and resources\./);
   });
 
   it("lists a Switch Console chat's members as its people, to change in Console", () => {
@@ -335,6 +380,62 @@ describe("RoomDetailPage permissions", () => {
     expect(screen.getByText("Grace Hopper")).toBeTruthy();
     expect(screen.queryByText(/Connected users/)).toBeNull();
     expect(screen.queryByRole("button", { name: "Add user" })).toBeNull();
+  });
+
+  it("marks the room admins among its people", () => {
+    vi.mocked(hooks.useRoom).mockReturnValue({
+      data: {
+        ...room,
+        bridge_id: null,
+        bridge_display_name: null,
+        is_console_chat: true,
+        connected_user_count: 2,
+        connected_user_names: ["Ada Lovelace", "Grace Hopper"],
+        room_admins: [
+          { user_id: "u-grace", name: "Grace Hopper", granted_by: "owner", granted_at: "2026-11-01" },
+        ],
+      },
+      loading: false,
+      error: null,
+      refetch: vi.fn(),
+    });
+    render(<RoomDetailPage />);
+
+    screen.getByText("Ada Lovelace");
+    screen.getByText("Grace Hopper · Room admin");
+    // And in the room admins list.
+    screen.getByText("Room admins");
+  });
+
+  it("lets a room admin change and archive the room but not its access, deletion or admins", () => {
+    viewAs({
+      can_write: true,
+      can_manage: false,
+      can_unlink: true,
+      viewer_is_member: true,
+      viewer_is_room_admin: true,
+      room_admins: [
+        { user_id: "u-me", name: "Me", granted_by: "owner", granted_at: "2026-11-01" },
+      ],
+    });
+
+    expect(nameField().disabled).toBe(false);
+    expect(accessSelect().getAttribute("aria-disabled")).toBe("true");
+    screen.getByText("Only the room's owner or a workspace admin can change who can see it.");
+    screen.getByRole("button", { name: "Archive room" });
+    expect(screen.queryByRole("button", { name: "Delete room" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Transfer ownership" })).toBeNull();
+    screen.getByRole("button", { name: "Step down" });
+    expect(screen.queryByRole("button", { name: "Make room admin" })).toBeNull();
+  });
+
+  it("reads archiving from managing the room on a server that predates room admins", () => {
+    viewAs({ can_write: true, can_manage: false, can_unlink: false, can_archive: undefined });
+    expect(screen.queryByRole("button", { name: "Archive room" })).toBeNull();
+    cleanup();
+
+    viewAs({ can_write: true, can_manage: true, can_unlink: false, can_archive: undefined });
+    screen.getByRole("button", { name: "Archive room" });
   });
 
   it("lists two people who share a name as two people", () => {

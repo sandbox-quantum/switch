@@ -36,9 +36,9 @@ name and body). Nothing else is sent with it:
   "resource": {
     "service.name": "switch-console",
     "service.version": "0.9.14",
-    "flint.client_id": "3f2a9c41-8d7e-4b16-9a55-c0e1d2f47b83",
-    "flint_env": "prod",
-    "flint_internal": "false",
+    "switch_trust.client_id": "3f2a9c41-8d7e-4b16-9a55-c0e1d2f47b83",
+    "switch_trust.env": "prod",
+    "switch_trust.internal": "false",
     "os.type": "darwin",
     "os.version": "23.6.0"
   },
@@ -77,11 +77,11 @@ machine, in what repository, or what the prompt said.
 | `service.name` | constant | `switch-console` |
 | `service.version` | app version | `0.9.14`, `1.0.2` |
 | `build` | release channel | `dev`, `canary`, `stable` |
-| `flint_env` | which analytics project the event is filed under | `prod` (a released stable build), `staging` (a released canary), `dev` (a packaged build that is not a release), `local` (running from source) |
-| `flint_internal` | whether an account this app is signed in to a Switch server with has a SandboxAQ email address — **only the yes/no is sent, never the address**. Once an installation has been signed in with one, it stays `true`, so staff usage stays labelled after that account signs out | `true`, `false`, `unknown` (no account, or only the one a local server signs in with) |
+| `switch_trust.env` | which analytics project the event is filed under | `prod` (a released stable build), `staging` (a released canary), `dev` (a packaged build that is not a release), `local` (running from source) |
+| `switch_trust.internal` | whether an account this app is signed in to a Switch server with has a SandboxAQ email address — **only the yes/no is sent, never the address**. Once an installation has been signed in with one, it stays `true`, so staff usage stays labelled after that account signs out | `true`, `false`, `unknown` (no account, or only the one a local server signs in with) |
 | `os.type` | OS family | `darwin`, `windows`, `linux`, `other` |
 | `os.version` | OS release string | `23.6.0`, `10.0.22631`, `6.1.0-53-cloud-amd64` |
-| `flint.client_id` | random install UUID | `3f2a9c41-8d7e-4b16-9a55-c0e1d2f47b83` |
+| `switch_trust.client_id` | random install UUID | `3f2a9c41-8d7e-4b16-9a55-c0e1d2f47b83` |
 | `flint.insert_id` | a random UUID made for this one event, so that two events alike in every field and sent in the same millisecond are not taken for one. A new one every event; kept nowhere | `9d0c5e7a-41b2-4f3e-8a6d-2b7c1e94f0a3` |
 | `flint.session_id` | which visit to the app the event belongs to: the time, in milliseconds, of the first thing someone did in it. A visit ends after 30 minutes with nothing done, and is kept only in memory. `-1` on the events that are not someone using the app — `session_discovered`, `session_reopened`, `subagent_adopted`, `agent_pruned`, `update_checked`, `update_install_started`, `renderer_crashed`, a `telemetry_consent_changed` from the first-run notice, and a `session_ended` for a session that went because the app removed its agent by itself — which neither start nor prolong a visit | `1789571950042`, `-1` |
 | `event.name` | the event, prefixed with the product | `switch_console.session_started` |
@@ -123,12 +123,13 @@ id, no IP field, no Switch identity.
 
 | Event | Fields, with example values |
 |---|---|
-| `view_opened` | a screen someone opened (not the one a launch resumes on) · `view_id`, one of exactly 24: `home`, `location`, `session`, `chat`, `managedAgent`, `room`, `settings`, `server`, `managedServer`, `serverAgents`, `machine`, `connectors`, `serverRooms`, `remoteHosts`, `remoteHost`, `templateImport`, `library`, `libraryItem`, `templates`, `templateDetail`, `templateUse`, `templateCapture`, `switchBuddy`, `admin` |
+| `view_opened` | a screen someone opened (not the one a launch resumes on) · `view_id`, one of exactly 24: `noServer`, `location`, `session`, `chat`, `managedAgent`, `room`, `settings`, `server`, `managedServer`, `serverAgents`, `machine`, `connectors`, `serverRooms`, `remoteHosts`, `remoteHost`, `templateImport`, `library`, `libraryItem`, `templates`, `templateDetail`, `templateUse`, `templateCapture`, `switchBuddy`, `admin` |
 | `command_executed` | `command_id`, one of exactly 9: `app.settings`, `app.newLocation`, `app.addServer`, `app.toggleTheme`, `app.navigateBack`, `app.navigateForward`, `session.pin`, `session.nextSession`, `session.prevSession` · `invoked_by`: `palette` / `shortcut` |
 | `deeplink_opened` | `resolved`: `true` / `false` · `cold_start`: `true` / `false`. **The URL is never sent.** |
 | `add_server_step` | `step`: `choose` / `managedGitHub` / `managedAgent` / `local` / `remoteHost` / `external` / `signIn` / `linkAccounts` · `choice`: `none` / `local` / `remoteHost` / `external` / `cloud` · `first_run`: `true` / `false` — whether the same step was reached on a fresh install rather than from the Add server dialog |
 | `onboarding_page` | `page`: `welcome` / `how_to_run` / `local_setup` / `server_address` / `sign_in` / `choose_workspace` / `create_workspace` / `meet_buddy` / `provider_setup` · `path`: `none` / `cloud` / `local` / `external` — which page of the first run opened, and how the install is running Switch once chosen |
 | `buddy_step` | `action`: `start` / `skip` / `setup_opened` / `install` / `sign_in` / `check_again` / `create_failed` / `opened_existing` / `intro_opened` / `intro_dismissed` · `provider`: `claude` / `codex` / `opencode` / `cursor` / `antigravity` / `deepseek-harness` / `pi` / `copilot` / `kiro` / `mistral-vibe` / `goose` / `qwen` / `droid` / `cline` / `junie` / `none` — a step on the way to switch-buddy, the first agent, from the first run or from the pop-up that introduces it to people who have none. A new buddy is reported once, as `agent_created` with `entry_point` `switch_buddy` |
+| `home_action` | `action`: `chip` / `connect_ai` / `message` · `chip`: `connect_chat_app` / `first_agent` / `team_room` / `new_room` / `new_agent` / `room_instructions` / `none` — something done on a server's Home: which suggestion was clicked, Connect to AI pressed, or a message sent to switch-buddy from the box there. **The message is never sent**, only that one was |
 
 **Agents and sessions**
 
@@ -348,7 +349,7 @@ hold it back again.
 
 ## 5. The identifier
 
-Exactly one lasting identifier is attached: `flint.client_id`, e.g.
+Exactly one lasting identifier is attached: `switch_trust.client_id`, e.g.
 `3f2a9c41-8d7e-4b16-9a55-c0e1d2f47b83` — a random UUID generated on the machine
 the first time telemetry runs, stored in the app's local database.
 
@@ -356,7 +357,7 @@ Each event also carries `flint.insert_id`, a random UUID made for that event
 alone. It identifies the event and nothing else: it is never reused, never
 stored on the machine, and connects no event to any other. And it carries
 `flint.session_id`, a time: when the visit it belongs to began. It groups an
-installation's events into visits, which `flint.client_id` already groups
+installation's events into visits, which `switch_trust.client_id` already groups
 them into installations, and is derived from nothing but the clock.
 
 - **Generated randomly.** Not derived from hardware, MAC address, disk serial, OS

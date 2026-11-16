@@ -24,6 +24,7 @@ function room(extra: Partial<RemoteRoomSummary>): RemoteRoomSummary {
     externalChannelUrl: null,
     ownerId: 'u-2',
     viewerIsMember: false,
+    viewerIsRoomAdmin: false,
     isConsoleChat: false,
     archived: false,
     createdAt: '2026-10-01T09:00:00Z',

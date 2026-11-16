@@ -20,6 +20,7 @@ import { Button } from '@renderer/lib/ui/button';
 import { SearchInput } from '@renderer/lib/ui/search-input';
 import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
 import type { RemoteRoomSummary } from '@shared/core/switch-servers/switch-servers';
+import { homeRedirect } from './home-target';
 import { AppMark, RoomCard } from './room-card';
 import { allReadableRooms, isConsoleGroupChatSummary, withConsoleGroupChats } from './room-filters';
 import {
@@ -147,7 +148,7 @@ const ServerRoomsPanel = observer(function ServerRoomsPanel() {
       );
     const room = archivedSummary(card);
     return room !== undefined && workspaceId !== null
-      ? switchRoomsStore.roomPermissions(workspaceId, room).canWrite
+      ? switchRoomsStore.roomPermissions(workspaceId, room).canArchive
       : false;
   };
   async function setArchived(card: RoomCardData) {
@@ -337,7 +338,7 @@ export const serverRoomsView = {
       typeof params === 'object' && params !== null
         ? (params as { serverId?: unknown }).serverId
         : undefined;
-    if (typeof serverId !== 'string') return { ok: false, redirect: 'home' };
+    if (typeof serverId !== 'string') return homeRedirect();
     return { ok: true };
   },
 } satisfies ViewDefinition<{ serverId: string }>;

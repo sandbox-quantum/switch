@@ -109,6 +109,11 @@ class _FakeLifecycle:
     def get(self, bridge_id: str) -> Any:
         return self._bridges.get(bridge_id)
 
+    def channel_creation_blocker(
+        self, bridge_type: str, connection_config: Any
+    ) -> None:
+        return None
+
 
 class _FakeBridgeStore:
     """Reports a connection an operator has left able to create channels, so
@@ -120,8 +125,10 @@ class _FakeBridgeStore:
     async def get(self, session: Any, bridge_id: str) -> Any:
         return SimpleNamespace(
             id=bridge_id,
+            type="fake",
             display_name=bridge_id,
             channel_creation_enabled=self._enabled,
+            connection_config={},
         )
 
 

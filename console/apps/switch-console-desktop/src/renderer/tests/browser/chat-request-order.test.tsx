@@ -104,6 +104,7 @@ function message(seq: number, second: number, body: string, agentId: string | nu
     mentions: [],
     threadReplyCount: 0,
     threadLastReplySeq: null,
+    kickoff: null,
   };
 }
 
