@@ -118,9 +118,14 @@ describe("agent rename and options", () => {
 
     expect(screen.queryByRole("button", { name: "Rename agent" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
-    expect(
-      screen.getByText("Only the agent's owner and admins can edit these options."),
-    ).toBeTruthy();
+  });
+
+  it("are not shown to anyone else, who is sent none, rather than shown the defaults as its options", () => {
+    showPageWith(OUTSIDER);
+
+    expect(screen.getByText("Only the agent's owner and admins can see its options.")).toBeTruthy();
+    expect(screen.queryByText(/can edit these options/)).toBeNull();
+    expect(screen.queryByText(/OAuth client/)).toBeNull();
   });
 
   it("keeps rename from an agent the server will not rename, leaving its options", () => {

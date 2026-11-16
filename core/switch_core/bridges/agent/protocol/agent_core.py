@@ -55,6 +55,7 @@ from switch_core.bridges.agent.protocol.agent_detail import (
     assemble_agent_detail,
     describe_addressing,
     list_agent_summaries,
+    shown_to,
 )
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.agent.protocol.message_events import removed_by
@@ -3651,6 +3652,16 @@ class AgentCore:
             )
         return agent, agent.owner_id, owner_is_admin
 
+    async def _acting_principal(
+        self, session: AsyncSession, agent_id: str
+    ) -> Principal:
+        """Who the calling agent acts as: its owner, with the owner's standing
+        in this workspace (`_resolve_acting_identity`)."""
+        _agent, owner_id, owner_is_admin = await self._resolve_acting_identity(
+            session, agent_id
+        )
+        return Principal(owner_id, owner_is_admin)
+
     async def _require_room_action(
         self,
         session: AsyncSession,
@@ -4778,13 +4789,15 @@ class AgentCore:
                 owner_name=owner_name,
                 known_agent_type=known_agent_type,
             )
-        return [agent_facing_summary(s) for s in summaries]
+            viewer = await self._acting_principal(session, agent_id)
+        return [agent_facing_summary(shown_to(viewer, s)) for s in summaries]
 
     async def get_agent_detail(
         self, agent_id: str, target_agent_id: str
     ) -> AgentDetail:
         """Return full detail for `target_agent_id`, mirroring the gateway
-        GET /agents/{id}. Readable by any authenticated agent.
+        GET /agents/{id}, as its owner would be shown it (`shown_to`).
+        Readable by any authenticated agent.
 
         Raises ValueError if the target agent does not exist.
         """
@@ -4792,7 +4805,7 @@ class AgentCore:
             agent = await self.agent_store.get(session, target_agent_id)
             if agent is None:
                 raise ValueError(f"Agent not found: {target_agent_id}")
-            return await assemble_agent_detail(
+            detail = await assemble_agent_detail(
                 session,
                 agent=agent,
                 visible_room_ids=await self._visible_room_ids(session, agent_id),
@@ -4803,6 +4816,7 @@ class AgentCore:
                 room_role_store=self.room_role_store,
                 connections=self.connections,
             )
+            return shown_to(await self._acting_principal(session, agent_id), detail)
 
     async def get_agent_addressing(
         self, agent_id: str, target_agent_id: str

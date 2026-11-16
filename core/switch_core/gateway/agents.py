@@ -32,6 +32,7 @@ from switch_core.bridges.agent.protocol.agent_detail import (
     assemble_agent_detail,
     build_agent_summary,
     list_agent_summaries,
+    shown_to,
 )
 from switch_core.bridges.agent.protocol.statuses import overall_statuses
 from switch_core.bridges.agent.protocol.types import (
@@ -133,7 +134,8 @@ def _with_capabilities(
     summary: AgentSummary, principal: Principal, facts: dict[str, AgentTransferFacts]
 ) -> GatewayAgentSummary:
     return GatewayAgentSummary(
-        **summary.model_dump(), **_capabilities(summary, principal, facts[summary.id])
+        **shown_to(principal, summary).model_dump(),
+        **_capabilities(summary, principal, facts[summary.id]),
     )
 
 
@@ -188,7 +190,7 @@ async def _detail_for_caller(
         raise _agent_gone(detail.id)
     owner = owns(principal, detail.owner_id)
     return GatewayAgentDetail(
-        **detail.model_dump(exclude={"children"}),
+        **shown_to(principal, detail).model_dump(exclude={"children"}),
         **_capabilities(detail, principal, facts[detail.id]),
         can_change_manage_agents=owner,
         can_grant_services=owner

@@ -2512,6 +2512,9 @@ async def list_agents(
         connection_model, tool_count, model_count, owner_id, owner_name,
         oauth_client_id, created_at, parent_agent_id, known_agent_type,
         known_agent_options}.
+        `known_agent_options` and `oauth_client_id`, how an agent is set up
+        on its owner's machine, are null unless your owner owns the agent or
+        administers the workspace.
         `icon_url` is null when the agent has no icon set. `display_name` is
         null when the agent has no display name set; fall back to `name`.
         Address agents by `name`: `display_name` is a human label that routes
@@ -2531,7 +2534,10 @@ async def get_agent_detail(agent_id: str) -> dict[str, Any]:
 
     Readable for any agent (not just your own). Use it to inspect another
     agent's configuration, capabilities, room memberships, and live sessions.
-    A room your owner cannot read is not named in it.
+    A room your owner cannot read is not named in it, and nor is a session
+    there. Unless your owner owns the agent or administers the workspace,
+    `known_agent_options`, `oauth_client_id` and a session's `controller_id`
+    (how and where it is set up on its owner's machine) are null.
 
     Args:
         agent_id: The target agent's id (from `list_participants` or

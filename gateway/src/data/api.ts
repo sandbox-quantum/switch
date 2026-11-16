@@ -98,6 +98,8 @@ export interface AgentSummary {
   model_count: number;
   owner_id: string | null;
   owner_name: string | null;
+  // How it is set up on its owner's machine: null to anyone who may not
+  // manage it (`can_manage`), as `known_agent_options` is.
   oauth_client_id: string | null;
   created_at: string;
   parent_agent_id: string | null;
@@ -166,7 +168,8 @@ export interface AgentSessionDetail {
   lifecycle: string;
   state: string;
   last_seen_at: string;
-  // The agent controller running it, for a `controller` session; else null.
+  // The agent controller running it, for a `controller` session, named to
+  // whoever may manage the agent; else null.
   controller_id: string | null;
 }
 

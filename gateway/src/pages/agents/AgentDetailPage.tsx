@@ -294,7 +294,8 @@ function InfoSection({ agent }: { agent: AgentDetail }) {
         label="Availability"
         value={agent.connection_model ? sentenceCase(agent.connection_model) : null}
       />
-      <InfoLine label="OAuth client" value={agent.oauth_client_id} mono />
+      {/* How it is set up is its owner's and admins' to see; anyone else is sent none. */}
+      {agent.can_manage && <InfoLine label="OAuth client" value={agent.oauth_client_id} mono />}
       <InfoLine label="Created" value={formatDateTime(agent.created_at)} />
     </Stack>
   );
@@ -373,7 +374,13 @@ function OptionsSection({
       <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
         Options
       </Typography>
-      {!spec ? (
+      {!agent.can_manage ? (
+        // The server sends its options, which hold where it runs on its
+        // owner's machine, to its owner and admins alone.
+        <Typography variant="body2" color="text.secondary">
+          Only the agent's owner and admins can see its options.
+        </Typography>
+      ) : !spec ? (
         <Alert severity="warning">
           Unknown agent type "{agent.known_agent_type}" — Switch no longer
           describes its options.
