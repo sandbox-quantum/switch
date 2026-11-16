@@ -440,10 +440,15 @@ export const ChatTimelineView = observer(function ChatTimelineView({
             ) : (
               // Switch's own lines (notices, kickoff headlines) are written in
               // the same Markdown as messages: drawn as text, `**name**` read
-              // as asterisks.
+              // as asterisks. A one-line notice is centred; a longer reply
+              // (a command's list) reads as a message.
               <div
                 id={messageAnchorId(message.messageId)}
-                className={cn('text-center text-xs text-foreground-muted', spacing())}
+                className={cn(
+                  'text-xs text-foreground-muted',
+                  !message.body.includes('\n') && 'text-center',
+                  spacing()
+                )}
               >
                 <ChatMarkdown>{message.body}</ChatMarkdown>
               </div>
