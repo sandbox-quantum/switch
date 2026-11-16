@@ -273,6 +273,8 @@ class SwitchConfig(BaseSettings):
         "decision_endpoint_url",
         "decision_api_key",
         "gateway_signup_refused_header",
+        "gateway_public_url",
+        "messaging_public_url",
         mode="before",
     )
     @classmethod

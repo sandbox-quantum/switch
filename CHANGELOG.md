@@ -706,6 +706,12 @@ version of their own to them without also giving them a release of their own.
   `read_user` and `api`. `read_api` is no longer used.
 
 #### Fixed
+- **GitHub works again on a standalone server with no public address set.**
+  The standalone compose file passes `GATEWAY_PUBLIC_URL` and
+  `MESSAGING_PUBLIC_URL` through as empty when `.env` leaves them out, and an
+  empty address was taken for one that is neither https nor on this computer,
+  so an agent's page answered that GitHub can't be used here. A blank value
+  now counts as unset.
 - **A sign-out that fails in the dashboard says so.** Signing out, or out of
   every device, from the account menu or the screens before a workspace said
   nothing when Switch didn't answer, and a failed sign-out of this browser
