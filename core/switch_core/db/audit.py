@@ -266,6 +266,33 @@ async def list_audit_events(
     return list(result.scalars().all())
 
 
+async def last_removed_by_someone_else(
+    session: AsyncSession, *, tenant_id: str, user_id: str
+) -> bool:
+    """Whether the last time `user_id` was removed from `tenant_id`, someone
+    other than themselves removed them: an admin, an organization admin, or
+    the organization's directory. False for someone never removed, or who
+    last left on their own.
+
+    Read from the workspace's own log, the one record of who removed whom,
+    which the runtime role can add to but not rewrite. Names its tenant as
+    `list_audit_events` does.
+    """
+    actor = await session.execute(
+        select(AuditEvent.actor_user_id)
+        .where(
+            AuditEvent.tenant_id == tenant_id,
+            AuditEvent.action == AuditAction.MEMBER_REMOVED.value,
+            AuditEvent.target_type == "user",
+            AuditEvent.target_id == user_id,
+        )
+        .order_by(AuditEvent.occurred_at.desc(), AuditEvent.id.desc())
+        .limit(1)
+    )
+    row = actor.first()
+    return row is not None and row[0] != user_id
+
+
 async def list_organization_audit_events(
     session: AsyncSession,
     *,

@@ -48,6 +48,7 @@ from switch_core.connections.broker import (
 from switch_core.db.audit import (
     AuditAction,
     OrganizationAuditAction,
+    last_removed_by_someone_else,
     list_audit_events,
     record_audit_event,
     record_organization_audit_event,
@@ -2161,7 +2162,8 @@ async def list_joinable_tenants(
     user_store: Annotated[UserStore, Depends(get_user_store)],
 ) -> list[JoinableTenant]:
     """The workspaces open to the domain of the caller's own address, that
-    they do not already belong to.
+    they do not already belong to and were not removed from
+    (`join_tenant_by_domain`).
 
     Authenticated without a tenant, like `list_my_invitations` and for the
     same reason: none of these is a workspace any session of theirs is bound
@@ -2177,6 +2179,10 @@ async def list_joinable_tenants(
             tenant = await session.get(Tenant, tenant_id)
             assert tenant is not None
             if tenant.archived_at is not None:
+                continue
+            if await last_removed_by_someone_else(
+                session, tenant_id=tenant_id, user_id=caller.id
+            ):
                 continue
             found.append(
                 JoinableTenant(
@@ -2210,7 +2216,9 @@ async def join_tenant_by_domain(
 
     A workspace that is not open to that domain is answered as not found, so
     the route does not confirm that a workspace exists. Joining one you are
-    already in returns your existing role and changes nothing.
+    already in returns your existing role and changes nothing. Someone an
+    admin removed comes back only through an invitation, or an organization
+    admin adding them: their e-mail domain is refused, 403, until then.
     """
     domain = email_domain(caller.email)
     async with tenant_session(session_factory, tenant_id) as session:
@@ -2219,6 +2227,17 @@ async def join_tenant_by_domain(
         if await is_archived(session, tenant_id):
             raise HTTPException(status_code=409, detail=WORKSPACE_ARCHIVED)
         role = await user_store.tenant_role(session, tenant_id, caller.id)
+        if role is None and await last_removed_by_someone_else(
+            session, tenant_id=tenant_id, user_id=caller.id
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "You were removed from this workspace, so you can't rejoin "
+                    "it through your e-mail domain. Ask a workspace admin to "
+                    "invite you."
+                ),
+            )
         if role is None:
             role = "member"
             joining = await _organization_to_join(session, tenant_id, caller.id)
