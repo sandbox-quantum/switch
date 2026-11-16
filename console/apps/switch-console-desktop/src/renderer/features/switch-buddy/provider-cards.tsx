@@ -1,4 +1,5 @@
 import { CircleAlert, ExternalLink } from 'lucide-react';
+import { TurnOnMachine } from '@renderer/features/machines/turn-on-machine';
 import { LogTail } from '@renderer/features/switch-servers/log-tail';
 import { AgentIcon } from '@renderer/lib/components/agent-icon';
 import { openExternalUrl } from '@renderer/lib/open-external';
@@ -18,13 +19,34 @@ import type { ThisComputer } from './use-this-computer';
  */
 
 export function ComputerNote({
+  serverId,
   computer,
   onRetry,
+  onTurnOn,
 }: {
+  serverId: string;
   computer: ThisComputer;
   onRetry: () => void;
+  onTurnOn: () => void;
 }) {
   if (computer.kind === 'ready') return null;
+  if (computer.kind === 'off')
+    return (
+      <div className="flex flex-col items-start gap-2">
+        <p className="text-sm text-foreground-muted">
+          switch-buddy runs on this computer, which does not run managed agents for this workspace
+          yet.
+        </p>
+        <TurnOnMachine
+          serverId={serverId}
+          label="This computer"
+          sshHost={null}
+          buttonLabel="Run managed agents on this computer"
+          busy={false}
+          onConfirm={onTurnOn}
+        />
+      </div>
+    );
   if (computer.kind === 'failed')
     return (
       <div className="flex flex-wrap items-center gap-3">
