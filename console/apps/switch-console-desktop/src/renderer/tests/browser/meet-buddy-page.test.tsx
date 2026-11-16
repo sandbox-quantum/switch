@@ -145,7 +145,7 @@ describe('MeetBuddyPage', () => {
   it("goes by Console's own early check until this computer reports", async () => {
     state.early = [ready('codex'), signedOut('claude')];
     await render();
-    expect(buttons()).toEqual(['CodexSigned in locally', 'use other providers']);
+    expect(buttons()).toEqual(['OpenAI CodexSigned in locally', 'use other providers']);
   });
 
   it('starts a provider chosen before this computer is ready, once it is', async () => {
