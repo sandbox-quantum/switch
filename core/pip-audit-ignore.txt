@@ -1,0 +1,14 @@
+# Advisories the dependency audit in .github/workflows/pr-ci.yml accepts.
+#
+# One advisory id per line (the ID column pip-audit prints), then why it is
+# accepted and when to look again. Prefer upgrading: an entry here is for an
+# advisory with no fixed release yet, or one that cannot reach Switch, and it
+# comes out as soon as that stops being true.
+#
+#   GHSA-xxxx-xxxx-xxxx  no fix released; Switch never calls the affected API. Recheck 2027-01-01.
+#
+# To run the audit locally:
+#
+#   uv export --project core --frozen --all-groups --no-emit-project \
+#     --format requirements-txt > /tmp/core-requirements.txt
+#   uvx pip-audit@2.10.1 --requirement /tmp/core-requirements.txt --disable-pip
