@@ -56,6 +56,7 @@ import { CumulativeUsage, mergeUsage } from '../usage';
 import { historyFromClaudeMessages } from './claude-history';
 import {
   approvalContent,
+  claudeMcpLaunch,
   isRecord,
   itemTypeForTool,
   outcomeForResult,
@@ -67,7 +68,6 @@ import {
   resultHitUsageLimit,
   resultMessageText,
   textFromToolResultContent,
-  toMcpServerConfig,
   toolNameForItem,
   toolTitle,
   truncate,
@@ -506,10 +506,7 @@ export class ClaudeAdapter implements ProviderAdapter {
     }
 
     const prompt = new PromptQueue();
-    const mcpServers: Record<string, McpServerConfig> = {};
-    for (const [name, spec] of Object.entries(input.mcpServers)) {
-      mcpServers[name] = toMcpServerConfig(spec, input.env);
-    }
+    const { mcpServers, env } = claudeMcpLaunch(input.mcpServers, input.env);
     const permissionMode = PERMISSION_MODE_BY_RUNTIME_MODE[input.runtimeMode];
     const effort = effortFrom(input.model);
     const executable = resolveClaudeExecutable(this.executablePath, input.env);
@@ -529,7 +526,7 @@ export class ClaudeAdapter implements ProviderAdapter {
 
     const options: Options = {
       cwd: input.cwd,
-      env: input.env,
+      env,
       permissionMode,
       strictMcpConfig: false,
       ...sessionSettings(mcpServers, input.connectorMcpServers),
