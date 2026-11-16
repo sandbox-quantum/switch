@@ -131,7 +131,7 @@ describe('DeleteAccountModal', () => {
     await act(async () => button('Start over').click());
     expect(onClose).toHaveBeenCalled();
     expect(rehearse).toHaveBeenCalled();
-    expect(navigate).toHaveBeenCalledWith('home');
+    expect(navigate).toHaveBeenCalledWith('noServer');
   });
 });
 
@@ -162,7 +162,7 @@ describe('DeleteAccountModal in reset mode', () => {
       await act(async () => button('Reset test account').click());
       expect(resetTestAccount).toHaveBeenCalledWith('srv-1', 'ada@example.test');
       expect(connected).toHaveBeenCalledWith(server, via, false);
-      expect(navigate).toHaveBeenCalledWith('home');
+      expect(navigate).toHaveBeenCalledWith('noServer');
       expect(onClose).toHaveBeenCalled();
       expect(toastSuccess).toHaveBeenCalledWith('Test account reset');
       expect(rehearse).not.toHaveBeenCalled();
