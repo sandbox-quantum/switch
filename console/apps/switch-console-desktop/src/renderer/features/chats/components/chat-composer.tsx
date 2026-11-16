@@ -465,9 +465,13 @@ export const ChatComposer = observer(function ChatComposer({
         setMentionIndex((activeIndex + step + suggestions.length) % suggestions.length);
         return;
       }
-      if ((event.key === 'Enter' && !event.shiftKey) || event.key === 'Tab') {
+      const active = suggestions[activeIndex]!;
+      // A command typed in full is sent by Enter, as it would be with no suggestions open.
+      const typedInFull =
+        event.key === 'Enter' && active.kind === 'command' && draft === `!${active.command.name}`;
+      if (((event.key === 'Enter' && !event.shiftKey) || event.key === 'Tab') && !typedInFull) {
         event.preventDefault();
-        pick(suggestions[activeIndex]!);
+        pick(active);
         return;
       }
       if (event.key === 'Escape') {

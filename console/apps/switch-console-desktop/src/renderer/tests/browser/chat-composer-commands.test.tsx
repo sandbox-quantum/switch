@@ -1,7 +1,8 @@
 /**
  * A `!` that starts a message offers the room's commands, from the server's
  * list: typed on, they narrow; arrows move, Enter or Tab inserts `!name `, Esc
- * closes. A `!` later in the message is just text.
+ * closes. Enter on a name already typed in full sends it. A `!` later in the
+ * message is just text.
  */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act } from 'react';
@@ -13,6 +14,7 @@ const commands = vi.hoisted(() =>
     { name: 'help', description: 'Show this list of commands.', usage: '!help' },
     { name: 'reset', description: "Reset a targeted agent's session.", usage: '!reset <target>' },
     { name: 'reset-all-agents', description: 'Reset every agent.', usage: '!reset-all-agents' },
+    { name: 'list-agents', description: 'List the agents in this room.', usage: '!list-agents' },
   ])
 );
 vi.mock('@renderer/lib/ipc', () => ({
@@ -39,7 +41,9 @@ afterEach(async () => {
   root = null;
 });
 
-async function render(): Promise<HTMLTextAreaElement> {
+async function render(
+  timeline = new ChatTimeline('room-commands', {} as TimelineApi)
+): Promise<HTMLTextAreaElement> {
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
@@ -48,7 +52,7 @@ async function render(): Promise<HTMLTextAreaElement> {
       <QueryClientProvider client={new QueryClient()}>
         <ChatComposer
           serverId="s"
-          timeline={new ChatTimeline('room-commands', {} as TimelineApi)}
+          timeline={timeline}
           agents={[]}
           people={[]}
           groupName="Ship review"
@@ -90,7 +94,7 @@ it('offers the room’s commands on a starting !, narrowing as the name is typed
   expect(container!.querySelector('[role="listbox"]')?.getAttribute('aria-label')).toBe(
     'Room commands'
   );
-  expect(options()).toEqual(['!help', '!reset <target>', '!reset-all-agents']);
+  expect(options()).toEqual(['!help', '!reset <target>', '!reset-all-agents', '!list-agents']);
   await type(textarea, '!res');
   expect(options()).toEqual(['!reset <target>', '!reset-all-agents']);
   expect(commands).toHaveBeenCalledWith('s', 'room-commands');
@@ -117,4 +121,31 @@ it('closes on Esc, and offers nothing for a ! later in the message', async () =>
   expect(container!.querySelector('[role="listbox"]')).toBeNull();
   await type(textarea, 'hello !res');
   expect(container!.querySelector('[role="listbox"]')).toBeNull();
+});
+
+it('sends a command typed in full with one Enter, and keeps the next one apart', async () => {
+  const timeline = new ChatTimeline('room-commands', {} as TimelineApi);
+  const send = vi.spyOn(timeline, 'send').mockReturnValue('request-1');
+  const textarea = await render(timeline);
+  await type(textarea, '!list-agents');
+  expect(options()).toEqual(['!list-agents']);
+  await key(textarea, 'Enter');
+  expect(send).toHaveBeenCalledTimes(1);
+  expect(send.mock.calls[0]![0]).toMatchObject({ body: '!list-agents' });
+  expect(textarea.value).toBe('');
+
+  await type(textarea, '!help');
+  await key(textarea, 'Enter');
+  expect(send).toHaveBeenCalledTimes(2);
+  expect(send.mock.calls[1]![0]).toMatchObject({ body: '!help' });
+});
+
+it('still completes a command whose name is only partly typed', async () => {
+  const timeline = new ChatTimeline('room-commands', {} as TimelineApi);
+  const send = vi.spyOn(timeline, 'send').mockReturnValue('request-1');
+  const textarea = await render(timeline);
+  await type(textarea, '!list');
+  await key(textarea, 'Enter');
+  expect(textarea.value).toBe('!list-agents ');
+  expect(send).not.toHaveBeenCalled();
 });
