@@ -541,13 +541,15 @@ const PendingBubble = observer(function PendingBubble({
         </span>
       ) : (
         <div role="alert" className="flex max-w-[85%] flex-col items-start gap-1 text-xs">
-          <span className="text-foreground-destructive">
-            {send.state === 'conflict'
-              ? 'This request id was already used for a different message, so it was not sent. Discard it and send again.'
-              : send.uncertain
-                ? `Not confirmed: ${send.error ?? 'Switch did not answer.'} Retrying sends the same message, never a second copy.`
-                : send.error}
-          </span>
+          {(send.state === 'conflict' || send.uncertain || send.error) && (
+            <span className="text-foreground-destructive">
+              {send.state === 'conflict'
+                ? 'This request id was already used for a different message, so it was not sent. Discard it and send again.'
+                : send.uncertain
+                  ? `Not confirmed: ${send.error ?? 'Switch did not answer.'} Retrying sends the same message, never a second copy.`
+                  : send.error}
+            </span>
+          )}
           <span className="flex gap-1">
             {send.state === 'failed' && (
               <Button size="sm" variant="ghost" onClick={() => timeline.retry(send.requestId)}>
