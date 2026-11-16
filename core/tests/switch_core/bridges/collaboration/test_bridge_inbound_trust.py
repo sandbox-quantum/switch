@@ -6,7 +6,13 @@ from unittest.mock import AsyncMock
 from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
 from switch_core.bridges.collaboration.models import InboundMessage
 from switch_core.clients.admin_messages import AdminMessageType
+from switch_core.delivery.send_limits import (
+    MessageRefused,
+    MessageTooLong,
+    SendRateLimited,
+)
 from switch_core.trust.client import (
+    TRUST_MESSAGE_TEXT_LIMIT,
     GuardrailsCheckError,
     TrustCheckResult,
     TrustFinding,
@@ -84,12 +90,14 @@ class _FixedTrustClient:
         self._result = result
         self.room_ids: list[str] = []
         self.tenant_ids: list[str] = []
+        self.contents: list[str] = []
 
     async def check(
         self, *, tenant_id: str, role: str, content: str, room_id: str
     ) -> TrustCheckResult:
         self.room_ids.append(room_id)
         self.tenant_ids.append(tenant_id)
+        self.contents.append(content)
         return self._result
 
 
@@ -130,6 +138,9 @@ def _bridge(
     # around a failing platform notify, same as production.
     bridge._post_trust_notice = lambda msg, body, message_type: (
         CollaborationCore._post_trust_notice(bridge, msg, body, message_type)
+    )
+    bridge._tell_message_refused = lambda msg, refused, room: (
+        CollaborationCore._tell_message_refused(bridge, msg, refused, room)
     )
     bridge.relayed = relayed
     return bridge
@@ -347,3 +358,75 @@ async def test_trust_check_failure_fails_open_and_annotates_instead_of_blocking(
     _, body, _, message_type = adapter.admin_messages[0]
     assert "Switch Trust could not check" in body
     assert message_type == AdminMessageType.TRUST_ERRORED.value
+
+
+_OK = TrustCheckResult(outcome="ok", policy_id=None, policy_name=None)
+
+
+async def test_a_long_message_is_checked_in_part_and_room_and_sender_are_told() -> None:
+    """Padding a message cannot make Switch Trust time out: only its start is
+    sent, and the room and the sender both see that the rest went unchecked."""
+    human_actor = _FakeHumanActor()
+    adapter = _FakeAdapter()
+    trust = _FixedTrustClient(_OK)
+    bridge = _bridge(human_actor, adapter, trust)
+    content = "a" * TRUST_MESSAGE_TEXT_LIMIT + "b" * 5_000
+
+    await CollaborationCore._handle_inbound_message(bridge, _message(content))
+
+    assert trust.contents == ["a" * TRUST_MESSAGE_TEXT_LIMIT]
+    [(_, sent)] = human_actor.sent
+    assert sent.startswith(content)
+    assert "checked only the first 20,000 characters" in sent
+    [(_, body, _, message_type)] = adapter.admin_messages
+    assert "checked only the first 20,000 characters" in body
+    assert message_type == AdminMessageType.TRUST_ERRORED.value
+
+
+class _RefusingHumanActor(_FakeHumanActor):
+    """A human whose sends Switch refuses, one refusal per send."""
+
+    def __init__(self, *refusals: MessageRefused) -> None:
+        super().__init__()
+        self._refusals = list(refusals)
+
+    async def send_message(
+        self, room_id: str, content: str, **_kw: object
+    ) -> str | None:
+        raise self._refusals.pop(0)
+
+
+async def test_a_message_refused_as_too_long_is_told_to_its_sender() -> None:
+    human_actor = _RefusingHumanActor(MessageTooLong(70_000, 65_536))
+    adapter = _FakeAdapter()
+    bridge = _bridge(human_actor, adapter, _FixedTrustClient(_OK))
+
+    assert (
+        await CollaborationCore._handle_inbound_message(bridge, _message("long"))
+        is None
+    )
+
+    assert bridge.relayed == []
+    [(channel_id, body, root_or_ref, message_type)] = adapter.admin_messages
+    assert channel_id == "chan-1"
+    assert "not delivered to the room" in body
+    assert "70,000 characters long" in body
+    assert root_or_ref == "mm-post-1"
+    assert message_type == AdminMessageType.MESSAGE_REFUSED.value
+
+
+async def test_a_sender_over_their_allowance_is_told_once_not_per_message() -> None:
+    def limited(first: bool) -> SendRateLimited:
+        return SendRateLimited(retry_after=2.0, burst=30, per_second=2.0, first=first)
+
+    human_actor = _RefusingHumanActor(limited(True), limited(False), limited(False))
+    adapter = _FakeAdapter()
+    bridge = _bridge(human_actor, adapter, _FixedTrustClient(_OK))
+
+    for _ in range(3):
+        await CollaborationCore._handle_inbound_message(bridge, _message("again"))
+
+    [(_, body, _, message_type)] = adapter.admin_messages
+    assert "faster than Switch accepts" in body
+    assert "Wait 2 seconds" in body
+    assert message_type == AdminMessageType.MESSAGE_REFUSED.value

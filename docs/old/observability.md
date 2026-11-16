@@ -270,6 +270,16 @@ handled in a way that leaves no trace.
   on a platform where the app routinely sits in them (a shared Telegram bot
   with Group Privacy off). Counted instead of logged, so the drops that are
   real losses — a bridge down, a migration's window — keep their own errors.
+- **`switch.messages.refused`** — a message refused before it was written,
+  for being longer than `MAX_MESSAGE_CHARS` or for coming faster than one
+  sender's allowance (`MESSAGE_RATE_BURST`, `MESSAGE_RATE_PER_SECOND`). The
+  sender is told; nobody else is, and a sender stuck at the limit looks from
+  the room like one who went quiet.
+- **`switch.trust.check_failures`** — a Switch Trust check that did not
+  complete lets its message or file through, with only a quiet "could not
+  check" note in the room. `reason:timeout` is counted apart from the rest:
+  a run of timeouts means messages are going through unchecked, whether
+  Switch Trust is slow or someone is trying to make it give up.
 
 If you add another place that catches an exception to keep something alive,
 this is the list it belongs on.

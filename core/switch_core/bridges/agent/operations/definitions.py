@@ -11,6 +11,7 @@ and room come from `operations.context`.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
@@ -2026,7 +2027,7 @@ async def _provision_as_agent(
     builtins = await rooms_yaml.builtins_for(
         user_id=owner.id, name=owner.name, email=owner.email, text=yaml, inputs=inputs
     )
-    parsed = rooms_yaml.parse_template(yaml, inputs=inputs, builtins=builtins)
+    parsed = await rooms_yaml.read_template(yaml, inputs=inputs, builtins=builtins)
     if isinstance(parsed.spec, GroupSpec):
         # Without the owner's admin reach, which filing rooms in a group needs.
         require_group_filing(False)
@@ -2327,7 +2328,8 @@ async def _run_document(
         text=content,
         inputs=inputs,
     )
-    plan = plan_template(
+    plan = await asyncio.to_thread(
+        plan_template,
         content,
         filled,
         inputs or {},

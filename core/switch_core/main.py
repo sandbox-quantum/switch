@@ -198,6 +198,7 @@ from switch_core.delivery.router import (
     MessageRouter,
     sweep_pending_decisions,
 )
+from switch_core.delivery.send_limits import SendLimits
 from switch_core.feature_flags import AGENT_MANAGEMENT, SWITCH_BUDDY
 from switch_core.gateway.app import create_gateway_app
 from switch_core.gateway.auth import hash_password
@@ -1010,6 +1011,7 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
         ),
         decisions=decision_client if config.decision_routing_enabled else None,
         decision_max_age_seconds=config.decision_pending_max_age_seconds,
+        send_limits=SendLimits.from_config(config, clock=time.monotonic),
     )
 
     MembershipSignals(invites=invites, bus=signal_bus, router=router)

@@ -99,6 +99,7 @@ from switch_core.db.stores.session_activity_store import (
 from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.delivery.addressing import MENTIONS_KEY, AddressingResolver
+from switch_core.delivery.send_limits import MessageTooLong, SendRateLimited
 from switch_core.messages.notify import MessageListener
 from switch_core.messages.row import attachments_in, message_row, new_event_id
 from switch_core.observability.catalogue import MESSAGES_SENT
@@ -1936,8 +1937,11 @@ class ChatService:
 
         Switch Trust checks the text and each file first, as it does a
         message from any other platform, and a refusal of either raises
-        ChatError TRUST_BLOCKED with nothing posted.
+        ChatError TRUST_BLOCKED with nothing posted. Before that, a message
+        longer than any may be raises MESSAGE_TOO_LONG, and one sent faster
+        than one sender's allowance RATE_LIMITED (`send_limits.py`).
         """
+        self._admit(user.id, body)
         mentions = sorted(set(mention_agent_ids))
         people = sorted(set(mention_user_ids))
         if people or mention_spans:
@@ -2082,8 +2086,8 @@ class ChatService:
                     content=content,
                     client_txn_id=f"{request_id}:{index}",
                 )
-                routed.append(
-                    await self._router.store(
+                try:
+                    stored = await self._router.store(
                         session,
                         tenant_id=tenant_id,
                         room_id=room.id,
@@ -2091,7 +2095,11 @@ class ChatService:
                         message=message,
                         attachments=attachments_in(content),
                     )
-                )
+                except MessageTooLong as error:
+                    # Within the limit as typed, past it with the notes and
+                    # mentions Switch wrote into it.
+                    raise ChatError(422, "MESSAGE_TOO_LONG", str(error)) from error
+                routed.append(stored)
                 posted.append(message)
             await self._usage_store.record(
                 session,
@@ -2476,6 +2484,17 @@ class ChatService:
             notes_text = "\n".join(notes)
             body = f"{body}\n\n{notes_text}" if body.strip() else notes_text
         return body
+
+    def _admit(self, user_id: str, body: str) -> None:
+        """Refuse a message too long or sent too fast, as a ChatError."""
+        try:
+            self._router.send_limits.admit(
+                user_id, body, actor="human", starts_post=True
+            )
+        except MessageTooLong as error:
+            raise ChatError(422, "MESSAGE_TOO_LONG", str(error)) from error
+        except SendRateLimited as error:
+            raise ChatError(429, "RATE_LIMITED", str(error)) from error
 
     async def _staged_upload(
         self, session: AsyncSession, user_id: str, room_id: str, upload_id: str

@@ -40,6 +40,8 @@ from switch_core.db.stores.media_store import MediaStore
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.usage_store import UsageStore
+from switch_core.delivery.send_limits import MessageTooLong, SendLimits, SendRateLimited
+from switch_core.observability.catalogue import MESSAGES_REFUSED
 from switch_core.observability.metrics import MetricsRegistry, install, uninstall
 from switch_core.observability.throttle import WarningThrottle
 from switch_core.provisioning.postgres import PostgresProvisioning
@@ -232,6 +234,7 @@ def _transport(
     invites: InviteBus | None = None,
     actor_role: str = "agent",
     message_observer: ParticipantMessageObserver | None = None,
+    send_limits: SendLimits | None = None,
 ) -> PostgresTransport:
     """A transport for `client_id`, acting in `tenant_id`.
 
@@ -259,7 +262,7 @@ def _transport(
         ephemeral=ephemeral or EphemeralBus(),
         room_cache=_room_cache(session_factory),
         message_observer=message_observer or IgnoreParticipantMessages(),
-        router=router_on(session_factory),
+        router=router_on(session_factory, send_limits=send_limits),
     )
 
 
@@ -269,6 +272,226 @@ class TestConformsToThePort:
     ) -> None:
         transport = _transport(session_factory, client_id="c", user_id="@a:test")
         assert isinstance(transport, MessageTransport)
+
+
+class TestSendLimits:
+    """What a person or an agent sends is refused before it reaches the router
+    when it is too long or comes too fast; whatever else writes to a room is
+    held to the same length by the router itself."""
+
+    async def _bodies(
+        self, session_factory: async_sessionmaker[AsyncSession], room_id: str
+    ) -> list[str | None]:
+        async with session_factory() as session:
+            rows = await session.scalars(
+                select(Message).where(Message.room_id == room_id).order_by(Message.seq)
+            )
+            return [r.body for r in rows]
+
+    async def test_a_message_over_the_length_limit_is_refused_and_nothing_written(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            room_id, transport_room_id, client_id, user_id = await _make_room(session)
+            await session.commit()
+        transport = _transport(
+            session_factory,
+            client_id=client_id,
+            user_id=user_id,
+            send_limits=_limits(max_message_chars=10, burst=100),
+        )
+
+        with pytest.raises(MessageTooLong, match="11 characters long"):
+            await transport.send_message(
+                transport_room_id, "x" * 11, sender_name="a", metered=True
+            )
+        await transport.send_message(
+            transport_room_id, "x" * 10, sender_name="a", metered=True
+        )
+
+        assert await self._bodies(session_factory, room_id) == ["x" * 10]
+
+    async def test_a_write_no_participant_sent_is_held_to_the_length_too(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            room_id, transport_room_id, client_id, user_id = await _make_room(session)
+            await session.commit()
+        transport = _transport(
+            session_factory,
+            client_id=client_id,
+            user_id=user_id,
+            actor_role="system",
+            send_limits=_limits(max_message_chars=10, burst=100),
+        )
+
+        with pytest.raises(MessageTooLong):
+            await transport.send_message(
+                transport_room_id, "x" * 11, sender_name="a", metered=False
+            )
+
+        assert await self._bodies(session_factory, room_id) == []
+
+    async def test_a_sender_past_its_burst_is_refused_before_the_router_and_others_are_not(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            room_id, transport_room_id, client_id, user_id = await _make_room(session)
+            other_id, other_user = await _make_client(session, "other")
+            session.add(ClientRoom(client_id=other_id, room_id=room_id))
+            await session.commit()
+        limits = _limits(max_message_chars=100, burst=3)
+        flooder = _transport(
+            session_factory, client_id=client_id, user_id=user_id, send_limits=limits
+        )
+        other = _transport(
+            session_factory, client_id=other_id, user_id=other_user, send_limits=limits
+        )
+        other._router = flooder._router
+        for n in range(3):
+            await flooder.send_message(
+                transport_room_id, f"m{n}", sender_name="a", metered=True
+            )
+
+        stored = flooder._router.store
+        flooder._router.store = _never_called  # type: ignore[method-assign]
+        with pytest.raises(SendRateLimited, match="3 at once") as refused:
+            await flooder.send_message(
+                transport_room_id, "m3", sender_name="a", metered=True
+            )
+        assert refused.value.first
+        with pytest.raises(SendRateLimited) as again:
+            await flooder.send_message(
+                transport_room_id, "m4", sender_name="a", metered=True
+            )
+        assert not again.value.first
+
+        flooder._router.store = stored  # type: ignore[method-assign]
+        await other.send_message(
+            transport_room_id, "theirs", sender_name="b", metered=True
+        )
+        # Switch's own writes as the same client are not a participant's.
+        await flooder.send_message(
+            transport_room_id, "notice", sender_name="a", metered=False
+        )
+
+        assert await self._bodies(session_factory, room_id) == [
+            "m0",
+            "m1",
+            "m2",
+            "theirs",
+            "notice",
+        ]
+
+    async def test_the_allowance_refills_with_time(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            _, transport_room_id, client_id, user_id = await _make_room(session)
+            await session.commit()
+        now = [0.0]
+        transport = _transport(
+            session_factory,
+            client_id=client_id,
+            user_id=user_id,
+            send_limits=SendLimits(
+                max_message_chars=100, burst=1, per_second=2.0, clock=lambda: now[0]
+            ),
+        )
+        await transport.send_message(
+            transport_room_id, "one", sender_name="a", metered=True
+        )
+        with pytest.raises(SendRateLimited) as refused:
+            await transport.send_message(
+                transport_room_id, "two", sender_name="a", metered=True
+            )
+        assert refused.value.retry_after == pytest.approx(0.5)
+
+        now[0] = 0.5
+        await transport.send_message(
+            transport_room_id, "two", sender_name="a", metered=True
+        )
+
+    async def test_the_files_of_one_post_take_one_turn(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            room_id, transport_room_id, client_id, user_id = await _make_room(session)
+            await session.commit()
+        transport = _transport(
+            session_factory,
+            client_id=client_id,
+            user_id=user_id,
+            send_limits=_limits(max_message_chars=100, burst=1),
+        )
+        for index in range(3):
+            await transport.send_media(
+                transport_room_id,
+                f"mxc://test/{index}",
+                f"f{index}.txt",
+                "text/plain",
+                1,
+                sender_name="a",
+                metered=True,
+                msgtype="m.file",
+                group={"id": "post-1", "index": index, "total": 3},
+            )
+        with pytest.raises(SendRateLimited):
+            await transport.send_message(
+                transport_room_id, "next", sender_name="a", metered=True
+            )
+
+        assert len(await self._bodies(session_factory, room_id)) == 3
+
+    async def test_each_refusal_is_counted_by_reason_and_sender(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            _, transport_room_id, client_id, user_id = await _make_room(session)
+            await session.commit()
+        registry = MetricsRegistry()
+        install(registry)
+        try:
+            transport = _transport(
+                session_factory,
+                client_id=client_id,
+                user_id=user_id,
+                send_limits=_limits(max_message_chars=5, burst=1),
+            )
+            with pytest.raises(MessageTooLong):
+                await transport.send_message(
+                    transport_room_id, "too long", sender_name="a", metered=True
+                )
+            await transport.send_message(
+                transport_room_id, "ok", sender_name="a", metered=True
+            )
+            with pytest.raises(SendRateLimited):
+                await transport.send_message(
+                    transport_room_id, "ok", sender_name="a", metered=True
+                )
+            counted = sorted(
+                (dict(point.attributes)["reason"], dict(point.attributes)["actor"])
+                for payload in registry.collect()
+                if payload.name == MESSAGES_REFUSED.name
+                for point in payload.numbers
+            )
+        finally:
+            uninstall()
+        assert counted == [("rate_limited", "agent"), ("too_long", "agent")]
+
+
+def _limits(*, max_message_chars: int, burst: int) -> SendLimits:
+    """Limits whose allowance does not refill during a test."""
+    return SendLimits(
+        max_message_chars=max_message_chars,
+        burst=burst,
+        per_second=0.001,
+        clock=lambda: 0.0,
+    )
+
+
+async def _never_called(*_args: object, **_kwargs: object) -> None:
+    raise AssertionError("a refused message reached the router")
 
 
 class TestMetering:

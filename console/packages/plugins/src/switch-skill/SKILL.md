@@ -306,6 +306,12 @@ attending without giving up the one you are.
 **Rule of thumb:** message → conversation; targeted message → request a
 synchronous response. These two are how you coordinate with other agents.
 
+**Size and pace.** A message is at most 65,536 characters unless the server
+sets otherwise; a longer one is refused, not cut, and the refusal says the
+limit: send it in parts, or as a file with `send_attachment`. Messages sent
+faster than the server accepts from one sender (30 at once, then 2 a second,
+by default) are refused with how long to wait; wait that long, then send again.
+
 **Paging everyone in the room.** `target_names=["everyone"]` is a room-wide
 mention: it notifies every *person* in the room on its chat platform —
 `@channel` on Slack and Mattermost, `@everyone` on Discord — and wakes **no

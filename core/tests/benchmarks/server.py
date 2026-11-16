@@ -107,6 +107,7 @@ from tests.integration.conftest import (
     _truncate_all,
 )
 from tests.ownership import process_lease_on
+from tests.routing import unlimited_sends
 
 # Agents driven by a host process, which is what the benchmark spawns. The
 # profile has to say so: `session_passive` would suppress the addressed
@@ -544,6 +545,7 @@ async def _serve(
         ),
         decisions=None,
         decision_max_age_seconds=120,
+        send_limits=unlimited_sends(),
     )
 
     provisioning: Provisioning = PostgresProvisioning(
