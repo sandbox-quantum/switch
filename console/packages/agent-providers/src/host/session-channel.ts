@@ -146,6 +146,16 @@ export const busyReasonSchema = z.object({
 });
 export type BusyReason = z.infer<typeof busyReasonSchema>;
 export type BusyState = { busy: boolean; reasons: BusyReason[] };
+/**
+ * How a host exited: its code or signal, what it last said about being busy,
+ * and whether this process signalled it (`child.killed`) — a stop it asked for.
+ */
+export type HostExit = {
+  code: number | null;
+  signal: NodeJS.Signals | null;
+  busy: BusyState | null;
+  stopAsked: boolean;
+};
 
 const toChildSchema = z.discriminatedUnion('kind', [
   z.object({
@@ -273,7 +283,9 @@ export class SessionLinks {
   private readonly agentTokens = new Map<string, Set<string>>();
   private readonly links = new Map<string, Link>();
   private readonly answerers = new Map<string, AskHandler>();
-  private readonly exitListeners = new Set<(root: string, identity: HostIdentity | null) => void>();
+  private readonly exitListeners = new Set<
+    (root: string, identity: HostIdentity | null, exit: HostExit) => void
+  >();
   private readonly readyListeners = new Set<(root: string) => void>();
   private readonly failureListeners = new Set<(root: string, failure: string) => void>();
   private readonly busyListeners = new Set<(root: string) => void>();
@@ -395,10 +407,11 @@ export class SessionLinks {
       }, HOST_HUNG_UP_MS);
       hungUp.unref?.();
     });
-    child.once('exit', (code) => {
+    child.once('exit', (code, signal) => {
       if (hungUp) clearTimeout(hungUp);
       if (link.child !== child) return;
       const identity = link.identity;
+      const exit: HostExit = { code, signal, busy: link.busy, stopAsked: child.killed };
       link.child = null;
       link.ready = false;
       link.identity = null;
@@ -425,7 +438,7 @@ export class SessionLinks {
       // A request waiting for this host to come up learns now that it will not.
       for (const wake of link.waiting.splice(0)) wake();
       for (const listener of this.busyListeners) listener(root);
-      for (const listener of this.exitListeners) listener(root, identity);
+      for (const listener of this.exitListeners) listener(root, identity, exit);
       if (failure !== null) for (const listener of this.failureListeners) listener(root, failure);
     });
   }
@@ -478,8 +491,10 @@ export class SessionLinks {
     return this.links.get(root)?.identity ?? null;
   }
 
-  /** Hear each host exit, with the session it last said it ran. */
-  onExit(listener: (root: string, identity: HostIdentity | null) => void): () => void {
+  /** Hear each host exit, with the session it last said it ran and how it exited. */
+  onExit(
+    listener: (root: string, identity: HostIdentity | null, exit: HostExit) => void
+  ): () => void {
     this.exitListeners.add(listener);
     return () => this.exitListeners.delete(listener);
   }

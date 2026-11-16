@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { isDeepStrictEqual } from 'node:util';
 import {
   IMPORTED_TURN_PREFIX,
@@ -146,6 +147,10 @@ export class HostedSession {
   /** Turns whose posts to the room were refused, with the last refusal. */
   private readonly failedPosts = new Map<string, string>();
   private readonly usage = new Map<string, TokenUsage[]>();
+  /** Why turns failed, in memory only: shown on their activity row. */
+  private readonly endReasons = new Map<string, string>();
+  /** Room replies still being posted, which shutting down waits for. */
+  private readonly roomReplying = new Set<Promise<unknown>>();
   private readonly resumeOperations = new Set<string>();
   private readonly queue: Command[] = [];
   private readonly questions = new Map<string, PendingQuestion>();
@@ -765,6 +770,11 @@ export class HostedSession {
   /** What `turnId` spent, as its provider reported when it ended. */
   usageOf(turnId: string): TokenUsage[] {
     return this.usage.get(turnId) ?? [];
+  }
+
+  /** Why `turnId` failed, or '' for a turn that did not. */
+  endReasonOf(turnId: string): string {
+    return this.endReasons.get(turnId) ?? '';
   }
 
   /**
@@ -1394,6 +1404,7 @@ export class HostedSession {
         attachments,
       });
     } catch (error) {
+      this.endReasons.set(command.commandId, String(error));
       await this.publish({
         type: 'turn.upsert',
         turnId: command.commandId,
@@ -1462,7 +1473,7 @@ export class HostedSession {
     if (body === null) return;
     await this.inbox.append({ type: 'room-reply', commandId: turnId });
     this.roomReplies.add(turnId);
-    void reply({ roomId, threadId: origin.threadId, body })
+    const posting = reply({ roomId, threadId: origin.threadId, body })
       .then(
         () =>
           this.publish({
@@ -1489,7 +1500,9 @@ export class HostedSession {
       )
       .catch((error: unknown) =>
         console.warn(`Could not record the room reply for turn ${turnId}: ${String(error)}`)
-      );
+      )
+      .finally(() => this.roomReplying.delete(posting));
+    this.roomReplying.add(posting);
   }
 
   private async providerEvent(event: ProviderRuntimeEvent): Promise<void> {
@@ -1512,9 +1525,17 @@ export class HostedSession {
             commandId: null,
             result: null,
           });
+      // A session that ends mid-turn without closing it, not stopped on
+      // purpose, failed that turn: its row and the room both say so.
+      const failed = this.stopped || this.shuttingDown ? null : this.activeTurn;
+      if (failed) this.endReasons.set(failed, event.reason);
       for (const turn of this.snapshot().turns)
         if (turn.status === 'running' || turn.status === 'queued')
-          await this.publish({ ...turn, status: 'interrupted' });
+          await this.publish({
+            ...turn,
+            status: turn.turnId === failed ? 'error' : 'interrupted',
+          });
+      if (failed) await this.replyIfUnposted(failed, 'error', event.reason, null);
       this.queue.length = 0;
       this.activeTurn = null;
       this.questions.clear();
@@ -1597,6 +1618,8 @@ export class HostedSession {
     // A turn is finished, with what it spent, before anyone can read that it
     // ended: its report to Switch is the one chance to count the spend.
     if (event.type === 'turn.completed') {
+      if (event.outcome === 'error' && event.message)
+        this.endReasons.set(event.turnId, event.message);
       await this.inbox.append({
         type: 'finished',
         commandId: event.turnId,
@@ -1737,6 +1760,8 @@ export class HostedSession {
         code: 'HOST_ERROR',
         message: this.fault.message,
       });
+      if (this.activeTurn)
+        await this.replyIfUnposted(this.activeTurn, 'error', this.fault.message, null);
     } catch (persistenceError) {
       console.error('SDK host could not persist its failure:', String(persistenceError));
     }
@@ -1749,11 +1774,18 @@ export class HostedSession {
       await this.adapter.stopSession(this.config.session.sessionId);
     await this.serial;
     await this.eventSerial;
+    // A reply asked of the parent fails once this process exits, though it may have posted.
+    await Promise.race([
+      Promise.allSettled([...this.roomReplying]),
+      delay(ROOM_REPLY_SETTLE_MS, undefined, { ref: false }),
+    ]);
     await this.publishing;
     this.unsubscribe();
   }
 }
 
+/** How long shutting down waits for room replies still being posted. */
+const ROOM_REPLY_SETTLE_MS = 10_000;
 /** How many items of a continued conversation's earlier turns a transcript starts with. */
 const HISTORY_ITEM_LIMIT = 500;
 /** How much of one imported item's text is shown; the agent still has all of it. */

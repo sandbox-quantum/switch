@@ -24,6 +24,8 @@ import { releaseOwner, replaceOwner, withOwnershipLockOutlasting } from './owner
 import { SessionPlacements } from './placements';
 import { roomInputId } from './room-inbox';
 import {
+  type HostExit,
+  type HostIdentity,
   SessionHostFailedError,
   type SessionRequest,
   SessionUnavailableError,
@@ -41,6 +43,7 @@ import {
   announceSessionStart,
   announceStartFailure,
   type PlaceOutcome,
+  postAsSession,
   sessionToolAnswerer,
   type WatcherControl,
   type WatcherState,
@@ -200,7 +203,19 @@ function sessionIdFor(agentId: string, roomId: string, messageId: string): strin
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
-async function stopped(sessionId: string): Promise<boolean> {
+/** The fields of a session's command journal records read here; see `RecordEntry` in session-host. */
+type InboxRecord = {
+  type: string;
+  commandId?: string;
+  notSent?: boolean;
+  command?: {
+    commandId: string;
+    origin?: { roomId?: string; threadId?: string | null; messageId?: string } | null;
+  };
+};
+
+/** The records of a session's command journal, or none when it has not written one. */
+async function inboxRecords(sessionId: string): Promise<InboxRecord[]> {
   try {
     const text = await readFile(join(sharedSessionRoot(sessionId), 'inbox.jsonl'), 'utf8');
     if (text && !text.endsWith('\n'))
@@ -210,11 +225,47 @@ async function stopped(sessionId: string): Promise<boolean> {
     return text
       .split('\n')
       .slice(0, -1)
-      .some((line) => JSON.parse(line).type === 'stopped');
+      .map((line) => JSON.parse(line) as InboxRecord);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
     throw error;
   }
+}
+
+async function stopped(sessionId: string): Promise<boolean> {
+  return (await inboxRecords(sessionId)).some((record) => record.type === 'stopped');
+}
+
+/**
+ * The room message the session's last dispatched turn answers, unless that
+ * turn finished or the host already told the room about it.
+ */
+async function unansweredRoomTurn(
+  sessionId: string
+): Promise<{ commandId: string; threadId: string | null } | null> {
+  const records = await inboxRecords(sessionId);
+  const last = records.filter((record) => record.type === 'dispatched' && !record.notSent).at(-1);
+  if (!last) return null;
+  const commandId = last.commandId;
+  if (
+    records.some(
+      (record) =>
+        (record.type === 'finished' || record.type === 'room-reply') &&
+        record.commandId === commandId
+    )
+  )
+    return null;
+  const origin = records.find(
+    (record) => record.type === 'accepted' && record.command?.commandId === commandId
+  )?.command?.origin;
+  if (!commandId || !origin?.roomId || !origin.messageId) return null;
+  return { commandId, threadId: origin.threadId ?? null };
+}
+
+/** What a room hears when its session's host dies during a turn. */
+export function sessionStoppedMessage(exit: HostExit): string {
+  const reason = exit.signal ? `signal ${exit.signal}` : `exit code ${exit.code}`;
+  return `My session stopped unexpectedly (${reason}). Mention me again to retry.`;
 }
 
 /**
@@ -908,12 +959,56 @@ export async function runAgentHost(
         }
       })
     );
+    /** Turns whose room was told their host died, so it is told once. */
+    const crashNoticed = new Set<string>();
+    /**
+     * Tells the room, as the session, that its host died mid-turn: not one
+     * that exited cleanly or that this process asked to stop.
+     */
+    const tellCrashed = async (exited: HostIdentity, exit: HostExit) => {
+      if (stop.signal.aborted || exit.stopAsked || exit.code === 0) return;
+      if (!exit.busy?.reasons.some((reason) => reason.kind === 'turn_running')) return;
+      const sessionRoot = sharedSessionRoot(exited.sessionId);
+      const body = sessionStoppedMessage(exit);
+      try {
+        const turn = await unansweredRoomTurn(exited.sessionId);
+        if (!turn || crashNoticed.has(turn.commandId)) return;
+        crashNoticed.add(turn.commandId);
+        const config = sharedConfigSchema.parse(
+          JSON.parse(await readFile(join(sessionRoot, 'config.json'), 'utf8'))
+        );
+        // As `publishBeforeNotice`, which is declared after a host can first exit.
+        await publish().catch((error: unknown) =>
+          console.warn(
+            `Could not state the session placements before telling the room session ${exited.sessionId} stopped: ${error instanceof Error ? error.message : String(error)}`
+          )
+        );
+        await postAsSession({
+          identity,
+          connectionId,
+          session: exited,
+          root: sessionRoot,
+          cwd: config.start.input.cwd,
+          threadId: turn.threadId,
+          body,
+        });
+      } catch (error) {
+        console.error(
+          `Could not tell the room that session ${exited.sessionId} stopped mid-turn (${body}): ${
+            error instanceof Error ? error.message : String(error)
+          }`
+        );
+      }
+    };
     unbind.push(
-      links.onExit((_root, exited) => {
+      links.onExit((_root, exited, exit) => {
         if (!exited || exited.agentId !== agentId) return;
         pending = pending.then(async () => {
           if (placements.roomOf(exited.sessionId) === null) return;
-          if (!(await stopped(exited.sessionId))) return;
+          if (!(await stopped(exited.sessionId))) {
+            void tellCrashed(exited, exit);
+            return;
+          }
           const roomId = await placements.unplace(exited.sessionId);
           console.warn(
             `Session ${exited.sessionId} was stopped, so room ${roomId} has no session attending it now.`

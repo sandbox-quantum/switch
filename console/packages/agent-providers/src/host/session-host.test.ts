@@ -1948,6 +1948,79 @@ it('posts nothing for a room turn the host stopped', async () => {
   expect(reply).not.toHaveBeenCalled();
 });
 
+it('posts nothing when a stopped session exits without closing its turn', async () => {
+  const reply = vi.fn(async (_reply: RoomReply) => {});
+  const { host, emit, adapter } = await startReplying(reply);
+  await host.command(roomMessage('cut', null));
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+  vi.mocked(adapter.stopSession).mockImplementationOnce(async () => {
+    emit({ type: 'session.exited', reason: 'Stopped' });
+  });
+  await host.command({ ...message('stop'), body: { type: 'session.stop' } });
+  await until(() => expect(host.snapshot().session.status).toBe('stopped'));
+  await host.barrier();
+  expect(reply).not.toHaveBeenCalled();
+  expect(host.snapshot().turns.find((turn) => turn.turnId === 'cut')?.status).toBe('interrupted');
+  expect(host.endReasonOf('cut')).toBe('');
+});
+
+it('tells the room, in its thread, when the session exits mid-turn', async () => {
+  const reply = vi.fn(async (_reply: RoomReply) => {});
+  const { host, emit, root, adapter } = await startReplying(reply);
+  await host.command(roomMessage('turn', 'thread'));
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+  emit({ type: 'session.exited', reason: 'Process exited with code 1.' });
+  await until(() => expect(reply).toHaveBeenCalledOnce());
+  expect(reply).toHaveBeenCalledWith({
+    roomId: 'room',
+    threadId: 'thread',
+    body: 'I finished without replying. The turn failed: Process exited with code 1.',
+  });
+  expect(await roomReplyRecords(root)).toEqual([{ type: 'room-reply', commandId: 'turn' }]);
+  expect(host.snapshot().turns[0]?.status).toBe('error');
+  expect(host.endReasonOf('turn')).toBe('Process exited with code 1.');
+});
+
+it('tells the room once when a failed turn is followed by the session exiting', async () => {
+  const reply = vi.fn(async (_reply: RoomReply) => {});
+  const { host, emit, root, adapter } = await startReplying(reply);
+  await host.command(roomMessage('turn', null));
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+  emit({
+    type: 'turn.completed',
+    turnId: 'turn',
+    outcome: 'error',
+    message: 'Claude Code stream ended.',
+    usage: [],
+  });
+  emit({ type: 'session.exited', reason: 'Claude Code stream ended.' });
+  await until(() =>
+    expect(host.snapshot().notices.map((notice) => notice.code)).toContain('ROOM_REPLY_POSTED')
+  );
+  await host.barrier();
+  expect(reply).toHaveBeenCalledExactlyOnceWith({
+    roomId: 'room',
+    threadId: null,
+    body: 'I finished without replying. The turn failed: Claude Code stream ended.',
+  });
+  expect(await roomReplyRecords(root)).toHaveLength(1);
+  expect(host.endReasonOf('turn')).toBe('Claude Code stream ended.');
+});
+
+it('tells the room when the host fails mid-turn', async () => {
+  const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+  const reply = vi.fn(async (_reply: RoomReply) => {});
+  const { host, emit, adapter } = await startReplying(reply);
+  await host.command(roomMessage('turn', null));
+  await until(() => expect(adapter.sendTurn).toHaveBeenCalledOnce());
+  // A notice the event schema refuses faults the host.
+  emit({ type: 'runtime.error', message: 42 });
+  await until(() => expect(reply).toHaveBeenCalledOnce());
+  expect(host.snapshot().session.status).toBe('error');
+  expect(reply.mock.calls[0]![0].body).toMatch(/^I finished without replying\. The turn failed: /);
+  error.mockRestore();
+});
+
 it('keeps the session working when the room reply cannot be posted', async () => {
   const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
   const reply = vi.fn(async (_reply: RoomReply) => {

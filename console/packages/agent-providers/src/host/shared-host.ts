@@ -572,7 +572,8 @@ export async function runSharedHost(
         const reports = reporter.reports(
           event,
           (turnId) => host!.originOf(turnId),
-          (turnId) => host!.usageOf(turnId)
+          (turnId) => host!.usageOf(turnId),
+          (turnId) => host!.endReasonOf(turnId)
         );
         for (const item of reports) {
           try {
@@ -1104,20 +1105,25 @@ export async function runSharedHost(
     })().catch((error: unknown) => {
       if (!executionSignal.aborted) reportingFailure = error;
     });
+    // How the session ended, and the turn that ended with it, are what Switch
+    // most needs to show; stopping would drop them unreported, the turn left running.
+    const reportLast = () =>
+      Promise.race([
+        reportInTurn().catch((error: unknown) =>
+          console.warn(`Could not report this session's last events: ${String(error)}`)
+        ),
+        delay(FINAL_REPORT_MS, undefined, { signal: executionSignal }).catch(() => {}),
+      ]);
     let heldForDecision = false;
     while (!executionSignal.aborted) {
       if (reportingFailure) throw reportingFailure;
       const status = host.snapshot().session.status;
-      if (status === 'stopped') break;
+      if (status === 'stopped') {
+        await reportLast();
+        break;
+      }
       if (status === 'error' && !host.resetDecisionPending) {
-        // What faulted it, and the turn that ended with it, are what Switch most
-        // needs to show; stopping would drop them unreported, the turn left running.
-        await Promise.race([
-          reportInTurn().catch((error: unknown) =>
-            console.warn(`Could not report this session's last events: ${String(error)}`)
-          ),
-          delay(FINAL_REPORT_MS, undefined, { signal: executionSignal }).catch(() => {}),
-        ]);
+        await reportLast();
         throw new Error(
           'HOST_FAULTED: Provider execution failed. Inspect the transcript before recovery.'
         );

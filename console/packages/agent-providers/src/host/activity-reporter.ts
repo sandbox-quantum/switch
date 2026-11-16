@@ -124,7 +124,8 @@ export class ActivityReporter {
   reports(
     event: ServerEvent,
     originOf: (turnId: string) => Origin | null,
-    usageOf: (turnId: string) => TokenUsage[]
+    usageOf: (turnId: string) => TokenUsage[],
+    endReasonOf: (turnId: string) => string
   ): Report[] {
     const body = event.body;
     const place = (turnId: string, itemOrigin?: Origin | null): Placement => {
@@ -150,7 +151,7 @@ export class ActivityReporter {
               revision: event.sequence,
               status: body.status,
               title: '',
-              text: '',
+              text: body.status === 'error' ? truncate(endReasonOf(body.turnId), MAX_TEXT) : '',
               command_id: body.commandId,
               ...place(body.turnId),
               occurred_at: event.occurredAt,

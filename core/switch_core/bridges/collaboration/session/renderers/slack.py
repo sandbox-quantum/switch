@@ -1038,7 +1038,11 @@ def render_activity(
     """
     if status_only:
         state = turn_state(
-            items, turn, tool_detail=True, elapsed_seconds=elapsed_seconds
+            items,
+            turn,
+            tool_detail=True,
+            escape=escape_mrkdwn,
+            elapsed_seconds=elapsed_seconds,
         )
         if turn.status not in TURN_ENDED:
             return SlackMessage(
@@ -1073,7 +1077,11 @@ def render_activity(
         blocks.append(_plan(items, did, turn, elapsed_seconds=elapsed_seconds))
     else:
         state = turn_state(
-            items, turn, tool_detail=True, elapsed_seconds=elapsed_seconds
+            items,
+            turn,
+            tool_detail=True,
+            escape=escape_mrkdwn,
+            elapsed_seconds=elapsed_seconds,
         )
         blocks.append(_context(f"_{state}_"))
     return SlackMessage(
@@ -1145,7 +1153,13 @@ def render_activity_text(
     lines += _activity_lines(did)
     lines += subagent_lines(items, fit=lambda text, size: _fit(text, size))
     lines.append(
-        turn_state(items, turn, tool_detail=True, elapsed_seconds=elapsed_seconds)
+        turn_state(
+            items,
+            turn,
+            tool_detail=True,
+            escape=escape_mrkdwn,
+            elapsed_seconds=elapsed_seconds,
+        )
     )
     return "\n".join(_within(lines, _MAX_TEXT))
 
@@ -1316,7 +1330,13 @@ def render_activity_stream(
     blocks = _step_blocks(
         [_settled(_plan_task(item), item, turn) for item in shown],
         _running(shown, turn),
-        turn_state(items, turn, tool_detail=True, elapsed_seconds=elapsed_seconds),
+        turn_state(
+            items,
+            turn,
+            tool_detail=True,
+            escape=_unescaped,
+            elapsed_seconds=elapsed_seconds,
+        ),
         turn.status not in TURN_ENDED,
     )
     _fit_details(blocks, _MAX_STREAM_BYTES)
@@ -1568,7 +1588,13 @@ def _activity_title(
     the only part of a collapsed block, so a cut nobody is told about is a cut
     nobody can see.
     """
-    title = turn_state(items, turn, tool_detail=True, elapsed_seconds=elapsed_seconds)
+    title = turn_state(
+        items,
+        turn,
+        tool_detail=True,
+        escape=_unescaped,
+        elapsed_seconds=elapsed_seconds,
+    )
     running = _running(items, turn)
     if running:
         title += f" · {running[1]}"
@@ -1630,7 +1656,13 @@ def _plan(
     """
     kept = did[len(did) - _MAX_PLAN_TASKS :]
     dropped = len(did) - len(kept)
-    title = turn_state(items, turn, tool_detail=True, elapsed_seconds=elapsed_seconds)
+    title = turn_state(
+        items,
+        turn,
+        tool_detail=True,
+        escape=_unescaped,
+        elapsed_seconds=elapsed_seconds,
+    )
     if dropped:
         step = "step" if dropped == 1 else "steps"
         title = f"{title} …{dropped} earlier {step}, not shown."
@@ -1750,6 +1782,11 @@ def _task_id(item_id: str) -> str:
     if len(item_id) <= _MAX_TASK_ID:
         return item_id
     return hashlib.sha256(item_id.encode()).hexdigest()[:_MAX_TASK_ID]
+
+
+def _unescaped(text: str) -> str:
+    """For a plain-text field, which parses nothing (see `_plan_task`)."""
+    return text
 
 
 def _context(text: str) -> dict[str, Any]:

@@ -87,6 +87,7 @@ def turn_view(rows: list[AgentSessionActivityItem]) -> TurnView | None:
             turn_id=row.turn_id,
             status=row.status,  # type: ignore[arg-type]
             command_id=row.command_id,
+            reason=row.text,
         ),
         items=items,
         row=row,

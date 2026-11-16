@@ -79,6 +79,34 @@ def test_every_platform_says_a_message_was_steered(
     assert "Steered into this turn: Use the other file" in text
 
 
+@pytest.mark.parametrize(
+    ("markup", "escape", "head"),
+    [
+        (MARKDOWN, _identity, "**Turn interrupted. Ended by <Switch>.**"),
+        (_TEAMS_MARKUP, _identity, "**Turn interrupted. Ended by <Switch>.**"),
+        (
+            TELEGRAM_HTML,
+            html.escape,
+            "<b>Turn interrupted. Ended by &lt;Switch&gt;.</b>",
+        ),
+    ],
+    ids=["markdown", "teams", "telegram"],
+)
+def test_every_platform_says_why_a_turn_ended(
+    markup: Markup, escape: object, head: str
+) -> None:
+    turn = _turn("interrupted").model_copy(update={"reason": "Ended by <Switch>."})
+    text = turn_status(
+        [],
+        turn,
+        escape=escape,  # type: ignore[arg-type]
+        limit=10_000,
+        markup=markup,
+        tool_detail=True,
+    )
+    assert text.splitlines()[0] == head
+
+
 # ── A turn that has ended is not still running ────────────────────────────────
 
 
