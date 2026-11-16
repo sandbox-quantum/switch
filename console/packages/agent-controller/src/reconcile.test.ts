@@ -55,6 +55,7 @@ function deps(): ReconcileDeps {
   return {
     store,
     runtime,
+    dataDir: join(dir, 'data'),
     ensureCredentials: async (agentId) => {
       if (runtime.credentials.get(agentId)?.endpoint === endpoint) return false;
       minted.push(agentId);
@@ -308,6 +309,34 @@ describe('reconcile', () => {
     expect(runtime.calls).toEqual([]);
   });
 
+  it('records a directory in the controller’s data directory as invalid, and never starts it', async () => {
+    const directories = [
+      join(dir, 'data'),
+      join(dir, 'data', 'secrets'),
+      join(dir, 'data', 'workspaces', '..', 'agents', 'agent-1'),
+    ];
+    await reconcile(
+      assignment(
+        ...directories.map((directory, index) =>
+          agent({ agent_id: `agent-${index}` }, { name: `scout-${index}`, directory })
+        )
+      ),
+      deps()
+    );
+    for (const index of directories.keys())
+      expect(store.agent(`agent-${index}`)?.failure).toMatchObject({
+        reason: 'definition_invalid',
+        detail: expect.stringContaining('data directory'),
+      });
+    expect(runtime.calls).toEqual([]);
+  });
+
+  it('starts an agent the server gave a directory in the data directory’s old workspaces folder', async () => {
+    const directory = join(dir, 'data', 'workspaces', 'scout');
+    await reconcile(assignment(agent({}, { directory })), deps());
+    expect(store.agent('agent-1')).toMatchObject({ appliedRevision: 1, failure: null });
+  });
+
   it('records a missing provider CLI, and retries on the next pass', async () => {
     missingProvider = true;
     await reconcile(assignment(agent()), deps());
@@ -332,6 +361,7 @@ describe('planReconcile', () => {
   it('holds an agent whose desired state it does not know', () => {
     const actions = planReconcile({
       assignment: assignment(agent({ desired_state: 'unknown' })),
+      dataDir: join(dir, 'data'),
       rows: [],
       observations: new Map([['agent-1', emptyObservation()]]),
       credentialsChanged: new Set(),
@@ -343,6 +373,7 @@ describe('planReconcile', () => {
   it('restarts a running watcher that is being turned off', () => {
     const actions = planReconcile({
       assignment: assignment(agent()),
+      dataDir: join(dir, 'data'),
       rows: [
         {
           agentId: 'agent-1',

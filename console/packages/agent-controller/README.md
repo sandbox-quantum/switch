@@ -667,7 +667,11 @@ An agent whose definition names no directory works in
 `~/.switch/agents/<server>/<name>/`, where `<server>` is the server's address
 (`localhost-8000`, `switch.example.com`). The server fills this path in once the
 controller reports `machine.workspaces_dir`. A missing directory under that folder
-is made; any other must already exist.
+is made; any other must already exist. A directory in the data directory is
+refused (`definition_invalid`), whether named directly or reached through a link,
+because an agent working there could read the controller's credential and keys.
+The one exception is its `workspaces` folder, where agents defined before the
+default moved to `~/.switch/agents` were given their directories.
 
 Sessions an agent host starts keep their state where the shared host puts it
 (`~/.local/state/switch/sdk-sessions/`), as they do under Console.

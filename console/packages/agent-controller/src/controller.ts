@@ -439,6 +439,7 @@ export async function runController(
   const reconcileDeps: ReconcileDeps = {
     store,
     runtime,
+    dataDir: deps.dataDir,
     ensureCredentials: async (agentId, provider) =>
       ensureRelayCredentials(
         agentId,
@@ -491,7 +492,7 @@ export async function runController(
           client,
           assignment: () => assignment,
           restartAgent: async (entry) => {
-            const problem = definitionProblem(entry);
+            const problem = definitionProblem(entry, deps.dataDir);
             if (problem) return { reason: 'definition_invalid', detail: problem };
             return startAgent(
               {
@@ -609,7 +610,7 @@ export async function runController(
       if (!assignment || stop.signal.aborted) return;
       try {
         for (const entry of assignment.agents) {
-          if (entry.desired_state !== 'running' || definitionProblem(entry)) continue;
+          if (entry.desired_state !== 'running' || definitionProblem(entry, deps.dataDir)) continue;
           const agentId = entry.agent_id;
           const observation = await runtime.observe(agentId);
           if (!observation.alive || !observation.outdated) continue;

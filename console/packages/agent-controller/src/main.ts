@@ -780,7 +780,7 @@ async function statusCommand(args: string[]): Promise<number> {
       const row = store.agent(entry.agent_id);
       let observation = emptyObservation();
       let unreadable: string | null = null;
-      if (!definitionProblem(entry)) {
+      if (!definitionProblem(entry, dataDir)) {
         if (separateRuntime)
           observation = await separateRuntime.observe(entry.agent_id).catch((error: unknown) => {
             unreadable = errorMessage(error);

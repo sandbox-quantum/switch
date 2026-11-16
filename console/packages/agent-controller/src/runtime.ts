@@ -1,7 +1,6 @@
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdir, open, readFile, rm, stat, unlink } from 'node:fs/promises';
-import { homedir } from 'node:os';
+import { mkdir, open, readFile, realpath, rm, stat, unlink } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
@@ -40,7 +39,7 @@ import {
 } from '@switch-console/agent-providers';
 import { ReasonedError } from './errors';
 import { errorMessage, type Logger } from './log';
-import { agentWorkspace, type DataLayout } from './paths';
+import { agentWorkspace, type DataLayout, expandHome, insideDataDir } from './paths';
 import type { Isolation, Provider } from './schemas';
 import type { GivenLogin } from './sealed-logins';
 
@@ -419,23 +418,22 @@ export class InProcessRuntime implements AgentRuntime {
   ): Promise<string> {
     if (directory === null) {
       const path = agentWorkspace(this.deps.workspaces, name);
+      await this.refuseDataDir(path, path);
       await mkdir(path, { recursive: true });
+      await this.refuseDataDir(path, await realpath(path));
       return path;
     }
-    const expanded =
-      directory === '~' ||
-      directory.startsWith('~/') ||
-      (process.platform === 'win32' && directory.startsWith('~\\'))
-        ? join(homedir(), directory.slice(1))
-        : directory;
+    const expanded = expandHome(directory);
     if (!isAbsolute(expanded))
       throw new ReasonedError(
         'definition_invalid',
         `The working directory '${directory}' is not an absolute path.`
       );
+    await this.refuseDataDir(expanded, expanded);
     if (isInside(this.deps.workspaces, expanded)) {
       const path = resolve(expanded);
       await mkdir(path, { recursive: true });
+      await this.refuseDataDir(path, await realpath(path));
       return path;
     }
     let isDirectory: boolean;
@@ -450,7 +448,29 @@ export class InProcessRuntime implements AgentRuntime {
     }
     if (!isDirectory)
       throw new ReasonedError('definition_invalid', `${expanded} is not a directory.`);
+    await this.refuseDataDir(expanded, await realpath(expanded));
     return expanded;
+  }
+
+  /**
+   * Refuses `directory` (which is `target` once links are followed) when an
+   * agent working there would work in the controller's data directory, by
+   * its path as given or as found on disk.
+   */
+  private async refuseDataDir(directory: string, target: string): Promise<void> {
+    const root = this.deps.layout.root;
+    const realRoot = await realpath(root).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return null;
+      throw error;
+    });
+    if (!insideDataDir(root, target) && (realRoot === null || !insideDataDir(realRoot, target)))
+      return;
+    throw new ReasonedError(
+      'definition_invalid',
+      directory === target
+        ? `The working directory ${directory} is inside this controller's data directory ${root}, which holds its credentials. Choose another directory.`
+        : `The working directory ${directory} leads to ${target}, inside this controller's data directory ${root}, which holds its credentials. Choose another directory.`
+    );
   }
 
   async observe(agentId: string): Promise<AgentObservation> {

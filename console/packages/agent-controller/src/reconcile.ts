@@ -1,10 +1,11 @@
+import { isAbsolute } from 'node:path';
 import {
   providerLoginEnvironment,
   providerUnsupportedReason,
 } from '@switch-console/agent-providers';
 import { ReasonedError } from './errors';
 import { errorMessage, type Logger } from './log';
-import { isSafeSegment } from './paths';
+import { expandHome, insideDataDir, isSafeSegment } from './paths';
 import { type AgentObservation, type AgentRuntime, emptyObservation } from './runtime';
 import {
   type AgentAssignment,
@@ -38,8 +39,12 @@ export type Action =
   | { kind: 'invalid'; agentId: string; revision: number; detail: string; stop: boolean }
   | { kind: 'hold'; agentId: string; why: string };
 
-/** Why an assigned agent cannot be applied on this machine as defined, or null when it can. */
-export function definitionProblem(entry: AgentAssignment): string | null {
+/**
+ * Why an assigned agent cannot be applied on this machine as defined, or null
+ * when it can. `dataDir` is the controller's data directory, which no agent
+ * may work in; a link to it is found only when the agent starts.
+ */
+export function definitionProblem(entry: AgentAssignment, dataDir: string): string | null {
   if (!isSafeSegment(entry.agent_id))
     return `The agent id '${entry.agent_id}' cannot be used as a directory name.`;
   if (!isProvider(entry.definition.provider))
@@ -53,6 +58,11 @@ export function definitionProblem(entry: AgentAssignment): string | null {
     return 'This controller does not know the isolation this agent asks for.';
   if (entry.definition.directory === null && !isSafeSegment(entry.definition.name))
     return `The agent name '${entry.definition.name}' cannot be used as a workspace directory name; set a directory.`;
+  if (entry.definition.directory !== null) {
+    const directory = expandHome(entry.definition.directory);
+    if (isAbsolute(directory) && insideDataDir(dataDir, directory))
+      return `The working directory ${directory} is inside this controller's data directory ${dataDir}, which holds its credentials. Choose another directory.`;
+  }
   return null;
 }
 
@@ -77,6 +87,8 @@ export function definitionProblem(entry: AgentAssignment): string | null {
  */
 export function planReconcile(input: {
   assignment: Assignment;
+  /** The controller's data directory (`definitionProblem`). */
+  dataDir: string;
   rows: AgentRow[];
   observations: Map<string, AgentObservation>;
   /** Agents whose relay credentials file was rewritten in this pass. */
@@ -93,7 +105,7 @@ export function planReconcile(input: {
     const observation = input.observations.get(agentId);
     if (!observation) throw new Error(`No observation of agent ${agentId} to reconcile against.`);
     const applied = row?.appliedRevision ?? null;
-    const problem = definitionProblem(entry);
+    const problem = definitionProblem(entry, input.dataDir);
     if (problem) {
       if (row?.failure?.revision !== entry.revision || observation.alive)
         actions.push({
@@ -201,6 +213,8 @@ export function planReconcile(input: {
 export type ReconcileDeps = {
   store: ControllerStore;
   runtime: AgentRuntime;
+  /** The controller's data directory (`definitionProblem`). */
+  dataDir: string;
   /**
    * Makes the agent's credentials file name the relay and a token it accepts.
    * Resolves true when the file had to be (re)written.
@@ -342,7 +356,7 @@ export async function reconcile(assignment: Assignment, deps: ReconcileDeps): Pr
   const observations = new Map<string, AgentObservation>();
   const credentialsChanged = new Set<string>();
   for (const entry of assignment.agents) {
-    if (definitionProblem(entry)) {
+    if (definitionProblem(entry, deps.dataDir)) {
       observations.set(entry.agent_id, emptyObservation());
       continue;
     }
@@ -361,6 +375,7 @@ export async function reconcile(assignment: Assignment, deps: ReconcileDeps): Pr
   }
   const actions = planReconcile({
     assignment,
+    dataDir: deps.dataDir,
     rows: deps.store.agents(),
     observations,
     credentialsChanged,
