@@ -673,6 +673,14 @@ version of their own to them without also giving them a release of their own.
   of as well as the rooms.
 
 #### Fixed
+- **Add a device no longer shows commands that can't work.** On a Switch
+  that Switch Console runs, or whose public address (`GATEWAY_PUBLIC_URL`)
+  is a loopback one such as `http://localhost:8000`, no other device can
+  reach it, so the dashboard's Add a device dialog now says why and what to
+  do instead of printing install and enroll commands that would fail.
+  `POST /gateway/management/enrollment-codes` also returns `remote_devices`,
+  `{supported, reason}`, saying whether another device could enroll and, if
+  not, why. The code is still issued.
 - **A sign-out that fails in the dashboard says so.** Signing out, or out of
   every device, from the account menu or the screens before a workspace said
   nothing when Switch didn't answer, and a failed sign-out of this browser
@@ -4314,6 +4322,15 @@ version of their own to them without also giving them a release of their own.
   agent"; it was the only place Console showed that name.
 
 #### Fixed
+- **Add device no longer shows commands that can't work.** On a server
+  Switch Console runs on this computer, Settings › Devices no longer offers
+  Add device and says why: no other device can reach it. On any other
+  server, when the server says no other device can reach it, or the address
+  the commands would use is this computer's own (such as
+  `http://localhost:8000`), the dialog says why and what to change instead of
+  showing install and enroll commands that would fail on another device.
+  Enrolling this computer, and the SSH hosts Switch Console sets up, works as
+  before.
 - **Cursor, Goose, Kiro and Mistral Vibe can be installed on Windows.** Each
   offers its vendor's Windows install, which works from PowerShell or Command
   Prompt, where before it said "Not found" with nothing to install. Cursor and
@@ -4556,6 +4573,11 @@ version of their own to them without also giving them a release of their own.
   stops says why, as Connectors does, even when it is turned on.
 
 #### Removed
+- **The "Onboarding checklist" setting.** Turning it on or off under Settings ›
+  Preferences changed nothing: the sidebar's "Setting up Switch" checklist it
+  controlled is no longer shown, since the first run now sets things up with
+  you through switch-buddy. The setting and the checklist behind it are gone,
+  and a value an older version saved is ignored.
 - **The welcome page.** The Switch mark in the sidebar, and deleting the agent
   or server on screen, now go to the active workspace's Home, or to an "Add a
   server" page when no server is left. "About Switch" in the workspace menu is

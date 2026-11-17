@@ -203,6 +203,12 @@ export interface EnrollmentCode {
    * page's own address is no stand-in: a gateway need not serve the agent API.
    */
   server_url: string | null;
+  /**
+   * Whether a device other than the one Switch runs on could enroll here at
+   * all, and if not, why, in Switch's own words: Switch Console runs it, or
+   * its public address only reaches the computer it runs on.
+   */
+  remote_devices: { supported: boolean; reason: string | null };
 }
 
 /** A refusal from a management route, with the contract's reason code. */

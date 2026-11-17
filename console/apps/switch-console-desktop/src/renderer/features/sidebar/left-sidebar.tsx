@@ -1,7 +1,6 @@
 import { FolderInput } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import React from 'react';
-import { SidebarOnboardingChecklist } from '@renderer/features/onboarding/sidebar-onboarding-checklist';
 import { navigateHome } from '@renderer/features/switch-servers/home-target';
 import { SwitchConsoleMark } from '@renderer/lib/switch-console-mark';
 import { cn } from '@renderer/utils/utils';
@@ -73,7 +72,6 @@ export const LeftSidebar: React.FC = observer(function LeftSidebar() {
             </SidebarGroupContent>
           </SidebarGroup>
         </SidebarContent>
-        <SidebarOnboardingChecklist />
         <div className="flex items-center justify-between gap-2 px-3 py-2">
           <button
             type="button"
