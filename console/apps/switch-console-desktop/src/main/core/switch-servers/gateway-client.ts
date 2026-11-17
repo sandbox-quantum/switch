@@ -859,6 +859,28 @@ export async function fetchMe(server: SwitchServer): Promise<SwitchUser> {
   return mapUser((await res.json()) as UserResponseJson);
 }
 
+const browserHandoffSchema = z.object({ path: z.string(), expires_at: z.string() });
+
+/**
+ * A one-time link that opens `next` (a dashboard path, with its query and
+ * fragment) in a browser signed in as this session's account
+ * (`POST /auth/handoff`). Console's own session never leaves Console: the
+ * browser redeems the link for a session of its own. `path` carries the code
+ * in its fragment, so never log it.
+ */
+export async function mintBrowserHandoff(
+  server: SwitchServer,
+  next: string
+): Promise<{ path: string; expiresAt: string }> {
+  const res = await gatewayFetch(server, '/auth/handoff', {
+    authenticated: true,
+    method: 'POST',
+    body: { next },
+  });
+  const minted = browserHandoffSchema.parse(await res.json());
+  return { path: minted.path, expiresAt: minted.expires_at };
+}
+
 /** A tenant the signed-in user belongs to, as `GET /tenants` reports it. */
 export type RemoteTenant = {
   id: string;

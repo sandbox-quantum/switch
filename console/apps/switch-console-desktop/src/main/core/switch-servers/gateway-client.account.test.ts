@@ -23,6 +23,7 @@ const {
   deleteApiKey,
   deleteMyAccount,
   fetchMyApiKeys,
+  mintBrowserHandoff,
   resetMyTestAccount,
   revealApiKey,
   updateMyName,
@@ -288,5 +289,34 @@ describe('a session the server has ended', () => {
     } finally {
       stop();
     }
+  });
+});
+
+describe('a sign-in link for the browser', () => {
+  it('asks for one with this session, for the page to open', async () => {
+    fetchMock.mockImplementation(async () =>
+      response(201, { path: '/auth/handoff#code=abc', expires_at: '2026-11-17T10:00:00Z' })
+    );
+
+    await expect(mintBrowserHandoff(SERVER, '/rooms/r1?workspace=t1#docs')).resolves.toEqual({
+      path: '/auth/handoff#code=abc',
+      expiresAt: '2026-11-17T10:00:00Z',
+    });
+    expect(lastCall()).toEqual({
+      url: 'https://switch.example.com/gateway/auth/handoff',
+      method: 'POST',
+      body: { next: '/rooms/r1?workspace=t1#docs' },
+    });
+    const [, init] = fetchMock.mock.calls.at(-1) as [string, RequestInit];
+    expect((init.headers as Record<string, string>).Cookie).toMatch(/^switch_auth=/);
+  });
+
+  it('raises what a server from before it answers, for the caller to read', async () => {
+    fetchMock.mockImplementation(async () => response(404, { detail: 'Not Found' }));
+
+    await expect(mintBrowserHandoff(SERVER, '/')).rejects.toMatchObject({
+      kind: 'http',
+      status: 404,
+    });
   });
 });
