@@ -1055,6 +1055,70 @@ version of their own to them without also giving them a release of their own.
   it, and an organization whose members come from a WorkOS directory keeps it a
   member however the directory lists it, recording the conflict in its audit
   log.
+- **Password sign-in locks out after repeated failures.** Ten failed password
+  sign-ins with one email address within 15 minutes lock that address out for
+  15 minutes; after the first three failures each further one makes the next
+  attempt wait (1, 2, 4 seconds and so on). A locked-out sign-in is answered
+  429 with `Retry-After` and a message saying when to try again, without its
+  password being checked, and a successful sign-in clears the count. An email
+  address with no account locks out exactly as one with an account does, so
+  the lock says nothing about which addresses are registered. One client
+  address may fail 50 times in the window before it is locked out too, as many
+  people can share one. The numbers are `GATEWAY_LOGIN_MAX_FAILURES`,
+  `GATEWAY_LOGIN_MAX_FAILURES_PER_ADDRESS`,
+  `GATEWAY_LOGIN_FAILURE_WINDOW_MINUTES` and `GATEWAY_LOGIN_LOCK_MINUTES`. The
+  counts are kept in Postgres (a new `auth_attempts` table, holding digests
+  rather than emails or addresses; the same migration adds
+  `revoked_sessions`), so they hold across replicas. The operator can lift an
+  account's lock at once with `DELETE /gateway/users/{user_id}/sign-in-lock`,
+  recorded in the server's audit log. Since failures from anywhere count,
+  anyone who knows a person's email can pause that person's password sign-in
+  for `GATEWAY_LOGIN_LOCK_MINUTES` by failing `GATEWAY_LOGIN_MAX_FAILURES`
+  times with it, and keep it paused by repeating that. This is the price of
+  stopping guessing spread across many addresses, and it is deliberate: the
+  lock never ends a session already signed in, never stops that session
+  refreshing, and never refuses single sign-on. To make such a lock cheaper to
+  sit out and costlier to keep up, raise `GATEWAY_LOGIN_MAX_FAILURES` or
+  shorten `GATEWAY_LOGIN_LOCK_MINUTES`; that also allows more guesses at a
+  password. A lock-out's 429 now says that password sign-in for this email
+  address (or from this network) is paused, when to try again, that single
+  sign-on still works where the server offers it, and, for an email, that an
+  administrator can lift the pause sooner. It reads the same for an email with
+  an account as for one without.
+- **Sign-in lock-outs are counted.** `switch.auth.sign_in_lockouts` counts
+  each password sign-in lock-out by `limit` (`email` or `client_address`),
+  never the email or the address, once the attempt that reached the limit has
+  failed. The main dashboard has a panel for it. Email lock-outs that keep
+  arriving with no `client_address` lock-outs beside them look like someone
+  keeping one person out on purpose.
+- **Behind a proxy, the per-address limits need the proxy trusted.** The
+  client address is the one uvicorn resolves: its peer, or the address a
+  proxy listed in `FORWARDED_ALLOW_IPS` forwarded for in `X-Forwarded-For`.
+  A private, loopback or link-local address is taken to be a proxy's and is
+  not counted, with a warning in the log saying so, since it stands for every
+  client behind it; only the per-account lock and the deployment-wide sign-up
+  cap then apply. The gateway's bundled nginx sends `X-Real-IP`, which
+  uvicorn does not read, so set `FORWARDED_ALLOW_IPS` and have your proxy send
+  `X-Forwarded-For` to count each client's address.
+- **A sign-in takes as long for an email with no account as for one with an
+  account.** Password sign-in now always checks one password hash, against a
+  stand-in where there is no account or the account has no password, so its
+  timing no longer says whether an email is registered.
+- **One client can no longer use up everyone's sign-ups.** Self sign-up is
+  limited per client address too, to 5 accounts an hour
+  (`GATEWAY_SIGNUP_MAX_PER_HOUR_PER_ADDRESS`), in front of the
+  deployment-wide `GATEWAY_SIGNUP_MAX_PER_HOUR`, which stays as a backstop. A
+  client over its limit is answered 429 with `Retry-After`, reported as
+  `signup_refused` with reason `rate_limited`.
+- **Signing out ends that session everywhere its cookie was copied.**
+  Signing out only cleared the browser's cookie, so a copy of it stayed
+  valid for up to a day. Each session now has an id that every refresh of it
+  keeps, and signing out (`POST /gateway/auth/logout`) refuses every copy of
+  that session from then on, while the person's other sessions stay signed
+  in. "Sign out of all devices" still ends them all. A session signed in
+  before this release can't be signed out of on its own until it is next
+  refreshed, which gives it an id; until then signing out clears the cookie
+  as before.
 
 #### Added
 - **The dashboard's new layout, behind the `gateway_v2` flag.** Overview,
