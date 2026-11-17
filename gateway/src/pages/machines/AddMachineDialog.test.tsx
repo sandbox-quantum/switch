@@ -6,7 +6,7 @@ const REACHABLE = { supported: true, reason: null };
 
 function issue(
   serverUrl: string | null,
-  remoteDevices: { supported: boolean; reason: string | null } = REACHABLE,
+  remoteDevices: { supported: boolean; reason: string | null } | "not sent" = REACHABLE,
 ) {
   vi.stubGlobal(
     "fetch",
@@ -17,7 +17,8 @@ function issue(
             code: "swce_example",
             expires_at: "2026-10-03T13:10:00Z",
             server_url: serverUrl,
-            remote_devices: remoteDevices,
+            // A server from before it sends no `remote_devices` at all.
+            ...(remoteDevices === "not sent" ? {} : { remote_devices: remoteDevices }),
           }),
           { status: 201 },
         ),
@@ -105,6 +106,18 @@ describe("AddMachineDialog", () => {
     render(<AddMachineDialog open onClose={() => {}} />);
     expect(await screen.findByText(/Other devices can't reach this Switch/)).toBeTruthy();
     expectNothingToRun();
+  });
+
+  it("shows the commands, as before, when a server from before remote_devices says nothing", async () => {
+    issue("https://switch-api.example.test", "not sent");
+    render(<AddMachineDialog open onClose={() => {}} />);
+    expect(
+      await screen.findByText(
+        "switch-agent-controller enroll --server https://switch-api.example.test --code swce_example",
+      ),
+    ).toBeTruthy();
+    expect(screen.getByLabelText("Name (optional)")).toBeTruthy();
+    expect(screen.queryByText(/Other devices can't reach this Switch/)).toBeNull();
   });
 
   it("says what to configure instead of showing a command that cannot work", async () => {

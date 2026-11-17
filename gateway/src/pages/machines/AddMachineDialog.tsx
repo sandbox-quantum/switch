@@ -86,7 +86,10 @@ export default function AddMachineDialog({
       ? `At most ${MAX_MACHINE_DESCRIPTION} characters.`
       : null;
 
-  const refused = enrollment !== null && !enrollment.remote_devices.supported;
+  // A server from before `remote_devices` says nothing, and gets the commands.
+  const refusal =
+    enrollment?.remote_devices?.supported === false ? enrollment.remote_devices : null;
+  const refused = refusal !== null;
 
   useEffect(() => {
     if (!open) return;
@@ -122,9 +125,7 @@ export default function AddMachineDialog({
         )}
         {error && <Alert severity="error">Could not issue an enrollment code: {error}</Alert>}
         {!error && !enrollment && <CircularProgress size={24} />}
-        {enrollment && refused && (
-          <Alert severity="warning">{enrollment.remote_devices.reason ?? NO_REMOTE_DEVICES}</Alert>
-        )}
+        {refusal && <Alert severity="warning">{refusal.reason ?? NO_REMOTE_DEVICES}</Alert>}
         {enrollment && !refused && (
           <Stack spacing={2}>
             <Stack spacing={2}>

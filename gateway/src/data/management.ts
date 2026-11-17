@@ -206,9 +206,10 @@ export interface EnrollmentCode {
   /**
    * Whether a device other than the one Switch runs on could enroll here at
    * all, and if not, why, in Switch's own words: Switch Console runs it, or
-   * its public address only reaches the computer it runs on.
+   * its public address only reaches the computer it runs on. Absent from a
+   * server from before it said, where any device may try.
    */
-  remote_devices: { supported: boolean; reason: string | null };
+  remote_devices?: { supported: boolean; reason: string | null };
 }
 
 /** A refusal from a management route, with the contract's reason code. */
