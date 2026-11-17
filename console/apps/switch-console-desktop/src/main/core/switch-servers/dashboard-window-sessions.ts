@@ -5,6 +5,7 @@ import { app, session as electronSession } from 'electron';
 import { log } from '@main/lib/logger';
 import {
   dashboardWindowSessionsCleared,
+  forgetDashboardWindowSessionsCleared,
   markDashboardWindowSessionsCleared,
 } from './dashboard-window-marker';
 
@@ -107,10 +108,23 @@ export async function clearDashboardWindowSessions(): Promise<void> {
  * Clear the partition `serverId`'s old dashboard window kept, when one is on
  * disk, as the server is removed. Opens no session otherwise: opening a
  * persistent partition creates its directory.
+ *
+ * A failure does not stop the removal, which has already deleted the
+ * server's credentials: it is logged, and the next launch sweeps every
+ * partition on disk again (`clearDashboardWindowSessions`).
  */
 export async function clearDashboardWindowSession(serverId: string): Promise<void> {
   const partition = `persist:${PARTITION_FAMILY}${serverId}`.toLowerCase();
   for (const found of await partitionsOnDisk()) {
-    if (found.partition === partition) await clearPartition(found);
+    if (found.partition !== partition) continue;
+    try {
+      await clearPartition(found);
+    } catch (error) {
+      log.error(
+        'switch-servers: could not clear the session an old dashboard window kept; the next launch tries again',
+        { partition, error: String(error) }
+      );
+      await forgetDashboardWindowSessionsCleared();
+    }
   }
 }

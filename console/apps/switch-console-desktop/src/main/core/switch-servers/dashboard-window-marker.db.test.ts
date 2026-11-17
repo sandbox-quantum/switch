@@ -5,6 +5,7 @@ import type { AppDb } from '@main/db/client';
 import { kv } from '@main/db/schema';
 import {
   dashboardWindowSessionsCleared,
+  forgetDashboardWindowSessionsCleared,
   markDashboardWindowSessionsCleared,
 } from './dashboard-window-marker';
 
@@ -50,5 +51,12 @@ describe('dashboard window sessions marker', () => {
 
     expect(await dashboardWindowSessionsCleared()).toBe(true);
     expect(await fixture.db.select().from(kv).where(eq(kv.key, MARKER_KEY))).toHaveLength(1);
+  });
+
+  it('reports not cleared again once forgotten, so the next launch sweeps again', async () => {
+    await markDashboardWindowSessionsCleared();
+    await forgetDashboardWindowSessionsCleared();
+
+    expect(await dashboardWindowSessionsCleared()).toBe(false);
   });
 });

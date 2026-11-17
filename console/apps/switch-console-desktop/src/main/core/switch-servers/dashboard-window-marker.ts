@@ -21,3 +21,8 @@ export async function markDashboardWindowSessionsCleared(): Promise<void> {
     .values({ key: MARKER_KEY, value: '1', updatedAt: sql`CURRENT_TIMESTAMP` })
     .onConflictDoUpdate({ target: kv.key, set: { value: '1', updatedAt: sql`CURRENT_TIMESTAMP` } });
 }
+
+/** Clear the marker, so the next launch sweeps every partition on disk again. */
+export async function forgetDashboardWindowSessionsCleared(): Promise<void> {
+  await db.delete(kv).where(eq(kv.key, MARKER_KEY));
+}

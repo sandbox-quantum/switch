@@ -17,6 +17,8 @@ const fromPartition = vi.hoisted(() =>
 const removeDirectory = vi.hoisted(() => ({ refuse: null as Error | null }));
 const dashboardWindowSessionsCleared = vi.hoisted(() => vi.fn());
 const markDashboardWindowSessionsCleared = vi.hoisted(() => vi.fn());
+const forgetDashboardWindowSessionsCleared = vi.hoisted(() => vi.fn());
+const logError = vi.hoisted(() => vi.fn());
 const warn = vi.hoisted(() => vi.fn());
 
 vi.mock('electron', () => ({
@@ -40,9 +42,10 @@ vi.mock('node:fs/promises', async (importOriginal) => {
 });
 vi.mock('./dashboard-window-marker', () => ({
   dashboardWindowSessionsCleared,
+  forgetDashboardWindowSessionsCleared,
   markDashboardWindowSessionsCleared,
 }));
-vi.mock('@main/lib/logger', () => ({ log: { warn, info: vi.fn(), error: vi.fn() } }));
+vi.mock('@main/lib/logger', () => ({ log: { warn, info: vi.fn(), error: logError } }));
 
 const { clearDashboardWindowSession, clearDashboardWindowSessions } =
   await import('./dashboard-window-sessions');
@@ -155,6 +158,17 @@ describe('clearing a removed server’s dashboard window partition', () => {
     expect(fromPartition).toHaveBeenCalledExactlyOnceWith('persist:switch-gateway:srv-1');
     expect(clearStorageData).toHaveBeenCalledOnce();
     expect(await onDisk()).toEqual([REMOVED, ...NOT_OURS].sort());
+  });
+
+  it('lets the removal go on when clearing fails, and has the next launch try again', async () => {
+    await partitions(CURRENT);
+    clearStorageData.mockRejectedValueOnce(new Error('cookie store locked'));
+
+    await expect(clearDashboardWindowSession('srv-1')).resolves.toBeUndefined();
+
+    expect(logError).toHaveBeenCalledOnce();
+    expect(forgetDashboardWindowSessionsCleared).toHaveBeenCalledOnce();
+    expect(await onDisk()).toContain(CURRENT);
   });
 
   it('opens no session, so creates no partition, when the server never had one', async () => {
