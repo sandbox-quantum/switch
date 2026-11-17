@@ -24,6 +24,7 @@ from switch_core.db.models import (
     OrganizationMember,
     User,
 )
+from switch_core.db.stores.identity_session_store import IdentitySessionStore
 from switch_core.gateway import dependencies as gw_deps
 from switch_core.members_service import MembersService
 from switch_core.workos_directory import WorkOSDirectory
@@ -54,6 +55,7 @@ class _WorkOS:
         self.members = members
         self.refuses_with: int | None = None
         self.changes: list[tuple[str, str, str]] = []
+        self.session_id = "session_ADMIN"
 
     def sign_in(self, request: httpx.Request) -> httpx.Response:
         return httpx.Response(
@@ -62,7 +64,11 @@ class _WorkOS:
                 "user": {"id": self.signs_in_as},
                 "organization_id": self.organization,
                 "access_token": jwt.encode(
-                    {"exp": int(time.time()) + 300, "sub": self.signs_in_as},
+                    {
+                        "exp": int(time.time()) + 300,
+                        "sub": self.signs_in_as,
+                        "sid": self.session_id,
+                    },
                     "test-signing-key-long-enough-for-hs256",
                     algorithm="HS256",
                 ),
@@ -179,6 +185,24 @@ async def _sign_in_to_workos(client: httpx.AsyncClient) -> httpx.Response:
         "/auth/workos/callback",
         params={"code": "the-code", "state": query["state"][0]},
     )
+
+
+class TestTheSignInIsRecorded:
+    async def test_its_authkit_session_is_kept_for_ending_all_of_the_admins(
+        self, session_factory
+    ) -> None:
+        """No cookie stands on it, so it is not followed, but signing out of
+        all devices reaches it."""
+        ada = _name("ada")
+        tenant_id, _ = await _linked(session_factory, {ada: ("admin", "org_admin")})
+        workos = _WorkOS({})
+        workos.signs_in_as = f"user_{ada}"
+        async with _client(_with(session_factory, workos), ada, tenant_id) as client:
+            signed_in = await _sign_in_to_workos(client)
+        assert signed_in.status_code == 303
+        async with session_factory() as session:
+            [row] = await IdentitySessionStore().live_for_user(session, ada)
+        assert (row.session_id, row.followed) == ("session_ADMIN", False)
 
 
 class TestChangingMembers:

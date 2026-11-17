@@ -1403,7 +1403,11 @@ UNAUTHENTICATED: dict[str, str] = {
         "A browser redeeming a sign-in link for a session of its own."
     ),
     "POST /gateway/auth/login": "Signing in.",
-    "POST /gateway/auth/logout": "Signing out of the session the cookie belongs to.",
+    "POST /gateway/auth/logout": (
+        "Signing out of the session the cookie belongs to, and of the AuthKit "
+        "session it names, if any, which the cookie's own signature proves is "
+        "its holder's."
+    ),
     "POST /gateway/auth/signup": "Signing up.",
     "GET /gateway/docs": "The API's own documentation.",
     "GET /gateway/docs/oauth2-redirect": "The API's own documentation.",

@@ -398,6 +398,11 @@ is the kind of machine (`vm` for every machine this server makes today).
 - `switch.auth.sign_in_failures` counts password sign-ins refused for a wrong
   password or an unknown email, with no attributes at all. Its alert fires
   above 20 in 10 minutes, at low urgency.
+- `switch.auth.identity_session_checks` counts checks of the WorkOS AuthKit
+  sessions that sign-ins through AuthKit stand on, by `outcome`: `alive`,
+  `ended` (the Switch session ended with it) or `failed` (WorkOS could not be
+  asked, and the session was kept). A dashboard panel only; a run of `failed`
+  means WorkOS is unreachable or refusing the API key.
 - `switch.auth.sign_in_lockouts` counts password sign-in lock-outs by `limit`
   (`email` or `client_address`), never the email or the address. Anyone who
   knows a person's email can lock their password sign-in by failing with it,

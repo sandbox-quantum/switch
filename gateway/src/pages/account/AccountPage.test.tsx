@@ -9,6 +9,7 @@ vi.mock("../../data/AuthContext", () => ({ useAuth: vi.fn() }));
 const auth = {
   logout: vi.fn(async () => {}),
   logoutEverywhere: vi.fn(async () => {}),
+  finishSignOut: vi.fn(),
   recheck: vi.fn(async () => {}),
 };
 
@@ -245,21 +246,18 @@ describe("Deleting your account", () => {
     fireEvent.click(confirm);
     expect(await dialog.findByText("Your account is deleted")).toBeTruthy();
     expect(calls.find((c) => c.method === "DELETE")?.body).toEqual({ email: "ADA@example.test" });
-    expect(auth.logout).not.toHaveBeenCalled();
+    expect(auth.finishSignOut).not.toHaveBeenCalled();
     fireEvent.click(dialog.getByRole("button", { name: "Done" }));
-    expect(auth.logout).toHaveBeenCalledTimes(1);
+    expect(auth.finishSignOut).toHaveBeenCalledWith({ endSessionUrl: null, notice: null });
+    expect(auth.logout).not.toHaveBeenCalled();
   });
 
-  it("leaves the page by loading the app again when signing out afterwards fails", async () => {
+  it("finishes signing out where the deletion says, ending the WorkOS sign-in too", async () => {
     signedIn();
-    auth.logout.mockRejectedValueOnce(new Error("Network down"));
-    const assign = vi.fn();
-    vi.stubGlobal("location", { ...window.location, assign });
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     answer({
       "GET /auth/me": me(),
       "GET /auth/me/deletion": { refusal: null },
-      "DELETE /auth/me": { ok: true },
+      "DELETE /auth/me": { ok: true, end_session_url: "https://auth.example.test/logout" },
     });
     render(<AccountPage />);
     const dialog = within(await openDelete());
@@ -268,9 +266,10 @@ describe("Deleting your account", () => {
     });
     fireEvent.click(dialog.getByRole("button", { name: "Delete account" }));
     fireEvent.click(await dialog.findByRole("button", { name: "Done" }));
-    await waitFor(() => expect(assign).toHaveBeenCalledWith("/"));
-    expect(warn).toHaveBeenCalled();
-    warn.mockRestore();
+    expect(auth.finishSignOut).toHaveBeenCalledWith({
+      endSessionUrl: "https://auth.example.test/logout",
+      notice: null,
+    });
   });
 
   it("shows a refusal from the deletion itself as it shows the check's, in place of the form", async () => {

@@ -9,6 +9,11 @@ metadata (Okta, Keycloak, Auth0, WorkOS Connect, …). This page covers the
 variables, the registration steps a provider needs from you, and one
 WorkOS-specific trap that will otherwise cost you an afternoon.
 
+Against WorkOS there is a second way in: AuthKit's own sign-in
+(`GATEWAY_SIGN_IN_PROVIDER=workos`), which shares the person's sign-in with
+every other application in the WorkOS environment. See "Signing in through
+WorkOS AuthKit" below; most of this page applies to both.
+
 OIDC login is additive: password login (`GATEWAY_ADMIN_EMAIL` /
 `GATEWAY_ADMIN_PASSWORD` and any user created under it) keeps working unless
 you explicitly turn it off with `GATEWAY_PASSWORD_LOGIN_ENABLED=false`.
@@ -222,11 +227,126 @@ with `open` sign-up, where anyone can create a workspace and would otherwise be
 able to use your relay to mail any address. Operators are exempt, and link
 invitations are not counted.
 
-## Setting up WorkOS as the provider
+## Signing in through WorkOS AuthKit
+
+`GATEWAY_SIGN_IN_PROVIDER` picks the single sign-on: `oidc` (the default) is
+the generic client this page has described so far; `workos` is WorkOS
+AuthKit's own sign-in. With `workos`, the dashboard's sign-in sends the browser
+to AuthKit's hosted sign-in page, and Switch exchanges what comes back with
+the AuthKit application's API key. That gives Switch what a generic OIDC
+client never sees: the person's AuthKit session, which every application in
+the WorkOS environment shares. So:
+
+- someone already signed in to another application in the environment signs
+  in to Switch without signing in again;
+- signing out of Switch, from the dashboard or by signing out of every
+  device, ends that session at WorkOS too, and with it the other
+  applications' sign-ins on it. The browser goes to WorkOS to end it and
+  comes back to Switch's sign-in page;
+- a session ended at WorkOS (signed out of elsewhere, revoked, a password
+  reset, or the environment's session policy) ends the Switch session on it
+  within about five minutes, and the browser sessions Switch Console opened
+  from it. Switch asks WorkOS about each session at most
+  every five minutes, while it is in use. When WorkOS cannot be reached, the
+  session is kept and asked about again later, never ended on a guess.
+- An impersonated sign-in (WorkOS's support impersonation) is refused: Switch
+  keeps no record of who was impersonating, so its audit log would credit the
+  person impersonated.
+
+The routes stay the same (`/gateway/auth/oidc/login` and
+`/gateway/auth/oidc/callback`), so Switch Console and existing bookmarks are
+unaffected.
+
+### The variables, with AuthKit
+
+| Variable | Required | What it does |
+| --- | --- | --- |
+| `GATEWAY_SIGN_IN_PROVIDER` | yes | `workos`. |
+| `WORKOS_CLIENT_ID` | yes | The AuthKit application's client id. Not a secret. |
+| `WORKOS_API_KEY` | yes | An API key of that same application: WorkOS exchanges an application's sign-ins only with its own key. |
+| `GATEWAY_OIDC_REDIRECT_URL` | yes | `https://<dashboard host>/gateway/auth/oidc/callback`, registered on the application. Required here, since a guessed one is wrong behind a proxy. |
+| `GATEWAY_OIDC_PROVIDER_LABEL` | no | The button's label, where the sign-in page shows one (with password login also on). |
+| `GATEWAY_OIDC_REQUIRE_EMAIL_VERIFIED` | no | As above. AuthKit verifies addresses itself, so leave it on. |
+| `GATEWAY_PASSWORD_LOGIN_ENABLED` | no | Set `false` and the sign-in page hands straight to AuthKit. |
+| `WORKOS_API_URL` | no | Defaults to `https://api.workos.com`. |
+
+`GATEWAY_OIDC_ISSUER_URL`, `GATEWAY_OIDC_CLIENT_ID`,
+`GATEWAY_OIDC_CLIENT_SECRET`, `GATEWAY_OIDC_SCOPES` and
+`GATEWAY_OIDC_LOGIN_OPTIONS` are refused with `workos`: AuthKit's own page
+offers the ways to sign in, and a button going around it would skip what it
+handles (email verification, multi-factor sign-in, an organization's own
+single sign-on).
+
+In the Helm chart: `switchCore.oidc.enabled: true`,
+`switchCore.signIn.provider: workos`, `switchCore.signIn.workosClientId`,
+`switchCore.oidc.redirectUrl` and `secrets.workosApiKey`. The render fails on
+the combinations the server refuses.
+
+Switch tells WorkOS the address each sign-in came from, which WorkOS's bot
+protection may need. That is the client's address as uvicorn resolved it:
+behind a proxy, set `FORWARDED_ALLOW_IPS` to the proxy's address and have the
+proxy send `X-Forwarded-For`, as the password sign-in limits already need.
+Until then Switch sends no address, rather than the proxy's.
+
+### Setting up the AuthKit application
+
+Give Switch an AuthKit application of its own in the WorkOS environment, next
+to the other applications there. Applications in one environment share users,
+organizations, the hosted page's branding and sessions; each has its own
+client id, API keys, redirect URIs and sign-out URIs. In the WorkOS
+dashboard, on that application:
+
+1. Note its client id and create an API key under it.
+2. **Redirect URIs:** `https://<dashboard host>/gateway/auth/oidc/callback`.
+   Add `https://<dashboard host>/gateway/auth/workos/callback` too where
+   member changes go to a members service (`docs/old/workos-directory.md`),
+   which uses the same application.
+3. **Sign-out URIs:** `https://<dashboard host>/login`, as the default. Switch
+   sends it as the place to come back to after ending a session, and WorkOS
+   accepts only one listed here.
+4. **Initiate login URI:** `https://<dashboard host>/gateway/auth/oidc/login`.
+   WorkOS sends the browser there when a sign-in has to start at the
+   application, such as finishing a password reset or sign-up begun from
+   Switch, and Switch forwards what WorkOS adds (an invitation, an
+   organization, a login hint) to the sign-in it starts.
+5. **Session policy:** set the inactivity timeout to at least the maximum
+   session length. Switch keeps no WorkOS token to refresh, and WorkOS counts
+   inactivity from the last refresh, so a shorter inactivity timeout signs
+   out people who are using Switch. Switch's own session lasts at most 14
+   days, so a maximum session length above that changes nothing for Switch.
+
+Initiate login and default sign-out URIs take one value per application, so
+two Switch deployments in one environment need an application each.
+
+### Moving from WorkOS Connect to AuthKit
+
+A server that signed people in through a WorkOS Connect application (generic
+OIDC, below) keeps their identities under the AuthKit domain's issuer. With
+AuthKit they are kept under one fixed name for every WorkOS environment,
+`https://api.workos.com/user_management`, so each account needs linking again.
+Where organizations are kept in Switch (`ORGANIZATION_DIRECTORY=local`), the
+first AuthKit sign-in links an account by its verified address on its own.
+Where they are kept in WorkOS, a sign-in never links by address, so link the
+accounts before the switch, or their next sign-in is refused:
+
+1. With the server's AuthKit settings in place (not yet deployed), run
+   `switch-link-workos accounts --from-issuer https://<slug>.authkit.app`.
+   It links each account signing in through Connect to the same WorkOS user,
+   copying the identity, so the Connect sign-in keeps working until the
+   switch. It reports every account and writes nothing without `--apply`.
+2. Read the report, then run it again with `--apply`.
+3. Deploy with `GATEWAY_SIGN_IN_PROVIDER=workos`. Existing sessions keep
+   working until they expire; only sign-ins from then on stand on an AuthKit
+   session.
+
+Where organizations are kept in WorkOS, its linking applies unchanged
+(`docs/old/workos-directory.md`).
+
+### Through WorkOS Connect instead (generic OIDC)
 
 This is the part that will otherwise burn an afternoon. WorkOS exposes two
 different sign-in surfaces, and only one of them is a standards-compliant
-OIDC provider that this gateway (or any generic OIDC client) can use.
+OIDC provider that a generic OIDC client can use.
 
 **The one that looks right but isn't: WorkOS User Management.**
 `https://api.workos.com/user_management/<client_id>` serves a
@@ -282,8 +402,8 @@ email"` (quoted, per the warning above).
 
 ## Verifying it end to end
 
-1. Set the four required variables plus `GATEWAY_OIDC_REDIRECT_URL`, and
-   restart the server.
+1. Set the four required variables plus `GATEWAY_OIDC_REDIRECT_URL` (with
+   AuthKit, the variables in its table instead), and restart the server.
 2. `GET /gateway/auth/config` should report `oidc_enabled: true` and your
    `oidc_provider_label` (or `null`, which the login page shows as "SSO").
 3. Visiting the login page should show a "Log in with `<label>`" button

@@ -139,6 +139,13 @@ them. That's also why cookie-based gateway auth (including OIDC login, see
 any CORS configuration: as far as the browser can tell, it never left
 `:5173`.
 
+To sign in through WorkOS AuthKit locally (`GATEWAY_SIGN_IN_PROVIDER=workos`,
+see `.env.example`), use an AuthKit application in a WorkOS environment meant
+for development, not one a shared deployment signs in through, and register
+`http://localhost:5173/gateway/auth/oidc/callback` as its redirect URI and
+`http://localhost:5173/login` as its sign-out URI. Password sign-in needs
+none of it.
+
 ### Viewing the dashboard as each role
 
 To check what each permission level sees, run `just seed-dev-roles` once the

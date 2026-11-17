@@ -479,6 +479,57 @@ class OidcIdentity(Base):
     )
 
 
+class IdentitySession(Base):
+    """A person's session at the identity provider behind a gateway sign-in.
+
+    Kept for sign-ins through WorkOS AuthKit, where the provider's session is
+    shared with every other application in its environment: the gateway
+    follows it, so a session ended there (revoked, its password reset, timed
+    out) ends the Switch session that came from it, and signing out of Switch
+    ends it there too (`gateway/identity_sessions.py`). Nothing of the
+    provider's but its session id is kept: no token.
+
+    The session cookie names a row by `id` (its `isid` claim), never by the
+    provider's `session_id`, so a session id the provider hands back after a
+    sign-out gets a new row and the cookies from before stay ended. At most
+    one live row per provider session, hence the partial unique index.
+
+    `followed` is false for the sessions an admin's member-change sign-in
+    makes (`gateway/workos_sign_in_routes.py`), which no cookie stands on: they
+    are kept only so that ending all of someone's sessions reaches them.
+    `checked_at` is when the provider last said the session was alive.
+    """
+
+    __tablename__ = "identity_sessions"
+    __table_args__ = (
+        Index("ix_identity_sessions_user_id", "user_id"),
+        Index(
+            "uq_identity_sessions_live_session",
+            "provider",
+            "session_id",
+            unique=True,
+            postgresql_where=text("ended_at IS NULL"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    provider: Mapped[str] = mapped_column(Text, nullable=False)
+    session_id: Mapped[str] = mapped_column(Text, nullable=False)
+    followed: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    checked_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    ended_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
 # ── API Keys ─────────────────────────────────────────────────────────────────
 
 
@@ -5392,6 +5443,10 @@ class BrowserHandoff(Base):
     session_version: Mapped[int] = mapped_column(Integer, nullable=False)
     console_sid: Mapped[str | None] = mapped_column(Text, nullable=True)
     browser_sid: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The identity session (`IdentitySession`) the minting session stands on,
+    # for a sign-in through WorkOS AuthKit, which the browser's session then
+    # stands on too, so it ends when that does.
+    identity_session: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

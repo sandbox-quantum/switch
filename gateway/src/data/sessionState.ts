@@ -34,6 +34,80 @@ export function clearPendingInvite(): void {
   window.sessionStorage.removeItem(INVITE_KEY);
 }
 
+const SIGNED_OUT_KEY = "switch.signedOut";
+
+/** Local storage, so every tab sees it: someone who signed out on purpose is
+ * not handed straight back to the identity provider, whose own session
+ * outlives Switch's and would sign them in again unasked. Kept until the next
+ * sign-in. */
+export function markSignedOut(): void {
+  window.localStorage.setItem(SIGNED_OUT_KEY, "1");
+}
+
+export function signedOutOnPurpose(): boolean {
+  return window.localStorage.getItem(SIGNED_OUT_KEY) !== null;
+}
+
+const HAND_OFF_KEY = "switch.ssoHandOffAt";
+
+/** How long after leaving for the identity provider coming back signed out
+ * means the sign-in did not finish, rather than someone arriving afresh. */
+export const HAND_OFF_WINDOW_MS = 60_000;
+
+export function noteHandOff(now: number): void {
+  window.sessionStorage.setItem(HAND_OFF_KEY, String(now));
+}
+
+/** Whether this tab left for the identity provider within the window. Back
+ * signed out that soon, handing off again would only loop. */
+export function handedOffRecently(now: number): boolean {
+  const at = Number(window.sessionStorage.getItem(HAND_OFF_KEY));
+  return at > 0 && now - at < HAND_OFF_WINDOW_MS;
+}
+
+const SIGN_OUT_NOTICE_KEY = "switch.signOutNotice";
+
+/** Session storage, so it rides along when signing out sends the browser to
+ * WorkOS to end its sign-in there and back to sign-in: what signing out could
+ * not do, for the sign-in page to say. */
+export function keepSignOutNotice(notice: string): void {
+  window.sessionStorage.setItem(SIGN_OUT_NOTICE_KEY, notice);
+}
+
+export function readSignOutNotice(): string | null {
+  return window.sessionStorage.getItem(SIGN_OUT_NOTICE_KEY);
+}
+
+export function clearSignOutNotice(): void {
+  window.sessionStorage.removeItem(SIGN_OUT_NOTICE_KEY);
+}
+
+/** Signed in: neither the sign-out nor a hand-off still counts. */
+export function clearSignInMarks(): void {
+  window.localStorage.removeItem(SIGNED_OUT_KEY);
+  window.sessionStorage.removeItem(HAND_OFF_KEY);
+  window.sessionStorage.removeItem(SIGN_OUT_NOTICE_KEY);
+}
+
+const NEXT_LIMIT = 2048;
+
+/** `value` as a place on this dashboard to land after signing in, or null
+ * when it is not one: anything a browser could read as another site (a
+ * scheme, `//`, a backslash) lands on the home page instead. The server
+ * checks the same of what it is sent. */
+export function dashboardLocation(value: string | null): string | null {
+  if (value === null || value === "" || value.length > NEXT_LIMIT) return null;
+  if (!value.startsWith("/") || value.startsWith("//") || value.includes("\\")) return null;
+  return value;
+}
+
+/** Where signing in should land someone sent to sign-in from `path` and
+ * `search`: null for the home page, which is where it lands anyway. */
+export function nextAfterSignIn(path: string, search: string): string | null {
+  if (path === "/" || path === "/login") return null;
+  return dashboardLocation(`${path}${search}`);
+}
+
 /** The token in an invite link's fragment (`#token=…`), or null. */
 export function inviteTokenFromHash(hash: string): string | null {
   return new URLSearchParams(hash.replace(/^#/, "")).get("token");

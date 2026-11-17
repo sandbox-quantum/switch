@@ -9,9 +9,10 @@ reads it, drops it from the address, and redeems it
 (`POST /auth/handoff/redeem`) for a session of the browser's own: a new
 session id, Console's workspace, and Console's sign-in time and session
 version, so it never outlives Console's session and ends with "Sign out of
-all devices". Signing out of Console's session signs it out too
-(`auth.sign_out_session`); signing out in the browser leaves Console's
-alone. `POST /auth/handoff/peek` tells the page whose link it is
+all devices". It stands on the AuthKit sign-in Console's session stands on,
+if any, so it ends when that ends at WorkOS. Signing out of Console's session
+signs it out too (`auth.sign_out_session`); signing out in the browser leaves
+Console's alone. `POST /auth/handoff/peek` tells the page whose link it is
 before spending it, so a browser signed in as someone else asks first.
 
 Peek and redeem take no session, and are checked against the server's own
@@ -45,6 +46,7 @@ from switch_core.gateway.auth import (
     new_session_id,
     session_auth_time,
     session_id_of,
+    session_identity,
     session_signed_out,
     set_session_cookie,
     signed_in_user,
@@ -156,7 +158,8 @@ async def mint_handoff(
 ) -> MintedHandoffResponse:
     """A one-time link that opens `next` in a browser signed in as the
     caller, in the workspace this session is in. The browser's session can
-    never outlive this one: it takes this one's sign-in time."""
+    never outlive this one: it takes this one's sign-in time, and stands on
+    the AuthKit sign-in this one stands on, if any."""
     next_path = checked_next(body.next)
     # Read before the rollback below, which expires the row.
     user_id = user.id
@@ -169,6 +172,7 @@ async def mint_handoff(
             auth_time=session_auth_time(request),
             session_version=user.session_version,
             console_sid=session_id_of(request),
+            identity_session=session_identity(request),
         )
     except BrowserHandoffRateLimited as refusal:
         await session.rollback()
@@ -283,7 +287,11 @@ async def redeem_handoff(
         config.keyring,
         config.gateway_cookie_secure,
         handoff.workspace_claim,
-        SignedIn(session_id=browser_sid, at=handoff.auth_time),
+        SignedIn(
+            session_id=browser_sid,
+            at=handoff.auth_time,
+            identity_session=handoff.identity_session,
+        ),
     )
     if handoff.workspace_claim is not None:
         async with tenant_session(session_factory, handoff.workspace_claim) as audit:

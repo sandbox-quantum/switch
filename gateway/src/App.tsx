@@ -1,11 +1,17 @@
-import { Alert, Box, Button, CircularProgress } from "@mui/material";
-import { BrowserRouter, Navigate, Route, Routes } from "react-router";
+import { Alert, Button, Stack } from "@mui/material";
+import { BrowserRouter, Navigate, Route, Routes, useLocation } from "react-router";
 import { AuthProvider, useAuth } from "./data/AuthContext";
-import { appView, readPendingInvite } from "./data/sessionState";
+import {
+  appView,
+  dashboardLocation,
+  nextAfterSignIn,
+  readPendingInvite,
+} from "./data/sessionState";
 import { DevRoleCorner } from "./layout/DevRoleSlot";
 import PageShell from "./layout/PageShell";
 import { renderRoutes } from "./routes/renderRoutes";
 import { NotFoundPage } from "./routes/StatusPages";
+import AuthLayout, { AuthLoading } from "./pages/auth/AuthLayout";
 import BrowserHandoffPage from "./pages/auth/BrowserHandoffPage";
 import LoginPage from "./pages/auth/LoginPage";
 import AcceptInvitePage from "./pages/onboarding/AcceptInvitePage";
@@ -13,46 +19,40 @@ import InviteCapture from "./pages/onboarding/InviteCapture";
 import OnboardingPage from "./pages/onboarding/OnboardingPage";
 import WorkspacePickerPage from "./pages/onboarding/WorkspacePickerPage";
 
-function FullScreen({ children }: { children: React.ReactNode }) {
+/** Signed out anywhere but sign-in: to sign-in, saying where to come back to. */
+function ToSignIn() {
+  const { pathname, search } = useLocation();
+  const next = nextAfterSignIn(pathname, search);
   return (
-    <Box
-      sx={{
-        display: "flex",
-        height: "100vh",
-        alignItems: "center",
-        justifyContent: "center",
-      }}
-    >
-      {children}
-    </Box>
+    <Navigate to={next === null ? "/login" : `/login?${new URLSearchParams({ next })}`} replace />
   );
+}
+
+/** Signed in on sign-in: on to where it was asked to come back to. */
+function FromSignIn() {
+  const { search } = useLocation();
+  return <Navigate to={dashboardLocation(new URLSearchParams(search).get("next")) ?? "/"} replace />;
 }
 
 export function AppRoutes() {
   const { session, loading, loadError, capabilities } = useAuth();
 
-  if (loading) {
-    return (
-      <FullScreen>
-        <CircularProgress />
-      </FullScreen>
-    );
-  }
+  if (loading) return <AuthLoading />;
 
   if (loadError !== null) {
     return (
-      <FullScreen>
-        <Alert
-          severity="error"
-          action={
-            <Button color="inherit" size="small" onClick={() => window.location.reload()}>
-              Retry
-            </Button>
-          }
-        >
-          Could not load your session: {loadError}
-        </Alert>
-      </FullScreen>
+      <AuthLayout
+        title="Could not load your session"
+        subtitle="Try again in a moment."
+        footer={null}
+      >
+        <Stack spacing={2}>
+          <Alert severity="error">{loadError}</Alert>
+          <Button variant="contained" fullWidth onClick={() => window.location.reload()}>
+            Retry
+          </Button>
+        </Stack>
+      </AuthLayout>
     );
   }
 
@@ -64,7 +64,7 @@ export function AppRoutes() {
       <Routes>
         <Route path="/login" element={<LoginPage />} />
         <Route path="/invite" element={<InviteCapture />} />
-        <Route path="*" element={<Navigate to="/login" replace />} />
+        <Route path="*" element={<ToSignIn />} />
       </Routes>
     );
   }
@@ -98,7 +98,7 @@ export function AppRoutes() {
         <Route path="*" element={<NotFoundPage />} />
       </Route>
       <Route path="/invite" element={<InviteCapture />} />
-      <Route path="/login" element={<Navigate to="/" replace />} />
+      <Route path="/login" element={<FromSignIn />} />
     </Routes>
   );
 }

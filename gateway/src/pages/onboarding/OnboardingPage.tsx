@@ -1,8 +1,8 @@
-import { Alert, Button, Divider, Stack, TextField, Typography } from "@mui/material";
+import { Alert, Button, Divider, Stack, TextField } from "@mui/material";
 import { useState } from "react";
 import { useAuth } from "../../data/AuthContext";
 import { inviteTokenFrom, storePendingInvite } from "../../data/sessionState";
-import CenteredCard from "./CenteredCard";
+import AuthLayout, { SignedInFooter } from "../auth/AuthLayout";
 import CreateWorkspaceForm from "./CreateWorkspaceForm";
 
 /** Signed in, and in no workspace yet. */
@@ -26,19 +26,21 @@ export default function OnboardingPage() {
   };
 
   return (
-    <CenteredCard
+    <AuthLayout
       title="Welcome to Switch"
       subtitle={
         canCreate
           ? "Create an organization for your team, or join a workspace you've been invited to."
           : "You're not in a workspace yet. Ask a workspace admin for an invite link."
       }
+      footer={<SignedInFooter />}
     >
       <Stack spacing={3}>
         {canCreate && <CreateWorkspaceForm />}
-        {canCreate && <Divider>or</Divider>}
+        {canCreate && (
+          <Divider sx={{ typography: "caption", color: "text.secondary" }}>or</Divider>
+        )}
         <Stack component="form" onSubmit={joinWithInvite} spacing={2}>
-          <Typography variant="subtitle2">Have an invite link?</Typography>
           {inviteError && <Alert severity="error">{inviteError}</Alert>}
           <TextField
             label="Invite link"
@@ -47,13 +49,13 @@ export default function OnboardingPage() {
               setInvite(e.target.value);
               setInviteError(null);
             }}
-            size="small"
+            helperText="Paste the link from your invitation."
           />
-          <Button type="submit" variant="outlined" disabled={invite.trim() === ""}>
+          <Button type="submit" variant="outlined" fullWidth disabled={invite.trim() === ""}>
             Join with invite
           </Button>
         </Stack>
       </Stack>
-    </CenteredCard>
+    </AuthLayout>
   );
 }

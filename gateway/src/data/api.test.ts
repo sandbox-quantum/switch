@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ApiError,
+  SESSION_REFUSED_EVENT,
   addBridgeToTeam,
   cancelLinkRequest,
   claimBridgeIdentity,
@@ -11,11 +12,64 @@ import {
   fetchTeamPlacements,
   fetchTeamsAppPackage,
   issueLinkCode,
+  login,
   logout,
+  oidcLoginUrl,
   removeBridgeFromTeam,
   setDefaultTeamsTeam,
   signOutEverywhere,
 } from "./api";
+
+describe("oidcLoginUrl", () => {
+  it("leaves the choice to the provider without a login option", () => {
+    expect(oidcLoginUrl(null, null)).toBe("/gateway/auth/oidc/login");
+  });
+
+  it("names the login option a button stands for", () => {
+    expect(oidcLoginUrl("google workspace", null)).toBe(
+      "/gateway/auth/oidc/login?provider=google+workspace",
+    );
+  });
+
+  it("says where on the dashboard to land", () => {
+    expect(oidcLoginUrl(null, "/rooms?tab=archived")).toBe(
+      "/gateway/auth/oidc/login?next=%2Frooms%3Ftab%3Darchived",
+    );
+  });
+});
+
+describe("a request refused for its session", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("asks the dashboard to read its session again", async () => {
+    const heard = vi.fn();
+    window.addEventListener(SESSION_REFUSED_EVENT, heard);
+    respond(401, { detail: "Your sign-in has ended. Sign in again." });
+    await expect(removeBridgeFromTeam("t1", "b1")).rejects.toBeInstanceOf(ApiError);
+    window.removeEventListener(SESSION_REFUSED_EVENT, heard);
+    expect(heard).toHaveBeenCalledTimes(1);
+  });
+
+  it("is not raised by reading the session, or by a wrong password", async () => {
+    const heard = vi.fn();
+    window.addEventListener(SESSION_REFUSED_EVENT, heard);
+    respond(401, { detail: "Invalid email or password" });
+    await expect(login("ada@example.test", "wrong")).rejects.toBeInstanceOf(ApiError);
+    respond(401, { detail: "Not authenticated" });
+    await fetchSession();
+    window.removeEventListener(SESSION_REFUSED_EVENT, heard);
+    expect(heard).not.toHaveBeenCalled();
+  });
+
+  it("is not raised by a refusal that is not about the session", async () => {
+    const heard = vi.fn();
+    window.addEventListener(SESSION_REFUSED_EVENT, heard);
+    respond(403, { detail: "Admins only" });
+    await expect(removeBridgeFromTeam("t1", "b1")).rejects.toBeInstanceOf(ApiError);
+    window.removeEventListener(SESSION_REFUSED_EVENT, heard);
+    expect(heard).not.toHaveBeenCalled();
+  });
+});
 
 describe("errorText", () => {
   it("returns a string detail as is", () => {
@@ -233,11 +287,30 @@ describe("signOutEverywhere", () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
 
-    await signOutEverywhere();
+    expect(await signOutEverywhere()).toEqual({ endSessionUrl: null, notice: null });
 
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toContain("/auth/sessions/revoke");
     expect(init.method).toBe("POST");
+  });
+
+  it("answers where to end the WorkOS sign-in", async () => {
+    respond(200, { ok: true, end_session_url: "https://auth.example.test/logout" });
+    expect(await signOutEverywhere()).toEqual({
+      endSessionUrl: "https://auth.example.test/logout",
+      notice: null,
+    });
+  });
+
+  it("answers, rather than throws, when only some sign-ins elsewhere could not be ended", async () => {
+    respond(502, {
+      detail: "2 sign-ins could not be ended.",
+      end_session_url: "https://auth.example.test/logout",
+    });
+    expect(await signOutEverywhere()).toEqual({
+      endSessionUrl: "https://auth.example.test/logout",
+      notice: "2 sign-ins could not be ended.",
+    });
   });
 
   it("throws when the server refuses", async () => {
@@ -253,11 +326,16 @@ describe("logout", () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
 
-    await logout();
+    expect(await logout()).toEqual({ endSessionUrl: null, notice: null });
 
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toContain("/auth/logout");
     expect(init.method).toBe("POST");
+  });
+
+  it("answers where to end the WorkOS sign-in", async () => {
+    respond(200, { ok: true, end_session_url: "https://auth.example.test/logout" });
+    expect((await logout()).endSessionUrl).toBe("https://auth.example.test/logout");
   });
 
   it("throws when the session wasn't cleared", async () => {

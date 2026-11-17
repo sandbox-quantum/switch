@@ -37,6 +37,7 @@ class TestGetOrCreateOidcUser:
                 join_tenant=True,
                 link_by_email=True,
                 create_allowed=True,
+                match_legacy=True,
             )
             await session.commit()
 
@@ -52,10 +53,13 @@ class TestGetOrCreateOidcUser:
                     join_tenant=True,
                     link_by_email=False,
                     create_allowed=True,
+                    match_legacy=True,
                 )
         async with session_factory() as session:
             assert (
-                await store.get_by_oidc_identity(session, iss=_ISS, sub="user_SHARED")
+                await store.get_by_oidc_identity(
+                    session, iss=_ISS, sub="user_SHARED", match_legacy=True
+                )
                 is None
             )
             assert (
@@ -77,6 +81,7 @@ class TestGetOrCreateOidcUser:
                 join_tenant=True,
                 link_by_email=True,
                 create_allowed=True,
+                match_legacy=True,
             )
             await session.commit()
             assert created is True
@@ -84,7 +89,9 @@ class TestGetOrCreateOidcUser:
             assert user.password_hash is None
             assert user.metadata_ is None
 
-            again = await store.get_by_oidc_identity(session, iss=_ISS, sub="okta|9")
+            again = await store.get_by_oidc_identity(
+                session, iss=_ISS, sub="okta|9", match_legacy=True
+            )
             assert again is not None and again.id == user.id
 
             returning, created_again = await store.get_or_create_oidc_user(
@@ -97,6 +104,7 @@ class TestGetOrCreateOidcUser:
                 join_tenant=True,
                 link_by_email=True,
                 create_allowed=True,
+                match_legacy=True,
             )
             assert (returning.id, created_again) == (user.id, False)
 
@@ -116,12 +124,15 @@ class TestGetOrCreateOidcUser:
                     join_tenant=True,
                     link_by_email=True,
                     create_allowed=False,
+                    match_legacy=True,
                 )
             await session.rollback()
         async with session_factory() as session:
             assert await store.get_by_email(session, "far.away@example.com") is None
             assert (
-                await store.get_by_oidc_identity(session, iss=_ISS, sub="okta|refused")
+                await store.get_by_oidc_identity(
+                    session, iss=_ISS, sub="okta|refused", match_legacy=True
+                )
                 is None
             )
 
@@ -140,6 +151,7 @@ class TestGetOrCreateOidcUser:
                 join_tenant=True,
                 link_by_email=True,
                 create_allowed=True,
+                match_legacy=True,
             )
             await session.commit()
             again, created = await store.get_or_create_oidc_user(
@@ -152,6 +164,7 @@ class TestGetOrCreateOidcUser:
                 join_tenant=True,
                 link_by_email=True,
                 create_allowed=False,
+                match_legacy=True,
             )
             assert (again.id, created) == (user.id, False)
 
@@ -178,6 +191,7 @@ class TestGetOrCreateOidcUser:
                 join_tenant=True,
                 link_by_email=True,
                 create_allowed=False,
+                match_legacy=True,
             )
             assert (linked.id, created) == (existing.id, False)
 
@@ -199,6 +213,7 @@ class TestGetOrCreateOidcUser:
                 join_tenant=True,
                 link_by_email=True,
                 create_allowed=True,
+                match_legacy=True,
             )
             await session.commit()
             assert user.email == "new.person@example.com"
@@ -218,6 +233,7 @@ class TestGetOrCreateOidcUser:
                 join_tenant=True,
                 link_by_email=True,
                 create_allowed=True,
+                match_legacy=True,
             )
             await session.commit()
             first.role = "admin"
@@ -233,6 +249,7 @@ class TestGetOrCreateOidcUser:
                 join_tenant=True,
                 link_by_email=True,
                 create_allowed=True,
+                match_legacy=True,
             )
             assert again.id == first.id
             assert again.role == "admin"
@@ -264,6 +281,7 @@ class TestGetOrCreateOidcUser:
                 join_tenant=True,
                 link_by_email=True,
                 create_allowed=True,
+                match_legacy=True,
             )
             await session.commit()
 
@@ -274,7 +292,7 @@ class TestGetOrCreateOidcUser:
             assert linked.password_hash == "bcrypt-hash"
 
             by_identity = await store.get_by_oidc_identity(
-                session, iss=_ISS, sub="okta|42"
+                session, iss=_ISS, sub="okta|42", match_legacy=True
             )
             assert by_identity is not None and by_identity.id == existing.id
 
@@ -304,6 +322,7 @@ class TestGetOrCreateOidcUser:
                 join_tenant=True,
                 link_by_email=True,
                 create_allowed=True,
+                match_legacy=True,
             )
             await session.commit()
 
@@ -366,6 +385,7 @@ class TestGetOrCreateOidcUser:
                 join_tenant=True,
                 link_by_email=True,
                 create_allowed=True,
+                match_legacy=True,
             )
             await session.commit()
 
@@ -379,15 +399,20 @@ class TestGetOrCreateOidcUser:
                 join_tenant=True,
                 link_by_email=True,
                 create_allowed=True,
+                match_legacy=True,
             )
             await session.commit()
 
             assert second.id == first.id
             assert (
-                await store.get_by_oidc_identity(session, iss=_ISS, sub="okta|1")
+                await store.get_by_oidc_identity(
+                    session, iss=_ISS, sub="okta|1", match_legacy=True
+                )
             ).id == first.id  # type: ignore[union-attr]
             assert (
-                await store.get_by_oidc_identity(session, iss=_ISS, sub="okta|2")
+                await store.get_by_oidc_identity(
+                    session, iss=_ISS, sub="okta|2", match_legacy=True
+                )
             ).id == first.id  # type: ignore[union-attr]
 
     async def test_unverified_email_collision_with_different_identity_is_refused(
@@ -417,6 +442,7 @@ class TestGetOrCreateOidcUser:
                     join_tenant=True,
                     link_by_email=True,
                     create_allowed=True,
+                    match_legacy=True,
                 )
 
     async def test_identity_already_bound_elsewhere_is_never_relinked(
@@ -437,6 +463,7 @@ class TestGetOrCreateOidcUser:
                 join_tenant=True,
                 link_by_email=True,
                 create_allowed=True,
+                match_legacy=True,
             )
             await session.commit()
 
@@ -459,6 +486,7 @@ class TestGetOrCreateOidcUser:
                 join_tenant=True,
                 link_by_email=True,
                 create_allowed=True,
+                match_legacy=True,
             )
             assert again.id == owner.id
 
@@ -490,6 +518,7 @@ class TestGetOrCreateOidcUser:
                 join_tenant=True,
                 link_by_email=True,
                 create_allowed=True,
+                match_legacy=True,
             )
             assert got.id == legacy_user.id
 
@@ -530,6 +559,7 @@ class TestGetOrCreateOidcUser:
                 join_tenant=True,
                 link_by_email=True,
                 create_allowed=True,
+                match_legacy=True,
             )
             assert got.id == legacy_admin.id
             assert got.role == "admin"
@@ -555,6 +585,7 @@ class TestGetOrCreateOidcUser:
                     join_tenant=True,
                     link_by_email=True,
                     create_allowed=True,
+                    match_legacy=True,
                 )
                 await session.commit()
 
@@ -623,12 +654,15 @@ class TestGetOrCreateOidcUser:
                 join_tenant=True,
                 link_by_email=True,
                 create_allowed=True,
+                match_legacy=True,
             )
             await winner_session.commit()
 
         async with session_factory() as session:
 
-            async def always_misses(sess: AsyncSession, *, iss: str, sub: str):
+            async def always_misses(
+                sess: AsyncSession, *, iss: str, sub: str, match_legacy: bool
+            ):
                 return None
 
             monkeypatch.setattr(store, "get_by_oidc_identity", always_misses)
@@ -644,6 +678,7 @@ class TestGetOrCreateOidcUser:
                     join_tenant=True,
                     link_by_email=True,
                     create_allowed=True,
+                    match_legacy=True,
                 )
 
     async def test_concurrent_creation_of_the_same_identity_resolves_to_the_winner(
@@ -666,6 +701,7 @@ class TestGetOrCreateOidcUser:
                 join_tenant=True,
                 link_by_email=True,
                 create_allowed=True,
+                match_legacy=True,
             )
             await winner_session.commit()
 
@@ -674,12 +710,14 @@ class TestGetOrCreateOidcUser:
             calls = {"n": 0}
 
             async def lookup_that_misses_once(
-                sess: AsyncSession, *, iss: str, sub: str
+                sess: AsyncSession, *, iss: str, sub: str, match_legacy: bool
             ):
                 calls["n"] += 1
                 if calls["n"] == 1:
                     return None
-                return await original_lookup(sess, iss=iss, sub=sub)
+                return await original_lookup(
+                    sess, iss=iss, sub=sub, match_legacy=match_legacy
+                )
 
             monkeypatch.setattr(store, "get_by_oidc_identity", lookup_that_misses_once)
 
@@ -693,6 +731,7 @@ class TestGetOrCreateOidcUser:
                 join_tenant=True,
                 link_by_email=True,
                 create_allowed=True,
+                match_legacy=True,
             )
             assert resolved.id == winner.id
 
@@ -716,6 +755,7 @@ class TestGetOrCreateOidcUser:
                 join_tenant=True,
                 link_by_email=True,
                 create_allowed=True,
+                match_legacy=True,
             )
             await winner_session.commit()
 
@@ -741,11 +781,14 @@ class TestGetOrCreateOidcUser:
                 join_tenant=True,
                 link_by_email=True,
                 create_allowed=True,
+                match_legacy=True,
             )
             assert resolved.id == winner.id
 
             for sub in ("okta|first", "okta|second"):
-                identity = await store.get_by_oidc_identity(session, iss=_ISS, sub=sub)
+                identity = await store.get_by_oidc_identity(
+                    session, iss=_ISS, sub=sub, match_legacy=True
+                )
                 assert identity is not None and identity.id == winner.id
 
 
@@ -777,11 +820,12 @@ class TestProvisioningWithoutJoiningATenant:
                 join_tenant=False,
                 link_by_email=True,
                 create_allowed=True,
+                match_legacy=True,
             )
             await session.commit()
 
             again = await store.get_by_oidc_identity(
-                session, iss=_ISS, sub="okta|loose"
+                session, iss=_ISS, sub="okta|loose", match_legacy=True
             )
             assert again is not None and again.id == user.id
             assert await _membership_count(session, user.id) == 0
@@ -805,6 +849,7 @@ class TestProvisioningWithoutJoiningATenant:
                 join_tenant=False,
                 link_by_email=True,
                 create_allowed=True,
+                match_legacy=True,
             )
             await session.commit()
 

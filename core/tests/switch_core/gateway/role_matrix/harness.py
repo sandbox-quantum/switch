@@ -78,6 +78,7 @@ from switch_core.decision.settings import DecisionAvailability
 from switch_core.feature_flags import KNOWN_FEATURE_FLAGS
 from switch_core.gateway.app import create_gateway_app
 from switch_core.gateway.auth import create_jwt
+from switch_core.gateway.identity_sessions import IdentitySessions
 from switch_core.management.dependencies import init_management_dependencies
 from switch_core.management.wiring import (
     Management,
@@ -410,6 +411,7 @@ def build_gateway(session_factory: async_sessionmaker[AsyncSession]) -> FastAPI:
     )
     gateway.state.controller_revoker = management.service
     gateway.state.workspace_archive = Fake("workspace_archive")
+    gateway.state.identity_sessions = IdentitySessions(session_factory, None)
     # Auto-route's decision client, asking nothing: the decision settings
     # routes read and save the workspace's row, and Test meets a service that
     # is down.
@@ -496,6 +498,7 @@ class People:
             session_version=0,
             auth_time=datetime.now(UTC),
             session_id=secrets.token_urlsafe(16),
+            identity_session=None,
         )
         return {"cookie": f"switch_auth={token}"}
 

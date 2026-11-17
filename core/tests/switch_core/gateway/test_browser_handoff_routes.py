@@ -32,6 +32,7 @@ from switch_core.db.models import (
 )
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.browser_handoff_store import MINT_LIMIT
+from switch_core.db.stores.identity_session_store import IdentitySessionStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway import dependencies as gw_deps
 from switch_core.gateway.auth import (
@@ -51,6 +52,7 @@ from switch_core.gateway.browser_handoff import (
     checked_next,
 )
 from switch_core.gateway.browser_handoff import router as handoff_router
+from switch_core.gateway.identity_sessions import IdentitySessions
 from switch_core.keys import Keyring, Purpose
 from tests.switch_core.gateway.login_limit_defaults import LOGIN_LIMIT_DEFAULTS
 
@@ -82,6 +84,7 @@ def _app(session_factory: async_sessionmaker[AsyncSession]) -> FastAPI:
         gateway_tenant_choice_enabled=False,
         **LOGIN_LIMIT_DEFAULTS,
     )
+    app.state.identity_sessions = IdentitySessions(session_factory, None)
     return app
 
 
@@ -124,6 +127,7 @@ def _cookie(
     tenant_id: str | None = _ACME,
     session_id: str = _CONSOLE_SID,
     auth_time: datetime = _SIGNED_IN,
+    identity_session: str | None = None,
 ) -> str:
     return create_jwt(
         user.id,
@@ -134,6 +138,7 @@ def _cookie(
         session_version=0,
         auth_time=auth_time,
         session_id=session_id,
+        identity_session=identity_session,
     )
 
 
@@ -636,6 +641,35 @@ async def _open_browser(app: FastAPI, token: str) -> str:
     redeemed = await _redeem(app, await _mint(app, token))
     assert redeemed.status_code == 200, redeemed.text
     return str(redeemed.cookies["switch_auth"])
+
+
+async def test_a_browser_opened_from_an_authkit_sign_in_ends_when_that_sign_in_does(
+    app: FastAPI,
+    people: SimpleNamespace,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    store = IdentitySessionStore()
+    async with session_factory() as session:
+        row_id = await store.record(
+            session,
+            user_id=people.ada.id,
+            provider="workos",
+            session_id="session_CONSOLE",
+            followed=True,
+            now=datetime.now(UTC),
+        )
+        await session.commit()
+    console = _cookie(people.ada, identity_session=row_id)
+
+    browser = await _open_browser(app, console)
+
+    assert decode_jwt(browser, _KEYRING)["isid"] == row_id
+    assert await _me(app, browser) == 200
+    async with session_factory() as session:
+        await store.end(session, [row_id], datetime.now(UTC))
+        await session.commit()
+    assert await _me(app, console) == 401
+    assert await _me(app, browser) == 401
 
 
 async def test_signing_out_of_console_signs_out_the_browsers_it_opened(

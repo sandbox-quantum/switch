@@ -30,6 +30,7 @@ from switch_core.gateway.auth import (
     hash_password,
 )
 from switch_core.gateway.auth_routes import router
+from switch_core.gateway.identity_sessions import IdentitySessions
 from switch_core.keys import Keyring, Purpose
 
 _SECRET = "unit-test-jwt-key-unit-test-jwt-key-unit-test"  # gitleaks:allow
@@ -50,6 +51,9 @@ def _app(session_factory: async_sessionmaker[AsyncSession]) -> FastAPI:
     app.dependency_overrides[gw_deps.get_system_session] = _session_dep
     app.dependency_overrides[gw_deps.get_session_factory] = lambda: session_factory
     app.dependency_overrides[gw_deps.get_user_store] = lambda: _USER_STORE
+    app.dependency_overrides[gw_deps.get_identity_sessions] = lambda: IdentitySessions(
+        session_factory, None
+    )
     app.dependency_overrides[gw_deps.get_config] = lambda: SimpleNamespace(
         keyring=_KEYRING,
         gateway_cookie_secure=False,
@@ -93,6 +97,7 @@ def _token(user_id: str, email: str, role: str, version: int) -> str:
         session_version=version,
         auth_time=datetime.now(UTC),
         session_id=secrets.token_urlsafe(16),
+        identity_session=None,
     )
 
 

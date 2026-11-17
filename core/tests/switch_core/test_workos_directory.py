@@ -635,3 +635,26 @@ class TestWhatTheMirrorReads:
             "user_A": "org_admin",
             "user_B": "member",
         }
+
+
+class TestReadingAUserById:
+    async def test_a_user_this_environment_has_is_read(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            assert request.url.path == "/user_management/users/user_A"
+            return httpx.Response(200, json={"id": "user_A", "email": "a@example.test"})
+
+        assert await _directory(handler).user("user_A") == {
+            "id": "user_A",
+            "email": "a@example.test",
+        }
+
+    @pytest.mark.parametrize("status", [400, 404, 422])
+    async def test_one_it_does_not_have_is_none(self, status: int) -> None:
+        assert (
+            await _directory(lambda request: httpx.Response(status)).user("x") is None
+        )
+
+    @pytest.mark.parametrize("status", [429, 500, 503])
+    async def test_workos_failing_stops_the_run(self, status: int) -> None:
+        with pytest.raises(DirectoryUnavailable):
+            await _directory(lambda request: httpx.Response(status)).user("user_A")

@@ -14,13 +14,18 @@ off by default; this page says what works today and what does not yet.
   create it under the AuthKit application in `WORKOS_CLIENT_ID`: WorkOS
   exchanges an application's sign-ins only with that application's own key,
   and the same key reads organizations, memberships, users and events.
-- The gateway's OIDC sign-in (`GATEWAY_OIDC_*`, see
-  [`GATEWAY_OIDC_SETUP.md`](GATEWAY_OIDC_SETUP.md)) set up against an AuthKit
-  application of the same environment. The sign-in's subject is the person's
-  WorkOS user id. `GATEWAY_OIDC_ISSUER_URL` must be exactly the issuer the
-  tokens name, trailing slash included: Switch looks people's WorkOS
-  identities up under it, so a sign-in whose token names another issuer is
-  refused, and the log says which one it named.
+- The gateway's sign-in set up against the same environment (see
+  [`GATEWAY_OIDC_SETUP.md`](GATEWAY_OIDC_SETUP.md)), either way:
+  - through AuthKit (`GATEWAY_SIGN_IN_PROVIDER=workos`), which shares the
+    person's sign-in with the environment's other applications. Identities
+    are kept under the fixed name `https://api.workos.com/user_management`.
+  - or through a WorkOS Connect application (`GATEWAY_OIDC_*`).
+    `GATEWAY_OIDC_ISSUER_URL` must then be exactly the issuer the tokens name,
+    trailing slash included: Switch looks people's WorkOS identities up under
+    it, so a sign-in whose token names another issuer is refused, and the log
+    says which one it named.
+
+  Either way the sign-in's subject is the person's WorkOS user id.
 - `GATEWAY_SIGNUP_MODE=invite_only`. Organizations cannot be created in WorkOS
   from Switch yet, so nobody but the operator creates one; the server refuses
   to start with any other mode.
@@ -28,9 +33,10 @@ off by default; this page says what works today and what does not yet.
 With the Helm chart (`deploy/remote/helm/switch`), set
 `switchCore.organizationDirectory.mode: workos` and `secrets.workosApiKey`
 (or `WORKOS_API_KEY` in `secrets.existingSecret`), next to `switchCore.oidc`
-and `switchCore.signup.mode: invite_only`; the settings for changes made from
-Switch (below) are under `switchCore.organizationDirectory` too. The render
-fails on a combination the server would refuse.
+(and `switchCore.signIn` for AuthKit) and `switchCore.signup.mode:
+invite_only`; the settings for changes made from Switch (below) are under
+`switchCore.organizationDirectory` too. The render fails on a combination the
+server would refuse.
 
 ## Linking
 
@@ -44,6 +50,20 @@ switch-link-workos organization <switch organization id> <WorkOS organization id
 switch-link-workos accounts            # report only
 switch-link-workos accounts --apply    # write the links
 ```
+
+Two flags are for moving a server:
+
+- `accounts --from-issuer <issuer>` links each account that signs in under
+  that issuer (the server's sign-in before the move, such as a WorkOS Connect
+  application's `https://<slug>.authkit.app` before AuthKit) to the same
+  WorkOS user, where this environment has it. Its identity there is copied,
+  not moved, so the old sign-in keeps working until the move is deployed.
+  Run it with the settings the server signs in with after the move. An
+  account with no identity under that issuer is linked by address as usual.
+- `organization ... --replace` re-links an organization that already follows
+  one WorkOS organization to another, for a server moving to another WorkOS
+  environment, whose organizations have other ids there. Each switch-core
+  process follows the new one once it next starts.
 
 - **Organizations.** Only the linked WorkOS organization counts: being in, or
   `org_admin` of, any other WorkOS organization, even one beneath the same
@@ -129,7 +149,8 @@ When several products share one WorkOS environment, one service usually owns
 each customer's account there, and every product changes its members through
 it, so its rules (nobody grants above their own role, the last `org_admin`
 stays) apply once for all of them. Switch can send its changes to such a
-service. Set all three, or none:
+service. Set `MEMBERS_SERVICE_URL` and `WORKOS_REDIRECT_URL` together, with
+`WORKOS_CLIENT_ID`:
 
 - `MEMBERS_SERVICE_URL`: the service. Switch calls, with the admin's token,
   `PATCH /v1/auth/tenants/members/{id}` with `{"role": <slug>}` and
@@ -137,7 +158,8 @@ service. Set all three, or none:
   the token was issued for, and reads a refusal's `{"error": ...}`. The
   membership `id` is WorkOS's, which Switch reads with its API key.
 - `WORKOS_CLIENT_ID`: the AuthKit application Switch signs admins in to for
-  that token.
+  that token. With sign-in through AuthKit it is the same application people
+  sign in through.
 - `WORKOS_REDIRECT_URL`: its callback, `.../gateway/auth/workos/callback`,
   registered on that application.
 

@@ -80,6 +80,7 @@ class BrowserHandoffStore:
         auth_time: datetime,
         session_version: int,
         console_sid: str | None,
+        identity_session: str | None,
     ) -> MintedHandoff:
         """Mint a code for `user_id`, redeemable once for `HANDOFF_TTL`, or
         raise `BrowserHandoffRateLimited`. Deletes the rows nothing needs any
@@ -122,6 +123,7 @@ class BrowserHandoffStore:
                 auth_time=auth_time,
                 session_version=session_version,
                 console_sid=console_sid,
+                identity_session=identity_session,
                 expires_at=func.now() + HANDOFF_TTL,
             )
             .returning(BrowserHandoff.expires_at)

@@ -58,6 +58,7 @@ def _signed_in(
             expires_at=time.time() + expires_in,
             session_version=0,
             session_id="session-1",
+            identity_session=None,
         )
 
     async def _current(*_: Any) -> bool:

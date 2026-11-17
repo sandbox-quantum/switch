@@ -384,6 +384,7 @@ def cookies_for(user: User, tenant_id: str = TENANT_ZERO_ID) -> dict[str, str]:
             session_version=0,
             auth_time=datetime.now(UTC),
             session_id=secrets.token_urlsafe(16),
+            identity_session=None,
         )
     }
 

@@ -3,7 +3,7 @@ import { useState } from "react";
 import { acceptInvitation } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
 import { clearPendingInvite } from "../../data/sessionState";
-import CenteredCard from "./CenteredCard";
+import AuthLayout, { SignedInFooter } from "../auth/AuthLayout";
 
 /** A signed-in person arriving with an invite token. The token names the
  * workspace, but only the server can read it, so what they are joining is
@@ -37,19 +37,20 @@ export default function AcceptInvitePage({ token }: { token: string }) {
   };
 
   return (
-    <CenteredCard
+    <AuthLayout
       title="Join a workspace"
-      subtitle="You've been invited to a Switch workspace."
+      subtitle="You've been invited to a Switch workspace. Accept to open it."
+      footer={<SignedInFooter />}
     >
       {error ? (
         <Stack spacing={2}>
           <Alert severity="error">{error}</Alert>
-          <Button variant="outlined" onClick={decline}>
+          <Button variant="outlined" fullWidth onClick={decline}>
             Continue
           </Button>
         </Stack>
       ) : (
-        <Stack direction="row" spacing={1}>
+        <Stack spacing={1}>
           <Button
             variant="contained"
             fullWidth
@@ -59,11 +60,11 @@ export default function AcceptInvitePage({ token }: { token: string }) {
           >
             Accept invitation
           </Button>
-          <Button onClick={decline} disabled={submitting}>
+          <Button variant="outlined" fullWidth onClick={decline} disabled={submitting}>
             Decline
           </Button>
         </Stack>
       )}
-    </CenteredCard>
+    </AuthLayout>
   );
 }

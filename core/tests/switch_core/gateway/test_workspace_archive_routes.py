@@ -430,8 +430,16 @@ class TestAnArchivedWorkspace:
         org = await _organization(session_factory, app)
 
         async def current(user_id: str) -> bool:
+            # No identity session, so no connection is consulted.
             return await session_still_enters(
-                session_factory, UserStore(), user_id, 0, "stream-session", org.second
+                None,  # type: ignore[arg-type]
+                session_factory,
+                UserStore(),
+                user_id,
+                0,
+                "stream-session",
+                None,
+                org.second,
             )
 
         before = await current(org.bob)

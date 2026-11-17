@@ -274,6 +274,7 @@ def _token(user_id: str, email: str, tenant_id: str | None) -> str:
         session_version=0,
         auth_time=datetime.now(UTC),
         session_id=secrets.token_urlsafe(16),
+        identity_session=None,
     )
 
 
@@ -492,6 +493,7 @@ class TestCreateTenant:
             session_version=0,
             auth_time=datetime.now(UTC),
             session_id=secrets.token_urlsafe(16),
+            identity_session=None,
         )
 
         app = _app(session_factory, signup_mode="invite_only")
@@ -518,6 +520,7 @@ class TestCreateTenant:
             session_version=0,
             auth_time=datetime.now(UTC),
             session_id=secrets.token_urlsafe(16),
+            identity_session=None,
         )
         lifecycle = ClientLifecycleService(
             provisioning=MagicMock(),
@@ -818,6 +821,7 @@ class TestWorkspaceCreationLimit:
             session_version=0,
             auth_time=datetime.now(UTC),
             session_id=secrets.token_urlsafe(16),
+            identity_session=None,
         )
 
         async with _client(
@@ -2079,6 +2083,7 @@ class TestOrganizationAdmins:
             session_version=0,
             auth_time=datetime.now(UTC),
             session_id=secrets.token_urlsafe(16),
+            identity_session=None,
         )
         claims = decode_jwt(token, _KEYRING)
         claims["auth_time"] = int(signed_in.timestamp())
@@ -3600,6 +3605,7 @@ class TestRetentionRoutes:
             session_version=0,
             auth_time=datetime.now(UTC),
             session_id=secrets.token_urlsafe(16),
+            identity_session=None,
         )
 
         async with _client(_app(session_factory), operator) as client:
@@ -4055,6 +4061,7 @@ class TestErasureRoutes:
             session_version=0,
             auth_time=datetime.now(UTC),
             session_id=secrets.token_urlsafe(16),
+            identity_session=None,
         )
         person_id = await self._person(session_factory, "ana")
 

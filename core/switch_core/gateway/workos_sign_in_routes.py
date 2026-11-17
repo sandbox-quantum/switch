@@ -15,6 +15,7 @@ import json
 import logging
 import re
 import secrets
+from datetime import UTC, datetime
 from typing import Annotated
 from urllib.parse import urlsplit
 
@@ -29,6 +30,10 @@ from switch_core.db.models import (
     Tenant,
     User,
     require_tenant_id,
+)
+from switch_core.db.stores.identity_session_store import (
+    IdentitySessionConflict,
+    IdentitySessionStore,
 )
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.auth import get_current_user
@@ -46,6 +51,7 @@ from switch_core.workos_sign_in import (
     OrganizationToken,
     SignInRefused,
     WorkOSOrganizationSignIn,
+    session_id_of,
 )
 
 logger = logging.getLogger(__name__)
@@ -203,6 +209,30 @@ async def finish_organization_sign_in(
             status_code=403,
             detail="WorkOS signed you in to another organization; try again",
         )
+    # Recorded, though no cookie stands on it, so that ending all of the
+    # admin's sessions reaches this one too (`IdentitySessions.end_all`). A
+    # session their sign-in already stands on is the same record.
+    session_id = session_id_of(token.access_token)
+    if session_id is not None:
+        try:
+            await IdentitySessionStore().record(
+                session,
+                user_id=user.id,
+                provider="workos",
+                session_id=session_id,
+                followed=False,
+                now=datetime.now(UTC),
+            )
+        except IdentitySessionConflict as error:
+            logger.error("WorkOS organization sign-in refused: %s", error)
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "You signed in to WorkOS as someone else than this Switch "
+                    "account; sign in as yourself"
+                ),
+            ) from error
+        await session.commit()
     request.session[_TOKEN_KEY] = config.keyring.encrypt(
         json.dumps(
             {

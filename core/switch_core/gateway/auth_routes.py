@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -51,15 +52,18 @@ from switch_core.gateway.auth import (
     get_authenticated_user_id,
     get_current_user,
     hash_password_off_loop,
+    identity_session_of,
     initial_tenant_claim,
     list_held_memberships,
     list_tenant_memberships,
     operator_entered_workspace,
     password_matches_off_loop,
     require_admin,
+    session_identity,
     session_signed_in,
     set_session_cookie,
     sign_out_session,
+    signed_claims,
     signed_in_now,
     signup_refused_by_edge,
     tenants_held_by,
@@ -74,6 +78,7 @@ from switch_core.gateway.dependencies import (
     get_collab_lifecycle,
     get_config,
     get_external_user_store,
+    get_identity_sessions,
     get_organization_store,
     get_protocol,
     get_resource_service,
@@ -89,6 +94,7 @@ from switch_core.gateway.hosted_machines import (
     ensure_machine,
     hosted_settings,
 )
+from switch_core.gateway.identity_sessions import IdentitySessions
 from switch_core.gateway.login_limits import (
     admit_login,
     clear_login_failures,
@@ -110,6 +116,7 @@ from switch_core.gateway.schemas import (
     ServerDeclaration,
     SessionStateResponse,
     SessionUserResponse,
+    SignOutResponse,
     SignupMachine,
     SignupRequest,
     SignupResponse,
@@ -208,7 +215,7 @@ async def login(
         config.keyring,
         config.gateway_cookie_secure,
         await initial_tenant_claim(session_factory, user_store, user),
-        signed_in_now(),
+        signed_in_now(None),
     )
     return _session_response(user)
 
@@ -339,7 +346,7 @@ async def signup(
             config.keyring,
             config.gateway_cookie_secure,
             TENANT_ZERO_ID,
-            signed_in_now(),
+            signed_in_now(None),
         )
         signed_in = _session_response(user)
         machine = await _prewarm(session, session_factory, user.id, config, settings)
@@ -374,13 +381,43 @@ async def refresh(
     return _session_response(user)
 
 
+def _sign_out_return(config: SwitchConfig) -> str | None:
+    """Where WorkOS sends the browser back to after ending an AuthKit session:
+    the dashboard's sign-in page, registered as one of the AuthKit
+    application's sign-out URIs; with no dashboard address, the application's
+    default sign-out URI."""
+    base = config.dashboard_base_url
+    return None if base is None else f"{base.rstrip('/')}/login"
+
+
+def _not_all_ended(failed: int, end_session_url: str | None) -> JSONResponse:
+    """A 502 that still carries the sign-out: the cookie cleared, and where
+    the browser goes to end its own AuthKit session. A raised HTTPException
+    would drop both."""
+    answer = JSONResponse(
+        status_code=502,
+        content={
+            "detail": (
+                "You're signed out of Switch everywhere, but "
+                f"{failed} of your sign-ins at WorkOS could not be ended, so "
+                "they may still sign you in without asking for a password. "
+                "Sign in and sign out of every device again to end them."
+            ),
+            "end_session_url": end_session_url,
+        },
+    )
+    answer.delete_cookie("switch_auth", path="/")
+    return answer
+
+
 @router.post("/auth/logout")
 async def logout(
     request: Request,
     response: Response,
     session: Annotated[AsyncSession, Depends(get_system_session)],
     config: Annotated[SwitchConfig, Depends(get_config)],
-) -> dict[str, bool]:
+    identity_sessions: Annotated[IdentitySessions, Depends(get_identity_sessions)],
+) -> SignOutResponse:
     """Sign out of this session: clear this browser's cookie, and refuse
     every copy of it from now on, wherever it was copied to. The account's
     other sessions are left alone; `/auth/sessions/revoke` ends them all.
@@ -388,19 +425,35 @@ async def logout(
     Takes no session, so a client holding an expired or broken cookie can
     always clear it, and `get_system_session` because a session belongs to no
     workspace: the revocation is one global row (`revoked_sessions`).
+
+    A session that stood on a WorkOS AuthKit session ends that too: it is
+    marked ended here, and the answer's `end_session_url` sends the browser
+    to WorkOS to end it there, as signing out of any application sharing it
+    does. Read with the cookie's signature checked and its expiry not, so an
+    expired cookie still ends what it stood on.
     """
     await sign_out_session(session, request, config)
+    end_session_url: str | None = None
+    payload = signed_claims(request, config.keyring)
+    identity_session = None if payload is None else identity_session_of(payload)
+    if payload is not None and identity_session is not None:
+        end_session_url = await identity_sessions.end_here(
+            payload["sub"], identity_session, _sign_out_return(config)
+        )
     response.delete_cookie("switch_auth", path="/")
-    return {"ok": True}
+    return SignOutResponse(ok=True, end_session_url=end_session_url)
 
 
-@router.post("/auth/sessions/revoke")
+@router.post("/auth/sessions/revoke", response_model=SignOutResponse)
 async def end_my_sessions(
+    request: Request,
     response: Response,
     user_id: Annotated[str, Depends(get_authenticated_user_id)],
     session: Annotated[AsyncSession, Depends(get_system_session)],
     user_store: Annotated[UserStore, Depends(get_user_store)],
-) -> dict[str, bool]:
+    config: Annotated[SwitchConfig, Depends(get_config)],
+    identity_sessions: Annotated[IdentitySessions, Depends(get_identity_sessions)],
+) -> SignOutResponse | JSONResponse:
     """Sign out of all devices, this one included.
 
     `/auth/logout` clears only this browser's cookie, so a copy of it, or a
@@ -408,6 +461,12 @@ async def end_my_sessions(
     account's session version on, which every cookie minted before it fails
     against. Needs no workspace selected, like `/tenants/{id}/switch`, so a
     person with several can always reach it.
+
+    Every WorkOS AuthKit session of this person's that Switch made is revoked
+    there too (those of other applications are left alone), and this browser
+    is sent to end its own, as `/auth/logout` does. One that could not be
+    revoked is reported with a 502; Switch's own sessions have all ended by
+    then regardless.
     """
     await user_store.end_sessions(session, user_id)
     await record_server_audit_event(
@@ -419,8 +478,36 @@ async def end_my_sessions(
         details=None,
     )
     await session.commit()
+    here = session_identity(request)
+    failed = await identity_sessions.end_all(user_id, keep=here)
+    end_session_url = (
+        None
+        if here is None
+        else await identity_sessions.end_here(user_id, here, _sign_out_return(config))
+    )
+    if failed:
+        return _not_all_ended(failed, end_session_url)
     response.delete_cookie("switch_auth", path="/")
-    return {"ok": True}
+    return SignOutResponse(ok=True, end_session_url=end_session_url)
+
+
+async def _end_identity_sessions_before_deleting(
+    identity_sessions: IdentitySessions, user_id: str, keep: str | None
+) -> None:
+    """End every identity-provider session of an account about to be deleted,
+    once its deletion is no longer refused: the rows go with the account, and
+    a device left on a live AuthKit session would be signed straight back in
+    and given a new account. A session that could not be ended refuses the
+    deletion, to be tried again."""
+    failed = await identity_sessions.end_all(user_id, keep=keep)
+    if failed:
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                f"{failed} of the account's sign-ins could not be ended at WorkOS, "
+                "so it was not deleted. Try again in a moment."
+            ),
+        )
 
 
 @router.get("/auth/config")
@@ -433,13 +520,13 @@ async def auth_config(
         password_login_enabled=config.gateway_password_login_enabled,
         signup_enabled=config.gateway_signup_open,
         test_account_reset_enabled=config.gateway_allow_test_account_reset,
-        oidc_enabled=config.gateway_oidc_enabled,
+        oidc_enabled=config.gateway_sso_enabled,
         oidc_provider_label=config.gateway_oidc_provider_label,
         oidc_login_options=[
             OidcLoginOptionView(id=option.id, label=option.label)
             for option in config.gateway_oidc_login_options
         ],
-        oidc_browser_handoff=config.gateway_oidc_enabled,
+        oidc_browser_handoff=config.gateway_sso_enabled,
         signup_mode=config.gateway_signup_mode,
     )
 
@@ -663,7 +750,8 @@ async def delete_my_account(
     broker: Annotated[ServiceBroker, Depends(get_service_broker)],
     client_lifecycle: Annotated[ClientLifecycleService, Depends(get_client_lifecycle)],
     config: Annotated[SwitchConfig, Depends(get_config)],
-) -> dict[str, bool]:
+    identity_sessions: Annotated[IdentitySessions, Depends(get_identity_sessions)],
+) -> SignOutResponse:
     """Delete the caller's own account, everywhere on this server.
 
     Binds no tenant because it acts on every workspace the caller is in, each
@@ -695,12 +783,19 @@ async def delete_my_account(
     reason = await deletion.refusal(session, user, workspaces)
     if reason is not None:
         raise HTTPException(status_code=409, detail=reason)
+    here = session_identity(request)
+    await _end_identity_sessions_before_deleting(identity_sessions, user.id, here)
+    end_session_url = (
+        None
+        if here is None
+        else await identity_sessions.end_here(user.id, here, _sign_out_return(config))
+    )
     try:
         await deletion.delete(session, user, workspaces, actor_id=user.id)
     except AccountDeletionRefused as refused:
         raise HTTPException(status_code=409, detail=str(refused)) from None
     response.delete_cookie("switch_auth", path="/")
-    return {"ok": True}
+    return SignOutResponse(ok=True, end_session_url=end_session_url)
 
 
 @router.post("/auth/me/reset-test-account")
@@ -724,7 +819,8 @@ async def reset_test_account(
     broker: Annotated[ServiceBroker, Depends(get_service_broker)],
     client_lifecycle: Annotated[ClientLifecycleService, Depends(get_client_lifecycle)],
     config: Annotated[SwitchConfig, Depends(get_config)],
-) -> dict[str, bool]:
+    identity_sessions: Annotated[IdentitySessions, Depends(get_identity_sessions)],
+) -> SignOutResponse:
     """Wipe the caller's own test account, on a test or canary server that
     allows it (`gateway_allow_test_account_reset`): an organization nobody
     else is in is purged whole; elsewhere only the workspaces the caller is
@@ -760,12 +856,29 @@ async def reset_test_account(
     workspaces = await _workspaces_to_delete(
         deletion, session_factory, user_store, user.id
     )
+    # The reset decides its refusals as it goes, and the account's identity
+    # sessions go with it, so they are read first and ended at WorkOS only
+    # once it has gone through: a refused reset signs nobody out. A test
+    # account signing straight back in afterwards is the fresh start a reset
+    # is for, so one that could not be revoked is logged, not refused.
+    user_id = user.id
+    here = session_identity(request)
+    live = await identity_sessions.live_sessions(user_id)
     try:
         await reset.reset(session, user, workspaces)
     except AccountDeletionRefused as refused:
         raise HTTPException(status_code=409, detail=str(refused)) from None
+    this_browser = next((row for row in live if row.id == here), None)
+    await identity_sessions.revoke_at_provider(
+        user_id, [row for row in live if row is not this_browser]
+    )
+    end_session_url = (
+        None
+        if this_browser is None
+        else identity_sessions.logout_url(this_browser, _sign_out_return(config))
+    )
     response.delete_cookie("switch_auth", path="/")
-    return {"ok": True}
+    return SignOutResponse(ok=True, end_session_url=end_session_url)
 
 
 async def _confirmed_user(
@@ -983,6 +1096,7 @@ async def delete_user(
     broker: Annotated[ServiceBroker, Depends(get_service_broker)],
     client_lifecycle: Annotated[ClientLifecycleService, Depends(get_client_lifecycle)],
     config: Annotated[SwitchConfig, Depends(get_config)],
+    identity_sessions: Annotated[IdentitySessions, Depends(get_identity_sessions)],
 ) -> dict[str, bool]:
     """The deployment operator deletes someone's whole account.
 
@@ -1030,6 +1144,7 @@ async def delete_user(
     if reason is not None:
         await _record_refusal(session, admin.id, target.id, reason)
         raise HTTPException(status_code=409, detail=reason)
+    await _end_identity_sessions_before_deleting(identity_sessions, target.id, None)
     await record_server_audit_event(
         session,
         actor_user_id=admin.id,
@@ -1072,17 +1187,21 @@ async def delete_user(
     return {"ok": True}
 
 
-@router.post("/users/{user_id}/sessions/revoke")
+@router.post("/users/{user_id}/sessions/revoke", response_model=dict[str, bool])
 async def end_user_sessions(
     user_id: str,
     response: Response,
     session: Annotated[AsyncSession, Depends(get_session)],
     admin: Annotated[User, Depends(require_admin)],
     user_store: Annotated[UserStore, Depends(get_user_store)],
-) -> dict[str, bool]:
+    identity_sessions: Annotated[IdentitySessions, Depends(get_identity_sessions)],
+) -> dict[str, bool] | JSONResponse:
     """The deployment operator signs someone out of all their devices, for a
     lost laptop or an account that looks taken over. Recorded in the server's
-    audit log, like the operator deleting an account."""
+    audit log, like the operator deleting an account. Their WorkOS AuthKit
+    sessions that Switch made are revoked there too; one that could not be is
+    reported with a 502, after their Switch sessions have all ended. Signing
+    out the operator themselves clears this browser's cookie either way."""
     if await user_store.session_version(session, user_id) is None:
         raise HTTPException(status_code=404, detail="User not found")
     await user_store.end_sessions(session, user_id)
@@ -1095,6 +1214,20 @@ async def end_user_sessions(
         details=None,
     )
     await session.commit()
+    failed = await identity_sessions.end_all(user_id, keep=None)
+    if failed:
+        answer = JSONResponse(
+            status_code=502,
+            content={
+                "detail": (
+                    f"Their Switch sessions have ended, but {failed} of their "
+                    "sign-ins could not be ended at WorkOS. Try again in a moment."
+                )
+            },
+        )
+        if user_id == admin.id:
+            answer.delete_cookie("switch_auth", path="/")
+        return answer
     if user_id == admin.id:
         response.delete_cookie("switch_auth", path="/")
     return {"ok": True}
