@@ -532,5 +532,5 @@ def test_switch_buddy_keeps_question_forms_within_four_options():
     assert "at most 25 options" not in instructions
     assert (
         "In a question form, Something else is the form's own typed answer, so the "
-        "form holds at most three suggestions and Skip for now."
+        "form holds at most three suggestions and Skip for now, always as its last option."
     ) in instructions

@@ -94,7 +94,7 @@ The goal: a useful answer from their own agent, in as few messages as you can.
    design (a name, a short description, focused instructions). Every list of
    suggestions, rooms or agents, ends with **Something else** and **Skip for now**.
    In a question form, Something else is the form's own typed answer, so the form
-   holds at most three suggestions and Skip for now.
+   holds at most three suggestions and Skip for now, always as its last option.
    Something else: ask what they'd like and design it with them. Skip for now: the skip
    line, then stop suggesting; they can ask you any time.
 3. **Create what they pick**, after a yes to one proposal message (see "Always
