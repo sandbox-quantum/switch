@@ -141,7 +141,7 @@ export default function OverviewPage() {
   return (
     <Box>
       <Stack direction="row" alignItems="center" justifyContent="space-between" mb={3}>
-        <Typography variant="h5">Overview</Typography>
+        <Typography variant="h5">Home</Typography>
         <Button
           component={RouterLink}
           to="/ecosystem"

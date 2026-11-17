@@ -76,6 +76,9 @@ class AuditAction(StrEnum):
     SERVICE_GRANT_SET = "service_grant.set"
     SERVICE_GRANT_REMOVED = "service_grant.removed"
     AGENT_DELETION_REQUESTED = "agent.deletion_requested"
+    # Someone other than its owner, a workspace admin, narrowed who may
+    # address an agent.
+    AGENT_ADDRESSING_CHANGED = "agent.addressing_changed"
     AGENT_DELETED = "agent.deleted"
     WORKSPACE_SERVICE_ENABLED = "workspace_service.enabled"
     WORKSPACE_SERVICE_DISABLED = "workspace_service.disabled"
@@ -104,8 +107,17 @@ class OrganizationAuditAction(StrEnum):
     WORKSPACE_ARCHIVED = "organization.workspace_archived"
     WORKSPACE_RESTORED = "organization.workspace_restored"
     MEMBER_ADDED_TO_WORKSPACE = "organization.member_added_to_workspace"
+    # An org admin changed someone's role in one of its workspaces, from the
+    # organization's pages (Manage admins included), or removed them from one.
+    MEMBER_WORKSPACE_ROLE_CHANGED = "organization.member_workspace_role_changed"
+    MEMBER_REMOVED_FROM_WORKSPACE = "organization.member_removed_from_workspace"
+    # Someone new to the organization joined one of its workspaces.
+    MEMBER_JOINED_BY_INVITATION = "organization.member_joined_by_invitation"
+    MEMBER_JOINED_BY_DOMAIN = "organization.member_joined_by_domain"
     ROLE_CHANGED = "organization.role_changed"
     MEMBER_REMOVED = "organization.member_removed"
+    # Someone in none of its workspaces left it themselves.
+    MEMBER_LEFT = "organization.member_left"
     CONNECTOR_APP_SAVED = "organization.connector_app_saved"
     CONNECTOR_APP_REMOVED = "organization.connector_app_removed"
     SERVICE_SET = "organization.service_set"
@@ -142,6 +154,10 @@ class ServerAuditAction(StrEnum):
     CONNECTOR_APP_SAVED = "connector_app.saved"
     CONNECTOR_APP_IMPORTED = "connector_app.imported"
     CONNECTOR_APP_REMOVED = "connector_app.removed"
+    # The operator added an account from Platform › Users, in no workspace.
+    USER_CREATED = "user.created"
+    # The operator made another operator a regular account.
+    USER_DEMOTED = "user.demoted"
     USER_DELETED = "user.deleted"
     USER_DELETION_REFUSED = "user.deletion_refused"
     USER_DELETION_FAILED = "user.deletion_failed"
@@ -259,6 +275,33 @@ async def list_audit_events(
         query.order_by(AuditEvent.occurred_at.desc(), AuditEvent.id.desc()).limit(limit)
     )
     return list(result.scalars().all())
+
+
+async def last_removed_by_someone_else(
+    session: AsyncSession, *, tenant_id: str, user_id: str
+) -> bool:
+    """Whether the last time `user_id` was removed from `tenant_id`, someone
+    other than themselves removed them: an admin, an organization admin, or
+    the organization's directory. False for someone never removed, or who
+    last left on their own.
+
+    Read from the workspace's own log, the one record of who removed whom,
+    which the runtime role can add to but not rewrite. Names its tenant as
+    `list_audit_events` does.
+    """
+    actor = await session.execute(
+        select(AuditEvent.actor_user_id)
+        .where(
+            AuditEvent.tenant_id == tenant_id,
+            AuditEvent.action == AuditAction.MEMBER_REMOVED.value,
+            AuditEvent.target_type == "user",
+            AuditEvent.target_id == user_id,
+        )
+        .order_by(AuditEvent.occurred_at.desc(), AuditEvent.id.desc())
+        .limit(1)
+    )
+    row = actor.first()
+    return row is not None and row[0] != user_id
 
 
 async def list_organization_audit_events(

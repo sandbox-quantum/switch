@@ -77,6 +77,7 @@ from switch_core.db.session_version_ddl import (
     DROP_SESSION_VERSION_TRIGGER,
 )
 from switch_core.db.tenant_lookup import attach_tenant_lookups
+from switch_core.template_use_cases import USE_CASES
 from switch_core.tenant_context import current_organization_id, current_tenant_id
 
 #: The highest boot number `agent_event_boot` hands out. An agent's own event
@@ -1678,6 +1679,10 @@ class Template(TenantScoped, Base):
             name="fk_templates_created_by_agent",
             ondelete="SET NULL (created_by_agent_id)",
         ),
+        CheckConstraint(
+            "use_case IN ({})".format(", ".join(f"'{u}'" for u in USE_CASES)),
+            name="ck_templates_use_case",
+        ),
     )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
@@ -1695,6 +1700,8 @@ class Template(TenantScoped, Base):
         Text, nullable=False, server_default="private"
     )
     content: Mapped[str] = mapped_column(Text, nullable=False)
+    # What it is for, from ``template_use_cases``; NULL when nobody said.
+    use_case: Mapped[str | None] = mapped_column(Text, nullable=True)
     version: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
     # The agent that saved it through an agent operation, NULL for a person.
     # ``owner_id`` is the agent's owner either way; only this agent may change
@@ -1822,11 +1829,18 @@ class TemplateRunRecord(TenantScoped, Base):
     """One run of a template in this workspace, counted for the catalogue.
 
     ``template_id`` is an ``official:`` id or a stored template's, so there is
-    no foreign key: an official template is not a row. A person's run is
-    reported by the client that ran it, once the whole run has succeeded; an
-    agent's is recorded by the operation that ran it. Nothing here says who
-    ran it, so the rows go with their template (``TemplateStore.delete``) or
-    their workspace, and erasing a person leaves nothing behind in them.
+    no foreign key: an official template is not a row. An agent's run is
+    recorded by the operation that ran it, and a person's by the route that
+    ran it when the run went through the server with the template's id.
+    Switch Console also reports every run of a template once the whole run
+    has succeeded, however it ran, and that report is believed at most once
+    per person and template in ``REPORTED_RUN_WINDOW``
+    (``TemplateStore.record_reported_run``), so a run the server counted is
+    not counted again and a reader cannot inflate a count by reporting.
+    ``run_by`` names the person a run was counted for, for that check alone
+    (an agent's run names nobody); it is cleared when their account goes.
+    The rows go with their template (``TemplateStore.delete``) or their
+    workspace.
     """
 
     __tablename__ = "template_run_records"
@@ -1836,6 +1850,13 @@ class TemplateRunRecord(TenantScoped, Base):
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
     template_id: Mapped[str] = mapped_column(Text, nullable=False)
+    run_by: Mapped[str | None] = mapped_column(
+        Text,
+        ForeignKey(
+            "users.id", ondelete="SET NULL", name="fk_template_run_records_run_by"
+        ),
+        nullable=True,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

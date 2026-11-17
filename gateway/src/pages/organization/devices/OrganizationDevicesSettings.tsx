@@ -1,10 +1,12 @@
 import DeleteOutline from "@mui/icons-material/DeleteOutline";
+import InfoOutlined from "@mui/icons-material/InfoOutlined";
 import LinkOffOutlined from "@mui/icons-material/LinkOffOutlined";
 import { Alert, Box, Button, Card, CircularProgress, Stack, Typography } from "@mui/material";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ConfirmDialog from "../../../components/ConfirmDialog";
 import { TableEmptyState } from "../../../components/DataTable";
 import InfoTip from "../../../components/InfoTip";
+import SuccessSnackbar from "../../../components/SuccessSnackbar";
 import PageBanner from "../../../components/PageBanner";
 import type { RowAction } from "../../../components/RowActionsMenu";
 import {
@@ -16,6 +18,7 @@ import {
   removeOrganizationDevice,
   unmanageOrganizationAgent,
 } from "../../../data/management";
+import DeviceDetailsDialog from "../../devices/DeviceDetailsDialog";
 import DevicesTable, { type DeviceTableRow } from "../../devices/DevicesTable";
 import ManagedAgentsTable, { type ManagedAgentTableRow } from "../../devices/ManagedAgentsTable";
 
@@ -61,6 +64,8 @@ export default function OrganizationDevicesSettings({ organizationName }: { orga
   // its words; the `…Open` flags alone open and close them.
   const [removing, setRemoving] = useState<DeviceRow | null>(null);
   const [removeOpen, setRemoveOpen] = useState(false);
+  const [detailsOf, setDetailsOf] = useState<DeviceRow | null>(null);
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const [unmanaging, setUnmanaging] = useState<AgentRow | null>(null);
   const [unmanageOpen, setUnmanageOpen] = useState(false);
   const latest = useRef(0);
@@ -95,10 +100,18 @@ export default function OrganizationDevicesSettings({ organizationName }: { orga
   const agents = useMemo(() => agentRows(data), [data]);
 
   const deviceActions = useCallback((row: DeviceTableRow): RowAction[] => {
-    const cloud = row.type === "cloud";
-    if (!row.can_remove && !cloud) return [];
-    return [
+    const actions: RowAction[] = [
       {
+        label: "Details",
+        icon: <InfoOutlined fontSize="small" />,
+        onClick: () => {
+          setDetailsOf(row as DeviceRow);
+          setDetailsOpen(true);
+        },
+      },
+    ];
+    if (row.can_remove || row.type === "cloud") {
+      actions.push({
         label: "Remove",
         icon: <DeleteOutline fontSize="small" />,
         destructive: true,
@@ -107,8 +120,9 @@ export default function OrganizationDevicesSettings({ organizationName }: { orga
           setRemoving(row as DeviceRow);
           setRemoveOpen(true);
         },
-      },
-    ];
+      });
+    }
+    return actions;
   }, []);
 
   const agentActions = useCallback(
@@ -159,6 +173,7 @@ export default function OrganizationDevicesSettings({ organizationName }: { orga
           rows={devices}
           showOwner
           showWorkspace
+          providerLabel={label}
           actionsFor={deviceActions}
           emptyState={empty("No devices yet", "Devices are added from a workspace's own Devices page.")}
         />
@@ -175,7 +190,11 @@ export default function OrganizationDevicesSettings({ organizationName }: { orga
             showWorkspace
             providerLabel={label}
             actionsFor={agentActions}
-            emptyState={empty("No managed agents yet", "Their owners place them on a device from a workspace's Devices page.")}
+            emptyState={
+              <TableEmptyState title="No managed agents yet">
+                Their owners place them on a device from a workspace's Devices page.
+              </TableEmptyState>
+            }
           />
         </Box>
       </Stack>
@@ -188,7 +207,7 @@ export default function OrganizationDevicesSettings({ organizationName }: { orga
         <Typography variant="h5">Devices</Typography>
         <Stack direction="row" spacing={0.5} sx={{ alignItems: "center", mt: 1 }}>
           <Typography variant="body2" color="text.secondary">
-            The devices that run agents across {organizationName}.
+            Computers running an agents controller across {organizationName}.
           </Typography>
           <InfoTip>
             Each is in one workspace. Add a device, or change what runs on one, from that workspace's own Devices page.
@@ -210,7 +229,7 @@ export default function OrganizationDevicesSettings({ organizationName }: { orga
           </PageBanner>
         )}
         {providersError !== null && <PageBanner tone="warning">{providersError}</PageBanner>}
-        {notice && (
+        {notice && notice.severity !== "success" && (
           <Alert severity={notice.severity} onClose={() => setNotice(null)}>
             {notice.text}
           </Alert>
@@ -218,6 +237,14 @@ export default function OrganizationDevicesSettings({ organizationName }: { orga
       </Stack>
 
       {body}
+
+      <DeviceDetailsDialog
+        open={detailsOpen}
+        // The row as it is now, so the dialog follows each refresh.
+        device={devices.find((row) => row.id === detailsOf?.id) ?? detailsOf}
+        providerLabel={label}
+        onClose={() => setDetailsOpen(false)}
+      />
 
       <ConfirmDialog
         open={removeOpen}
@@ -271,6 +298,10 @@ export default function OrganizationDevicesSettings({ organizationName }: { orga
           }
           setNotice({ severity: "success", text: `Stopped managing ${unmanaging.display_name ?? unmanaging.name}.` });
         }}
+      />
+      <SuccessSnackbar
+        message={notice?.severity === "success" ? notice.text : null}
+        onClose={() => setNotice(null)}
       />
     </Box>
   );

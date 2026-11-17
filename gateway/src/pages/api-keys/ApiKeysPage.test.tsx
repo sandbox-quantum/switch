@@ -5,7 +5,18 @@ import ApiKeysPage from "./ApiKeysPage";
 import { apiKey } from "./testFixtures";
 
 vi.mock("../../data/AuthContext", () => ({ useAuth: vi.fn() }));
-vi.mock("../../components/DataTable", () => import("../../test/FakeDataTable"));
+/** The order each table opens in, by what it counts. */
+const openingOrder = vi.hoisted(() => new Map<string, unknown>());
+vi.mock("../../components/DataTable", async () => {
+  const fake = await import("../../test/FakeDataTable");
+  return {
+    ...fake,
+    default: (props: Parameters<typeof fake.default>[0] & { noun: { other: string }; initialSort?: unknown }) => {
+      openingOrder.set(props.noun.other, props.initialSort);
+      return fake.default(props);
+    },
+  };
+});
 
 /** The items of a row's "…" menu, by label. */
 async function menuOf(rowId: string, name: string): Promise<string[]> {
@@ -48,6 +59,16 @@ describe("ApiKeysPage", () => {
     expect(agentRow.queryByRole("button")).toBeNull();
   });
 
+  it("opens agent keys by agent, A to Z, and the others newest first", async () => {
+    signedInAs("admin");
+    answer({ "GET /api-keys/workspace": [200, [MINE, THEIR_AGENT]] });
+    render(<ApiKeysPage />);
+    await screen.findByTestId("row-their-agent");
+
+    expect(openingOrder.get("agent keys")).toEqual({ field: "label", sort: "asc" });
+    expect(openingOrder.get("keys")).toEqual({ field: "created_at", sort: "desc" });
+  });
+
   it("shows a member only their own keys", async () => {
     signedInAs("member");
     const calls = answer({ "GET /api-keys": [200, [MINE]] });
@@ -83,7 +104,9 @@ describe("ApiKeysPage", () => {
     expect(within(dialog).getByText(/Delete Grace's key "theirs"\? It stops working at once/)).toBeTruthy();
     fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
 
-    expect(await screen.findByText('Deleted "theirs".')).toBeTruthy();
+    const deleted = await screen.findByText('Deleted "theirs".');
+    // A plain success is the snackbar's, not a notice left on the page.
+    expect(deleted.closest(".MuiAlert-root")).toBeNull();
     expect(calls.some((call) => call.method === "DELETE" && call.path === "/api-keys/theirs")).toBe(true);
     await waitFor(() => expect(screen.queryByTestId("row-theirs")).toBeNull());
   });

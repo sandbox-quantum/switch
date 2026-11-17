@@ -16,6 +16,7 @@ import pytest_asyncio
 import yaml
 from sqlalchemy import select, update
 
+from switch_core.addressing import owner_only_policy
 from switch_core.agent_refusals import AgentRefused
 from switch_core.agent_template_ops import ActingFor, AgentTemplates
 from switch_core.agent_templates import (
@@ -43,8 +44,10 @@ from switch_core.db.models import Agent, Room, Template, User
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.providers.registry import provider_ids
+from switch_core.room_invites import InviteRefused
 from switch_core.rooms_yaml import RoomSpec
 from switch_core.template_guide import TEMPLATE_GUIDE
+from tests.switch_core.bridges.agent.operations.conftest import _make_agent
 from tests.telemetry_records import recording_telemetry
 
 ROOM_TEMPLATE = """\
@@ -327,6 +330,46 @@ async def test_run_an_agent_template_with_an_existing_agent(tools):
     )
 
     assert result["room_name"] == "Ask claude-code.bob"
+
+
+@pytest.mark.asyncio
+async def test_run_refuses_a_room_holding_an_agent_its_owner_may_not_address(tools):
+    """The invite rule `create_room` asks, for an agent named in the room or
+    standing in for a slot, before anything is made."""
+    async with tools["session_factory"]() as session:
+        theirs = await _make_agent(
+            session, "mallorys-agent", tools["stranger_id"], tools["stranger_id"]
+        )
+        theirs.addressing_policy = owner_only_policy([]).model_dump()
+        await session.commit()
+    in_the_room = await _stored(
+        tools,
+        tools["user_id"],
+        "names it",
+        ROOM_TEMPLATE.replace(
+            '["claude-code.alice"]', '["claude-code.alice", "mallorys-agent"]'
+        ),
+    )
+    standing_in = await _stored(
+        tools, tools["user_id"], "jq", AGENT_TEMPLATE, kind="agent"
+    )
+
+    with pytest.raises(InviteRefused, match="mallorys-agent"):
+        await _as(
+            tools["agent_id"],
+            run_template,
+            template_id=in_the_room,
+            inputs={"topic": "jq"},
+        )
+    with pytest.raises(InviteRefused, match="mallorys-agent"):
+        await _as(
+            tools["agent_id"],
+            run_template,
+            template_id=standing_in,
+            agents={"jq-expert": "mallorys-agent"},
+        )
+    async with tools["session_factory"]() as session:
+        assert (await session.execute(select(Room))).scalars().all() == []
 
 
 @pytest.mark.asyncio

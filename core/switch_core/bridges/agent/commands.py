@@ -6,6 +6,7 @@ import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, cast
+from urllib.parse import urlencode
 
 from sqlalchemy import select
 
@@ -2435,6 +2436,13 @@ def _via(package_names: list[str]) -> str:
     return "via " + ", ".join(package_names)
 
 
+def _dashboard_url(frontend_base_url: str, tenant_id: str, path: str) -> str:
+    """A link to `path` on the dashboard that names the room's workspace, so
+    it opens there rather than in whichever workspace the reader's browser
+    used last, where the room or resource is not found."""
+    return f"{frontend_base_url}{path}?{urlencode({'workspace': tenant_id})}"
+
+
 async def _cmd_list_documents(
     client: AgentRecipient,
     room: RoomRef,
@@ -2480,9 +2488,17 @@ async def _cmd_list_documents(
                 name_md = f"**{d.name}**"
             else:
                 if d.room_id is not None:
-                    url = f"{client._frontend_base_url}/rooms/{d.room_id}/documents/{d.id}"
+                    url = _dashboard_url(
+                        client._frontend_base_url,
+                        client.tenant_id,
+                        f"/rooms/{d.room_id}/documents/{d.id}",
+                    )
                 else:
-                    url = f"{client._frontend_base_url}/resources/documents/{d.id}"
+                    url = _dashboard_url(
+                        client._frontend_base_url,
+                        client.tenant_id,
+                        f"/resources/documents/{d.id}",
+                    )
                 name_md = f"[{d.name}]({url})"
             lines.append(f"- {name_md}{scope}{via}{desc}{creator}")
 
@@ -2528,7 +2544,11 @@ async def _cmd_list_references(
         if client._frontend_base_url is None:
             name_md = f"**{ref.name}**"
         else:
-            url = f"{client._frontend_base_url}/resources/references/{ref.id}"
+            url = _dashboard_url(
+                client._frontend_base_url,
+                client.tenant_id,
+                f"/resources/references/{ref.id}",
+            )
             name_md = f"[{ref.name}]({url})"
         kind = (
             ref.type if ref.id in direct_ids else f"{ref.type}, {_via(sources[ref.id])}"
@@ -2561,7 +2581,9 @@ async def _cmd_room_url(
         )
         return
 
-    url = f"{client._frontend_base_url}/rooms/{meta.room_id}"
+    url = _dashboard_url(
+        client._frontend_base_url, client.tenant_id, f"/rooms/{meta.room_id}"
+    )
     await _reply(client, room, event, f"Room URL: {url}")
 
 

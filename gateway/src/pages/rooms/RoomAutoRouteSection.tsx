@@ -34,7 +34,7 @@ export default function RoomAutoRouteSection({
   autoRoute: RoomAutoRoute;
   canWrite: boolean;
 }) {
-  const { data: allAgents } = useAgents();
+  const { data: allAgents, error: agentsError } = useAgents();
   const [state, setState] = useState(autoRoute);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -78,6 +78,11 @@ export default function RoomAutoRouteSection({
         <code>!auto-route</code> in the room.
       </Typography>
       {error && <Alert severity="error">{error}</Alert>}
+      {agentsError && (
+        <Alert severity="error">
+          Couldn't load the agents, so the room's agents aren't offered as its triage agent: {agentsError}
+        </Alert>
+      )}
       {!state.available && state.reason && <Alert severity="info">{state.reason}</Alert>}
       <FormControlLabel
         control={

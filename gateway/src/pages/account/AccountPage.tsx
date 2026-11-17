@@ -8,17 +8,18 @@ import {
   FormControl,
   InputLabel,
   OutlinedInput,
-  Snackbar,
   Stack,
   Typography,
 } from "@mui/material";
 import { type ReactNode, useEffect, useId, useState } from "react";
 import EditableField from "../../components/EditableField";
+import SuccessSnackbar from "../../components/SuccessSnackbar";
 import { useAuth } from "../../data/AuthContext";
 import { type Me, changeMyName, fetchMe } from "../../data/api";
 import ChangePasswordDialog from "../../layout/ChangePasswordDialog";
 import { tokenVar } from "../../theme/tokens";
 import DeleteAccountDialog from "./DeleteAccountDialog";
+import OrganizationsWithoutWorkspace from "./OrganizationsWithoutWorkspace";
 
 // What `PATCH /auth/me` accepts.
 const NAME_MAX = 255;
@@ -66,9 +67,7 @@ function AccountSections({ me, onRenamed }: { me: Me; onRenamed: (me: Me) => voi
   const { logout, logoutEverywhere, recheck } = useAuth();
   const [passwordOpen, setPasswordOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
-  // Kept after the message closes, so it still names them while it fades out.
-  const [renamedTo, setRenamedTo] = useState("");
-  const [noticeOpen, setNoticeOpen] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
   // Which sign-out is under way. Both buttons wait for it: a sign-out that
   // fails says so here, and this browser stays signed in.
   const [signingOut, setSigningOut] = useState<"here" | "everywhere" | null>(null);
@@ -79,8 +78,7 @@ function AccountSections({ me, onRenamed }: { me: Me; onRenamed: (me: Me) => voi
     const renamed = await changeMyName(draft);
     onRenamed(renamed);
     await recheck();
-    setRenamedTo(renamed.name);
-    setNoticeOpen(true);
+    setNotice(`Display name changed to ${renamed.name}.`);
   };
 
   // A sign-out that works leaves the page, so only a failure comes back here.
@@ -113,6 +111,7 @@ function AccountSections({ me, onRenamed }: { me: Me; onRenamed: (me: Me) => voi
       </Stack>
 
       <Stack spacing={2} sx={{ mt: 4 }}>
+        <OrganizationsWithoutWorkspace />
         {/* An account made through single sign-on has no password here. */}
         {me.has_password && (
           <AccountCard
@@ -169,16 +168,7 @@ function AccountSections({ me, onRenamed }: { me: Me; onRenamed: (me: Me) => voi
         email={me.email}
         onClose={() => setDeleteOpen(false)}
       />
-      <Snackbar
-        open={noticeOpen}
-        autoHideDuration={5000}
-        onClose={() => setNoticeOpen(false)}
-        anchorOrigin={{ vertical: "bottom", horizontal: "left" }}
-      >
-        <Alert severity="success" onClose={() => setNoticeOpen(false)}>
-          Display name changed to {renamedTo}.
-        </Alert>
-      </Snackbar>
+      <SuccessSnackbar message={notice} onClose={() => setNotice(null)} />
     </>
   );
 }

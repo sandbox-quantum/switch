@@ -46,6 +46,20 @@ function candidatesFor(members: readonly OrganizationMemberEntry[], workspaceId:
   return candidates;
 }
 
+/** Why nobody can be picked, without saying the workspace is empty when it
+ * isn't: the organization's admins reach every workspace through the
+ * organization, and count among its users, while being nobody's to pick. */
+function nobodyToPick(members: readonly OrganizationMemberEntry[], workspace: { id: string; name: string }): string {
+  const then = "Invite people to it from Organization settings › Users, then come back to pick an admin.";
+  const inIt = members.filter((member) => member.workspaces.some((w) => w.id === workspace.id));
+  if (inIt.some((member) => member.role !== "org_admin"))
+    return `Nobody in ${workspace.name} can be made its admin yet. ${then}`;
+  if (inIt.length > 0) return `Only org admins are in ${workspace.name}, and they administer it already. ${then}`;
+  if (members.some((member) => member.role === "org_admin"))
+    return `${workspace.name} has no members of its own yet; org admins reach it through the organization. ${then}`;
+  return `Nobody is in ${workspace.name} yet. ${then}`;
+}
+
 interface Props {
   workspace: { id: string; name: string };
   /** Saving the exact set of ids ticked. Left to throw: the dialog shows what
@@ -118,8 +132,7 @@ export default function ManageAdminsDialog({ workspace, onSave, onClose }: Props
           <Alert severity="error">{error}</Alert>
         ) : candidates.length === 0 ? (
           <Typography variant="body2" color="text.secondary">
-            Nobody is in {workspace.name} yet. Invite people to it from Organization settings ›
-            Users, then come back to pick an admin.
+            {nobodyToPick(members ?? [], workspace)}
           </Typography>
         ) : (
           <Stack spacing={0.5}>
@@ -160,7 +173,7 @@ export default function ManageAdminsDialog({ workspace, onSave, onClose }: Props
           Cancel
         </Button>
         <Button variant="contained" onClick={save} loading={busy} disabled={busy || candidates.length === 0}>
-          Save
+          Save admins
         </Button>
       </DialogActions>
     </Dialog>

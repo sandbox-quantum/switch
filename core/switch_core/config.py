@@ -17,6 +17,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from switch_core.feature_flags import (
     AGENT_CHATS,
     AGENT_MANAGEMENT,
+    ALWAYS_ON_FEATURE_FLAGS,
     BUDDY_SLACK_HANDOFF,
     DECISION_ROUTING,
     FOLLOW_THE_CONVERSATION,
@@ -235,9 +236,9 @@ class SwitchConfig(BaseSettings):
     outbound_allowed_private_hosts: str = ""
 
     # Feature flags that are on for this deployment: comma-separated keys from
-    # `feature_flags.KNOWN_FEATURE_FLAGS`. Every other flag is off. Fixed for
-    # the life of the process; an unknown key is a startup error rather than a
-    # silently ignored typo.
+    # `feature_flags.KNOWN_FEATURE_FLAGS`. Every other flag is off, except the
+    # `ALWAYS_ON_FEATURE_FLAGS`. Fixed for the life of the process; an unknown
+    # key is a startup error rather than a silently ignored typo.
     feature_flags_enabled: str = ""
     # Set by Switch Console on a server it runs for someone (MANAGED_BY_CONSOLE),
     # so an agent can tell them apart from Switch Cloud and a self-hosted server.
@@ -1517,8 +1518,9 @@ class SwitchConfig(BaseSettings):
 
     @property
     def feature_flags(self) -> dict[str, bool]:
-        """Every known flag and whether this deployment turned it on."""
-        enabled = self._enabled_feature_flags()
+        """Every known flag and whether this deployment turned it on, or
+        whether it is on whatever the deployment says."""
+        enabled = self._enabled_feature_flags() | ALWAYS_ON_FEATURE_FLAGS
         return {key: key in enabled for key in sorted(KNOWN_FEATURE_FLAGS)}
 
     @property

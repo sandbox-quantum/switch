@@ -4,6 +4,8 @@
 // except the provider list and advanced-configuration fields, which are always
 // served; every failure comes back as {"error": {"code", "message", "retryable"}}.
 
+import { gatewayFetch } from "./gatewayFetch";
+
 const BASE = "/gateway/management";
 
 /** A provider's id, one of those `fetchProviders` lists. */
@@ -65,6 +67,8 @@ export interface ProviderStatus {
   auth_source: string | null;
   checked_at: string;
   reason?: string | null;
+  /** What went wrong signing it in, in the controller's words. */
+  auth_problem?: string | null;
 }
 
 export interface AgentStatus {
@@ -233,7 +237,7 @@ export async function managementError(res: Response): Promise<ManagementApiError
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
+  const res = await gatewayFetch(`${BASE}${path}`, {
     ...init,
     credentials: "include",
     headers: init?.body ? { "Content-Type": "application/json" } : undefined,
@@ -314,10 +318,6 @@ export async function unmanageAgent(agentId: string): Promise<void> {
   });
 }
 
-export function fetchOperations(): Promise<Operation[]> {
-  return request<Operation[]>("/operations");
-}
-
 export function createOperation(body: {
   controller_id: string;
   agent_id: string | null;
@@ -349,6 +349,16 @@ export interface WorkspaceDevice {
   providers: Provider[];
   agents_total: number;
   agents_running: number;
+  /** Null when it has never connected. */
+  connection: ControllerConnection | null;
+  /** Null when Switch names no release for it (`updated_by_console`). */
+  release: ControllerReleaseState | null;
+  /** Where it last said it stands in moving to the release; null when it said nothing. */
+  update: ControllerUpdate | null;
+  /** Switch Console updates its controller, so it follows no release Switch names. */
+  updated_by_console: boolean;
+  /** Each provider as it last reported it: installed or not, and its sign-in. */
+  provider_reports: ProviderStatus[];
   /** Rename and describe it; ask it to re-check its providers; remove it.
    *  Its owner does the first two, and its owner or an admin removes it, but
    *  nobody renames or removes a cloud device: Switch does. */
@@ -371,6 +381,11 @@ export interface WorkspaceManagedAgent {
   /** What its device last reported of it; null before it has, and for one
    *  placed nowhere. */
   process: string | null;
+  /** Why it is in that state, and more on it, when its device said. */
+  process_reason: string | null;
+  process_detail: string | null;
+  /** Its device runs an older revision of its definition than the latest. */
+  updating: boolean;
   owner_id: string;
   owner_name: string;
   /** Start, stop, restart and edit it: its owner. Stop managing it, or delete
@@ -418,7 +433,7 @@ async function organizationError(res: Response): Promise<ManagementApiError> {
 }
 
 async function organizationRequest<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${ORGANIZATION}${path}`, { ...init, credentials: "include" });
+  const res = await gatewayFetch(`${ORGANIZATION}${path}`, { ...init, credentials: "include" });
   if (!res.ok) throw await organizationError(res);
   return (await res.json()) as T;
 }
@@ -465,7 +480,7 @@ export type CloudMachineAction = "stop" | "start" | "retry";
 const HOSTED = "/gateway/hosted-machines";
 
 async function hostedRequest<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${HOSTED}${path}`, {
+  const res = await gatewayFetch(`${HOSTED}${path}`, {
     ...init,
     credentials: "include",
     headers: init?.body ? { "Content-Type": "application/json" } : undefined,

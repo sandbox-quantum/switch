@@ -20,7 +20,8 @@ import {
 } from "../../data/api";
 import { AccessChip, AccessSelect } from "../../components/AccessControls";
 import {
-  ACCESS_HELPERS_FOR_OTHERS,
+  LISTED_RESOURCE_HELPERS,
+  LISTED_RESOURCE_HELPERS_FOR_OTHERS,
   type AccessLevel,
   fromAccessLevel,
   toAccessLevel,
@@ -34,6 +35,8 @@ import {
   DetailLoadFailed,
   DetailLoading,
   InfoLine,
+  ReadOnlyBanner,
+  ownerCanChange,
   requiredHelper,
   useAfterTransfer,
   useResourceDetail,
@@ -44,13 +47,13 @@ const LIST_PATH = "/resources?tab=packages";
 export default function PackageDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { data: pkg, setData: setPkg, error, loading, reload } = useResourceDetail(id, loadPackage);
+  const { data: pkg, setData: setPkg, error, errorStatus, loading, reload } = useResourceDetail(id, loadPackage);
   const { afterTransfer, refreshNotice } = useAfterTransfer(id, loadPackage, setPkg, LIST_PATH);
   const [deleteOpen, setDeleteOpen] = useState(false);
 
   if (pkg === null && loading) return <DetailLoading />;
   if (pkg === null || !id) {
-    return <DetailLoadFailed what="package" listPath={LIST_PATH} error={error} onRetry={reload} />;
+    return <DetailLoadFailed what="package" listPath={LIST_PATH} error={error} errorStatus={errorStatus} onRetry={reload} />;
   }
 
   return (
@@ -60,7 +63,7 @@ export default function PackageDetailPage() {
         <IconButton
           onClick={() => navigate(LIST_PATH)}
           size="small"
-          aria-label="Back"
+          aria-label="Back to resources"
         >
           <ArrowBack />
         </IconButton>
@@ -69,6 +72,7 @@ export default function PackageDetailPage() {
         </Typography>
         <AccessChip pair={pkg} />
       </Stack>
+      {!pkg.can_edit && <ReadOnlyBanner whose={ownerCanChange("package", pkg.owner_id, pkg.owner_name)} />}
 
       <Stack spacing={4}>
         <InfoSection pkg={pkg} />
@@ -224,7 +228,7 @@ function EditFieldsSection({
         value={access}
         onChange={setAccess}
         disabled={!canChangeAccess || saving}
-        helpers={canChangeAccess ? undefined : ACCESS_HELPERS_FOR_OTHERS}
+        helpers={canChangeAccess ? LISTED_RESOURCE_HELPERS : LISTED_RESOURCE_HELPERS_FOR_OTHERS}
         sx={{ maxWidth: 320 }}
       />
       {error && <Alert severity="error">{error}</Alert>}

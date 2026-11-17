@@ -1,8 +1,11 @@
+import LinkOffOutlined from "@mui/icons-material/LinkOffOutlined";
+import SwapHoriz from "@mui/icons-material/SwapHoriz";
 import { Alert, Box, Button, CircularProgress, Stack, TextField, Typography } from "@mui/material";
 import { useCallback, useState } from "react";
 import ConfirmDialog from "../../../components/ConfirmDialog";
 import InfoTip from "../../../components/InfoTip";
 import RowActionsMenu from "../../../components/RowActionsMenu";
+import SuccessSnackbar from "../../../components/SuccessSnackbar";
 import {
   type OrganizationGuardrails as Guardrails,
   connectOrganizationGuardrails,
@@ -23,18 +26,8 @@ const MIN_KEY_LENGTH = 8;
 /** The Switch Trust policy the organization checks every message in its
  * workspaces against: connecting one, with its policy ID and an API key,
  * checked with Switch Trust before it is kept; the policy once connected;
- * and disconnecting it. Its admins only, as the route table admits.
- *
- * `heading` says where it sits: as Organization settings › Guardrails in the
- * new layout, or as one section of today's organization page, the only
- * place to set guardrails while the new layout is off. */
-export default function OrganizationGuardrails({
-  organizationName,
-  heading,
-}: {
-  organizationName: string;
-  heading: "page" | "section";
-}) {
+ * and disconnecting it. Its admins only, as the route table admits. */
+export default function OrganizationGuardrails({ organizationName }: { organizationName: string }) {
   const load = useCallback(() => fetchOrganizationGuardrails(), []);
   const { data, error, loading, refetch } = useLoad(load);
   const [setting, setSetting] = useState(false);
@@ -62,8 +55,8 @@ export default function OrganizationGuardrails({
 
   return (
     <Box>
-      <Stack spacing={0.5} sx={{ mb: heading === "page" ? 3 : 1.5 }}>
-        <Typography variant={heading === "page" ? "h5" : "h6"}>Guardrails</Typography>
+      <Stack spacing={0.5} sx={{ mb: 3 }}>
+        <Typography variant="h5">Guardrails</Typography>
         {subtitle !== null && (
           <Stack direction="row" spacing={0.5} sx={{ alignItems: "center" }}>
             <Typography variant="body2" color="text.secondary">
@@ -74,11 +67,6 @@ export default function OrganizationGuardrails({
         )}
       </Stack>
       {error && <Alert severity="error">{error}</Alert>}
-      {notice !== null && (
-        <Alert severity="info" onClose={() => setNotice(null)} sx={{ mb: 2 }}>
-          {notice}
-        </Alert>
-      )}
       {loading ? (
         <CircularProgress />
       ) : data === null ? null : setting ? (
@@ -98,8 +86,17 @@ export default function OrganizationGuardrails({
                 label="Policy actions"
                 tabIndex={0}
                 actions={[
-                  { label: "Connect another policy", onClick: () => setSetting(true) },
-                  { label: "Disconnect", onClick: () => setDisconnecting(true), destructive: true },
+                  {
+                    label: "Connect another policy",
+                    icon: <SwapHoriz fontSize="small" />,
+                    onClick: () => setSetting(true),
+                  },
+                  {
+                    label: "Disconnect",
+                    icon: <LinkOffOutlined fontSize="small" />,
+                    onClick: () => setDisconnecting(true),
+                    destructive: true,
+                  },
                 ]}
               />
             }
@@ -133,6 +130,7 @@ export default function OrganizationGuardrails({
         onConfirm={disconnect}
         onClose={() => setDisconnecting(false)}
       />
+      <SuccessSnackbar message={notice} onClose={() => setNotice(null)} />
     </Box>
   );
 }

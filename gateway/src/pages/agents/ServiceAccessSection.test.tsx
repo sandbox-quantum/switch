@@ -1,5 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { MemoryRouter } from "react-router";
+import type { ReactElement } from "react";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   type AgentDetail,
@@ -12,8 +13,13 @@ import ServiceAccessSection from "./ServiceAccessSection";
 import { serviceConnection } from "../../test/serviceConnection";
 
 vi.mock("../../data/AuthContext", () => ({
-  useAuth: vi.fn(() => ({ isOperator: false, capabilities: { features: { gateway_v2: false } } })),
+  useAuth: vi.fn(() => ({ isOperator: false })),
 }));
+
+/** The section where it lives, inside the router its links need. */
+function renderSection(section: ReactElement) {
+  return render(<MemoryRouter>{section}</MemoryRouter>);
+}
 
 const agent: AgentDetail = {
   id: "a1",
@@ -46,6 +52,7 @@ const agent: AgentDetail = {
   can_transfer: true,
   transfer_blocked_reason: null,
   can_change_manage_agents: true,
+  can_widen_addressing: true,
   can_grant_services: true,
 };
 
@@ -121,7 +128,7 @@ describe("ServiceAccessSection", () => {
   it("shows each grant with its repositories, and offers owner-only when anyone can address the agent", async () => {
     const calls = mockServer(GRANTED);
     const updated = vi.fn();
-    render(<ServiceAccessSection agent={agent} canGrant onAgentUpdated={updated} />);
+    renderSection(<ServiceAccessSection agent={agent} canGrant onAgentUpdated={updated} />);
     expect(await screen.findByText(GRANTED.grants[0]!.summary)).toBeTruthy();
     expect(await screen.findByText("example-org/project")).toBeTruthy();
     expect(screen.getByText(/show as the Switch GitHub App/)).toBeTruthy();
@@ -142,7 +149,7 @@ describe("ServiceAccessSection", () => {
 
   it("says what removing a grant does, and does not, on the agent's own machine", async () => {
     const calls = mockServer(GRANTED);
-    render(<ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />);
+    renderSection(<ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />);
     const remove = await screen.findByRole("button", { name: "Remove" });
     expect(remove.getAttribute("title")).toMatch(/may still use the device's own sign-in/);
 
@@ -157,7 +164,7 @@ describe("ServiceAccessSection", () => {
 
   it("grants GitHub on the repositories picked, for reading unless asked", async () => {
     const calls = mockServer({ grants: [], addressing_open: false });
-    render(<ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />);
+    renderSection(<ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />);
     const account = await screen.findByLabelText("GitHub account");
     fireEvent.mouseDown(account);
     fireEvent.click(await screen.findByText("example-org"));
@@ -190,7 +197,7 @@ describe("ServiceAccessSection", () => {
 
   it("turns a connected on/off service on with no level to choose", async () => {
     const calls = mockServer(NONE, [onOff("active")]);
-    render(<ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />);
+    renderSection(<ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />);
     const toggle = await screen.findByLabelText("Example for helper");
     expect(screen.getByText(/helper acts as you at Example/)).toBeTruthy();
     expect(screen.getByText(/within a minute/)).toBeTruthy();
@@ -223,7 +230,7 @@ describe("ServiceAccessSection", () => {
       },
       [onOff("active", { token_lifetime: 24 * 3600 })],
     );
-    render(<ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />);
+    renderSection(<ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />);
     expect(await screen.findByText("helper reads and writes Example as you.")).toBeTruthy();
     expect(
       screen.getByText(
@@ -242,7 +249,7 @@ describe("ServiceAccessSection", () => {
     );
   });
 
-  it("says a key service is used with the owner's key, and to connect it from Switch Console", async () => {
+  it("says a key service is used with the owner's key, and to connect it first", async () => {
     const key = {
       fields: [{ name: "api_key", label: "API key", secret: true, help: null, choices: null }],
       help_url: null,
@@ -251,7 +258,7 @@ describe("ServiceAccessSection", () => {
       onOff("active", { key, token_lifetime: 24 * 3600 }),
       onOff("not_connected", { slug: "other", name: "Other", key }),
     ]);
-    render(<ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />);
+    renderSection(<ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />);
     await screen.findByLabelText("Example for helper");
     expect(
       screen.getByText(
@@ -260,7 +267,7 @@ describe("ServiceAccessSection", () => {
     ).toBeTruthy();
     expect(screen.queryByText(/stays valid/)).toBeNull();
     expect((screen.getByLabelText("Other for helper") as HTMLInputElement).disabled).toBe(true);
-    expect(screen.getByText(/To turn Other on, first connect it in Switch Console/)).toBeTruthy();
+    expect(screen.getByText(/To turn Other on, first connect it\./)).toBeTruthy();
   });
 
   it("says why a service cannot be turned on: not connected, or not available here", async () => {
@@ -272,38 +279,47 @@ describe("ServiceAccessSection", () => {
         unavailable_reason: "Coming here soon.",
       }),
     ]);
-    render(<ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />);
+    renderSection(<ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />);
     const example = await screen.findByLabelText("Example for helper");
     expect((example as HTMLInputElement).disabled).toBe(true);
-    expect(screen.getByText(/first connect it in Switch Console/)).toBeTruthy();
+    expect(screen.getByText(/first connect it\./)).toBeTruthy();
     expect(screen.getByText("Coming here soon.")).toBeTruthy();
     expect((screen.getByLabelText("Other for helper") as HTMLInputElement).disabled).toBe(true);
   });
 
-  it("in the new layout, sends a service to be connected on its own page", async () => {
-    vi.mocked(useAuth).mockReturnValue({
-      isOperator: false,
-      capabilities: { features: { gateway_v2: true } },
-    } as ReturnType<typeof useAuth>);
+  it("sends a service to be connected on its own page", async () => {
     mockServer(NONE, [onOff("not_connected")]);
-    render(
-      <MemoryRouter>
-        <ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />
-      </MemoryRouter>,
-    );
+    renderSection(<ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />);
     expect(await screen.findByText(/To turn Example on, first connect it\./)).toBeTruthy();
     expect(screen.queryByText(/Switch Console, under Connectors/)).toBeNull();
     expect(screen.getByRole("link", { name: "Connect" }).getAttribute("href")).toBe("/connectors/example");
-    vi.mocked(useAuth).mockReturnValue({
-      isOperator: false,
-      capabilities: { features: { gateway_v2: false } },
-    } as ReturnType<typeof useAuth>);
+  });
+
+  it("leads back to the agent from the connector's page", async () => {
+    mockServer(NONE, [onOff("not_connected")]);
+    function BackProbe() {
+      const back = (useLocation().state as { back?: { label: string; to: string } } | null)?.back;
+      return <output>{back ? `${back.label} at ${back.to}` : "no way back"}</output>;
+    }
+    render(
+      <MemoryRouter initialEntries={["/agents/a1"]}>
+        <Routes>
+          <Route
+            path="/agents/:agentId"
+            element={<ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />}
+          />
+          <Route path="/connectors/:slug" element={<BackProbe />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+    fireEvent.click(await screen.findByRole("link", { name: "Connect" }));
+    expect(await screen.findByText("helper at /agents/a1")).toBeTruthy();
   });
 
   it("says a service signs in through the organization's app only while that app works", async () => {
     const through = "Signs in through your organization's Example app.";
     mockServer(NONE, [onOff("active", { app_source: "organization" })]);
-    render(<ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />);
+    renderSection(<ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />);
     expect(await screen.findByText(through)).toBeTruthy();
     cleanup();
 
@@ -311,7 +327,7 @@ describe("ServiceAccessSection", () => {
     mockServer(NONE, [
       onOff("active", { app_source: "organization", unavailable_reason: broken }),
     ]);
-    render(<ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />);
+    renderSection(<ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />);
     expect(await screen.findByText(broken)).toBeTruthy();
     expect(screen.queryByText(through)).toBeNull();
   });
@@ -341,7 +357,7 @@ describe("ServiceAccessSection", () => {
         onOff("active", { slug: "other", name: "Other", workspace_enabled: false }),
       ],
     );
-    render(<ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />);
+    renderSection(<ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />);
     const other = await screen.findByLabelText("Other for helper");
     expect((other as HTMLInputElement).disabled).toBe(true);
     expect(screen.getByText(SWITCHED_OFF("Other"))).toBeTruthy();
@@ -368,7 +384,7 @@ describe("ServiceAccessSection", () => {
         workspace_enabled: false,
       }),
     ]);
-    render(<ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />);
+    renderSection(<ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />);
     expect(await screen.findByText(SWITCHED_OFF("GitHub"))).toBeTruthy();
     expect(screen.queryByLabelText("GitHub account")).toBeNull();
     expect(screen.queryByRole("button", { name: "Grant" })).toBeNull();
@@ -383,7 +399,7 @@ describe("ServiceAccessSection", () => {
         workspace_enabled: false,
       }),
     ]);
-    render(<ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />);
+    renderSection(<ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />);
     expect(await screen.findByText(SWITCHED_OFF("GitHub"))).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Change" })).toBeNull();
     expect(screen.getByRole("button", { name: "Remove" })).toBeTruthy();
@@ -397,38 +413,22 @@ describe("ServiceAccessSection", () => {
       onOff("not_connected", { unavailable_reason: NOT_SET_UP, server_setup_needed: true }),
     ];
     mockServer(NONE, services);
-    render(<ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />);
+    renderSection(<ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />);
     expect(await screen.findByText(NOT_SET_UP)).toBeTruthy();
     expect(screen.queryByRole("link", { name: "Set up" })).toBeNull();
     cleanup();
 
-    for (const [newLayout, where] of [
-      [false, "/connectors"],
-      [true, "/platform/connectors"],
-    ] as const) {
-      vi.mocked(useAuth).mockReturnValue({
-        isOperator: true,
-        capabilities: { features: { gateway_v2: newLayout } },
-      } as ReturnType<typeof useAuth>);
-      mockServer(NONE, services);
-      render(
-        <MemoryRouter>
-          <ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />
-        </MemoryRouter>,
-      );
-      const setUp = await screen.findByRole("link", { name: "Set up" });
-      expect(setUp.getAttribute("href")).toBe(where);
-      cleanup();
-    }
-    vi.mocked(useAuth).mockReturnValue({
-      isOperator: false,
-      capabilities: { features: { gateway_v2: false } },
-    } as ReturnType<typeof useAuth>);
+    vi.mocked(useAuth).mockReturnValue({ isOperator: true } as ReturnType<typeof useAuth>);
+    mockServer(NONE, services);
+    renderSection(<ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />);
+    const setUp = await screen.findByRole("link", { name: "Set up" });
+    expect(setUp.getAttribute("href")).toBe("/platform/connectors");
+    vi.mocked(useAuth).mockReturnValue({ isOperator: false } as ReturnType<typeof useAuth>);
   });
 
   it("keeps what an agent was granted removable where it may be granted nothing more", async () => {
     mockServer(GRANTED, [onOff("active")]);
-    render(<ServiceAccessSection agent={agent} canGrant={false} onAgentUpdated={vi.fn()} />);
+    renderSection(<ServiceAccessSection agent={agent} canGrant={false} onAgentUpdated={vi.fn()} />);
     expect(await screen.findByText(GRANTED.grants[0]!.summary)).toBeTruthy();
     expect(screen.getByText(/New grants are only for an agent Switch Console runs/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "Remove" })).toBeTruthy();
@@ -449,7 +449,7 @@ describe("ServiceAccessSection", () => {
         server_setup_needed: true,
       }),
     ]);
-    render(<ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />);
+    renderSection(<ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />);
     expect(await screen.findByText(reason)).toBeTruthy();
     expect(calls.map((call) => call.path)).not.toContain("/gateway/provider-connections/github");
   });
@@ -471,7 +471,7 @@ describe("ServiceAccessSection", () => {
       "/gateway/service-connections",
       () => new Response(JSON.stringify({ detail: "The database is unavailable" }), { status: 500 }),
     );
-    render(<ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />);
+    renderSection(<ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />);
     expect(await screen.findByLabelText("GitHub account")).toBeTruthy();
     expect(calls.map((call) => call.path)).toContain("/gateway/provider-connections/github");
   });
@@ -492,7 +492,7 @@ describe("ServiceAccessSection", () => {
       "/gateway/provider-connections/github",
       () => new Response(JSON.stringify({ detail: problem }), { status: 503 }),
     );
-    render(<ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />);
+    renderSection(<ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />);
     // Said once, where the GitHub form would be, in place of the form.
     expect(await screen.findByText(problem)).toBeTruthy();
     expect(screen.queryByLabelText("GitHub account")).toBeNull();
@@ -510,7 +510,7 @@ describe("ServiceAccessSection", () => {
 
   it("offers GitHub for reading only where the server's App can't write, saying why", async () => {
     const calls = mockServer(NONE, [readOnlyGitHub]);
-    render(<ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />);
+    renderSection(<ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />);
     await screen.findByLabelText("GitHub account");
     expect(screen.getByText(READ_ONLY)).toBeTruthy();
     const push = screen.getByLabelText("Read and push") as HTMLInputElement;
@@ -532,14 +532,14 @@ describe("ServiceAccessSection", () => {
 
   it("says why a write grant made before gets nothing on such a server", async () => {
     mockServer(GRANTED, [readOnlyGitHub]);
-    render(<ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />);
+    renderSection(<ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />);
     expect(await screen.findByText(GRANTED.grants[0]!.summary)).toBeTruthy();
     expect(await screen.findByText(READ_ONLY)).toBeTruthy();
   });
 
   it("says nothing of it where the App can write", async () => {
     mockServer(GRANTED, [{ ...readOnlyGitHub, read_only_reason: null }]);
-    render(<ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />);
+    renderSection(<ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />);
     expect(await screen.findByText(GRANTED.grants[0]!.summary)).toBeTruthy();
     expect(screen.queryByText(READ_ONLY)).toBeNull();
   });
