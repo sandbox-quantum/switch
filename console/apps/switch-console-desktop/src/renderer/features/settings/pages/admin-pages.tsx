@@ -151,8 +151,8 @@ export function GuardrailsSettingsPage() {
             description={`Guardrails that check what is sent on ${server.name} before it goes out, once they are set up.`}
           >
             <AdminNotice>
-              As the person who runs {server.name}, you are able to set its guardrails for every
-              workspace on it.
+              As the person who runs {server.name}, you are able to manage the guardrails that check
+              what is sent on it.
             </AdminNotice>
           </PageHeader>
           <GuardrailsSection serverId={server.id} initiallyOpen />
