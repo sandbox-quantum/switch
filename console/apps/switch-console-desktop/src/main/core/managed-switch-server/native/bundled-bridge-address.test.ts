@@ -27,6 +27,7 @@ function bridge(overrides: Partial<RemoteBridge>): RemoteBridge {
     channelCreationSupported: true,
     canCreateChannels: true,
     directorySearchSupported: true,
+    directorySearchHint: 'Your name or handle',
     attention: null,
     teamPlacementSupported: false,
     channelIdsRefused: null,
@@ -35,6 +36,7 @@ function bridge(overrides: Partial<RemoteBridge>): RemoteBridge {
     privateChannelNeedsLinkedAccount: false,
     publicChannelAddsCreator: false,
     webhookUrl: null,
+    commands: {},
     ...overrides,
   };
 }

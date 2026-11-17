@@ -78,6 +78,7 @@ function bridge(patch: Partial<RemoteBridge> = {}): RemoteBridge {
     channelCreationSupported: true,
     canCreateChannels: true,
     directorySearchSupported: true,
+    directorySearchHint: 'Your name or handle',
     attention: null,
     teamPlacementSupported: false,
     channelIdsRefused: null,
@@ -86,6 +87,7 @@ function bridge(patch: Partial<RemoteBridge> = {}): RemoteBridge {
     publicChannelAddsCreator: false,
     receivesWebhooks: false,
     webhookUrl: null,
+    commands: {},
     ...patch,
   };
 }

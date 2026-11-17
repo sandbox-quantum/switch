@@ -500,7 +500,70 @@ def test_outside_a_forum_the_replied_to_message_is_the_root() -> None:
         )
     )
 
-    assert seen[0].root_id == "5"
+    # Spelled as the message map records every post, so it finds the message
+    # replied to; a bare number found nothing.
+    assert seen[0].root_id == f"{CHAT_ID}:5"
+
+
+def test_a_reply_to_the_bots_message_says_so() -> None:
+    """In a group with Group Privacy on, a reply to the bot's own message is
+    the one kind of message the bot is handed; it goes to the agent that
+    posted what it replies to."""
+    adapter = _adapter()
+    seen: list[InboundMessage] = []
+    adapter._on_message = lambda m: _collect(seen, m)
+
+    _run(
+        adapter._handle_message(
+            _FakeInbound(
+                text="Acme Corp",
+                reply_to_message=_FakeInbound(
+                    message_id=5,
+                    from_user=_FakeUser(BOT_USER_ID, username=BOT_USERNAME),
+                ),
+            )
+        )
+    )
+    _run(
+        adapter._handle_message(
+            _FakeInbound(
+                message_id=12,
+                text="agreed",
+                reply_to_message=_FakeInbound(message_id=6, from_user=_FakeUser(8)),
+            )
+        )
+    )
+
+    assert [(m.root_id, m.replies_to_app) for m in seen] == [
+        (f"{CHAT_ID}:5", True),
+        (f"{CHAT_ID}:6", False),
+    ]
+    # Not a mention of the bot: nobody typed its name.
+    assert seen[0].self_mention_token is None
+
+
+def test_every_part_of_a_split_message_is_handed_to_the_bridge() -> None:
+    """A reply to the third part of a long answer has to find the answer, so
+    the bridge is given the refs of the parts after the first to map."""
+    adapter = _adapter()
+    body = "\n".join(["x" * 200] * 50)
+
+    ref = _run(adapter.send_message(str(CHAT_ID), "scout", body))
+
+    sent = _bot(adapter).messages
+    assert len(sent) == 3
+    assert ref == f"{CHAT_ID}:501"
+    assert adapter.take_further_refs(ref) == [f"{CHAT_ID}:502", f"{CHAT_ID}:503"]
+    # Taken once: the bridge maps them as it settles the post.
+    assert adapter.take_further_refs(ref) == []
+
+
+def test_a_message_sent_whole_has_no_further_parts() -> None:
+    adapter = _adapter()
+
+    ref = _run(adapter.send_message(str(CHAT_ID), "scout", "on it"))
+
+    assert adapter.take_further_refs(ref) == []
 
 
 def test_a_top_level_message_has_no_root() -> None:
@@ -1465,6 +1528,19 @@ def test_a_deeplink_telegram_cannot_render_becomes_copyable_text() -> None:
     )
 
 
+def test_a_link_to_localhost_stays_visible_as_its_address() -> None:
+    """Telegram keeps a localhost link's label and drops its address, so a local
+    server's "Open … →" read as a link and went nowhere."""
+    adapter = _adapter()
+
+    rendered = adapter.translate_outbound(
+        "[Open Sprint Room →](http://localhost:8000/deeplink/room?id=r)"
+    )
+
+    assert "<a href" not in rendered
+    assert "<code>http://localhost:8000/deeplink/room?id=r</code>" in rendered
+
+
 def test_an_https_deeplink_is_still_a_real_link() -> None:
     # With GATEWAY_PUBLIC_URL set, the deeplink is rewritten to the https
     # redirect before it reaches the adapter — and that one must stay clickable.
@@ -1513,6 +1589,18 @@ def test_a_known_person_is_mentioned_by_id() -> None:
     rendered = adapter.translate_outbound("ping @alice")
 
     assert rendered == 'ping <a href="tg://user?id=12345">@alice</a>'
+
+
+def test_an_agent_mentioning_a_person_without_a_username_names_them() -> None:
+    # An agent writes the handle Switch addresses the person by; the chat
+    # sees their name, linked so Telegram notifies them.
+    adapter = _adapter()
+    adapter._username_to_id["MM_42"] = 42
+    adapter._full_names[42] = "M M"
+
+    rendered = adapter.translate_outbound("thanks @MM_42")
+
+    assert rendered == 'thanks <a href="tg://user?id=42">M M</a>'
 
 
 def test_an_unknown_name_stays_plain_so_the_client_can_link_it() -> None:
@@ -2413,8 +2501,43 @@ def test_a_mention_only_chat_is_told_so_in_the_chat() -> None:
     _run(adapter.announce_visibility(str(CHAT_ID)))
 
     posted = _bot(adapter).messages[-1]["text"]
-    assert "only see messages that tag me" in posted
+    assert "only see some messages here" in posted
+    # What reaches agents here, said truthfully: a message that only names
+    # one never does.
+    assert "replies to my messages" in posted
+    assert f"@{BOT_USERNAME}" in posted
+    assert "commands" in posted
+    assert "reply to the agent" in posted.lower()
+    assert "by name" not in posted
+    # And what fixes it.
+    assert "Group Privacy" in posted
+    assert "added back" in posted
     assert "administrator" in posted
+
+
+def test_an_agents_join_line_says_to_reply_to_it_in_a_mention_only_chat() -> None:
+    adapter = _adapter()
+    adapter._privacy_mode_disabled = False
+    _bot(adapter).member_status = "member"
+
+    line = _run(
+        adapter.agent_greeting(
+            str(CHAT_ID),
+            "scout",
+            "Hello! I'm ready — just tag @scout when you need me.",
+        )
+    )
+
+    assert "reply to this message" in line
+    assert "tag @scout" not in line
+
+
+def test_an_agents_join_line_is_left_alone_where_the_bot_sees_everything() -> None:
+    adapter = _adapter()
+    _bot(adapter).member_status = "administrator"
+    usual = "Hello! I'm ready — just tag @scout when you need me."
+
+    assert _run(adapter.agent_greeting(str(CHAT_ID), "scout", usual)) == usual
 
 
 def test_a_fully_visible_chat_is_not_told_anything() -> None:
@@ -2521,7 +2644,28 @@ def test_the_install_handshake_reports_a_chat_it_cannot_read() -> None:
 
     _run(adapter._handle_message(_FakeInbound(text="/start switch")))
 
-    assert "only see messages that tag me" in _bot(adapter).messages[-1]["text"]
+    assert "only see some messages here" in _bot(adapter).messages[-1]["text"]
+
+
+def test_a_group_start_naming_an_agent_runs_the_invite_as_whoever_added_the_bot() -> (
+    None
+):
+    """Console's "Add to a group" opens `?startgroup=invite-<agent>`, so adding
+    the bot invites the agent through the same command typing it would."""
+    adapter = _adapter()
+    commands: list[InboundCommand] = []
+    adapter._on_command = lambda c: _collect(commands, c)
+    _bot(adapter).member_status = "administrator"
+
+    _run(
+        adapter._handle_message(
+            _FakeInbound(text=f"/start@{BOT_USERNAME} invite-switch-buddy")
+        )
+    )
+
+    assert [(c.command, c.args) for c in commands] == [
+        ("invite-agent", "@switch-buddy")
+    ]
 
 
 def test_a_bare_start_in_a_group_is_absorbed_too() -> None:
@@ -2613,7 +2757,7 @@ def test_demoting_the_bot_says_what_was_lost() -> None:
     _bot(adapter).member_status = "member"
     _run(adapter.announce_visibility(str(CHAT_ID)))
 
-    assert "only see messages that tag me" in _bot(adapter).messages[-1]["text"]
+    assert "only see some messages here" in _bot(adapter).messages[-1]["text"]
 
 
 def test_a_chat_that_was_already_visible_is_not_congratulated() -> None:
@@ -2677,7 +2821,7 @@ def test_being_added_by_hand_still_discloses_a_mention_only_chat() -> None:
     assert [j.channel_id for j in joins] == [str(CHAT_ID)]
     # After provisioning: a notice about a room that does not exist yet would
     # point at nothing.
-    assert "only see messages that tag me" in _bot(adapter).messages[-1]["text"]
+    assert "only see some messages here" in _bot(adapter).messages[-1]["text"]
 
 
 def test_a_chat_reissued_a_new_id_is_re_assessed() -> None:

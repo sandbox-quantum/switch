@@ -21,7 +21,7 @@ from switch_core.account_links import is_prompt_token
 from switch_core.agent_display_name import ZERO_WIDTH_SPACE, defuse_label_markup
 from switch_core.aliases import AliasError, validate_alias_format
 from switch_core.attachments import parse_attachment_group
-from switch_core.bridges.agent.commands import stop_control_frame
+from switch_core.bridges.agent.commands import AGENT_GREETING_KEY, stop_control_frame
 from switch_core.bridges.collaboration.adapter import (
     AgentIdentity,
     AgentPresentation,
@@ -70,6 +70,7 @@ from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.bridge_message_map_store import BridgeMessageMapStore
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
+from switch_core.db.stores.message_store import MessageStore
 from switch_core.db.stores.room_store import (
     LINKED_CHANNEL_NAME_KEY,
     RoomStore,
@@ -208,6 +209,12 @@ class _PendingOutboundGroup:
     caption: str | None = None
 
 
+_LOBBY_HELLO = (
+    "👋 Hello! Switch has seen your account. Go back to Switch Console to "
+    "finish linking it. Agents don't answer here: add one to a group and "
+    "@-mention it there."
+)
+
 _LOBBY_DEPRECATION_NOTICE = (
     "👋 This isn't where you talk to agents — direct messages to the Switch "
     "app aren't routed to anyone. Head to a channel and @-mention an agent "
@@ -215,13 +222,30 @@ _LOBBY_DEPRECATION_NOTICE = (
 )
 
 
-def _no_agents_notice(slash_hint: str | None) -> str:
+def _no_agents_notice(
+    slash_hint: str | None, *, replies_and_commands_only: bool
+) -> str:
     """The agentless-room notice, carrying only the invite forms this bridge has.
 
-    The `!` form works everywhere. The slash form does not — whether it exists
-    at all, and how an argument is spelled, are both per-platform — so the
-    adapter supplies that line, or none on a platform with no slash commands.
+    The `!` form works everywhere the bot sees ordinary messages. The slash
+    form does not — whether it exists at all, and how an argument is spelled,
+    are both per-platform — so the adapter supplies that line, or none on a
+    platform with no slash commands.
+
+    `replies_and_commands_only` is a chat that hands the bot nothing else (a
+    Telegram group with Group Privacy on): there a typed `!invite-agent` and
+    an @-mention of an agent never arrive, so only the slash command is
+    offered, and the way to talk to an agent is to reply to it.
     """
+    if replies_and_commands_only and slash_hint:
+        return (
+            "👋 I've linked this channel to a new Switch room, but there are no "
+            "agents in it yet — so no one is here to respond to messages.\n\n"
+            "**To add an agent**, send the command from the menu (swap in the "
+            f"agent you want):\n• {slash_hint}.\n\n"
+            "This chat shows me only replies and commands, so once an agent is "
+            "in the room, reply to its messages to talk to it."
+        )
     typed = "• `!invite-agent @agent-name` — type it here in the channel"
     invites = f"{typed}, or\n• {slash_hint}." if slash_hint else f"{typed}."
     return (
@@ -336,6 +360,7 @@ class CollaborationCore:
         self._external_user_store = external_user_store
         self._user_store = UserStore()
         self._bridge_message_map_store = bridge_message_map_store
+        self._message_store = MessageStore()
         self._agent_store = agent_store
         self._client_store = client_store
         self._room_service = room_service
@@ -1363,13 +1388,80 @@ class CollaborationCore:
             agent = await self._agent_store.get(session, agent_id)
         return agent.name if agent is not None else None
 
+    async def _remember_lobby_sender(self, sender_id: str, sender_name: str) -> None:
+        """Know someone who wrote to the app directly, on a platform with no
+        directory.
+
+        There, the only people Switch can offer to link are the ones it has
+        seen, and a direct message to the bot (pressing Start on Telegram) is
+        the first thing a new person does. Recording them then is what lets
+        Console say "Is this you?" before they have joined any group, and lets
+        a link code sent in that same chat find their account.
+        """
+        if self._adapter.supports_directory_search:
+            return
+        await self.ensure_external_user(
+            external_user_id=sender_id, external_username=sender_name
+        )
+
+    async def _reply_target(
+        self, room_id: str, thread_root_id: str | None, content: str
+    ) -> str | None:
+        """The agent a reply to one of the app's messages addresses, or None.
+
+        On a platform where a reply answers one message (Telegram), a reply to
+        an agent's message is said to that agent, as a mention would be, and
+        in a group whose bot sees only replies and commands it is the one way
+        to say anything to it. A message that names an agent of the room is
+        left to that, and a reply to something no agent posted (a notice, or
+        a message Switch never mapped) goes to the room's agent when it has
+        exactly one, the rule a mention of the bot follows.
+        """
+        body = strip_emphasis(content)
+        async with self._session_factory() as session:
+            agents = [
+                agent
+                for agent in [
+                    await self._agent_store.get(session, agent_id)
+                    for agent_id in await self._room_store.get_agent_ids(
+                        session, room_id
+                    )
+                ]
+                if agent is not None
+            ]
+            if any(mention_regex(agent.name).search(body) for agent in agents):
+                return None
+            replied = (
+                await self._message_store.get_by_transport_event_id(
+                    session, thread_root_id
+                )
+                if thread_root_id is not None
+                else None
+            )
+        author = next(
+            (
+                agent
+                for agent in agents
+                if replied is not None and agent.client_id == replied.sender_client_id
+            ),
+            None,
+        )
+        if author is not None:
+            return author.name
+        return agents[0].name if len(agents) == 1 else None
+
     async def _handle_lobby_message(self, msg: InboundMessage) -> None:
         """The Slack app's DM ("lobby") is deprecated for talking to agents.
         Reply with a pointer to the onboarding docs instead of routing."""
         thread_root_id = msg.root_id or msg.message_ref
-        await self._adapter.admin_message(
-            msg.channel_id, _LOBBY_DEPRECATION_NOTICE, thread_root_id
+        # Where saying hello here is how Switch comes to know someone, it is
+        # answered as the hello it is rather than as a mistake.
+        notice = (
+            _LOBBY_DEPRECATION_NOTICE
+            if self._adapter.supports_directory_search
+            else _LOBBY_HELLO
         )
+        await self._adapter.admin_message(msg.channel_id, notice, thread_root_id)
 
     async def _handle_inbound_message(self, msg: InboundMessage) -> str | None:
         """Write a platform message into its room as its sender, and return
@@ -1392,15 +1484,15 @@ class CollaborationCore:
             )
             return None
         if msg.channel_type == "lobby":
-            # The Slack app's DM ("lobby") is deprecated as a place to talk to
+            # The app's direct messages ("lobby") are not a place to talk to
             # agents: point the user at the docs instead of auto-creating a room
-            # and routing the message. Only Slack im/mpim map to "lobby".
+            # and routing the message.
+            await self._remember_lobby_sender(msg.sender_id, msg.sender_name)
             await self._handle_lobby_message(msg)
             return None
-        # An answer typed in words. Almost no message is one, and the check is a
-        # parse before it is a query, so this costs a channel nothing. It does
+        # An answer typed in words, or a word that a card is waiting. It does
         # not consume the message: the room still sees what was said.
-        await self._handle_text_answer(msg)
+        answered_card = await self._handle_text_answer(msg)
         room_ids = self._channel_to_room.get(msg.channel_id)
         if room_ids is None:
             lock = self._channel_locks.setdefault(msg.channel_id, asyncio.Lock())
@@ -1440,16 +1532,6 @@ class CollaborationCore:
             return None
 
         content = self._adapter.translate_inbound(msg.content)
-        if mention_target is not None and (
-            mention_regex(mention_target).search(strip_emphasis(content)) is None
-        ):
-            content = f"@{mention_target} {content}"
-        logger.debug(
-            "[BRIDGE-IN] writing to room=%s as human=%s attachments=%d",
-            transport_room_id,
-            human_actor.transport_user_id,
-            len(msg.attachments),
-        )
 
         # Bridge threads inbound: if the external post replied into a thread,
         # resolve that external root to the room event we bridged for it.
@@ -1463,6 +1545,22 @@ class CollaborationCore:
                     msg.root_id,
                     transport_room_id,
                 )
+
+        # A reply to the app's own message answers whoever posted it. An answer
+        # to a card is the card's, not a message to its agent.
+        if mention_target is None and msg.replies_to_app and not answered_card:
+            mention_target = await self._reply_target(room_id, thread_root_id, content)
+
+        if mention_target is not None and (
+            mention_regex(mention_target).search(strip_emphasis(content)) is None
+        ):
+            content = f"@{mention_target} {content}"
+        logger.debug(
+            "[BRIDGE-IN] writing to room=%s as human=%s attachments=%d",
+            transport_room_id,
+            human_actor.transport_user_id,
+            len(msg.attachments),
+        )
 
         # An attachment the platform offered but we could not relay must be
         # visible in the room, not swallowed. Append it to the message body so
@@ -1844,6 +1942,9 @@ class CollaborationCore:
                         external_user_store=self._external_user_store,
                         user_store=self._user_store,
                         account=account,
+                        account_name=self._adapter.known_user_label(
+                            account.external_user_id, account.external_username
+                        ).display_name,
                         code=code,
                         only_here=only_here,
                     )
@@ -1873,8 +1974,19 @@ class CollaborationCore:
         await self._adapter.answer_command(cmd, reply)
 
     async def _handle_inbound_command(self, cmd: InboundCommand) -> None:
+        if cmd.channel_type == "lobby":
+            await self._remember_lobby_sender(cmd.sender_id, cmd.sender_name)
         if cmd.command in ACCOUNT_COMMANDS:
             await self._handle_account_command(cmd)
+            return
+        if cmd.channel_type == "lobby":
+            # A direct chat with the app is never a room: making one would put
+            # every agent in it. Start is how a person first says hello there.
+            await self._adapter.admin_message(
+                cmd.channel_id,
+                _LOBBY_HELLO if cmd.command == "start" else _LOBBY_DEPRECATION_NOTICE,
+                cmd.root_id or cmd.message_ref,
+            )
             return
         room_ids = self._channel_to_room.get(cmd.channel_id)
         if room_ids is None:
@@ -1888,6 +2000,7 @@ class CollaborationCore:
                         agent_name=cmd.agent_name,
                         sender_name=cmd.sender_name,
                         channel_name=cmd.channel_name,
+                        inviting_an_agent=cmd.command == "invite-agent",
                     )
             if room_ids is None:
                 return
@@ -2179,6 +2292,7 @@ class CollaborationCore:
         sender_name: str | None = None,
         channel_name: str | None = None,
         added_by_external_user_id: str | None = None,
+        inviting_an_agent: bool = False,
     ) -> tuple[str, str] | None:
         # Callers hold the per-channel lock. Guard against provisioning a
         # duplicate room for a channel that is already (or is being) bridged:
@@ -2268,7 +2382,9 @@ class CollaborationCore:
             channel_id,
         )
 
-        if not agent_ids:
+        # Not when the room is being made by an invite: the agent is a moment
+        # away, and "no agents in it yet" would be the first thing said there.
+        if not agent_ids and not inviting_an_agent:
             # create_room invited the bridge client before returning, so posting
             # now cannot predate its join. admin_message goes straight to the
             # channel via the platform API (not through the room), so it surfaces
@@ -2278,7 +2394,12 @@ class CollaborationCore:
             )
             await self._adapter.admin_message(
                 channel_id,
-                _no_agents_notice(self._adapter.slash_invite_hint()),
+                _no_agents_notice(
+                    self._adapter.slash_invite_hint(),
+                    replies_and_commands_only=await self._adapter.sees_only_replies_and_commands(
+                        channel_id
+                    ),
+                ),
                 message_type=AdminMessageType.NO_AGENTS,
             )
 
@@ -2789,18 +2910,46 @@ class CollaborationCore:
             body=card.content["body"],
         )
 
-    async def _handle_text_answer(self, msg: InboundMessage) -> None:
-        """An answer to an approval card, typed rather than pressed.
+    async def _handle_text_answer(self, msg: InboundMessage) -> bool:
+        """An answer to an approval card, typed rather than pressed, and
+        whether the message was one, taken or refused.
 
         Runs alongside the relay rather than instead of it: an answer is also
         something the person said in the channel, and the room sees it either
         way.
         """
         if self._approval_answers is None:
-            return
+            return False
         answered = await self._approval_answers.for_text(msg)
         if isinstance(answered, Refused):
             await self._tell_refused(msg, answered, thread_ref=answered.card_ref)
+        elif answered is None:
+            await self._tell_if_waiting(msg)
+        return answered is not None
+
+    async def _tell_if_waiting(self, msg: InboundMessage) -> None:
+        """Tell the sender, once, that an open card is holding the agent up.
+
+        A courtesy, so it never stands between the message and the room: a
+        failure here is logged and the relay carries on.
+        """
+        assert self._approval_answers is not None
+        try:
+            waiting = await self._approval_answers.waiting_notice(msg)
+            if waiting is not None:
+                await self._adapter.tell_actor(
+                    msg.channel_id,
+                    msg.sender_id,
+                    msg.sender_name,
+                    waiting.card_ref,
+                    waiting.text,
+                )
+        except Exception:
+            logger.exception(
+                "Could not tell %s in %s that a card is waiting",
+                msg.sender_name,
+                msg.channel_id,
+            )
 
     async def _tell_refused(
         self, actor: InboundActor, refused: Refused, thread_ref: str | None
@@ -3459,13 +3608,16 @@ class CollaborationCore:
                 message_type=message_type,
             )
         assert sender_name is not None  # guarded by the caller
+        body = event.body
+        if event_content.get(AGENT_GREETING_KEY) is True:
+            body = await self._adapter.agent_greeting(channel_id, sender_name, body)
         # Only the marker pages a channel. An `@channel` an agent wrote
         # itself is defused by `translate_outbound` like any other text.
         room_wide = is_room_wide_mention(event_content)
         text = (
-            self._adapter.render_room_wide_mention(event.body)
+            self._adapter.render_room_wide_mention(body)
             if room_wide
-            else self._adapter.translate_outbound(event.body)
+            else self._adapter.translate_outbound(body)
         )
         if UI_CONTENT_KEY in event_content:
             try:
@@ -3949,6 +4101,7 @@ class CollaborationCore:
         if external_post_id is None:
             await self._release_outbound(transport_event_id)
             return
+        further_post_ids = self._adapter.take_further_refs(external_post_id)
         async with tenant_session(
             self._session_factory, self._bridge_tenant_id
         ) as session:
@@ -3957,6 +4110,7 @@ class CollaborationCore:
                 bridge_id=self._bridge_id,
                 transport_event_id=transport_event_id,
                 external_post_id=external_post_id,
+                further_post_ids=further_post_ids,
             )
             await session.commit()
 

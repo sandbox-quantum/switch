@@ -4878,6 +4878,27 @@ class AgentCore:
                 connections=self.connections,
             )
 
+    async def _channel_web_url(self, room: Room) -> str | None:
+        """An https link to the room's channel on its app, or None.
+
+        Only a web address: a native scheme (`slack://`) is not something a
+        chat message can be trusted to open, so a room whose app gives only
+        that is linked through Switch Console instead.
+        """
+        if not room.bridge_id or not room.external_channel_id:
+            return None
+        adapter = self.collab_lifecycle.get_adapter(room.bridge_id)
+        if adapter is None:
+            return None
+        try:
+            url = await adapter.channel_deeplink(room.external_channel_id)
+        except Exception:
+            logger.warning(
+                "Could not build a channel link for room %s", room.id, exc_info=True
+            )
+            return None
+        return url if url is not None and url.startswith("https://") else None
+
     async def get_room_detail(
         self, agent_id: str, room_id: str
     ) -> RoomDetailDescriptor:
@@ -4949,6 +4970,7 @@ class AgentCore:
             id=room.id,
             name=room.name,
             description=room.description,
+            channel_url=await self._channel_web_url(room),
             channel_type=room.channel_type,
             admin_mode=room.admin_mode,
             instructions=room.instructions,

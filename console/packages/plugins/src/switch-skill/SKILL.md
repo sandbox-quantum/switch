@@ -541,8 +541,9 @@ change it. A refusal says which of these it was; relay it rather than retrying.
 
 - **`list_all_rooms`** / **`get_room_detail`** — enumerate the rooms on the
   instance you may see (not just the ones you are in: every room your owner
-  can read, plus your own), and fetch a room's members, channel type and
-  admin mode. `list_all_rooms` answers a page at a time,
+  can read, plus your own), and fetch a room's members, channel type,
+  admin mode and `channel_url` (an https link that opens its channel on its
+  app, or null; link that when you send someone to a room there). `list_all_rooms` answers a page at a time,
   `{rooms, next_cursor}`: pass `next_cursor` back as `cursor` for the next page
   (null on the last), `limit` for its size (default 100, at most 500), and
   `name_contains` to match a name in any case. `get_room_detail` also returns the room's assumable

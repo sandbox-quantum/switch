@@ -437,6 +437,9 @@ class AgentRoomMembership(BaseModel):
     archived: bool
     status: str
     room_role: str | None
+    # Whether the agent has had a turn in this room: someone addressed it there
+    # and one of its sessions took the message up.
+    answered_here: bool
 
 
 class AgentSessionDetail(BaseModel):
@@ -897,12 +900,21 @@ class BridgeDetail(BaseModel):
     # nobody has used yet — a question worth not asking rather than asking
     # badly.
     directory_search_supported: bool = True
+    # What the account search can find a person by on this connection, as its
+    # field's placeholder ("Your name or handle"). Only what really matches:
+    # Slack offers email only when the app may read addresses.
+    directory_search_hint: str
     # Whether this connection receives its platform's events on an address of
     # its own, and that address — the one the operator gives the platform. The
     # address is None where the deployment has not set `MESSAGING_PUBLIC_URL`,
     # which is then what stands between this connection and its events.
     receives_webhooks: bool = False
     webhook_url: str | None = None
+    # The commands a person is told to type here, keyed by command name, as
+    # this platform spells them, with `{agent}` (an agent's name) and `{code}`
+    # (a link code) left for the client to fill in. Clients show these rather
+    # than keeping a per-platform list of their own.
+    commands: dict[str, str]
     # What the caller may do with it: change its settings, Teams placement
     # and confirmation rules, or delete it — a workspace admin. That chats
     # still connected through it must be disconnected first is answered when
@@ -1033,6 +1045,9 @@ class ExternalUserSummary(BaseModel):
     bridge_id: str
     external_user_id: str
     external_username: str
+    # When Switch first saw this account, so a client waiting for someone to
+    # say hello to the bot can tell a new arrival from the people it knew.
+    first_seen_at: str
     # Everyone who has claimed this platform account. A list, not one user:
     # claiming is not exclusive, so an account shared by several Switch users
     # satisfies an owner rule for any of them.
@@ -1050,6 +1065,10 @@ class DirectoryUserSummary(BaseModel):
     username: str
     display_name: str
     email: str | None = None
+    # False where `username` is a handle Switch made up for a person the
+    # platform gave none (a Telegram account without a username): shown by
+    # `display_name` alone, never as `@username`.
+    has_handle: bool = True
     # Set when this person has already spoken on the bridge and so has an
     # ExternalUser row; claiming reuses it rather than creating a duplicate.
     known_external_user_id: str | None = None
@@ -1117,6 +1136,12 @@ class LinkedIdentity(BaseModel):
     bridge_type: str
     external_user_id: str
     external_username: str
+    # How to name the account: the person's name as the platform shows it,
+    # and whether `external_username` is a handle of theirs rather than one
+    # Switch made up (a Telegram account without a username), which is then
+    # never shown as `@external_username`.
+    external_display_name: str
+    has_handle: bool
     # False for a link made before accounts had to confirm them: it works,
     # and Console asks its owner to confirm it.
     verified: bool
@@ -1143,6 +1168,9 @@ class PendingIdentity(BaseModel):
     bridge_type: str
     external_user_id: str
     external_username: str
+    # As on `LinkedIdentity`.
+    external_display_name: str
+    has_handle: bool
     # Who started it, when that was someone else (an admin); null when it was
     # the user themselves or the admin has since been deleted.
     requested_by_name: str | None

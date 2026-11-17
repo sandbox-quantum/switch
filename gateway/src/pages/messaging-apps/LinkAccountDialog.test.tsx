@@ -44,6 +44,7 @@ describe("LinkAccountDialog", () => {
           username: "ada",
           display_name: "Ada Lovelace",
           email: null,
+          has_handle: true,
           known_external_user_id: null,
           claimed_by: [],
         },

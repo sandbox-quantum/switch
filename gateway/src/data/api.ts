@@ -288,6 +288,9 @@ export interface BridgeDetail {
   // (Telegram), only people who have written in a connected chat can be
   // found.
   directory_search_supported: boolean;
+  // What the account search can find a person by here, as its placeholder
+  // ("Your name or handle"): only what really matches.
+  directory_search_hint: string;
 }
 
 export interface ExternalUserSummary {
@@ -1235,6 +1238,11 @@ export interface LinkedIdentity {
   bridge_type: string;
   external_user_id: string;
   external_username: string;
+  /** How to name the account: absent (older servers) or `has_handle` true
+   *  means `@external_username`; else the person's name, as the platform
+   *  shows it, because the handle is one Switch made up. */
+  external_display_name?: string;
+  has_handle?: boolean;
   /** False for a link made before links had to be confirmed: it counts, and
    *  its owner is asked to confirm it. */
   verified: boolean;
@@ -1255,6 +1263,11 @@ export interface PendingIdentity {
   bridge_type: string;
   external_user_id: string;
   external_username: string;
+  /** How to name the account: absent (older servers) or `has_handle` true
+   *  means `@external_username`; else the person's name, as the platform
+   *  shows it, because the handle is one Switch made up. */
+  external_display_name?: string;
+  has_handle?: boolean;
   /** Who started it, when that was an admin rather than the person. */
   requested_by_name: string | null;
   /** When the last code stops working; null when none has been issued. */
@@ -1308,6 +1321,9 @@ export interface DirectoryPerson {
   username: string;
   display_name: string;
   email: string | null;
+  /** False when `username` is a handle Switch made up for someone the
+   *  platform gave none (Telegram without a username): show the name alone. */
+  has_handle: boolean;
   /** The account's row id when Switch has seen it, else null. */
   known_external_user_id: string | null;
   claimed_by: IdentityClaimant[];

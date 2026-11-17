@@ -67,6 +67,7 @@ function deps(overrides: Partial<OperationDeps> = {}) {
       return claudeStatus;
     },
     takeUpLogin: async () => ({ status: claudeStatus, problem: null }),
+    restartController: () => null,
     log: silentLogger,
     ...overrides,
   };
@@ -221,5 +222,37 @@ describe('processPendingOperations', () => {
       },
     });
     await expect(processPendingOperations(d)).rejects.toMatchObject({ code: 'controller_revoked' });
+  });
+});
+
+describe('controller.restart', () => {
+  it('succeeds when whatever runs the controller will start it again', async () => {
+    let asked = 0;
+    const { deps: value } = deps({
+      restartController: () => {
+        asked += 1;
+        return null;
+      },
+    });
+    const result = await executeOperation(
+      operation({ kind: 'controller.restart', agent_id: null }),
+      value
+    );
+    expect(result).toEqual({ outcome: 'succeeded' });
+    expect(asked).toBe(1);
+  });
+
+  it('fails, saying why, when nothing would start it again', async () => {
+    const { deps: value } = deps({
+      restartController: () => ({ reason: 'not_supervised', detail: 'runs outside a service' }),
+    });
+    const result = await executeOperation(
+      operation({ kind: 'controller.restart', agent_id: null }),
+      value
+    );
+    expect(result).toEqual({
+      outcome: 'failed',
+      error: { code: 'not_supervised', message: 'runs outside a service' },
+    });
   });
 });

@@ -10,7 +10,6 @@ import { ApiError, type BridgeDetail, cancelLinkRequest, releaseBridgeIdentity }
 import { formatDate, platformLabel, sentenceCase } from "../../theme/format";
 import {
   type AccountLine,
-  accountHandle,
   accountsByApp,
   findableNote,
   statusColor,
@@ -176,7 +175,7 @@ export default function YourAccountsSection({
                     line,
                     others: lines
                       .filter((other) => other.id !== line.id && other.kind !== "pending")
-                      .map((other) => accountHandle(other.username)),
+                      .map((other) => other.name),
                   })
                 }
               />
@@ -231,7 +230,7 @@ export default function YourAccountsSection({
 /** What unlinking costs, said for the case at hand: with another account
  * still linked in the same app, agents there go on recognising the person. */
 function unlinkText(app: BridgeDetail, line: AccountLine, others: string[]): string {
-  const handle = accountHandle(line.username);
+  const handle = line.name;
   return others.length === 0
     ? `${handle} in ${app.display_name} will stop being recognised as you. Agents there will treat your messages as coming from an unknown person until you link it again.`
     : `${handle} in ${app.display_name} will stop being recognised as you. You stay linked there as ${others.join(", ")}.`;
@@ -374,7 +373,7 @@ function AccountRow({
   onCancel: () => void;
   onUnlink: () => void;
 }) {
-  const handle = accountHandle(line.username);
+  const handle = line.name;
   // Every row's buttons say whose they are: "Unlink" ten times over tells a
   // screen reader nothing.
   const whose = `${handle} in ${app.display_name}`;
