@@ -876,7 +876,6 @@ const WorkspaceMenuItem = observer(function WorkspaceMenuItem({
   const { toast } = useToast();
   const showInvitePeopleModal = useShowModal('invitePeopleModal');
   const isActive = workspacesStore.activeId === workspace.id;
-  const name = workspaceDisplayName(workspace, server);
   // Kept in the list rather than hidden: its agents are still here and the row
   // is the only thing that says where they went. Disabled, because the gateway
   // refuses every call scoped to it — offering it would turn a fact the app
@@ -898,7 +897,7 @@ const WorkspaceMenuItem = observer(function WorkspaceMenuItem({
       aria-current={isActive ? 'true' : undefined}
       className={cn('group/ws', WORKSPACE_ROW, isActive && 'bg-[var(--sel-soft)]')}
       disabled={unavailable !== null}
-      title={unavailable ? UNAVAILABLE_REASON[unavailable](name) : undefined}
+      title={unavailable ? UNAVAILABLE_REASON[unavailable](workspace.name) : undefined}
       onClick={() => {
         void workspacesStore
           .setActive(workspace.id)
@@ -909,14 +908,14 @@ const WorkspaceMenuItem = observer(function WorkspaceMenuItem({
             // you picked.
             toast({
               title: 'Could not switch workspace',
-              description: `${name} is still there; the app stayed where it was.`,
+              description: `${workspace.name} is still there; the app stayed where it was.`,
               variant: 'destructive',
             });
           });
       }}
     >
       <span className={cn('flex shrink-0', dormant && 'opacity-50')}>
-        <WorkspaceAvatar name={name} size="tile" active={isActive && !dormant} />
+        <WorkspaceAvatar name={workspace.name} size="tile" active={isActive && !dormant} />
       </span>
       <span
         data-row-name
@@ -925,7 +924,7 @@ const WorkspaceMenuItem = observer(function WorkspaceMenuItem({
           dormant ? 'text-[var(--fg-dim)]' : 'text-[var(--fg-name)]'
         )}
       >
-        {name}
+        {workspace.name}
       </span>
       {unavailable && (
         <span className="shrink-0 rounded bg-background-tertiary px-1 py-px text-[10px] font-medium tracking-wide text-foreground-muted uppercase">

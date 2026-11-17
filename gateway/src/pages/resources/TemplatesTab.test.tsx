@@ -64,4 +64,14 @@ describe("TemplatesTab", () => {
     expect(within(own).queryByText("Official")).toBeNull();
     expect(within(own).getByText("Ada")).toBeTruthy();
   });
+  it("keeps a long name on one line, with the whole name on hover, and the Official chip in full", async () => {
+    const name = "A very long official template name that will not fit in the column";
+    showWith([{ ...INCIDENT, name }]);
+
+    const cell = await screen.findByText(name);
+    expect(cell.getAttribute("title")).toBe(name);
+    expect(cell.style.whiteSpace === "nowrap" || getComputedStyle(cell).whiteSpace === "nowrap").toBe(true);
+    const official = within(cell.closest('[role="row"]') as HTMLElement).getByText("Official");
+    expect(getComputedStyle(official.closest(".MuiChip-root") as HTMLElement).flexShrink).toBe("0");
+  });
 });

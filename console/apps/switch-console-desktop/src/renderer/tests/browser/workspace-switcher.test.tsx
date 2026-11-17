@@ -316,10 +316,11 @@ describe('the workspaces the switcher offers', () => {
     const trigger = container!.querySelector<HTMLElement>('[aria-label="Switch workspace"]')!;
     expect(trigger.textContent).toContain('Local Switch server');
     expect(trigger.textContent).not.toContain('Default');
-    // The row in the open list agrees with the trigger.
-    expect(row('Local Switch server').getAttribute('aria-current')).toBe('true');
+    // The row in the open list is the workspace, so it keeps the workspace's own name.
+    expect(row('Default').getAttribute('aria-current')).toBe('true');
     const names = [...document.querySelectorAll('[data-row-name]')].map((el) => el.textContent);
-    expect(names).not.toContain('Default');
+    expect(names).toContain('Default');
+    expect(names).not.toContain('Local Switch server');
   });
 
   it('keeps "Default" on the trigger beside other workspaces on its server', async () => {

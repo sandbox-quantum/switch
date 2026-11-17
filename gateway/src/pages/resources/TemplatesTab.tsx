@@ -69,11 +69,17 @@ export default function TemplatesTab({ refreshKey }: Props) {
         flex: 1,
         minWidth: 300,
         renderCell: ({ row }) => (
-          <Box sx={{ display: "flex", alignItems: "center", gap: 1, minWidth: 0 }}>
-            <Box component="span" sx={{ overflow: "hidden", textOverflow: "ellipsis" }}>
+          <Box sx={{ display: "flex", alignItems: "center", gap: 1, minWidth: 0, overflow: "hidden" }}>
+            <Box
+              component="span"
+              title={row.name}
+              sx={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}
+            >
               {row.name}
             </Box>
-            {row.official && <Chip size="small" color="primary" variant="outlined" label="Official" />}
+            {row.official && (
+              <Chip size="small" color="primary" variant="outlined" label="Official" sx={{ flexShrink: 0 }} />
+            )}
           </Box>
         ),
       },

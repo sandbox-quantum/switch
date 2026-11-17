@@ -610,9 +610,7 @@ describe('switch-buddy setup cards', () => {
       'Telegram',
       'Switch Console',
     ]);
-    expect(tiles[4].textContent).toContain(
-      'Chat in the console and connect to your messaging app later'
-    );
+    expect(tiles[4].textContent).toContain('Connect an app later');
     expect(el.textContent).not.toContain('Chat right here');
     expect(tiles.some((tile) => tile.getAttribute('aria-pressed') === 'true')).toBe(false);
   });
@@ -621,22 +619,18 @@ describe('switch-buddy setup cards', () => {
     ['narrow', 720],
     ['wide', 1200],
   ] as const)(
-    '(k0) %s: the platforms share one row and Console has its own full-width row',
+    '(k0) %s: Switch Console is one of the cards, and no taller than the others',
     async (label, width) => {
       await page.viewport(width + 40, 900);
       const el = await render(width);
       const grid = el.querySelector<HTMLElement>('[data-testid="buddy-setup-cards"] .grid')!;
       const tiles = [...grid.querySelectorAll<HTMLButtonElement>(':scope > button')];
-      const platforms = tiles.slice(0, 4);
       const consoleTile = tiles[4];
 
-      expect(new Set(platforms.map((tile) => tile.offsetTop)).size).toBe(1);
-      expect(consoleTile.offsetTop).toBeGreaterThan(
-        platforms[0].offsetTop + platforms[0].offsetHeight - 1
-      );
-      expect(consoleTile.offsetWidth).toBe(grid.clientWidth);
-      expect(consoleTile.offsetHeight).toBeLessThan(platforms[0].offsetHeight);
-      await shot(el, `k0-console-row-${label}`);
+      expect(consoleTile.offsetWidth).toBe(tiles[0].offsetWidth);
+      expect(consoleTile.offsetHeight).toBeLessThanOrEqual(tiles[0].offsetHeight);
+      if (width >= 1200) expect(new Set(tiles.map((tile) => tile.offsetTop)).size).toBe(1);
+      await shot(el, `k0-console-card-${label}`);
     }
   );
 

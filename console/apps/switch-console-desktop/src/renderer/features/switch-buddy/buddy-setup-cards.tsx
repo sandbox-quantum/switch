@@ -222,7 +222,7 @@ const Cards = observer(function Cards({
         Where does your team chat?
         <TermInfo term="messagingApp" />
       </div>
-      <div className="grid grid-cols-2 gap-3 @md:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 @md:grid-cols-3 @2xl:grid-cols-5">
         {TILES.map((app) => (
           <button
             key={app.bridgeType}
@@ -238,16 +238,9 @@ const Cards = observer(function Cards({
             <TileText name={app.name} subtitle={app.subtitle} />
           </button>
         ))}
-        <button
-          type="button"
-          onClick={stay}
-          className={cn(TILE_CLASS, 'col-span-full flex-row items-center')}
-        >
+        <button type="button" onClick={stay} className={TILE_CLASS}>
           <SwitchConsoleMark size={28} />
-          <TileText
-            name="Switch Console"
-            subtitle="Chat in the console and connect to your messaging app later"
-          />
+          <TileText name="Switch Console" subtitle="Connect an app later" />
         </button>
       </div>
 
