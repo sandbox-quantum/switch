@@ -9,6 +9,7 @@ import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { administersWorkspaceById } from '@renderer/features/switch-servers/workspace-admin';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
+import { InfoTooltip } from '@renderer/lib/components/info-tooltip';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
@@ -27,10 +28,28 @@ import type { RoomResource, RoomResourceKind } from '@shared/core/switch-servers
 import { useRoomDetail } from './room-participants';
 import { attachableResources, opensInResources, resourcesByOrigin } from './room-resources';
 
-const KIND_LABEL: Record<RoomResourceKind, { title: string; noun: string; none: string }> = {
-  references: { title: 'References', noun: 'reference', none: 'No references attached.' },
-  documents: { title: 'Documents', noun: 'document', none: 'No documents attached.' },
-  packages: { title: 'Packages', noun: 'package', none: 'No packages attached.' },
+const KIND_LABEL: Record<
+  RoomResourceKind,
+  { title: string; noun: string; none: string; info: string }
+> = {
+  references: {
+    title: 'References',
+    noun: 'reference',
+    none: 'No references attached.',
+    info: 'Links to a repository, a doc or a page outside Switch. Agents in this room read the link and its instructions to know where to look.',
+  },
+  documents: {
+    title: 'Documents',
+    noun: 'document',
+    none: 'No documents attached.',
+    info: 'Notes or instructions kept in Switch. Agents in this room can read them.',
+  },
+  packages: {
+    title: 'Packages',
+    noun: 'package',
+    none: 'No packages attached.',
+    info: 'A set of references and documents that you attach to a room in one go.',
+  },
 };
 
 const roomResourcesKey = (workspaceId: string, roomId: string, kind: RoomResourceKind) => [
@@ -198,7 +217,10 @@ const ResourceSection = observer(function ResourceSection({
   return (
     <section aria-label={label.title} className="flex flex-col gap-3">
       <div className="flex items-center justify-between gap-3">
-        <h2 className="text-sm font-semibold text-foreground">{label.title}</h2>
+        <div className="flex items-center gap-1.5">
+          <h2 className="text-sm font-semibold text-foreground">{label.title}</h2>
+          <InfoTooltip label={`What are ${label.title.toLowerCase()}?`} content={label.info} />
+        </div>
         {canAttach && (
           <Button variant="outline" size="sm" onClick={() => setPicking(true)}>
             <Plus className="size-3.5" />
@@ -620,7 +642,13 @@ const LinkedRoomsSection = observer(function LinkedRoomsSection({
   return (
     <section aria-label="Linked rooms" className="flex flex-col gap-3">
       <div className="flex items-center justify-between gap-3">
-        <h2 className="text-sm font-semibold text-foreground">Linked rooms</h2>
+        <div className="flex items-center gap-1.5">
+          <h2 className="text-sm font-semibold text-foreground">Linked rooms</h2>
+          <InfoTooltip
+            label="What are linked rooms?"
+            content="Pointers from this room to related rooms, such as a support room or a parent project. Agents here see each link and why it exists. A link goes one way and does not let anyone into the other room."
+          />
+        </div>
         {canWrite && (
           <Button variant="outline" size="sm" onClick={() => setAdding(true)}>
             <Plus className="size-3.5" />
