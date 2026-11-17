@@ -34,8 +34,9 @@ must be toggled on under **Bot → Privileged Gateway Intents**:
 - **Server Members Intent** — required for member lookups and per-channel
   membership grants.
 
-(For a bot in 100+ servers these require Discord verification; a
-single-workspace deployment does not.)
+(A bot seen by more than 10,000 users needs Discord's review to keep these,
+and one in 100+ servers needs verification; a single-workspace deployment
+needs neither.)
 
 ## 3. Invite the bot with the right permissions
 

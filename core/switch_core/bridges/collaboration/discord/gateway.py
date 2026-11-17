@@ -125,11 +125,12 @@ class DiscordGatewayClient:
         arrive are dropped (guard G4).
 
         `message_content` and `members` are both *privileged* and default off:
-        requesting either unapproved closes the connection past Discord's
-        ~100-guild verification threshold, which the distributed app crosses
-        quickly. Off, the connection still opens — the bot sees messages that
-        mention it and its own, and member lookups fall back to API fetches;
-        each is turned on independently once the app is verified for it.
+        requesting one the application is not allowed (not toggled on in the
+        Developer Portal, or not granted after Discord's review) closes the
+        connection with 4014. Off, the connection still opens — the bot sees
+        messages that mention it and its own, and member lookups fall back to
+        API fetches; each is turned on independently once the application has
+        it.
         """
         intents = discord.Intents.none()
         intents.guilds = True

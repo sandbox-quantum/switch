@@ -627,9 +627,11 @@ switchCore:
     messagingPublicUrl: ""
     clientId: ""
     applicationId: ""
-    # Privileged Gateway intents, each off by default and requiring Discord
-    # verification past ~100 guilds (counted across every tenant). Off is
-    # mention-only operation; leave both false unless the app is verified.
+    # Privileged Gateway intents, each off by default. Toggle one on under Bot →
+    # Privileged Gateway Intents in the Developer Portal before setting it here,
+    # or Discord closes the connection. An app that reaches more than 10,000
+    # users (counted across every tenant's servers) needs Discord's review to
+    # keep it, renewed yearly. Off for messageContent is mention-only operation.
     messageContent: false
     members: false
   # The distributed Teams app (TEAMS_DISTRIBUTED_APP.md): one multi-tenant Entra
