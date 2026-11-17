@@ -1328,6 +1328,7 @@ class CollaborationBridgeLifecycleService:
             adapter.set_bridge_id(bridge_id)
             adapter.set_session_factory(self._session_factory)
             adapter.set_outbound_policy(self._config.outbound_policy)
+            adapter.set_feature_flags(self._config.feature_flags)
             adapter.set_service_url_persister(
                 lambda service_url: self._persist_service_url(
                     bridge_id, tenant_id, service_url

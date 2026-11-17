@@ -212,7 +212,9 @@ class RoomDetail(RoomSummary):
     # when it has not seen one. A room not named after its channel can take
     # it with `POST /rooms/{id}/sync-name`.
     linked_channel_name: str | None = None
-    auto_route: RoomAutoRoute
+    # Null on a server with the `decision_routing` flag off, where rooms have
+    # no auto-route to show.
+    auto_route: RoomAutoRoute | None
 
 
 class RoomCreateRequest(BaseModel):

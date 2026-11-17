@@ -156,7 +156,8 @@ export const SettingsPage = observer(function SettingsPage({
   const workspace = server !== null ? workspacesStore.onServerInScope(server.id) : null;
   const organizationSettings =
     workspaceSettings && workspace !== null && administersOrganization(workspace);
-  const serviceConnections = useFeatureFlags(server?.id ?? null).service_connections;
+  const serverFlags = useFeatureFlags(server?.id ?? null);
+  const serviceConnections = serverFlags.service_connections;
   // What you administer is what the server says of you once signed in.
   const operator = server !== null && user !== null && operatesServer(server.id);
   const sections = settingsSections({
@@ -167,6 +168,8 @@ export const SettingsPage = observer(function SettingsPage({
     workspaceAdmin: server !== null && user !== null && administersWorkspaceInScope(server.id),
     operatesGatewaylessServer: operator && server !== null && !servesWebGateway(server),
     serviceConnections,
+    // Auto-route does not exist on a server with it off, so neither does its page.
+    decisionRouting: serverFlags.decision_routing,
   });
   const shownTab = shownSettingsTab(activeTab, sections);
 

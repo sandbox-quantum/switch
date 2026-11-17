@@ -34,7 +34,7 @@ from fastapi import (
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.bridges.agent.commands import COMMANDS, COMMANDS_BY_NAME
+from switch_core.bridges.agent.commands import COMMANDS_BY_NAME, commands_for
 from switch_core.chats.service import (
     ChatError,
     ChatService,
@@ -50,6 +50,7 @@ from switch_core.chats.views import (
     chat_messages,
     chat_summaries,
 )
+from switch_core.config import SwitchConfig
 from switch_core.content_disposition import untrusted_file_headers
 from switch_core.db.models import (
     AgentSessionActivityItem,
@@ -65,7 +66,7 @@ from switch_core.gateway.auth import (
     session_id_of,
     session_still_enters,
 )
-from switch_core.gateway.dependencies import get_user_store
+from switch_core.gateway.dependencies import get_config, get_user_store
 from switch_core.session_activity.listener import Change, RoomSubscription
 
 logger = logging.getLogger(__name__)
@@ -646,10 +647,14 @@ async def list_members(room_id: str, user: CurrentUser, service: Service) -> Mem
 
 @router.get("/{room_id}/commands", response_model=ChatCommands)
 async def list_commands(
-    room_id: str, user: CurrentUser, service: Service
+    room_id: str,
+    user: CurrentUser,
+    service: Service,
+    config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> ChatCommands:
     """The room commands a member can type here (`!name`), as the platforms'
-    command lists show them: those that do something and are not hidden."""
+    command lists show them: those this server has (`commands_for`) that do
+    something and are not hidden."""
     tenant_id = require_tenant_id()
     async with tenant_session(service.session_factory, tenant_id) as session:
         await service.require_member(session, tenant_id, user, room_id)
@@ -665,7 +670,7 @@ async def list_commands(
                     ]
                 ),
             )
-            for command in COMMANDS
+            for command in commands_for(config.feature_flags)
             if command.handler is not None
             and not command.hidden
             and command.description.strip()

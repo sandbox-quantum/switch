@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import random
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, cast
 
@@ -71,6 +71,7 @@ from switch_core.delivery.addressing import (
     SenderPrincipal,
 )
 from switch_core.events import CommandEvent
+from switch_core.feature_flags import DECISION_ROUTING
 from switch_core.platform_access import administers_on_record
 from switch_core.room_invites import not_addressable_refusal
 from switch_core.room_policy import RoomAction, RoomCaller, RoomDecision
@@ -281,6 +282,10 @@ class Command:
     # stores what is queued with it, so the agent gets the command before
     # anything written after it; `handler` runs it outside the router.
     decide: CommandDecider | None = None
+    # The feature flag a server must have on for the command to exist there
+    # (`commands_for`). Off, it is missing from `!help` and every native
+    # command list, and using it gets "Unknown command".
+    flag: str | None = None
 
 
 # ── Handlers ──────────────────────────────────────────────────────────────────
@@ -460,7 +465,7 @@ async def _cmd_help(
     client: AgentRecipient, room: RoomRef, event: CommandEvent, _is_direct: bool
 ) -> None:
     lines = ["**Available commands:**"]
-    for cmd in COMMANDS:
+    for cmd in commands_for(cast("CommandConsumer", client).feature_flags):
         if cmd.hidden:
             continue
         lines.append(f"- `!{cmd.name}` — {cmd.description}")
@@ -2749,6 +2754,7 @@ COMMANDS: list[Command] = [
             CommandArg("state", "on, off, or fallback @agent|off", required=False),
         ),
         admin_owned=True,
+        flag=DECISION_ROUTING,
     ),
     Command(
         "assign-agent",
@@ -2933,6 +2939,21 @@ COMMANDS: list[Command] = [
 COMMANDS_BY_NAME: dict[str, Command] = {cmd.name: cmd for cmd in COMMANDS}
 
 
+def commands_for(flags: Mapping[str, bool]) -> list[Command]:
+    """The commands a server with these feature flags has, in `COMMANDS`
+    order: every one that needs no flag, and each one whose flag is on."""
+    return [cmd for cmd in COMMANDS if cmd.flag is None or flags.get(cmd.flag, False)]
+
+
+def command_for(name: str, flags: Mapping[str, bool]) -> Command | None:
+    """The command `name` on a server with these feature flags, or None when
+    there is no such command or its flag is off there."""
+    cmd = COMMANDS_BY_NAME.get(name)
+    if cmd is None or (cmd.flag is not None and not flags.get(cmd.flag, False)):
+        return None
+    return cmd
+
+
 async def dispatch_command(
     client: AgentRecipient, room: RoomRef, event: CommandEvent, is_direct: bool
 ) -> bool:
@@ -2967,8 +2988,9 @@ async def dispatch_admin_command(
     commands, so it runs them unconditionally (no role/availability gating) and
     renders the result as an admin/system message. Commands that exist but are
     agent-owned are left to the agents; a name that matches no command gets an
-    "unknown command" notice (the admin is the room's command front-door)."""
-    cmd = COMMANDS_BY_NAME.get(event.command)
+    "unknown command" notice (the admin is the room's command front-door).
+    A command whose feature flag is off here is unknown too."""
+    cmd = command_for(event.command, host.feature_flags)
     if cmd is None:
         await _reply(host, room, event, f"Unknown command: `{event.command}`")
         return

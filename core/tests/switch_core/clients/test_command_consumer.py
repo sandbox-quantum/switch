@@ -415,6 +415,7 @@ def _command_host() -> tuple[SimpleNamespace, list[dict[str, object]]]:
     host = SimpleNamespace(
         reply_command=_reply_command,
         _is_direct_room=_is_direct_room,
+        feature_flags={},
     )
     return host, sent
 

@@ -45,4 +45,11 @@ describe('switch skill', () => {
       "The room's owner, a room admin or a workspace admin can name a triage agent for those messages"
     );
   });
+
+  it('says auto-route is only on some servers, and not to suggest it where it is missing', () => {
+    const text = SWITCH_SKILL_CONTEXT.replace(/\s+/g, ' ');
+    expect(text).toContain('Automatic routing is a feature only some Switch servers have.');
+    expect(text).toContain('`!auto-route` answers "Unknown command"');
+    expect(text).toMatch(/don't suggest either, and offer what the server does have instead/);
+  });
 });

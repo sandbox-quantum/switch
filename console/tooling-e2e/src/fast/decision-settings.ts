@@ -2,6 +2,8 @@ import { expect } from 'vitest';
 import { SwitchHttpError } from '../clients/switch-client.ts';
 import type { FastScenario } from './scenario.ts';
 
+const FLAG = 'decision_routing';
+
 /**
  * A workspace's decision routing settings and a room's auto-route switch,
  * through the gateway as the workspace's admin:
@@ -13,6 +15,10 @@ import type { FastScenario } from './scenario.ts';
  * 3. choosing "none" turns auto-route off for the workspace, so a room can't
  *    turn it on and says why;
  * 4. resetting goes back to the server default.
+ *
+ * On a server with the `decision_routing` flag off none of these routes is
+ * mounted, so instead it checks that each one answers 404: a server without
+ * auto-route offers nothing of it.
  *
  * It changes the workspace's setting while it runs, so it stays off shared
  * environments.
@@ -33,6 +39,37 @@ export const decisionSettings: FastScenario = {
     requires: [],
   },
   async run({ fixtures, switchClient, log }) {
+    if (!(await switchClient.enabledFeatureFlags()).has(FLAG)) {
+      const agent = await fixtures.agent('dragent');
+      const room = await fixtures.internalRoom('drroom', [agent]);
+      const calls: [string, () => Promise<unknown>][] = [
+        ['GET /gateway/decision-settings', () => switchClient.decisionSettings()],
+        [
+          'PUT /gateway/decision-settings',
+          () => switchClient.saveDecisionSettings({ backend: 'none' }),
+        ],
+        ['DELETE /gateway/decision-settings', () => switchClient.resetDecisionSettings()],
+        [
+          'POST /gateway/decision-settings/test',
+          () => switchClient.testDecisionSettings({ backend: 'default' }),
+        ],
+        [
+          'PUT /gateway/rooms/{room_id}/auto-route',
+          () => switchClient.setRoomAutoRoute(room.id, { on: false }),
+        ],
+      ];
+      for (const [route, call] of calls) {
+        const error = await call().then(
+          () => null,
+          (thrown: unknown) => thrown
+        );
+        expect(error, route).toBeInstanceOf(SwitchHttpError);
+        expect((error as SwitchHttpError).status, route).toBe(404);
+      }
+      log(`'${FLAG}' is off here: every auto-route route answers 404`);
+      return;
+    }
+
     const before = await switchClient.decisionSettings();
     if (before.source === 'workspace') {
       throw new Error(

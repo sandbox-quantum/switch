@@ -30,9 +30,9 @@ def build_decision_client(
     endpoint is reached through the server's outbound policy
     (`OUTBOUND_ALLOWED_PRIVATE_HOSTS`), the server's decision service directly.
 
-    Built whether or not the `decision_routing` flag is on: workspace admins
-    can set up and test a backend before the flag goes on. Only with it on is
-    the client handed to the router."""
+    Built whether or not the `decision_routing` flag is on, but only with it
+    on is it handed to the router, and only then does the gateway mount the
+    settings routes that reach it (`gateway/app.py`)."""
     if config.decision_routing_enabled and config.decision_endpoint_url is None:
         logger.warning(
             "The %r feature flag is on but DECISION_ENDPOINT_URL is not set: "

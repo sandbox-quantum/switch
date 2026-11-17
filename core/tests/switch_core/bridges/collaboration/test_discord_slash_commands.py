@@ -8,13 +8,13 @@ from typing import Any
 import discord
 import pytest
 
+from switch_core.bridges.agent import commands
 from switch_core.bridges.agent.commands import (
     COMMANDS,
     COMMANDS_BY_NAME,
     Command,
     CommandArg,
 )
-from switch_core.bridges.collaboration.discord import slash
 from switch_core.bridges.collaboration.discord.adapter import (
     DiscordAdapter,
     DiscordConnectionConfig,
@@ -29,6 +29,7 @@ from switch_core.bridges.collaboration.discord.slash import (
     validate_args_spec,
 )
 from switch_core.bridges.collaboration.models import InboundCommand
+from switch_core.feature_flags import DECISION_ROUTING
 
 GUILD_ID = 900
 CHANNEL_ID = 100
@@ -171,12 +172,16 @@ def _invoke(
 # ── Registration ─────────────────────────────────────────────────────────────
 
 
+# Every flag that adds a command, so every command is there to check.
+ALL_ON = {DECISION_ROUTING: True}
+
+
 async def _noop(interaction: Any, command: Any, values: Any) -> None:
     return None
 
 
 def test_every_visible_registry_command_is_registered() -> None:
-    built = {c.name for c in build_app_commands(_noop)}
+    built = {c.name for c in build_app_commands(_noop, ALL_ON)}
     expected = {
         c.name
         for c in COMMANDS
@@ -233,7 +238,7 @@ def test_hidden_and_handlerless_commands_are_not_registered(
         return None
 
     monkeypatch.setattr(
-        slash,
+        commands,
         "COMMANDS",
         [
             *COMMANDS,
@@ -242,26 +247,26 @@ def test_hidden_and_handlerless_commands_are_not_registered(
         ],
     )
 
-    built = {c.name for c in build_app_commands(_noop)}
+    built = {c.name for c in build_app_commands(_noop, ALL_ON)}
     assert "kept-quiet" not in built
     assert "does-nothing" not in built
     assert "admin" not in built
 
 
 def test_every_registered_command_has_a_handler() -> None:
-    for command in build_app_commands(_noop):
+    for command in build_app_commands(_noop, ALL_ON):
         assert COMMANDS_BY_NAME[command.name].handler is not None, command.name
 
 
 def test_registered_descriptions_fit_discord_cap() -> None:
-    for command in build_app_commands(_noop):
+    for command in build_app_commands(_noop, ALL_ON):
         assert 1 <= len(command.description) <= MAX_DESCRIPTION, command.name
         for param in command.parameters:
             assert 1 <= len(param.description) <= MAX_DESCRIPTION, param.name
 
 
 def test_declared_options_match_the_registry_spec() -> None:
-    built = {c.name: c for c in build_app_commands(_noop)}
+    built = {c.name: c for c in build_app_commands(_noop, ALL_ON)}
     for command in COMMANDS:
         if command.hidden or not command.description:
             continue
@@ -289,7 +294,7 @@ def test_registered_descriptions_never_teach_the_bang_form() -> None:
     # These render in Discord's command picker. Registry descriptions are
     # written for `!help` and end in a `Usage:` clause naming the `!` form —
     # telling someone who just typed `/reset` to type `!reset` instead.
-    for command in build_app_commands(_noop):
+    for command in build_app_commands(_noop, ALL_ON):
         assert "!" not in command.description, command.name
         assert "Usage:" not in command.description, command.name
 
@@ -801,3 +806,12 @@ def test_free_text_must_come_last() -> None:
     )
     with pytest.raises(ValueError, match="only come last"):
         validate_args_spec(bad)
+
+
+def test_a_command_whose_flag_is_off_is_not_registered() -> None:
+    """A server without auto-route registers no `/auto-route` with Discord."""
+    off = {c.name for c in build_app_commands(_noop, {})}
+
+    assert "auto-route" not in off
+    assert {"help", "follow-ups", "assign-agent"} <= off
+    assert "auto-route" in {c.name for c in build_app_commands(_noop, ALL_ON)}

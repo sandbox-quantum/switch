@@ -3743,8 +3743,9 @@ type RoomDetailJson = RoomSummaryJson & {
   external_channel_id?: string | null;
   transport_room_id?: string | null;
   archived_at?: string | null;
-  /** Absent from a server that predates decision routing. */
-  auto_route?: RoomAutoRouteJson;
+  /** Absent from a server that predates decision routing, and null on a
+   * server with it switched off. */
+  auto_route?: RoomAutoRouteJson | null;
 };
 
 /** The gateway `RoomAdminEntry` wire shape. */

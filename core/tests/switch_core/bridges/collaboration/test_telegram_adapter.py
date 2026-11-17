@@ -279,6 +279,7 @@ def _adapter() -> TelegramAdapter:
     adapter = TelegramAdapter(
         config=TelegramConnectionConfig(bot_token="token", bot_username=BOT_USERNAME)
     )
+    adapter.set_feature_flags({})
     adapter._bot_user_id = BOT_USER_ID
     adapter._bot = _FakeBot()
     return adapter
@@ -1640,6 +1641,7 @@ def test_starting_begins_polling_and_learns_the_bot_id() -> None:
     adapter = TelegramAdapter(
         config=TelegramConnectionConfig(bot_token="token", bot_username=BOT_USERNAME)
     )
+    adapter.set_feature_flags({})
     app = _FakeApplication()
 
     with patch.object(adapter_module, "ApplicationBuilder", lambda: _FakeBuilder(app)):
@@ -1660,6 +1662,7 @@ def test_starting_configures_network_timeouts_on_application_builder() -> None:
     adapter = TelegramAdapter(
         config=TelegramConnectionConfig(bot_token="token", bot_username=BOT_USERNAME)
     )
+    adapter.set_feature_flags({})
     app = _FakeApplication()
     builder = _FakeBuilder(app)
 
@@ -1679,6 +1682,7 @@ def test_a_quiet_copy_calls_the_bot_api_without_polling() -> None:
     adapter = TelegramAdapter(
         config=TelegramConnectionConfig(bot_token="token", bot_username=BOT_USERNAME)
     )
+    adapter.set_feature_flags({})
     adapter.set_listening(False)
     app = _FakeApplication()
 
@@ -1722,6 +1726,7 @@ def test_polling_installs_the_error_callback() -> None:
     adapter = TelegramAdapter(
         config=TelegramConnectionConfig(bot_token="token", bot_username=BOT_USERNAME)
     )
+    adapter.set_feature_flags({})
     app = _FakeApplication()
 
     with patch.object(adapter_module, "ApplicationBuilder", lambda: _FakeBuilder(app)):
@@ -1741,6 +1746,7 @@ def test_privacy_mode_on_is_not_reported_as_a_fault(
     adapter = TelegramAdapter(
         config=TelegramConnectionConfig(bot_token="token", bot_username=BOT_USERNAME)
     )
+    adapter.set_feature_flags({})
     app = _FakeApplication(can_read_all_group_messages=False)
 
     with patch.object(adapter_module, "ApplicationBuilder", lambda: _FakeBuilder(app)):
@@ -1760,6 +1766,7 @@ def test_privacy_mode_off_is_recorded_as_seeing_everything(
     adapter = TelegramAdapter(
         config=TelegramConnectionConfig(bot_token="token", bot_username=BOT_USERNAME)
     )
+    adapter.set_feature_flags({})
     app = _FakeApplication(can_read_all_group_messages=True)
 
     with patch.object(adapter_module, "ApplicationBuilder", lambda: _FakeBuilder(app)):
@@ -1774,6 +1781,7 @@ def test_stopping_shuts_the_application_down() -> None:
     adapter = TelegramAdapter(
         config=TelegramConnectionConfig(bot_token="token", bot_username=BOT_USERNAME)
     )
+    adapter.set_feature_flags({})
     app = _FakeApplication()
 
     with patch.object(adapter_module, "ApplicationBuilder", lambda: _FakeBuilder(app)):
@@ -1789,6 +1797,7 @@ def test_sending_before_the_bridge_is_connected_fails_loudly() -> None:
     adapter = TelegramAdapter(
         config=TelegramConnectionConfig(bot_token="token", bot_username=BOT_USERNAME)
     )
+    adapter.set_feature_flags({})
 
     with pytest.raises(RuntimeError, match="not connected"):
         _run(adapter.send_message(str(CHAT_ID), "scout", "hello"))
@@ -2072,6 +2081,7 @@ def test_the_bots_own_username_wins_over_a_configured_one(
     adapter = TelegramAdapter(
         config=TelegramConnectionConfig(bot_token="token", bot_username="wrong_name")
     )
+    adapter.set_feature_flags({})
     app = _FakeApplication()
 
     with patch.object(adapter_module, "ApplicationBuilder", lambda: _FakeBuilder(app)):
@@ -2096,6 +2106,7 @@ def test_groups_disabled_in_botfather_withholds_the_group_link(
     adapter = TelegramAdapter(
         config=TelegramConnectionConfig(bot_token="token", bot_username=BOT_USERNAME)
     )
+    adapter.set_feature_flags({})
     app = _FakeApplication(can_join_groups=False)
 
     with patch.object(adapter_module, "ApplicationBuilder", lambda: _FakeBuilder(app)):
@@ -2112,6 +2123,7 @@ def test_groups_are_assumed_allowed_when_the_bot_does_not_say() -> None:
     adapter = TelegramAdapter(
         config=TelegramConnectionConfig(bot_token="token", bot_username=BOT_USERNAME)
     )
+    adapter.set_feature_flags({})
     app = _FakeApplication()
 
     with patch.object(adapter_module, "ApplicationBuilder", lambda: _FakeBuilder(app)):
@@ -2124,6 +2136,7 @@ def test_a_bad_token_fails_the_start_rather_than_running_deaf() -> None:
     adapter = TelegramAdapter(
         config=TelegramConnectionConfig(bot_token="bad", bot_username=BOT_USERNAME)
     )
+    adapter.set_feature_flags({})
     app = _FakeApplication()
 
     async def _unauthorised() -> Any:
@@ -2144,6 +2157,7 @@ def test_an_application_without_an_updater_fails_loudly() -> None:
     adapter = TelegramAdapter(
         config=TelegramConnectionConfig(bot_token="token", bot_username=BOT_USERNAME)
     )
+    adapter.set_feature_flags({})
     app = _FakeApplication()
     app.updater = None  # type: ignore[assignment]
 
@@ -2156,6 +2170,7 @@ def test_the_command_menu_is_published_in_telegrams_spelling() -> None:
     adapter = TelegramAdapter(
         config=TelegramConnectionConfig(bot_token="token", bot_username=BOT_USERNAME)
     )
+    adapter.set_feature_flags({})
     app = _FakeApplication()
 
     with patch.object(adapter_module, "ApplicationBuilder", lambda: _FakeBuilder(app)):
@@ -2174,6 +2189,7 @@ def test_a_menu_telegram_rejects_does_not_stop_the_bridge(
     adapter = TelegramAdapter(
         config=TelegramConnectionConfig(bot_token="token", bot_username=BOT_USERNAME)
     )
+    adapter.set_feature_flags({})
     app = _FakeApplication()
 
     async def _reject(_commands: Any) -> None:
