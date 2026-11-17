@@ -329,6 +329,36 @@ export function useGroupProgress({
   return { inGroup: talking || query.data?.inGroup === true, talking };
 }
 
+/**
+ * Whether the person has talked to the agent in one room: one of its sessions
+ * has attended it, which only a message to it there starts. Remembered on
+ * this machine once seen, as `useGroupProgress` does.
+ */
+export function useTalkedIn({
+  workspaceId,
+  agentId,
+  roomId,
+}: {
+  workspaceId: string;
+  agentId: string;
+  roomId: string | null;
+}): boolean {
+  const key = `switch-buddy:talked-in:${workspaceId}:${agentId}:${roomId ?? ''}`;
+  const remembered = roomId !== null && readFlag(key);
+  const query = useQuery({
+    queryKey: ['buddy-talked-in', workspaceId, agentId, roomId],
+    queryFn: async () =>
+      (await rpc.workspaces.listAgentRooms({ workspaceId, agentId })).some(
+        (room) => room.roomId === roomId && room.sessionAttended === true
+      ),
+    enabled: roomId !== null && !remembered,
+    refetchInterval: (q) => (q.state.data ? false : SEEN_POLL_MS),
+  });
+  const talked = remembered || query.data === true;
+  if (talked && !remembered) writeFlag(key);
+  return talked;
+}
+
 function readFlag(key: string): boolean {
   try {
     return window.localStorage.getItem(key) === '1';

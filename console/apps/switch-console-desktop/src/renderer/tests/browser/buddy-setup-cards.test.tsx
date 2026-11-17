@@ -346,7 +346,11 @@ describe('switch-buddy setup cards', () => {
 
     const summary = el.querySelector<HTMLElement>('[data-testid="buddy-created-since"]')!;
     expect(summary.textContent).toBe('Created since: Order Planner · bakery-orders room');
-    expect(listAgentRooms).toHaveBeenCalledTimes(1);
+    // Once for the agent made since; the buddy's own rooms are read to see
+    // whether it has been talked to in its channel.
+    expect(
+      listAgentRooms.mock.calls.filter(([params]) => params.agentId === 'agent-op')
+    ).toHaveLength(1);
     await click(summary, 'Order Planner');
     expect(followConsoleLink).toHaveBeenLastCalledWith('switchdash://open/agent/agent-op');
     await click(summary, 'bakery-orders');
@@ -779,6 +783,22 @@ describe('switch-buddy setup cards', () => {
 
     await click(el, 'Connect another app');
     expect(el.textContent).toContain('Where does your team chat?');
+  });
+
+  it('(l) Slack: once buddy has answered in its channel, folds into a bar that still opens Slack', async () => {
+    listBridges.mockResolvedValue([acme]);
+    listMyIdentities.mockResolvedValue([linked('b-1')]);
+    made.add('b-1');
+    listAgentRooms.mockResolvedValue([
+      { roomId: 'room-b-1', roomName: '#buddy-ada', archived: false, sessionAttended: true },
+    ]);
+    const el = await render();
+
+    await vi.waitFor(() => expect(el.textContent).toContain('Slack is set up.'));
+    expect(el.textContent).not.toContain('Where does your team chat?');
+    expect(findButton(el, 'Open Slack')).toBeDefined();
+    expect(findButton(el, 'Connect another app')).toBeDefined();
+    await shot(el, 'l-slack-settled');
   });
 
   it('(o) Discord linked: continues in a private Discord channel, then opens it', async () => {

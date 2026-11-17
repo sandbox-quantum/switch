@@ -32,7 +32,7 @@ import {
   buddyResumeBridges,
   buddySetupStep,
 } from './buddy-setup-step';
-import { ChatAppChecklist, useGroupProgress } from './chat-app-checklist';
+import { ChatAppChecklist, useGroupProgress, useTalkedIn } from './chat-app-checklist';
 import {
   BUDDY_CHAT_NAME,
   buddyHandoffRequestId,
@@ -175,9 +175,11 @@ const Cards = observer(function Cards({
     enabled: (ids.identities ?? []).some((identity) => identity.bridgeId === checklistBridge?.id),
   });
   const [connectAnother, setConnectAnother] = useState(false);
-  const settled = checklistBridge !== null && progress.talking && !connectAnother;
-
   const doneRoomId = step.kind === 'done' ? step.chat.roomId : null;
+  const talkedInChannel = useTalkedIn({ workspaceId, agentId, roomId: doneRoomId });
+  const settled =
+    !connectAnother &&
+    ((checklistBridge !== null && progress.talking) || (doneRoomId !== null && talkedInChannel));
   const roomQuery = useQuery({
     queryKey: ['buddy-handoff-room', workspaceId, doneRoomId],
     queryFn: () => rpc.workspaces.getRoomDetail({ workspaceId, roomId: doneRoomId as string }),
@@ -233,13 +235,19 @@ const Cards = observer(function Cards({
 
   if (settled)
     return (
-      <div className="mt-4" data-testid="buddy-setup-cards">
+      <div className="mt-4 flex flex-col gap-3" data-testid="buddy-setup-cards">
         <StatusRow>
           <CheckCircle2 className="size-4 shrink-0 text-foreground-success" />
           <span className="min-w-0 flex-1">
             <span className="font-semibold">{label} is set up.</span> You’re talking to {agentName}{' '}
             there.
           </span>
+          {doneRoomId && channelUrl && (
+            <Button size="sm" onClick={() => openChannel(channelUrl)}>
+              Open {label}
+              <ArrowRight />
+            </Button>
+          )}
           <Button
             size="sm"
             variant="outline"
@@ -251,6 +259,13 @@ const Cards = observer(function Cards({
             Connect another app
           </Button>
         </StatusRow>
+        {doneRoomId && roomQuery.data?.createdAt && (
+          <CreatedSince
+            workspaceId={workspaceId}
+            buddyId={agentId}
+            since={roomQuery.data.createdAt}
+          />
+        )}
       </div>
     );
 
