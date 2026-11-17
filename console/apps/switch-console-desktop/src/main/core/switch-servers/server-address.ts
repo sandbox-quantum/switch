@@ -3,6 +3,7 @@ import { log } from '@main/lib/logger';
 import {
   dashboardOrigin,
   type SwitchServer,
+  urlHost,
   urlOrigin,
 } from '@shared/core/switch-servers/switch-servers';
 import { clearDashboardUrl, listServers, setDashboardUrl } from './servers-store';
@@ -99,6 +100,32 @@ export class NoManagementApiError extends Error {
         `${url} to switch-core, as the agent API already is.`
     );
     this.name = 'NoManagementApiError';
+  }
+}
+
+/**
+ * The server's address answered its management API with a redirect.
+ * switch-core never redirects an API call, so whatever answered is not it: a
+ * typo that landed on someone else's site, or plain http where the server
+ * only answers https.
+ */
+export class RedirectedAddressError extends Error {
+  constructor(url: string, location: string) {
+    const from = urlHost(url);
+    let target: URL | null = null;
+    try {
+      target = new URL(location, url);
+    } catch {
+      target = null;
+    }
+    const sameHostHttps = target !== null && target.host === from && target.protocol === 'https:';
+    super(
+      sameHostHttps
+        ? `${from} only answers over https. Enter the address as https://${from}.`
+        : `${from} isn't a Switch server: it redirects to ${target ? target.host : location}. ` +
+            `Check the address.`
+    );
+    this.name = 'RedirectedAddressError';
   }
 }
 

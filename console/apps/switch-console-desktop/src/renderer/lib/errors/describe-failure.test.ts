@@ -139,6 +139,7 @@ describe('describeFailure', () => {
     'DuplicateServerUrlError',
     'NoDashboardError',
     'NoManagementApiError',
+    'RedirectedAddressError',
   ])('passes a refusal about a server’s address straight through (%s)', (code) => {
     const message = 'https://switch.example.com answered with a web page, not the Switch server.';
     expect(describeFailure(rpcError(code, message), 'Could not add the server.')).toEqual({
