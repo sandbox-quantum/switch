@@ -72,6 +72,10 @@ async def test_a_hello_where_there_is_no_directory_is_answered_as_one() -> None:
         SimpleNamespace(_adapter=adapter), _msg("lobby")
     )
     assert "Switch has seen your account" in adapter.notices[0][1]
+    # A mention alone never reaches the bot in a group with Group Privacy
+    # on (BotFather's default); a reply to an agent's message does.
+    assert "reply to its messages" in adapter.notices[0][1]
+    assert "mention" not in adapter.notices[0][1]
 
 
 async def test_inbound_lobby_message_short_circuits_routing() -> None:
