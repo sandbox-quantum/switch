@@ -36,6 +36,7 @@ from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
+from switch_core.gateway.agent_key_rotation import router as agent_key_rotation_router
 from switch_core.gateway.agent_sessions import router as agent_sessions_router
 from switch_core.gateway.agents import router as agents_router
 from switch_core.gateway.api_keys import router as api_keys_router
@@ -283,6 +284,7 @@ def create_gateway_app(
     app.include_router(templates_router, tags=["templates"])
     app.include_router(ownership_router, tags=["ownership"])
     app.include_router(suspension_router, tags=["suspension"])
+    app.include_router(agent_key_rotation_router, tags=["agents"])
     app.include_router(template_runs_router, tags=["templates"])
     app.include_router(ecosystem_router, prefix="/ecosystem", tags=["ecosystem"])
     app.include_router(trust_settings_router, tags=["trust-settings"])

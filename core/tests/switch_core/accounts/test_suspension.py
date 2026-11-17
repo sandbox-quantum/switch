@@ -10,7 +10,8 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 from fastapi import HTTPException
@@ -33,10 +34,13 @@ from switch_core.bridges.agent.api_key_cache import ApiKeyCache
 from switch_core.bridges.agent.auth import BearerAuthMiddleware
 from switch_core.bridges.agent.protocol.agent_connections import (
     AGENT_SUSPENDED,
+    KEY_REISSUED,
     AgentConnectionRegistry,
     ClientDeclaration,
 )
+from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.bridges.agent.protocol.positions import OWN_EVENTS
+from switch_core.config import SwitchConfig
 from switch_core.db.models import (
     TENANT_ZERO_ID,
     Agent,
@@ -55,9 +59,11 @@ from switch_core.db.stores.agent_connection_store import AgentConnectionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.user_store import UserStore
+from switch_core.gateway.agent_key_rotation import rotate_agent_key
 from switch_core.gateway.auth import refuse_suspended_account
 from switch_core.management.schemas import assignment_entry
 from switch_core.tenant_context import tenant_scope
+from tests.conftest import TEST_KEYRING
 from tests.switch_core.gateway.agent_route_harness import add_agent, add_user
 
 TENANT = TENANT_ZERO_ID
@@ -671,3 +677,67 @@ class TestSuspendingAPerson:
 
         assert own.value.status == 400
         assert theirs.value.status == 403
+
+
+class TestRotatingAnAgentsKey:
+    async def test_the_old_key_is_refused_and_its_connections_closed(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            owner = await add_user(session, name="owner")
+            agent = await _agent(session, "helper", owner)
+            await _record_connection(session, agent.id)
+            await session.commit()
+        registry = AgentConnectionRegistry()
+        conn = _open(registry, agent.id)
+        cache = ApiKeyCache(ttl_seconds=5, max_entries=8)
+        mw, reached = _middleware(session_factory, cache)
+        path = f"/agents/{agent.id}/ops"
+        assert await _dispatch(mw, "tok-helper", path) == []
+
+        async with session_factory() as session:
+            rotated = await rotate_agent_key(
+                agent.id,
+                session=session,
+                user=owner,
+                is_admin=False,
+                protocol=cast(
+                    AgentCore,
+                    SimpleNamespace(api_key_cache=cache, connections=registry),
+                ),
+                config=cast(SwitchConfig, SimpleNamespace(keyring=TEST_KEYRING)),
+            )
+
+        assert conn.closure == KEY_REISSUED
+        assert (await _dispatch(mw, "tok-helper", path))[0]["status"] == 401
+        assert await _dispatch(mw, rotated.api_key, path) == []
+        assert reached == [path, path]
+        async with session_factory() as session:
+            assert not await session.scalar(
+                select(AgentConnectionRecord.id).where(
+                    AgentConnectionRecord.agent_id == agent.id
+                )
+            )
+            event = await session.scalar(
+                select(AuditEvent).where(AuditEvent.action == "agent.key_rotated")
+            )
+            assert event is not None and event.target_id == agent.id
+
+    async def test_someone_else_may_not_rotate_it(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            owner = await add_user(session, name="owner")
+            other = await add_user(session, name="other")
+            agent = await _agent(session, "helper", owner)
+            await session.commit()
+            with pytest.raises(HTTPException) as refused:
+                await rotate_agent_key(
+                    agent.id,
+                    session=session,
+                    user=other,
+                    is_admin=False,
+                    protocol=cast(AgentCore, SimpleNamespace()),
+                    config=cast(SwitchConfig, SimpleNamespace(keyring=TEST_KEYRING)),
+                )
+        assert refused.value.status_code == 403

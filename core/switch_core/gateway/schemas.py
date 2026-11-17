@@ -2874,7 +2874,7 @@ class ErasureDetail(BaseModel):
     completed_at: datetime | None
 
 
-# ── Suspension ───────────────────────────────────────────────────────────────
+# ── Suspension and key rotation ──────────────────────────────────────────────
 
 
 class SuspendRequest(BaseModel):
@@ -2897,3 +2897,11 @@ class PersonSuspensionResponse(BaseModel):
     by_role: str | None
     # The agents suspended, or let back in, with the person, by workspace.
     agents: dict[str, list[str]]
+
+
+class RotateAgentKeyResponse(BaseModel):
+    """The agent's new key, shown this once as when the agent was registered.
+    Every connection made with the old key has been closed."""
+
+    agent_id: str
+    api_key: str

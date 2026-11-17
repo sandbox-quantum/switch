@@ -395,6 +395,9 @@ ROUTES: dict[str, Case] = {
         owner_or_admins(ok=409),
         why="Who may suspend it may ask; this one is not suspended.",
     ),
+    "POST /gateway/agents/{agent_id}/key/rotate": post(
+        f"{G}/agents/{{agent}}/key/rotate", owner_or_admins()
+    ),
     "POST /gateway/users/{user_id}/suspend": post(
         f"{G}/users/{{member_target}}/suspend",
         admins(),

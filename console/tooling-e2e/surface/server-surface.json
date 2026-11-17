@@ -1221,6 +1221,11 @@
       "flags": []
     },
     {
+      "route": "POST /gateway/agents/{agent_id}/key/rotate",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "POST /gateway/agents/{agent_id}/suspend",
       "auth": "session",
       "flags": []
