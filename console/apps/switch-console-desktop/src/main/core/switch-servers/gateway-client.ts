@@ -147,6 +147,7 @@ import type {
 import type { OrganizationRole, WorkspaceRole } from '@shared/core/workspaces/workspaces';
 import { extractAuthCookie, reauthenticateManagedServer, refreshSession } from './auth';
 import { consoleIdentityHeaders } from './console-identity';
+import { describeNetworkFailure } from './network-failure';
 import { NoManagementApiError } from './server-address';
 import { getSessionCookie, setSessionCookie } from './servers-store';
 import { noteSessionEnded } from './session-ended';
@@ -418,10 +419,7 @@ export async function gatewayRequest(
       });
     } catch (cause) {
       noteManagedServerUnanswered(server);
-      throw new GatewayError(
-        'network',
-        `Could not reach ${server.url}: ${cause instanceof Error ? cause.message : String(cause)}`
-      );
+      throw new GatewayError('network', describeNetworkFailure(server.url, cause));
     }
   };
 
@@ -877,6 +875,21 @@ export class PasswordChangedSessionNotSavedError extends Error {
       { cause }
     );
     this.name = 'PasswordChangedSessionNotSavedError';
+  }
+}
+
+/**
+ * Whether the server answers at all, asked without a session. Any answer
+ * counts, a refusal included; only a request that never got one is raised, as
+ * the `network` {@link GatewayError} that says why.
+ */
+export async function probeGateway(server: SwitchServer): Promise<void> {
+  try {
+    const res = await gatewayFetch(server, '/auth/config', { authenticated: false });
+    await res.body?.cancel();
+  } catch (cause) {
+    if (cause instanceof GatewayError && cause.kind !== 'network') return;
+    throw cause;
   }
 }
 

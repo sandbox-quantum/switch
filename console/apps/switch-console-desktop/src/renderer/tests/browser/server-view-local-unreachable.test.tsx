@@ -38,6 +38,10 @@ vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
     statusFor: () => ({ connected: true }),
     refreshing: new Set(),
     isUnreachable: () => state.unreachable,
+    unreachableReason: () =>
+      state.unreachable
+        ? "Can't reach localhost:41001: nothing is answering at that address and port (ECONNREFUSED)."
+        : null,
     isHostBlocked: () => false,
     refreshStatus: () => Promise.resolve(),
     ensureAuthConfig: () => Promise.resolve(),
@@ -159,16 +163,18 @@ it('does not blame the connection when the local server is not answering', async
   await render();
 
   expect(document.body.textContent).toContain("Local server isn't answering");
-  expect(document.body.textContent).not.toContain('Check your connection');
+  expect(document.body.textContent).not.toContain('Check the address and your connection');
   expect(button(/^Server status$/)).toBeDefined();
 });
 
-it('still calls an unmanaged server unreachable a connection problem', async () => {
+it('names the address an unmanaged server cannot be reached at, and why', async () => {
   state.unreachable = true;
   LOCAL.managed = false;
   try {
     await render();
-    expect(document.body.textContent).toContain('Check your connection');
+    expect(document.body.textContent).toContain("Can't reach localhost:41001");
+    expect(document.body.textContent).toContain('(ECONNREFUSED)');
+    expect(document.body.textContent).toContain('Check the address and your connection');
     expect(button(/^Server status$/)).toBeUndefined();
   } finally {
     LOCAL.managed = true;

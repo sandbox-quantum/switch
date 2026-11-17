@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
+import { RpcError } from '@shared/lib/ipc/rpc-error';
 
 const getAuthConfig = vi.hoisted(() => vi.fn());
 const getConnectionStatus = vi.hoisted(() => vi.fn());
@@ -72,6 +73,7 @@ vi.mock('@renderer/lib/stores/app-state', () => ({
 }));
 
 const { SwitchServersStore, switchServersStore } = await import('./switch-servers-store');
+const { workspacesStore } = await import('@renderer/features/workspaces/workspaces-store');
 const { gatewaySessionEndedChannel } = await import('@shared/events/switchServerEvents');
 /** What the store does with word from the main process that a session ended,
  * taken before `beforeEach` clears the record of it being subscribed. */
@@ -660,6 +662,87 @@ describe('a server that cannot be reached', () => {
 
     expect(store.isUnreachable('srv-a')).toBe(true);
     expect(store.isUnreachable('srv-b')).toBe(false);
+  });
+});
+
+describe('why a server cannot be reached', () => {
+  const unreachable = () =>
+    new RpcError({
+      __switchConsoleRpcError: true,
+      code: 'GatewayError',
+      message: "Can't reach api.srv-a.example.com: the address doesn't resolve (ENOTFOUND).",
+      data: { kind: 'network' },
+    });
+
+  it('keeps the reason the sign-in read gave', async () => {
+    const store = newStore([server('srv-a')]);
+    getAuthConfig.mockRejectedValueOnce(unreachable());
+
+    await store.ensureAuthConfig('srv-a');
+
+    expect(store.authConfigFailure('srv-a')).toBe(
+      "Can't reach api.srv-a.example.com: the address doesn't resolve (ENOTFOUND)."
+    );
+    expect(store.unreachableReason('srv-a')).toBe(store.authConfigFailure('srv-a'));
+  });
+
+  it('keeps the reason the status read gave', async () => {
+    const store = newStore([server('srv-a')]);
+    getConnectionStatus.mockRejectedValueOnce(unreachable());
+
+    await store.refreshStatus('srv-a');
+
+    expect(store.unreachableReason('srv-a')).toMatch(/doesn't resolve/);
+  });
+
+  it('forgets the reason once the server answers', async () => {
+    const store = newStore([server('srv-a')]);
+    getAuthConfig.mockRejectedValueOnce(unreachable());
+    getConnectionStatus.mockRejectedValueOnce(unreachable());
+    await store.refreshServer('srv-a');
+
+    await store.refreshServer('srv-a');
+
+    expect(store.unreachableReason('srv-a')).toBeNull();
+    expect(store.authConfigFailure('srv-a')).toBeNull();
+  });
+});
+
+describe('where leaving setup lands', () => {
+  it('stays on the open workspace when the new server has never answered', async () => {
+    listServers.mockResolvedValue([server('srv-a'), server('srv-new')]);
+    selectServer('srv-a');
+    getConnectionStatus.mockImplementation(async (serverId: string) => {
+      if (serverId === 'srv-new') throw new Error('fetch failed');
+      return { serverId, connected: true, user: null };
+    });
+    getAuthConfig.mockRejectedValue(new Error('fetch failed'));
+    const store = new SwitchServersStore();
+    await store.init();
+    await store.refreshServer('srv-new');
+
+    expect(store.serverToOpenAfterSetup('srv-new')).toBe('srv-a');
+  });
+
+  it('opens the new server once it has answered, signed in or not', async () => {
+    listServers.mockResolvedValue([server('srv-a'), server('srv-new')]);
+    selectServer('srv-a');
+    const store = new SwitchServersStore();
+    await store.init();
+    await store.refreshStatus('srv-new');
+
+    expect(store.serverToOpenAfterSetup('srv-new')).toBe('srv-new');
+  });
+
+  it('opens the new server when there is nothing else to show', async () => {
+    listServers.mockResolvedValue([server('srv-new')]);
+    getConnectionStatus.mockRejectedValue(new Error('fetch failed'));
+    const store = new SwitchServersStore();
+    await store.init();
+    selectServer(null);
+    await workspacesStore.refresh();
+
+    expect(store.serverToOpenAfterSetup('srv-new')).toBe('srv-new');
   });
 });
 
