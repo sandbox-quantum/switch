@@ -521,6 +521,14 @@ version of their own to them without also giving them a release of their own.
   Platform pages.
 
 #### Changed
+- **A message in a busy chat no longer costs every member's Console stream a
+  database pass of its own at the same instant.** Chat stream passes hold at
+  most a quarter of the process's database pool at once, and a pass over that
+  waits holding no connection. The new rows of a room are read and rendered once
+  and handed to every stream its message woke, so each stream reads only what
+  its own person may see. A stream woken by its rooms passes at most every
+  200 ms, sending what came in meanwhile together. The activity stream's
+  reads share the same slots.
 - **The dashboard has one layout: the one built behind `gateway_v2`.**
   Home, Agents, Rooms, Templates, Connectors and Resources on the rail,
   Workspace and Organization settings as their own areas, and the

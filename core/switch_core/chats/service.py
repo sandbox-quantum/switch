@@ -55,6 +55,7 @@ from switch_core.authz import (
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.bridges.agent.registration_bootstrap import is_bootstrap_owner
 from switch_core.chats import MEMBER_CLIENT_TYPE, is_console_chat
+from switch_core.chats.stream_reads import StreamReads
 from switch_core.chats.views import (
     COMMAND_EVENT_TYPE,
     MESSAGE_EVENT_TYPE,
@@ -205,8 +206,13 @@ class ChatService:
         trust_client: TrustClient,
         message_observer: ParticipantMessageObserver,
         telemetry: TelemetryService | None,
+        stream_slots: int | None = None,
     ) -> None:
         self.session_factory = session_factory
+        # What this process's Console streams share: the slots their passes
+        # hold a connection in (`stream_slots`, None for no limit) and the
+        # pages of rooms' new rows they read (`chats/stream_reads.py`).
+        self.stream_reads = StreamReads(stream_slots)
         self._trust_client = trust_client
         # A post is stored straight through the router rather than sent by a
         # transport, so it is told to the observer here, as the transport
