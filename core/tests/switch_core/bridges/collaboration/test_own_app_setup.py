@@ -200,7 +200,7 @@ class TestWhatLinkingAnAccountNeeds:
     person first (`im:write`). An app made from the manifest has all of it."""
 
     def test_the_manifest_turns_on_everything_linking_uses(self) -> None:
-        manifest = own_app_setup.slack_manifest()
+        manifest = own_app_setup.slack_manifest({})
 
         assert manifest["settings"]["interactivity"] == {"is_enabled": True}
         assert manifest["settings"]["socket_mode_enabled"] is True
@@ -245,12 +245,12 @@ SLACK_DOC = (
 
 def test_the_documented_manifest_is_the_one_this_server_builds() -> None:
     """An app made from the docs must be able to do what one made from Switch
-    Console's link can, linking accounts included: the docs' manifest is
-    `slack_manifest()` exactly. Regenerate the block with
-    `json.dumps(slack_manifest(), indent=4)` when this fails."""
+    Console's link can, linking accounts included: the docs' manifest is the
+    one a server with no feature flags on builds. Regenerate the block with
+    `json.dumps(slack_manifest({}), indent=4)` when this fails."""
     text = SLACK_DOC.read_text()
     head = "### Agent Switch app manifest\n\n```json\n"
     start = text.index(head) + len(head)
     documented = json.loads(text[start : text.index("\n```\n", start)])
 
-    assert documented == slack_manifest()
+    assert documented == slack_manifest({})

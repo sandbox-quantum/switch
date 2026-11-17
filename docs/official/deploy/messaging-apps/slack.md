@@ -60,180 +60,159 @@ Declaring the app an Agent blocks workspace guests from using it and turns every
         "slash_commands": [
             {
                 "command": "/help",
-                "description": "Show this list of commands",
-                "should_escape": false
+                "description": "Show the commands"
             },
             {
                 "command": "/reset",
-                "description": "Reset a targeted agent's session (clears context, then reconnects)",
+                "description": "Reset an agent's session",
                 "should_escape": true,
                 "usage_hint": "<target>"
             },
             {
                 "command": "/reset-all-agents",
-                "description": "Reset EVERY agent's session in this room (clears context, then reconnects each)",
-                "should_escape": false
+                "description": "Reset every agent's session here"
             },
             {
                 "command": "/compact",
-                "description": "Compact a targeted agent's session context",
+                "description": "Compact an agent's context",
                 "should_escape": true,
                 "usage_hint": "<target>"
             },
             {
                 "command": "/compact-all-agents",
-                "description": "Compact EVERY agent's session context in this room",
-                "should_escape": false
+                "description": "Compact every agent's context here"
             },
             {
                 "command": "/interrupt",
-                "description": "Interrupt a targeted agent's current turn",
+                "description": "Stop an agent's current turn",
                 "should_escape": true,
                 "usage_hint": "<target>"
             },
             {
                 "command": "/interrupt-all-agents",
-                "description": "Interrupt EVERY agent's current turn in this room",
-                "should_escape": false
+                "description": "Stop every agent's current turn here"
             },
             {
                 "command": "/list-agents",
-                "description": "List agents in this room",
-                "should_escape": false
+                "description": "List the agents here"
             },
             {
                 "command": "/agents-status",
-                "description": "Show each agent's presence status and capabilities in this room",
-                "should_escape": false
+                "description": "Show each agent's status"
             },
             {
                 "command": "/roles",
-                "description": "List this room's roles and who currently holds each",
-                "should_escape": false
+                "description": "List roles and who holds them"
             },
             {
                 "command": "/list-documents",
-                "description": "List the room's internal documents",
-                "should_escape": false
+                "description": "List the room's documents"
             },
             {
                 "command": "/list-references",
-                "description": "List the room's references",
-                "should_escape": false
+                "description": "List the room's references"
             },
             {
                 "command": "/list-aliases",
-                "description": "List per-room agent aliases (`@alias` → agent)",
-                "should_escape": false
+                "description": "List agent aliases here"
             },
             {
                 "command": "/follow-ups",
-                "description": "Turn follow-ups on or off for this room: whether a reply in an agent's thread, or the next message…",
-                "should_escape": true,
-                "usage_hint": "<state>"
-            },
-            {
-                "command": "/auto-route",
-                "description": "Let Switch pick the agent to answer messages that tag nobody, using a decision service",
+                "description": "Turn follow-ups on or off",
                 "should_escape": true,
                 "usage_hint": "<state>"
             },
             {
                 "command": "/assign-agent",
-                "description": "Send every message in this room to one agent, unless it mentions someone else",
+                "description": "Send every message here to one agent",
                 "should_escape": true,
                 "usage_hint": "<agent>"
             },
             {
                 "command": "/unassign-agent",
-                "description": "Stop sending every message in this room to the assigned agent",
-                "should_escape": false
+                "description": "Stop sending every message to one agent"
             },
             {
                 "command": "/add-room-admin",
-                "description": "Make someone in this room a room admin, who can change it as its owner does: the room's owner or a…",
+                "description": "Make someone a room admin",
                 "should_escape": true,
                 "usage_hint": "<person>"
             },
             {
                 "command": "/remove-room-admin",
-                "description": "Take someone off this room's room admins: the room's owner or a workspace admin, or a room admin st…",
+                "description": "Remove a room admin",
                 "should_escape": true,
                 "usage_hint": "<person>"
             },
             {
                 "command": "/list-room-admins",
-                "description": "Show who owns this room and who its room admins are",
-                "should_escape": false
+                "description": "Show the room's owner and admins"
             },
             {
                 "command": "/set-alias",
-                "description": "Give an agent a room alias: the room's owner or an admin, or the agent's own owner",
+                "description": "Give an agent a room alias",
                 "should_escape": true,
                 "usage_hint": "<agent> <alias>"
             },
             {
                 "command": "/remove-alias",
-                "description": "Remove a room alias: the room's owner or an admin, or the agent's own owner",
+                "description": "Remove a room alias",
                 "should_escape": true,
                 "usage_hint": "<alias>"
             },
             {
                 "command": "/invite-agent",
-                "description": "Add an existing agent to this room",
+                "description": "Add an agent to this room",
                 "should_escape": true,
                 "usage_hint": "<agent>"
             },
             {
                 "command": "/remove-agent",
-                "description": "Remove an agent from this room: the room's owner or an admin, or the agent's own owner",
+                "description": "Remove an agent from this room",
                 "should_escape": true,
                 "usage_hint": "<agent>"
             },
             {
                 "command": "/remove-user",
-                "description": "Remove a person from this room and its channel: the room's owner or an admin",
+                "description": "Remove a person from this room",
                 "should_escape": true,
                 "usage_hint": "<person>"
             },
             {
                 "command": "/link-account",
-                "description": "Confirm a link between this chat account and your Switch user, with the code Switch showed you",
+                "description": "Link this chat account with a code",
                 "should_escape": true,
                 "usage_hint": "<code>"
             },
             {
                 "command": "/unlink-account",
-                "description": "Show which Switch users this chat account is linked to, or remove one",
+                "description": "Show or remove your linked Switch users",
                 "should_escape": true,
                 "usage_hint": "<user>"
             },
             {
                 "command": "/rename-agent",
-                "description": "Rename an agent, and its display name with it",
+                "description": "Rename an agent",
                 "should_escape": true,
                 "usage_hint": "<agent> <new_name> <display_name>"
             },
             {
                 "command": "/delete-agent",
-                "description": "Delete an agent everywhere, after a confirmation",
+                "description": "Delete an agent everywhere",
                 "should_escape": true,
                 "usage_hint": "<agent> <confirm>"
             },
             {
                 "command": "/room-url",
-                "description": "Show the frontend URL for this room",
-                "should_escape": false
+                "description": "Show this room's web address"
             },
             {
                 "command": "/list-switch-agents",
-                "description": "List all agents registered on the Switch",
-                "should_escape": false
+                "description": "List every agent on this server"
             },
             {
                 "command": "/agents-greet",
-                "description": "Have agents in the room introduce themselves",
-                "should_escape": false
+                "description": "Have the agents introduce themselves"
             }
         ]
     },
