@@ -77,6 +77,9 @@ export const antigravityAcp: AcpProviderHooks = {
   launch: antigravityLaunch,
   loginCommand: AGY_LOGIN,
   loginCommandFor: antigravityLoginCommand,
+  // How agy signs in to Vertex AI with application-default credentials; the
+  // project, location and credential file variables are passed through already.
+  inheritEnv: ['AGY_ADC_AUTH', 'GOOGLE_CLOUD_QUOTA_PROJECT'],
   // agy 1.5 connects to HTTP MCP servers, headers included, without declaring
   // `mcpCapabilities.http`.
   mcpCapabilities: { http: true },

@@ -4576,6 +4576,13 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **Antigravity can be given a Vertex AI login, as Claude can.** Giving a
+  cloud machine an Antigravity login now offers Vertex AI beside this
+  computer's sign-in: a Google Cloud project, a region, and a service account
+  key or this computer's `gcloud auth application-default login` sign-in. It
+  needs Google's `agy` CLI on the machine. Antigravity agents on this computer
+  also pick up `AGY_ADC_AUTH` and `GOOGLE_CLOUD_QUOTA_PROJECT` from your
+  environment, so `agy` set up for Vertex AI there works in Switch as well.
 - **Home's chat bar takes several lines, and switch-buddy comes alive
   beside it.** The box grows with what you type, up to ten lines, then
   scrolls; Enter sends and Shift+Enter starts a new line. Each time Home
@@ -7151,6 +7158,12 @@ tags; see RELEASING.md.
 ### [Unreleased]
 
 #### Added
+- **Signs Antigravity in through Vertex AI.** A Vertex AI login given for
+  Antigravity is taken, its Google credential written to the agent's own
+  `provider-home/google-credentials.json`, and `agy` run with `AGY_ADC_AUTH`,
+  the project as `GOOGLE_CLOUD_PROJECT` and `GOOGLE_CLOUD_QUOTA_PROJECT`, the
+  region as `GOOGLE_CLOUD_LOCATION`, and `GOOGLE_APPLICATION_CREDENTIALS`. The
+  retired `antigravity-acp` runtime is refused one, since it cannot use it.
 - **Reports when its process started.** Each status report carries
   `controller.started_at`, so Core can count a cloud machine's controller
   restarting. An older Core ignores it.
