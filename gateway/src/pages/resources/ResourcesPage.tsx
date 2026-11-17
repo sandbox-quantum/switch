@@ -9,9 +9,7 @@ import CreateReferenceTypeDialog from "./CreateReferenceTypeDialog";
 import DocumentsTab from "./DocumentsTab";
 import PackagesTab from "./PackagesTab";
 import ReferencesTab from "./ReferencesTab";
-import CreateTemplateDialog from "./CreateTemplateDialog";
 import ReferenceTypesTab from "./ReferenceTypesTab";
-import TemplatesTab from "./TemplatesTab";
 
 // One list drives the tab bar, the URL parameter, the type and the create
 // button's label. They belong together: a tab listed in one and missed in
@@ -22,20 +20,18 @@ const TABS = [
   { value: "types", label: "Reference types", newLabel: "New reference type" },
   { value: "documents", label: "Documents", newLabel: "New document" },
   { value: "packages", label: "Packages", newLabel: "New package" },
-  { value: "templates", label: "Templates", newLabel: "Upload template" },
 ] as const;
 
 type ResourceTab = (typeof TABS)[number]["value"];
 
-/** `withTemplates` is false in the new layout, where Templates is a page of
- * its own; a link to the old tab is sent there. */
-export default function ResourcesPage({ withTemplates }: { withTemplates: boolean }) {
+/** References, their types, documents and packages. Templates, once a tab
+ * here, are a page of their own; a link to the old tab is sent there. */
+export default function ResourcesPage() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const { hash } = useLocation();
   const tabParam = searchParams.get("tab");
-  const tabs = TABS.filter((t) => withTemplates || t.value !== "templates");
-  const active = tabs.find((t) => t.value === tabParam) ?? tabs[0];
+  const active = TABS.find((t) => t.value === tabParam) ?? TABS[0];
   const tab: ResourceTab = active.value;
   const [createOpen, setCreateOpen] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
@@ -64,18 +60,12 @@ export default function ResourcesPage({ withTemplates }: { withTemplates: boolea
     navigate(`/resources/packages/${id}`);
   };
 
-  const handleTemplateCreated = (id: string) => {
-    setCreateOpen(false);
-    setRefreshKey((k) => k + 1);
-    navigate(`/resources/templates/${id}`);
-  };
-
   const handleReferenceTypeCreated = () => {
     setCreateOpen(false);
     setRefreshKey((k) => k + 1);
   };
 
-  if (!withTemplates && tabParam === "templates") {
+  if (tabParam === "templates") {
     const rest = new URLSearchParams(searchParams);
     rest.delete("tab");
     const search = rest.toString();
@@ -105,7 +95,7 @@ export default function ResourcesPage({ withTemplates }: { withTemplates: boolea
         onChange={(_, v) => setTab(v as ResourceTab)}
         sx={{ mb: 2, borderBottom: 1, borderColor: "divider" }}
       >
-        {tabs.map((t) => (
+        {TABS.map((t) => (
           <Tab key={t.value} label={t.label} value={t.value} />
         ))}
       </Tabs>
@@ -115,7 +105,6 @@ export default function ResourcesPage({ withTemplates }: { withTemplates: boolea
         {tab === "types" && <ReferenceTypesTab refreshKey={refreshKey} />}
         {tab === "documents" && <DocumentsTab refreshKey={refreshKey} />}
         {tab === "packages" && <PackagesTab refreshKey={refreshKey} />}
-        {tab === "templates" && <TemplatesTab refreshKey={refreshKey} />}
       </Box>
 
       {/* Mounted only while open: each dialog loads what it offers, which no
@@ -146,16 +135,6 @@ export default function ResourcesPage({ withTemplates }: { withTemplates: boolea
           open
           onClose={() => setCreateOpen(false)}
           onCreated={handlePackageCreated}
-        />
-      )}
-      {createOpen && tab === "templates" && (
-        <CreateTemplateDialog
-          open
-          title="Upload template"
-          submitLabel="Upload"
-          initial={null}
-          onClose={() => setCreateOpen(false)}
-          onCreated={handleTemplateCreated}
         />
       )}
     </Box>

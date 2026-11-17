@@ -189,7 +189,7 @@ const Cards = observer(function Cards({
   const channelUrl = roomQuery.data?.externalChannelUrl ?? null;
   const openChannel = (url: string) =>
     void reportOpenAttempt(
-      rpc.switchRooms.openRoomChannel({ serverId, channelUrl: url }),
+      rpc.switchRooms.openRoomChannel({ channelUrl: url }),
       `Could not open ${label}`,
       url
     );
@@ -277,10 +277,6 @@ const Cards = observer(function Cards({
         <TermInfo term="messagingApp" />
       </div>
       <div className="grid grid-cols-2 gap-3 @md:grid-cols-3 @2xl:grid-cols-5">
-        <button type="button" onClick={stay} className={TILE_CLASS}>
-          <SwitchConsoleMark size={28} />
-          <TileText name="Switch Console" subtitle="Chat right here" />
-        </button>
         {TILES.map((app) => (
           <button
             key={app.bridgeType}
@@ -296,6 +292,10 @@ const Cards = observer(function Cards({
             <TileText name={app.name} subtitle={app.subtitle} />
           </button>
         ))}
+        <button type="button" onClick={stay} className={TILE_CLASS}>
+          <SwitchConsoleMark size={28} />
+          <TileText name="Switch Console" subtitle="Connect an app later" />
+        </button>
       </div>
 
       {platform && step.kind === 'loading' && (
@@ -308,7 +308,7 @@ const Cards = observer(function Cards({
       {step.kind === 'unknown' && (
         <StatusRow className="border-border-destructive text-foreground-destructive">
           <div className="min-w-0 flex-1">
-            <div className="font-semibold">Couldn’t check {label || 'your chat apps'}</div>
+            <div className="font-semibold">Couldn’t check {label || 'your messaging apps'}</div>
             <div>Switch did not answer.</div>
           </div>
           <Button size="sm" variant="outline" onClick={retry}>

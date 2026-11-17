@@ -254,6 +254,14 @@ async def set_organization_workspace_admins(
             await change_member_role(
                 bound, user_store, workspace_id, user_id, role, actor_id=user.id
             )
+            await _record_workspace_role_change(
+                bound,
+                acting,
+                tenant,
+                user_id,
+                previous="member" if role == "admin" else "admin",
+                role=role,
+            )
         admins = await user_store.admin_names(bound, tenant)
         response = WorkspaceAdminsResponse(
             id=workspace_id, name=tenant.name, admins=admins
@@ -351,16 +359,22 @@ async def change_organization_workspace_member_role(
     user: Annotated[User, Depends(get_current_user)],
 ) -> OrganizationMemberWorkspace:
     """Change someone's role in one of the organization's workspaces, as its
-    own Users page does (`tenants.change_member_role`)."""
+    own Users page does (`tenants.change_member_role`), recorded in the
+    organization's audit log too."""
     role = validated_member_role(req.role)
     acting = await acting_org_admin(session, user_store, organization_store, user)
     async with in_organization_workspace(session_factory, acting, workspace_id) as (
         bound,
         tenant,
     ):
+        previous = await user_store.tenant_role(bound, workspace_id, user_id)
         _, membership = await change_member_role(
             bound, user_store, workspace_id, user_id, role, actor_id=user.id
         )
+        if previous is not None and previous != role:
+            await _record_workspace_role_change(
+                bound, acting, tenant, user_id, previous=previous, role=role
+            )
         changed = OrganizationMemberWorkspace(
             id=tenant.id,
             name=tenant.name,
@@ -417,7 +431,9 @@ async def remove_organization_workspace_member(
     """Remove someone from one of the organization's workspaces, as its own
     Users page does (`tenants.remove_member_from_workspace`): their keys and
     connections there revoked, what they own handed over, refused while they
-    own agents there or are its last admin."""
+    own agents there or are its last admin. Recorded in the organization's
+    audit log in the removal's own transaction, so neither commits without
+    the other."""
     acting = await acting_org_admin(session, user_store, organization_store, user)
     revocation = AccessRevocation(
         agent_store=agent_store,
@@ -429,8 +445,23 @@ async def remove_organization_workspace_member(
     try:
         async with in_organization_workspace(session_factory, acting, workspace_id) as (
             bound,
-            _,
+            tenant,
         ):
+            role = await user_store.tenant_role(bound, workspace_id, user_id)
+            await record_organization_audit_event(
+                bound,
+                organization_id=acting.access.organization_id,
+                actor_user_id=user.id,
+                action=OrganizationAuditAction.MEMBER_REMOVED_FROM_WORKSPACE,
+                target_type="user",
+                target_id=user_id,
+                details={
+                    "workspace": workspace_id,
+                    "workspace_name": tenant.name,
+                    "role": role,
+                    **acting.made_from,
+                },
+            )
             removed = await remove_member_from_workspace(
                 bound, user_store, revocation, workspace_id, user_id, actor_id=user.id
             )
@@ -441,6 +472,35 @@ async def remove_organization_workspace_member(
             request, response, session_factory, user_store, user, config
         )
     return removed
+
+
+async def _record_workspace_role_change(
+    bound: AsyncSession,
+    acting: Acting,
+    tenant: Tenant,
+    user_id: str,
+    *,
+    previous: str,
+    role: str,
+) -> None:
+    """Record, in the organization's audit log, its admin changing
+    `user_id`'s role in `tenant` from `previous` to `role`; it lands when
+    `bound` commits."""
+    await record_organization_audit_event(
+        bound,
+        organization_id=acting.access.organization_id,
+        actor_user_id=acting.user.id,
+        action=OrganizationAuditAction.MEMBER_WORKSPACE_ROLE_CHANGED,
+        target_type="user",
+        target_id=user_id,
+        details={
+            "workspace": tenant.id,
+            "workspace_name": tenant.name,
+            "from": previous,
+            "to": role,
+            **acting.made_from,
+        },
+    )
 
 
 @router.post(f"{WORKSPACE}/invitations", status_code=201)

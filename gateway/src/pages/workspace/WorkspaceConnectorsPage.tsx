@@ -1,11 +1,12 @@
-import { Alert, Box, Button, CircularProgress, Stack, Tooltip, Typography } from "@mui/material";
+import { Alert, Box, Button, CircularProgress, Link, Stack, Tooltip, Typography } from "@mui/material";
 import { useCallback, useState } from "react";
-import { useNavigate } from "react-router";
+import { Link as RouterLink, useNavigate } from "react-router";
 import CatalogueGrid from "../../components/connectors/CatalogueGrid";
 import ConnectorAvailability from "../../components/connectors/ConnectorAvailability";
 import ConnectorCard from "../../components/connectors/ConnectorCard";
 import ConfirmDialog from "../../components/ConfirmDialog";
-import PageBanner from "../../components/PageBanner";
+import InfoTip from "../../components/InfoTip";
+import SuccessSnackbar from "../../components/SuccessSnackbar";
 import { useAuth } from "../../data/AuthContext";
 import {
   type UnavailableCode,
@@ -37,6 +38,43 @@ function plural(count: number, one: string, many: string): string {
   return `${count} ${count === 1 ? one : many}`;
 }
 
+/** What stops anyone here using it, in the card's few words. */
+function unavailableText(service: WorkspaceService): string {
+  const code = service.unavailable_code;
+  if (code === null) throw new Error(`${service.slug} is not unavailable`);
+  return (code in UNAVAILABLE ? UNAVAILABLE[code as UnavailableCode] : service.unavailable_reason) ?? "Unavailable";
+}
+
+/** Whether nobody here can use it whatever the switch says (its app isn't set
+ * up, say), so the switch would decide nothing. One whose app is missing a
+ * part can still be connected, so its switch still decides that. Switch's own
+ * configuration having it off is said as "Off for everyone" instead. */
+function unusable(service: WorkspaceService): boolean {
+  const code = service.unavailable_code;
+  return code !== null && code !== "switched_off" && code !== "not_fully_set_up";
+}
+
+function lockedOff(service: WorkspaceService): boolean {
+  return service.decided_by === "organization_locked" && !service.enabled;
+}
+
+/** Why the switch can't decide it here, said in its place: Switch's own
+ * configuration or the organization has it off, or nobody here can use it
+ * anyway. Null where the switch decides. */
+export function blockedText(service: WorkspaceService, organization: string): string | null {
+  if (service.unavailable_code === "switched_off") return "Off for everyone";
+  if (lockedOff(service)) return `Off for ${organization}`;
+  return unusable(service) ? unavailableText(service) : null;
+}
+
+/** What a connector nobody has set is left as, for the page's info tip. */
+export function defaultsTip(data: Pick<WorkspaceServices, "on_by_default" | "organization_name">): string {
+  const state = data.on_by_default ? "on" : "off";
+  const org = data.organization_name;
+  if (org === null) return `Connectors nobody has set here are ${state}.`;
+  return `Connectors nobody has set, here or in ${org}, are ${state}. Whether one exists for ${org} at all is set in Organization settings › Connectors.`;
+}
+
 /** Which setting decides it, in the card's words. */
 function deciderText(service: WorkspaceService, organization: string): string {
   switch (service.decided_by) {
@@ -52,12 +90,12 @@ function deciderText(service: WorkspaceService, organization: string): string {
 }
 
 /** "Set by Acme · Your organization's app · 2 people, 1 agent": one line,
- * so who it reaches is said only when anyone is reached. */
+ * so who it reaches is said only when anyone is reached. What stops anyone
+ * using it is said here unless it is said in place of the switch. */
 export function metaText(service: WorkspaceService, organization: string): string {
   const parts = [deciderText(service, organization)];
   if (service.unavailable_code !== null) {
-    const code = service.unavailable_code;
-    parts.push((code in UNAVAILABLE ? UNAVAILABLE[code as UnavailableCode] : service.unavailable_reason) ?? "Unavailable");
+    if (!unusable(service) || lockedOff(service)) parts.push(unavailableText(service));
   } else if (service.auth_type === "oauth") {
     parts.push(service.app_source === "organization" ? "Your organization's app" : "Switch's app");
   }
@@ -107,7 +145,7 @@ interface Change {
  * shown with the page read again.
  */
 export default function WorkspaceConnectorsPage() {
-  const { session } = useAuth();
+  const { session, capabilities } = useAuth();
   const navigate = useNavigate();
   const load = useCallback(() => fetchWorkspaceServices(), []);
   const { data, error, loading, refetch } = useLoad<WorkspaceServices>(load);
@@ -115,13 +153,16 @@ export default function WorkspaceConnectorsPage() {
   const [pending, setPending] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionWarning, setActionWarning] = useState<string | null>(null);
+  const [done, setDone] = useState<string | null>(null);
   const [confirming, setConfirming] = useState<Change | null>(null);
 
   const workspace = session?.tenant?.name ?? "this workspace";
   const organization = data?.organization_name ?? "your organization";
+  const administers = data?.can_change ?? capabilities.administersWorkspace;
 
   // Rethrows, so the confirmation shows a refusal in place; the page is read
-  // again either way.
+  // again either way. A change that leaves something still usable says so on
+  // the page, in place of saying it worked.
   const apply = async (change: Change) => {
     setPending(change.service.slug);
     setActionError(null);
@@ -129,6 +170,12 @@ export default function WorkspaceConnectorsPage() {
     try {
       const { warning } = await change.run();
       setActionWarning(warning);
+      if (warning === null)
+        setDone(
+          change.enabled
+            ? `${change.service.name} is available in ${workspace}.`
+            : `${change.service.name} is off for ${workspace}. Nobody can connect it here until it is switched back on.`,
+        );
     } finally {
       setPending(null);
       await refetch();
@@ -159,19 +206,20 @@ export default function WorkspaceConnectorsPage() {
       <Typography variant="h5" sx={{ mb: 1 }}>
         Connectors
       </Typography>
-      <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
-        Choose which connectors people in {workspace} can connect and give to their agents.
-        {data &&
-          ` Connectors nobody has set${data.organization_name ? `, here or in ${data.organization_name},` : ""} are ${
-            data.on_by_default ? "on" : "off"
-          }.`}
-      </Typography>
+      <Stack direction="row" spacing={0.5} useFlexGap sx={{ mb: 3, alignItems: "center", flexWrap: "wrap" }}>
+        <Typography variant="body2" color="text.secondary">
+          {administers
+            ? `Choose which connectors ${workspace} can use.`
+            : `Which connectors ${workspace} can use. Only its admins can change this.`}
+          {" To give your agents access, go to "}
+          <Link component={RouterLink} to="/connectors">
+            Connectors
+          </Link>
+          .
+        </Typography>
+        {data && <InfoTip>{defaultsTip(data)}</InfoTip>}
+      </Stack>
       <Stack spacing={2}>
-        {data && !data.can_change && (
-          <PageBanner tone="neutral">
-            Only this workspace&apos;s admins can change which connectors it uses.
-          </PageBanner>
-        )}
         {error && <Alert severity="error">{error}</Alert>}
         {actionError && (
           <Alert severity="error" onClose={() => setActionError(null)}>
@@ -192,20 +240,21 @@ export default function WorkspaceConnectorsPage() {
                 connectors={data.services}
                 query={query}
                 onQueryChange={setQuery}
-                emptyMessage={
-                  query.trim() ? `No connectors match "${query.trim()}".` : "No connectors are offered here yet."
-                }
+                emptyMessage={query.trim() ? "No connectors match that search." : "No connectors are offered here yet."}
                 renderCard={(service) => {
-                  const offEverywhere = service.unavailable_code === "switched_off";
-                  const lockedOff = service.decided_by === "organization_locked" && !service.enabled;
-                  const fallback = service.can_change && service.decided_by === "workspace" ? defaultOf(service, data) : null;
+                  const blocked = blockedText(service, organization);
+                  // A way back to a default would decide no more than the switch.
+                  const fallback =
+                    blocked === null && service.can_change && service.decided_by === "workspace"
+                      ? defaultOf(service, data)
+                      : null;
                   return (
                     <ConnectorCard
                       connector={service}
                       meta={metaText(service, organization)}
                       onOpen={() =>
                         navigate(`/connectors/${service.slug}`, {
-                          state: { back: { label: "Workspace settings", to: "/settings/connectors" } },
+                          state: { back: { label: "Settings", to: "/settings/connectors" } },
                         })
                       }
                       trailing={
@@ -218,7 +267,7 @@ export default function WorkspaceConnectorsPage() {
                               available={service.enabled}
                               connectorName={service.name}
                               scopeName={workspace}
-                              turnedOffBy={offEverywhere ? "everyone" : lockedOff ? organization : null}
+                              blocked={blocked}
                               onChange={
                                 service.can_change
                                   ? (enabled) => switchTo(service, enabled)
@@ -265,6 +314,7 @@ export default function WorkspaceConnectorsPage() {
           onClose={() => setConfirming(null)}
         />
       )}
+      <SuccessSnackbar message={done} onClose={() => setDone(null)} />
     </Box>
   );
 }

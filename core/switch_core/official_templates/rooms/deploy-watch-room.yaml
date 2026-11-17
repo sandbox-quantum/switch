@@ -94,6 +94,7 @@ resources:
     name: "Deploy - {service}"
     description: "Production deploy monitoring for {service}. Real-time metrics, anomaly detection, and rollback coordination."
     bridge: "{bridge}"
+    channel_type: channel_private
     agents: [deploy_monitor, rollback_advisor]
     users:
       - {if: "{bridge}", value: ["{$creator}"]}

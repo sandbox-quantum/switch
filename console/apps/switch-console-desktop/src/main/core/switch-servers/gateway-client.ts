@@ -3504,8 +3504,10 @@ export async function updateTemplate(
 /**
  * Count a run of a stored or official template (`POST /templates/{id}/runs`),
  * once the whole run has succeeded, whichever way it ran. Only a count for the
- * catalogue. False when the server did not count it (404): one from before
- * runs were counted, or a template the person can no longer read.
+ * catalogue. The server counts a person's report once per template in a few
+ * minutes, and not after a run it counted itself, so reporting every run is
+ * safe. False when the server refused it (404): one from before runs were
+ * counted, or a template the person can no longer read.
  */
 export async function recordTemplateRun(
   server: SwitchServer,
@@ -4960,9 +4962,10 @@ export async function disconnectService(server: SwitchServer, service: string) {
 // ── Agent management: controllers and the agents placed on them ─────────────
 
 /**
- * The server does not run agent management: its `/gateway/management` routes
- * are not mounted (its `agent_management` flag is off), so they answer a bare
- * 404 rather than one in the management error envelope.
+ * The server does not run agent management: an older one with its
+ * `agent_management` flag off does not mount its `/gateway/management`
+ * routes, so they answer a bare 404 rather than one in the management error
+ * envelope.
  */
 export class AgentManagementUnavailableError extends Error {
   constructor(server: SwitchServer) {

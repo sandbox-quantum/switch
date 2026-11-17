@@ -189,7 +189,7 @@ async def get_my_context() -> dict[str, Any]:
             if protocol.service_broker is None
             else await protocol.service_broker.workspace_disabled(session)
         )
-        bridges = await protocol.bridge_store.get_all(session)
+        bridges = await protocol.bridge_store.get_listed(session)
         services = await _services(
             session, protocol, connections, agents, grants, switched_off
         )

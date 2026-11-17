@@ -53,6 +53,14 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **Devices say how each device is doing.** Beside a device's state, a
+  warning when its controller is behind the release Switch names (or is
+  waiting to update, needs a restart or failed to) or a provider it has
+  installed is not signed in; on the state's hover, when it connected or
+  when and why it went; and a Details dialog with its controller and each
+  provider's install, sign-in, version and when it last checked. A managed
+  agent's state says why, and that its device is still applying the latest
+  change. On Workspace and Organization settings › Devices.
 - **Switch Console can open a dashboard page in a browser that is already
   signed in.** `POST /gateway/auth/handoff` gives a signed-in session a
   one-time sign-in link to a dashboard page, good once for 60 seconds, with
@@ -274,7 +282,12 @@ version of their own to them without also giving them a release of their own.
   not run it by hand (switch-buddy, which Switch Console sets up itself).
   `POST /templates/{id}/runs` counts a run of a template the caller may read.
   Switch Console reports each finished run there, and the agent operation
-  `run_template` counts its own. Runs from before this release are not
+  `run_template` counts its own, as does `POST /rooms/from-template-document`
+  when it is given the template's id and runs that template's own document.
+  Nothing checks that a reported run
+  happened, so a person's report counts at most once per template in ten
+  minutes, and not at all just after a run the server counted for them; the
+  answer's `counted` says which. Runs from before this release are not
   counted.
 - **`switch-purge-organization` deletes an organization when its owner
   asks.** Run where switch-core runs, it shows what would go and what stays;
@@ -474,8 +487,76 @@ version of their own to them without also giving them a release of their own.
   admin, and for making the registration service account an admin. The last
   admin's `can_change_role` and `can_remove` are now false, as the routes
   already refused both, so the current Workspace page no longer offers them.
+- **Another platform operator can be made a regular account, or deleted.**
+  `POST /gateway/users/{user_id}/demote` makes another operator a regular
+  account, keeping their workspaces and their roles in them and signing them
+  out everywhere; the server always keeps one operator. Deleting another
+  operator goes ahead like anyone's, and an operator may delete their own
+  account while another remains. Only the account at `GATEWAY_ADMIN_EMAIL`,
+  which Switch recreates every time it starts, stays an operator and can't be
+  deleted. Both are recorded in the server's audit log (`user.demoted`).
+  `GET /gateway/users` adds `can_demote` beside `can_delete`.
+- **An invitation says what it's to before you accept it.**
+  `POST /gateway/invitations/preview` takes an invitation token from a
+  signed-in person and returns the workspace, its organization and the role,
+  and nothing else, refused exactly as accepting it would be.
+- **Someone left in an organization with no workspace can leave it.**
+  `GET /gateway/organizations/without-workspace` lists the organizations the
+  caller is still in after being removed from their last workspace there,
+  and `POST /gateway/organizations/{id}/leave` takes them out, recorded in
+  the organization's audit log. An org admin, someone still in one of its
+  workspaces, and an organization whose members a directory keeps are
+  refused.
+- **Make regular account and Delete account for platform operators** in
+  Platform › Users, wherever the server allows them; never for your own
+  account or the server's administrator account.
+- **The invite page says what you're joining:** "Join <workspace> in
+  <organization> as <role>", or why the invitation won't work, before
+  Accept. Accepting one for a workspace you're already in at that role says
+  so.
+- **The onboarding screen and Your account offer to leave an organization
+  you're left in with no workspace.**
+- **A platform operator in no workspace can open one from the onboarding
+  screen**, which is how one added from Platform › Users reaches the
+  Platform pages.
 
 #### Changed
+- **The dashboard has one layout: the one built behind `gateway_v2`.**
+  Home, Agents, Rooms, Templates, Connectors and Resources on the rail,
+  Workspace and Organization settings as their own areas, and the
+  operator's pages under Platform, on every server. The earlier layout's
+  pages are gone, and each of their URLs redirects to the page that
+  replaced it, so links from older Switch Console versions, the docs and
+  bookmarks still land. `gateway_v2` is still accepted in
+  `FEATURE_FLAGS_ENABLED`, so a deployment that names it keeps starting,
+  and the server always reports it on, which is how Switch Console picks
+  its links into the dashboard. Entries in this release that describe a
+  page behind `gateway_v2`, or with it on, describe this layout, which every
+  server now has; its landing page, called Overview in them, is Home.
+- **The dashboard follows its design more closely.** The landing page is
+  Home. Rooms has the same dropdown filters as the other lists (group,
+  owner, messaging app and connected users), and its Users column, which
+  counted only people reaching the room from a messaging app or a Console
+  chat, is Connected users. Settings and Organization settings have a title
+  bar and a menu of their own, and Usage & budget sits before Devices.
+  Organization settings opened directly lead back to workspace settings. A
+  page you may not open keeps the rail. Successes are a short message at the foot of the
+  window; failures stay on the page.
+- **The dashboard's Templates page is a card library.** All, Official and
+  Workspace tabs with live counts, one search (name, description, use case
+  and owner), type chips and Only mine; the workspace's own templates come
+  first, then the official ones (six, with See all), most used first. Each
+  card says what the template is for, how many agents and rooms it creates
+  and when it was last used, and Use hands it to Switch Console. Create
+  template offers your personal agent, Switch Console, or writing the YAML
+  in the dashboard. A template's page gains Use and Duplicate as my own, and
+  says plainly when a template isn't available to you. Templates carry a
+  `use_case` from a fixed list (engineering, product, support, research,
+  ops, personal, sales, marketing), set in the dashboard or through `POST`
+  and `PATCH /gateway/templates`, and every official template has one;
+  template listings and details add `agent_count`, `room_count` and
+  `last_run_at`. `use_case` in the create and update bodies raises the
+  `gateway-api` revision to 6.
 - **The Discord connect form asks for the Server ID.** Discord's own app
   calls the guild id a Server ID, and that is what you copy from the server
   icon; the setting's key stays `guild_id`.
@@ -701,8 +782,84 @@ version of their own to them without also giving them a release of their own.
   confirm in a dialog, which keeps the server's reason if it is refused.
   Deleting a resource names, before you confirm, the packages it is taken out
   of as well as the rooms.
+- **An agent's addressing policy offers someone other than its owner only
+  ways to narrow it.** An admin sees why the rest is held, and can remove
+  rules or restrict the agent to its owner; making it Open, adding rules and
+  editing them stay with the owner.
+- **An account added from Platform › Users starts in no workspace.**
+  `POST /gateway/users` no longer puts the account in the workspace the
+  operator happens to be in, and a "Platform operator" made there is no
+  workspace's admin and no organization's org admin: the server's role grants
+  neither. A workspace admin gives them a workspace by inviting them. The
+  server's audit log records `user.created`.
+- **Accepting an invitation to a workspace you're already in.** An
+  invitation above your role there raises you to it and is spent; one at or
+  below it changes nothing, spends nothing, and the answer says so
+  (`already_member`). `GET /gateway/invitations/mine` lists an invitation
+  addressed to you that would raise your role.
+- **The organization's audit log records member changes from its pages, and
+  people joining it.** Manage admins, changing someone's role in a workspace
+  and removing them from one, from the organization's pages, and someone new
+  joining it through an invitation or an e-mail domain, are each recorded
+  there, naming the workspace and the role.
+- **Someone an admin removed can't rejoin straight away through their e-mail
+  domain.** A workspace open to their domain isn't offered to them, and
+  joining is refused, until they're invited again or an organization admin
+  adds them. Someone who left on their own can still use the domain.
+- **Add user says the account starts in no workspace**, and that "Platform
+  operator" makes them no workspace's or organization's admin.
+- **The organization's Audit log names every kind of event it records**,
+  with a Details column for the workspace and the role change.
+- **An admin's reference, document and package lists hold everyone's.**
+  They left out other people's private items, which the detail routes gave
+  an admin in full; now the lists hold them, whole, as the detail routes do.
+- **`can_read` says whether what is in an item came with it.** A room's and
+  a package's lists said `false` for items whose contents they returned. It
+  is now true wherever the contents come and false only where they are
+  withheld, and an item's own page opens for whoever a room or package
+  showed it to, so a link from one never ends on a refusal.
+- **The ecosystem graph shows a member only their own agents.**
+  `GET /gateway/ecosystem/graph` returned every agent in the workspace to
+  everyone; whoever administers the workspace still gets them all.
+- **A member's counts are of what they may see.** `GET /gateway/tenants/counts`
+  counts only a member's own agents in a workspace they do not administer,
+  and `GET /gateway/organizations/current/workspaces` counts only their own
+  agents and the rooms they may read, so private rooms they are not in are no
+  longer counted to them. Admins' counts are unchanged.
+- **Private now reads "Only you and admins can see or change it. Anyone who
+  can read a room it's attached to, or a package of yours it's in, can see it
+  there."** on references, documents and packages, as the documentation
+  describes it.
+- **A package's members and a room's packages open when the server says
+  so**, which now includes what the room or package shares; someone else's
+  private item in a package stays locked.
+- **An item's packages are named to an admin**, whose package list holds
+  them all.
+- **The ecosystem graph is narrowed by the server**, so the page no longer
+  loads the agent list to narrow it for a member.
+- **Another person's agent's page says its options are its owner's and
+  admins' to see**, rather than showing the option defaults as if they were
+  its options, and no longer shows an empty OAuth client line.
+- **Budgets say they are soft limits.** The Usage & budget page and the budget
+  dialog say that an agent that reaches a budget takes no new work until it
+  resets, but that work it already started finishes and can go past it.
+- **Workspace settings say plainly when no retention policy is set.** The Data
+  retention section reads "No retention policy is set, so Switch keeps every
+  message and the files attached to it."
+- **The guardrails pages say which files Switch Trust cannot read.** Beside the
+  policy, the workspace and organization guardrails pages say that images,
+  audio, video, archives and Office files other than Word documents are
+  delivered unchecked.
 
 #### Fixed
+- **A room Discord refuses to make a channel for says why.** When Discord
+  turned down the new channel, for example because the Switch bot's role
+  lacks Manage Channels, creating the room failed with a bare 500 and
+  switch-buddy could only say the server had an internal error. It now fails
+  with Discord's reason and what to change (the permission to turn on, a bot
+  missing from the server, the server's 500-channel limit), so buddy and the
+  Console can pass it on. A room name with no letters or digits Discord
+  accepts is refused before Discord is asked.
 - **A stopped agent's unfinished turn is ended.** The sweep that ends
   abandoned turns now treats a session whose connection closed as gone, so a
   turn left open when its agent stopped is ended after the quiet window.
@@ -914,6 +1071,90 @@ version of their own to them without also giving them a release of their own.
   last column has a header menu could be scrolled 23px to the side at any
   width, because the menu button the table hides until the header is hovered
   stuck out past it.
+- **Bulk archive and delete say which rooms they left alone, and why.**
+  `POST /rooms/bulk-archive` and `/rooms/bulk-delete` still act on every room
+  the caller may change and answer 200, and now add `refused`, each
+  `{room_id, reason}` with the reason the route for that one room would give
+  ("Room not found" for one that is gone). Before, a room the caller could
+  not touch was only left out of the count.
+- **Making a workspace or an organization keeps the name rules renaming
+  does.** A name is trimmed and must be 1 to 255 characters on one line with
+  something visible, for an organization, its first workspace and a
+  workspace added to it. A 200 KB or multi-line name was stored, and a long
+  random one failed with a server error.
+- **Archiving or unarchiving several rooms names each room that was left
+  alone, and why**, instead of a count of rooms "you can't change or no
+  longer exist".
+- **A demoted or removed admin can no longer rejoin as admin with an
+  invitation they made earlier.** Demoting an admin, removing anyone, ending
+  an org admin's access to a workspace they were in only through the
+  organization, and deleting an account revoke the invitations that person
+  made there, shareable links included. Accepting an invitation is refused
+  while its maker no longer administers the workspace, which covers
+  invitations made before this release.
+- **Clearing a workspace's message retention takes the caller's own admin
+  membership**, as setting it does. An organization admin acting through the
+  organization, and the platform operator, could clear a policy they weren't
+  allowed to set.
+- **The last org admin's row says they can't step down or leave.**
+  `GET /gateway/organizations/current/members` answered `can_change_role` and
+  `can_remove` true for the organization's only org admin, and confirming
+  either ended in a 409. Both are false for them now, with the reason in
+  `change_role_blocked_reason` and `remove_blocked_reason`.
+- **Two admins leaving a workspace at the same moment no longer deadlock.**
+  One stays, as before, and the other is told it can't remove the last admin
+  instead of getting a server error.
+- **The only org admin is told to make someone else an org admin first.**
+  Organization › Users offered them "Step down to Member" and "Leave
+  organization", which failed, and the help for leaving a workspace pointed
+  back to stepping down. Those actions are greyed with the reason now.
+- **A dashboard tab showing one workspace can no longer write into
+  another.** The session's workspace is shared by every tab, so a tab left on
+  one workspace after another tab switched could create an API key, an
+  invitation or a room in the new workspace while still showing the old.
+  The dashboard now names the workspace it shows on every write, and
+  switch-core refuses a write that names another workspace than the
+  session's with "This tab is showing another workspace. Reload to
+  continue." Switch Console and other clients that name none are unaffected.
+- **The links `!room-url`, `!documents` and `!references` post open in the
+  room's workspace.** They now carry `?workspace=`, so someone in several
+  workspaces no longer lands in whichever one their browser used last, where
+  the room or resource is not found.
+- **A section that couldn't load says so instead of looking empty.** The
+  room page's packages, references, documents, linked rooms, group and
+  participants, the New room form's bridges, groups and agents, an agent's
+  options and addressing policy, the Add agent, Add messaging app and budget
+  dialogs, the attach pickers, the graphs, People, invite links and the org
+  audit log now show the server's reason when their load fails, and never an
+  empty state beside it. An agent's options no longer claim Switch has
+  forgotten its type when the list of types simply failed to load, and the
+  "Public rooms on private channels" warning no longer vanishes when its
+  count can't be read.
+- **The dashboard follows the session when the server says it changed.** A
+  session that ended (signed out elsewhere, expired, or every device signed
+  out) now goes to sign-in, and back to the same page afterwards, instead of
+  leaving every section saying "Session ended". When the server refuses
+  something, the session is read again, so a demoted admin stops being
+  offered what they may no longer do.
+- **Errors say what went wrong.** A room, agent or resource page that can't
+  load now gives the server's reason rather than "Failed to fetch data", and
+  adds "This may be in another workspace — switch workspace or check the
+  link." when the server can't find it or won't show it. Registering an
+  agent, creating or revealing an API key, adding a messaging app and
+  unlinking a room no longer show "[object Object]" for an invalid request.
+- **A server that doesn't answer is reported.** Requests give up after 30
+  seconds (two minutes for creating a room from YAML) with "The server
+  didn't answer", where a spinner used to turn for good.
+- **A long room or agent name wraps** instead of pushing the page header's
+  actions off screen.
+- **Ecosystem's "Show owners" is offered only when the server sends owners**
+  (the `ecosystem.show_owners` flag).
+- **A connector page's Back survives the vendor's sign-in,** leading to the
+  agent or settings page that opened it rather than the catalogue.
+- **The review of Public rooms on private channels is a Settings page,** at
+  `/settings/general/private-channel-rooms`, and its Back leads to General
+  rather than out of the dashboard. `/workspace/private-channel-rooms`
+  redirects to it.
 
 #### Security
 - **Cookie-signed changes must come from Switch's own origins.** Every POST,
@@ -1089,10 +1330,70 @@ version of their own to them without also giving them a release of their own.
   making it an organization admin handed them every workspace in the
   organization. `PATCH /gateway/tenants/{id}/members/{user_id}` and
   `PATCH /gateway/organizations/current/members/{user_id}` now refuse it with
-  409, the workspace members list says why and the organization's never offers
+  409, and so does accepting an admin invitation as it; the workspace members
+  list says why and the organization's never offers
   it, and an organization whose members come from a WorkOS directory keeps it a
   member however the directory lists it, recording the conflict in its audit
   log.
+- **A room made from a template asks the same invite rule as any other.**
+  `POST /rooms/from-yaml`, `/rooms/from-template`,
+  `/rooms/from-template-document` and the agent tools `create_room_from_yaml`
+  and `run_template` put any agent a document named into the new room, so a member could bring
+  in somebody else's agent that takes no requests from them, which
+  `POST /rooms` and adding agents refuse. They now refuse it with the same
+  403 sentence, before anything is made: no room, no group, and no agents a
+  template run would have created. An agent provisioning is judged as for
+  its `create_room`: as its owner, or as itself where the target trusts it by
+  name.
+- **Only an agent's owner lets more people address it.** A workspace or
+  organization admin could clear any member's agent's addressing policy,
+  opening it to everyone, then bring it into their own rooms and give it
+  work, acting with the service access its owner granted it.
+  `PUT /agents/{id}/addressing-policy` now refuses anyone but the owner a
+  policy that lets in someone the current one doesn't: a person, an agent
+  (the owner's own included) or the platform, in any room it did not already
+  admit them in. An admin may still narrow it, to stop an agent misbehaving,
+  and that change is recorded in the workspace audit log as
+  `agent.addressing_changed`, with the policy before and after. An agent
+  that acts for no person, added with the registration token or left with
+  no owner, an admin may open as well, since it lends nobody's service
+  access. An agent's detail carries `can_widen_addressing`, which says which
+  applies.
+- **Only a parent agent's owner registers subagents under it.**
+  `POST /agents/register-known-bulk` let a workspace admin register
+  subagents under a member's agent, which then sat under it in its working
+  directory with keys of the admin's.
+- **Names refuse characters that change how they read without showing.**
+  Bidirectional controls (U+202A-U+202E, U+2066-U+2069) and zero-width or
+  invisible characters (U+200B, U+200E, U+200F, U+2060, U+FEFF) are refused
+  with a 422 naming the character when a room, room group, reference,
+  document, package, workspace or organization is created or renamed, and in
+  a person's name at sign-up, in their profile and when an operator creates
+  their account. The zero-width joiners (U+200C, U+200D) are kept, as emoji
+  and Persian and Indic names need them. A room "fe-rtl" followed by
+  a right-to-left override showed "exe.perls" for "slrep.exe". Agent display
+  names refuse them as they refuse other unsafe text (400), and so do room
+  and group names in templates and an agent's `create_room`, `update_room`
+  and `create_room_group`. Text in any script is kept.
+- **A package no longer re-shares someone else's private item.** A package
+  handed out everything in it, so a reference or document someone else made
+  private after it went in still reached every reader of the package, and
+  making the package public shared it with the whole workspace. A package
+  now shares only what its own owner put in it of theirs: anything else in
+  it that its owner keeps private comes with its `value`, `instructions` and
+  content null and `can_read: false` in `GET /gateway/packages/{id}/references`
+  and `/documents`. For agents it comes marked `"withheld": true`, and
+  `load_internal_documents` refuses it. Its owner and the workspace's admins
+  still read it through the package.
+- **How an agent is set up on its owner's machine is its owner's and admins'
+  to see.** `GET /gateway/agents`, `GET /gateway/agents/{id}` and the agent
+  tools `list_agents` and `get_agent_detail` gave everyone each agent's
+  `known_agent_options`, which hold the directory its sessions run in, and
+  its `oauth_client_id`. To whoever neither owns nor administers the agent
+  they are now null, and so is a session's `controller_id`; an agent's
+  detail also leaves out sessions in rooms the viewer may not read. Every
+  agent is still listed to everyone, with its name, description, type, owner
+  and status.
 - **Password sign-in locks out after repeated failures.** Ten failed password
   sign-ins with one email address within 15 minutes lock that address out for
   15 minutes; after the first three failures each further one makes the next
@@ -1159,15 +1460,12 @@ version of their own to them without also giving them a release of their own.
   as before.
 
 #### Added
-- **The dashboard's new layout, behind the `gateway_v2` flag.** Overview,
-  Templates and Connectors on the rail; Workspace and Organization settings
-  as areas of their own, each with a menu of only the pages you may open,
-  reopening the page you last used; and the operator's pages under Platform.
-  Today's pages move into it, and their old URLs lead there. It is still
-  being built, so turn it on for development and staging only. With it off,
-  the dashboard is laid out as before, and the new URLs lead back to today's
-  pages.
-- **The new layout's Overview counts the workspace's agents, users and
+- **The dashboard's new layout.** Home, Templates and Connectors on the
+  rail; Workspace and Organization settings as areas of their own, each with
+  a menu of only the pages you may open, reopening the page you last used;
+  and the operator's pages under Platform. Today's pages move into it, and
+  their old URLs lead there.
+- **The new layout's Home counts the workspace's agents, users and
   rooms.** Each card opens its list, and View graph opens the ecosystem
   graph, which leaves the new rail. A workspace's admins see its totals; a
   member sees the agents they own and the rooms they take part in, marked
@@ -4697,6 +4995,10 @@ version of their own to them without also giving them a release of their own.
   the workspace has switched off. It now names only what you could connect
   and then turn on here. A card for a service the workspace or the server
   stops says why, as Connectors does, even when it is turned on.
+- **Admin › Switch Trust offers "Open organization guardrails" only to an
+  admin of the organization,** and opens it in the workspace in scope. An
+  operator who isn't one is told that only the organization's admins set its
+  guardrails, rather than being sent to a page that refuses them.
 
 #### Removed
 - **The welcome page.** The Switch mark in the sidebar, and deleting the agent

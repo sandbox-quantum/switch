@@ -133,7 +133,7 @@ describe('onboarding checklist panel', () => {
   it('hides the steps when collapsed but keeps the header', async () => {
     const el = await renderPanel({ collapsed: true });
 
-    expect(el.textContent).toContain('Setting up Switch');
+    expect(el.textContent).toContain('Setting up Switch Rooms');
     expect(stepButton(el, 'Add a server')).toBeUndefined();
   });
 

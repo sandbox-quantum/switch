@@ -41,6 +41,7 @@ const agent: AgentDetail = {
   can_transfer: true,
   transfer_blocked_reason: null,
   can_change_manage_agents: true,
+  can_widen_addressing: true,
   can_grant_services: true,
 };
 

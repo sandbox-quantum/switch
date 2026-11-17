@@ -58,6 +58,7 @@ type Notice = { severity: "success" | "error"; text: string };
 const WAITING_POLL_MS = 10_000;
 
 const PINNED = ["actions"];
+const BUSIEST_FIRST = { field: "room_count", sort: "desc" } as const;
 
 const SEARCH = {
   label: "Search apps",
@@ -83,7 +84,7 @@ function useRowControls(): RowControls {
 }
 
 /**
- * Workspace settings › Messaging apps, in the new layout.
+ * Workspace settings › Messaging apps.
  *
  * Two sections with two owners. The table is the workspace's messaging apps
  * and their settings, so it is for whoever administers the workspace; a
@@ -131,9 +132,7 @@ export default function MessagingAppsPage() {
         <Box sx={{ flexGrow: 1 }}>
           <Typography variant="h5">Messaging apps</Typography>
           <Typography variant="body2" color="text.secondary" mt={0.5}>
-            {isAdmin
-              ? `The messaging apps connected to ${workspaceName}, and who you are inside them.`
-              : `Who you are in the messaging apps connected to ${workspaceName}.`}
+            {`The messaging apps available to people in ${workspaceName}. Admins control which messaging apps are enabled and members link their own accounts.`}
           </Typography>
         </Box>
         {isAdmin && (
@@ -211,7 +210,8 @@ function ConnectedApps({
   const [olderTarget, setOlderTarget] = useState<{ app: BridgeDetail; links: UnconfirmedLink[] } | null>(null);
   const [olderLinks, setOlderLinks] = useState<OlderLinks>({});
 
-  // Sorted busiest first, as the design has it; a header click re-sorts.
+  // Busiest first, as the table opens with its arrow on Rooms; by name among
+  // apps with as many rooms, an order the table's sort keeps.
   const rows = useMemo<AppRow[]>(
     () =>
       [...(bridges ?? [])]
@@ -494,6 +494,7 @@ function ConnectedApps({
             columns={columns}
             height={480}
             search={SEARCH}
+            initialSort={BUSIEST_FIRST}
             pinnedRight={PINNED}
             emptyState={
               <TableEmptyState title="No messaging apps yet">

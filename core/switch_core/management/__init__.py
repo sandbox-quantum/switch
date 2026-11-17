@@ -1,7 +1,6 @@
 """Agent management: managed agent definitions and the controllers that run them.
 
-Off unless the `agent_management` feature flag is on. Management is the source of
-truth for which agents are managed, how each is defined, which controller
+Management is the source of truth for which agents are managed, how each is defined, which controller
 runs it, controller enrollment and credentials, controller status, and
 operations. It tells Core which controller runs each agent through Core's
 `ControllerPresence`; from there Core lets that controller act as the agent

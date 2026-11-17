@@ -111,6 +111,14 @@ describe("OverviewPage", () => {
     vi.unstubAllGlobals();
   });
 
+  it("is titled Home", async () => {
+    signedInAs("member");
+    answer(WORKSPACE);
+    renderPage();
+    expect(screen.getByRole("heading", { name: "Home" })).toBeTruthy();
+    await counts();
+  });
+
   it("shows a workspace admin the workspace's totals", async () => {
     signedInAs("workspace_admin");
     answer(WORKSPACE);

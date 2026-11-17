@@ -88,6 +88,7 @@ resources:
     name: "{study} - Research Lab"
     description: "Research synthesis room for {study}. Collecting and analyzing user insights."
     bridge: "{bridge}"
+    channel_type: channel_private
     agents: [research_synthesizer, insight_writer]
     users:
       - {if: "{bridge}", value: ["{$creator}"]}

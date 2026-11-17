@@ -175,7 +175,7 @@ export const OnboardingChecklistPanel = observer(function OnboardingChecklistPan
             <ChevronDown className="size-3.5 shrink-0" />
           )}
           <SectionLabel className="text-foreground-tertiary-passive">
-            Setting up Switch
+            Setting up Switch Rooms
           </SectionLabel>
         </button>
         <button
@@ -215,7 +215,9 @@ export function OnboardingChecklistCard({
   return (
     <div className="flex w-full flex-col gap-2 rounded-xl border border-border p-4">
       <div className="flex items-center justify-between">
-        <SectionLabel className="text-foreground-tertiary-passive">Setting up Switch</SectionLabel>
+        <SectionLabel className="text-foreground-tertiary-passive">
+          Setting up Switch Rooms
+        </SectionLabel>
         <button
           type="button"
           onClick={onDismiss}

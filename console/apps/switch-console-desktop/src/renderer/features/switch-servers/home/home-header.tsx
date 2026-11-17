@@ -12,7 +12,7 @@ import { observer } from 'mobx-react-lite';
 import { useState } from 'react';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { WorkspaceAvatar } from '@renderer/features/workspaces/workspace-avatar';
-import { workspaceTitle } from '@renderer/features/workspaces/workspace-title';
+import { breadcrumbTitle } from '@renderer/features/workspaces/workspace-title';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { TitlebarBreadcrumb } from '@renderer/lib/components/titlebar/titlebar-breadcrumb';
 import { failureText } from '@renderer/lib/errors/describe-failure';
@@ -97,7 +97,7 @@ export const HomeHeader = observer(function HomeHeader({
   // A background status poll spins the button too: it is the same reading the
   // button asks for, so the page should not look idle while one is in flight.
   const busy = refreshingPage || switchServersStore.refreshing.has(serverId);
-  const title = workspaceTitle(server);
+  const title = breadcrumbTitle(server);
 
   return (
     <div className="flex min-w-0 items-center gap-2 text-sm">

@@ -902,18 +902,27 @@ async def list_users(
 ) -> list[OperatorUserResponse]:
     admin_id = admin.id
     users = await user_store.get_all(session)
-    return [
-        OperatorUserResponse(
-            id=u.id,
-            name=u.name,
-            email=u.email,
-            role=u.role,
-            created_at=str(u.created_at),
-            can_delete=u.id != admin_id
-            and not is_server_administrator(u, config.gateway_admin_email),
-        )
-        for u in users
-    ]
+    return [_operator_user(u, admin_id, config) for u in users]
+
+
+def _operator_user(
+    user: User, operator_id: str, config: SwitchConfig
+) -> OperatorUserResponse:
+    """`user` as the operator `operator_id` manages them: never their own
+    account, nor the server's administrator account, which the server
+    recreates as an operator every time it starts."""
+    manageable = user.id != operator_id and not is_server_administrator(
+        user, config.gateway_admin_email
+    )
+    return OperatorUserResponse(
+        id=user.id,
+        name=user.name,
+        email=user.email,
+        role=user.role,
+        created_at=str(user.created_at),
+        can_delete=manageable,
+        can_demote=manageable and user.role == "admin",
+    )
 
 
 @router.post("/users")
@@ -921,9 +930,16 @@ async def create_user(
     req: CreateUserRequest,
     session: Annotated[AsyncSession, Depends(get_session)],
     user_store: Annotated[UserStore, Depends(get_user_store)],
-    _admin: Annotated[User, Depends(require_admin)],
+    admin: Annotated[User, Depends(require_admin)],
     config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> OperatorUserResponse:
+    """The deployment operator adds an account, in no workspace and no
+    organization (`UserStore.create_without_membership`), whichever workspace
+    the operator's own session is in. Giving it a workspace is a step of its
+    own: an invitation, or an admin adding them. `role` is the server's
+    alone: an operator made here administers no workspace or organization by
+    being one. Recorded in the server's audit log."""
+    operator_id = admin.id
     existing = await user_store.get_by_email(session, req.email)
     if existing is not None:
         raise HTTPException(status_code=409, detail="Email already registered")
@@ -941,7 +957,7 @@ async def create_user(
     # address can have inserted since; the unique constraint is what decides.
     try:
         async with session.begin_nested():
-            await user_store.create(session, user)
+            await user_store.create_without_membership(session, user)
     except IntegrityError as err:
         if not email_taken(err):
             raise
@@ -949,18 +965,77 @@ async def create_user(
         raise HTTPException(
             status_code=409, detail="Email already registered"
         ) from None
+    await record_server_audit_event(
+        session,
+        actor_user_id=operator_id,
+        action=ServerAuditAction.USER_CREATED,
+        target_type="user",
+        target_id=user.id,
+        details={"role": user.role},
+    )
     await session.commit()
 
     logger.info("Created user %s", user.id)
     emit_safely(current_telemetry(), "account_created", {"method": "admin"})
-    return OperatorUserResponse(
-        id=user.id,
-        name=user.name,
-        email=user.email,
-        role=user.role,
-        created_at=str(user.created_at),
-        can_delete=not is_server_administrator(user, config.gateway_admin_email),
+    return _operator_user(user, operator_id, config)
+
+
+@router.post("/users/{user_id}/demote")
+async def demote_operator(
+    user_id: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    admin: Annotated[User, Depends(require_admin)],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
+) -> OperatorUserResponse:
+    """The deployment operator makes another platform operator a regular
+    account. Their memberships and roles in workspaces and organizations are
+    their own and stay as they are; what they could do on the operator flag
+    alone stops with this request, and the database ends every session they
+    hold (`db/session_version_ddl.py`), so they sign in again as what they
+    now are.
+
+    Never the operator's own account, nor the server's administrator account,
+    which the server recreates as an operator every time it starts. The
+    operators' rows are locked until the change commits, and the caller must
+    still be one once they are: of two operators demoting each other at
+    once, the second is refused, so the server always keeps one. Recorded in
+    the server's audit log.
+    """
+    operator_id = admin.id
+    if user_id == operator_id:
+        raise HTTPException(
+            status_code=409,
+            detail="That's your own account. Another platform operator can change it.",
+        )
+    target = await user_store.get(session, user_id)
+    if target is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    if is_server_administrator(target, config.gateway_admin_email):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "This is Switch's administrator account, which stays a platform "
+                "operator. Switch recreates it every time it starts."
+            ),
+        )
+    operators = await user_store.lock_operators(session)
+    if operator_id not in operators:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    if user_id not in operators:
+        raise HTTPException(status_code=409, detail="Not a platform operator")
+    target.role = "user"
+    await record_server_audit_event(
+        session,
+        actor_user_id=operator_id,
+        action=ServerAuditAction.USER_DEMOTED,
+        target_type="user",
+        target_id=user_id,
+        details={"from": "admin", "to": "user"},
     )
+    await session.commit()
+    logger.info("Operator %s made operator %s a regular account", operator_id, user_id)
+    return _operator_user(target, operator_id, config)
 
 
 @router.delete("/users/{user_id}")

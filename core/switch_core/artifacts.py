@@ -25,7 +25,6 @@ ARTIFACT_VERSIONS: Final[dict[str, str]] = {
     "agent-runtime": "0.8.4",
     "sidecar": "1.9.12",
     "gateway": "0.31.0",
-    "setup": "0.31.0",
     "switch-decision": "0.31.0",
     "switch-decision-strands": "0.31.0",
     "helm-chart": "0.31.0",
@@ -42,8 +41,8 @@ CONTRACTS: Final[dict[str, dict[str, ContractRange]]] = {
     },
     # The HTTP API switch-core serves to first-party UI clients. Excludes signing in, refreshing a session and signing out, which are deliberately frozen and unversioned so that a client can always sign in far enough to be told what is wrong. The rest of /auth is part of it, sign-up and the browser sign-in link included.
     "gateway-api": {
-        "switch-core": ContractRange(speaks=5, accepts=2),
-        "switch-console": ContractRange(speaks=5, accepts=1),
+        "switch-core": ContractRange(speaks=6, accepts=2),
+        "switch-console": ContractRange(speaks=6, accepts=1),
     },
     # The interface of the published standalone compose artifact — its service names, profiles, and environment variables — which Switch Console's local-server mode drives.
     "stack-compose": {

@@ -92,6 +92,7 @@ resources:
     name: "Retro - {incident}"
     description: "Post-mortem review for {incident}. Blameless analysis of what happened and how to prevent recurrence."
     bridge: "{bridge}"
+    channel_type: channel_private
     agents: [postmortem_facilitator, action_tracker]
     users:
       - {if: "{bridge}", value: ["{$creator}"]}

@@ -154,18 +154,27 @@ def slack_create_url(manifest: dict[str, Any]) -> str:
     )
 
 
-#: Bot scopes Switch cannot do without: reading and posting in channels, and
-#: `users:read`, without which linking a person's Slack account fails. An app
-#: made from the manifest has them all; one built by hand, or from an older
-#: manifest, may not, and is told which to add before it is connected.
+#: Bot scopes Switch cannot do without: reading and posting in channels;
+#: `users:read`, without which linking a person's Slack account fails; and what
+#: confirming that link uses: `im:write` to message the person and `commands`
+#: for `/link-account`. An app made from the manifest has them all; one built by
+#: hand, or from an older manifest, may not, and is told which to add before it
+#: is connected.
 REQUIRED_SLACK_SCOPES: tuple[str, ...] = (
     "channels:history",
     "channels:read",
     "chat:write",
+    "commands",
     "groups:history",
     "groups:read",
+    "im:write",
     "users:read",
 )
+
+
+def missing_slack_scopes(granted: set[str]) -> list[str]:
+    """The required scopes a bot token lacks, in the order they are listed."""
+    return [scope for scope in REQUIRED_SLACK_SCOPES if scope not in granted]
 
 
 @dataclass(frozen=True)
@@ -198,14 +207,17 @@ async def check_slack(
     # Slack lists the token's scopes in a header; an answer without it is
     # not judged.
     if granted is not None:
-        missing = [s for s in REQUIRED_SLACK_SCOPES if s not in granted]
+        missing = missing_slack_scopes(granted)
         if missing:
             raise SetupCheckError(
                 f"The Slack app is missing the {', '.join(missing)} "
                 f"{'scope' if len(missing) == 1 else 'scopes'}. In Slack, open "
                 "OAuth & Permissions, add "
                 f"{'it' if len(missing) == 1 else 'them'} under Bot Token Scopes, "
-                "click Reinstall to Workspace, and paste the new bot token here."
+                "click Reinstall to Workspace, and paste the new bot token here. "
+                "An app built by hand may also lack Interactivity and the slash "
+                "commands, which linking accounts needs: pasting the manifest "
+                "above on the app's App Manifest page sets all of it."
             )
     socket = await _slack_call(http, "apps.connections.open", app_token)
     if not socket.get("ok"):

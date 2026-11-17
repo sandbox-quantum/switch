@@ -44,12 +44,14 @@ export const privateChannelRooms: FastScenario = {
       agentNames: [],
       userNames: [],
       channelType: "channel_private",
-      readVisibility: "public",
     });
     fixtures.defer(`the room ${room.id}`, async () => {
       const [code, detail] = await status(() => switchClient.deleteRoom(room.id));
       if (code !== 200 && code !== 404) throw new Error(`${code}: ${detail}`);
     });
+    // A new room on a private channel can no longer be made Public, so make
+    // it Private and then open it up, the way older rooms ended up Public.
+    await switchClient.setRoomReadVisibility(room.id, "public");
 
     expect(
       await switchClient.countPrivateChannelRooms(workspace),
@@ -76,7 +78,7 @@ export const privateChannelRooms: FastScenario = {
     const password = `e2e-${names.runId}-${crypto.randomUUID()}`;
     const memberName = names.name("onlooker");
     const email = `${memberName}@e2e.invalid`;
-    const { id } = await switchClient.createUser({
+    const { id, client: member } = await switchClient.createMember({
       name: memberName,
       email,
       password,
@@ -86,8 +88,6 @@ export const privateChannelRooms: FastScenario = {
       const [code, detail] = await status(() => switchClient.deleteUser(id));
       if (code !== 200 && code !== 404) throw new Error(`${code}: ${detail}`);
     });
-    const member = switchClient.as(email, password);
-    await member.tenantId();
     const [memberLooks] = await status(() => member.previewPrivateChannelRooms(workspace));
     expect(memberLooks, "a plain member opening the review").toBe(403);
 
