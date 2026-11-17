@@ -343,20 +343,33 @@ export function readOnlyReasonFor(
   return services.find((service) => service.slug === slug)?.read_only_reason ?? null;
 }
 
+export const BY_COMMAND = "It's set up with the switch-connector-apps command, where Switch runs.";
+
+/** Whom to ask, on a deployment whose connector apps its organization's
+ * admins set up in the dashboard, in each layout. */
+export const BY_ORGANIZATION_ADMIN = {
+  v2: "An admin of your organization sets it up in Organization settings › Connector apps.",
+  current: "An admin of your organization sets it up in the dashboard, under Connectors.",
+} as const;
+
 /** What to do about a service that waits on its connector app: whoever may
  * set up the deployment's connector apps is led to them, in Organization
- * settings in the new layout and on Connectors in today's. In the new layout
- * anyone else is told how they are set up, after the server's own reason,
- * which says by whom. */
+ * settings in the new layout and on Connectors in today's. Anyone else is
+ * told who sets it up, after the server's own reason: an admin of their
+ * organization while it is the deployment's only one, or else whoever runs
+ * Switch, with its command. A server that does not say which gets what it
+ * got before: the command in the new layout, and nothing more in today's. */
 function SetUp() {
   const { capabilities } = useAuth();
-  if (!capabilities.features.gateway_v2)
-    return capabilities.canManageConnectorApps ? <SetUpLink to="/connectors" /> : null;
-  if (capabilities.canManageConnectorApps) return <SetUpLink to="/settings/org/connector-apps" />;
+  const newLayout = capabilities.features.gateway_v2;
+  if (capabilities.canManageConnectorApps)
+    return <SetUpLink to={newLayout ? "/settings/org/connector-apps" : "/connectors"} />;
+  const inDashboard = capabilities.connectorAppsInDashboard;
+  if (inDashboard === null && !newLayout) return null;
   return (
     <>
       {" "}
-      <span>It's set up with the switch-connector-apps command, where Switch runs.</span>
+      <span>{inDashboard ? BY_ORGANIZATION_ADMIN[newLayout ? "v2" : "current"] : BY_COMMAND}</span>
     </>
   );
 }

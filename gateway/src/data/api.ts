@@ -1697,6 +1697,11 @@ export interface Session {
   // Whether the caller may set up the deployment's connector apps: the
   // operator, and the admins of its only organization while it has one.
   can_manage_connector_apps: boolean;
+  // Whether those apps are set up here in the dashboard, by the admins of
+  // the deployment's organization, which has exactly one; with several, the
+  // operator sets them up with the switch-connector-apps command. Absent
+  // from a server from before it said.
+  connector_apps_in_dashboard?: boolean;
 }
 
 /** The signed-in session, or null when nobody is signed in. Any other

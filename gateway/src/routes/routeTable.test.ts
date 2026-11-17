@@ -47,6 +47,7 @@ describe("Connector apps", () => {
       canDeleteWorkspace: true,
       canManageDataProtection: true,
       canManageConnectorApps,
+      connectorAppsInDashboard: null,
       features: featureFlagsFrom(
         ["agent_management", "service_connections", "organization_connector_apps", "gateway_v2"].map(
           (key) => ({ key, enabled: true }),

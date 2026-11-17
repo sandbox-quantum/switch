@@ -42,6 +42,7 @@ function capabilitiesOf(persona: Persona, layout: MatrixLayout): Capabilities {
     // up the deployment's connector apps there, and the operator may: it
     // enters Organization settings as the operator and finds Connector apps.
     canManageConnectorApps: persona === "operator",
+    connectorAppsInDashboard: false,
     features,
   };
 }

@@ -45,6 +45,7 @@ function authState(canAdminTenant: boolean) {
       canDeleteWorkspace: false,
       canManageDataProtection: false,
       canManageConnectorApps: false,
+      connectorAppsInDashboard: null,
       features: ALL_OFF,
     },
     staleError: null,

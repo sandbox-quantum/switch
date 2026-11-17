@@ -8,7 +8,7 @@ import {
   type ServiceGrants,
 } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
-import ServiceAccessSection from "./ServiceAccessSection";
+import ServiceAccessSection, { BY_COMMAND, BY_ORGANIZATION_ADMIN } from "./ServiceAccessSection";
 import { serviceConnection } from "../../test/serviceConnection";
 
 vi.mock("../../data/AuthContext", () => ({
@@ -398,14 +398,21 @@ describe("ServiceAccessSection", () => {
     newLayout,
     isOperator = false,
     canManageConnectorApps = isOperator,
+    connectorAppsInDashboard = null,
   }: {
     newLayout: boolean;
     isOperator?: boolean;
     canManageConnectorApps?: boolean;
+    connectorAppsInDashboard?: boolean | null;
   }) {
     vi.mocked(useAuth).mockReturnValue({
       isOperator,
-      capabilities: { isOperator, canManageConnectorApps, features: { gateway_v2: newLayout } },
+      capabilities: {
+        isOperator,
+        canManageConnectorApps,
+        connectorAppsInDashboard,
+        features: { gateway_v2: newLayout },
+      },
     } as ReturnType<typeof useAuth>);
   }
 
@@ -417,7 +424,9 @@ describe("ServiceAccessSection", () => {
     );
   }
 
-  const WHO_SETS_UP = "It's set up with the switch-connector-apps command, where Switch runs.";
+  // What a server that does not say whether the apps are set up in the
+  // dashboard (`connector_apps_in_dashboard`) gets, as before it could.
+  const WHO_SETS_UP = BY_COMMAND;
   const WAITING = [onOff("not_connected", { unavailable_reason: NOT_SET_UP, server_setup_needed: true })];
 
   it("in the new layout, offers Set up for a service waiting on its app to whoever may set up connector apps", async () => {
@@ -444,6 +453,33 @@ describe("ServiceAccessSection", () => {
       expect(await screen.findByText(NOT_SET_UP)).toBeTruthy();
       expect(screen.getByText(WHO_SETS_UP)).toBeTruthy();
       expect(screen.queryByRole("link", { name: "Set up" })).toBeNull();
+    } finally {
+      viewer({ newLayout: false });
+    }
+  });
+
+  it("tells anyone else who sets it up: their organization's admin with one organization, the command with several", async () => {
+    try {
+      for (const newLayout of [true, false]) {
+        viewer({ newLayout, connectorAppsInDashboard: true });
+        mockServer(NONE, WAITING);
+        renderInRouter();
+        expect(await screen.findByText(NOT_SET_UP)).toBeTruthy();
+        expect(
+          screen.getByText(BY_ORGANIZATION_ADMIN[newLayout ? "v2" : "current"]),
+        ).toBeTruthy();
+        expect(screen.queryByText(BY_COMMAND)).toBeNull();
+        expect(screen.queryByRole("link", { name: "Set up" })).toBeNull();
+        cleanup();
+
+        viewer({ newLayout, connectorAppsInDashboard: false });
+        mockServer(NONE, WAITING);
+        renderInRouter();
+        expect(await screen.findByText(BY_COMMAND)).toBeTruthy();
+        expect(screen.queryByText(BY_ORGANIZATION_ADMIN.v2)).toBeNull();
+        expect(screen.queryByText(BY_ORGANIZATION_ADMIN.current)).toBeNull();
+        cleanup();
+      }
     } finally {
       viewer({ newLayout: false });
     }

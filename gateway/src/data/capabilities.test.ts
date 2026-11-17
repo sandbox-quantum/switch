@@ -70,6 +70,15 @@ describe("capabilitiesOf", () => {
     );
   });
 
+  it("says whether connector apps are set up in the dashboard only where the server does", () => {
+    for (const inDashboard of [true, false]) {
+      const told = { ...session(), connector_apps_in_dashboard: inDashboard };
+      expect(capabilitiesOf(told, tenant(false), ALL_OFF).connectorAppsInDashboard).toBe(inDashboard);
+    }
+    expect(capabilitiesOf(session(), tenant(false), ALL_OFF).connectorAppsInDashboard).toBeNull();
+    expect(capabilitiesOf(null, null, ALL_OFF).connectorAppsInDashboard).toBeNull();
+  });
+
   it("is no admin of anything with no workspace", () => {
     const caps = capabilitiesOf(null, null, ALL_OFF);
     expect(caps.administersWorkspace).toBe(false);

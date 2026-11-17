@@ -33,6 +33,11 @@ export interface Capabilities {
    * connector apps, which the operator may, and the admins of its only
    * organization while it has no other. */
   canManageConnectorApps: boolean;
+  /** The session's `connector_apps_in_dashboard`: whether the deployment's
+   * connector apps are set up in the dashboard, by the admins of its one
+   * organization, rather than with the server's command; null from a server
+   * that does not say. Whom to send someone who may not set them up. */
+  connectorAppsInDashboard: boolean | null;
   features: FeatureFlags;
 }
 
@@ -49,6 +54,7 @@ export function capabilitiesOf(
     canDeleteWorkspace: tenant?.can_delete ?? false,
     canManageDataProtection: tenant?.can_manage_data_protection ?? false,
     canManageConnectorApps: session?.can_manage_connector_apps ?? false,
+    connectorAppsInDashboard: session?.connector_apps_in_dashboard ?? null,
     features,
   };
 }
