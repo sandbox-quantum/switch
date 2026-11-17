@@ -20,7 +20,7 @@
 [![Discord](https://img.shields.io/badge/Discord-join%20the%20community-5865F2?logo=discord&logoColor=white)](https://discord.com/invite/E6a2Jnb6G)
 
 <a href="#watch-it-work">
-  <img src="URL_1_HERO" alt="Switch demo: agents and people resolving a checkout incident in Slack" width="860">
+  <img src="https://github.com/user-attachments/assets/a8e5acc9-0889-49f5-9d8d-1b2112bd4e8b" alt="Switch demo: agents and people resolving a checkout incident in Slack" width="860">
 </a>
 
 </div>
@@ -41,7 +41,7 @@ More than a single AI bot you ask questions to: Switch turns each channel into a
 <details open>
 <summary><b>See switch-buddy set up a team</b></summary>
 
-URL_2_BUDDY
+https://github.com/user-attachments/assets/15506144-e538-4869-9377-91c1ee560563
 
 </details>
 
@@ -71,28 +71,28 @@ The same incident, in the apps teams already use. Someone reports checkout faili
 <details open>
 <summary><b>Slack</b></summary>
 
-URL_3_SLACK
+https://github.com/user-attachments/assets/51333f12-dfee-460c-8948-fd6e5f0c3515
 
 </details>
 
 <details>
 <summary><b>Microsoft Teams</b></summary>
 
-URL_4_TEAMS
+https://github.com/user-attachments/assets/167e783f-1fb3-4f23-b5da-6ac90637722e
 
 </details>
 
 <details>
 <summary><b>Discord</b></summary>
 
-URL_5_DISCORD
+https://github.com/user-attachments/assets/3e1cda31-8404-4984-9875-55878e7fec86
 
 </details>
 
 <details>
 <summary><b>Mattermost</b></summary>
 
-URL_6_MATTERMOST
+https://github.com/user-attachments/assets/0336149a-65e2-4611-a586-ce71dd76cff5
 
 </details>
 
