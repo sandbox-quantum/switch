@@ -6,8 +6,16 @@ from __future__ import annotations
 import pytest
 from sqlalchemy import select
 
+from switch_core.bridges.agent.registration_bootstrap import (
+    BOOTSTRAP_OWNER_MARKER_META_KEY,
+)
 from switch_core.db.audit import OrganizationAuditAction
-from switch_core.db.models import OrganizationAuditEvent, OrganizationMember
+from switch_core.db.models import (
+    Organization,
+    OrganizationAuditEvent,
+    OrganizationMember,
+    User,
+)
 from switch_core.db.session_scope import organization_session
 from switch_core.operator_commands import CommandRefused
 from switch_core.organization_admin_notices import OrganizationAdminNotices
@@ -156,3 +164,54 @@ async def test_an_unknown_organization_is_refused(rls_harness: RLSHarness) -> No
         await plan_promotion(
             rls_harness.restricted, "no-such-org", email_of(made.ids["bob"]), REASON
         )
+
+
+async def test_an_organization_kept_in_workos_is_refused(
+    rls_harness: RLSHarness,
+) -> None:
+    """Its admins come from its WorkOS directory, which Switch follows: a
+    promotion here would be undone, or fight the directory."""
+    made = await make_organization(
+        rls_harness,
+        people={"ada": ("admin", "org_admin"), "bob": ("member", "member")},
+    )
+    async with organization_session(rls_harness.owner, made.organization_id) as session:
+        organization = await session.get(Organization, made.organization_id)
+        assert organization is not None
+        organization.workos_organization_id = "org_workos_example"
+        await session.commit()
+
+    with pytest.raises(CommandRefused, match="WorkOS"):
+        await plan_promotion(
+            rls_harness.restricted,
+            made.organization_id,
+            email_of(made.ids["bob"]),
+            REASON,
+        )
+
+    assert await _role(rls_harness, made.organization_id, made.ids["bob"]) == "member"
+
+
+async def test_the_registration_service_account_is_refused(
+    rls_harness: RLSHarness,
+) -> None:
+    """Agents added with the shared registration token act with its role."""
+    made = await make_organization(
+        rls_harness,
+        people={"ada": ("admin", "org_admin"), "bob": ("member", "member")},
+    )
+    async with rls_harness.owner() as session:
+        service_account = await session.get(User, made.ids["bob"])
+        assert service_account is not None
+        service_account.metadata_ = {BOOTSTRAP_OWNER_MARKER_META_KEY: True}
+        await session.commit()
+
+    with pytest.raises(CommandRefused, match="admin"):
+        await plan_promotion(
+            rls_harness.restricted,
+            made.organization_id,
+            email_of(made.ids["bob"]),
+            REASON,
+        )
+
+    assert await _role(rls_harness, made.organization_id, made.ids["bob"]) == "member"

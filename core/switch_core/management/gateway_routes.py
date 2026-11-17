@@ -14,7 +14,9 @@ Failures use the same error envelope as the controller routes.
 
 from __future__ import annotations
 
+from ipaddress import ip_address
 from typing import Annotated, Any
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -111,6 +113,16 @@ def remote_devices(
                 "reach."
             ),
         }
+    if server_url and _names_no_one_address(server_url):
+        return {
+            "supported": False,
+            "reason": (
+                f"This Switch's public address is {server_url}, which names no "
+                "address another device can connect to. Set GATEWAY_PUBLIC_URL "
+                "to an address other devices reach, such as the network IP or "
+                "name of the computer it runs on."
+            ),
+        }
     if server_url and gateway_url_is_loopback(server_url):
         return {
             "supported": False,
@@ -122,6 +134,18 @@ def remote_devices(
             ),
         }
     return {"supported": True, "reason": None}
+
+
+def _names_no_one_address(url: str) -> bool:
+    """Whether `url`'s host is the unspecified address (`0.0.0.0`, `::`): one
+    a server binds to listen everywhere, which no device can connect to."""
+    host = urlsplit(url).hostname
+    if host is None:
+        return False
+    try:
+        return ip_address(host).is_unspecified
+    except ValueError:
+        return False
 
 
 @router.post("/enrollment-codes", status_code=201)

@@ -166,6 +166,8 @@ class TestRemoteDevices:
             "http://127.0.1.1:8000",
             "http://[::1]:8000",
             "https://switch.localhost",
+            "http://0.0.0.0:8000",
+            "http://[::]:8000",
         ],
     )
     async def test_a_loopback_public_address_takes_none(

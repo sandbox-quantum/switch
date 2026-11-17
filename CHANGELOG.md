@@ -758,8 +758,8 @@ version of their own to them without also giving them a release of their own.
 #### Fixed
 - **Add a device no longer shows commands that can't work.** On a Switch
   that Switch Console runs, or whose public address (`GATEWAY_PUBLIC_URL`)
-  is a loopback one such as `http://localhost:8000`, no other device can
-  reach it, so the dashboard's Add a device dialog now says why and what to
+  is a loopback one such as `http://localhost:8000` or the unspecified
+  `0.0.0.0` or `::`, no other device can reach it, so the dashboard's Add a device dialog now says why and what to
   do instead of printing install and enroll commands that would fail.
   `POST /gateway/management/enrollment-codes` also returns `remote_devices`,
   `{supported, reason}`, saying whether another device could enroll and, if

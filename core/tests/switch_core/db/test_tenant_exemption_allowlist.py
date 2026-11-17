@@ -309,7 +309,9 @@ _RAW_SESSION_FACTORY_MODULES = {
 # session with it.
 _FACTORY_ACCESSORS = {"create_session_factory", "get_session_factory"}
 
-_LOOKUP_NAMES = {lookup.name for lookup in TENANT_LOOKUPS}
+# The lookups, and the helpers in `tenant_lookup.py` that read one of them
+# for a narrower answer: importing one reaches the exemption just the same.
+_LOOKUP_NAMES = {lookup.name for lookup in TENANT_LOOKUPS} | {"only_organization_id"}
 
 _LOOKUP_MODULE = "switch_core.db.tenant_lookup"
 _LOOKUP_PACKAGE, _, _LOOKUP_MODULE_LEAF = _LOOKUP_MODULE.rpartition(".")

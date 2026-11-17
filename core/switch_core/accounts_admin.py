@@ -610,7 +610,14 @@ async def delete_account(
                     },
                 )
                 await session.commit()
-                raise
+                raise CommandRefused(
+                    f"Deleting {plan.user.email} failed partway, after leaving "
+                    f"{len(error.completed)} of {len(plan.workspaces)} "
+                    f"workspace(s): {type(error.__cause__).__name__}: "
+                    f"{error.__cause__}. The account still exists, and the "
+                    "audit log records what was finished. Run it again to "
+                    "finish."
+                ) from error
 
 
 async def run_delete(

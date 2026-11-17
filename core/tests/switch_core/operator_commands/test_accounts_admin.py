@@ -12,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core import accounts_admin
-from switch_core.accounts.deletion import AccountDeletion, AccountDeletionIncomplete
+from switch_core.accounts.deletion import AccountDeletion
 from switch_core.accounts_admin import (
     DeletionPlan,
     create_account,
@@ -697,7 +697,7 @@ async def test_a_deletion_that_fails_partway_is_recorded_with_what_it_finished(
     deletion.broker = _FailsOnSecondWorkspace()  # type: ignore[assignment]
 
     plan = await plan_deletion(deletion, rls_harness.restricted, leaving.email)
-    with pytest.raises(AccountDeletionIncomplete):
+    with pytest.raises(CommandRefused, match="failed partway"):
         await delete_account(deletion, rls_harness.restricted, plan)
 
     assert await _user(rls_harness, leaving.id) is not None
