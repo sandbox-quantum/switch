@@ -69,6 +69,7 @@ import {
 import {
   clusterExists,
   initCluster,
+  runningPostmasterBinary,
   startCluster,
   stopCluster,
   stopClusterByPid,
@@ -482,7 +483,9 @@ export async function startNativeStack(opts: NativeStartOptions): Promise<Native
 
     if (checkoutRoot === null) {
       if (bundle !== null) {
-        await pruneBundleCopies(layout.toolchain, bundle.root).catch((error: unknown) => {
+        const running = await runningPostmasterBinary(layout);
+        const inUse = [postgres.binDir, ...(running === null ? [] : [running])];
+        await pruneBundleCopies(layout.toolchain, bundle.root, inUse).catch((error: unknown) => {
           log.warn('local-switch-server: could not remove old bundle copies', {
             error: String(error),
           });
