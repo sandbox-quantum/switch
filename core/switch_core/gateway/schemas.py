@@ -1131,6 +1131,12 @@ class LinkedIdentity(BaseModel):
     bridge_type: str
     external_user_id: str
     external_username: str
+    # How to name the account: the person's name as the platform shows it,
+    # and whether `external_username` is a handle of theirs rather than one
+    # Switch made up (a Telegram account without a username), which is then
+    # never shown as `@external_username`.
+    external_display_name: str
+    has_handle: bool
     # False for a link made before accounts had to confirm them: it works,
     # and Console asks its owner to confirm it.
     verified: bool
@@ -1157,6 +1163,9 @@ class PendingIdentity(BaseModel):
     bridge_type: str
     external_user_id: str
     external_username: str
+    # As on `LinkedIdentity`.
+    external_display_name: str
+    has_handle: bool
     # Who started it, when that was someone else (an admin); null when it was
     # the user themselves or the admin has since been deleted.
     requested_by_name: str | None

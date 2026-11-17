@@ -2827,6 +2827,8 @@ export async function fetchMyIdentities(server: SwitchServer): Promise<LinkedIde
     bridge_type: string;
     external_user_id: string;
     external_username: string;
+    external_display_name?: string;
+    has_handle?: boolean;
     verified?: boolean;
   }>;
   return json.map((i) => ({
@@ -2836,6 +2838,8 @@ export async function fetchMyIdentities(server: SwitchServer): Promise<LinkedIde
     bridgeType: i.bridge_type,
     externalUserId: i.external_user_id,
     externalUsername: i.external_username,
+    externalDisplayName: i.external_display_name ?? i.external_username,
+    hasHandle: i.has_handle ?? true,
     verified: i.verified ?? true,
   }));
 }
@@ -2860,6 +2864,8 @@ export async function fetchMyPendingIdentities(server: SwitchServer): Promise<Pe
     bridge_type: string;
     external_user_id: string;
     external_username: string;
+    external_display_name?: string;
+    has_handle?: boolean;
     requested_by_name: string | null;
     code_expires_at: string | null;
   }>;
@@ -2870,6 +2876,8 @@ export async function fetchMyPendingIdentities(server: SwitchServer): Promise<Pe
     bridgeType: i.bridge_type,
     externalUserId: i.external_user_id,
     externalUsername: i.external_username,
+    externalDisplayName: i.external_display_name ?? i.external_username,
+    hasHandle: i.has_handle ?? true,
     requestedByName: i.requested_by_name,
     codeExpiresAt: i.code_expires_at,
   }));

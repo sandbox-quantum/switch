@@ -1590,6 +1590,18 @@ def test_a_known_person_is_mentioned_by_id() -> None:
     assert rendered == 'ping <a href="tg://user?id=12345">@alice</a>'
 
 
+def test_an_agent_mentioning_a_person_without_a_username_names_them() -> None:
+    # An agent writes the handle Switch addresses the person by; the chat
+    # sees their name, linked so Telegram notifies them.
+    adapter = _adapter()
+    adapter._username_to_id["MM_42"] = 42
+    adapter._full_names[42] = "M M"
+
+    rendered = adapter.translate_outbound("thanks @MM_42")
+
+    assert rendered == 'thanks <a href="tg://user?id=42">M M</a>'
+
+
 def test_an_unknown_name_stays_plain_so_the_client_can_link_it() -> None:
     adapter = _adapter()
 

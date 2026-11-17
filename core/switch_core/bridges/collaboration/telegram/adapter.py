@@ -2137,7 +2137,7 @@ class TelegramAdapter(PlatformAdapter):
                 user_id,
             )
             return None
-        label = html.escape(f"@{name}", quote=False)
+        label = html.escape(self._mention_label(user_id, name), quote=False)
         return f'<a href="tg://user?id={user_id}">{label}</a>'
 
     async def post_rich(
@@ -2843,7 +2843,16 @@ class TelegramAdapter(PlatformAdapter):
         user_id = self._username_to_id.get(match.group(1))
         if user_id is None:
             return match.group(0)
-        return f'<a href="tg://user?id={user_id}">{match.group(0)}</a>'
+        label = html.escape(self._mention_label(user_id, match.group(1)), quote=False)
+        return f'<a href="tg://user?id={user_id}">{label}</a>'
+
+    def _mention_label(self, user_id: int, name: str) -> str:
+        """The text of a mention of `user_id`: `@username` for a real handle,
+        else the name Telegram shows for the person. A handle Switch made up
+        for someone without a username is nobody's, so it is never shown;
+        the `tg://user` link is what notifies them either way."""
+        label = self.known_user_label(str(user_id), name)
+        return f"@{name}" if label.has_handle else label.display_name
 
     def translate_inbound(self, raw_message: str) -> str:
         """Telegram delivers plain text with `@handle` mentions already written

@@ -19,6 +19,7 @@ import {
 } from '@shared/core/switch-servers/switch-servers';
 import { AccountLinkConfirmation, type AccountLinkTarget } from './account-link-confirmation';
 import { BridgeIdentitySearch } from './bridge-identity-search';
+import { accountName } from './link-accounts-prose';
 import { linkedIdentityOn } from './messaging-apps-warning';
 import { useMyIdentities } from './use-my-identities';
 
@@ -148,7 +149,7 @@ export const ClaimIdentityModal = observer(function ClaimIdentityModal({
               <Info className="mt-0.5 size-3.5 shrink-0 text-foreground-muted" />
               <span>
                 You are already linked to{' '}
-                <span className="font-medium">{alreadyLinked.externalUsername}</span> on{' '}
+                <span className="font-medium">{accountName(alreadyLinked)}</span> on{' '}
                 {alreadyLinked.bridgeDisplayName}. Linking another account here keeps that one too —
                 search for it to unlink it, or use that app&apos;s row on the server page.
               </span>

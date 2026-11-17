@@ -18,13 +18,17 @@ from switch_core.accounts.deletion import (
     is_server_administrator,
 )
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
+from switch_core.bridges.collaboration.lifecycle_service import (
+    CollaborationBridgeLifecycleService,
+)
+from switch_core.bridges.collaboration.models import KnownUserLabel
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.chats.member_names import rename_member_clients
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.config import SwitchConfig
 from switch_core.connections.broker import ServiceBroker, get_service_broker
 from switch_core.db.audit import ServerAuditAction, record_server_audit_event
-from switch_core.db.models import TENANT_ZERO_ID, User
+from switch_core.db.models import TENANT_ZERO_ID, ExternalUser, User
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
@@ -64,6 +68,7 @@ from switch_core.gateway.dependencies import (
     get_api_key_store,
     get_bridge_store,
     get_client_lifecycle,
+    get_collab_lifecycle,
     get_config,
     get_external_user_store,
     get_organization_store,
@@ -452,12 +457,28 @@ async def me(
     return _session_response(user)
 
 
+def _account_label(
+    collab_lifecycle: CollaborationBridgeLifecycleService, identity: ExternalUser
+) -> KnownUserLabel:
+    """How a linked account is named: as its running bridge names it, or by
+    its stored name, a handle, while the bridge is stopped."""
+    adapter = collab_lifecycle.get_adapter(identity.bridge_id)
+    if adapter is None:
+        return KnownUserLabel(display_name=identity.external_username, has_handle=True)
+    return adapter.known_user_label(
+        identity.external_user_id, identity.external_username
+    )
+
+
 @router.get("/auth/me/identities")
 async def my_identities(
     session: Annotated[AsyncSession, Depends(get_session)],
     external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
     bridge_store: Annotated[CollaborationBridgeStore, Depends(get_bridge_store)],
     user: Annotated[User, Depends(get_current_user)],
+    collab_lifecycle: Annotated[
+        CollaborationBridgeLifecycleService, Depends(get_collab_lifecycle)
+    ],
 ) -> list[LinkedIdentity]:
     """The messaging-app accounts this user has claimed (CHOO-2137).
 
@@ -472,6 +493,7 @@ async def my_identities(
         bridge = await bridge_store.get(session, identity.bridge_id)
         if bridge is None:
             continue
+        label = _account_label(collab_lifecycle, identity)
         linked.append(
             LinkedIdentity(
                 id=identity.id,
@@ -480,6 +502,8 @@ async def my_identities(
                 bridge_type=bridge.type,
                 external_user_id=identity.external_user_id,
                 external_username=identity.external_username,
+                external_display_name=label.display_name,
+                has_handle=label.has_handle,
                 verified=claim.verified_at is not None,
                 linked_at=claim.created_at,
                 awaiting_confirmation=await external_user_store.get_link_request(
@@ -498,6 +522,9 @@ async def my_pending_identities(
     bridge_store: Annotated[CollaborationBridgeStore, Depends(get_bridge_store)],
     user_store: Annotated[UserStore, Depends(get_user_store)],
     user: Annotated[User, Depends(get_current_user)],
+    collab_lifecycle: Annotated[
+        CollaborationBridgeLifecycleService, Depends(get_collab_lifecycle)
+    ],
 ) -> list[PendingIdentity]:
     """The messaging-app accounts waiting to confirm a link to this user
     (CHOO-3881), which count for nothing until they do."""
@@ -514,6 +541,7 @@ async def my_pending_identities(
             if requested_by is not None and requested_by != user.id
             else None
         )
+        label = _account_label(collab_lifecycle, identity)
         pending.append(
             PendingIdentity(
                 id=identity.id,
@@ -522,6 +550,8 @@ async def my_pending_identities(
                 bridge_type=bridge.type,
                 external_user_id=identity.external_user_id,
                 external_username=identity.external_username,
+                external_display_name=label.display_name,
+                has_handle=label.has_handle,
                 requested_by_name=requester.name if requester is not None else None,
                 code_expires_at=request.code_expires_at,
             )

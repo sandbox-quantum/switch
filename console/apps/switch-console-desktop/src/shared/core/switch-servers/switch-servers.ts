@@ -1287,6 +1287,12 @@ export type LinkedIdentity = {
   bridgeType: string;
   externalUserId: string;
   externalUsername: string;
+  /** How to name the account when `externalUsername` is a handle Switch made
+   * up for someone the platform gave none (a Telegram account without a
+   * username): their name as the platform shows it, with `hasHandle` false.
+   * Both absent from a server predating them, which means a real handle. */
+  externalDisplayName?: string;
+  hasHandle?: boolean;
   /** False for a link made before links had to be confirmed: it works, and its
    * owner is asked to confirm it with a code. */
   verified: boolean;
@@ -1305,6 +1311,12 @@ export type PendingIdentity = {
   bridgeType: string;
   externalUserId: string;
   externalUsername: string;
+  /** How to name the account when `externalUsername` is a handle Switch made
+   * up for someone the platform gave none (a Telegram account without a
+   * username): their name as the platform shows it, with `hasHandle` false.
+   * Both absent from a server predating them, which means a real handle. */
+  externalDisplayName?: string;
+  hasHandle?: boolean;
   /** Who started the link, when it was someone else (an admin). */
   requestedByName: string | null;
   /** When the last code issued stops working; null when none has been. */
