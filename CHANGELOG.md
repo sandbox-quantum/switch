@@ -457,6 +457,13 @@ version of their own to them without also giving them a release of their own.
   already refused both, so the current Workspace page no longer offers them.
 
 #### Changed
+- **The Discord connect form asks for the Server ID.** Discord's own app
+  calls the guild id a Server ID, and that is what you copy from the server
+  icon; the setting's key stays `guild_id`.
+- **The dashboard's budget page is called Usage & budget,** and its Add
+  budget button no longer squeezes until its label wraps out of it on a
+  narrower window. Back to workspace, in Organization settings and Platform,
+  returns to the page you came from rather than always to home.
 - **Switch Trust guardrails are set per organization instead of once for
   the whole server.** Each organization's admins connect its own policy, with
   a policy ID and an API key, under Organization settings › Guardrails. Switch
@@ -4308,6 +4315,15 @@ version of their own to them without also giving them a release of their own.
   agent"; it was the only place Console showed that name.
 
 #### Fixed
+- **Bug bash polish.** Home's header reads workspace / Home like every other
+  workspace page, with its connection badge, Refresh and server menu beside
+  it. The Slack app setup puts each token field above a picture of the Slack
+  page wide enough to read, which opens full size. Avatar tiles (switch-buddy,
+  a workspace's initial, an agent with no picture) no longer vanish into the
+  background in dark mode. Inputs, text areas and selects have a solid
+  background: white, or a slightly lighter grey in dark mode. Page headers
+  and the settings sidebar are no longer window drag regions, which could
+  leave their buttons and the titlebar unclickable after a scroll.
 - **Cursor, Goose, Kiro and Mistral Vibe can be installed on Windows.** Each
   offers its vendor's Windows install, which works from PowerShell or Command
   Prompt, where before it said "Not found" with nothing to install. Cursor and
