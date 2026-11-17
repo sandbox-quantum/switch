@@ -24,6 +24,8 @@ from switch_core.db.stores.organization_trust_settings_store import (
     OrganizationTrustSettingsStore,
 )
 from switch_core.keys import Keyring
+from switch_core.logging_context import current_log_context
+from switch_core.security_events import SecuritySignal, log_security_event
 
 logger = logging.getLogger(__name__)
 
@@ -457,7 +459,7 @@ async def check_message(
     `outcome="errored"` rather than `"ok"`, so callers give it the same
     quiet in-chat annotation as an engine-side error."""
     try:
-        return await client.check(
+        result = await client.check(
             tenant_id=tenant_id, role=role, content=content, room_id=room_id
         )
     except GuardrailsCheckError:
@@ -465,7 +467,44 @@ async def check_message(
             "Switch Trust check failed; message allowed through unchecked",
             exc_info=True,
         )
-        return TrustCheckResult(outcome="errored", policy_id=None, policy_name=None)
+        result = TrustCheckResult(outcome="errored", policy_id=None, policy_name=None)
+    if result.outcome != "ok":
+        report_verdict(result, tenant_id=tenant_id, role=role, room_id=room_id)
+    return result
+
+
+def report_verdict(
+    result: TrustCheckResult, *, tenant_id: str, role: Role, room_id: str
+) -> None:
+    """A verdict other than `ok` as a security event: the policy, the room,
+    the outcome and what each finding was, never the text it found. Written
+    to the log only: the check runs before the send's transaction opens, and
+    while Switch Trust is down every message is an `errored` verdict. The
+    sender is whoever the request is for, from the log context."""
+    context = current_log_context()
+    log_security_event(
+        SecuritySignal.TRUST_VERDICT,
+        tenant_id=tenant_id,
+        actor_user_id=context.user_id,
+        target_type="room",
+        target_id=room_id,
+        agent_id=context.agent_id,
+        room_id=room_id,
+        details={
+            "outcome": result.outcome,
+            "policy_id": result.policy_id,
+            "policy_name": result.policy_name,
+            "role": role,
+            "findings": [
+                {
+                    "category": finding.category,
+                    "detector_name": finding.detector_name,
+                    "severity": finding.severity,
+                }
+                for finding in result.findings
+            ],
+        },
+    )
 
 
 async def trust_is_active(client: TrustClient, tenant_id: str) -> bool:

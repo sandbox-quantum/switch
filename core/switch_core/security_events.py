@@ -15,8 +15,9 @@ leaves no line, as it leaves no row. The pending lines ride on the session
 
 Some events have no transaction to ride on, or come too often for a row each:
 a sign-in that failed, a budget refusing a message, the refusal breaker
-tripping. Those are written at once with `log_security_event`, and are marked
-`switch.scope` = `log` so a reader knows no audit row backs them.
+tripping, a Switch Trust verdict other than `ok`. Those are written at once
+with `log_security_event`, and are marked `switch.scope` = `log` so a reader
+knows no audit row backs them.
 
 `details` is the audit event's own, which holds identifiers and field names,
 never secrets or message text; a log-only event follows the same rule.
@@ -62,6 +63,8 @@ class SecuritySignal(StrEnum):
     SIGN_IN_FAILED = "auth.sign_in_failed"
     BUDGET_EXCEEDED = "budget.exceeded"
     REFUSAL_BREAKER_TRIPPED = "refusal_breaker.tripped"
+    # A Switch Trust verdict other than `ok` (`trust/client.py`).
+    TRUST_VERDICT = "trust.verdict"
 
 
 @dataclass(frozen=True)

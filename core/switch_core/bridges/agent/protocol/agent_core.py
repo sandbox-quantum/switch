@@ -1617,7 +1617,7 @@ class AgentCore:
                 room = await self._room_member_in(session, agent_id, room_id)
             ticket = access.ticket()
             covered = await self.budget_guard.require_within(
-                session, tenant_id=tenant_id, agent_id=agent_id
+                session, tenant_id=tenant_id, agent_id=agent_id, room_id=room_id
             )
         if not covered:
             access.put_unbudgeted(tenant_id, agent_id, ticket)

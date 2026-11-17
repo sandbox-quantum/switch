@@ -237,8 +237,24 @@ any line and describe the request that made the change.
 
 A few events are written to the log only, at once, with `switch.scope` =
 `log`, because they have no transaction to ride on or come too often for a row
-each: `security.auth.sign_in_failed`, `security.budget.exceeded` and
-`security.refusal_breaker.tripped`.
+each:
+
+- `security.auth.sign_in_failed`: a password, OIDC or WorkOS organization
+  sign-in refused, with `method`, `reason` and `client_ip`, and the account's
+  id when the attempt named a real one (never the email typed). A row per
+  attempt would let anyone grow an append-only table.
+- `security.budget.exceeded`: an agent stopped by a usage budget, once per
+  budget period per process rather than once per refused message.
+- `security.refusal_breaker.tripped`: a caller answered 429 for repeating a
+  refused request; the caller is a short prefix of its hashed credential.
+- `security.trust.verdict`: a Switch Trust verdict other than `ok`, with the
+  policy, the outcome and each finding's category, detector and severity —
+  never the text it found. The check runs before the message's transaction
+  opens, and while Switch Trust is down every message is `errored`.
+
+`client_ip` is the address uvicorn reports. Behind a load balancer or ingress
+that is the proxy's own address unless uvicorn is told to trust the proxy's
+`X-Forwarded-For` (`FORWARDED_ALLOW_IPS`), which no deployment here sets yet.
 
 The logger is held at INFO whatever `SWITCH_LOG_LEVEL` says, so turning
 switch-core's own lines down does not silence it. Filter on the logger name

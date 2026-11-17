@@ -4,6 +4,7 @@ sites that use them.
 """
 
 import json
+import logging
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -12,6 +13,8 @@ import httpx
 import pytest
 
 from switch_core.keys import UndecryptableError
+from switch_core.logging_context import log_context, structured_fields
+from switch_core.security_events import LOGGER_NAME as SECURITY_LOGGER_NAME
 from switch_core.trust.client import (
     DynamicTrustClient,
     GuardrailBlockedError,
@@ -486,6 +489,79 @@ async def test_check_message_passes_through_a_block():
         client, tenant_id="tenant-1", role="assistant", content="hi", room_id="room-1"
     )
     assert result.blocked is True
+
+
+class _Verdict:
+    def __init__(self, result: TrustCheckResult) -> None:
+        self._result = result
+
+    async def check(
+        self, *, tenant_id: str, role: str, content: str, room_id: str
+    ) -> TrustCheckResult:
+        return self._result
+
+    async def is_active(self, tenant_id: str) -> bool:
+        return True
+
+
+def _security_records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    return [r for r in caplog.records if r.name == SECURITY_LOGGER_NAME]
+
+
+@pytest.mark.asyncio
+async def test_a_verdict_other_than_ok_is_a_security_event_without_the_text(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger=SECURITY_LOGGER_NAME)
+    client = _Verdict(
+        TrustCheckResult(
+            outcome="redacted",
+            policy_id="policy-1",
+            policy_name="No secrets",
+            findings=(TrustFinding("secret", "aws_key", "high"),),
+            redacted_content="my key is [REDACTED]",
+        )
+    )
+    with log_context(user_id="user-1"):
+        await check_message(
+            client,  # type: ignore[arg-type]
+            tenant_id="tenant-1",
+            role="user",
+            content="my key is AKIAEXAMPLE",
+            room_id="room-1",
+        )
+
+    [record] = _security_records(caplog)
+    fields = structured_fields(record)
+    assert fields["switch"]["event"] == "security.trust.verdict"
+    assert fields["switch"]["room_id"] == "room-1"
+    assert fields["switch"]["tenant_id"] == "tenant-1"
+    assert fields["switch"]["actor_user_id"] == "user-1"
+    details = fields["security_details"]
+    assert details["outcome"] == "redacted"
+    assert details["policy_id"] == "policy-1"
+    assert details["policy_name"] == "No secrets"
+    assert json.loads(str(details["findings"])) == [
+        {"category": "secret", "detector_name": "aws_key", "severity": "high"}
+    ]
+    assert "AKIAEXAMPLE" not in json.dumps(fields)
+    assert "REDACTED" not in json.dumps(fields)
+
+
+@pytest.mark.asyncio
+async def test_an_ok_verdict_is_not_a_security_event(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger=SECURITY_LOGGER_NAME)
+    client = _Verdict(TrustCheckResult(outcome="ok", policy_id="p", policy_name="n"))
+    await check_message(
+        client,  # type: ignore[arg-type]
+        tenant_id="tenant-1",
+        role="user",
+        content="hi",
+        room_id="room-1",
+    )
+    assert _security_records(caplog) == []
 
 
 @pytest.mark.asyncio
