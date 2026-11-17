@@ -83,8 +83,12 @@ version of their own to them without also giving them a release of their own.
   only shows what it would do until given `--execute`, and then asks for the
   account's e-mail to be typed before deleting. `--yes` skips that question
   for scripts; without it, a run with no terminal to ask on is refused.
+  Either way it looks at every workspace again just before deleting, and
+  deletes nothing if the account has changed since it was shown.
   `switch-connector-apps set` checks the app with the vendor first, as the
-  dashboard does, and never prints a secret. The account at
+  dashboard does, and never prints a secret. A password file or app file
+  that is missing or can't be read is refused with a one-line message, as
+  every other problem is. The account at
   `GATEWAY_ADMIN_EMAIL` stays an operator, and the server keeps at least
   one. Every change is recorded in the audit log as made by a platform
   operator command.
@@ -93,9 +97,13 @@ version of their own to them without also giving them a release of their own.
   through were the platform operator's alone. When the deployment has
   exactly one organization, that organization's admins may now set them up
   too. This is checked again on every request, so they lose it as soon as a
-  second organization exists. `GET /auth/session` reports
-  `can_manage_connector_apps`, and the server audit log notes when a change
-  came from an organization admin rather than the operator.
+  second organization exists. `GET /gateway/auth/session` reports
+  `can_manage_connector_apps`, and `connector_apps_in_dashboard`: whether the
+  deployment has exactly one organization, so its admins set the apps up in
+  the dashboard, where with several the operator does with
+  `switch-connector-apps`. The dashboard and Switch Console use it to tell
+  someone who can't set an app up whom to ask. The server audit log notes
+  when a change came from an organization admin rather than the operator.
 - **An organization's admins are e-mailed when one of them stops being an
   admin.** When an organization admin is made a member by another admin,
   steps down, is removed from the organization, leaves it, or has their
@@ -103,10 +111,15 @@ version of their own to them without also giving them a release of their own.
   e-mail. It says who made the change (or that they made it themselves), whom
   it was made to, the organization and when, and links to the organization's
   audit log. It goes through the relay invitation e-mails use
-  (`GATEWAY_SMTP_*`). Without one, nothing is sent and the server logs a
-  warning for each change. A send that fails is logged as an error and
-  doesn't undo the change. Deleting an organization admin's account is now
-  recorded in the organization's audit log too. Changes brought in from
+  (`GATEWAY_SMTP_*`), after the change is made: from the dashboard, once the
+  response has been sent, with no database connection held while the relay
+  is talked to. Without a relay, nothing is sent and the server logs a
+  warning for each change. Anything that goes wrong sending is logged as an
+  error and doesn't undo the change. Deleting an organization admin's account
+  is now recorded in the organization's audit log too, and e-mailed, only
+  once the account is gone; a deletion that fails partway is recorded there
+  as one that did not finish, since the person is no longer an admin either
+  way, and nobody is told the account was deleted. Changes brought in from
   WorkOS are not e-mailed.
 - **A room's page in the web dashboard says who owns it and where you
   stand.** Room info names the owner, or says the room has none, and a "Your
@@ -527,7 +540,9 @@ version of their own to them without also giving them a release of their own.
   The deployment's connector apps are now in Organization settings ›
   Connector apps, and on the default layout's Connectors page, for whoever
   may manage them: the operator, or the admins of a deployment's only
-  organization. On a deployment with several organizations, deployment-wide
+  organization. They reach it from a workspace in no organization too, which
+  an older release could make; Organization settings then lists Connector
+  apps alone. On a deployment with several organizations, deployment-wide
   work (accounts, organizations, connector apps) is done with the
   `switch-accounts`, `switch-orgs` and `switch-connector-apps` commands.
 - **Switch Trust guardrails are set per organization instead of once for
@@ -746,25 +761,35 @@ version of their own to them without also giving them a release of their own.
   of as well as the rooms.
 
 #### Removed
-- **The operator's account and workspace-list API routes are gone, which
-  breaks any script that calls them.** `GET /gateway/users`,
-  `POST /gateway/users`, `DELETE /gateway/users/{user_id}`,
+- **Breaking for HTTP clients: the operator's account and workspace-list
+  routes are removed.** `GET /gateway/users`, `POST /gateway/users`,
+  `DELETE /gateway/users/{user_id}`,
   `POST /gateway/users/{user_id}/sessions/revoke` and
-  `GET /gateway/operator/workspaces` now answer 404. Run the commands that
+  `GET /gateway/operator/workspaces` now answer `404`. Run the commands that
   replace them where switch-core runs: `switch-accounts list`, `create`,
-  `delete` and `sign-out`, and `switch-orgs list`. People still delete their
-  own account (`DELETE /gateway/auth/me`) and sign out of every device
+  `delete` and `sign-out`, and `switch-orgs list`. `switch-accounts create`,
+  which replaces `POST /gateway/users`, puts the account in no workspace,
+  where the route put it in the caller's: invite it to one, or give it an
+  address at a domain a workspace is open to, or a script moved onto it
+  makes accounts that can't reach anything. People still delete their own
+  account (`DELETE /gateway/auth/me`) and sign out of every device
   (`POST /gateway/auth/sessions/revoke`) as before.
 
 #### Fixed
 - **Add a device no longer shows commands that can't work.** On a Switch
   that Switch Console runs, or whose public address (`GATEWAY_PUBLIC_URL`)
   is a loopback one such as `http://localhost:8000` or the unspecified
-  `0.0.0.0` or `::`, no other device can reach it, so the dashboard's Add a device dialog now says why and what to
-  do instead of printing install and enroll commands that would fail.
+  `0.0.0.0` or `::`, no other device can reach it, so the dashboard's Add a
+  device dialog now says why and what to do instead of printing install and
+  enroll commands that would fail. The address is read as the operating
+  system reads it, so shorthand such as `http://127.1` or `http://0`, a
+  trailing dot, and an IPv4 address written as IPv6
+  (`[::ffff:127.0.0.1]`) count too, and the bridges' warning about a
+  loopback `GATEWAY_PUBLIC_URL` catches them as well.
   `POST /gateway/management/enrollment-codes` also returns `remote_devices`,
   `{supported, reason}`, saying whether another device could enroll and, if
-  not, why. The code is still issued.
+  not, why. The code is still issued. Against a server from before it, the
+  dialog shows the commands as it always did.
 - **A sign-out that fails in the dashboard says so.** Signing out, or out of
   every device, from the account menu or the screens before a workspace said
   nothing when Switch didn't answer, and a failed sign-out of this browser
@@ -969,11 +994,13 @@ version of their own to them without also giving them a release of their own.
   width, because the menu button the table hides until the header is hovered
   stuck out past it.
 - **A page or section title's buttons cope with a narrow window.** Add
-  budget, Add user, Create API key and the other buttons beside a dashboard
-  heading could wrap onto the title, get clipped, or run past the edge of
-  the page as the window narrowed, instead of moving to their own line. The
-  usage period picker, the resources tabs and the sign-out buttons on Your
-  account had the same problem; all now give way cleanly.
+  budget, Create API key and the other buttons beside a dashboard heading
+  could wrap onto the title, get clipped, or run past the edge of the page as
+  the window narrowed, instead of moving to their own line. Where there are
+  several, such as Rooms' four with rooms selected, they now wrap among
+  themselves within the page's width, each staying whole. The usage period
+  picker, the resources tabs and the sign-out buttons on Your account had
+  the same problem; all now give way cleanly.
 
 #### Security
 - **Cookie-signed changes must come from Switch's own origins.** Every POST,
@@ -4334,12 +4361,15 @@ version of their own to them without also giving them a release of their own.
   A machine cannot be given a Mistral Vibe login from Console yet.
 
 #### Changed
-- **Set up for a connector's app opens Organization settings.** On a
-  server whose dashboard uses the new layout, Set up now opens
-  Organization settings › Connector apps. Organization admins get it too
-  where the server allows. Anyone the server doesn't allow is told the app is
-  set up with the `switch-connector-apps` command where Switch runs. Older
-  servers keep today's link.
+- **Set up for a connector's app goes to whoever may set it up.** Console
+  asks the server who may set up its connector apps, whichever layout its
+  dashboard uses. Set up opens Organization settings › Connector apps in the
+  new layout and Connectors in the default one, for the operator and, where
+  the server allows, the admins of its only organization. Anyone else is
+  told that an admin of their organization sets it up, on a server with one
+  organization, or that whoever runs the server does with the
+  `switch-connector-apps` command, on one with several. Older servers keep
+  today's link and wording.
 - **Admin › Switch Trust points to the organization's guardrails on a server
   that sets them per organization.** Such a server no longer has a
   server-wide policy to edit, so the form gives way to its note and a button
