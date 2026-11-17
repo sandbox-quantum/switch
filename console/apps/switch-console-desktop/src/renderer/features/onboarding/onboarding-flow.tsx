@@ -120,16 +120,12 @@ export const OnboardingFlow = observer(function OnboardingFlow() {
     if (to !== from) reportPage(to);
   };
 
-  /**
-   * Leave the first-run pages for the app, on the server they set up — unless
-   * it has never answered, in which case the workspace already open stays open.
-   */
+  /** Leave the first-run pages for the app, on the server they set up. */
   const finish = (serverId: string | null) => {
     onboardingStore.reset();
     if (serverId === null) return;
-    const destination = switchServersStore.serverToOpenAfterSetup(serverId);
-    if (destination === serverId) void switchServersStore.setActive(serverId);
-    navigate('server', { serverId: destination });
+    void switchServersStore.setActive(serverId);
+    navigate('server', { serverId });
   };
 
   /** Leave them for the buddy's chat: its own once it exists, else the one waiting for a provider. */

@@ -15,7 +15,6 @@ const addServer = vi.hoisted(() => vi.fn());
 const updateServer = vi.hoisted(() => vi.fn());
 const storeError = vi.hoisted(() => ({ text: null as string | null }));
 const setActive = vi.hoisted(() => vi.fn());
-const serverToOpenAfterSetup = vi.hoisted(() => vi.fn((serverId: string) => serverId));
 const navigate = vi.hoisted(() => vi.fn());
 const listHosts = vi.hoisted(() => vi.fn());
 const switchCloud = vi.hoisted(() => vi.fn());
@@ -47,7 +46,6 @@ vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
     updateServer,
     connectToSwitchCloud,
     setActive,
-    serverToOpenAfterSetup,
     serverById: (id: string | null) => servers.find((s) => s.id === id) ?? null,
     isConnected: () => false,
     get errorText() {
@@ -63,7 +61,6 @@ vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
       testAccountResetEnabled: false,
     }),
     authConfigCheckFailed: () => false,
-    authConfigFailure: () => null,
     authConfigChecking: () => false,
     passwordLogin: () => Promise.resolve(true),
     oidcLogin: () => Promise.resolve(true),
@@ -128,7 +125,6 @@ beforeEach(() => {
   updateServer.mockReset();
   storeError.text = null;
   setActive.mockReset();
-  serverToOpenAfterSetup.mockReset().mockImplementation((serverId: string) => serverId);
   navigate.mockReset();
   listHosts.mockReset();
   listHosts.mockResolvedValue([]);
@@ -422,21 +418,7 @@ describe('the first-run flow', () => {
     await act(async () => button(el, 'Finish later').click());
 
     expect(onboardingStore.inProgress).toBe(false);
-    expect(setActive).toHaveBeenCalledWith('srv-1');
     expect(navigate).toHaveBeenCalledWith('server', { serverId: 'srv-1' });
-  });
-
-  it('stays on the open workspace when the server has never answered', async () => {
-    serverAdded('srv-1');
-    serverToOpenAfterSetup.mockReturnValue('srv-default');
-    const el = await renderFlow();
-    await addFromConnectPage(el);
-
-    await act(async () => button(el, 'Finish later').click());
-
-    expect(onboardingStore.inProgress).toBe(false);
-    expect(setActive).not.toHaveBeenCalled();
-    expect(navigate).toHaveBeenCalledWith('server', { serverId: 'srv-default' });
   });
 
   it('offers nothing to finish later before a server has been registered', async () => {

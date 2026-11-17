@@ -73,7 +73,6 @@ vi.mock('@renderer/lib/stores/app-state', () => ({
 }));
 
 const { SwitchServersStore, switchServersStore } = await import('./switch-servers-store');
-const { workspacesStore } = await import('@renderer/features/workspaces/workspaces-store');
 const { gatewaySessionEndedChannel } = await import('@shared/events/switchServerEvents');
 /** What the store does with word from the main process that a session ended,
  * taken before `beforeEach` clears the record of it being subscribed. */
@@ -705,44 +704,6 @@ describe('why a server cannot be reached', () => {
 
     expect(store.unreachableReason('srv-a')).toBeNull();
     expect(store.authConfigFailure('srv-a')).toBeNull();
-  });
-});
-
-describe('where leaving setup lands', () => {
-  it('stays on the open workspace when the new server has never answered', async () => {
-    listServers.mockResolvedValue([server('srv-a'), server('srv-new')]);
-    selectServer('srv-a');
-    getConnectionStatus.mockImplementation(async (serverId: string) => {
-      if (serverId === 'srv-new') throw new Error('fetch failed');
-      return { serverId, connected: true, user: null };
-    });
-    getAuthConfig.mockRejectedValue(new Error('fetch failed'));
-    const store = new SwitchServersStore();
-    await store.init();
-    await store.refreshServer('srv-new');
-
-    expect(store.serverToOpenAfterSetup('srv-new')).toBe('srv-a');
-  });
-
-  it('opens the new server once it has answered, signed in or not', async () => {
-    listServers.mockResolvedValue([server('srv-a'), server('srv-new')]);
-    selectServer('srv-a');
-    const store = new SwitchServersStore();
-    await store.init();
-    await store.refreshStatus('srv-new');
-
-    expect(store.serverToOpenAfterSetup('srv-new')).toBe('srv-new');
-  });
-
-  it('opens the new server when there is nothing else to show', async () => {
-    listServers.mockResolvedValue([server('srv-new')]);
-    getConnectionStatus.mockRejectedValue(new Error('fetch failed'));
-    const store = new SwitchServersStore();
-    await store.init();
-    selectServer(null);
-    await workspacesStore.refresh();
-
-    expect(store.serverToOpenAfterSetup('srv-new')).toBe('srv-new');
   });
 });
 
