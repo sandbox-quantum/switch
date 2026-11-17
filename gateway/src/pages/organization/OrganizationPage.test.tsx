@@ -23,6 +23,7 @@ function session(
     role: organizationRole === "member" ? ("member" as const) : ("admin" as const),
     organization_role: organizationRole,
     organization_id: "o1",
+    archived_at: null,
   };
   return {
     user: { id: "u1", name: "Ada", email: "ada@example.com", is_operator: isOperator },
@@ -37,10 +38,25 @@ function session(
 
 /** Answers each `METHOD /path` from `routes`: a body, or `[status, body]`
  * for a refusal. */
+/** What an organization with no Switch Trust policy answers, for the
+ * Guardrails section an admin sees, unless a test says otherwise. */
+const NO_GUARDRAILS = {
+  connected: false,
+  policy_id: null,
+  policy_name: null,
+  policy_url: null,
+  api_key_last4: null,
+  connected_by_name: null,
+  connected_at: null,
+};
+
 function answer(routes: Record<string, unknown>) {
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = String(input).replace(/^\/gateway/, "").split("?")[0];
     const key = `${init?.method ?? "GET"} ${path}`;
+    if (key === "GET /organizations/current/guardrails" && !(key in routes)) {
+      return new Response(JSON.stringify(NO_GUARDRAILS), { status: 200 });
+    }
     if (!(key in routes)) {
       return new Response(JSON.stringify({ detail: `unmocked ${key}` }), { status: 404 });
     }
@@ -107,6 +123,7 @@ const workspace = (id: string, name: string) => ({
   role: "admin",
   organization_role: "org_admin",
   organization_id: "o1",
+  archived_at: null,
 });
 
 describe("OrganizationPage", () => {
@@ -268,6 +285,22 @@ describe("OrganizationPage", () => {
     const asked = fetchMock.mock.calls.map(([input]) => String(input));
     expect(asked.filter((url) => /current\/(services|connector-apps)|feature-flags/.test(url))).toEqual([]);
     expect(screen.queryByText(/unmocked/)).toBeNull();
+  });
+
+  it("lets an admin set the organization's guardrails, the only place they are set", async () => {
+    signedInAs(session("org_admin", true));
+    answer({
+      "GET /organizations/current": { id: "o1", slug: "acme", name: "Acme Inc", role: "org_admin" },
+      "GET /organizations/current/workspaces": [workspace("t1", "Acme")],
+      "GET /organizations/current/members": [],
+      "GET /organizations/current/audit-events": [],
+      "GET /organizations/current/issues": [],
+    });
+
+    render(<OrganizationPage />);
+
+    expect(await screen.findByRole("heading", { name: "Guardrails" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Set up" })).toBeTruthy();
   });
 
   it("shows what a demotion could not revoke at a vendor", async () => {

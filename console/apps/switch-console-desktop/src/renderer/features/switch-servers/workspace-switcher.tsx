@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Check, ChevronsUpDown, Plus, Search, Server, UserPlus } from 'lucide-react';
+import { Check, ChevronsUpDown, ExternalLink, Plus, Search, Server, UserPlus } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { Fragment, useEffect, useState } from 'react';
 import { ChatsOfflineNote } from '@renderer/features/chats/components/chats-offline-note';
@@ -30,7 +30,7 @@ import { useToast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
-import { SwitchConsoleMark } from '@renderer/lib/switch-console-mark';
+import { openExternalUrl } from '@renderer/lib/open-external';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -50,6 +50,7 @@ import {
   type WorkspaceUnavailability,
   workspaceUnavailability,
 } from '@shared/core/workspaces/workspaces';
+import { SWITCH_CONSOLE_REPO_URL } from '@shared/urls';
 import { localServerStore } from './local-server-store';
 import { ManagedServerDot } from './managed-server-dot';
 import { remoteServerStore } from './remote-server-store';
@@ -175,7 +176,6 @@ const NoServerYet = observer(function NoServerYet() {
 /** One row per server, as the sidebar had before workspaces. */
 const ServerMenu = observer(function ServerMenu({ activeServer }: { activeServer: SwitchServer }) {
   const store = switchServersStore;
-  const { navigate } = useNavigate();
   const showAddServerModal = useShowModal('addServerModal');
   const ActiveIcon = serverIcon(activeServer);
 
@@ -230,11 +230,13 @@ const ServerMenu = observer(function ServerMenu({ activeServer }: { activeServer
             Add server
           </DropdownMenuItem>
           <DropdownMenuSeparator />
-          {/* The welcome screen is what the app opens with before any server
-              exists; once one does, this is how it stays reachable. */}
-          <DropdownMenuItem onClick={() => navigate('home')}>
-            <SwitchConsoleMark size={16} />
-            About Switch
+          <DropdownMenuItem
+            onClick={() =>
+              openExternalUrl(SWITCH_CONSOLE_REPO_URL, 'Could not open the repository')
+            }
+          >
+            <ExternalLink className="size-4" />
+            Switch on GitHub
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
@@ -341,7 +343,6 @@ const WorkspaceMenu = observer(function WorkspaceMenu({
   activeServer: SwitchServer;
 }) {
   const store = switchServersStore;
-  const { navigate } = useNavigate();
   const showAddServerModal = useShowModal('addServerModal');
   const [query, setQuery] = useState('');
 
@@ -408,11 +409,14 @@ const WorkspaceMenu = observer(function WorkspaceMenu({
             <Server className="size-4" />
             Add server…
           </DropdownMenuItem>
-          {/* The welcome screen is what the app opens with before any server
-              exists; once one does, this is how it stays reachable. */}
-          <DropdownMenuItem className={ACTION_ROW} onClick={() => navigate('home')}>
-            <SwitchConsoleMark size={16} />
-            About Switch
+          <DropdownMenuItem
+            className={ACTION_ROW}
+            onClick={() =>
+              openExternalUrl(SWITCH_CONSOLE_REPO_URL, 'Could not open the repository')
+            }
+          >
+            <ExternalLink className="size-4" />
+            Switch on GitHub
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>

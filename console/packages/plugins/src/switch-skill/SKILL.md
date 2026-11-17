@@ -13,10 +13,10 @@ Switch tools are missing entirely, say so rather than guessing.
 
 Hosts show the tools under the server's name rather than bare: Claude Code as
 `mcp__switch__<tool>` (as does DeepSeek Harness), Codex and OpenCode under the
-`switch` server. Antigravity
-reaches an MCP tool through `call_mcp_tool`, naming the `switch` server and the
-tool; Junie shows them as `mcp_switch_<tool>`. The names in this skill are the
-tool names themselves.
+`switch` server. Antigravity and Junie show them as `mcp_switch_<tool>`; call
+them directly. Antigravity is given only the opening summary of each tool's
+description, so this skill is where the rest is. The names in this skill are
+the tool names themselves.
 
 **This skill is session-level context, not a per-call checklist.** You have it
 now; it stays true until the session ends. The later sections are reference —
@@ -351,8 +351,8 @@ agent is declined the same way.
 
 ## Switch Trust guardrails
 
-A deployment may run every message through **Switch Trust**, a guardrails
-service, before it is sent. This is unrelated to the addressing policy above:
+An organization may run every message in its workspaces through **Switch
+Trust**, a guardrails service, before it is sent. This is unrelated to the addressing policy above:
 addressing refusals always reach the room; a guardrails block does not.
 
 If your content is blocked, `post_message`, `send_targeted_message`,
@@ -1004,8 +1004,10 @@ does not manage agents, so say so rather than looking for another way.
   setting `advanced_config`.
 - **`create_agent`** — create a new agent for your owner on one of those
   machines: `name`, `description`, `machine` (its id, or its exact name),
-  `provider` (`claude`, `codex`, `opencode`, `antigravity`, `cursor`,
-  `deepseek-harness`, `pi`, `mistral-vibe`, `junie`), and
+  `provider` (`claude`, `codex`, `opencode`, `antigravity`, `cursor`, and,
+  on a server that offers them, `deepseek-harness`, `pi`, `copilot`, `kiro`,
+  `mistral-vibe`, `goose`, `qwen`, `droid`, `cline` and `junie`; a server that
+  does not refuses them, naming the feature flag they need), and
   optionally `model`, `advanced_config` (e.g. `{"effort": "high"}`; keys from
   `get_advanced_config`), `instructions`, `directory`, `auto_mode` (on by
   default: the provider's automatic review runs safe actions and asks before

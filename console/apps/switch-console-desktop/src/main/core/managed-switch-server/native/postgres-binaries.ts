@@ -14,6 +14,7 @@ import {
   POSTGRES_MAJOR,
   POSTGRES_VERSION,
   postgresArchive,
+  VC_RUNTIME_DLLS,
 } from './toolchain-pins';
 
 const execFileAsync = promisify(execFile);
@@ -35,6 +36,46 @@ export type PostgresBinaries = {
 
 const REQUIRED = ['initdb', 'pg_ctl', 'postgres'] as const;
 const CHOICE_FILE = 'postgres.json';
+
+export const VC_REDIST_URL = 'https://aka.ms/vs/17/release/vc_redist.x64.exe';
+
+/** The VC++ runtime DLLs neither `binDir` nor System32 has, which is where
+ * Windows looks for them when loading `binDir`'s binaries. */
+export async function missingVcRuntimeDlls(
+  binDir: string,
+  systemRoot: string | undefined = process.env.SystemRoot
+): Promise<string[]> {
+  const searched = [binDir];
+  if (systemRoot) searched.push(path.join(systemRoot, 'System32'));
+  const missing: string[] = [];
+  for (const dll of VC_RUNTIME_DLLS) {
+    let found = false;
+    for (const dir of searched) {
+      try {
+        await access(path.join(dir, dll), constants.F_OK);
+        found = true;
+        break;
+      } catch {
+        // Not in this folder; Windows looks in the next.
+      }
+    }
+    if (!found) missing.push(dll);
+  }
+  return missing;
+}
+
+/** Throw a fix-it error when PostgreSQL in `binDir` cannot run because the
+ * VC++ runtime is missing, instead of a bare "does not run". */
+async function assertVcRuntime(binDir: string): Promise<void> {
+  if (process.platform !== 'win32') return;
+  const missing = await missingVcRuntimeDlls(binDir);
+  if (missing.length === 0) return;
+  throw new Error(
+    `PostgreSQL cannot start because this computer is missing the Microsoft Visual C++ ` +
+      `Redistributable (${missing.join(', ')} not found). Install it from ${VC_REDIST_URL}, ` +
+      `then start the server again.`
+  );
+}
 
 export function postgresBin(binaries: Pick<PostgresBinaries, 'binDir'>, name: string): string {
   return path.join(binaries.binDir, exe(name));
@@ -277,6 +318,7 @@ async function downloadPostgres(
     await hydrateSymlinks(root);
     const major = await probeBinDir(binDir);
     if (major !== POSTGRES_MAJOR) {
+      await assertVcRuntime(binDir);
       throw new Error(
         `The downloaded PostgreSQL in ${root} does not run (it reported major ${major ?? 'none'}).`
       );
@@ -323,6 +365,9 @@ export async function resolvePostgres(
   );
   const bundled = await bundledPostgres(bundle);
   let chosen: PostgresBinaries;
+  if (installed.length === 0 && bundled === null && bundle?.postgresBinDir != null) {
+    await assertVcRuntime(bundle.postgresBinDir);
+  }
   if (installed.length > 0) {
     chosen = installed[0];
   } else if (bundled !== null && (required === null || bundled.major === required)) {

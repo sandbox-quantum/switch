@@ -11,7 +11,7 @@ import { buildNativeCoreSettings } from './core-settings';
 import { downloadFile } from './download';
 import { mattermostCallbackBaseUrl, mattermostComposeYaml, mattermostImage } from './mattermost';
 import { nativeLayout } from './native-paths';
-import { parsePostgresMajor, resolvePostgres } from './postgres-binaries';
+import { missingVcRuntimeDlls, parsePostgresMajor, resolvePostgres } from './postgres-binaries';
 import { bundlePthLine } from './switch-core-install';
 import {
   currentNativePlatform,
@@ -213,6 +213,30 @@ describe('resolvePostgres', () => {
       await expect(resolvePostgres(layout, null, () => {})).rejects.toThrow(
         'created by PostgreSQL 14, and switch-core needs PostgreSQL 16 or newer. Reset the server'
       );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('missingVcRuntimeDlls', () => {
+  it('finds the VC++ runtime next to the binaries or in System32, and names what neither has', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'switch-vcrt-'));
+    try {
+      const binDir = path.join(root, 'bin');
+      const system32 = path.join(root, 'Windows', 'System32');
+      await mkdir(binDir, { recursive: true });
+      await mkdir(system32, { recursive: true });
+      const systemRoot = path.join(root, 'Windows');
+      expect(await missingVcRuntimeDlls(binDir, systemRoot)).toEqual([
+        'vcruntime140.dll',
+        'vcruntime140_1.dll',
+        'msvcp140.dll',
+      ]);
+      await writeFile(path.join(system32, 'vcruntime140.dll'), '');
+      await writeFile(path.join(system32, 'vcruntime140_1.dll'), '');
+      await writeFile(path.join(binDir, 'msvcp140.dll'), '');
+      expect(await missingVcRuntimeDlls(binDir, systemRoot)).toEqual([]);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

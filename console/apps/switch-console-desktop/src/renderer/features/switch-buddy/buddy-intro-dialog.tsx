@@ -54,7 +54,7 @@ export const BuddyIntroDialog = observer(function BuddyIntroDialog() {
       <DialogContent
         aria-labelledby="buddy-intro-heading"
         initialFocus={meetRef}
-        className="sm:max-w-[560px]"
+        className="sm:max-w-[620px]"
         style={{ backgroundImage: ONBOARDING_BACKDROP }}
       >
         <div className="flex flex-col gap-6 overflow-y-auto px-8 pt-10 pb-6">

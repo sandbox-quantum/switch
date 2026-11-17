@@ -107,7 +107,14 @@ def render_plans(
             ],
         }
     ]
-    plan = plan_template(text, {}, inputs, builtins=builtins, machines=machines)
+    plan = plan_template(
+        text,
+        {},
+        inputs,
+        builtins=builtins,
+        machines=machines,
+        providers=frozenset(provider_ids()),
+    )
     keys = resource_keys(text, inputs, builtins)
     return {key_of(agent, keys): agent for agent in plan.new_agents}
 

@@ -66,6 +66,38 @@ function compareVersions(a: string, b: string): number {
 /** Methods that are non-PM origins — cannot be used for PM routing. */
 const NON_PM_KINDS = new Set(['manual', 'version-manager', 'unknown']);
 
+/**
+ * `detected`, or the method of the dependency's own install option that installed the
+ * binary at `realpath` (`InstallOption.installedAt`, relative to `homeDir`) when no
+ * package manager confirmed it. A provider's own installer knows where it writes; the
+ * generic location hints do not.
+ *
+ * A path ending in a separator is a folder the binary is anywhere under; any other is the
+ * binary itself. Both are anchored at the home directory, so a copy with the same name
+ * elsewhere, or beside it (`claude.exe.old`), is not taken for the one the option's
+ * uninstall removes.
+ */
+export function ownProvenance(
+  detected: Provenance,
+  descriptor: Pick<DependencyDescriptor, 'installCommands'>,
+  platform: Platform,
+  realpath: string,
+  homeDir: string | undefined
+): Provenance {
+  if (detected.confidence === 'confirmed' || !homeDir) return detected;
+  const normalise = (path: string) => path.replace(/[\\/]+/g, '/').toLowerCase();
+  const where = normalise(realpath);
+  const home = normalise(homeDir).replace(/\/$/, '');
+  const owns = (path: string) => {
+    const at = `${home}/${normalise(path).replace(/^\//, '')}`;
+    return at.endsWith('/') ? where.startsWith(at) : where === at;
+  };
+  const owner = descriptor.installCommands?.[platform]?.find((option) =>
+    option.installedAt?.some(owns)
+  );
+  return owner ? { kind: owner.method, confidence: 'confirmed' } : detected;
+}
+
 /** Returns true when a provenance kind is a real InstallMethod that can be PM-routed. */
 function isRealInstallMethod(kind: Provenance['kind'] | null | undefined): kind is InstallMethod {
   return !!kind && !NON_PM_KINDS.has(kind);
@@ -187,6 +219,11 @@ export type HostDependencyManagerOptions = {
    * Inject a stub in tests to avoid live brew/npm queries.
    */
   installMethodDetector?: InstallMethodDetector;
+  /**
+   * The target machine's home directory, which `InstallOption.installedAt` paths are
+   * relative to. Without it, no installation is matched to an install option by where it is.
+   */
+  homeDir?: string;
 };
 
 /**
@@ -209,6 +246,7 @@ export class HostDependencyManager {
   private readonly _dependencies: DependencyDescriptor[];
   private readonly _getDependencyDescriptor: (id: string) => DependencyDescriptor | undefined;
   private readonly detector: InstallMethodDetector;
+  private readonly homeDir: string | undefined;
   /** Platform of the target machine. Defaults to process.platform; SSH callers pass the remote platform. */
   readonly platform: Platform;
 
@@ -225,6 +263,7 @@ export class HostDependencyManager {
     this.ctx = ctx;
     this.connectionId = options.connectionId;
     this.platform = options.platform ?? toPlatform(process.platform);
+    this.homeDir = options.homeDir;
     this.getSelection = options.getSelection ?? (() => Promise.resolve(null));
     this.logger = options.logger ?? consoleLogger;
     this._dependencies = options.dependencies ?? [];
@@ -378,7 +417,13 @@ export class HostDependencyManager {
       seenRealpaths.add(realpath);
 
       const isActive = isFirstOverall;
-      const provenance = await this.detector.detect(realpath);
+      const provenance = ownProvenance(
+        await this.detector.detect(realpath),
+        descriptor,
+        this.platform,
+        realpath,
+        this.homeDir
+      );
       const manageable = computeManageable(provenance, descriptor);
 
       // For the active (first) installation, reuse the already-computed fullState

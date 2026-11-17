@@ -29,6 +29,7 @@ function sessionFor(email: string, name: string): Session {
       role: "admin",
       organization_role: "member",
       organization_id: "o1",
+      archived_at: null,
     },
     tenants: [],
     state: "ready",

@@ -37,6 +37,7 @@ export {
   HostDependencyManager,
   type HostDependencyManagerOptions,
   type InstallCommandRunner,
+  ownProvenance,
 } from './host-dependency-manager';
 export {
   resolveAllCommandPaths,

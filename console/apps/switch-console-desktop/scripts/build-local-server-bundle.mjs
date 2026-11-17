@@ -27,6 +27,7 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createWriteStream, existsSync } from 'node:fs';
 import {
+  copyFile,
   cp,
   mkdir,
   mkdtemp,
@@ -91,6 +92,7 @@ const wanted = {
   postgresVersion: pins.postgresArchive(platform) ? pins.POSTGRES_VERSION : null,
   opensslVersion: buildsOpenssl ? pins.OPENSSL_VERSION : null,
   python: pins.SWITCH_CORE_PYTHON,
+  vcRuntime: process.platform === 'win32' ? pins.VC_RUNTIME_DLLS.join(',') : null,
   // Bumped when what the bundle holds of the gateway changes, so a bundle
   // already on disk from before is rebuilt (1: its built pages).
   gatewayUi: 1,
@@ -198,6 +200,7 @@ if (postgres) {
   for (const drop of ['share/doc', 'share/man', 'share/locale']) {
     await rm(path.join(dir, drop), { recursive: true, force: true });
   }
+  await shipVcRuntime(path.join(dir, 'bin'));
   // Recreate the shared-library links npm packaging cannot carry.
   const linksFile = path.join(dir, 'pg-symlinks.json');
   if (existsSync(linksFile)) {
@@ -215,6 +218,24 @@ if (postgres) {
 
 // A relocatable CPython, as uv installs it.
 console.log(`local-server bundle: Python ${pins.SWITCH_CORE_PYTHON}`);
+/**
+ * Copies the VC++ runtime into `dir` on Windows. PostgreSQL and the C++
+ * extensions switch-core's packages bring (greenlet's, for one) link against
+ * it, and a clean Windows lacks it. Shipped next to what loads it: app-local
+ * deployment, which the Redistributable's licence allows.
+ */
+async function shipVcRuntime(dir) {
+  if (process.platform !== 'win32') return;
+  const system32 = path.win32.join(process.env.SystemRoot, 'System32');
+  for (const dll of pins.VC_RUNTIME_DLLS) {
+    const source = path.win32.join(system32, dll);
+    if (!existsSync(source)) {
+      throw new Error(`${source} is missing; the local server needs it on a clean Windows.`);
+    }
+    await copyFile(source, path.join(dir, dll));
+  }
+}
+
 const pythons = path.join(work, 'pythons');
 execFileSync(
   uv,
@@ -236,6 +257,8 @@ await cp(path.join(pythons, pythonDir.name), path.join(stage, 'python'), {
   recursive: true,
   verbatimSymlinks: true,
 });
+// CPython ships vcruntime140 but not msvcp140, which C++ extensions load.
+await shipVcRuntime(path.join(stage, 'python'));
 const python =
   process.platform === 'win32'
     ? path.join(stage, 'python', 'python.exe')

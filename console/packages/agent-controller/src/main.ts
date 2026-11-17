@@ -10,10 +10,13 @@ import {
   isStopMessage,
   PROVIDER_RECHECKED_KIND,
   type ProviderRecheckReply,
+  windowsRegistryPath,
+  withWindowsPathEntries,
 } from '@switch-console/agent-providers';
 import {
   withWindowsAgyBinDir,
   withWindowsCodexBinDir,
+  withWindowsInstallerBinDirs,
   withWindowsGitBashDir,
 } from '@switch-console/plugins/agents';
 import packageJson from '../package.json' with { type: 'json' };
@@ -401,9 +404,22 @@ async function setInfoCommand(args: string[]): Promise<number> {
 function pathRefresher(log: Logger): () => Promise<void> {
   return async () => {
     if (process.platform === 'win32') {
+      const registry = await windowsRegistryPath(process.env);
+      if (registry === null)
+        log.warn(
+          'Could not read the PATH from the registry; a CLI installed since this controller started may not be found',
+          { path: process.env.PATH }
+        );
+      const current = withUserBinDirs(
+        withWindowsPathEntries(process.env.PATH ?? '', registry ?? ''),
+        homedir()
+      );
       process.env.PATH = withWindowsGitBashDir(
-        withWindowsCodexBinDir(
-          withWindowsAgyBinDir(process.env.PATH ?? '', process.env.LOCALAPPDATA),
+        withWindowsInstallerBinDirs(
+          withWindowsCodexBinDir(
+            withWindowsAgyBinDir(current, process.env.LOCALAPPDATA),
+            process.env.LOCALAPPDATA
+          ),
           process.env.LOCALAPPDATA
         ),
         {

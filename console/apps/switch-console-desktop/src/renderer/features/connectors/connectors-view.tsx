@@ -2,6 +2,7 @@ import { ArrowRight, Check, Plug, Plus } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useState } from 'react';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
+import { homeRedirect } from '@renderer/features/switch-servers/home-target';
 import { ServerPage } from '@renderer/features/switch-servers/server-page';
 import { ServerSectionTitlebar } from '@renderer/features/switch-servers/server-section-titlebar';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
@@ -82,13 +83,23 @@ const ConnectorsPanel = observer(function ConnectorsPanel() {
 
   if (access === 'unreadable')
     return (
-      <ServerPage width={LIST_PAGE_WIDTH} title="Connectors" description={DESCRIPTION}>
+      <ServerPage
+        width={LIST_PAGE_WIDTH}
+        title="Connectors"
+        term="connector"
+        description={DESCRIPTION}
+      >
         <FlagsUnreadable flags={flags} />
       </ServerPage>
     );
   if (access !== 'shown' || workspaceId === null)
     return (
-      <ServerPage width={LIST_PAGE_WIDTH} title="Connectors" description={DESCRIPTION}>
+      <ServerPage
+        width={LIST_PAGE_WIDTH}
+        title="Connectors"
+        term="connector"
+        description={DESCRIPTION}
+      >
         <Spinner />
       </ServerPage>
     );
@@ -201,6 +212,7 @@ function Connectors({
     <ServerPage
       width={LIST_PAGE_WIDTH}
       title="Connectors"
+      term="connector"
       description={DESCRIPTION}
       action={
         // Turning a service on or off for everyone is the Admin page's; only
@@ -427,7 +439,7 @@ export const connectorsView = {
       typeof params === 'object' && params !== null
         ? (params as { serverId?: unknown }).serverId
         : undefined;
-    if (typeof serverId !== 'string') return { ok: false, redirect: 'home' };
+    if (typeof serverId !== 'string') return homeRedirect();
     return { ok: true };
   },
 } satisfies ViewDefinition<{ serverId: string; connector?: string }>;

@@ -6,7 +6,7 @@ import type {
   InstallOverride,
 } from '@switch-console/core/deps/runtime';
 import { reportedCliAction } from '@main/core/telemetry/cli-action';
-import { ensureUserBinDirsInPath, ensureWindowsUserBinDirsInPath } from '@main/utils/userEnv';
+import { refreshInstalledCliPath } from '@main/utils/userEnv';
 import type { ProviderCustomConfig } from '@shared/core/app-settings';
 import {
   type AgentProviderDefinition,
@@ -109,6 +109,8 @@ export const providersController = createRPCController({
   startLogin: (id: AgentProviderId): { attemptId: string } => providerLoginRunner.start(id),
 
   cancelLogin: (): void => providerLoginRunner.cancel(),
+  loginInput: (params: { attemptId: string; line: string }): void =>
+    providerLoginRunner.input(params.attemptId, params.line),
 
   // ── Settings ─────────────────────────────────────────────────────────────────
 
@@ -156,8 +158,7 @@ export const providersController = createRPCController({
     // A CLI installed since start, by hand or by its own installer, is often in
     // ~/.local/bin, which this computer's controller always looks in.
     if (!connectionId) {
-      ensureUserBinDirsInPath();
-      if (process.platform === 'win32') ensureWindowsUserBinDirsInPath();
+      await refreshInstalledCliPath();
     }
     const mgr = await getDependencyManager(connectionId);
     return mgr.probeAll(options);
