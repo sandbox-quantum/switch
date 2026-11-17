@@ -1,3 +1,5 @@
+import { app } from 'electron';
+import { hardwareAccelerationState, setHardwareAcceleration } from '@main/app/gpu-acceleration';
 import { getDiagnosticLogAttachment } from '@main/lib/file-logger';
 import { createRPCController } from '@shared/lib/ipc/rpc';
 import type { OpenInAppId } from '@shared/openInApps';
@@ -62,4 +64,20 @@ export const appController = createRPCController({
   getAppVersion: () => appService.getCachedAppVersion(),
   getPlatform: () => process.platform,
   getDiagnosticLogAttachment,
+  getHardwareAcceleration: () => hardwareAccelerationState(),
+  setHardwareAcceleration: (enabled: boolean) => {
+    try {
+      setHardwareAcceleration(enabled);
+      return { success: true };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  },
+  /** Quit and start again, so a setting read only at launch takes effect. */
+  restart: () => {
+    // before-quit ends in app.exit(0), which honours the relaunch scheduled here.
+    app.relaunch();
+    app.quit();
+    return { success: true };
+  },
 });
