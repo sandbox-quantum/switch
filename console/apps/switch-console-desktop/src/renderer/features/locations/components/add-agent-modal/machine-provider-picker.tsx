@@ -77,6 +77,9 @@ export function MachineProviderPicker({
       )
     : [];
   const [giving, setGiving] = useState<AgentProviderId | null>(null);
+  const unchecked = options
+    .filter((option) => option.problem === SIGN_IN_UNCHECKED)
+    .map((option) => option.name);
   const picked = options.find((option) => option.id === value);
   const pickedDetail = machine.providers.find((entry) => entry.provider === value)?.detail ?? null;
 
@@ -95,7 +98,9 @@ export function MachineProviderPicker({
           <span>
             {machine.providers.length === 0
               ? `${machine.name} has not reported its providers yet.`
-              : `No provider is installed and logged in on ${machine.name}.`}
+              : unchecked.length > 0
+                ? `Sign-in couldn’t be checked for ${unchecked.join(' and ')} on ${machine.name}. ${unchecked.length === 1 ? 'It' : 'They'} can still be picked.`
+                : `No provider is installed and logged in on ${machine.name}.`}
           </span>
         </div>
       )}

@@ -409,6 +409,22 @@ describe('the providers a server machine offers', () => {
     expect(onChange).toHaveBeenCalledWith('cursor');
   });
 
+  it('says the only usable provider’s sign-in could not be checked, not that none is logged in', async () => {
+    const el = await render(
+      <MachineProviderPicker
+        serverId="server-1"
+        machine={{ ...UNCHECKED, providers: UNCHECKED.providers.filter((p) => !p.ready) }}
+        value={null}
+        onChange={vi.fn()}
+        defaultAgent="claude"
+      />
+    );
+    expect(el.textContent).toMatch(
+      /Sign-in couldn’t be checked for Cursor on build-box\. It can still be picked\./
+    );
+    expect(el.textContent).not.toMatch(/No provider is installed and logged in/);
+  });
+
   it('warns that the picked provider’s sign-in could not be checked', async () => {
     const picked = await render(
       <MachineProviderPicker
