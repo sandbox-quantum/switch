@@ -4308,6 +4308,17 @@ version of their own to them without also giving them a release of their own.
   agent"; it was the only place Console showed that name.
 
 #### Fixed
+- **The window opens on Linux VMs without 3D acceleration.** Started with
+  `--disable-gpu` in a Wayland session, Switch Console restarts itself once on
+  X11 (XWayland), where it can paint without a GPU; on Wayland the window was
+  never shown. The Linux install guide now says what the AppImage needs (FUSE 2,
+  as `libfuse2t64` on Ubuntu 24.04 and later), that it handles Ubuntu's
+  AppArmor sandbox restriction itself, and what to do in a VM without 3D.
+- **Restarting Switch Console from an AppImage starts it again.** A restart
+  (after a launch that arrived while quitting, or "replay as a fresh install")
+  used to exit and start nothing, because the copy it started lived inside the
+  AppImage's mount, which goes away on exit. It now starts the AppImage file
+  once the old copy has exited.
 - **Cursor, Goose, Kiro and Mistral Vibe can be installed on Windows.** Each
   offers its vendor's Windows install, which works from PowerShell or Command
   Prompt, where before it said "Not found" with nothing to install. Cursor and
