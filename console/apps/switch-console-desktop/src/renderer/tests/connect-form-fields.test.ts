@@ -12,7 +12,7 @@ function field(key: string, label: string, required: boolean): BridgeConfigField
 
 // What a server that predates the fix sends: the token optional, since the
 // model also serves shared bridges that carry none.
-const discordFields = [field('bot_token', 'Bot Token', false), field('guild_id', 'Guild Id', true)];
+const discordFields = [field('bot_token', 'Bot Token', false), field('guild_id', 'Server ID', true)];
 
 describe('the connect form fields', () => {
   it('asks for a Discord bot token as required, whatever the schema says', () => {
@@ -43,7 +43,7 @@ describe('the connect form fields', () => {
     expect(missingFieldsMessage(fields, { guild_id: '123', bot_token: '  ' })).toBe(
       'Bot Token is required to connect.'
     );
-    expect(missingFieldsMessage(fields, {})).toBe('Bot Token, Guild Id are required to connect.');
+    expect(missingFieldsMessage(fields, {})).toBe('Bot Token, Server ID are required to connect.');
     expect(missingFieldsMessage(fields, { guild_id: '123', bot_token: 'tok' })).toBeNull();
   });
 

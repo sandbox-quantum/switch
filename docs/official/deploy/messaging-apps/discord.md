@@ -64,7 +64,7 @@ Open the URL the generator builds and add the bot to your Discord server.
 
 In Discord, open **User Settings**, then **Developer**, and turn on **Developer Mode**. Then open the context menu on the server icon (right-click, or press and hold) and select **Copy Server ID**. Store it with the bot token.
 
-The connect form labels this field **Guild Id**, the internal Discord name for a server ID.
+The connect form labels this field **Server ID**.
 
 ## Connect Discord to your Switch workspace <Admin />
 
@@ -85,7 +85,7 @@ If there's no **Connect** button, you aren't an admin. Ask an admin to connect i
 ### Paste in the bot token and server id
 
 - **Bot Token**: paste the token from the **Bot** tab in the Developer Portal.
-- **Guild Id**: paste the id you copied from the server icon.
+- **Server ID**: paste the id you copied from the server icon.
 
 Leave **Agent name autocomplete** selected unless your Discord server is near its role limit or restricts role management. You can't change it in Switch Console or the Gateway once the connection exists. [Agent names and progress](#agent-names-and-progress) has the details.
 
