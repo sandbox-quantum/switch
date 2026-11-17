@@ -463,7 +463,7 @@ describe('linking your account once an app is added', () => {
     });
   });
 
-  it('explains how to link a Telegram account instead of offering a search', async () => {
+  it('neither searches nor toasts after connecting Telegram, which has no directory', async () => {
     listBridgeTypes.mockResolvedValue([
       { key: 'slack', fields: [], channelCreationSupported: true, directorySearchSupported: true },
       {
@@ -486,9 +486,8 @@ describe('linking your account once an app is added', () => {
     await settle();
 
     expect(showModal).not.toHaveBeenCalledWith('claimIdentityModal', expect.anything());
-    expect(toast).toHaveBeenCalledWith({
-      title: 'Link your telegram b-tg account',
-      description: expect.stringContaining('has no directory of users to search'),
-    });
+    // Said where it stays put (the app's row, the buddy's checklist), not in a
+    // toast that vanishes.
+    expect(toast).not.toHaveBeenCalled();
   });
 });
