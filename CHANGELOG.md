@@ -53,6 +53,15 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **`switch-promote-org-admin`, a break-glass command.** When an
+  organization's admins can't make someone an admin themselves, the platform
+  operator can run `switch-promote-org-admin <organization id or slug>
+  <email> --reason "<text>" --execute` where switch-core runs. The person
+  must already be in one of the organization's workspaces. The change is
+  recorded in the organization's audit log as made by a platform operator,
+  with the reason, and its organization admins are e-mailed. Without
+  `--execute` it only shows what it would do. An organization whose admins
+  come from WorkOS is refused.
 - **Server commands for the platform operator.** Three commands run where
   switch-core runs, with its configuration:
   - `switch-orgs list` shows every organization with its admins and
