@@ -33,6 +33,7 @@ import {
   settingsSections,
   shownSettingsTab,
 } from '../settings-tabs';
+import { HardwareAccelerationRow } from './HardwareAccelerationRow';
 import NotificationSettingsCard from './NotificationSettingsCard';
 import { OnboardingChecklistRow } from './OnboardingSettingsRow';
 import { ReplayOnboardingRow } from './ReplayOnboardingRow';
@@ -59,6 +60,7 @@ function PreferencesSettingsPage() {
       <AutoTrustWorktreesRow />
       <PreserveSessionNameCapitalizationRow />
       <NotificationSettingsCard />
+      <HardwareAccelerationRow />
       <OnboardingChecklistRow />
       <ReplayOnboardingRow />
       <TelemetrySettingsCard />

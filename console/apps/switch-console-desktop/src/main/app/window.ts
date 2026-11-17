@@ -6,6 +6,7 @@ import { log } from '@main/lib/logger';
 import { registerExternalLinkHandlers, registerGuestLinkHandlers } from '@main/utils/externalLinks';
 import { PRODUCT_NAME } from '@shared/app-identity';
 import { appCommandNavigateChannel } from '@shared/events/appEvents';
+import { watchGpuHealth } from './gpu-acceleration';
 import { APP_ORIGIN } from './protocol';
 
 let mainWindow: BrowserWindow | null = null;
@@ -53,6 +54,10 @@ export function createMainWindow(): BrowserWindow {
       : {}),
     show: false,
   });
+
+  // The window is shown on ready-to-show, which never comes when the GPU
+  // cannot draw; this restarts Console without it in that case.
+  watchGpuHealth(mainWindow);
 
   if (import.meta.env.DEV) {
     void mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL!);

@@ -10,6 +10,7 @@ import dockIcon from '@/assets/images/switch-console/icon-dock.png?asset';
 import { PRODUCT_NAME } from '@shared/app-identity';
 import { registerRPCRouter } from '@shared/lib/ipc/rpc';
 import { deeplinkFromArgv, flushPendingDeeplink, setupDeeplinks } from './app/deeplinks';
+import { applyGpuPreference, logGpuPreference } from './app/gpu-acceleration';
 import {
   dbusSend,
   linuxPasswordStoreFallback,
@@ -93,6 +94,9 @@ if (process.platform === 'linux') {
   if (passwordStore) app.commandLine.appendSwitch('password-store', passwordStore);
 }
 
+// Before the app is ready: Chromium decides once whether to use the GPU.
+applyGpuPreference();
+
 registerAppScheme();
 setupDeeplinks();
 
@@ -102,6 +106,7 @@ registerAppDiagnostics();
 registerProcessErrorLogging(log);
 registerRendererLogHandler(ipcMain);
 logAppStart();
+logGpuPreference();
 
 // A launch while Console is quitting finds no window to show, and one opened
 // now would close with the exit, so Console starts again once it has quit.
