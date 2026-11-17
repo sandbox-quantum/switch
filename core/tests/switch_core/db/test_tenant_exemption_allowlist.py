@@ -178,6 +178,12 @@ _ALLOWED_MODULES = {
     # report a page of zeroes on a correctly configured deployment and look
     # perfectly healthy doing it.
     "switch_core.telemetry.snapshot",
+    # The platform operator's server commands run with no caller to take a
+    # tenant from: `switch-orgs list` enumerates every organization and its
+    # workspaces to print them, and `switch-promote-org-admin` resolves the
+    # organization it was named before binding it for the change.
+    "switch_core.organizations_admin",
+    "switch_core.promote_org_admin",
 }
 
 # Every module allowed to open a session straight from the factory. Not short,
@@ -285,6 +291,18 @@ _RAW_SESSION_FACTORY_MODULES = {
     # deployment and service, shared by every tenant's sign-ins, so read at
     # boot and after the operator changes one, in a session bound to none.
     "switch_core.connections.app_credentials",
+    # Account deletion reads the account that asked, in `users`, which is
+    # global (`rls_ddl.GLOBAL_TABLES`); every workspace and organization it
+    # leaves is bound.
+    "switch_core.accounts.deletion",
+    # The platform operator's server commands (`operator_commands.py`) look
+    # accounts up in `users` and read and write the deployment's connector
+    # apps in `service_app_credentials`, both global (`rls_ddl.GLOBAL_TABLES`)
+    # and read with no tenant bound (`no_tenant()`); whatever they change in a
+    # workspace or organization they bind first.
+    "switch_core.operator_commands",
+    "switch_core.accounts_admin",
+    "switch_core.connector_apps_admin",
 }
 
 # Calls that end in `session_factory` but hand one back rather than open a
