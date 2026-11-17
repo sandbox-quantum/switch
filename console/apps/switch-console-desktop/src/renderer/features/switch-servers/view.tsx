@@ -206,13 +206,6 @@ const HomeBody = observer(function HomeBody({
 const UNREACHABLE_RETRY_MS = 10_000;
 
 /**
- * The whole page when a server's gateway cannot be reached. There is nothing to
- * sign into and no status worth reading, so this replaces both rather than
- * stacking a red banner on top of a sign-in form that can never work. The raw
- * gateway error stays in the console: naming our own IPC method at the user
- * gives them nothing to act on (CHOO-2042).
- */
-/**
  * The reason a server could not be reached, without the address the card's
  * title already names: "Can't reach <host>: …" from a network failure, or
  * "<host> …" from a redirect.
@@ -225,6 +218,13 @@ function withoutAddress(reason: string | null, host: string): string | null {
   return rest.charAt(0).toUpperCase() + rest.slice(1);
 }
 
+/**
+ * The whole page when a server's gateway cannot be reached. There is nothing to
+ * sign into and no status worth reading, so this replaces both rather than
+ * stacking a red banner on top of a sign-in form that can never work. The raw
+ * gateway error stays in the console: naming our own IPC method at the user
+ * gives them nothing to act on (CHOO-2042).
+ */
 const ServerUnreachableCard = observer(function ServerUnreachableCard({
   server,
 }: {
