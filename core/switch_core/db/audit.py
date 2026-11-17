@@ -91,6 +91,9 @@ class AuditAction(StrEnum):
     # the clean-up of rooms made before rooms followed their channel
     # (`private_channel_rooms.py`).
     ROOM_MADE_PRIVATE = "room.made_private"
+    # Switch Console signed a browser in to the workspace with a one-time
+    # link, opening a dashboard page (`details.next`).
+    BROWSER_HANDOFF = "auth.browser_handoff"
 
 
 class OrganizationAuditAction(StrEnum):

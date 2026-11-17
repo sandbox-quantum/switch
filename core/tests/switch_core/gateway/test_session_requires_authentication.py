@@ -76,6 +76,12 @@ _ROUTES_WITH_NO_TENANT_BOUND = {
     # Signing out of one session records its id in `revoked_sessions`, which
     # belongs to no workspace, and needs no valid session to clear a cookie.
     ("POST", "/auth/logout"),
+    # A browser opened from Switch Console, which may hold no session yet,
+    # asks whose sign-in link it holds and redeems it. Both read the global
+    # `browser_handoffs` and `users`; the workspace the link names is read,
+    # and its audit event written, in a `tenant_session` of its own.
+    ("POST", "/auth/handoff/peek"),
+    ("POST", "/auth/handoff/redeem"),
 }
 
 # Every route that does not resolve a tenant, for any reason. `get_current_user`
@@ -108,6 +114,11 @@ _ROUTES_THAT_NEVER_BIND_A_TENANT = {
     ("POST", "/auth/login"),
     ("POST", "/auth/signup"),
     ("POST", "/auth/logout"),
+    # Switch Console's sign-in link for a browser: the browser has no session
+    # yet, so nothing to bind from. The link itself names the workspace its
+    # new session selects, which every request re-checks.
+    ("POST", "/auth/handoff/peek"),
+    ("POST", "/auth/handoff/redeem"),
     # Signing out of all devices acts on the account, not a workspace, and a
     # caller with several and none selected must be able to reach it.
     ("POST", "/auth/sessions/revoke"),

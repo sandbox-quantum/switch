@@ -194,6 +194,12 @@ ROUTES: dict[str, Case] = {
     ),
     "GET /gateway/auth/session": get(f"{G}/auth/session", SELF),
     "POST /gateway/auth/refresh": post(f"{G}/auth/refresh", SELF),
+    "POST /gateway/auth/handoff": post(
+        f"{G}/auth/handoff",
+        SELF,
+        json={"next": "/rooms"},
+        why="A sign-in link to a browser, as the caller themselves.",
+    ),
     "PATCH /gateway/auth/me": patch(f"{G}/auth/me", SELF, json={"name": "Renamed"}),
     "PUT /gateway/auth/me/password": put(
         f"{G}/auth/me/password",
@@ -1390,6 +1396,12 @@ UNAUTHENTICATED: dict[str, str] = {
     "GET /gateway/auth/oidc/callback": "A sign-in coming back from the identity provider.",
     "GET /gateway/auth/oidc/login": "Starting a sign-in.",
     "POST /gateway/auth/oidc/exchange": "Finishing a sign-in with its one-time code.",
+    "POST /gateway/auth/handoff/peek": (
+        "Whose browser sign-in link this is, before the browser has a session."
+    ),
+    "POST /gateway/auth/handoff/redeem": (
+        "A browser redeeming a sign-in link for a session of its own."
+    ),
     "POST /gateway/auth/login": "Signing in.",
     "POST /gateway/auth/logout": "Signing out of the session the cookie belongs to.",
     "POST /gateway/auth/signup": "Signing up.",
