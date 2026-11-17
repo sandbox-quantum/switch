@@ -469,7 +469,7 @@ describe("the layout", () => {
       ]);
     });
 
-    it("gives a workspace admin Usage & budget, and Devices and Connectors where they run", async () => {
+    it("gives a workspace admin Devices and Connectors where they run", async () => {
       mockFetch(
         signedInAs("workspace_admin", {
           flags: ["agent_management", "service_connections"],
@@ -483,7 +483,6 @@ describe("the layout", () => {
         "Connectors",
         "API keys",
         "Guardrails",
-        "Usage & budget",
         "Devices",
         "Your account",
       ]);
@@ -518,15 +517,16 @@ describe("the layout", () => {
       expect(within(menu).getAllByRole("separator")).toHaveLength(1);
     });
 
-    it("keeps Usage & budget at its own URL, inside the area", async () => {
+    it("sends Usage & budget, which is off, to the area", async () => {
       mockFetch(signedInAs("workspace_admin"));
       renderAt("/usage");
-      expect(await menuLabels("Settings")).toContain("Usage & budget");
+      await landsOn("/settings/general");
+      expect(await menuLabels("Settings")).not.toContain("Usage & budget");
     });
 
     it("refuses a settings page named in the URL, and says why", async () => {
       mockFetch(signedInAs("member"));
-      renderAt("/usage");
+      renderAt("/settings/general/private-channel-rooms");
       expect(await screen.findByText("Only this workspace's admins can open this page.")).toBeTruthy();
     });
 
@@ -1159,13 +1159,13 @@ describe("a page that falls behind the server", () => {
   it("follows a change of role when the tab comes back", async () => {
     mockFetch(signedInAs("member"));
     renderAt("/settings/general");
-    expect(await menuLabels("Settings")).not.toContain("Usage & budget");
+    expect(await menuLabels("Settings")).not.toContain("Organization settings");
 
-    mockFetch(signedInAs("workspace_admin"));
+    mockFetch(signedInAs("org_admin"));
     comeBackToTheTab();
 
     await waitFor(async () =>
-      expect(await menuLabels("Settings")).toContain("Usage & budget"),
+      expect(await menuLabels("Settings")).toContain("Organization settings"),
     );
     expect(reload).not.toHaveBeenCalled();
   });
@@ -1216,9 +1216,9 @@ describe("what the server's answers say about the session", () => {
   });
 
   it("reads the session again when the server refuses something, and follows a change of role", async () => {
-    mockFetch(signedInAs("workspace_admin"));
+    mockFetch(signedInAs("org_admin"));
     renderAt("/settings/general");
-    expect(await menuLabels("Settings")).toContain("Usage & budget");
+    expect(await menuLabels("Settings")).toContain("Organization settings");
 
     mockFetch({
       ...signedInAs("member"),
@@ -1226,7 +1226,9 @@ describe("what the server's answers say about the session", () => {
     });
     await gatewayFetch("/gateway/tenants/t1/invitations", { method: "POST" });
 
-    await waitFor(async () => expect(await menuLabels("Settings")).not.toContain("Usage & budget"));
+    await waitFor(async () =>
+      expect(await menuLabels("Settings")).not.toContain("Organization settings"),
+    );
     expect(reload).not.toHaveBeenCalled();
   });
 

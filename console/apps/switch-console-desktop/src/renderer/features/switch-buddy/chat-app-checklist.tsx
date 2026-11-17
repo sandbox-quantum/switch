@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { CheckCircle2, Circle } from 'lucide-react';
 import { type ReactNode, useState } from 'react';
 import { claimFailureText } from '@renderer/features/switch-servers/bridge-identity-search';
+import { accountName } from '@renderer/features/switch-servers/link-accounts-prose';
 import { BridgeIcon } from '@renderer/lib/components/bridge-icon';
 import { CopyCommand } from '@renderer/lib/components/copy-command';
 import { failureText } from '@renderer/lib/errors/describe-failure';
@@ -92,6 +93,9 @@ export function ChatAppChecklist({
           confirm: {
             identityId: result.pending.id,
             externalUsername: result.pending.externalUsername,
+            ...(person.hasHandle === false && person.displayName
+              ? { displayName: person.displayName }
+              : {}),
             kind: result.alreadyLinked ? 'unverified' : 'pending',
           },
           confirmCode: result.code,
@@ -175,8 +179,8 @@ export function ChatAppChecklist({
             detail={
               seen
                 ? linked
-                  ? `Seen you as ${handle(linked.externalUsername)}.`
-                  : `Seen you as ${handle(candidates[0].username)}.`
+                  ? `Seen you as ${accountName(linked)}.`
+                  : `Seen you as ${personName(candidates[0])}.`
                 : `Open the bot in ${label} and press Start (or send it “hello”), so Switch knows your account.`
             }
           >
@@ -203,8 +207,8 @@ export function ChatAppChecklist({
           detail={
             linked
               ? linked.verified
-                ? `Linked as ${handle(linked.externalUsername)}. I’ll answer you there.`
-                : `Linked as ${handle(linked.externalUsername)}. Confirm it with a code to finish.`
+                ? `Linked as ${accountName(linked)}. I’ll answer you there.`
+                : `Linked as ${accountName(linked)}. Confirm it with a code to finish.`
               : groupFirst
                 ? 'I answer only accounts I recognise. Say something in that group, then pick your account and send the code Switch shows there.'
                 : 'I answer only accounts I recognise. Pick yours and confirm it.'
@@ -214,7 +218,7 @@ export function ChatAppChecklist({
             <div className="flex flex-col items-start gap-2">
               {candidates.map((person) => (
                 <div key={person.externalUserId} className="flex items-center gap-3 text-sm">
-                  <span className="font-medium">{handle(person.username)}</span>
+                  <span className="font-medium">{personName(person)}</span>
                   <Button size="sm" disabled={claiming !== null} onClick={() => void claim(person)}>
                     {claiming === person.externalUserId ? <Spinner size="sm" /> : 'That’s me'}
                   </Button>
@@ -250,6 +254,9 @@ export function ChatAppChecklist({
                   confirm: {
                     identityId: linked.id,
                     externalUsername: linked.externalUsername,
+                    ...(linked.hasHandle === false && linked.externalDisplayName
+                      ? { displayName: linked.externalDisplayName }
+                      : {}),
                     kind: 'unverified',
                   },
                   onSuccess: onIdentitiesChanged,
@@ -271,7 +278,11 @@ export function ChatAppChecklist({
               ? `${agentName} is in a ${label} group with you.`
               : groupFirst
                 ? `In that group, send this:`
-                : `Create a ${label} group with you and the ${bot} bot, then send this in it:`
+                : groupUrl
+                  ? // Telegram's group picker lists only groups you already
+                    // have, and on the web and desktop it cannot make one.
+                    `First make a ${label} group with just you in it (New Group in ${label}). Then add the bot to it:`
+                  : `Create a ${label} group with you and the ${bot} bot, then send this in it:`
           }
         >
           {!inGroup && (
@@ -283,8 +294,8 @@ export function ChatAppChecklist({
               )}
               {groupUrl && (
                 <span className="text-sm text-foreground-muted">
-                  Pick a group with just you in it, and {agentName} joins with the bot. Or send this
-                  in the group yourself:
+                  Pick that group, and {agentName} joins with the bot. Or add the bot yourself and
+                  send this in the group:
                 </span>
               )}
               <CopyCommand command={invite} />
@@ -449,8 +460,14 @@ export function newestUnlinked(people: BridgePerson[]): BridgePerson[] {
     .slice(0, MAX_CANDIDATES);
 }
 
-function handle(username: string): string {
-  return username.startsWith('@') ? username : `@${username}`;
+/** A person the bot has seen, by their handle, or by name where the handle is
+ * one Switch made up for an account with no username. */
+function personName(person: BridgePerson): string {
+  return accountName({
+    externalUsername: person.username,
+    externalDisplayName: person.displayName,
+    hasHandle: person.hasHandle,
+  });
 }
 
 function Step({

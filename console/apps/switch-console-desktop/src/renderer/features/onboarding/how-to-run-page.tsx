@@ -105,7 +105,8 @@ function CloudComingSoonCard() {
           </span>
         </span>
         <span className="block text-sm text-foreground-muted">
-          We’ll run the server for you. Not open yet: run your own server for now.
+          Managed hosting for your Switch server and agents. Coming soon - self-host to get started
+          today.
         </span>
       </span>
     </button>

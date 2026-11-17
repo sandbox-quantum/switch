@@ -919,6 +919,8 @@ version of their own to them without also giving them a release of their own.
   policy, the workspace and organization guardrails pages say that images,
   audio, video, archives and Office files other than Word documents are
   delivered unchecked.
+- **Usage & budget is off in the dashboard until it is offered.** It is out of
+  Workspace settings, and `/usage` opens Settings.
 
 #### Removed
 - **Breaking for HTTP clients: the operator's account and workspace-list
