@@ -17,6 +17,20 @@ import { CLAUDE_SUBAGENTS, claudeRepoAgentsBehavior } from './subagents';
  * The installer puts `claude.exe` in `~\.local\bin` and leaves PATH alone, so
  * the command adds that folder, for the terminal the sign-in step points to.
  */
+/**
+ * Claude Code has no uninstall command: Anthropic's documented removal deletes
+ * the native build's launcher and its versions, and leaves settings in
+ * `~/.claude` alone.
+ */
+const CLAUDE_UNIX_UNINSTALL =
+  'rm -f "$HOME/.local/bin/claude" && rm -rf "$HOME/.local/share/claude"';
+/** The same on Windows, written without `$`, `%` or inner double quotes like the install. */
+const CLAUDE_WINDOWS_UNINSTALL =
+  'powershell -ExecutionPolicy ByPass -c "' +
+  "Remove-Item -Force -EA SilentlyContinue ([IO.Path]::Combine([Environment]::GetFolderPath('UserProfile'), '.local', 'bin', 'claude.exe')); " +
+  "Remove-Item -Recurse -Force -EA SilentlyContinue ([IO.Path]::Combine([Environment]::GetFolderPath('UserProfile'), '.local', 'share', 'claude'))" +
+  '"';
+
 export const CLAUDE_WINDOWS_INSTALL_SCRIPT = `powershell -ExecutionPolicy ByPass -c "irm https://claude.ai/install.ps1 | iex; ${addToUserPath('.local', 'bin')}"`;
 
 export const plugin = definePlugin(
@@ -43,7 +57,7 @@ export const plugin = definePlugin(
           {
             method: 'curl',
             command: 'curl -fsSL https://claude.ai/install.sh | bash',
-            uninstallCommand: 'claude uninstall',
+            uninstallCommand: CLAUDE_UNIX_UNINSTALL,
             recommended: true,
           },
           homebrewOption({ formula: 'claude-code', cask: true }),
@@ -52,14 +66,15 @@ export const plugin = definePlugin(
           {
             method: 'curl',
             command: 'curl -fsSL https://claude.ai/install.sh | bash',
-            uninstallCommand: 'claude uninstall',
+            uninstallCommand: CLAUDE_UNIX_UNINSTALL,
           },
         ],
         windows: [
           {
             method: 'powershell',
             command: CLAUDE_WINDOWS_INSTALL_SCRIPT,
-            uninstallCommand: 'claude uninstall',
+            uninstallCommand: CLAUDE_WINDOWS_UNINSTALL,
+            installedAt: ['\\.local\\bin\\claude.exe'],
           },
         ],
       },

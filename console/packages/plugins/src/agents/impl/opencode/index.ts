@@ -80,6 +80,7 @@ const OPENCODE_HOST_DEPENDENCY = (() => {
           command: OPENCODE_WINDOWS_INSTALL,
           updateCommand: OPENCODE_WINDOWS_INSTALL,
           uninstallCommand: OPENCODE_WINDOWS_UNINSTALL,
+          installedAt: ['\\.opencode\\bin\\'],
           recommended: true,
         },
         ...windowsNpm,

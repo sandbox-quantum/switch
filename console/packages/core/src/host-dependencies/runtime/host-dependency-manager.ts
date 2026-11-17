@@ -66,6 +66,26 @@ function compareVersions(a: string, b: string): number {
 /** Methods that are non-PM origins — cannot be used for PM routing. */
 const NON_PM_KINDS = new Set(['manual', 'version-manager', 'unknown']);
 
+/**
+ * `detected`, or the method of the dependency's own install option that installs under
+ * `realpath` (`InstallOption.installedAt`) when no package manager confirmed it. A
+ * provider's own installer knows where it writes; the generic location hints do not.
+ */
+export function ownProvenance(
+  detected: Provenance,
+  descriptor: Pick<DependencyDescriptor, 'installCommands'>,
+  platform: Platform,
+  realpath: string
+): Provenance {
+  if (detected.confidence === 'confirmed') return detected;
+  const normalise = (path: string) => path.replace(/[\\/]+/g, '/').toLowerCase();
+  const where = normalise(realpath);
+  const owner = descriptor.installCommands?.[platform]?.find((option) =>
+    option.installedAt?.some((fragment) => where.includes(normalise(fragment)))
+  );
+  return owner ? { kind: owner.method, confidence: 'confirmed' } : detected;
+}
+
 /** Returns true when a provenance kind is a real InstallMethod that can be PM-routed. */
 function isRealInstallMethod(kind: Provenance['kind'] | null | undefined): kind is InstallMethod {
   return !!kind && !NON_PM_KINDS.has(kind);
@@ -378,7 +398,12 @@ export class HostDependencyManager {
       seenRealpaths.add(realpath);
 
       const isActive = isFirstOverall;
-      const provenance = await this.detector.detect(realpath);
+      const provenance = ownProvenance(
+        await this.detector.detect(realpath),
+        descriptor,
+        this.platform,
+        realpath
+      );
       const manageable = computeManageable(provenance, descriptor);
 
       // For the active (first) installation, reuse the already-computed fullState
