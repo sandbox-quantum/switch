@@ -42,7 +42,9 @@ async def _person(
         user = User(name=name, email=f"{name}@example.invalid", role=role)
         session.add(user)
         await session.flush()
-        session.add(TenantMember(tenant_id=TENANT_ZERO_ID, user_id=user.id, role="member"))
+        session.add(
+            TenantMember(tenant_id=TENANT_ZERO_ID, user_id=user.id, role="member")
+        )
         if organization_role is not None:
             session.add(
                 OrganizationMember(

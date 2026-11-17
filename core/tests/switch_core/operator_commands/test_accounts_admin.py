@@ -8,7 +8,9 @@ from pathlib import Path
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from switch_core.accounts.deletion import AccountDeletionIncomplete
 from switch_core.accounts_admin import (
     create_account,
     delete_account,
@@ -25,7 +27,9 @@ from switch_core.bridges.agent.registration_bootstrap import (
 from switch_core.db.models import (
     TENANT_ZERO_ID,
     AuditEvent,
+    Organization,
     ServerAuditEvent,
+    Tenant,
     TenantMember,
     User,
 )
@@ -35,6 +39,7 @@ from tests.conftest import RLSHarness
 from tests.switch_core.accounts.test_account_deletion import (
     ADMIN_EMAIL,
     _agent,
+    _Broker,
     _deletion,
 )
 
@@ -322,3 +327,52 @@ class TestDelete:
             await delete_account(deletion, rls_harness.restricted, plan)
 
         assert await _user(rls_harness, only_admin.id) is not None
+
+
+class _FailsOnSecondWorkspace(_Broker):
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def remove_connections(self, _session: AsyncSession, _user_id: str) -> list:
+        self.calls += 1
+        if self.calls == 2:
+            raise RuntimeError("the vendor is down")
+        return []
+
+
+async def test_a_deletion_that_fails_partway_is_recorded_with_what_it_finished(
+    rls_harness: RLSHarness,
+) -> None:
+    """The first workspace commits on its own before the second fails, so the
+    attempt lands in the server's audit log though the deletion's own event
+    rolls back with the `users` row."""
+    await _account(rls_harness, "keeper", workspace_role="admin")
+    leaving = await _account(rls_harness, "leaving", workspace_role="member")
+    with tenant_scope("second"):
+        async with rls_harness.owner() as session:
+            session.add(Organization(id="second", slug="second", name="Second"))
+            await session.flush()
+            session.add(
+                Tenant(
+                    id="second", slug="second", name="Second", organization_id="second"
+                )
+            )
+            await session.flush()
+            session.add(
+                TenantMember(tenant_id="second", user_id=leaving.id, role="member")
+            )
+            await session.commit()
+    deletion, _, _ = _deletion(rls_harness.restricted)
+    deletion.broker = _FailsOnSecondWorkspace()  # type: ignore[assignment]
+
+    plan = await plan_deletion(deletion, rls_harness.restricted, leaving.email)
+    with pytest.raises(AccountDeletionIncomplete):
+        await delete_account(deletion, rls_harness.restricted, plan)
+
+    assert await _user(rls_harness, leaving.id) is not None
+    [event] = await _server_events(rls_harness)
+    assert (event.action, event.actor_user_id) == ("user.deletion_failed", None)
+    assert event.details is not None
+    assert event.details["platform_operator_command"] is True
+    assert event.details["workspaces"] == 2
+    assert len(event.details["workspaces_completed"]) == 1

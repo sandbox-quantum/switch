@@ -36,9 +36,7 @@ async def test_every_organization_with_its_admins_and_workspaces(
     assert set(by_id) == {TENANT_ZERO_ID, made.organization_id}
     acme = by_id[made.organization_id]
     assert (acme.slug, acme.name) == (made.slug, "Acme")
-    assert acme.admins == sorted(
-        [email_of(made.ids["ada"]), email_of(made.ids["bob"])]
-    )
+    assert acme.admins == sorted([email_of(made.ids["ada"]), email_of(made.ids["bob"])])
     assert acme.workspaces == [
         WorkspaceListing(
             id=made.tenant_id, name="Acme workspace", people=3, archived=False

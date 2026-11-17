@@ -280,7 +280,6 @@ ROUTES: dict[str, Case] = {
             "membership; let through, then told nobody has that id."
         ),
     ),
-    "GET /gateway/operator/workspaces": get(f"{G}/operator/workspaces", operator()),
     "GET /gateway/tenants/{tenant_id}/members": get(f"{W}/members", anyone()),
     "PATCH /gateway/tenants/{tenant_id}/members/{user_id}": patch(
         f"{W}/members/{{member_target}}", admins(), json={"role": "member"}
@@ -510,20 +509,6 @@ ROUTES: dict[str, Case] = {
         state="matrix",
     ),
     # ── Operator ─────────────────────────────────────────────────────────
-    "GET /gateway/users": get(f"{G}/users", operator()),
-    "POST /gateway/users": post(
-        f"{G}/users",
-        operator(),
-        json={
-            "name": "New",
-            "email": "{tag}-new@example.invalid",
-            "password": "a-long-enough-password",
-        },
-    ),
-    "DELETE /gateway/users/{user_id}": delete(f"{G}/users/{{user_target}}", operator()),
-    "POST /gateway/users/{user_id}/sessions/revoke": post(
-        f"{G}/users/{{user_target}}/sessions/revoke", operator()
-    ),
     "POST /gateway/auth/sessions/revoke": post(
         f"{G}/auth/sessions/revoke",
         SELF,

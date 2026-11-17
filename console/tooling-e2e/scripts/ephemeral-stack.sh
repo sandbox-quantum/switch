@@ -141,6 +141,11 @@ else
   rm -f "$ENV_FILE.bak"
   printf 'FOLLOW_THE_CONVERSATION_WINDOW_SECONDS=%s\n' "$FOLLOW_WINDOW_SECONDS" >>"$ENV_FILE"
 fi
+# The harness makes its own accounts by signing up, as people do: sign-up on,
+# landing in the default workspace (GATEWAY_SIGNUP_MODE's default), with an
+# hourly cap well above the accounts a run makes, since the cap counts every
+# account created and a --keep stack may be run against again.
+printf 'GATEWAY_SIGNUP_ENABLED=true\nGATEWAY_SIGNUP_MAX_PER_HOUR=1000\n' >>"$ENV_FILE"
 chmod 600 "$ENV_FILE"
 set -a; source "$ENV_FILE"; set +a
 

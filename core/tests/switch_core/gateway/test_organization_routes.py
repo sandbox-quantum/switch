@@ -628,23 +628,6 @@ class TestThePlatformOperator:
             await _events(session_factory, tenant_id, AuditAction.PLATFORM_ACCESS) == []
         )
 
-    async def test_only_the_operator_lists_every_workspace(
-        self, session_factory: async_sessionmaker[AsyncSession]
-    ) -> None:
-        ada = _name("ada")
-        tenant_id = await _workspace(session_factory, {ada: ("admin", "org_admin")})
-        operator_id = await _operator(session_factory)
-
-        async with _client(_app(session_factory), operator_id, None) as client:
-            listed = await client.get("/operator/workspaces")
-        async with _client(_app(session_factory), ada, tenant_id) as client:
-            refused = await client.get("/operator/workspaces")
-
-        assert listed.status_code == 200, listed.text
-        [row] = [row for row in listed.json() if row["id"] == tenant_id]
-        assert row["organization_name"] == "Acme"
-        assert refused.status_code == 403
-
     async def test_restores_an_org_admin_only_where_there_is_none(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:

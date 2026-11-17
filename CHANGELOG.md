@@ -737,6 +737,17 @@ version of their own to them without also giving them a release of their own.
   Deleting a resource names, before you confirm, the packages it is taken out
   of as well as the rooms.
 
+#### Removed
+- **The operator's account and workspace-list API routes are gone, which
+  breaks any script that calls them.** `GET /gateway/users`,
+  `POST /gateway/users`, `DELETE /gateway/users/{user_id}`,
+  `POST /gateway/users/{user_id}/sessions/revoke` and
+  `GET /gateway/operator/workspaces` now answer 404. Run the commands that
+  replace them where switch-core runs: `switch-accounts list`, `create`,
+  `delete` and `sign-out`, and `switch-orgs list`. People still delete their
+  own account (`DELETE /gateway/auth/me`) and sign out of every device
+  (`POST /gateway/auth/sessions/revoke`) as before.
+
 #### Fixed
 - **A sign-out that fails in the dashboard says so.** Signing out, or out of
   every device, from the account menu or the screens before a workspace said

@@ -36,7 +36,6 @@ from switch_core.db.session_scope import organization_session, tenant_session
 from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.db.tenant_lookup import (
-    all_tenant_ids,
     only_organization_id,
     tenant_of_invitation,
     tenants_bindable_by_user,
@@ -895,26 +894,6 @@ async def record_operator_entry(
             details={"event": "entered"},
         )
         await session.commit()
-
-
-async def all_workspaces(
-    session_factory: async_sessionmaker[AsyncSession],
-) -> list[tuple[Tenant, Organization | None]]:
-    """Every workspace on the server, oldest first, with its organization,
-    each read on its own short session. For the platform operator's list
-    only."""
-    found: list[tuple[Tenant, Organization | None]] = []
-    for tenant_id in await all_tenant_ids(session_factory):
-        async with tenant_session(session_factory, tenant_id) as session:
-            tenant = await session.get(Tenant, tenant_id)
-            organization = (
-                await session.get(Organization, tenant.organization_id)
-                if tenant is not None and tenant.organization_id is not None
-                else None
-            )
-        if tenant is not None:
-            found.append((tenant, organization))
-    return found
 
 
 async def may_bind_tenant(

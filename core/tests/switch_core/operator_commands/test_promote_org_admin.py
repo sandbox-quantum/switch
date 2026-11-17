@@ -25,7 +25,9 @@ pytestmark = pytest.mark.no_ambient_tenant
 REASON = "Its only admin left the company"
 
 
-async def _role(rls_harness: RLSHarness, organization_id: str, user_id: str) -> str | None:
+async def _role(
+    rls_harness: RLSHarness, organization_id: str, user_id: str
+) -> str | None:
     async with organization_session(rls_harness.owner, organization_id) as session:
         member = await session.get(OrganizationMember, (organization_id, user_id))
         return None if member is None else member.role
@@ -63,7 +65,9 @@ async def test_a_member_is_made_org_admin_audited_and_the_admins_told(
         REASON,
     )
 
-    assert await _role(rls_harness, made.organization_id, made.ids["bob"]) == "org_admin"
+    assert (
+        await _role(rls_harness, made.organization_id, made.ids["bob"]) == "org_admin"
+    )
     [event] = await _events(rls_harness, made.organization_id)
     assert event.action == OrganizationAuditAction.ROLE_CHANGED
     assert event.actor_user_id is None
@@ -94,7 +98,10 @@ async def test_someone_in_none_of_its_workspaces_is_refused_and_told_to_invite(
 
     with pytest.raises(CommandRefused, match="Invite them"):
         await plan_promotion(
-            rls_harness.restricted, made.organization_id, email_of(made.ids["cy"]), REASON
+            rls_harness.restricted,
+            made.organization_id,
+            email_of(made.ids["cy"]),
+            REASON,
         )
 
     assert await _role(rls_harness, made.organization_id, made.ids["cy"]) is None

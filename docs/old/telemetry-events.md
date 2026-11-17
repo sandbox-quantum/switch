@@ -1240,9 +1240,10 @@ cloud machines, with a controller that reports; a plain local server sends
 none of them.
 
 - `account_created` — sign up on the sign-up page (`POST /gateway/auth/signup`,
-  `method: signup`), sign in with single sign-on as someone with no account
-  yet (`oidc`), or create a user as an admin (`POST /gateway/users`, `admin`).
-  A single sign-on sign-in that links an existing account sends nothing.
+  `method: signup`), or sign in with single sign-on as someone with no account
+  yet (`oidc`). A single sign-on sign-in that links an existing account sends
+  nothing, and so does an operator's `switch-accounts create`. `admin` was the
+  operator's `POST /gateway/users`, which is gone.
 - `signup_refused` — sign up while sign-up is switched off (`disabled`), with
   an email that already has an account (`email_taken`), or past the hourly cap
   (`rate_limited`).
