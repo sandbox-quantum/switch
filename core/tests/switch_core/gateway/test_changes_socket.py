@@ -57,6 +57,7 @@ def _signed_in(
             tenant_id="t1",
             expires_at=time.time() + expires_in,
             session_version=0,
+            identity_session=None,
         )
 
     async def _current(*_: Any) -> bool:

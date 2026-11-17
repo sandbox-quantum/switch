@@ -36,7 +36,9 @@ def _request(*, tenant_id: str | None) -> SimpleNamespace:
     # resolved this request to, which it must carry forward into the re-minted
     # cookie (CHOO-2723).
     return SimpleNamespace(
-        state=SimpleNamespace(tenant_id=tenant_id, session_auth_time=_SIGNED_IN)
+        state=SimpleNamespace(
+            tenant_id=tenant_id, session_auth_time=_SIGNED_IN, identity_session=None
+        )
     )
 
 

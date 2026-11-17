@@ -60,7 +60,7 @@ async def signup_app(session_factory):
         gateway_signup_max_per_hour=20,
         gateway_signup_refused_header=None,
         gateway_password_login_enabled=True,
-        gateway_oidc_enabled=False,
+        gateway_sso_enabled=False,
         gateway_oidc_provider_label=None,
         gateway_oidc_login_options=[],
         hosted_launch_capacity=2,

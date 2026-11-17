@@ -108,6 +108,7 @@ from switch_core.gateway.auth import (
     record_operator_entry,
     require_tenant_admin,
     session_auth_time,
+    session_identity,
     set_session_cookie,
     tenant_of_invitation_token,
     tenants_bindable_by,
@@ -513,6 +514,7 @@ async def create_tenant(
         name=req.name,
         workspace_name=req.name,
         auth_time=session_auth_time(request),
+        identity_session=session_identity(request),
     )
     return created.workspace
 
@@ -679,6 +681,7 @@ async def delete_tenant(
         config.gateway_cookie_secure,
         await initial_tenant_claim(session_factory, user_store, user),
         session_auth_time(request),
+        session_identity(request),
     )
     return {"ok": True}
 
@@ -732,6 +735,7 @@ async def switch_tenant(
         config.gateway_cookie_secure,
         tenant_id,
         session_auth_time(request),
+        session_identity(request),
     )
     return _session_response(user)
 
@@ -1641,6 +1645,7 @@ async def accept_invitation(
         config.gateway_cookie_secure,
         tenant_id,
         session_auth_time(request),
+        session_identity(request),
     )
     return membership
 
@@ -1879,6 +1884,7 @@ async def accept_my_invitation(
         config.gateway_cookie_secure,
         req.tenant_id,
         session_auth_time(request),
+        session_identity(request),
     )
     return membership
 
@@ -2087,6 +2093,7 @@ async def join_tenant_by_domain(
         config.gateway_cookie_secure,
         tenant_id,
         session_auth_time(request),
+        session_identity(request),
     )
     return membership
 

@@ -234,6 +234,7 @@ async def create_organization_for(
     name: str,
     workspace_name: str,
     auth_time: datetime,
+    identity_session: str | None,
 ) -> OrganizationCreateResponse:
     """Create an organization and its first workspace for `caller`, count it
     against their allowance, and switch their session into the workspace.
@@ -283,6 +284,7 @@ async def create_organization_for(
         config.gateway_cookie_secure,
         tenant.id,
         auth_time,
+        identity_session,
     )
     return OrganizationCreateResponse(
         organization=OrganizationSummary(

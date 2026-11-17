@@ -424,6 +424,7 @@ class TestSessionStateEndpoint:
             TENANT_B,
             session_version=0,
             auth_time=datetime.now(UTC),
+            identity_session=None,
         )
 
         response = await self._get(session_factory, token, signup_mode="default_tenant")
@@ -453,6 +454,7 @@ class TestSessionStateEndpoint:
             None,
             session_version=0,
             auth_time=datetime.now(UTC),
+            identity_session=None,
         )
 
         body = (
@@ -476,6 +478,7 @@ class TestSessionStateEndpoint:
             None,
             session_version=0,
             auth_time=datetime.now(UTC),
+            identity_session=None,
         )
 
         body = (
@@ -501,6 +504,7 @@ class TestSessionStateEndpoint:
             NOT_A_MEMBER_TENANT,
             session_version=0,
             auth_time=datetime.now(UTC),
+            identity_session=None,
         )
 
         body = (
@@ -534,6 +538,7 @@ class TestSessionStateEndpoint:
             entered,
             session_version=0,
             auth_time=datetime.now(UTC),
+            identity_session=None,
         )
 
         body = (
@@ -564,6 +569,7 @@ class TestSessionStateEndpoint:
             "gone",
             session_version=0,
             auth_time=datetime.now(UTC),
+            identity_session=None,
         )
 
         body = (
@@ -586,6 +592,7 @@ class TestSessionStateEndpoint:
             None,
             session_version=0,
             auth_time=datetime.now(UTC),
+            identity_session=None,
         )
 
         body = (await self._get(session_factory, token, signup_mode="open")).json()
@@ -631,6 +638,7 @@ class TestSessionStateEndpoint:
                     TENANT_ZERO_ID,
                     session_version=0,
                     auth_time=datetime.now(UTC),
+                    identity_session=None,
                 ),
                 signup_mode="invite_only",
             )
@@ -646,6 +654,7 @@ class TestSessionStateEndpoint:
                     TENANT_ZERO_ID,
                     session_version=0,
                     auth_time=datetime.now(UTC),
+                    identity_session=None,
                 ),
                 signup_mode="invite_only",
             )
@@ -705,6 +714,7 @@ class TestSessionStateEndpoint:
                 TENANT_ZERO_ID,
                 session_version=0,
                 auth_time=datetime.now(UTC),
+                identity_session=None,
             )
 
         as_admin = (
@@ -737,6 +747,7 @@ class TestSessionStateEndpoint:
             None,
             session_version=0,
             auth_time=datetime.now(UTC),
+            identity_session=None,
         )
 
         body = (
@@ -760,6 +771,7 @@ class TestSessionStateEndpoint:
             None,
             session_version=0,
             auth_time=datetime.now(UTC),
+            identity_session=None,
         )
 
         body = (
@@ -784,6 +796,7 @@ class TestSessionStateEndpoint:
             None,
             session_version=0,
             auth_time=datetime.now(UTC),
+            identity_session=None,
         )
 
         off = await self._get(session_factory, token, signup_mode="open")
@@ -830,6 +843,7 @@ class TestAGatewayRequestBindsTheCallersTenant:
             None,
             session_version=0,
             auth_time=datetime.now(UTC),
+            identity_session=None,
         )
         async with _client(_app(session_factory), token) as client:
             response = await client.get("/whoami")
@@ -873,6 +887,7 @@ class TestAClaimSelectsAMembership:
             TENANT_B,
             session_version=0,
             auth_time=datetime.now(UTC),
+            identity_session=None,
         )
 
         async with _client(_app(session_factory), token) as client:
@@ -895,6 +910,7 @@ class TestAClaimSelectsAMembership:
             NOT_A_MEMBER_TENANT,
             session_version=0,
             auth_time=datetime.now(UTC),
+            identity_session=None,
         )
 
         async with _client(_app(session_factory), token) as client:
@@ -933,6 +949,7 @@ class TestNoClaimWithSeveralMemberships:
             None,
             session_version=0,
             auth_time=datetime.now(UTC),
+            identity_session=None,
         )
 
         async with _client(
@@ -957,6 +974,7 @@ class TestNoClaimWithSeveralMemberships:
             None,
             session_version=0,
             auth_time=datetime.now(UTC),
+            identity_session=None,
         )
 
         async with _client(_app(session_factory, choice_enabled=True), token) as client:
@@ -1005,6 +1023,7 @@ class TestNoClaimWithSeveralMemberships:
             None,
             session_version=0,
             auth_time=datetime.now(UTC),
+            identity_session=None,
         )
 
         async with _client(_app(session_factory, choice_enabled=True), token) as client:
@@ -1042,6 +1061,7 @@ class TestAUserWithNoMembership:
             None,
             session_version=0,
             auth_time=datetime.now(UTC),
+            identity_session=None,
         )
         async with _client(_app(session_factory), token) as client:
             response = await client.get("/whoami")
@@ -1071,6 +1091,7 @@ class TestConcurrentRequests:
                 None,
                 session_version=0,
                 auth_time=datetime.now(UTC),
+                identity_session=None,
             )
             async with _client(app, token) as client:
                 response = await client.get("/whoami", params={"hold": 0.2})
@@ -1106,6 +1127,7 @@ class TestListTenantsEndpoint:
             None,
             session_version=0,
             auth_time=datetime.now(UTC),
+            identity_session=None,
         )
 
         async with _client(_tenants_app(session_factory), token) as client:
@@ -1135,6 +1157,7 @@ class TestListTenantsEndpoint:
             None,
             session_version=0,
             auth_time=datetime.now(UTC),
+            identity_session=None,
         )
 
         async with _client(_tenants_app(session_factory), token) as client:
@@ -1159,6 +1182,7 @@ class TestSwitchTenantEndpoint:
             None,
             session_version=0,
             auth_time=datetime.now(UTC),
+            identity_session=None,
         )
 
         async with _client(_tenants_app(session_factory), token) as client:
@@ -1186,6 +1210,7 @@ class TestSwitchTenantEndpoint:
             None,
             session_version=0,
             auth_time=datetime.now(UTC),
+            identity_session=None,
         )
 
         async with _client(_tenants_app(session_factory), token) as client:
@@ -1241,6 +1266,7 @@ class TestARequestHoldsOneConnection:
             None,
             session_version=0,
             auth_time=datetime.now(UTC),
+            identity_session=None,
         )
 
         async with _client(_app(one_connection_session_factory), token) as client:
@@ -1263,6 +1289,7 @@ class TestARequestHoldsOneConnection:
             None,
             session_version=0,
             auth_time=datetime.now(UTC),
+            identity_session=None,
         )
         app = _app(one_connection_session_factory)
 
@@ -1314,6 +1341,7 @@ class TestTenantListingHoldsOneConnectionAtATime:
             None,
             session_version=0,
             auth_time=datetime.now(UTC),
+            identity_session=None,
         )
 
         async with _client(
@@ -1382,6 +1410,7 @@ class TestSigningInHoldsOneConnectionAtATime:
             None,
             session_version=0,
             auth_time=datetime.now(UTC),
+            identity_session=None,
         )
 
         async with _client(

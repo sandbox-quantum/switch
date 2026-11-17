@@ -31,6 +31,7 @@ def _session(keyring: Keyring) -> str:
         "tenant-1",
         session_version=0,
         auth_time=datetime.datetime.now(datetime.UTC),
+        identity_session=None,
     )
 
 

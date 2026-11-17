@@ -201,6 +201,7 @@ from switch_core.delivery.router import (
 from switch_core.feature_flags import AGENT_MANAGEMENT, SWITCH_BUDDY
 from switch_core.gateway.app import create_gateway_app
 from switch_core.gateway.auth import hash_password
+from switch_core.gateway.identity_sessions import IdentitySessions
 from switch_core.gateway.invite_mail import SmtpInviteMailer
 from switch_core.gateway.ui import GatewayUi
 from switch_core.logging_config import configure_logging
@@ -260,6 +261,7 @@ from switch_core.trust.setup import build_trust_client
 from switch_core.trust.signals import TrustSettingsSignals
 from switch_core.user_changes import LocalUserChanges, SignalUserChanges
 from switch_core.version import switch_core_version
+from switch_core.workos_authkit import AuthKit
 from switch_core.workos_directory import WorkOSDirectory
 from switch_core.workos_mirror import WorkOSMirror, own_workos_mirror
 from switch_core.workos_sign_in import WorkOSOrganizationSignIn
@@ -1591,6 +1593,25 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
             config.workos_client_id,
             config.workos_redirect_url,
         )
+    # Signing in through WorkOS AuthKit, and following the AuthKit sessions
+    # sign-ins stand on (`gateway/identity_sessions.py`). The follower is
+    # there without AuthKit too, so a cookie that still names an identity
+    # session after AuthKit sign-in is turned off is still refused once that
+    # session has ended; it just stops asking WorkOS.
+    authkit: AuthKit | None = None
+    if config.gateway_workos_sign_in:
+        # Checked present with the provider (`_validate_gateway_sign_in_provider`).
+        assert config.workos_api_key is not None
+        assert config.workos_client_id is not None
+        authkit = AuthKit(
+            service_http,
+            config.workos_api_key,
+            config.workos_api_url,
+            config.workos_client_id,
+        )
+    gateway_app.state.authkit = authkit
+    identity_sessions = IdentitySessions(session_factory, authkit)
+    gateway_app.state.identity_sessions = identity_sessions
     gateway_app.state.decision_client = decision_client
     # A connector app the operator saves or removes, put to work in every process.
     ConnectorAppSignals(
@@ -1769,6 +1790,7 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
                 # teardown runs inside `_FORCED_EXIT_GRACE_SECONDS` and a
                 # product event is the least valuable thing in it.
                 await protocol.sessions.aclose()
+                await identity_sessions.aclose()
                 await _drain_telemetry(telemetry, message_telemetry, telemetry_http)
                 await trust_http.aclose()
                 await decision_client.aclose()

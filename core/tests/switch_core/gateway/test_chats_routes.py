@@ -972,8 +972,14 @@ def _session_of(chats: _Harness, user: User) -> Callable[[], Awaitable[bool]]:
     session_version = user.session_version
 
     async def current() -> bool:
+        # No identity session, so no connection is consulted.
         return await session_is_current(
-            chats.factory, UserStore(), user.id, session_version
+            None,  # type: ignore[arg-type]
+            chats.factory,
+            UserStore(),
+            user.id,
+            session_version,
+            None,
         )
 
     return current

@@ -488,6 +488,7 @@ class People:
             TENANT,
             session_version=0,
             auth_time=datetime.now(UTC),
+            identity_session=None,
         )
         return {"cookie": f"switch_auth={token}"}
 

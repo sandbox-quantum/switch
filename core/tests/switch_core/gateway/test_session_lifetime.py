@@ -88,6 +88,7 @@ def _session_signed_in(
             None,
             session_version=0,
             auth_time=datetime.now(UTC),
+            identity_session=None,
         ),
         _KEYRING,
     )

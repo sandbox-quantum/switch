@@ -273,6 +273,12 @@ _RAW_SESSION_FACTORY_MODULES = {
     # and reads `oidc_identities` to match people, both global
     # (`rls_ddl.GLOBAL_TABLES`); every organization it changes is bound.
     "switch_core.workos_mirror",
+    # The identity-provider sessions gateway sign-ins stand on
+    # (`identity_sessions`, in `rls_ddl.GLOBAL_TABLES`): one sign-in serves
+    # every workspace the person is in, so following it, and retention's pruning
+    # of it, binds no tenant. Neither touches any other table.
+    "switch_core.gateway.identity_sessions",
+    "switch_core.retention.service",
     #
     # ── The OAuth client Core registers for itself at a vendor that offers
     # no other (`service_oauth_clients`, in `rls_ddl.GLOBAL_TABLES`). The

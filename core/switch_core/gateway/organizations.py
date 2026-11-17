@@ -71,6 +71,7 @@ from switch_core.gateway.auth import (
     organizations_bindable_by,
     rebind_if_left,
     session_auth_time,
+    session_identity,
     workspaces_in_organization,
     workspaces_reached_through_organization,
 )
@@ -314,6 +315,7 @@ async def create_organization(
         name=req.name,
         workspace_name=req.workspace_name or req.name,
         auth_time=session_auth_time(request),
+        identity_session=session_identity(request),
     )
 
 

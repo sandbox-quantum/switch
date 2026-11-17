@@ -107,10 +107,12 @@ async def changes_socket(
 ) -> None:
     async def still_current() -> bool:
         return await session_still_enters(
+            websocket,
             session_factory,
             user_store,
             caller.user_id,
             caller.session_version,
+            caller.identity_session,
             caller.tenant_id,
         )
 

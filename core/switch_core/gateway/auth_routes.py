@@ -53,6 +53,7 @@ from switch_core.gateway.auth import (
     operator_entered_workspace,
     require_admin,
     session_auth_time,
+    session_identity,
     set_session_cookie,
     signup_refused_by_edge,
     tenants_held_by,
@@ -190,6 +191,7 @@ async def login(
         config.gateway_cookie_secure,
         await initial_tenant_claim(session_factory, user_store, user),
         datetime.now(UTC),
+        None,
     )
     return _session_response(user)
 
@@ -317,6 +319,7 @@ async def signup(
             config.gateway_cookie_secure,
             TENANT_ZERO_ID,
             datetime.now(UTC),
+            None,
         )
         signed_in = _session_response(user)
         machine = await _prewarm(session, session_factory, user.id, config, settings)
@@ -347,6 +350,7 @@ async def refresh(
         config.gateway_cookie_secure,
         request.state.tenant_id,
         session_auth_time(request),
+        session_identity(request),
     )
     return _session_response(user)
 
@@ -826,6 +830,7 @@ async def change_password(
         config.gateway_cookie_secure,
         request.state.tenant_id,
         session_auth_time(request),
+        session_identity(request),
     )
     return {"ok": True}
 

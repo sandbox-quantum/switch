@@ -91,6 +91,7 @@ def _token(user_id: str, email: str, role: str, version: int) -> str:
         None,
         session_version=version,
         auth_time=datetime.now(UTC),
+        identity_session=None,
     )
 
 

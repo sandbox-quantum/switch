@@ -480,6 +480,7 @@ async def oidc_callback(
         config.gateway_cookie_secure,
         await initial_tenant_claim(session_factory, user_store, user),
         datetime.now(UTC),
+        None,
     )
     return response
 
@@ -525,5 +526,6 @@ async def oidc_exchange(
         config.gateway_cookie_secure,
         await initial_tenant_claim(session_factory, user_store, user),
         datetime.now(UTC),
+        None,
     )
     return response

@@ -116,6 +116,7 @@ class _World:
                     TENANT_ZERO_ID,
                     session_version=0,
                     auth_time=datetime.now(UTC),
+                    identity_session=None,
                 )
             },
         )

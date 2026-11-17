@@ -291,6 +291,7 @@ async def _signed_in(factory, user) -> str:
         TENANT_ZERO_ID,
         session_version=0,
         auth_time=datetime.now(UTC),
+        identity_session=None,
     )
 
 

@@ -93,6 +93,7 @@ async def _list_installs(
         _TENANT,
         session_version=0,
         auth_time=datetime.now(UTC),
+        identity_session=None,
     )
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=_app(session_factory)),

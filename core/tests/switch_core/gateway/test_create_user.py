@@ -84,6 +84,7 @@ async def _admin_client(
         None,
         session_version=0,
         auth_time=datetime.now(UTC),
+        identity_session=None,
     )
     return httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app),
