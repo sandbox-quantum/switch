@@ -74,13 +74,6 @@ export class SwitchServersStore {
   /** Why the last failed auth-config read failed, by server id, for as long as
    * {@link authConfigUnreachable} holds that server. */
   private readonly authConfigFailures = new Map<string, string>();
-  /**
-   * Server ids that have answered this app at least once since it started: a
-   * status read or a sign-in-options read came back, a refusal included. A
-   * server just added that is not in here has never been reached, so a typo
-   * and a server that is down look the same, and neither is somewhere to land.
-   */
-  private readonly answered = new Set<string>();
 
   loadingServers = false;
   /** Whether the list has been read at least once. Until it has, an empty
@@ -227,22 +220,6 @@ export class SwitchServersStore {
     if (!this.isUnreachable(serverId)) return null;
     if (this.statuses.has(serverId)) return this.statusFailures.get(serverId) ?? null;
     return this.authConfigFailures.get(serverId) ?? null;
-  }
-
-  /** Whether the server has ever answered this app since it started. */
-  hasAnswered(serverId: string): boolean {
-    return this.answered.has(serverId);
-  }
-
-  /**
-   * Where leaving setup lands: the server just set up, unless it has never
-   * answered and another workspace is already open, which then stays open.
-   * Making an unreached server active would put a typo in charge of the window.
-   */
-  serverToOpenAfterSetup(serverId: string): string {
-    const current = this.activeServerId;
-    if (this.answered.has(serverId) || current === null) return serverId;
-    return current;
   }
 
   /** Whether a sign-in-options read is in flight right now. The sign-in panel
@@ -440,7 +417,6 @@ export class SwitchServersStore {
         this.statuses.set(serverId, status);
         this.statusUnreachable.delete(serverId);
         this.statusFailures.delete(serverId);
-        this.answered.add(serverId);
       });
     } catch (cause) {
       // An unreachable server is a real, displayable state — record it as
@@ -521,7 +497,6 @@ export class SwitchServersStore {
         this.authConfigs.set(serverId, config);
         this.authConfigUnreachable.delete(serverId);
         this.authConfigFailures.delete(serverId);
-        this.answered.add(serverId);
       });
     } catch (cause) {
       // Not the error banner, which every server's page shows: the sign-in
@@ -696,7 +671,6 @@ export class SwitchServersStore {
       this.statusFailures.delete(serverId);
       this.authConfigUnreachable.delete(serverId);
       this.authConfigFailures.delete(serverId);
-      this.answered.delete(serverId);
       this.signInErrors.delete(serverId);
     });
     // The removed id also sits in the server view's saved params, where it
