@@ -111,22 +111,33 @@ export class NoManagementApiError extends Error {
  */
 export class RedirectedAddressError extends Error {
   constructor(url: string, location: string) {
-    const from = urlHost(url);
-    let target: URL | null = null;
-    try {
-      target = new URL(location, url);
-    } catch {
-      target = null;
-    }
-    const sameHostHttps = target !== null && target.host === from && target.protocol === 'https:';
-    super(
-      sameHostHttps
-        ? `${from} only answers over https. Enter the address as https://${from}.`
-        : `${from} isn't a Switch server: it redirects to ${target ? target.host : location}. ` +
-            `Check the address.`
-    );
+    super(redirectMessage(url, location));
     this.name = 'RedirectedAddressError';
   }
+}
+
+function bareHostname(hostname: string): string {
+  return hostname.replace(/^www\./, '');
+}
+
+function redirectMessage(url: string, location: string): string {
+  const from = urlHost(url);
+  let source: URL;
+  let target: URL;
+  try {
+    source = new URL(url.trim());
+    target = new URL(location, source);
+  } catch {
+    return `${from} doesn't answer as a Switch server: it redirects to ${location}. Check the address.`;
+  }
+  const sameSite = bareHostname(target.hostname) === bareHostname(source.hostname);
+  if (sameSite && source.protocol === 'http:' && target.protocol === 'https:') {
+    return `${from} only answers over https. Enter the address as https://${target.host}.`;
+  }
+  if (target.host === source.host) {
+    return `${from} redirects instead of answering as a Switch server. Check the address.`;
+  }
+  return `${from} doesn't answer as a Switch server: it redirects to ${target.host}. Check the address.`;
 }
 
 /** A server's dashboard pages cannot be opened, because nothing serves them. */

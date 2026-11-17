@@ -108,6 +108,7 @@ const {
   deleteRoom,
   ensureCloudMachine,
   fetchAuthConfig,
+  probeGateway,
   fetchBridges,
   fetchMe,
   ownsOwnerAddressedAgent,
@@ -2500,8 +2501,35 @@ describe('sign-up support', () => {
     await expect(fetchAuthConfig(SERVER)).rejects.toMatchObject({
       name: 'RedirectedAddressError',
       message:
-        "switch.example.com isn't a Switch server: it redirects to elsewhere.example.org. " +
-        'Check the address.',
+        "switch.example.com doesn't answer as a Switch server: it redirects to " +
+        'elsewhere.example.org. Check the address.',
+    });
+  });
+
+  it('says an address that redirects on its own host is not answering as a Switch server', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(null, { status: 302, headers: { location: '/login' } })
+    );
+    await expect(fetchAuthConfig(SERVER)).rejects.toMatchObject({
+      name: 'RedirectedAddressError',
+      message:
+        'switch.example.com redirects instead of answering as a Switch server. Check the address.',
+    });
+  });
+
+  it('says to use https when plain http redirects to the same host on another port', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(null, {
+        status: 308,
+        headers: { location: 'https://switch.example.com:8443/gateway/auth/config' },
+      })
+    );
+    await expect(
+      fetchAuthConfig({ ...(SERVER as object), url: 'http://switch.example.com:8080' } as never)
+    ).rejects.toMatchObject({
+      message:
+        'switch.example.com:8080 only answers over https. ' +
+        'Enter the address as https://switch.example.com:8443.',
     });
   });
 
@@ -2519,6 +2547,36 @@ describe('sign-up support', () => {
       message:
         'switch.example.com only answers over https. Enter the address as https://switch.example.com.',
     });
+  });
+
+  it('gives up on a server that has not answered the reachability check in five seconds', async () => {
+    const timeout = new AbortController();
+    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout').mockReturnValueOnce(timeout.signal);
+    const hangingFetch = vi.fn(
+      (_url: string, init: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init.signal?.addEventListener('abort', () => reject(init.signal?.reason));
+        })
+    );
+    vi.stubGlobal('fetch', hangingFetch);
+    try {
+      const probe = probeGateway(SERVER);
+      await vi.waitFor(() => expect(hangingFetch).toHaveBeenCalled());
+      timeout.abort(new DOMException('The operation timed out.', 'TimeoutError'));
+      await expect(probe).rejects.toMatchObject({
+        name: 'GatewayError',
+        kind: 'network',
+        message: "Can't reach switch.example.com: the server didn't answer in time.",
+      });
+      expect(timeoutSpy).toHaveBeenCalledWith(5_000);
+    } finally {
+      timeoutSpy.mockRestore();
+    }
+  });
+
+  it('counts any answer to the reachability check, a refusal included', async () => {
+    fetchMock.mockResolvedValueOnce(new Response('nope', { status: 503 }));
+    await expect(probeGateway(SERVER)).resolves.toBeUndefined();
   });
 
   it('reports a proxy’s 502 page as the failure it is, not as a missing route', async () => {
