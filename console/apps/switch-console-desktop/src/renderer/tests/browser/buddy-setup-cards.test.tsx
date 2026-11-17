@@ -901,6 +901,7 @@ describe('switch-buddy setup cards', () => {
 
     await vi.waitFor(() => expect(el.textContent).toContain('Seen you as M M.'));
     expect(el.textContent).not.toContain('MM_8270654669');
+    await shot(el, 'n-telegram-no-username');
   });
 
   it('(n) Telegram: the one-tap add says to make the group first, since the picker cannot', async () => {
