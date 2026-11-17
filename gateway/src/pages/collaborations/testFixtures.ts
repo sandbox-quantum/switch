@@ -21,6 +21,7 @@ export function bridgeDetail(overrides: Partial<BridgeDetail> = {}): BridgeDetai
     receives_webhooks: false,
     webhook_url: null,
     directory_search_supported: true,
+    directory_search_hint: "Your name or handle",
     ...overrides,
   };
 }

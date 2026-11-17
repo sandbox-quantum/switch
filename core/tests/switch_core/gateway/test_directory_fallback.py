@@ -21,7 +21,7 @@ import pytest
 from fastapi import HTTPException
 
 from switch_core.bridges.collaboration.adapter import DirectorySearchBusy
-from switch_core.bridges.collaboration.models import DirectoryUser
+from switch_core.bridges.collaboration.models import DirectoryUser, KnownUserLabel
 from switch_core.bridges.collaboration.telegram.adapter import TelegramAdapter
 from switch_core.gateway.collaborations import (
     _known_as_directory_users,
@@ -45,7 +45,25 @@ def _known(external_user_id: str, username: str) -> SimpleNamespace:
     )
 
 
-class _StubLifecycle:
+class _PlainLabels:
+    """An adapter whose stored names are handles, as most platforms' are."""
+
+    def known_user_label(
+        self, _external_user_id: str, external_username: str
+    ) -> KnownUserLabel:
+        return KnownUserLabel(display_name=external_username, has_handle=True)
+
+
+PLAIN = _PlainLabels()
+
+
+def _telegram(full_names: dict[int, str]) -> TelegramAdapter:
+    adapter = TelegramAdapter.__new__(TelegramAdapter)
+    adapter._full_names = full_names
+    return adapter
+
+
+class _StubLifecycle(_PlainLabels):
     def __init__(self, result: list[DirectoryUser] | Exception | None) -> None:
         self._result = result
 
@@ -181,34 +199,112 @@ class TestMatchingKnownAccounts:
         # Prefix matching would hide someone whose handle starts with a team
         # prefix, and this list is the last resort — not finding yourself in it
         # is the end of the road.
-        found = _known_as_directory_users([_known("11", "team-louis")], "louis")
+        found = _known_as_directory_users([_known("11", "team-louis")], "louis", PLAIN)
 
         assert [u.username for u in found] == ["team-louis"]
 
     def test_ignores_case(self) -> None:
-        found = _known_as_directory_users([_known("11", "Louis")], "lOuIs")
+        found = _known_as_directory_users([_known("11", "Louis")], "lOuIs", PLAIN)
 
         assert len(found) == 1
 
     def test_a_blank_query_matches_nobody(self) -> None:
         # Returning the entire workspace for an empty box is not a search.
-        found = _known_as_directory_users([_known("11", "louis")], "   ")
+        found = _known_as_directory_users([_known("11", "louis")], "   ", PLAIN)
 
         assert found == []
 
     def test_results_are_ordered_by_name_regardless_of_case(self) -> None:
         rows = [_known("1", "zoe-a"), _known("2", "Adam-a"), _known("3", "mia-a")]
 
-        found = _known_as_directory_users(rows, "-a")
+        found = _known_as_directory_users(rows, "-a", PLAIN)
 
         assert [u.username for u in found] == ["Adam-a", "mia-a", "zoe-a"]
+
+    def test_spaces_are_ignored_on_both_sides(self) -> None:
+        # Telegram files "M M", who has no username, as "MM_42"; searching
+        # the name as Telegram shows it has to find them.
+        rows = [_known("42", "MM_42"), _known("7", "ann_marie")]
+
+        assert [u.username for u in _known_as_directory_users(rows, "M M", PLAIN)] == [
+            "MM_42"
+        ]
+        assert [
+            u.username for u in _known_as_directory_users(rows, "annmarie", PLAIN)
+        ] == []
+        assert [
+            u.username
+            for u in _known_as_directory_users(
+                [_known("8", "Ann Marie")], "annmarie", PLAIN
+            )
+        ] == ["Ann Marie"]
 
     def test_carries_no_email_it_cannot_know(self) -> None:
         # The row is built from a message, which carries no address. Inventing
         # one would put a wrong address next to a face in the picker.
-        found = _known_as_directory_users([_known("11", "louis")], "lou")
+        found = _known_as_directory_users([_known("11", "louis")], "lou", PLAIN)
 
         assert found[0].email is None
+
+
+class TestTelegramPeopleWithoutAUsername:
+    """Telegram usernames are optional. Switch addresses a person without one
+    by a handle it makes up ("MM_42"), which is not theirs to be shown as."""
+
+    def test_listed_by_their_telegram_name_without_a_handle(self) -> None:
+        found = _known_as_directory_users(
+            [_known("42", "MM_42")], "M M", _telegram({42: "M M"})
+        )
+
+        assert [(u.display_name, u.has_handle) for u in found] == [("M M", False)]
+        # The made-up handle still identifies them for the claim.
+        assert found[0].username == "MM_42"
+
+    def test_found_by_their_name_with_its_space(self) -> None:
+        found = _known_as_directory_users(
+            [_known("42", "MohammadK_42")], "Mohammad K", _telegram({42: "Mohammad K"})
+        )
+
+        assert [u.display_name for u in found] == ["Mohammad K"]
+
+    def test_before_they_write_again_the_stored_name_stands_in(self) -> None:
+        # Their name is only known once they have written since the bridge
+        # started; the stored name without its id is the next best thing.
+        found = _known_as_directory_users([_known("42", "MM_42")], "mm", _telegram({}))
+
+        assert [(u.display_name, u.has_handle) for u in found] == [("MM", False)]
+
+    def test_a_real_username_is_shown_as_a_handle(self) -> None:
+        found = _known_as_directory_users(
+            [_known("42", "mkarzand")], "mkar", _telegram({42: "M K"})
+        )
+
+        assert [(u.display_name, u.has_handle) for u in found] == [("mkarzand", True)]
+
+    async def test_the_search_answer_says_so(self) -> None:
+        class _Telegram(_StubLifecycle):
+            def known_user_label(
+                self, external_user_id: str, external_username: str
+            ) -> KnownUserLabel:
+                return _telegram({42: "M M"}).known_user_label(
+                    external_user_id, external_username
+                )
+
+        result = await search_bridge_directory(
+            "b1",
+            "M M",
+            _StubSession(),  # type: ignore[arg-type]
+            _StubBridgeStore(),  # type: ignore[arg-type]
+            _StubExternalUserStore([_known("42", "MM_42")]),  # type: ignore[arg-type]
+            _StubUserStore(),  # type: ignore[arg-type]
+            _Telegram(NO_DIRECTORY),  # type: ignore[arg-type]
+            SimpleNamespace(id="u1", role="user", name="u1"),  # type: ignore[arg-type]
+            False,
+        )
+
+        assert [(u.display_name, u.has_handle) for u in result.users] == [
+            ("M M", False)
+        ]
 
 
 async def test_the_platform_names_itself_in_the_refusal() -> None:

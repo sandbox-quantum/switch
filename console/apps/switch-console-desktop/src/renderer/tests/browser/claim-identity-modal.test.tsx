@@ -78,6 +78,7 @@ const SLACK: RemoteBridge = {
   channelCreationSupported: true,
   canCreateChannels: true,
   directorySearchSupported: true,
+  directorySearchHint: 'Your name or handle',
   attention: null,
   teamPlacementSupported: false,
   channelIdsRefused: null,
@@ -86,6 +87,7 @@ const SLACK: RemoteBridge = {
   publicChannelAddsCreator: false,
   receivesWebhooks: false,
   webhookUrl: null,
+  commands: {},
 };
 
 const PERSON = {
@@ -93,6 +95,7 @@ const PERSON = {
   username: 'ada',
   displayName: 'Ada Lovelace',
   email: null,
+  hasHandle: true,
   knownExternalUserId: 'eu-1',
   claimedBy: [],
 };
@@ -559,7 +562,9 @@ describe('a server that messages the account a number to tap', () => {
     expect(number?.textContent).toBe('42');
     expect(code?.textContent).toBe('7KQ2-M9XD');
     expect(number!.compareDocumentPosition(code!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(el.textContent).toContain('Didn’t get it? Post this code from that account instead:');
+    expect(el.textContent).toContain(
+      'Didn’t get it, or tapping does nothing? Post this code from that account instead:'
+    );
     expect(el.textContent).toMatch(/Waiting for confirmation\. The code expires at \d\d:\d\d/);
     expect(button(el, 'Copy')).toBeDefined();
     expect(el.querySelector('[data-testid="link-prompt-unavailable"]')).toBeNull();
@@ -647,7 +652,7 @@ describe('a server that messages the account a number to tap', () => {
     expect(el.querySelector('[data-testid="link-prompt-number"]')).toBeNull();
     expect(el.querySelector('[data-testid="link-prompt-unavailable"]')).toBeNull();
     expect(el.textContent).not.toContain('We sent');
-    expect(el.textContent).not.toContain('Didn’t get it?');
+    expect(el.textContent).not.toContain('Didn’t get it');
     expect(el.textContent).toContain('Waiting for the code. It expires at');
     expect(button(el, 'Get a new code')).toBeDefined();
     expect(button(el, 'Send again')).toBeUndefined();
@@ -704,6 +709,74 @@ describe('a server that messages the account a number to tap', () => {
       )
     );
     expect(button(el, 'Start again')).toBeDefined();
+  });
+});
+
+describe('the search says only what it can find', () => {
+  async function typeInto(el: HTMLElement, text: string): Promise<void> {
+    const input = el.querySelector('input') as HTMLInputElement;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')!.set!.call(
+        input,
+        text
+      );
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+  }
+
+  it('takes its placeholder from the connection, so email is offered only where it matches', async () => {
+    listBridges.mockResolvedValue([{ ...SLACK, directorySearchHint: 'Your name or handle' }]);
+    const el = await render();
+
+    expect((el.querySelector('input') as HTMLInputElement).placeholder).toBe('Your name or handle');
+  });
+
+  it('names a Telegram user without a username by their name, with no made-up @handle', async () => {
+    listBridges.mockResolvedValue([
+      { ...SLACK, type: 'telegram', displayName: 'Our Telegram', directorySearchSupported: false },
+    ]);
+    searchBridgeDirectory.mockResolvedValue({
+      kind: 'results',
+      note: 'Telegram has no searchable user directory.',
+      users: [
+        {
+          ...PERSON,
+          externalUserId: '42',
+          username: 'MM_42',
+          displayName: 'M M',
+          hasHandle: false,
+          knownExternalUserId: 'eu-42',
+        },
+      ],
+    });
+    const el = await render();
+
+    await typeInto(el, 'M M');
+
+    await vi.waitFor(() => expect(button(el, 'This is me')).toBeDefined());
+    expect(el.textContent).toContain('M M');
+    expect(el.textContent).not.toContain('@MM_42');
+
+    // The confirmation names them the same way, including when Telegram
+    // would not let the bot message them.
+    claimReturns({
+      ...PENDING_RESULT,
+      pending: { ...PENDING_RESULT.pending, id: 'eu-42', externalUsername: 'MM_42' },
+      code: {
+        ...CODE,
+        prompt: {
+          number: 7,
+          sent: false,
+          unavailableReason:
+            'Telegram only lets the bot message people who have started a chat with it.',
+          link: null,
+        },
+      },
+    });
+    await click(button(el, 'This is me'));
+    expect(el.textContent).toContain('Couldn’t message M M directly');
+    expect(el.textContent).toContain('To finish linking M M, post this code');
+    expect(el.textContent).not.toContain('@MM_42');
   });
 });
 

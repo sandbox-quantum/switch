@@ -12,7 +12,9 @@ import DataTable, {
 } from "../../components/DataTable";
 import InfoTip from "../../components/InfoTip";
 import PageBanner from "../../components/PageBanner";
+import PageHeader from "../../components/PageHeader";
 import RowActionsMenu, { type RowAction } from "../../components/RowActionsMenu";
+import SuccessSnackbar from "../../components/SuccessSnackbar";
 import { useAuth } from "../../data/AuthContext";
 import {
   type ApiKeyDetail,
@@ -36,6 +38,11 @@ const ROW = 52;
 const PAGE_SIZE = 10;
 
 const byLabel = (a: FilterOption, b: FilterOption) => a.label.localeCompare(b.label);
+
+/** The order each table opens in: keys for adding agents newest first, agent
+ *  keys by their agent's name, the way agents are looked for. */
+const ADDING_ORDER = { field: "created_at", sort: "desc" } as const;
+const AGENT_ORDER = { field: "label", sort: "asc" } as const;
 
 /** What an agent key is called: its agent's name now, or, its agent gone,
  *  the name it was made for. */
@@ -228,6 +235,7 @@ function ApiKeys({ scope, userId, workspace }: { scope: ListScope; userId: strin
     columns: TableColumn<ApiKeyDetail>[],
     search: { label: string; text: (key: ApiKeyDetail) => string },
     noun: { one: string; other: string },
+    order: { field: string; sort: "asc" | "desc" },
     empty: ReactNode,
   ) =>
     rows.length === 0 ? (
@@ -241,7 +249,7 @@ function ApiKeys({ scope, userId, workspace }: { scope: ListScope; userId: strin
         noun={noun}
         search={search}
         selectFilters={selectFilters}
-        initialSort={{ field: "created_at", sort: "desc" }}
+        initialSort={order}
         pinnedRight={PINNED}
       />
     );
@@ -277,6 +285,7 @@ function ApiKeys({ scope, userId, workspace }: { scope: ListScope; userId: strin
             addingColumns,
             addingSearch,
             { one: "key", other: "keys" },
+            ADDING_ORDER,
             <TableEmptyState title={yours ? "You don't have a key for adding agents here" : "No keys for adding agents yet"}>
               Create one to add an agent to {workspace}.
             </TableEmptyState>,
@@ -297,6 +306,7 @@ function ApiKeys({ scope, userId, workspace }: { scope: ListScope; userId: strin
             agentColumns,
             agentSearch,
             { one: "agent key", other: "agent keys" },
+            AGENT_ORDER,
             <TableEmptyState title={yours ? "None of your agents has a key here" : "No agent keys yet"}>
               An agent gets its own key when it's added.
             </TableEmptyState>,
@@ -310,17 +320,20 @@ function ApiKeys({ scope, userId, workspace }: { scope: ListScope; userId: strin
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0 }}>
-      <Stack direction="row" spacing={2} sx={{ alignItems: "flex-start", justifyContent: "space-between", mb: 3 }}>
-        <Box sx={{ minWidth: 0 }}>
-          <Typography variant="h5">API keys</Typography>
+      <PageHeader
+        sx={{ mb: 3 }}
+        title={<Typography variant="h5">API keys</Typography>}
+        description={
           <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
             {yours ? `Your keys in ${workspace}.` : `The keys in ${workspace}. Only a key's owner can copy it.`}
           </Typography>
-        </Box>
-        <Button variant="contained" startIcon={<AddCircleOutline />} onClick={() => setCreateOpen(true)}>
-          Create API key
-        </Button>
-      </Stack>
+        }
+        actions={
+          <Button variant="contained" startIcon={<AddCircleOutline />} onClick={() => setCreateOpen(true)}>
+            Create API key
+          </Button>
+        }
+      />
 
       {data !== null && error !== null && (
         <Box sx={{ mb: 2 }}>
@@ -337,7 +350,7 @@ function ApiKeys({ scope, userId, workspace }: { scope: ListScope; userId: strin
         </Box>
       )}
 
-      {notice && (
+      {notice && notice.severity !== "success" && (
         <Alert severity={notice.severity} onClose={() => setNotice(null)} sx={{ mb: 2 }}>
           {notice.text}
         </Alert>
@@ -372,6 +385,10 @@ function ApiKeys({ scope, userId, workspace }: { scope: ListScope; userId: strin
           setNotice({ severity: "success", text: `Deleted "${deleting.label}".` });
           void refetch();
         }}
+      />
+      <SuccessSnackbar
+        message={notice?.severity === "success" ? notice.text : null}
+        onClose={() => setNotice(null)}
       />
     </Box>
   );

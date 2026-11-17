@@ -49,6 +49,26 @@ describe("accountsByApp", () => {
     expect(groups[0]!.accounts[2]).toMatchObject({ requestedBy: "bob" });
   });
 
+  it("names an account by the person's name where Switch made up its handle", () => {
+    const telegram = bridgeDetail({ bridge_id: "b-tg", display_name: "Telegram" });
+    const [group] = accountsByApp(
+      [telegram],
+      [
+        linkedIdentity({
+          id: "a1",
+          bridge_id: "b-tg",
+          external_username: "MM_42",
+          external_display_name: "M M",
+          has_handle: false,
+        }),
+        linkedIdentity({ id: "a2", bridge_id: "b-tg", external_username: "ada" }),
+      ],
+      [],
+    );
+
+    expect(group!.accounts.map((a) => a.name)).toEqual(["M M", "@ada"]);
+  });
+
   it("lists every app, by name, with nothing in the ones not linked", () => {
     const groups = accountsByApp(
       [

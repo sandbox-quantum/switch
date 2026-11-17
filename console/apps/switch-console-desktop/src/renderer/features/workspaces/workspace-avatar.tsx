@@ -32,7 +32,7 @@ export function WorkspaceAvatar({
             : 'bg-[var(--menu-tile)] text-[var(--menu-tile-fg)]'
           : active
             ? 'bg-[var(--accent-solid)] text-white'
-            : 'bg-background-tertiary text-foreground-muted'
+            : 'bg-background-tertiary text-foreground-muted emdark:bg-background-3'
       )}
     />
   );

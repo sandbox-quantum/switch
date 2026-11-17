@@ -145,18 +145,28 @@ describe('openConsoleLink', () => {
     );
   });
 
-  it('opens Admin on the section its tab names', async () => {
+  it('opens the Settings tab an Admin link’s section became', async () => {
     await openConsoleLink('switchdash://open/admin?tab=apps');
-    expect(navigate).toHaveBeenCalledWith('admin', { serverId: 'srv-1', section: 'apps' });
+    expect(navigate).toHaveBeenCalledWith('settings', { tab: 'connector-apps' });
+    await openConsoleLink('switchdash://open/admin?tab=switch-trust');
+    expect(navigate).toHaveBeenCalledWith('settings', { tab: 'guardrails' });
     expect(toastError).not.toHaveBeenCalled();
+  });
+
+  it('opens the admin pages in Settings by their own tabs', async () => {
+    await openConsoleLink('switchdash://open/settings?tab=decision-routing');
+    expect(navigate).toHaveBeenCalledWith('settings', { tab: 'decision-routing' });
   });
 
   it('opens the home for someone who does not administer the workspace, and says why', async () => {
     administers.mockReturnValueOnce(false);
     await openConsoleLink('switchdash://open/admin?server=https%3A%2F%2Fswitch.example.com');
     expect(navigate).toHaveBeenCalledWith('server', { serverId: 'srv-2' });
-    expect(navigate).not.toHaveBeenCalledWith('admin', expect.anything());
-    expect(toastError).toHaveBeenCalledWith('Admin is for workspace admins', expect.anything());
+    expect(navigate).not.toHaveBeenCalledWith('settings', expect.anything());
+    expect(toastError).toHaveBeenCalledWith(
+      'These settings are for workspace admins',
+      expect.anything()
+    );
   });
 
   it('opens the Status page for someone who runs the server without administering it', async () => {
@@ -168,10 +178,7 @@ describe('openConsoleLink', () => {
 
   it('opens a dialog over the page it belongs to', async () => {
     await openConsoleLink('switchdash://open/messaging-apps/connect');
-    expect(navigate).toHaveBeenCalledWith('admin', {
-      serverId: 'srv-1',
-      section: 'messaging-apps',
-    });
+    expect(navigate).toHaveBeenCalledWith('settings', { tab: 'messaging-apps' });
     expect(showModal).toHaveBeenCalledWith(
       'connectMessagingAppModal',
       expect.objectContaining({ serverId: 'srv-1' })

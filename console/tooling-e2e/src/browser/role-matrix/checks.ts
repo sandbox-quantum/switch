@@ -4,7 +4,6 @@ import {
   RAIL,
   REDIRECTS,
   SETTINGS_MENUS,
-  type MatrixLayout,
   type MatrixSettingsArea,
   type Persona,
 } from '../../../../../gateway/src/routes/roleMatrix.ts';
@@ -18,7 +17,7 @@ import type { PageObjects } from './world.ts';
  * run lists everything a change broke.
  */
 
-/** A catalogue slug for the connector detail page, which is not built yet. */
+/** A catalogue slug for the connector detail page. */
 const CONNECTOR = 'github';
 
 /** The object an `:id` parameter names, by what the path starts with. */
@@ -61,31 +60,31 @@ export interface Landing {
 }
 
 /**
- * Where opening `path` lands `persona` in `layout`: following redirects, then
- * into a settings area's first page, then onto the page or its refusal.
+ * Where opening `path` lands `persona`: following redirects, then into a
+ * settings area's first page, then onto the page or its refusal.
  */
-export function landingOf(layout: MatrixLayout, persona: Persona, path: string): Landing {
+export function landingOf(persona: Persona, path: string): Landing {
   let target = path;
   let query: string | null = null;
   for (let hops = 0; ; hops += 1) {
     if (hops > 10) throw new Error(`The matrix's redirects from ${path} go round in a circle.`);
-    const redirect = REDIRECTS[layout].find((row) => row.from === target);
+    const redirect = REDIRECTS.find((row) => row.from === target);
     if (redirect === undefined) break;
     const [to, search] = redirect.to.split('?', 2) as [string, string | undefined];
     target = to;
     if (search !== undefined) query = search;
   }
-  const area = AREAS[layout].find((row) => row.path === target);
+  const area = AREAS.find((row) => row.path === target);
   if (area !== undefined) {
     if (!area.open.includes(persona)) return { path: target, query, state: 'refused' };
     target = area.first;
   }
-  const page = PAGES[layout].find((row) => row.path === target);
+  const page = PAGES.find((row) => row.path === target);
   if (page === undefined) {
     throw new Error(`The matrix sends ${path} to ${target}, which it has no row for.`);
   }
   if (!page.open.includes(persona)) return { path: target, query, state: 'refused' };
-  return { path: target, query, state: page.status === 'planned' ? 'planned' : 'page' };
+  return { path: target, query, state: 'page' };
 }
 
 /** `landing` with its path's parameters filled in from `objects`. */
@@ -132,18 +131,18 @@ async function missingObject(
   return shown ? null : `${url}: the page does not show ${name}`;
 }
 
-/** Every page and settings area of the layout, opened by URL. */
+/** Every page and settings area, opened by URL. */
 export async function checkPages(
   ui: GatewayUi,
   persona: Persona,
   objects: PageObjects,
   log: (message: string) => void
 ): Promise<string[]> {
-  const paths = [...AREAS[ui.layout], ...PAGES[ui.layout]].map((row) => row.path);
+  const paths = [...AREAS, ...PAGES].map((row) => row.path);
   const wrong: string[] = [];
   for (const path of paths) {
     const url = fill(path, objects);
-    const expected = filled(landingOf(ui.layout, persona, path), objects);
+    const expected = filled(landingOf(persona, path), objects);
     const problem = await openAndCompare(ui, url, expected);
     if (problem !== null) wrong.push(problem);
     else if (expected.state === 'page') {
@@ -155,7 +154,7 @@ export async function checkPages(
   return wrong;
 }
 
-/** Every redirect of the layout, followed to where it lands. */
+/** Every redirect, followed to where it lands. */
 export async function checkRedirects(
   ui: GatewayUi,
   persona: Persona,
@@ -163,48 +162,45 @@ export async function checkRedirects(
   log: (message: string) => void
 ): Promise<string[]> {
   const wrong: string[] = [];
-  for (const { from } of REDIRECTS[ui.layout]) {
+  for (const { from } of REDIRECTS) {
     const problem = await openAndCompare(
       ui,
       fill(from, objects),
-      filled(landingOf(ui.layout, persona, from), objects)
+      filled(landingOf(persona, from), objects)
     );
     if (problem !== null) wrong.push(problem);
   }
-  log(`followed ${REDIRECTS[ui.layout].length} redirects`);
+  log(`followed ${REDIRECTS.length} redirects`);
   return wrong;
 }
 
 /** The rail's labels, in order. */
 export async function checkRail(ui: GatewayUi, persona: Persona): Promise<string[]> {
   const rail = (await ui.navLinks()).map((link) => link.label);
-  const expected = RAIL[ui.layout][persona];
+  const expected = RAIL[persona];
   return sameList(rail, expected) ? [] : [`rail: wanted ${list(expected)}, got ${list(rail)}`];
 }
 
 /** Each settings area's landmark, by the title it is labelled with. */
 const AREA_TITLE: Record<MatrixSettingsArea, string> = {
-  workspace: 'Workspace settings',
+  workspace: 'Settings',
   organization: 'Organization settings',
-  platform: 'Platform',
 };
 
 const AREA_PATH: Record<MatrixSettingsArea, string> = {
   workspace: '/settings',
   organization: '/settings/org',
-  platform: '/platform',
 };
 
 /**
- * Each settings area's menu in the new layout, and the link across from the
+ * Each settings area's menu, and the link across from the
  * workspace's settings to the organization's. An area the role may not enter
  * is the page checks' business.
  */
 export async function checkSettingsMenus(ui: GatewayUi, persona: Persona): Promise<string[]> {
-  if (ui.layout !== 'v2') return [];
   const wrong: string[] = [];
   const areaPaths = new Set(Object.values(AREA_PATH));
-  for (const area of ['workspace', 'organization', 'platform'] as const) {
+  for (const area of ['workspace', 'organization'] as const) {
     const expected = SETTINGS_MENUS[area][persona];
     if (expected === null) continue;
     await ui.open(AREA_PATH[area]);
@@ -219,9 +215,7 @@ export async function checkSettingsMenus(ui: GatewayUi, persona: Persona): Promi
       const across = links.some((link) => link.path === AREA_PATH.organization);
       const allowed = SETTINGS_MENUS.organization[persona] !== null;
       if (across !== allowed) {
-        wrong.push(
-          `Workspace settings menu: wanted ${allowed ? 'a' : 'no'} link to Organization settings`
-        );
+        wrong.push(`Settings menu: wanted ${allowed ? 'a' : 'no'} link to Organization settings`);
       }
     }
   }

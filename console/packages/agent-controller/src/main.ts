@@ -10,10 +10,13 @@ import {
   isStopMessage,
   PROVIDER_RECHECKED_KIND,
   type ProviderRecheckReply,
+  windowsRegistryPath,
+  withWindowsPathEntries,
 } from '@switch-console/agent-providers';
 import {
   withWindowsAgyBinDir,
   withWindowsCodexBinDir,
+  withWindowsInstallerBinDirs,
   withWindowsGitBashDir,
 } from '@switch-console/plugins/agents';
 import packageJson from '../package.json' with { type: 'json' };
@@ -50,12 +53,7 @@ import {
   resolveSharedHostBundle,
 } from './handover';
 import { createLogger, errorMessage, type Logger } from './log';
-import {
-  loginShellPath,
-  windowsRegistryPath,
-  withUserBinDirs,
-  withWindowsPathEntries,
-} from './login-path';
+import { loginShellPath, withUserBinDirs } from './login-path';
 import { dataLayout, ensureDataDir, resolveDataDir, serverWorkspacesDir } from './paths';
 import { ProviderRechecks } from './provider-rechecks';
 import { readProviderSeed, writeProviderSeed } from './provider-seed';
@@ -417,8 +415,11 @@ function pathRefresher(log: Logger): () => Promise<void> {
         homedir()
       );
       process.env.PATH = withWindowsGitBashDir(
-        withWindowsCodexBinDir(
-          withWindowsAgyBinDir(current, process.env.LOCALAPPDATA),
+        withWindowsInstallerBinDirs(
+          withWindowsCodexBinDir(
+            withWindowsAgyBinDir(current, process.env.LOCALAPPDATA),
+            process.env.LOCALAPPDATA
+          ),
           process.env.LOCALAPPDATA
         ),
         {
@@ -638,6 +639,9 @@ async function runCommand(args: string[]): Promise<number> {
             now: Date.now,
           })
         : null;
+    // Switch Console starts its controllers again when they end on their own.
+    const supervised =
+      updatedBy === 'console' || isSupervised(separateUsers, values.launchd === true, process.env);
     if (controllerId !== undefined && values.server !== undefined) {
       const previousServer = store.identity()?.server;
       const adopted = adoptIdentity(
@@ -702,6 +706,7 @@ async function runCommand(args: string[]): Promise<number> {
         version: VERSION,
         updatedBy,
         selfUpdate,
+        supervised,
         now: Date.now,
         random: Math.random,
         timing: DEFAULT_TIMING,

@@ -430,12 +430,15 @@ class TestAgentPermissions:
                 change_manage_agents,
                 grant_services,
             )
+            assert detail.can_widen_addressing is change_manage_agents
 
 
 class TestRoomPackagePermissions:
     async def test_each_package_in_a_room_says_whether_the_caller_may_open_it(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
+        """The room shares what is attached to it, so whoever may read the
+        room opens every package in it, a private one included."""
         async with session_factory() as session:
             owner = await add_user(session, name="owner")
             member = await add_user(session, name="member")
@@ -482,8 +485,12 @@ class TestRoomPackagePermissions:
                 )
                 return {p.name: p.can_read for p in packages}
 
-            assert await readable(member) == {"shared": True, "private": False}
+            assert await readable(member) == {"shared": True, "private": True}
             assert await readable(owner) == {"shared": True, "private": True}
+            opened = await svc.open_package(
+                session, private.id, member.id, is_admin=False
+            )
+            assert opened.id == private.id
 
 
 # Who reads a resource, whether its write visibility lets everyone change it,

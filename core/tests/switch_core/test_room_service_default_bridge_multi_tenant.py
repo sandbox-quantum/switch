@@ -121,6 +121,9 @@ class _FakeLifecycle:
     def rooms_changed(self, bridge_id: str) -> None:
         self.rooms_changed_for.append(bridge_id)
 
+    def typed_commands(self, bridge_type, connection_config):
+        return {}
+
     def channel_creation_blocker(
         self, bridge_type: str, connection_config: object
     ) -> str | None:
@@ -224,11 +227,15 @@ async def test_create_room_succeeds_for_each_tenants_own_default_bridge(
     # tenant A's own default bridge was never ambiguous on its own.
     with tenant_scope(tenant_a):
         result_a = await svc.create_room(
-            RoomCreateConfig(name="Room A", description="d")
+            RoomCreateConfig(
+                name="Room A", description="d", channel_type="channel_public"
+            )
         )
     with tenant_scope(tenant_b):
         result_b = await svc.create_room(
-            RoomCreateConfig(name="Room B", description="d")
+            RoomCreateConfig(
+                name="Room B", description="d", channel_type="channel_public"
+            )
         )
 
     assert result_a.room.bridge_id == bridge_a

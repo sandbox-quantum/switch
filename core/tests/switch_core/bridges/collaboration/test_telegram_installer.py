@@ -90,6 +90,7 @@ def _client(bot: _FakeBot | None = None) -> TelegramAppClient:
         webhook_url=_WEBHOOK_URL,
         webhook_secret=_SECRET,
         on_connected=_nothing,
+        feature_flags={},
     )
 
 
@@ -192,6 +193,7 @@ class TestTheSharedBot:
             webhook_url=_WEBHOOK_URL,
             webhook_secret=_SECRET,
             on_connected=on_connected,
+            feature_flags={},
         )
         await client.start_with_retry()
 

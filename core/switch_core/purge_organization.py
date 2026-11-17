@@ -135,6 +135,7 @@ async def _installers(config: SwitchConfig) -> MessagingInstallerRegistry:
                     ),
                     webhook_secret=config.telegram_app_webhook_secret,
                     on_connected=_never_connected,
+                    feature_flags=config.feature_flags,
                 ),
                 webhook_secret=config.telegram_app_webhook_secret,
             )

@@ -15,9 +15,11 @@ from switch_core.bridges.collaboration.models import (
     DirectMessageUnavailable,
     DirectPrompt,
     InboundCommand,
+    InboundInteraction,
 )
 from switch_core.bridges.collaboration.session.renderers import (
     parse_answer_position,
+    position_action,
 )
 from switch_core.bridges.collaboration.slack import adapter as slack_adapter
 from switch_core.bridges.collaboration.slack.adapter import (
@@ -310,3 +312,136 @@ class TestDirectPrompts:
         adapter._web_client = _WebClient(refuse="message_not_found")  # type: ignore[assignment]
 
         await adapter.settle_direct_prompt("D42:111.1", "Done")
+
+
+def _press(value: str = _PROMPT.token, position: int = 2) -> dict[str, Any]:
+    """A tap on one of the prompt's buttons, as Socket Mode hands it over."""
+    return {
+        "type": "block_actions",
+        "user": {"id": "U-ada"},
+        "channel": {"id": "D42"},
+        "container": {"channel_id": "D42", "message_ts": "111.1"},
+        "actions": [{"action_id": position_action(position), "value": value}],
+    }
+
+
+class TestTapsReachTheLinkFlow:
+    async def test_a_tap_in_the_apps_conversation_is_passed_on_with_who_tapped(
+        self,
+    ) -> None:
+        adapter = _adapter()
+        adapter._web_client = _WebClient()  # type: ignore[assignment]
+        pressed: list[InboundInteraction] = []
+
+        async def on_interaction(interaction: InboundInteraction) -> None:
+            pressed.append(interaction)
+
+        adapter.set_interaction_handler(on_interaction)
+
+        await adapter.dispatch_event(envelope_type="interactive", payload=_press())
+
+        [interaction] = pressed
+        # Who tapped is what Slack says; the button carries only the token.
+        assert interaction.sender_id == "U-ada"
+        assert interaction.value == _PROMPT.token
+        assert parse_answer_position(interaction.action_id) == 2
+        assert interaction.message_ref == "D42:111.1"
+
+
+class TestNoSilentFailures:
+    async def test_a_tap_that_cannot_be_acted_on_is_answered_privately(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        adapter = _adapter()
+        web = _WebClient()
+        adapter._web_client = web  # type: ignore[assignment]
+
+        async def broken(_interaction: InboundInteraction) -> None:
+            raise RuntimeError(f"database refused token {_PROMPT.token} hunter2")
+
+        adapter.set_interaction_handler(broken)
+
+        await adapter.dispatch_event(envelope_type="interactive", payload=_press())
+
+        [(name, kwargs)] = web.calls
+        assert name == "chat_postEphemeral"
+        assert kwargs["channel"] == "D42"
+        assert kwargs["user"] == "U-ada"
+        # Says it could not be processed, and nothing of why.
+        assert "couldn" in kwargs["text"].lower()
+        assert "hunter2" not in kwargs["text"]
+        assert "RuntimeError" not in kwargs["text"]
+        assert "Could not act on a button press" in caplog.text
+        assert "RuntimeError" in caplog.text
+        # The log names the failure, never what the person's press carried.
+        assert _PROMPT.token not in caplog.text
+        assert "hunter2" not in caplog.text
+
+    async def test_a_link_command_that_cannot_be_acted_on_is_answered_privately(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        posted: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            posted.append(request)
+            return httpx.Response(200, text="ok")
+
+        real_client = httpx.AsyncClient
+        monkeypatch.setattr(
+            slack_adapter.httpx,
+            "AsyncClient",
+            lambda **kwargs: real_client(
+                transport=httpx.MockTransport(handler), **kwargs
+            ),
+        )
+        adapter = _adapter()
+        web = _WebClient()
+        adapter._web_client = web  # type: ignore[assignment]
+
+        async def broken(_command: InboundCommand) -> None:
+            raise RuntimeError("code 7KQ2-M9XD for user 42 blew up")
+
+        adapter._on_command = broken
+
+        await adapter.dispatch_event(
+            envelope_type="slash_commands",
+            payload={
+                "command": "/link-account",
+                "text": "7KQ2-M9XD",
+                "channel_id": "D-self",
+                "user_id": "U-ada",
+                "response_url": _RESPONSE_URL,
+            },
+        )
+
+        [request] = posted
+        assert str(request.url) == _RESPONSE_URL
+        body = request.read().decode()
+        assert '"response_type":"ephemeral"' in body.replace(" ", "")
+        assert "couldn" in body.lower()
+        # Neither the code nor the error goes back.
+        assert "7KQ2-M9XD" not in body
+        assert "blew up" not in body
+        assert web.calls == []
+        # Nor does the code reach the log, though the error carried it.
+        assert "Could not act on /link-account" in caplog.text
+        assert "7KQ2-M9XD" not in caplog.text
+
+    def test_the_reply_names_no_reason(self) -> None:
+        assert slack_adapter.COULD_NOT_PROCESS.startswith("Switch couldn't process")
+
+
+class TestCodeInstructions:
+    def test_an_own_app_says_what_a_tap_that_does_nothing_means(self) -> None:
+        text = SlackAdapter.link_code_instructions("7KQ2-M9XD", {})
+
+        assert text.startswith("Type `/link-account 7KQ2-M9XD`")
+        assert "one possible cause is the Slack app's Interactivity being off" in text
+        assert "a second Switch server using the same app token" in text
+
+    def test_switchs_own_app_does_not(self) -> None:
+        text = SlackAdapter.link_code_instructions(
+            "7KQ2-M9XD", {"event_delivery": "webhook"}
+        )
+
+        assert "Interactivity" not in text

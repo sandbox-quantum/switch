@@ -13,11 +13,12 @@ import type { Fixtures } from '../../fixtures/fixtures.ts';
  * - a workspace admin and a member, each brought into the first workspace by
  *   an invitation link, as people join today;
  * - the platform operator, who is the harness's own gateway admin, holds no
- *   role in the organization, and enters the workspace from the operator's
- *   list of every workspace.
+ *   role in the organization, and enters the workspace on the operator's
+ *   reach alone.
  *
- * Accounts and organizations cannot be removed afterwards, so the scenarios
- * that use this run only on a stack thrown away after the run.
+ * Every account but the operator's signs up, as people make theirs. Accounts
+ * and organizations are left behind, so the scenarios that use this run only
+ * on a stack thrown away after the run.
  */
 
 export interface Account {
@@ -60,16 +61,18 @@ export class RoleWorld {
     this.password = scopePassword(names);
   }
 
-  /** A new account with no workspace of its own yet; `role` names it. */
+  /**
+   * A new account with no workspace of its own yet, signed up, so a plain
+   * member of the server's default workspace; `role` names it.
+   */
   async account(role: string, label: string): Promise<Account> {
     const email = `${this.names.name(role)}@e2e.invalid`;
-    const { id } = await this.admin.createUser({
-      name: `E2E ${label}`,
+    const { id, client } = await this.admin.signUp({
       email,
       password: this.password,
-      role: 'user',
+      displayName: `E2E ${label}`,
     });
-    return { id, email, password: this.password, client: this.admin.as(email, this.password) };
+    return { id, email, password: this.password, client };
   }
 
   /** An organization, and its first workspace, made by a new account who is its admin. */
