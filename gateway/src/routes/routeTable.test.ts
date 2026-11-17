@@ -77,4 +77,79 @@ describe("Connector apps", () => {
     const labels = menuOf("organization", "v2", orgAdmin(true)).map((item) => item.label);
     expect(labels.indexOf("Connector apps")).toBe(labels.indexOf("Connectors and apps") + 1);
   });
+
+  /** Someone in a workspace of no organization, as an older release could
+   * make one, who may or may not set up the deployment's connector apps:
+   * the operator, or an admin of its only organization. */
+  function outsideAnOrganization(canManageConnectorApps: boolean): Capabilities {
+    return {
+      ...orgAdmin(canManageConnectorApps),
+      isOperator: canManageConnectorApps,
+      administersOrganization: false,
+      inOrganization: false,
+    };
+  }
+
+  it("opens from a workspace in no organization for whoever may set them up, and nothing else there does", () => {
+    const caps = outsideAnOrganization(true);
+    expect(accessTo("/settings/org", "v2", caps)?.allowed).toBe(true);
+    expect(accessTo("/settings/org/connector-apps", "v2", caps)?.allowed).toBe(true);
+    expect(menuOf("organization", "v2", caps).map((item) => item.path)).toEqual([
+      "/settings/org/connector-apps",
+    ]);
+    for (const path of [
+      "/settings/org/general",
+      "/settings/org/workspaces",
+      "/settings/org/users",
+      "/settings/org/audit-log",
+    ]) {
+      expect(accessTo(path, "v2", caps)).toEqual({
+        allowed: false,
+        reason: "not_permitted",
+        message: "This workspace belongs to no organization.",
+      });
+    }
+  });
+
+  it("keeps Organization settings shut, from a workspace in no organization, to anyone else", () => {
+    const caps = outsideAnOrganization(false);
+    expect(accessTo("/settings/org", "v2", caps)).toEqual({
+      allowed: false,
+      reason: "not_permitted",
+      message: "This workspace belongs to no organization.",
+    });
+    expect(accessTo("/settings/org/connector-apps", "v2", caps)?.allowed).toBe(false);
+  });
+});
+
+describe("Organization settings for everyone else", () => {
+  it("still admits only the organization's admins and the operator to its pages", () => {
+    const flags = featureFlagsFrom(
+      ["agent_management", "service_connections", "organization_connector_apps", "gateway_v2"].map(
+        (key) => ({ key, enabled: true }),
+      ),
+    );
+    const member: Capabilities = {
+      isOperator: false,
+      administersWorkspace: true,
+      administersOrganization: false,
+      inOrganization: true,
+      canDeleteWorkspace: true,
+      canManageDataProtection: true,
+      canManageConnectorApps: false,
+      connectorAppsInDashboard: true,
+      features: flags,
+    };
+    for (const path of ["/settings/org", "/settings/org/general", "/settings/org/users"]) {
+      expect(accessTo(path, "v2", member)).toEqual({
+        allowed: false,
+        reason: "not_permitted",
+        message: "Only the organization's admins can open this page.",
+      });
+    }
+    const operator = { ...member, isOperator: true, canManageConnectorApps: true };
+    for (const path of ["/settings/org/general", "/settings/org/users", "/settings/org/connector-apps"]) {
+      expect(accessTo(path, "v2", operator)?.allowed).toBe(true);
+    }
+  });
 });

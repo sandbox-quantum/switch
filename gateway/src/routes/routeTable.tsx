@@ -19,6 +19,7 @@ import {
   type Rule,
   agentManagement,
   allOf,
+  anyOf,
   connectorAppManagers,
   everyone,
   inOrganization,
@@ -142,7 +143,10 @@ export const AREAS: Record<SettingsArea, AreaDefinition> = {
   },
   organization: {
     title: "Organization settings",
-    access: organizationAdmins,
+    // Whoever may set up the deployment's connector apps comes in for them
+    // even from a workspace in no organization, which an older release
+    // could make; every other page here asks for the organization itself.
+    access: anyOf(organizationAdmins, connectorAppManagers),
     first: "/settings/org/general",
     outsideWorkspace: true,
   },
@@ -290,17 +294,19 @@ export const ROUTES: readonly AppRoute[] = [
   settingsPage("/usage", "workspace", "Usage & budget", workspaceAdmins, <UsagePage />),
   personalSettingsPage("/settings/account", "Your account", everyone, <AccountPage />),
 
-  // Organization settings: the area admits the organization's admins, and
-  // the operator to restore one; its pages beyond that are the admins' alone,
-  // but for Connector apps, which is whoever may set up the deployment's
-  // connector apps, the operator included.
+  // Organization settings: the area admits the organization's admins, the
+  // operator to restore one, and whoever may set up the deployment's
+  // connector apps. Its pages beyond General, Workspaces and Users are the
+  // admins' alone, but for Connector apps, which is whoever may set up the
+  // deployment's connector apps, the operator included, in an organization
+  // or not.
   areaIndex("/settings/org", "organization"),
   redirect("/settings/org", CURRENT, "/organization"),
   settingsPage(
     "/settings/org/general",
     "organization",
     "General",
-    everyone,
+    organizationAdmins,
     <OrganizationGeneralPage />,
   ),
   redirect("/settings/org/general", CURRENT, "/organization"),
@@ -308,11 +314,17 @@ export const ROUTES: readonly AppRoute[] = [
     "/settings/org/workspaces",
     "organization",
     "Workspaces",
-    everyone,
+    organizationAdmins,
     <OrganizationWorkspacesPage />,
   ),
   redirect("/settings/org/workspaces", CURRENT, "/organization"),
-  settingsPage("/settings/org/users", "organization", "Users", everyone, <OrganizationUsersPage />),
+  settingsPage(
+    "/settings/org/users",
+    "organization",
+    "Users",
+    organizationAdmins,
+    <OrganizationUsersPage />,
+  ),
   redirect("/settings/org/users", CURRENT, "/organization"),
   settingsPage(
     "/settings/org/connectors",

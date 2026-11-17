@@ -122,8 +122,12 @@ export function SettingsIndex({ area, layout }: { area: SettingsArea; layout: La
   const candidates = [carried, rememberedSettingsPage(area)].filter(
     (path): path is string => path !== null,
   );
+  // The area's first page, unless this person may not open it: then the
+  // first of its menu they may.
+  const fallbacks = [definition.first, ...menuOf(area, layout, capabilities).map((item) => item.path)];
   const landing =
-    candidates.find((path) => accessTo(path, layout, capabilities)?.allowed === true) ??
-    definition.first;
+    [...candidates, ...fallbacks].find(
+      (path) => accessTo(path, layout, capabilities)?.allowed === true,
+    ) ?? definition.first;
   return <Navigate to={landing} replace />;
 }

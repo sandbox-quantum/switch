@@ -120,6 +120,15 @@ export const organizationConnectorApps = feature(
   "Organization connector apps aren't",
 );
 
+/** Allowed when any rule allows; otherwise the first rule's refusal. */
+export function anyOf(first: Rule, ...rest: Rule[]): Rule {
+  return (caps) => {
+    const refusal = first(caps);
+    if (refusal.allowed) return refusal;
+    return rest.some((rule) => rule(caps).allowed) ? ALLOWED : refusal;
+  };
+}
+
 /** Allowed when every rule allows; otherwise the first refusal. */
 export function allOf(...rules: Rule[]): Rule {
   return (caps) => {

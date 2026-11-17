@@ -752,6 +752,38 @@ describe("the new layout (gateway_v2)", () => {
       expect(await screen.findByRole("heading", { name: "Connectors" })).toBeTruthy();
     });
 
+    it("opens from a workspace in no organization for whoever may set them up", async () => {
+      const routes = {
+        ...signedInAs("operator", { flags: V2, inOrganization: false }),
+        "/connector-apps": [200, { public_url: "https://switch.example.test", apps: [] }],
+      } satisfies Routes;
+      mockFetch(routes);
+      renderAt("/settings/general");
+      expect(await menuLabels("Workspace settings")).toContain("Organization settings ›");
+      cleanup();
+
+      mockFetch(routes);
+      renderAt("/settings/org");
+      await landsOn("/settings/org/connector-apps");
+      expect(await menuLabels("Organization settings")).toEqual([
+        "Connector apps",
+        "‹ Workspace settings",
+      ]);
+      expect(await screen.findByRole("heading", { name: "Connectors" })).toBeTruthy();
+      cleanup();
+
+      mockFetch(routes);
+      renderAt("/settings/org/general");
+      expect(await screen.findByText("This workspace belongs to no organization.")).toBeTruthy();
+    });
+
+    it("keeps Organization settings shut, outside an organization, to anyone who may not", async () => {
+      mockFetch(signedInAs("member", { flags: V2, inOrganization: false }));
+      renderAt("/settings/org/connector-apps");
+      expect(await screen.findByText("This workspace belongs to no organization.")).toBeTruthy();
+      expect(screen.queryByRole("navigation", { name: "Organization settings" })).toBeNull();
+    });
+
     it("neither lists nor opens it for an admin who may not", async () => {
       mockFetch(signedInAs("org_admin", { flags: [...V2, "service_connections"] }));
       renderAt("/settings/org/connector-apps");
