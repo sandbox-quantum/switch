@@ -152,6 +152,7 @@ function ManageHereDialog({
 export default function ConnectorAppCard({
   app,
   publicUrl,
+  openSetup,
   checkFailure,
   onCheckFailure,
   onChecked,
@@ -160,6 +161,8 @@ export default function ConnectorAppCard({
   app: ConnectorApp;
   /** GATEWAY_PUBLIC_URL; while it is unset the vendor has nowhere to send people back. */
   publicUrl: string | null;
+  /** Open the setup dialog on mount, where setting it up is what the card offers. */
+  openSetup: boolean;
   checkFailure: string | null;
   onCheckFailure: (message: string | null) => void;
   /** After a check: the server keeps what the vendor said of the app, so the apps are read again. */
@@ -168,7 +171,9 @@ export default function ConnectorAppCard({
 }) {
   const scope = useConnectorAppScope();
   const [menu, setMenu] = useState<HTMLElement | null>(null);
-  const [setup, setSetup] = useState<SetupMode | null>(null);
+  const [setup, setSetup] = useState<SetupMode | null>(() =>
+    openSetup && primaryAction(app, checkFailure) === "set_up" && !changeBlocked(app, publicUrl) ? "set_up" : null,
+  );
   const [updating, setUpdating] = useState(false);
   const [removing, setRemoving] = useState(false);
   const [managing, setManaging] = useState(false);

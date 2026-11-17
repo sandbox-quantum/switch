@@ -491,4 +491,78 @@ describe('linking your account once an app is added', () => {
       description: expect.stringContaining('has no directory of users to search'),
     });
   });
+
+  it('names the connection after the platform and focuses its first credential', async () => {
+    const token = (key: string, label: string) => ({
+      key,
+      label,
+      description: null,
+      required: true,
+      secret: true,
+      kind: 'string',
+      default: null,
+    });
+    listMessagingApps.mockResolvedValue({ installable: [], claimable: [] });
+    listBridgeTypes.mockResolvedValue([
+      {
+        key: 'discord',
+        fields: [token('bot_token', 'Bot Token'), token('guild_id', 'Guild Id')],
+        channelCreationSupported: true,
+        directorySearchSupported: false,
+      },
+      {
+        key: 'telegram',
+        fields: [token('bot_token', 'Bot Token')],
+        channelCreationSupported: true,
+        directorySearchSupported: false,
+      },
+    ]);
+    const el = await render();
+
+    await act(async () => {
+      el.querySelector<HTMLElement>('[role="combobox"]')!.click();
+    });
+    await settle();
+    const discordOption = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find((o) =>
+      o.textContent?.includes('Discord')
+    );
+    await act(async () => discordOption!.click());
+    await settle();
+
+    const name = el.querySelector<HTMLInputElement>('input[placeholder^="e.g."]')!;
+    expect(name.value).toBe('Discord');
+    const firstPasswordInput = el.querySelector<HTMLInputElement>('input[type="password"]');
+    expect(document.activeElement).toBe(firstPasswordInput);
+
+    await act(async () => {
+      el.querySelector<HTMLElement>('[role="combobox"]')!.click();
+    });
+    await settle();
+    const telegramOption = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(
+      (o) => o.textContent?.includes('Telegram')
+    );
+    await act(async () => telegramOption!.click());
+    await settle();
+
+    expect(name.value).toBe('Telegram');
+    const telegramPasswordInput = el.querySelector<HTMLInputElement>('input[type="password"]');
+    expect(document.activeElement).toBe(telegramPasswordInput);
+
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+      setter.call(name, 'My bot');
+      name.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () => {
+      el.querySelector<HTMLElement>('[role="combobox"]')!.click();
+    });
+    await settle();
+    const discordOption2 = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(
+      (o) => o.textContent?.includes('Discord')
+    );
+    await act(async () => discordOption2!.click());
+    await settle();
+
+    expect(name.value).toBe('My bot');
+  });
 });

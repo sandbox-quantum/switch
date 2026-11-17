@@ -17,24 +17,53 @@ const ANSI_RE = /\u001b\[[0-?]*[ -/]*[@-~]/g;
 
 /**
  * How each shell says a program is not there: Windows PowerShell and
- * PowerShell 7, cmd.exe, and POSIX shells.
+ * PowerShell 7, cmd.exe, and POSIX shells. The POSIX one is case-sensitive,
+ * as the shells write it, so `curl: error: Not Found` is not taken for a
+ * missing `error`.
  */
 const MISSING_COMMAND_RES = [
-  /The term '([^']+)' is not recognized as (?:the |a )?name of a cmdlet/i,
-  /'([^']+)' is not recognized as an internal or external command/i,
-  /(?:^|\n)(?:[^\n:]*: )?(?:(?:line )?\d+: )?([^\s:]+): (?:command )?not found/i,
+  /The term '([^']+)' is not recognized as (?:the |a )?name of a cmdlet/gi,
+  /'([^']+)' is not recognized as an internal or external command/gi,
+  /(?:^|\n)(?:[^\n:]*: )?(?:(?:line )?\d+: )?([^\s:]+): (?:command )?not found/g,
 ];
 
-/** The program a failed install command could not find, as typed (`npm`), or null. */
+/** Words a log puts before a colon that are not programs. */
+const NOT_A_PROGRAM = /^(error|warning|fatal|info|debug)$/i;
+
+/**
+ * How many lines a missing program's message may sit above the end of the
+ * output: PowerShell follows it with its error record (`At line:1`, the
+ * command, `CategoryInfo`, `FullyQualifiedErrorId`). One further up came from
+ * a step inside the install (a postinstall script's `node-gyp`), which is not
+ * what the install as a whole needs, and its real failure follows.
+ */
+const MISSING_COMMAND_TAIL_LINES = 8;
+
+/**
+ * The program a failed install command could not find, as typed (`npm`), or
+ * null: the last one a shell said it could not find, when that is how the
+ * output ends.
+ */
 export function missingCommandIn(output: string): string | null {
+  const lines = output.split('\n');
+  const nonEmpty = lines.map((line, index) => ({ line, index })).filter(({ line }) => line.trim());
+  const tailStart =
+    nonEmpty.length > MISSING_COMMAND_TAIL_LINES
+      ? nonEmpty[nonEmpty.length - MISSING_COMMAND_TAIL_LINES]!.index
+      : 0;
+  const tailOffset = lines.slice(0, tailStart).reduce((sum, line) => sum + line.length + 1, 0);
+  let last: { at: number; name: string } | null = null;
   for (const re of MISSING_COMMAND_RES) {
-    const match = re.exec(output);
-    if (match?.[1]) {
-      const base = match[1].split(/[\\/]/).pop() ?? match[1];
-      return base.replace(/\.(exe|cmd|bat|ps1)$/i, '');
+    for (const match of output.matchAll(re)) {
+      const name = match[1];
+      if (!name || NOT_A_PROGRAM.test(name)) continue;
+      const at = (match.index ?? 0) + match[0].indexOf(name);
+      if (at >= tailOffset && (last === null || at > last.at)) last = { at, name };
     }
   }
-  return null;
+  if (last === null) return null;
+  const base = last.name.split(/[\\/]/).pop() ?? last.name;
+  return base.replace(/\.(exe|cmd|bat|ps1)$/i, '');
 }
 
 export function classifyInstallCommandFailure({
