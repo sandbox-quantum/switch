@@ -40,12 +40,25 @@ export async function checkOpencodeSignIn(input: SignInCheckInput): Promise<Prov
         `OpenCode ${version} isn’t supported yet. Install OpenCode 1 instead: ${OPENCODE_SUPPORTED_INSTALL}`
       )
     );
-  const server = await startOpencodeServer({
-    ...input,
-    startupTimeoutMs: 15000,
-    skills: [],
-    config: { $schema: 'https://opencode.ai/config.json', permission: {}, mcp: {} },
-  });
+  let server;
+  try {
+    server = await startOpencodeServer({
+      ...input,
+      startupTimeoutMs: 15000,
+      skills: [],
+      config: { $schema: 'https://opencode.ai/config.json', permission: {}, mcp: {} },
+    });
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    if (detail.includes('no session table'))
+      return loginWontHelp(
+        readiness(
+          'unconfigured',
+          'OpenCode Desktop 2 has migrated the shared database, so OpenCode 1 cannot open it.'
+        )
+      );
+    throw error;
+  }
   try {
     const response = await fetch(`${server.url}/provider`, {
       headers: { Authorization: server.authorization },

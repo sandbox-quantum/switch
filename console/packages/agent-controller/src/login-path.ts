@@ -83,13 +83,14 @@ function merged(shellPath: string, current: string): string | null {
 
 /**
  * `path` with the folders provider installers put CLIs in that it lacks, added
- * after it: `~/.local/bin`, where Claude Code's and OpenCode's installers
- * write, is often missing from a shell profile. Switch Console adds the same
- * folder to its own PATH, so what it installed is found here too.
+ * after it: `~/.local/bin` (Claude Code, and OpenCode from npm) and
+ * `~/.opencode/bin` (OpenCode's Windows release zip). Both are often missing
+ * from a process started before the install. Switch Console adds the same
+ * folders to its own PATH, so what it installed is found here too.
  */
 export function withUserBinDirs(path: string, home: string): string {
   const entries = path.split(delimiter).filter(Boolean);
-  const additions = [join(home, '.local', 'bin')].filter(
+  const additions = [join(home, '.local', 'bin'), join(home, '.opencode', 'bin')].filter(
     (dir) => !entries.includes(dir) && isDirectory(dir)
   );
   return [...entries, ...additions].join(delimiter);

@@ -175,9 +175,14 @@ export async function refreshWindowsPath(env: NodeJS.ProcessEnv = process.env): 
   }
   const userProfile = getWindowsEnvValue(env, 'USERPROFILE');
   if (userProfile) {
-    const localBin = path.win32.join(userProfile, '.local', 'bin');
-    if (pathEntryExists(localBin))
-      env[pathKey] = withWindowsPathEntries(env[pathKey] ?? '', localBin);
+    for (const relative of [
+      path.win32.join('.local', 'bin'),
+      path.win32.join('.opencode', 'bin'),
+    ]) {
+      const folder = path.win32.join(userProfile, relative);
+      if (pathEntryExists(folder))
+        env[pathKey] = withWindowsPathEntries(env[pathKey] ?? '', folder);
+    }
   }
   ensureWindowsNpmGlobalBinInPath(env);
   ensureWindowsUserBinDirsInPath(env);
@@ -204,10 +209,10 @@ export async function refreshInstalledCliPath(): Promise<void> {
  */
 export async function resolveUserEnv(): Promise<void> {
   if (process.platform === 'win32') {
-    // Windows PATH is managed differently; no login-shell capture needed.
-    ensureWindowsNpmGlobalBinInPath();
-    ensureWindowsUserBinDirsInPath();
-    ensureWindowsGitBashInPath(process.env, fs.existsSync);
+    // The process inherits its parent's PATH, which stays stale after an
+    // installer updates the registry. Read the registry, then add the
+    // installer folders that parent never had.
+    await refreshWindowsPath();
     return;
   }
 

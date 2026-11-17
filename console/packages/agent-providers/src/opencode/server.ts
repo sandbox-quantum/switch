@@ -6,6 +6,7 @@ import { ProviderUnavailableError } from '../adapter';
 import { spawnProvider, stopProvider } from '../provider-process';
 import type { OpencodeConfigFile } from './config';
 import { prepareOpencodeHome } from './home';
+import { opencodeV1DatabaseEnv } from './v1-database';
 
 const READY_PREFIX = 'opencode server listening';
 
@@ -68,6 +69,7 @@ export async function startOpencodeServer(input: StartServerInput): Promise<Open
       cwd: input.cwd,
       env: {
         ...input.env,
+        ...opencodeV1DatabaseEnv(input.env),
         XDG_CONFIG_HOME: configHome,
         OPENCODE_SERVER_PASSWORD: password,
       },
