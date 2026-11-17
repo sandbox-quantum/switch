@@ -3,7 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
-from switch_core.bridges.collaboration.models import InboundMessage
+from switch_core.bridges.collaboration.models import InboundCommand, InboundMessage
 
 
 async def _no_text_answer(_msg: object) -> None:
@@ -150,3 +150,52 @@ async def test_a_direct_message_makes_its_sender_known_where_there_is_no_directo
 
 async def test_a_platform_with_a_directory_does_not_record_direct_messages() -> None:
     assert await _remembering(directory=True) == []
+
+
+async def _lobby_command(
+    command: str,
+) -> tuple[list[tuple[str, str, str | None]], list]:
+    adapter = _adapter_fake()
+    created: list[object] = []
+
+    async def _create_room_for_channel(**kwargs: object) -> None:
+        created.append(kwargs)
+
+    async def _remember_lobby_sender(sender_id: str, sender_name: str) -> None:
+        return None
+
+    bridge = SimpleNamespace(
+        _adapter=adapter,
+        _remember_lobby_sender=_remember_lobby_sender,
+        _create_room_for_channel=_create_room_for_channel,
+        _channel_to_room={},
+        _channel_locks={},
+    )
+    await CollaborationCore._handle_inbound_command(
+        bridge,
+        InboundCommand(
+            channel_id="D123",
+            channel_type="lobby",
+            sender_id="U1",
+            sender_name="alice",
+            command=command,
+            args="",
+            message_ref="D123:7",
+        ),
+    )
+    return adapter.notices, created
+
+
+async def test_start_in_a_direct_chat_says_hello_and_makes_no_room() -> None:
+    """A room for the app's direct chat would hold every agent, and each would
+    greet the person there."""
+    notices, created = await _lobby_command("start")
+    assert created == []
+    assert len(notices) == 1
+    assert "Switch has seen your account" in notices[0][1]
+
+
+async def test_another_command_in_a_direct_chat_makes_no_room_either() -> None:
+    notices, created = await _lobby_command("invite-agent")
+    assert created == []
+    assert "isn't where you talk to agents" in notices[0][1]

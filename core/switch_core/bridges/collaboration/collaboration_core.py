@@ -208,6 +208,12 @@ class _PendingOutboundGroup:
     caption: str | None = None
 
 
+_LOBBY_HELLO = (
+    "👋 Hello! Switch has seen your account. Go back to Switch Console to "
+    "finish linking it. Agents don't answer here: add one to a group and "
+    "@-mention it there."
+)
+
 _LOBBY_DEPRECATION_NOTICE = (
     "👋 This isn't where you talk to agents — direct messages to the Switch "
     "app aren't routed to anyone. Head to a channel and @-mention an agent "
@@ -1893,6 +1899,15 @@ class CollaborationCore:
             await self._remember_lobby_sender(cmd.sender_id, cmd.sender_name)
         if cmd.command in ACCOUNT_COMMANDS:
             await self._handle_account_command(cmd)
+            return
+        if cmd.channel_type == "lobby":
+            # A direct chat with the app is never a room: making one would put
+            # every agent in it. Start is how a person first says hello there.
+            await self._adapter.admin_message(
+                cmd.channel_id,
+                _LOBBY_HELLO if cmd.command == "start" else _LOBBY_DEPRECATION_NOTICE,
+                cmd.root_id or cmd.message_ref,
+            )
             return
         room_ids = self._channel_to_room.get(cmd.channel_id)
         if room_ids is None:
