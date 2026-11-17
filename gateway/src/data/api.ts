@@ -1652,6 +1652,29 @@ export async function deleteMyAccount(email: string): Promise<void> {
   await jsonRequest("/auth/me", "DELETE", { email });
 }
 
+/** A sign-in link Switch Console handed this browser, as its page asks about
+ * it before spending it. */
+export interface BrowserHandoffPeek {
+  // Whose link it is, and the workspace it opens; null when it names none, or
+  // one deleted since.
+  name: string;
+  email: string;
+  workspace_name: string | null;
+  // Whom this browser is signed in as already, if anyone.
+  signed_in_as: { name: string; email: string } | null;
+  same_person: boolean;
+}
+
+// The code goes in the body, never in an address, so no log or Referer holds it.
+export async function peekBrowserHandoff(code: string): Promise<BrowserHandoffPeek> {
+  return jsonRequest<BrowserHandoffPeek>("/auth/handoff/peek", "POST", { code });
+}
+
+/** Spends the link and signs this browser in; `next` is the page to open. */
+export async function redeemBrowserHandoff(code: string): Promise<{ next: string }> {
+  return jsonRequest<{ next: string }>("/auth/handoff/redeem", "POST", { code });
+}
+
 export type SignupMode = "default_tenant" | "invite_only" | "open";
 
 export interface AuthConfig {

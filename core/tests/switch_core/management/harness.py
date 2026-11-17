@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import secrets
 import uuid
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
@@ -382,6 +383,7 @@ def cookies_for(user: User, tenant_id: str = TENANT_ZERO_ID) -> dict[str, str]:
             tenant_id,
             session_version=0,
             auth_time=datetime.now(UTC),
+            session_id=secrets.token_urlsafe(16),
         )
     }
 

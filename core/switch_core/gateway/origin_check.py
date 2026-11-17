@@ -25,7 +25,8 @@ provisioner) aren't checked: a browser can't attach their bearer to a
 cross-origin request without a preflight, which fails with no CORS.
 
 **Sign-in is checked even with no cookie**
-(`SIGN_IN_PATHS`: password sign-in, sign-up and the OIDC exchange), under the
+(`SIGN_IN_PATHS`: password sign-in, sign-up, the OIDC exchange, and the
+browser sign-in Switch Console hands over, its peek included), under the
 same three rules, so a foreign page can't sign a browser into another
 account. Rule 3 still lets Console's main process sign in. Sign-out and
 refresh carry the cookie, so they were already checked.
@@ -59,7 +60,15 @@ COOKIE = "switch_auth"
 CHECKED_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 REFUSAL = "This request didn't come from Switch."
 # Checked with or without the cookie: a browser has none yet when it signs in.
-SIGN_IN_PATHS = frozenset({"/auth/login", "/auth/signup", "/auth/oidc/exchange"})
+SIGN_IN_PATHS = frozenset(
+    {
+        "/auth/login",
+        "/auth/signup",
+        "/auth/oidc/exchange",
+        "/auth/handoff/peek",
+        "/auth/handoff/redeem",
+    }
+)
 _DEFAULT_PORTS = {"http": 80, "https": 443}
 _LOOPBACK_NAMES = frozenset({"localhost"})
 
