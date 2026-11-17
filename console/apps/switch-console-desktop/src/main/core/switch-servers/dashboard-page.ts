@@ -1,7 +1,6 @@
 import { appService } from '@main/core/app/service';
 import { log } from '@main/lib/logger';
 import { dashboardOrigin, type SwitchServer } from '@shared/core/switch-servers/switch-servers';
-import { reauthenticateManagedServer } from './auth';
 import { GatewayError, mintBrowserHandoff } from './gateway-client';
 import { assertServesDashboard } from './server-address';
 import { getSessionCookie } from './servers-store';
@@ -21,6 +20,11 @@ const PREDATES_HANDOFF = new Set([404, 405]);
  * the server predates the link, the page opens as it is, and the dashboard
  * asks the person to sign in.
  *
+ * A managed server is always asked: the authenticated call signs Console in
+ * again when it holds no session there, and selects the workspace a lease on
+ * the server is asserting (`gateway-client`'s `silentLogin`). Signing in here
+ * directly would mint the link from a session bound to no workspace.
+ *
  * `url` must be on the server's dashboard origin, so a link is only ever
  * opened there. Never log the link: its fragment holds the code.
  */
@@ -38,7 +42,7 @@ export async function openDashboardPage(server: SwitchServer, url: string): Prom
 /** The path of a link that signs a browser in and opens `next`, or null
  * when the page is to open signed out. */
 async function signedInPath(server: SwitchServer, next: string): Promise<string | null> {
-  if (!(await hasSession(server))) {
+  if (!server.managed && !(await getSessionCookie(server.id))) {
     log.info('switch-servers: opening a dashboard page signed out; Console has no session', {
       server: server.id,
     });
@@ -49,9 +53,10 @@ async function signedInPath(server: SwitchServer, next: string): Promise<string 
   } catch (cause) {
     if (!(cause instanceof GatewayError)) throw cause;
     if (cause.kind === 'unauthorized') {
-      log.warn('switch-servers: opening a dashboard page signed out; the session was refused', {
-        server: server.id,
-      });
+      log.warn(
+        'switch-servers: opening a dashboard page signed out; the server took no session from Console',
+        { server: server.id, status: cause.status }
+      );
       return null;
     }
     if (cause.kind === 'http' && cause.status !== undefined && PREDATES_HANDOFF.has(cause.status)) {
@@ -63,13 +68,6 @@ async function signedInPath(server: SwitchServer, next: string): Promise<string 
     }
     throw cause;
   }
-}
-
-/** Whether Console holds a session for `server`, signing the managed server
- * in again with the credentials Console keeps for it when it holds none. */
-async function hasSession(server: SwitchServer): Promise<boolean> {
-  if (await getSessionCookie(server.id)) return true;
-  return (await reauthenticateManagedServer(server)) !== null;
 }
 
 /** `path` on the dashboard's origin, refused unless it stays there. */

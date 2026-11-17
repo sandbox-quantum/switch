@@ -102,7 +102,6 @@ describe('opening a dashboard page', () => {
 
   it('opens the page signed out where Console has no session', async () => {
     getSessionCookie.mockResolvedValue(null);
-    reauthenticateManagedServer.mockResolvedValue(null);
 
     await openDashboardPage(REMOTE, 'https://switch.example.com/rooms/r1');
 
@@ -151,29 +150,34 @@ describe('opening a dashboard page', () => {
     expect(openExternal).not.toHaveBeenCalled();
   });
 
-  it('signs the managed server in again when Console holds no session for it', async () => {
+  it('leaves signing in to the managed server to the authenticated call', async () => {
+    // The call signs in again and selects the workspace a lease asserts;
+    // signing in here would mint from a session bound to no workspace.
     getSessionCookie.mockResolvedValue(null);
-    reauthenticateManagedServer.mockResolvedValue('minted-session');
 
     await openDashboardPage(MANAGED, 'http://127.0.0.1:8080/agents/a1');
 
-    expect(reauthenticateManagedServer).toHaveBeenCalledExactlyOnceWith(MANAGED);
+    expect(reauthenticateManagedServer).not.toHaveBeenCalled();
+    expect(getSessionCookie).not.toHaveBeenCalled();
     expect(assertServesDashboard).not.toHaveBeenCalled();
-    expect(mintBrowserHandoff).toHaveBeenCalledWith(MANAGED, '/agents/a1');
+    expect(mintBrowserHandoff).toHaveBeenCalledExactlyOnceWith(MANAGED, '/agents/a1');
     expect(openExternal).toHaveBeenCalledWith(`http://127.0.0.1:8080${LINK}`);
   });
 
-  it('uses the session Console holds for the managed server without signing in again', async () => {
-    await openDashboardPage(MANAGED, 'http://127.0.0.1:8080/');
+  it('opens the managed server’s page signed out when Console cannot sign in there', async () => {
+    mintBrowserHandoff.mockRejectedValue(
+      new GatewayError('unauthorized', 'Not signed in to this Switch server.')
+    );
+
+    await openDashboardPage(MANAGED, 'http://127.0.0.1:8080/agents/a1');
 
     expect(reauthenticateManagedServer).not.toHaveBeenCalled();
-    expect(openExternal).toHaveBeenCalledWith(`http://127.0.0.1:8080${LINK}`);
+    expect(openExternal).toHaveBeenCalledExactlyOnceWith('http://127.0.0.1:8080/agents/a1');
   });
 
   it('never logs the link', async () => {
     await openDashboardPage(REMOTE, 'https://switch.example.com/rooms/r1');
     getSessionCookie.mockResolvedValue(null);
-    reauthenticateManagedServer.mockResolvedValue(null);
     await openDashboardPage(REMOTE, 'https://switch.example.com/rooms/r1');
 
     const logged = JSON.stringify(Object.values(log).flatMap((fn) => fn.mock.calls));
