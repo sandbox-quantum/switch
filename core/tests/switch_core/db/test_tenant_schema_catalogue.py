@@ -105,6 +105,9 @@ class TestEveryTableIsScopedUnlessItIsNamedGlobal:
         """
         assert set(GLOBAL_TABLES) == {
             "cloud_machines",
+            # A person's move from their v1 machine to a v2 box: one row per
+            # person, of that same one machine, naming no workspace.
+            "hosted_migrations",
             "users",
             "oidc_identities",
             # Facts about the installation, not about anything in it: which
