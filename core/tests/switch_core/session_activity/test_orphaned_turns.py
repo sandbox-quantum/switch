@@ -126,6 +126,59 @@ async def test_a_connected_agents_dead_session_has_its_turn_ended(
     assert (await _status(service, "faulted"))[0] == "interrupted"
 
 
+async def _place_on_closed_connection(session_factory, session_id: str) -> None:
+    """The session placed over a connection that has since closed, as when its
+    agent is stopped; the process holding it is still up, so the placement
+    stays for routing."""
+    connection_id = await _connect(session_factory)
+    async with session_factory() as db, db.begin():
+        room_id = await make_room(db, member=AGENT)
+        db.add(
+            AgentSessionPlacement(
+                agent_id=AGENT,
+                session_id=session_id,
+                room_id=room_id,
+                connection_id=connection_id,
+            )
+        )
+        await db.execute(
+            update(AgentConnectionRecord)
+            .where(AgentConnectionRecord.id == connection_id)
+            .values(closed_at=datetime.now(UTC), close_reason="closed")
+        )
+
+
+async def test_a_stopped_agents_turn_is_ended_though_its_placement_stays(
+    service, session_factory
+) -> None:
+    await _place_on_closed_connection(session_factory, "stopped")
+    await _turn(service, "stopped", "running")
+    await _quiet(session_factory, "stopped", minutes=15)
+
+    await end_orphaned_turns_once(session_factory)
+    assert await _status(service, "stopped") == (
+        "interrupted",
+        4,
+        ORPHANED_TURN_TEXT,
+    )
+
+
+async def test_a_closed_placement_of_a_still_connected_agent_waits_the_longer_window(
+    service, session_factory
+) -> None:
+    await _place_on_closed_connection(session_factory, "stopped")
+    await _connect(session_factory)
+    await _turn(service, "stopped", "running")
+    await _quiet(session_factory, "stopped", minutes=15)
+
+    await end_orphaned_turns_once(session_factory)
+    assert (await _status(service, "stopped"))[0] == "running"
+
+    await _quiet(session_factory, "stopped", minutes=40)
+    await end_orphaned_turns_once(session_factory)
+    assert (await _status(service, "stopped"))[0] == "interrupted"
+
+
 async def _child(service, session_id: str) -> None:
     await service.report_item(
         AGENT,

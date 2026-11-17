@@ -1,14 +1,14 @@
 /**
- * The Admin page of the workspace in scope: its sections down the side,
- * under what they reach, and a workspace admin's switch for each service,
- * drawn as tiles. A switch asks before it reaches other people, shows what
- * the server says rather than what was asked, and keeps its place when it
- * flips. Whoever runs a Switch with no web gateway also has the apps
- * connectors sign in through, under Server, each opening to its own profile. Someone who
- * administers nothing is told whom to ask.
+ * The admin pages in Settings, for the workspace in scope: a workspace
+ * admin's switch for each service, drawn as tiles, and its decision routing.
+ * A switch asks before it reaches other people, shows what the server says
+ * rather than what was asked, and keeps its place when it flips. Whoever runs
+ * a Switch with no web gateway also has the apps connectors sign in through,
+ * each opening to its own profile. Which of these the menu offers whom is
+ * `settingsSections`'s, tested on its own.
  */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act } from 'react';
+import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { WorkspaceService } from '@shared/core/switch-servers/connection-catalog';
@@ -36,8 +36,15 @@ const switchServers = vi.hoisted(() => ({
   checkConnectorApp: vi.fn(),
   saveConnectorApp: vi.fn(),
   getConnectorAppImpact: vi.fn(),
+  getTrustSettings: vi.fn(),
+  getWorkspaceGuardrails: vi.fn(),
 }));
-const admin = vi.hoisted(() => ({ administers: true, operator: false, servesGateway: false }));
+const admin = vi.hoisted(() => ({
+  administers: true,
+  operator: false,
+  servesGateway: false,
+  organizationAdmin: false,
+}));
 /** The dialogs asked for, by id; each is answered by the test. */
 const modals = vi.hoisted(
   () =>
@@ -63,11 +70,32 @@ vi.mock('@renderer/lib/ipc', () => ({
 }));
 
 vi.mock('@renderer/features/workspaces/workspaces-store', () => ({
-  workspacesStore: { onServerInScope: () => ({ id: 'workspace', name: 'Acme' }) },
+  workspacesStore: {
+    onServerInScope: () => ({
+      id: 'workspace',
+      name: 'Acme',
+      tenantId: 'tenant-1',
+      role: admin.administers ? 'admin' : 'member',
+      organizationRole: admin.organizationAdmin ? 'org_admin' : null,
+    }),
+  },
 }));
 
 vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
-  switchServersStore: { servers: [{ id: 'server', name: 'Dev Server' }] },
+  switchServersStore: {
+    servers: [{ id: 'server', name: 'Dev Server' }],
+    activeServer: {
+      id: 'server',
+      name: 'Dev Server',
+      url: 'https://switch.example.com',
+      dashboardUrl: null,
+    },
+    serverById: () => ({ id: 'server', name: 'Dev Server' }),
+    statusFor: () => ({
+      connected: true,
+      user: { id: 'u', name: 'Ada', role: admin.operator ? 'admin' : 'member' },
+    }),
+  },
 }));
 
 // Connector apps are in the web gateway; Admin keeps them for a Switch without one.
@@ -82,13 +110,13 @@ vi.mock('@renderer/features/switch-servers/workspace-admin', () => ({
 
 /** Stands in for the app's navigation: a tile opens its profile by navigating. */
 const navigation = vi.hoisted(() => {
-  // Opened on the connector switches, which these tests are about.
-  let params: Record<string, string | undefined> = { serverId: 'server', section: 'connectors' };
+  // Opened on the connector switches, which most of these tests are about.
+  let params: Record<string, string | undefined> = { tab: 'connectors' };
   const listeners = new Set<() => void>();
   return {
     params: () => params,
     navigate: (_view: string, next?: Record<string, string | undefined>) => {
-      params = { serverId: 'server', ...next };
+      params = { ...next };
       for (const listener of listeners) listener();
     },
     subscribe: (listener: () => void) => {
@@ -98,7 +126,7 @@ const navigation = vi.hoisted(() => {
       };
     },
     reset: () => {
-      params = { serverId: 'server', section: 'connectors' };
+      params = { tab: 'connectors' };
     },
   };
 });
@@ -114,14 +142,24 @@ vi.mock('@renderer/lib/layout/navigation-provider', async () => {
   };
 });
 
+const openExternalUrl = vi.hoisted(() => vi.fn(async () => true));
+vi.mock('@renderer/lib/open-external', () => ({ openExternalUrl }));
+const openServerPage = vi.hoisted(() => vi.fn(async () => {}));
+vi.mock('@renderer/features/switch-servers/open-server-page', () => ({ openServerPage }));
+
 vi.mock('@renderer/lib/modal/modal-provider', () => ({
   useShowModal: (id: string) => (args: Omit<(typeof modals)[number], 'id'>) =>
     modals.push({ id, ...args }),
   useModalContext: () => ({ setCloseGuard: () => {} }),
 }));
 
-import { adminView } from '@renderer/features/admin/admin-view';
 import { ConnectorAppSetupDialog } from '@renderer/features/admin/connector-app-dialogs';
+import {
+  ConnectorAppsSettingsPage,
+  ConnectorsSettingsPage,
+  DecisionRoutingSettingsPage,
+  GuardrailsSettingsPage,
+} from '@renderer/features/settings/pages/admin-pages';
 import { Dialog, DialogContent } from '@renderer/lib/ui/dialog';
 
 function service(overrides: Partial<WorkspaceService>): WorkspaceService {
@@ -154,6 +192,9 @@ beforeEach(() => {
   admin.administers = true;
   admin.operator = false;
   admin.servesGateway = false;
+  admin.organizationAdmin = false;
+  openExternalUrl.mockClear();
+  openServerPage.mockClear();
   modals.length = 0;
   for (const mock of Object.values(workspaces)) mock.mockReset();
   for (const mock of Object.values(switchServers)) mock.mockReset();
@@ -167,16 +208,25 @@ afterEach(async () => {
   root = null;
 });
 
+/** The Settings tab navigation is on, as Settings draws it beside its menu. */
+function Tab() {
+  const { useSyncExternalStore } = React;
+  const { tab } = useSyncExternalStore(navigation.subscribe, navigation.params);
+  if (tab === 'decision-routing') return <DecisionRoutingSettingsPage />;
+  if (tab === 'connector-apps') return <ConnectorAppsSettingsPage />;
+  if (tab === 'guardrails') return <GuardrailsSettingsPage />;
+  return <ConnectorsSettingsPage />;
+}
+
 async function render(): Promise<HTMLElement> {
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
-  const Panel = adminView.MainPanel;
   await act(async () =>
     root!.render(
       <QueryClientProvider client={client}>
-        <Panel />
+        <Tab />
       </QueryClientProvider>
     )
   );
@@ -191,17 +241,16 @@ function switchFor(page: HTMLElement, name: string): HTMLElement | null {
   return page.querySelector<HTMLElement>(`[aria-label="${name} for this workspace"]`);
 }
 
-it('lists its sections under what they reach, and each service as a tile with who it uses', async () => {
+it('says what a workspace admin can do here, and draws each service as a tile with who it uses', async () => {
   workspaces.getWorkspaceServices.mockResolvedValue(SERVICES);
   const page = await render();
 
   await vi.waitFor(() => expect(tiles(page)).not.toBeNull());
   expect(workspaces.getWorkspaceServices).toHaveBeenCalledWith('workspace');
   expect(page.textContent).toContain('Choose which services people in Acme can connect');
-  const workspace = page.querySelector('nav [role="group"][aria-label="Workspace"]')!;
-  expect(workspace.textContent).toBe('Workspace · AcmeMessaging appsConnectorsDecision routing');
-  expect(workspace.querySelector('[aria-current="page"]')!.textContent).toBe('Connectors');
-  expect(page.querySelector('nav [role="group"][aria-label="Server"]')).toBeNull();
+  expect(page.querySelector('[role="note"]')!.textContent).toBe(
+    'As a workspace admin, you are able to turn each service on or off for everyone in Acme.'
+  );
   expect(tiles(page)!.textContent).toContain('3 members connected · 2 agents use it');
   expect(tiles(page)!.textContent).toContain('Nobody has connected it yet');
 });
@@ -318,19 +367,7 @@ it('says when the server has no workspace switches, rather than drawing none', a
   );
 });
 
-it('tells someone who administers nothing whom to ask, asking the server nothing', async () => {
-  admin.administers = false;
-  const page = await render();
-
-  await vi.waitFor(() =>
-    expect(page.textContent).toContain('Ask a workspace admin to change these.')
-  );
-  expect(workspaces.getWorkspaceServices).not.toHaveBeenCalled();
-  expect(page.textContent).not.toContain('Decision routing');
-  expect(switchServers.getDecisionSettings).not.toHaveBeenCalled();
-});
-
-it('gives the workspace’s admins Decision routing under Workspace, with service connections off too', async () => {
+it('gives the workspace’s admins Decision routing, with service connections off too', async () => {
   featureFlags.get.mockResolvedValueOnce({
     success: true,
     data: {
@@ -356,16 +393,16 @@ it('gives the workspace’s admins Decision routing under Workspace, with servic
       options: { haikuAnthropic: true, haikuBedrock: false },
     },
   });
-  navigation.navigate('admin', { section: 'decision' });
+  navigation.navigate('settings', { tab: 'decision-routing' });
   const page = await render();
 
   await vi.waitFor(() =>
     expect(page.textContent).toContain('This workspace uses the server default')
   );
   expect(switchServers.getDecisionSettings).toHaveBeenCalledWith('workspace');
-  const workspace = page.querySelector('nav [role="group"][aria-label="Workspace"]')!;
-  expect(workspace.textContent).toBe('Workspace · AcmeMessaging appsDecision routing');
-  expect(workspace.querySelector('[aria-current="page"]')!.textContent).toBe('Decision routing');
+  expect(page.querySelector('[role="note"]')!.textContent).toBe(
+    'As a workspace admin, you are able to choose the decision service for every auto-route room in Acme.'
+  );
   expect(workspaces.getWorkspaceServices).not.toHaveBeenCalled();
 });
 
@@ -379,32 +416,143 @@ it('offers no Decision routing on a server without auto-route, asking it nothing
       error: null,
     },
   });
-  workspaces.getWorkspaceServices.mockResolvedValue(SERVICES);
+  navigation.navigate('settings', { tab: 'decision-routing' });
   const page = await render();
 
-  await vi.waitFor(() => expect(tiles(page)).not.toBeNull());
-  const workspace = page.querySelector('nav [role="group"][aria-label="Workspace"]')!;
-  expect(workspace.textContent).toBe('Workspace · AcmeMessaging appsConnectors');
+  await vi.waitFor(() => expect(page.textContent).toContain('Preferences'));
   expect(page.textContent).not.toContain('Decision routing');
   expect(switchServers.getDecisionSettings).not.toHaveBeenCalled();
 });
 
-it('opens Decision routing from its menu entry beside Connectors', async () => {
-  workspaces.getWorkspaceServices.mockResolvedValue(SERVICES);
+it('says so when it cannot read the decision routing, rather than drawing a guess', async () => {
   switchServers.getDecisionSettings.mockResolvedValue({ kind: 'forbidden' });
+  navigation.navigate('settings', { tab: 'decision-routing' });
   const page = await render();
-  await vi.waitFor(() => expect(tiles(page)).not.toBeNull());
-
-  const entry = [...page.querySelectorAll<HTMLElement>('nav button')].find(
-    (button) => button.textContent === 'Decision routing'
-  )!;
-  await act(async () => entry.click());
 
   await vi.waitFor(() =>
     expect(page.textContent).toContain(
       'Only an admin of this workspace can view or change its decision routing.'
     )
   );
+});
+
+const CHECKED = {
+  kind: 'loaded',
+  guardrails: {
+    checking: true,
+    policyId: 'pol_123',
+    policyName: 'Default policy',
+    policyUrl: 'https://app.switchagents.ai/policies/pol_123',
+  },
+};
+
+it('shows a workspace admin which policy checks the workspace, read-only, powered by Switch Trust', async () => {
+  switchServers.getWorkspaceGuardrails.mockResolvedValue(CHECKED);
+  navigation.navigate('settings', { tab: 'guardrails' });
+  const page = await render();
+
+  await vi.waitFor(() =>
+    expect(page.textContent).toContain(
+      'Messages in Acme are checked by the Switch Trust policy Default policy.'
+    )
+  );
+  expect(switchServers.getWorkspaceGuardrails).toHaveBeenCalledWith('workspace');
+  expect(page.querySelector('[role="note"]')!.textContent).toBe(
+    'As a workspace admin, you are able to see which guardrails check Acme. Only organization admins can change them.'
+  );
+  expect(button(/Change in Organization settings/, page)).toBeUndefined();
+  expect(switchServers.getTrustSettings).not.toHaveBeenCalled();
+
+  await act(async () => button(/^View in Workspace settings/, page)!.click());
+  expect(openServerPage).toHaveBeenCalledWith(
+    'server',
+    expect.stringMatching(/\/settings\/guardrails\?.*tenant-1/)
+  );
+  expect(page.textContent).toContain('Powered by Switch Trust.');
+  await act(async () => button(/^Switch Trust$/, page)!.click());
+  expect(openExternalUrl).toHaveBeenCalledWith(
+    'https://www.switchagents.ai/trust',
+    'Could not open Switch Trust'
+  );
+});
+
+it('names running the server, not a workspace role, for an operator who holds none', async () => {
+  admin.administers = false;
+  admin.operator = true;
+  switchServers.getWorkspaceGuardrails.mockResolvedValue(CHECKED);
+  navigation.navigate('settings', { tab: 'guardrails' });
+  const page = await render();
+
+  await vi.waitFor(() =>
+    expect(page.querySelector('[role="note"]')!.textContent).toBe(
+      'As the person who runs Dev Server, you are able to see which guardrails check Acme. Only organization admins can change them.'
+    )
+  );
+});
+
+it('says when nothing checks the workspace', async () => {
+  switchServers.getWorkspaceGuardrails.mockResolvedValue({
+    kind: 'loaded',
+    guardrails: { checking: false, policyId: null, policyName: null, policyUrl: null },
+  });
+  navigation.navigate('settings', { tab: 'guardrails' });
+  const page = await render();
+
+  await vi.waitFor(() =>
+    expect(page.textContent).toContain('No guardrails check messages in Acme yet.')
+  );
+  // The workspace's own Guardrails page says so too, so it is still the way there.
+  expect(button(/^View in Workspace settings/, page)).toBeDefined();
+});
+
+it('sends an organization admin to Organization settings to change them', async () => {
+  admin.organizationAdmin = true;
+  switchServers.getWorkspaceGuardrails.mockResolvedValue(CHECKED);
+  navigation.navigate('settings', { tab: 'guardrails' });
+  const page = await render();
+
+  await vi.waitFor(() => expect(button(/Change in Organization settings/, page)).toBeDefined());
+  expect(page.querySelector('[role="note"]')!.textContent).toBe(
+    'As an organization admin, you are able to change the guardrails for every workspace in your organization.'
+  );
+  expect(button(/^View in Workspace settings/, page)).toBeUndefined();
+  await act(async () => button(/Change in Organization settings/, page)!.click());
+  expect(openServerPage).toHaveBeenCalledWith(
+    'server',
+    expect.stringMatching(/\/settings\/org\/guardrails\?.*tenant-1/)
+  );
+});
+
+it('keeps the whole-server form for whoever runs a server from before organizations set their own', async () => {
+  admin.operator = true;
+  switchServers.getWorkspaceGuardrails.mockResolvedValue({ kind: 'unsupported' });
+  switchServers.getTrustSettings.mockResolvedValue({
+    kind: 'loaded',
+    settings: {
+      endpoint: 'https://trust.example',
+      policyId: 'pol_1',
+      hasApiKey: true,
+      apiKeyLast4: 'ab12',
+      enabled: true,
+    },
+  });
+  navigation.navigate('settings', { tab: 'guardrails' });
+  const page = await render();
+
+  await vi.waitFor(() => expect(page.textContent).toContain('Switch Trust Integration'));
+});
+
+it('tells a workspace admin on such a server who can change them', async () => {
+  switchServers.getWorkspaceGuardrails.mockResolvedValue({ kind: 'unsupported' });
+  navigation.navigate('settings', { tab: 'guardrails' });
+  const page = await render();
+
+  await vi.waitFor(() =>
+    expect(page.textContent).toContain(
+      'Dev Server sets one set of guardrails for the whole server. Whoever runs it can change them.'
+    )
+  );
+  expect(switchServers.getTrustSettings).not.toHaveBeenCalled();
 });
 
 function connectorApp(overrides: Partial<ConnectorApp>): ConnectorApp {
@@ -460,21 +608,18 @@ function button(name: RegExp, within: ParentNode): HTMLButtonElement | undefined
   return [...within.querySelectorAll('button')].find((b) => name.test(b.textContent ?? ''));
 }
 
-it("gives the server's operator Connector apps under Server, the app needing set-up first", async () => {
+it("gives the server's operator Connector apps, the app needing set-up first", async () => {
   admin.operator = true;
-  workspaces.getWorkspaceServices.mockResolvedValue(SERVICES);
   switchServers.getConnectorApps.mockResolvedValue({
     public_url: 'https://switch.example.test',
     apps: [GOOGLE, GITHUB_NOT_SET_UP],
   });
+  navigation.navigate('settings', { tab: 'connector-apps' });
   const page = await render();
-  await vi.waitFor(() => expect(tiles(page)).not.toBeNull());
-
-  const server = page.querySelector('nav [role="group"][aria-label="Server"]')!;
-  expect(server.textContent).toBe('Server · Dev ServerSwitch TrustConnector apps');
-  await act(async () => button(/^Connector apps$/, server)!.click());
-  expect(navigation.params()).toEqual({ serverId: 'server', section: 'apps' });
   await vi.waitFor(() => expect(appTiles(page)).not.toBeNull());
+  expect(page.querySelector('[role="note"]')!.textContent).toBe(
+    'As the person who runs Dev Server, you are able to set up the apps its connectors sign in through.'
+  );
   expect(switchServers.getConnectorApps).toHaveBeenCalledWith('server');
   expect(page.textContent).toContain(
     'Some connectors sign people in through an app you register with the vendor. Set each up once, and every workspace on Dev Server uses it.'
@@ -494,27 +639,6 @@ it("gives the server's operator Connector apps under Server, the app needing set
     mode: 'set_up',
     app: { slug: 'github' },
   });
-});
-
-it('leaves the apps to the web gateway where the server serves one', async () => {
-  admin.operator = true;
-  admin.servesGateway = true;
-  workspaces.getWorkspaceServices.mockResolvedValue(SERVICES);
-  const page = await render();
-  await vi.waitFor(() => expect(tiles(page)).not.toBeNull());
-
-  const server = page.querySelector('nav [role="group"][aria-label="Server"]')!;
-  expect(server.textContent).toBe('Server · Dev ServerSwitch Trust');
-  expect(switchServers.getConnectorApps).not.toHaveBeenCalled();
-});
-
-it('keeps the apps from a workspace admin who does not run the server', async () => {
-  workspaces.getWorkspaceServices.mockResolvedValue(SERVICES);
-  const page = await render();
-  await vi.waitFor(() => expect(tiles(page)).not.toBeNull());
-
-  expect(page.querySelector('nav [role="group"][aria-label="Server"]')).toBeNull();
-  expect(switchServers.getConnectorApps).not.toHaveBeenCalled();
 });
 
 it("opens an app's profile from its tile, and a failed check stays on the tile after", async () => {
@@ -542,16 +666,12 @@ it("opens an app's profile from its tile, and a failed check stays on the tile a
       },
     ],
   });
-  navigation.navigate('admin', { section: 'apps' });
+  navigation.navigate('settings', { tab: 'connector-apps' });
   const page = await render();
   await vi.waitFor(() => expect(appTiles(page)).not.toBeNull());
 
   await act(async () => button(/^Google Workspace/, appTiles(page)!)!.click());
-  expect(navigation.params()).toEqual({
-    serverId: 'server',
-    section: 'apps',
-    app: 'google-workspace',
-  });
+  expect(navigation.params()).toEqual({ tab: 'connector-apps', app: 'google-workspace' });
   await vi.waitFor(() => expect(page.querySelector('h1')?.textContent).toBe('Google Workspace'));
   const credentials = page.querySelector('section dl')!;
   expect([...credentials.querySelectorAll('dt')].map((dt) => dt.textContent)).toEqual([
@@ -571,12 +691,11 @@ it("opens an app's profile from its tile, and a failed check stays on the tile a
   // The fix is now the obvious button.
   expect(button(/^Update secret$/, page)).toBeDefined();
 
-  // The profile's way back, not the side menu's entry of the same name.
   const back = [...page.querySelectorAll('button')].find(
-    (b) => b.textContent === 'Connector apps' && !b.closest('nav')
+    (b) => b.textContent === 'Connector apps'
   )!;
   await act(async () => back.click());
-  expect(navigation.params()).toEqual({ serverId: 'server', section: 'apps' });
+  expect(navigation.params()).toEqual({ tab: 'connector-apps' });
   await vi.waitFor(() => expect(appTiles(page)).not.toBeNull());
   expect(appTiles(page)!.textContent).toContain('Needs attention');
   expect(appTiles(page)!.textContent).toContain('Google refused the secret.');
@@ -585,7 +704,7 @@ it("opens an app's profile from its tile, and a failed check stays on the tile a
 it('says what is missing before an app can be set up, and holds the button', async () => {
   admin.operator = true;
   switchServers.getConnectorApps.mockResolvedValue({ public_url: null, apps: [GITHUB_NOT_SET_UP] });
-  navigation.navigate('admin', { section: 'apps' });
+  navigation.navigate('settings', { tab: 'connector-apps' });
   const page = await render();
 
   await vi.waitFor(() => expect(page.textContent).toContain('Set GATEWAY_PUBLIC_URL first'));

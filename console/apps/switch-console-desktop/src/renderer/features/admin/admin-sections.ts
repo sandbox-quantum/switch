@@ -1,80 +1,33 @@
+import type { SettingsPageTab } from '@renderer/features/settings/settings-tabs';
+
+/**
+ * The sections the Admin page had, before its pages moved into Settings. A
+ * switch-buddy link, a persisted navigation snapshot or an older button may
+ * still name one, so each says which Settings tab it became.
+ */
 export type AdminSection = 'messaging-apps' | 'connectors' | 'decision' | 'switch-trust' | 'apps';
 
-export type AdminScope = 'workspace' | 'server';
-
-export const ADMIN_MENU_LABELS = {
-  'messaging-apps': 'Messaging apps',
-  connectors: 'Connectors',
-  'switch-trust': 'Switch Trust',
-  decision: 'Decision routing',
-  apps: 'Connector apps',
-} as const satisfies Record<AdminSection, string>;
-
-export type AdminGroup = { scope: AdminScope; items: AdminSection[] };
+const SETTINGS_TAB_FOR: Record<AdminSection, SettingsPageTab> = {
+  'messaging-apps': 'messaging-apps',
+  connectors: 'connectors',
+  decision: 'decision-routing',
+  'switch-trust': 'guardrails',
+  apps: 'connector-apps',
+};
 
 /**
- * The Admin menu's entries the signed-in account may use, grouped by what
- * they reach. Each is there only for the role that may use it, so nobody is
- * shown a control the server would refuse.
- *
- * Admin holds only what the web gateway does not have yet, and each entry
- * goes once it does:
- * - Messaging apps: the workspace's side of its apps (replacing a token,
- *   the default app, confirming older links, guided set-up), for its admins.
- *   Your own accounts are linked in Settings.
- * - Connectors: the workspace's connector switches, for its admins, where
- *   the server has service connections on.
- * - Decision routing: which decision service the workspace's auto-route
- *   rooms ask, for its admins, where the server has auto-route
- *   (`decision_routing`) on. It is not about connectors, so it is there
- *   whether or not the server has service connections on.
- * - Switch Trust: the deployment's guardrails, for the server's operator.
- * - Connector apps: the apps connectors sign in through, for the operator of
- *   a Switch that serves no gateway (one this Console runs without Docker),
- *   where the server has service connections on.
- *
- * The server's operator administers every workspace. A server's status is in
- * Settings. A group with nothing in it is left out.
+ * The Settings params that open what an Admin link named: its section's tab,
+ * and the connector app whose profile it opened. A section this build does not
+ * know opens Settings on its first page, where the role-filtered menu offers
+ * whatever the person may use.
  */
-export function adminGroups(person: {
-  administers: boolean;
-  operator: boolean;
-  operatesGatewaylessServer: boolean;
-  serviceConnections: boolean;
-  decisionRouting: boolean;
-}): AdminGroup[] {
-  const { serviceConnections, decisionRouting } = person;
-  const groups: AdminGroup[] = [
-    {
-      scope: 'workspace',
-      items: person.administers
-        ? [
-            'messaging-apps',
-            ...(serviceConnections ? (['connectors'] as const) : []),
-            ...(decisionRouting ? (['decision'] as const) : []),
-          ]
-        : [],
-    },
-    {
-      scope: 'server',
-      items: [
-        ...(person.operator ? (['switch-trust'] as const) : []),
-        ...(serviceConnections && person.operatesGatewaylessServer ? (['apps'] as const) : []),
-      ],
-    },
-  ];
-  return groups.filter((group) => group.items.length > 0);
-}
-
-/**
- * The section to show: the one asked for when the person may use it,
- * otherwise the first they may. Null when they may use none.
- */
-export function shownAdminSection(
-  groups: AdminGroup[],
-  asked: AdminSection | undefined
-): AdminSection | null {
-  const sections = groups.flatMap((group) => group.items);
-  if (asked !== undefined && sections.includes(asked)) return asked;
-  return sections[0] ?? null;
+export function settingsForAdminSection(
+  section: unknown,
+  app?: unknown
+): { tab: SettingsPageTab; app?: string } {
+  const tab =
+    typeof section === 'string' && Object.hasOwn(SETTINGS_TAB_FOR, section)
+      ? SETTINGS_TAB_FOR[section as AdminSection]
+      : 'preferences';
+  return tab === 'connector-apps' && typeof app === 'string' ? { tab, app } : { tab };
 }

@@ -63,7 +63,7 @@ export const CONSOLE_PAGES = {
   invite: { description: 'Invite people to the workspace.' },
   admin: {
     description:
-      "Admin, for the workspace's admins and the server's operator: what the web gateway does not have yet.",
+      "Where Admin was. Its pages are in Switch Console's settings now, and this opens the one each tab became.",
     tabs: ['messaging-apps', 'connectors', 'switch-trust', 'apps'],
   },
   settings: {
@@ -72,6 +72,10 @@ export const CONSOLE_PAGES = {
       'preferences',
       'messaging-apps',
       'clis-models',
+      'connectors',
+      'decision-routing',
+      'guardrails',
+      'connector-apps',
       'api-keys',
       'devices',
       'remote-hosts',

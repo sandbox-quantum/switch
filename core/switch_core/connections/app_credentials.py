@@ -166,7 +166,7 @@ def reads_only(name: str, *, organization: bool) -> str:
     return (
         f"Switch's {name} App lets agents read only, so {name} can't be "
         "granted for writing. Whoever runs Switch can change that in Switch "
-        "Console, under Admin → Connector apps."
+        "Console, under Settings → Connector apps."
     )
 
 

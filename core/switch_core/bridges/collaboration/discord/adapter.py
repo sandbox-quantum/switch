@@ -580,7 +580,8 @@ class DiscordConnectionConfig(BridgeConnectionConfig):
     #: needs a token; the distributed bridge routes through the one shared
     #: connection and carries none — its token is deployment config.
     bot_token: str | None = None
-    guild_id: str
+    #: Discord's API calls a server a guild; its own app calls the id a Server ID.
+    guild_id: str = Field(title="Server ID")
     #: How this bridge's events reach it, and which is decided by which Discord
     #: app the install came from rather than by an operator's preference.
     #:

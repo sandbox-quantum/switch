@@ -299,7 +299,7 @@ class TestAutoRouteCommand:
         await _run(host, "on")
 
         assert posted[-1].startswith("Auto-route needs a decision service.")
-        assert "Switch Console → Admin → Decision routing" in posted[-1]
+        assert "Switch Console → Settings → Decision routing" in posted[-1]
         assert "Nothing was changed" in posted[-1]
         assert not await _on(session_factory, room_id)
 

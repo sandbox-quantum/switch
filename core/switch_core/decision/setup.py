@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 import httpx
 
 from switch_core.decision.client import SETTINGS_CACHE_SECONDS, DynamicDecisionClient
-from switch_core.decision.settings import DecisionAvailability
+from switch_core.decision.settings import DECISION_ROUTING_PAGE, DecisionAvailability
 from switch_core.feature_flags import DECISION_ROUTING
 from switch_core.outbound import guarded_async_client
 
@@ -38,8 +38,9 @@ def build_decision_client(
             "The %r feature flag is on but DECISION_ENDPOINT_URL is not set: "
             "there is no server default, so auto-route is unavailable in every "
             "workspace whose admins have not chosen a decision service in "
-            "Switch Console (Admin → Decision routing), and Haiku is not offered.",
+            "%s, and Haiku is not offered.",
             DECISION_ROUTING,
+            DECISION_ROUTING_PAGE,
         )
     return DynamicDecisionClient(
         session_factory=session_factory,

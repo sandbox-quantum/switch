@@ -201,7 +201,7 @@ CONSOLE_PAGES: Mapping[str, ConsolePage] = {
     "connections": ConsolePage("your connectors"),
     "invite": ConsolePage("the page to invite people to the workspace"),
     "admin": ConsolePage(
-        "the workspace's admin page",
+        "the admin pages in Switch Console's settings",
         tabs={
             "messaging-apps": "the workspace's messaging apps",
             "connectors": "the connectors the workspace offers",
@@ -215,6 +215,10 @@ CONSOLE_PAGES: Mapping[str, ConsolePage] = {
             "preferences": "Switch Console's preferences",
             "messaging-apps": "your messaging app accounts",
             "clis-models": "Switch Console's agent providers",
+            "connectors": "the connectors the workspace offers",
+            "decision-routing": "the workspace's decision routing",
+            "guardrails": "the server's Switch Trust guardrails",
+            "connector-apps": "the apps connectors sign in through",
             "api-keys": "your API keys",
             "devices": "your devices",
             "remote-hosts": "the SSH hosts Switch Console reaches",
