@@ -86,7 +86,8 @@ SESSION_ID_CLAIM = "sid"
 
 REVOKED_SESSIONS = RevokedSessionStore()
 # The one-time sign-ins Switch Console hands a browser
-# (`gateway/browser_handoff.py`).
+# (`gateway/browser_handoff.py`). Signing out of a session signs out the
+# browser sessions it opened, so this module reads them too.
 BROWSER_HANDOFFS = BrowserHandoffStore(session_max_age=SESSION_MAX_AGE)
 
 # The `error` discriminator on the three tenant-resolution failures a client
@@ -455,7 +456,8 @@ async def sign_out_session(
     session: AsyncSession, request: Request, config: SwitchConfig
 ) -> None:
     """Revoke the session the request's cookie belongs to, so that no copy
-    of it is accepted again. Commits.
+    of it is accepted again, and every browser session it handed a sign-in
+    to (`_sign_out_sessions_opened_by`). Commits.
 
     A missing, expired or forged cookie is no session to revoke, and a cookie
     minted before sessions had ids cannot be told apart from the person's
@@ -482,7 +484,33 @@ async def sign_out_session(
     await REVOKED_SESSIONS.revoke(
         session, session_id, expires_at=_auth_time(payload) + SESSION_MAX_AGE
     )
+    await _sign_out_sessions_opened_by(session, session_id)
     await session.commit()
+
+
+async def _sign_out_sessions_opened_by(session: AsyncSession, session_id: str) -> None:
+    """Revoke every browser session `session_id` handed a sign-in to
+    (`gateway/browser_handoff.py`), and any those handed one to in turn, so
+    signing out of Switch Console signs out the browsers it opened. Each is
+    kept revoked as long as a copy of it could be live."""
+    seen = {session_id}
+    opened_by = [session_id]
+    while opened_by:
+        opened = [
+            each
+            for each in await BROWSER_HANDOFFS.lock_sessions_opened_by(
+                session, opened_by
+            )
+            if each.session_id not in seen
+        ]
+        for each in opened:
+            seen.add(each.session_id)
+            await REVOKED_SESSIONS.revoke(
+                session,
+                each.session_id,
+                expires_at=each.signed_in_at + SESSION_MAX_AGE,
+            )
+        opened_by = [each.session_id for each in opened]
 
 
 async def session_signed_out(session: AsyncSession, session_id: str | None) -> bool:

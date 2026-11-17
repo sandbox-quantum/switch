@@ -6,6 +6,7 @@ browser that holds no session, or someone else's, peeks at and redeems it.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -22,6 +23,7 @@ from switch_core.db.models import (
     TENANT_ZERO_ID,
     AuditEvent,
     BrowserHandoff,
+    RevokedSession,
     Tenant,
     TenantMember,
     User,
@@ -31,7 +33,9 @@ from switch_core.db.stores.browser_handoff_store import MINT_LIMIT
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway import dependencies as gw_deps
 from switch_core.gateway.auth import (
+    BROWSER_HANDOFFS,
     JWT_ALGORITHM,
+    REVOKED_SESSIONS,
     SESSION_MAX_AGE,
     create_jwt,
     decode_jwt,
@@ -513,3 +517,143 @@ async def test_no_code_reaches_the_log(
         await _redeem(app, code)
         await _redeem(app, code)
     assert code not in caplog.text
+
+
+# ── Signing out ─────────────────────────────────────────────────────────────
+
+
+async def _me(app: FastAPI, token: str) -> int:
+    async with _client(app, token) as client:
+        return (await client.get("/auth/me")).status_code
+
+
+async def _sign_out(app: FastAPI, token: str) -> None:
+    async with _client(app, token) as client:
+        assert (await client.post("/auth/logout")).status_code == 200
+
+
+async def _open_browser(app: FastAPI, token: str) -> str:
+    """Console opens a page in a browser: the browser's new session cookie."""
+    redeemed = await _redeem(app, await _mint(app, token))
+    assert redeemed.status_code == 200, redeemed.text
+    return str(redeemed.cookies["switch_auth"])
+
+
+async def test_signing_out_of_console_signs_out_the_browsers_it_opened(
+    app: FastAPI,
+    people: SimpleNamespace,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    console = _cookie(people.ada)
+    first = await _open_browser(app, console)
+    second = await _open_browser(app, console)
+    elsewhere = await _open_browser(
+        app, _cookie(people.ada, session_id="another-console")
+    )
+
+    await _sign_out(app, console)
+
+    assert await _me(app, console) == 401
+    assert await _me(app, first) == 401
+    assert await _me(app, second) == 401
+    # A browser another Console session opened stays signed in.
+    assert await _me(app, elsewhere) == 200
+    async with session_factory() as session:
+        revoked = {
+            row.session_id: row.expires_at
+            for row in await session.scalars(select(RevokedSession))
+        }
+    browser_sids = {decode_jwt(t, _KEYRING)["sid"] for t in (first, second)}
+    assert set(revoked) == {_CONSOLE_SID} | browser_sids
+    # Each kept as long as a copy of it could be live.
+    assert set(revoked.values()) == {_SIGNED_IN + SESSION_MAX_AGE}
+
+
+async def test_a_browser_refreshed_before_console_signs_out_is_signed_out_too(
+    app: FastAPI, people: SimpleNamespace
+) -> None:
+    console = _cookie(people.ada)
+    browser = await _open_browser(app, console)
+    async with _client(app, browser) as client:
+        refreshed = (await client.post("/auth/refresh")).cookies["switch_auth"]
+
+    await _sign_out(app, console)
+
+    assert await _me(app, refreshed) == 401
+
+
+async def test_signing_out_in_the_browser_leaves_console_signed_in(
+    app: FastAPI, people: SimpleNamespace
+) -> None:
+    console = _cookie(people.ada)
+    browser = await _open_browser(app, console)
+    other_browser = await _open_browser(app, console)
+
+    await _sign_out(app, browser)
+
+    assert await _me(app, browser) == 401
+    assert await _me(app, console) == 200
+    assert await _me(app, other_browser) == 200
+
+
+async def test_a_browser_s_own_links_are_signed_out_with_console(
+    app: FastAPI, people: SimpleNamespace
+) -> None:
+    """A browser session can ask for a link too; whatever it opens goes when
+    the Console session that opened it signs out."""
+    console = _cookie(people.ada)
+    browser = await _open_browser(app, console)
+    grandchild = await _open_browser(app, browser)
+
+    await _sign_out(app, console)
+
+    assert await _me(app, grandchild) == 401
+
+
+async def test_a_console_cookie_from_before_session_ids_links_nothing(
+    app: FastAPI,
+    people: SimpleNamespace,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """It can still open a browser signed in, but it cannot be signed out of
+    on its own, so nothing ties the browser to it."""
+    claims = decode_jwt(_cookie(people.ada), _KEYRING)
+    del claims["sid"]
+    legacy = _signed(claims)
+    browser = await _open_browser(app, legacy)
+
+    await _sign_out(app, legacy)
+
+    assert await _me(app, browser) == 200
+    [row] = await _rows(session_factory)
+    assert row.console_sid is None
+    async with session_factory() as session:
+        assert list(await session.scalars(select(RevokedSession))) == []
+
+
+async def test_a_redeem_waiting_on_console_s_sign_out_is_refused(
+    app: FastAPI,
+    people: SimpleNamespace,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Console signs out while the browser is redeeming: the redeem waits on
+    the rows the sign-out locked, then finds Console signed out, and no
+    browser session is left behind unrevoked."""
+    code = await _mint(app, _cookie(people.ada))
+    async with session_factory() as signing_out:
+        await REVOKED_SESSIONS.revoke(
+            signing_out, _CONSOLE_SID, expires_at=_SIGNED_IN + SESSION_MAX_AGE
+        )
+        assert (
+            await BROWSER_HANDOFFS.lock_sessions_opened_by(signing_out, [_CONSOLE_SID])
+            == []
+        )
+        redeeming = asyncio.create_task(_redeem(app, code))
+        await asyncio.sleep(0.3)
+        assert not redeeming.done()
+        await signing_out.commit()
+    redeemed = await redeeming
+
+    assert redeemed.status_code == 410
+    assert redeemed.json() == {"detail": ENDED_DETAIL}
+    assert "switch_auth" not in redeemed.cookies

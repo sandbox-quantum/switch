@@ -9,7 +9,9 @@ reads it, drops it from the address, and redeems it
 (`POST /auth/handoff/redeem`) for a session of the browser's own: a new
 session id, Console's workspace, and Console's sign-in time and session
 version, so it never outlives Console's session and ends with "Sign out of
-all devices". `POST /auth/handoff/peek` tells the page whose link it is
+all devices". Signing out of Console's session signs it out too
+(`auth.sign_out_session`); signing out in the browser leaves Console's
+alone. `POST /auth/handoff/peek` tells the page whose link it is
 before spending it, so a browser signed in as someone else asks first.
 
 Peek and redeem take no session, and are checked against the server's own
@@ -262,8 +264,10 @@ async def redeem_handoff(
     if handoff is None:
         await session.rollback()
         raise _expired()
-    # Asked after the row is spent, so a sign-out of Console's session that
-    # committed before this is seen.
+    # Asked after the row is spent, in its transaction: a sign-out of
+    # Console's session either committed before and is seen here, or is
+    # waiting on this row and signs this browser out with it
+    # (`auth.sign_out_session`).
     console_signed_out = await session_signed_out(session, handoff.console_sid)
     user = await user_store.get(session, handoff.user_id)
     # Spent, whatever is decided below.
