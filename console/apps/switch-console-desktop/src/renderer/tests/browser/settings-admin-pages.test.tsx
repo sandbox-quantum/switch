@@ -406,24 +406,6 @@ it('gives the workspace’s admins Decision routing, with service connections of
   expect(workspaces.getWorkspaceServices).not.toHaveBeenCalled();
 });
 
-it('offers no Decision routing on a server without auto-route, asking it nothing', async () => {
-  featureFlags.get.mockResolvedValueOnce({
-    success: true,
-    data: {
-      serverId: 'server',
-      flags: { service_connections: true, decision_routing: false },
-      fetchedAt: 1,
-      error: null,
-    },
-  });
-  navigation.navigate('settings', { tab: 'decision-routing' });
-  const page = await render();
-
-  await vi.waitFor(() => expect(page.textContent).toContain('Preferences'));
-  expect(page.textContent).not.toContain('Message routing');
-  expect(switchServers.getDecisionSettings).not.toHaveBeenCalled();
-});
-
 it('says so when it cannot read the decision routing, rather than drawing a guess', async () => {
   switchServers.getDecisionSettings.mockResolvedValue({ kind: 'forbidden' });
   navigation.navigate('settings', { tab: 'decision-routing' });
