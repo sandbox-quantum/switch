@@ -2490,6 +2490,37 @@ describe('sign-up support', () => {
     }
   );
 
+  it('says an address that redirects elsewhere is not a Switch server', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response('<html><title>302 Found</title></html>', {
+        status: 302,
+        headers: { 'content-type': 'text/html', location: 'https://elsewhere.example.org/x' },
+      })
+    );
+    await expect(fetchAuthConfig(SERVER)).rejects.toMatchObject({
+      name: 'RedirectedAddressError',
+      message:
+        "switch.example.com isn't a Switch server: it redirects to elsewhere.example.org. " +
+        'Check the address.',
+    });
+  });
+
+  it('says to use https when plain http redirects to the same host', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(null, {
+        status: 301,
+        headers: { location: 'https://switch.example.com/gateway/auth/config' },
+      })
+    );
+    await expect(
+      fetchAuthConfig({ ...(SERVER as object), url: 'http://switch.example.com' } as never)
+    ).rejects.toMatchObject({
+      name: 'RedirectedAddressError',
+      message:
+        'switch.example.com only answers over https. Enter the address as https://switch.example.com.',
+    });
+  });
+
   it('reports a proxy’s 502 page as the failure it is, not as a missing route', async () => {
     fetchMock.mockResolvedValueOnce(
       new Response('<html>Bad Gateway</html>', {
@@ -2500,6 +2531,8 @@ describe('sign-up support', () => {
     await expect(fetchAuthConfig(SERVER)).rejects.toMatchObject({
       name: 'GatewayError',
       status: 502,
+      message: 'Switch gateway returned 502',
+      body: '<html>Bad Gateway</html>',
     });
   });
 

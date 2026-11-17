@@ -148,7 +148,7 @@ import type { OrganizationRole, WorkspaceRole } from '@shared/core/workspaces/wo
 import { extractAuthCookie, reauthenticateManagedServer, refreshSession } from './auth';
 import { consoleIdentityHeaders } from './console-identity';
 import { describeNetworkFailure } from './network-failure';
-import { NoManagementApiError } from './server-address';
+import { NoManagementApiError, RedirectedAddressError } from './server-address';
 import { getSessionCookie, setSessionCookie } from './servers-store';
 import { noteSessionEnded } from './session-ended';
 
@@ -446,6 +446,11 @@ export async function gatewayRequest(
   if (answeredWithPage(response)) {
     throw new NoManagementApiError(server.name, server.url, response.status);
   }
+  const location = response.headers.get('location');
+  if (response.status >= 300 && response.status < 400 && location) {
+    await response.body?.cancel();
+    throw new RedirectedAddressError(server.url, location);
+  }
   return response;
 }
 
@@ -456,9 +461,12 @@ export async function gatewayRequest(
  * with no route for the path) is not from it. A proxy's 502 page means the
  * server is down, which the caller reports as it is.
  */
+function isHtmlResponse(response: Response): boolean {
+  return (response.headers.get('content-type') ?? '').toLowerCase().startsWith('text/html');
+}
+
 function answeredWithPage(response: Response): boolean {
-  const html = (response.headers.get('content-type') ?? '').toLowerCase().startsWith('text/html');
-  return html && (response.ok || response.status === 404);
+  return isHtmlResponse(response) && (response.ok || response.status === 404);
 }
 
 /** The `retryable` beside `detail` in a coded refusal, or undefined without one. */
@@ -483,9 +491,12 @@ export async function gatewayFetch(
   });
   if (!response.ok) {
     const body = await response.text().catch(() => '');
+    // A page of markup says nothing a person can read in a sentence; the body
+    // is still kept whole on the error for whoever reads it.
+    const shown = isHtmlResponse(response) ? '' : body;
     throw new GatewayError(
       'http',
-      `Switch gateway returned ${response.status}${body ? `: ${body}` : ''}`,
+      `Switch gateway returned ${response.status}${shown ? `: ${shown}` : ''}`,
       response.status,
       parseErrorDetail(body),
       parseErrorCode(body),
