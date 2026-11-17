@@ -1792,6 +1792,13 @@ class DiscordAdapter(PlatformAdapter):
             f"or post `!link-account {code}` there."
         )
 
+    @classmethod
+    def unlink_account_instructions(
+        cls, name: str, connection_config: Mapping[str, object]
+    ) -> str:
+        option = COMMANDS_BY_NAME["unlink-account"].args_spec[0].name
+        return f"run `/unlink-account {option}:{name}` in a server channel Switch is in"
+
     async def answer_command(self, command: InboundCommand, text: str) -> None:
         """Answer an account command where only its sender sees it.
 
