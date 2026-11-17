@@ -5,6 +5,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   coreFailureLine,
+  lastErrorRecord,
   coreInterpreter,
   describeExit,
   failureLine,
@@ -72,6 +73,31 @@ it('does not take an error the server logged and ran on past for why it stopped'
   expect(failureLine(log)).toBeNull();
 });
 
+it("gives a taken port's ERROR record as the reason when no traceback follows", () => {
+  const log = [
+    'INFO:     Started server process [4242]',
+    'INFO:     Waiting for application startup.',
+    "ERROR:    [Errno 48] error while attempting to bind on address ('127.0.0.1', 8000): address already in use",
+    'INFO:     Waiting for application shutdown.',
+    'INFO:     Application shutdown complete.',
+  ].join('\n');
+  expect(failureLine(log)).toBeNull();
+  expect(lastErrorRecord(log)).toBe(
+    "[Errno 48] error while attempting to bind on address ('127.0.0.1', 8000): address already in use"
+  );
+});
+
+it('does not take an ERROR record far up the log for the reason', () => {
+  const log = [
+    '2026-11-16T09:00:00 ERROR [switch_core.bridges] mattermost bridge failed; retrying in 60s',
+    ...Array.from(
+      { length: 6 },
+      (_, i) => `2026-11-16T09:00:0${i} INFO  [uvicorn.access] "GET /health" 200`
+    ),
+  ].join('\n');
+  expect(lastErrorRecord(log)).toBeNull();
+});
+
 it('describes an exit by its code or signal', () => {
   expect(describeExit({ code: 1, signal: null })).toBe('exited with code 1');
   expect(describeExit({ code: null, signal: 'SIGKILL' })).toBe('was ended by SIGKILL');
@@ -127,7 +153,7 @@ it.skipIf(process.platform === 'win32')(
         new AbortController().signal
       );
       expect(healthy).toBe(false);
-      expect(await coreFailureLine(layout)).toBe(
+      expect(await coreFailureLine(layout, null)).toBe(
         'exited with code 1: SyntaxError: from __future__ imports must occur at the beginning of the file'
       );
     } finally {
@@ -165,7 +191,7 @@ it.skipIf(process.platform === 'win32')(
       while ((await runningCore(layout)) !== null) {
         await new Promise((resolve) => setTimeout(resolve, 100));
       }
-      expect(await coreFailureLine(layout)).toBe('was ended by SIGKILL');
+      expect(await coreFailureLine(layout, record.pid)).toBe('was ended by SIGKILL');
     } finally {
       await rm(root, { recursive: true, force: true });
     }
