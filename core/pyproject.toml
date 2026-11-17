@@ -64,6 +64,7 @@ switch-orgs = "switch_core.organizations_admin:main"
 switch-accounts = "switch_core.accounts_admin:main"
 switch-connector-apps = "switch_core.connector_apps_admin:main"
 switch-promote-org-admin = "switch_core.promote_org_admin:main"
+switch-suspend = "switch_core.suspension_admin:main"
 
 [build-system]
 requires = ["hatchling"]

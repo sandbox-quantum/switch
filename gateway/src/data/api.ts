@@ -78,7 +78,17 @@ export function canArchiveRoom(room: RoomSummary): boolean {
   return room.can_archive ?? room.can_manage;
 }
 
+export interface AgentSuspension {
+  suspended_at: string;
+  reason: string | null;
+  by_role: 'owner' | 'admin' | 'operator';
+  // Suspended because its owner's account is.
+  with_owner: boolean;
+}
+
 export interface AgentSummary {
+  // Null unless the agent is suspended; then it is refused everything.
+  suspension: AgentSuspension | null;
   id: string;
   name: string;
   // The label people read ("Notes Helper"); null when none was chosen and the

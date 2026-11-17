@@ -61,6 +61,7 @@ from switch_core.db.models import (
     ApiKey,
     MachineWorkspace,
     ServiceTokenIssuance,
+    User,
     require_tenant_id,
 )
 from switch_core.db.models import AgentDefinition as AgentDefinitionRow
@@ -482,6 +483,14 @@ class ManagementService:
             or key.expired(self.now())
         ):
             raise invalid
+        if await session.scalar(
+            select(User.suspended_at).where(User.id == key.user_id)
+        ):
+            raise ManagementError(
+                403,
+                reason_codes.ACCOUNT_SUSPENDED,
+                "The account this enrollment code belongs to is suspended.",
+            )
         consumed = await self.controllers.consume_enrollment_code(
             session, tenant_id, key.id, self.now()
         )
@@ -1588,6 +1597,9 @@ class ManagementService:
                 row,
                 controller,
                 workspace_archived=await is_archived(session, tenant_id),
+                agent_suspended=await self.definitions.agent_suspended(
+                    session, tenant_id, row.agent_id
+                ),
             )
         )
 
@@ -1622,6 +1634,34 @@ class ManagementService:
         await session.commit()
         for row in placed:
             await self._bind(session, tenant_id, row)
+        self._nudge(tenant_id, revisions)
+
+    async def agents_suspension_changed(
+        self,
+        session: AsyncSession,
+        tenant_id: str,
+        agent_ids: list[str],
+        revisions: dict[str, int],
+    ) -> None:
+        """The agents were suspended or let back in, and that has committed
+        with their controllers' revisions moved on (`accounts/suspension.py`):
+        Core's bindings follow, here and in every other process, and each
+        controller pulls its assignment, which has a suspended agent stopped
+        and any other as its owner set it (`assignment_entry`)."""
+        rows = [
+            row
+            for agent_id in agent_ids
+            if (
+                row := await self.definitions.get_for_agent(
+                    session, tenant_id, agent_id
+                )
+            )
+            is not None
+            and row.controller_id is not None
+        ]
+        for row in rows:
+            await self._bind(session, tenant_id, row)
+        await session.commit()
         self._nudge(tenant_id, revisions)
 
     async def check_new_managed_agent(

@@ -104,6 +104,15 @@ class AuditAction(StrEnum):
     # link, opening a dashboard page (`details.next`).
     BROWSER_HANDOFF = "auth.browser_handoff"
 
+    # Suspending and lifting a suspension (`accounts/suspension.py`), and
+    # re-issuing an agent's key on request; `details.reason` says why. A
+    # person's are recorded in every workspace they are in or own agents in.
+    AGENT_SUSPENDED = "agent.suspended"
+    AGENT_UNSUSPENDED = "agent.unsuspended"
+    AGENT_KEY_ROTATED = "agent.key_rotated"
+    USER_SUSPENDED = "user.suspended"
+    USER_UNSUSPENDED = "user.unsuspended"
+
 
 class OrganizationAuditAction(StrEnum):
     ORGANIZATION_CREATED = "organization.created"
@@ -191,6 +200,10 @@ class ServerAuditAction(StrEnum):
     # or released it again (`switch-cloud-machine`).
     CLOUD_MACHINE_ADMIN_STOPPED = "cloud_machine.admin_stopped"
     CLOUD_MACHINE_ADMIN_RELEASED = "cloud_machine.admin_released"
+    # An account suspended or let back in (`accounts/suspension.py`), by
+    # whoever did it; `details.reason` says why.
+    USER_SUSPENDED = "user.suspended"
+    USER_UNSUSPENDED = "user.unsuspended"
 
 
 async def record_audit_event(

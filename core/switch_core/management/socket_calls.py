@@ -39,6 +39,7 @@ from typing import Any
 from fastapi import HTTPException
 from pydantic import TypeAdapter
 
+from switch_core.accounts.suspension import agent_suspended_message
 from switch_core.archived_workspace import WORKSPACE_ARCHIVED
 from switch_core.bridges.agent.api.operations import (
     call_operation,
@@ -174,6 +175,16 @@ async def _run(
             403,
             error_body(
                 reason_codes.WORKSPACE_ARCHIVED, WORKSPACE_ARCHIVED, retryable=False
+            ),
+        )
+    if await authenticator.agent_suspended(controller.tenant_id, call.agent_id):
+        return _result(
+            id_,
+            403,
+            error_body(
+                reason_codes.AGENT_SUSPENDED,
+                agent_suspended_message(call.agent_id),
+                retryable=False,
             ),
         )
 

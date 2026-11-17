@@ -392,7 +392,21 @@ class RoomGroupUpdateRequest(BaseModel):
 # ── Agents ────────────────────────────────────────────────────────────────────
 
 
+class AgentSuspension(BaseModel):
+    """An agent's suspension (`accounts/suspension.py`). `by_role` is who
+    made it (`owner`, `admin` or `operator`), which decides who may lift it;
+    `with_owner` says it came from suspending the agent's owner, and is lifted
+    with theirs."""
+
+    suspended_at: datetime
+    reason: str | None
+    by_role: str
+    with_owner: bool
+
+
 class AgentSummary(BaseModel):
+    # Null unless the agent is suspended.
+    suspension: AgentSuspension | None
     id: str
     name: str
     description: str
@@ -2858,3 +2872,28 @@ class ErasureDetail(BaseModel):
     requested_by_user_id: str | None
     created_at: datetime
     completed_at: datetime | None
+
+
+# ── Suspension ───────────────────────────────────────────────────────────────
+
+
+class SuspendRequest(BaseModel):
+    """Why the agent or person is suspended, kept on it and in the audit log."""
+
+    reason: str = Field(min_length=1, max_length=2000)
+
+
+class AgentSuspensionResponse(BaseModel):
+    agent_id: str
+    # Null once the agent is no longer suspended.
+    suspension: AgentSuspension | None
+
+
+class PersonSuspensionResponse(BaseModel):
+    user_id: str
+    suspended: bool
+    suspended_at: datetime | None
+    reason: str | None
+    by_role: str | None
+    # The agents suspended, or let back in, with the person, by workspace.
+    agents: dict[str, list[str]]

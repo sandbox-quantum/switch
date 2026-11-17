@@ -30,6 +30,7 @@ from sqlalchemy.pool import NullPool
 from uvicorn.main import STARTUP_FAILURE
 
 from switch_core.accounts.organization_purge import OrganizationPurge
+from switch_core.accounts.suspension import SuspensionEffects
 from switch_core.announcer import Announcer
 from switch_core.bridges.agent.app import create_agent_bridge_app
 from switch_core.bridges.agent.protocol.agent_connections import (
@@ -1553,6 +1554,15 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
     )
     agent_bridge_app.state.service_broker = service_broker
     gateway_app.state.service_broker = service_broker
+    # What suspending an agent or a person, or lifting it, sets going once it
+    # commits (`gateway/suspension.py`).
+    gateway_app.state.suspension_effects = SuspensionEffects(
+        session_factory=session_factory,
+        connections=protocol.connections,
+        api_key_cache=protocol.api_key_cache,
+        broker=service_broker,
+        management=management.service if management is not None else None,
+    )
     # A bus skips signals carrying its own process id, as acted on locally
     # already; the purge acts on nothing here, so it signals under its own id
     # for this process to hear too, as the CLI does.

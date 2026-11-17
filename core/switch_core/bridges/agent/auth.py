@@ -11,11 +11,18 @@ from typing import Protocol
 import jwt
 from fastapi import HTTPException
 from jwt import PyJWKClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from starlette.requests import HTTPConnection
 from starlette.responses import JSONResponse, Response
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from switch_core.accounts.suspension import (
+    ACCOUNT_SUSPENDED_CODE,
+    ACCOUNT_SUSPENDED_MESSAGE,
+    AGENT_SUSPENDED_CODE,
+    agent_suspended_message,
+)
 from switch_core.archived_workspace import WORKSPACE_ARCHIVED, is_archived
 from switch_core.bridges.agent.api_key_cache import ApiKeyCache
 from switch_core.bridges.agent.controller_auth_cache import ControllerAuthCache
@@ -27,7 +34,7 @@ from switch_core.bridges.agent.registration_bootstrap import REGISTRATION_KEY_TY
 from switch_core.bridges.collaboration.install import (
     PUBLIC_PATH_PREFIX as MESSAGING_INSTALL_PREFIX,
 )
-from switch_core.db.models import Agent, ApiKey
+from switch_core.db.models import Agent, ApiKey, User
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
@@ -49,6 +56,15 @@ class ApiKeyExpired(Exception):
 
     def __init__(self, api_key: ApiKey) -> None:
         super().__init__(f"API key {api_key.id} expired at {api_key.expires_at}")
+        self.api_key = api_key
+
+
+class AccountSuspendedError(Exception):
+    """A presented key belongs to a suspended account
+    (`accounts/suspension.py`)."""
+
+    def __init__(self, api_key: ApiKey) -> None:
+        super().__init__(f"API key {api_key.id} belongs to a suspended account")
         self.api_key = api_key
 
 
@@ -335,8 +351,22 @@ class BearerAuthMiddleware:
                 scope, receive, send
             )
             return
+        except AccountSuspendedError as exc:
+            logger.warning(
+                "Refused API key %s (%s) of suspended user %s",
+                exc.api_key.id,
+                exc.api_key.type,
+                exc.api_key.user_id,
+            )
+            await _controller_refusal(
+                ACCOUNT_SUSPENDED_CODE, ACCOUNT_SUSPENDED_MESSAGE, 403
+            )(scope, receive, send)
+            return
 
         if agent is not None:
+            if agent.suspended_at is not None:
+                await _refuse_suspended(agent, scope, receive, send)
+                return
             if (
                 self._controller_auth is not None
                 and self._controller_auth.presence.is_bound(agent.id)
@@ -502,6 +532,9 @@ class BearerAuthMiddleware:
                 NOT_ASSIGNED, f"Agent {agent_id} does not exist.", 403
             )(scope, receive, send)
             return
+        if agent.suspended_at is not None:
+            await _refuse_suspended(agent, scope, receive, send)
+            return
 
         scope["agent"] = agent
         scope["agent_id"] = agent.id
@@ -589,9 +622,15 @@ class BearerAuthMiddleware:
                 raise WorkspaceArchivedError(tenant_id)
             if api_key.type != "agent":
                 agent = None
+                if await session.scalar(
+                    select(User.suspended_at).where(User.id == api_key.user_id)
+                ):
+                    raise AccountSuspendedError(api_key)
             session.expunge_all()
 
-        if agent is not None:
+        # A suspended agent is refused on every request, and not remembered,
+        # so it is let in again as soon as the suspension is lifted.
+        if agent is not None and agent.suspended_at is None:
             self._api_key_cache.put(token_hash, api_key, agent)
         return api_key, agent
 
@@ -619,6 +658,15 @@ class BearerAuthMiddleware:
             if await is_archived(session, tenant_id):
                 raise WorkspaceArchivedError(tenant_id)
             return await self._agent_store.get_by_oauth_client_id(session, client_id)
+
+
+async def _refuse_suspended(
+    agent: Agent, scope: Scope, receive: Receive, send: Send
+) -> None:
+    logger.info("Refused suspended agent %s", agent.id)
+    await _controller_refusal(
+        AGENT_SUSPENDED_CODE, agent_suspended_message(agent.id), 403
+    )(scope, receive, send)
 
 
 def _controller_refusal(code: str, message: str, status_code: int) -> ASGIApp:

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import re
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.archived_workspace import is_archived
@@ -30,6 +31,7 @@ from switch_core.bridges.agent.protocol.controller_presence import (
     Binding,
     ControllerPresence,
 )
+from switch_core.db.models import Agent
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_controller_store import AgentControllerStore
 from switch_core.db.tenant_lookup import tenant_of_api_key
@@ -153,6 +155,27 @@ class ManagementAuthenticator:
             return False
         async with tenant_session(self._session_factory, binding.tenant_id) as session:
             return await is_archived(session, binding.tenant_id)
+
+    async def agent_suspended(self, tenant_id: str, agent_id: str) -> bool:
+        """Whether the agent a controller acts for is suspended
+        (`accounts/suspension.py`), when its controller may not act for it,
+        as its own key may not. From the controller-token cache when it holds
+        the agent's row, which a change to the row drops."""
+        agent = self._auth_cache.agent(tenant_id, agent_id)
+        if agent is None:
+            ticket = self._auth_cache.ticket()
+            async with tenant_session(self._session_factory, tenant_id) as session:
+                agent = await session.scalar(
+                    select(Agent).where(
+                        Agent.tenant_id == tenant_id, Agent.id == agent_id
+                    )
+                )
+                if agent is not None:
+                    session.expunge(agent)
+            if agent is None:
+                return False
+            self._auth_cache.put_agents(tenant_id, [agent], ticket)
+        return agent.suspended_at is not None
 
     async def tenant_of_secret(self, secret: str) -> str | None:
         """The tenant an enrollment code or controller credential belongs to,

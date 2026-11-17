@@ -48,6 +48,10 @@ NOT_FOUND = "not_found"
 VALIDATION_ERROR = "validation_error"
 # The workspace is archived: nothing new is set up in it until it is restored.
 WORKSPACE_ARCHIVED = "workspace_archived"
+# The agent, or the account, is suspended (`accounts/suspension.py`); Core's
+# bearer middleware names the same strings.
+AGENT_SUSPENDED = "agent_suspended"
+ACCOUNT_SUSPENDED = "account_suspended"
 
 ALL_REASON_CODES = frozenset(
     {
@@ -87,5 +91,7 @@ ALL_REASON_CODES = frozenset(
         NOT_FOUND,
         VALIDATION_ERROR,
         WORKSPACE_ARCHIVED,
+        AGENT_SUSPENDED,
+        ACCOUNT_SUSPENDED,
     }
 )

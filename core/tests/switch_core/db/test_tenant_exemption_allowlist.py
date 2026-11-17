@@ -135,6 +135,13 @@ _ALLOWED_MODULES = {
     # holds no membership. Everything it then reads or deletes in a workspace
     # is bound to that workspace.
     "switch_core.accounts.organization_purge",
+    # Suspending a person suspends every agent they own, in every workspace,
+    # their former ones included, and an admin may suspend them only if they
+    # administer every workspace the person belongs to: enumerate, then read
+    # and write each workspace's agents with it bound. The operator's command
+    # line also finds an agent named by id alone the same way.
+    "switch_core.accounts.suspension",
+    "switch_core.suspension_admin",
     # Enumerating tenants at boot, and starting one bridge by id from a
     # context bound to somebody else's tenant.
     "switch_core.clients.client_lifecycle_service",
@@ -283,6 +290,12 @@ _RAW_SESSION_FACTORY_MODULES = {
     # `users` row (`rls_ddl.GLOBAL_TABLES`) for the organizations they may
     # be left in; the workspace and organization it reads next are bound.
     "switch_core.gateway.organizations",
+    # Suspending a person, or lifting it, reads and writes their `users` row,
+    # which is global (`rls_ddl.GLOBAL_TABLES`); every workspace whose agents
+    # it touches is bound. The gateway's suspension routes read the same row
+    # back for their answer.
+    "switch_core.accounts.suspension",
+    "switch_core.gateway.suspension",
     # The WorkOS mirror reads and moves its cursor (`directory_event_cursors`)
     # and reads `oidc_identities` to match people, both global
     # (`rls_ddl.GLOBAL_TABLES`); every organization it changes is bound.
