@@ -77,6 +77,7 @@ export const ProviderSetup = observer(function ProviderSetup({
             onStart={() => setup.start(setup.selected!)}
             onSignIn={() => void setup.signIn(setup.selected!)}
             onCancelSignIn={setup.cancelSignIn}
+            onSignInCode={(code) => void setup.sendSignInCode(code)}
             checked={setup.checked}
             onInstall={() => void setup.install(setup.selected!)}
             installFailed={setup.installFailed === setup.selected.id}

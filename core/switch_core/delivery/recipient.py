@@ -33,6 +33,7 @@ from sqlalchemy import select
 from switch_core.attachments import parse_attachment_group
 from switch_core.authz import ORGANIZATION_ADMIN_TENANT_ROLE, TENANT_ADMIN_ROLES
 from switch_core.bridges.agent.commands import (
+    AGENT_GREETING_KEY,
     AGENT_GREETINGS,
     COMMANDS_BY_NAME,
     _addressed_by_name_or_role,
@@ -1325,6 +1326,7 @@ class AgentRecipient:
             )
             return
         opening = opening_message_for(meta, self.agent.id)
+        extra_content: dict[str, object] | None = None
         if opening is not None:
             greeting = opening
         elif meta.console_chat:
@@ -1333,8 +1335,13 @@ class AgentRecipient:
             greeting = f"Hi! I'm {name} — how can I help?"
         else:
             greeting = random.choice(AGENT_GREETINGS).format(name=name)
+            extra_content = {AGENT_GREETING_KEY: True}
         await self.actor.send_message(
-            self._room.room_id, greeting, format="markdown", metered=False
+            self._room.room_id,
+            greeting,
+            format="markdown",
+            metered=False,
+            extra_content=extra_content,
         )
 
     # ── Commands ──────────────────────────────────────────────────────────────

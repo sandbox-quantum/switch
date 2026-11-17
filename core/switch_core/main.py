@@ -200,7 +200,7 @@ from switch_core.delivery.router import (
     MessageRouter,
     sweep_pending_decisions,
 )
-from switch_core.feature_flags import AGENT_MANAGEMENT, SWITCH_BUDDY
+from switch_core.feature_flags import SWITCH_BUDDY
 from switch_core.gateway.app import create_gateway_app
 from switch_core.gateway.auth import hash_password
 from switch_core.gateway.cloud_controllers import revoke_machine_controller
@@ -502,7 +502,7 @@ _HAND_OVER_SECONDS = 10.0
 async def _release_process(
     ownership: Ownership,
     connections: SharedConnections,
-    management: Management | None,
+    management: Management,
     lease: ProcessLease,
 ) -> None:
     """Hand the work this process owns to the others, record the agent
@@ -534,8 +534,7 @@ async def _release_process(
         async with asyncio.timeout(_RELEASE_SECONDS):
             try:
                 await connections.flush()
-                if management is not None:
-                    await management.flush()
+                await management.flush()
             finally:
                 await lease.stop()
                 ownership.gone()
@@ -1202,9 +1201,10 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
         frontend_base_url=config.dashboard_base_url,
         follow_the_conversation_enabled=config.follow_the_conversation_enabled,
         decision_availability=decision_client.availability,
+        feature_flags=config.feature_flags,
     )
 
-    # ── Agent management (off unless the agent_management flag is on) ─────────
+    # ── Agent management ───────────────────────────────────────────────────────
     # Built before the agent bridge app because its authenticator is the bearer
     # middleware's controller branch; its routes are installed once both apps
     # exist, below.
@@ -1252,7 +1252,7 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
         approval_outcomes=ApprovalOutcomes(
             session_activity_listener, AgentSessionActivityService(session_factory)
         ),
-        controller_auth=management.authenticator if management is not None else None,
+        controller_auth=management.authenticator,
         connections=connections,
         room_access=room_access,
         telemetry=telemetry,
@@ -1318,6 +1318,7 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
             ),
             webhook_secret=config.telegram_app_webhook_secret,
             on_connected=_attach_shared_telegram_bridges,
+            feature_flags=config.feature_flags,
         )
         collab_lifecycle.reserve_resource(
             bot_resource(telegram_app.bot_id), "Telegram app bot"
@@ -1369,8 +1370,6 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
         usage_store=usage_store,
         id_server_name=config.id_server_name,
         media_max_bytes=config.agent_media_max_bytes,
-        agent_chats_enabled=config.agent_chats_enabled,
-        group_chats_enabled=config.group_chats_enabled,
         buddy_slack_handoff_enabled=config.buddy_slack_handoff_enabled,
         connections=connections,
         trust_client=trust_client,
@@ -1380,14 +1379,11 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
     # Changes to people's chats made in another process wake the Console
     # streams held here too (`chats/signals.py`).
     ChatSignals(service=chat_service, bus=signal_bus)
+    room_service.use_chats(chat_service)
     room_service.on_room_agents_changed(chat_service.sync_room)
     protocol.set_room_agents_listener(room_service.room_agents_changed)
     protocol.set_agent_profile_listener(chat_service.agent_changed)
-    protocol.set_member_adder(
-        chat_service.add_member,
-        chat_service.require_can_join,
-        group_chats_enabled=chat_service.group_chats_enabled,
-    )
+    protocol.set_member_adder(chat_service.add_member, chat_service.require_can_join)
     chat_service.on_agent_room_changed(room_changes.rooms_changed)
     room_service.on_room_changed(chat_service.room_changed)
 
@@ -1500,25 +1496,22 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
         tags=["bridge-webhooks"],
     )
 
-    if management is not None:
-        management.install(
-            agent_bridge_app=agent_bridge_app,
-            gateway_app=gateway_app,
-            protocol=protocol,
-        )
-        # What deleting an account needs of it: revoking the person's machines.
-        gateway_app.state.controller_revoker = management.service
-        # A budget route that changes the daily AI cap nudges the
-        # workspace's hosted controllers, without importing management itself.
-        gateway_app.state.assignment_nudge = (
-            management.service.signals.assignment_changed
-        )
-        # Before the bridge serves: until Core knows which agents a controller
-        # runs, their own keys would be let in and their presence misread.
-        await management.load_bindings()
-        # And which controllers the other processes hold, so their agents do
-        # not read offline here until the signal bus has connected.
-        await management.load_connections()
+    management.install(
+        agent_bridge_app=agent_bridge_app,
+        gateway_app=gateway_app,
+        protocol=protocol,
+    )
+    # What deleting an account needs of it: revoking the person's machines.
+    gateway_app.state.controller_revoker = management.service
+    # A budget route that changes the daily AI cap nudges the
+    # workspace's hosted controllers, without importing management itself.
+    gateway_app.state.assignment_nudge = management.service.signals.assignment_changed
+    # Before the bridge serves: until Core knows which agents a controller
+    # runs, their own keys would be let in and their presence misread.
+    await management.load_bindings()
+    # And which controllers the other processes hold, so their agents do
+    # not read offline here until the signal bus has connected.
+    await management.load_connections()
 
     # What archiving or restoring a workspace sets going once it commits
     # (`gateway/organizations.py`).
@@ -1723,27 +1716,18 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
             )
             shared_connections_task = asyncio.create_task(shared_connections.run())
             cursor_writer_task = asyncio.create_task(cursor_writer.run())
-            management_task = (
-                asyncio.create_task(management.run())
-                if management is not None
-                else None
-            )
+            management_task = asyncio.create_task(management.run())
             # Once per start, in the background: a new release may bring a
             # new revision of an official template, and the agents an older
             # one created are brought up to it (`template_updates`).
-            template_updates_task = (
-                asyncio.create_task(
-                    TemplateUpdates(
-                        engine=engine,
-                        session_factory=session_factory,
-                        management=management.service,
-                        protocol=protocol,
-                        agent_management=config.feature_flags[AGENT_MANAGEMENT],
-                        switch_buddy=config.feature_flags[SWITCH_BUDDY],
-                    ).run(tenant_ids)
-                )
-                if management is not None
-                else None
+            template_updates_task = asyncio.create_task(
+                TemplateUpdates(
+                    engine=engine,
+                    session_factory=session_factory,
+                    management=management.service,
+                    protocol=protocol,
+                    switch_buddy=config.feature_flags[SWITCH_BUDDY],
+                ).run(tenant_ids)
             )
             # Turns of a box that never came back: only where agents run on
             # controllers at all.
@@ -1817,10 +1801,8 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
                 if snapshot_task is not None:
                     snapshot_task.cancel()
                 shared_connections_task.cancel()
-                if management_task is not None:
-                    management_task.cancel()
-                if template_updates_task is not None:
-                    template_updates_task.cancel()
+                management_task.cancel()
+                template_updates_task.cancel()
                 ownership_task.cancel()
                 # The lease goes on being renewed while the owned work is
                 # handed over, which can take a few seconds: it must not lapse
@@ -1900,6 +1882,7 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
             members=config.discord_app_members,
             install_service=install_service,
             on_connected=_attach_shared_discord_bridges,
+            feature_flags=config.feature_flags,
         )
         collab_lifecycle.add_bridge_starting_listener(discord_gateway.attach_if_live)
         discord_gateway.own(ownership)
@@ -1935,6 +1918,7 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
     # same missing client.
     async with boot_lock(config):
         await room_service.reconcile_room_clients()
+        await room_service.retire_bundled_mattermost_bridges()
 
     logger.info(
         "Switch is running on http://%s:%d", config.server_host, config.server_port

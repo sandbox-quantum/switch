@@ -1,5 +1,5 @@
 {
-  "revision": 4,
+  "revision": 6,
   "bodies": {
     "switch_core.gateway.agent_sessions.AnswerBody": [
       "answer",
@@ -51,6 +51,12 @@
       "options",
       "prompt",
       "title"
+    ],
+    "switch_core.gateway.browser_handoff.HandoffCodeBody": [
+      "code"
+    ],
+    "switch_core.gateway.browser_handoff.MintHandoffBody": [
+      "next"
     ],
     "switch_core.gateway.connector_apps.SaveApp": [
       "client_id",
@@ -132,6 +138,7 @@
       "kind",
       "name",
       "read_visibility",
+      "use_case",
       "write_visibility"
     ],
     "switch_core.gateway.schemas.TemplateUpdateRequest": [
@@ -140,6 +147,7 @@
       "kind",
       "name",
       "read_visibility",
+      "use_case",
       "write_visibility"
     ],
     "switch_core.gateway.schemas.TemplateValidateRequest": [

@@ -29,6 +29,9 @@ from testcontainers.postgres import PostgresContainer
 # create_all provisions the full schema (rooms, room_groups, FKs, …).
 import switch_core.db.models  # noqa: F401
 from switch_core import messaging_platforms
+from switch_core.bridges.agent.operations.agent_management import (
+    disable_agent_management,
+)
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.bridges.collaboration.platforms import PLATFORMS
 from switch_core.db import encrypted_json
@@ -36,6 +39,7 @@ from switch_core.db.base import Base
 from switch_core.db.engine import create_session_factory
 from switch_core.db.models import TENANT_ZERO_ID, Organization, Tenant
 from switch_core.db.runtime_role import grant_runtime_role
+from switch_core.gateway.cloud_controllers import set_cloud_enrollment
 from switch_core.keys import Keyring
 from switch_core.messages.notify import MessageListener
 from switch_core.tenant_context import tenant_scope
@@ -88,6 +92,24 @@ def _restore_messaging_platforms(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         messaging_platforms, "_REGISTERED", dict(messaging_platforms._REGISTERED)
     )
+
+
+@pytest.fixture(autouse=True)
+def _agent_management_off_afterwards() -> Iterator[None]:
+    """Installing agent management (`Management.install`, which the
+    management harness calls) switches its agent operations and cloud
+    enrollment on process-wide, as in production. Switch them off after every
+    test, wherever it lives, so a later test in the same worker does not
+    reach a management port whose database has gone."""
+    yield
+    disable_agent_management()
+    set_cloud_enrollment(None)
+
+
+@pytest.fixture(autouse=True)
+def _controller_token_secret(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every deployment sets it, so every `SwitchConfig` a test builds has one."""
+    monkeypatch.setenv("CONTROLLER_TOKEN_SECRET", "test-controller-token-secret" * 2)
 
 
 async def _seed_tenant_zero(conn: AsyncConnection) -> None:

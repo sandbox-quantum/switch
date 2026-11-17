@@ -109,7 +109,7 @@ export default function AccountSearch({
     try {
       const next = afterClaim(await claimBridgeIdentity(app.bridge_id, person));
       if (next.kind === "linked") onLinked(person.username);
-      else onConfirm(next.target, next.code);
+      else onConfirm({ ...next.target, ...namedWithoutHandle(person) }, next.code);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not link this account.");
     } finally {
@@ -122,7 +122,7 @@ export default function AccountSearch({
     <Stack spacing={2}>
       <TextField
         label={`Search ${app.display_name}`}
-        placeholder="Your name, handle or email"
+        placeholder={app.directory_search_hint}
         value={text}
         autoFocus
         fullWidth
@@ -262,10 +262,13 @@ function Results({
                 <Typography variant="body2" noWrap sx={{ fontWeight: 500 }}>
                   {person.display_name}
                 </Typography>
-                <Typography variant="caption" color="text.secondary" noWrap component="div">
-                  @{handleOf(person)}
-                  {person.email ? ` · ${person.email}` : ""}
-                </Typography>
+                {(person.has_handle || person.email) && (
+                  <Typography variant="caption" color="text.secondary" noWrap component="div">
+                    {[person.has_handle ? `@${handleOf(person)}` : null, person.email]
+                      .filter(Boolean)
+                      .join(" · ")}
+                  </Typography>
+                )}
                 {others.length > 0 && (
                   <Typography variant="caption" color="text.secondary" noWrap component="div">
                     Also linked to {others.map((c) => c.user_name).join(", ")}
@@ -279,10 +282,15 @@ function Results({
                     <Button
                       size="small"
                       variant="outlined"
-                      aria-label={`Confirm @${handleOf(person)}`}
+                      aria-label={`Confirm ${personLabel(person)}`}
                       disabled={claiming !== null}
                       onClick={() =>
-                        onConfirm({ identityId: rowId, username: person.username, kind: "unverified" })
+                        onConfirm({
+                          identityId: rowId,
+                          username: person.username,
+                          ...namedWithoutHandle(person),
+                          kind: "unverified",
+                        })
                       }
                     >
                       Confirm
@@ -295,12 +303,13 @@ function Results({
                   <Button
                     size="small"
                     variant="outlined"
-                    aria-label={`Finish linking @${handleOf(person)}`}
+                    aria-label={`Finish linking ${personLabel(person)}`}
                     disabled={claiming !== null}
                     onClick={() =>
                       onConfirm({
                         identityId: waiting.id,
                         username: waiting.external_username,
+                        ...namedWithoutHandle(person),
                         kind: "pending",
                       })
                     }
@@ -312,7 +321,7 @@ function Results({
                 <Button
                   size="small"
                   variant="contained"
-                  aria-label={`This is me: ${person.display_name}, @${handleOf(person)}`}
+                  aria-label={`This is me: ${person.has_handle ? `${person.display_name}, @${handleOf(person)}` : person.display_name}`}
                   disabled={claiming !== null}
                   loading={claiming === person.external_user_id}
                   onClick={() => onClaim(person)}
@@ -327,6 +336,18 @@ function Results({
       </Box>
     </Stack>
   );
+}
+
+/** The name to show for a person whose username is a handle Switch made up,
+ *  so the confirmation names them as the search did; nothing for a real one. */
+function namedWithoutHandle(person: DirectoryPerson): { displayName?: string } {
+  return person.has_handle ? {} : { displayName: person.display_name };
+}
+
+/** How a person is named in a button's label: their handle, or their name
+ *  where the platform gave them no handle. */
+function personLabel(person: DirectoryPerson): string {
+  return person.has_handle ? `@${handleOf(person)}` : person.display_name;
 }
 
 /** A person's username without the sigil some platforms report it with. */

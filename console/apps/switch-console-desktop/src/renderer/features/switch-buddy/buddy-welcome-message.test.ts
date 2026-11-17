@@ -7,7 +7,7 @@ describe('buddyWelcomeMessage', () => {
       '\n'
     )[0];
     expect(first).toBe(
-      'Hi Max, I’m **switch-buddy-max**, your switch-buddy for everything Switch. 👋'
+      'Hi Max, I’m **switch-buddy-max**, your switch-buddy for everything Switch Rooms. 👋'
     );
   });
 
@@ -15,6 +15,6 @@ describe('buddyWelcomeMessage', () => {
     const first = buddyWelcomeMessage({ firstName: null, agentName: 'switch-buddy' }).split(
       '\n'
     )[0];
-    expect(first).toBe('Hi, I’m **switch-buddy**, your assistant for everything Switch. 👋');
+    expect(first).toBe('Hi, I’m **switch-buddy**, your assistant for everything Switch Rooms. 👋');
   });
 });

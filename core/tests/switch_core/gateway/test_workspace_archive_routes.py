@@ -43,7 +43,6 @@ from tests.switch_core.gateway.test_organization_routes import (
     _app,
     _client,
     _name,
-    _operator,
     _workspace,
 )
 
@@ -329,24 +328,6 @@ class TestAnArchivedWorkspace:
         assert switched.status_code == 403
         assert "archived" in switched.json()["detail"]
 
-    async def test_the_operator_sees_it_archived_among_every_workspace(
-        self, session_factory: async_sessionmaker[AsyncSession]
-    ) -> None:
-        app = _app(session_factory)
-        _with_archive(app)
-        org = await _organization(session_factory, app)
-        async with _client(app, org.ada, org.first) as client:
-            await client.post(f"{WORKSPACES}/{org.second}/archive")
-        operator = await _operator(session_factory)
-
-        async with _client(app, operator, None) as client:
-            listed = await client.get("/operator/workspaces")
-
-        assert listed.status_code == 200, listed.text
-        archived = {row["id"]: row["archived_at"] for row in listed.json()}
-        assert archived[org.second] is not None
-        assert archived[org.first] is None
-
     async def test_its_organizations_admin_still_enters_it(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
@@ -431,7 +412,7 @@ class TestAnArchivedWorkspace:
 
         async def current(user_id: str) -> bool:
             return await session_still_enters(
-                session_factory, UserStore(), user_id, 0, org.second
+                session_factory, UserStore(), user_id, 0, "stream-session", org.second
             )
 
         before = await current(org.bob)

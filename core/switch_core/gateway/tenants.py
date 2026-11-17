@@ -50,6 +50,7 @@ from switch_core.connections.broker import (
 from switch_core.db.audit import (
     AuditAction,
     OrganizationAuditAction,
+    last_removed_by_someone_else,
     list_audit_events,
     record_audit_event,
     record_organization_audit_event,
@@ -100,7 +101,6 @@ from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.auth import (
     AuthenticatedCaller,
     AuthenticatedSession,
-    all_workspaces,
     get_authenticated_caller,
     get_authenticated_session,
     get_authenticated_user_id,
@@ -113,7 +113,7 @@ from switch_core.gateway.auth import (
     rebind_if_left,
     record_operator_entry,
     require_tenant_admin,
-    session_auth_time,
+    session_signed_in,
     set_session_cookie,
     tenant_of_invitation_token,
     tenants_bindable_by,
@@ -166,9 +166,11 @@ from switch_core.gateway.schemas import (
     ErasureCreateRequest,
     ErasureDetail,
     InvitationAcceptRequest,
+    InvitationAcceptResponse,
     InvitationCreateRequest,
     InvitationCreateResponse,
     InvitationDetail,
+    InvitationPreviewResponse,
     JoinableTenant,
     JoinDomainCreateRequest,
     JoinDomainDetail,
@@ -178,7 +180,6 @@ from switch_core.gateway.schemas import (
     MemberDetail,
     MemberUpdateRequest,
     NamedAuditEventDetail,
-    OperatorWorkspaceResponse,
     PersonDetail,
     PrivateChannelRoom,
     PrivateChannelRoomsCount,
@@ -206,6 +207,7 @@ from switch_core.gateway.workspace_creation import (
     refuse_a_workspace_name_taken,
 )
 from switch_core.hosted_v2 import process_hosted_v2
+from switch_core.invitation_revocation import revoke_invitations_made_by
 from switch_core.organization_access import (
     AccessRevocation,
     removal_heir,
@@ -406,6 +408,8 @@ async def workspace_counts(
     """How many people and agents each workspace the caller may enter has:
     those of `GET /tenants`, and the one the platform operator entered on the
     operator flag alone, which their session is in without being one of them.
+    Agents as the caller's agent list there holds them: every one where they
+    administer the workspace, else their own.
 
     For the dashboard's workspace switcher, which asks when it opens rather
     than on every page: each workspace is read on its own short session, as
@@ -431,11 +435,17 @@ async def workspace_counts(
                     tenant_id,
                 )
                 continue
+            caller = await session.get(User, auth.user_id)
             counts.append(
                 WorkspaceCountsResponse(
                     id=tenant_id,
                     users=await user_store.count_people(session, tenant),
-                    agents=await agent_store.count(session),
+                    agents=(
+                        await agent_store.count(session)
+                        if caller is not None
+                        and await user_store.administers(session, caller)
+                        else await agent_store.count_owned_by(session, auth.user_id)
+                    ),
                 )
             )
     return counts
@@ -523,7 +533,7 @@ async def create_tenant(
         config,
         name=req.name,
         workspace_name=req.name,
-        auth_time=session_auth_time(request),
+        signed_in=session_signed_in(request),
     )
     return created.workspace
 
@@ -689,7 +699,7 @@ async def delete_tenant(
         config.keyring,
         config.gateway_cookie_secure,
         await initial_tenant_claim(session_factory, user_store, user),
-        session_auth_time(request),
+        session_signed_in(request),
     )
     return {"ok": True}
 
@@ -742,35 +752,9 @@ async def switch_tenant(
         config.keyring,
         config.gateway_cookie_secure,
         tenant_id,
-        session_auth_time(request),
+        session_signed_in(request),
     )
     return _session_response(user)
-
-
-@router.get("/operator/workspaces")
-async def list_every_workspace(
-    caller: Annotated[AuthenticatedCaller, Depends(get_authenticated_caller)],
-    session_factory: Annotated[
-        async_sessionmaker[AsyncSession], Depends(get_session_factory)
-    ],
-) -> list[OperatorWorkspaceResponse]:
-    """Every workspace on the server, archived ones included and saying so,
-    for the platform operator to enter one with `POST /tenants/{id}/switch`. Kept apart from `GET /tenants`, which
-    stays the caller's own, so the ordinary picker never lists customers'
-    workspaces. Listing records nothing; entering does."""
-    if not caller.is_operator:
-        raise HTTPException(status_code=403, detail="Admin access required")
-    return [
-        OperatorWorkspaceResponse(
-            id=tenant.id,
-            slug=tenant.slug,
-            name=tenant.name,
-            organization_id=tenant.organization_id,
-            organization_name=organization.name if organization is not None else None,
-            archived_at=archived_since(tenant),
-        )
-        for tenant, organization in await all_workspaces(session_factory)
-    ]
 
 
 # ── Invitations ───────────────────────────────────────────────────────────────
@@ -1317,13 +1301,18 @@ async def clear_retention_policy(
     session: Annotated[AsyncSession, Depends(get_session)],
     retention_store: Annotated[RetentionStore, Depends(get_retention_store)],
     user: Annotated[User, Depends(require_tenant_admin)],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
 ) -> RetentionPolicyResponse:
-    """Keep the bound tenant's messages forever. Admins only.
+    """Keep the bound tenant's messages forever. Admins only, by their own
+    admin membership, the same as setting a policy.
 
     Messages already deleted stay deleted. Clearing a policy that is not set
     succeeds and records nothing.
     """
     _require_bound_tenant(tenant_id)
+    await _require_admin_membership(
+        session, user_store, tenant_id, user, "change when messages are deleted"
+    )
     previous = await retention_store.get_policy(session)
     if previous is not None:
         previous_days = previous.message_retention_days
@@ -1771,7 +1760,7 @@ async def accept_invitation(
         OrganizationDirectory, Depends(get_organization_directory)
     ],
     config: Annotated[SwitchConfig, Depends(get_config)],
-) -> TenantMembershipResponse:
+) -> InvitationAcceptResponse:
     """Accept an invitation, joining its tenant, and switch the caller's
     session into it — someone who follows an invite link means to be there.
 
@@ -1790,12 +1779,17 @@ async def accept_invitation(
     and a path segment is written to proxy and access logs, kept in browser
     history, and sent onward in `Referer`.
 
-    A use is spent only when a membership is actually granted. Accepting an
-    invitation you already hold is a no-op that returns your existing role —
-    a double-clicked shared link must not cost the invite a slot — and the
-    `consume` that does spend one is a conditional `UPDATE` that arbitrates
-    between simultaneous acceptances, so a single-use link grants exactly one
-    membership however many people race for it.
+    A use is spent only when something is granted: a membership, or a role
+    above the one the caller already holds there. Accepting an invitation
+    to a workspace you are already in at its role or above changes nothing,
+    spends nothing — a double-clicked shared link must not cost the invite a
+    slot — and says so (`already_member`). The `consume` that does spend one
+    is a conditional `UPDATE` that arbitrates between simultaneous
+    acceptances, so a single-use link grants exactly one membership however
+    many people race for it.
+
+    Refused while whoever made the invitation no longer administers the
+    workspace (`invitation_revocation.py`).
     """
     token_hash = hashlib.sha256(req.token.encode()).hexdigest()
     tenant_id = await tenant_of_invitation_token(session_factory, token_hash)
@@ -1823,9 +1817,83 @@ async def accept_invitation(
         config.keyring,
         config.gateway_cookie_secure,
         tenant_id,
-        session_auth_time(request),
+        session_signed_in(request),
     )
     return membership
+
+
+@router.post("/invitations/preview")
+async def preview_invitation(
+    req: InvitationAcceptRequest,
+    caller: Annotated[AuthenticatedCaller, Depends(get_authenticated_caller)],
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+    invitation_store: Annotated[InvitationStore, Depends(get_invitation_store)],
+) -> InvitationPreviewResponse:
+    """What an invitation is to — the workspace, its organization and the
+    role — for the person about to accept it, refused exactly as accepting
+    it now would be. Changes nothing.
+
+    Signed in, like `accept_invitation`, and for the invitation's own
+    address when it names one: an invitation addressed to someone else says
+    nothing about where it leads. The token arrives in the body, for the
+    reason `accept_invitation` gives.
+    """
+    token_hash = hashlib.sha256(req.token.encode()).hexdigest()
+    tenant_id = await tenant_of_invitation_token(session_factory, token_hash)
+    if tenant_id is None:
+        raise HTTPException(status_code=404, detail="Invitation not found")
+    async with tenant_session(session_factory, tenant_id) as session:
+        invitation = await invitation_store.get_by_token_hash(session, token_hash)
+        if invitation is None:
+            raise HTTPException(status_code=404, detail="Invitation not found")
+        _require_invitation_usable(invitation, caller.email)
+        if await is_archived(session, tenant_id):
+            raise HTTPException(status_code=409, detail=WORKSPACE_ARCHIVED)
+        await _require_maker_administers(session, user_store, invitation)
+        tenant = await session.get(Tenant, tenant_id)
+        assert tenant is not None
+        organization = (
+            await session.get(Organization, tenant.organization_id)
+            if tenant.organization_id is not None
+            else None
+        )
+        return InvitationPreviewResponse(
+            workspace_name=tenant.name,
+            organization_name=organization.name if organization is not None else None,
+            role=invitation.role,
+        )
+
+
+INVITATION_MAKER_GONE = (
+    "This invitation no longer works: whoever made it no longer administers "
+    "this workspace. Ask a workspace admin for a new one."
+)
+
+
+async def _maker_administers(
+    session: AsyncSession, user_store: UserStore, invitation: Invitation
+) -> bool:
+    """Whether whoever made `invitation` still administers its workspace, on
+    `session`, bound to it: the platform operator, or by a role they hold
+    there (`invitation_revocation.py`)."""
+    maker = await user_store.get(session, invitation.created_by)
+    return maker is not None and (
+        maker.role == "admin"
+        or await user_store.administers_by_role(session, invitation.tenant_id, maker.id)
+    )
+
+
+async def _require_maker_administers(
+    session: AsyncSession, user_store: UserStore, invitation: Invitation
+) -> None:
+    """Refuse, 403, an invitation whose maker no longer administers its
+    workspace: one made before demotions and removals revoked what the person
+    made."""
+    if not await _maker_administers(session, user_store, invitation):
+        raise HTTPException(status_code=403, detail=INVITATION_MAKER_GONE)
 
 
 async def _organization_to_join(
@@ -1841,6 +1909,32 @@ async def _organization_to_join(
     if await session.get(OrganizationMember, (tenant.organization_id, user_id)):
         return None
     return await session.get(Organization, tenant.organization_id)
+
+
+async def _record_organization_join(
+    session: AsyncSession,
+    organization: Organization | None,
+    tenant_id: str,
+    user_id: str,
+    action: OrganizationAuditAction,
+    details: dict[str, object],
+) -> None:
+    """Record `user_id` joining `organization` through workspace `tenant_id`
+    in the organization's audit log, when joining it made them new to it
+    (`_organization_to_join`)."""
+    if organization is None:
+        return
+    tenant = await session.get(Tenant, tenant_id)
+    assert tenant is not None
+    await record_organization_audit_event(
+        session,
+        organization_id=organization.id,
+        actor_user_id=user_id,
+        action=action,
+        target_type="user",
+        target_id=user_id,
+        details={"workspace": tenant_id, "workspace_name": tenant.name, **details},
+    )
 
 
 async def _join_in_directory(
@@ -1866,9 +1960,11 @@ async def _join_through(
     user_store: UserStore,
     invitation_store: InvitationStore,
     organization_directory: OrganizationDirectory,
-) -> tuple[TenantMembershipResponse, User]:
-    """Make `caller` a member of the invitation's tenant, spending one use,
-    select that tenant for them, and commit.
+) -> tuple[InvitationAcceptResponse, User]:
+    """Make `caller` a member of the invitation's tenant, or raise their role
+    there to the invitation's, spending one use; select that tenant for them,
+    and commit. Someone already there at the invitation's role or above is
+    let in with nothing changed or spent (`already_member`).
 
     `session` is bound to the invitation's tenant, and `invitation` has
     already passed `_require_invitation_usable` for this caller. Both ways of
@@ -1878,14 +1974,19 @@ async def _join_through(
     tenant_id = invitation.tenant_id
     if await is_archived(session, tenant_id):
         raise HTTPException(status_code=409, detail=WORKSPACE_ARCHIVED)
-    existing_role = await user_store.tenant_role(session, tenant_id, caller.id)
-    if existing_role is None:
-        try:
-            await invitation_store.consume(session, invitation.id)
-        except InvitationNotUsableError as exc:
-            raise HTTPException(
-                status_code=403, detail="This invitation has already been used"
-            ) from exc
+    await _require_maker_administers(session, user_store, invitation)
+    existing = await session.get(
+        TenantMember, (tenant_id, caller.id), with_for_update=True
+    )
+    already_member = existing is not None and not _outranks(
+        invitation.role, existing.role
+    )
+    if invitation.role == "admin" and not already_member:
+        joiner = await user_store.get(session, caller.id)
+        if joiner is not None and is_bootstrap_owner(joiner):
+            raise HTTPException(status_code=409, detail=SERVICE_ACCOUNT_ADMIN_REFUSAL)
+    if existing is None:
+        await _consume(session, invitation_store, invitation)
         role = invitation.role
         joining = await _organization_to_join(session, tenant_id, caller.id)
         await user_store.add_membership(
@@ -1905,17 +2006,59 @@ async def _join_through(
             details={"role": role},
         )
         # Only on the branch that actually joined someone. A caller who
-        # was already a member takes the `else` below and has accepted
-        # nothing — reporting it there would count re-clicking a link as
-        # onboarding.
+        # was already a member has joined nothing — reporting it would count
+        # re-clicking a link, or a promotion, as onboarding.
         emit_safely(
             current_telemetry(),
             "invitation_accepted",
             {"age_hours": age_hours(invitation.created_at)},
         )
+        await _record_organization_join(
+            session,
+            joining,
+            tenant_id,
+            caller.id,
+            OrganizationAuditAction.MEMBER_JOINED_BY_INVITATION,
+            {"role": role, "invited_by": invitation.created_by},
+        )
         await _join_in_directory(organization_directory, joining, caller.id)
+    elif not already_member:
+        await _consume(session, invitation_store, invitation)
+        previous_role = existing.role
+        existing.role = invitation.role
+        await record_audit_event(
+            session,
+            tenant_id=tenant_id,
+            actor_user_id=caller.id,
+            action=AuditAction.INVITATION_ACCEPTED,
+            target_type="invitation",
+            target_id=invitation.id,
+            details={"role": invitation.role, "previous_role": previous_role},
+        )
 
-    return await _enter(session, tenant_id, caller, user_store)
+    membership, user = await _enter(session, tenant_id, caller, user_store)
+    return (
+        InvitationAcceptResponse(
+            **membership.model_dump(), already_member=already_member
+        ),
+        user,
+    )
+
+
+def _outranks(role: str, held: str) -> bool:
+    """Whether workspace role `role` is above `held`: admin above member."""
+    return role == "admin" and held != "admin"
+
+
+async def _consume(
+    session: AsyncSession, invitation_store: InvitationStore, invitation: Invitation
+) -> None:
+    try:
+        await invitation_store.consume(session, invitation.id)
+    except InvitationNotUsableError as exc:
+        raise HTTPException(
+            status_code=403, detail="This invitation has already been used"
+        ) from exc
 
 
 async def _enter(
@@ -1965,7 +2108,8 @@ async def list_my_invitations(
     invitation_store: Annotated[InvitationStore, Depends(get_invitation_store)],
 ) -> list[AddressedInvitation]:
     """The live invitations addressed to the caller's own e-mail, in
-    workspaces they do not already belong to.
+    workspaces they do not already belong to, or that would raise their role
+    in one they do (`_join_through`).
 
     Authenticated without a tenant, like `accept_invitation`: these are
     invitations to workspaces the caller is not in, so no session they could
@@ -1980,11 +2124,14 @@ async def list_my_invitations(
     found: list[AddressedInvitation] = []
     for tenant_id in await tenants_with_invitations_for(session_factory, caller.email):
         async with tenant_session(session_factory, tenant_id) as session:
-            if await user_store.tenant_role(session, tenant_id, caller.id) is not None:
-                continue
-            invitations = await invitation_store.list_live_addressed_to(
-                session, tenant_id, caller.email
-            )
+            held = await user_store.tenant_role(session, tenant_id, caller.id)
+            invitations = [
+                invitation
+                for invitation in await invitation_store.list_live_addressed_to(
+                    session, tenant_id, caller.email
+                )
+                if held is None or _outranks(invitation.role, held)
+            ]
             if not invitations:
                 continue
             tenant = await session.get(Tenant, tenant_id)
@@ -1993,6 +2140,9 @@ async def list_my_invitations(
             if tenant.archived_at is not None:
                 continue
             for invitation in invitations:
+                # Not offered once it can't be accepted.
+                if not await _maker_administers(session, user_store, invitation):
+                    continue
                 inviter = await user_store.get(session, invitation.created_by)
                 assert inviter is not None
                 found.append(
@@ -2025,7 +2175,7 @@ async def accept_my_invitation(
         OrganizationDirectory, Depends(get_organization_directory)
     ],
     config: Annotated[SwitchConfig, Depends(get_config)],
-) -> TenantMembershipResponse:
+) -> InvitationAcceptResponse:
     """Accept an invitation addressed to the caller, by id, without its token,
     and switch the caller's session into its workspace.
 
@@ -2061,7 +2211,7 @@ async def accept_my_invitation(
         config.keyring,
         config.gateway_cookie_secure,
         req.tenant_id,
-        session_auth_time(request),
+        session_signed_in(request),
     )
     return membership
 
@@ -2183,7 +2333,8 @@ async def list_joinable_tenants(
     user_store: Annotated[UserStore, Depends(get_user_store)],
 ) -> list[JoinableTenant]:
     """The workspaces open to the domain of the caller's own address, that
-    they do not already belong to.
+    they do not already belong to and were not removed from
+    (`join_tenant_by_domain`).
 
     Authenticated without a tenant, like `list_my_invitations` and for the
     same reason: none of these is a workspace any session of theirs is bound
@@ -2199,6 +2350,10 @@ async def list_joinable_tenants(
             tenant = await session.get(Tenant, tenant_id)
             assert tenant is not None
             if tenant.archived_at is not None:
+                continue
+            if await last_removed_by_someone_else(
+                session, tenant_id=tenant_id, user_id=caller.id
+            ):
                 continue
             found.append(
                 JoinableTenant(
@@ -2232,7 +2387,9 @@ async def join_tenant_by_domain(
 
     A workspace that is not open to that domain is answered as not found, so
     the route does not confirm that a workspace exists. Joining one you are
-    already in returns your existing role and changes nothing.
+    already in returns your existing role and changes nothing. Someone an
+    admin removed comes back only through an invitation, or an organization
+    admin adding them: their e-mail domain is refused, 403, until then.
     """
     domain = email_domain(caller.email)
     async with tenant_session(session_factory, tenant_id) as session:
@@ -2241,6 +2398,17 @@ async def join_tenant_by_domain(
         if await is_archived(session, tenant_id):
             raise HTTPException(status_code=409, detail=WORKSPACE_ARCHIVED)
         role = await user_store.tenant_role(session, tenant_id, caller.id)
+        if role is None and await last_removed_by_someone_else(
+            session, tenant_id=tenant_id, user_id=caller.id
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "You were removed from this workspace, so you can't rejoin "
+                    "it through your e-mail domain. Ask a workspace admin to "
+                    "invite you."
+                ),
+            )
         if role is None:
             role = "member"
             joining = await _organization_to_join(session, tenant_id, caller.id)
@@ -2260,6 +2428,14 @@ async def join_tenant_by_domain(
                 target_id=caller.id,
                 details={"role": role, "domain": domain},
             )
+            await _record_organization_join(
+                session,
+                joining,
+                tenant_id,
+                caller.id,
+                OrganizationAuditAction.MEMBER_JOINED_BY_DOMAIN,
+                {"role": role, "domain": domain},
+            )
             await _join_in_directory(organization_directory, joining, caller.id)
         membership, user = await _enter(session, tenant_id, caller, user_store)
 
@@ -2269,7 +2445,7 @@ async def join_tenant_by_domain(
         config.keyring,
         config.gateway_cookie_secure,
         tenant_id,
-        session_auth_time(request),
+        session_signed_in(request),
     )
     return membership
 
@@ -2390,7 +2566,8 @@ async def change_member_role(
     recording the change. Refuses an `org_admin` of its organization, whose
     standing comes from there; making the registration service account an
     admin; and demoting the last admin, whose rows are locked until the
-    caller commits. Shared by the workspace's own route and its
+    caller commits. Demoting an admin revokes the invitations they made here
+    (`invitation_revocation.py`). Shared by the workspace's own route and its
     organization's (`gateway/organization_workspaces.py`)."""
     membership = await session.get(TenantMember, (tenant_id, user_id))
     if membership is None:
@@ -2414,6 +2591,14 @@ async def change_member_role(
             target_type="user",
             target_id=user_id,
             details={"from": membership.role, "to": role},
+        )
+    if membership.role == "admin" and role != "admin":
+        await revoke_invitations_made_by(
+            session,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            actor_id=actor_id,
+            reason="creator_demoted",
         )
     membership.role = role
     return user, membership
@@ -2557,9 +2742,13 @@ async def remove_member_from_workspace(
     workspace's own route and its organization's
     (`gateway/organization_workspaces.py`). Raises `ServiceError` when a
     revocation is refused."""
-    # Locked until the removal commits, as handing the member something locks
-    # it (`accounts/transfer.py`), so no agent reaches them after the check
-    # below finds none.
+    # The admins' rows first, then the member's: every removal takes them in
+    # that order, so two admins removing themselves at once queue on the
+    # first lock rather than each holding one the other waits on. The
+    # member's row is locked until the removal commits, as handing the member
+    # something locks it (`accounts/transfer.py`), so no agent reaches them
+    # after the check below finds none.
+    admins = await user_store.lock_admins(session)
     membership = await session.get(
         TenantMember,
         (tenant_id, user_id),
@@ -2570,9 +2759,8 @@ async def remove_member_from_workspace(
         raise HTTPException(status_code=404, detail="Not a member of this workspace")
     await _refuse_organization_admin(session, user_store, tenant_id, user_id)
 
-    if membership.role == "admin":
-        if await user_store.lock_admins(session) <= 1:
-            raise HTTPException(status_code=409, detail="Cannot remove the last admin")
+    if membership.role == "admin" and admins <= 1:
+        raise HTTPException(status_code=409, detail="Cannot remove the last admin")
 
     owned_agents = await revocation.agent_store.get_by_owner(session, user_id)
     if owned_agents:
@@ -2593,6 +2781,11 @@ async def remove_member_from_workspace(
         details={},
         keep_agent_keys=False,
     )
+    tenant = await session.get(Tenant, tenant_id)
+    if tenant is not None and tenant.organization_id is not None:
+        await user_store.remember_organization_left(
+            session, user_id, tenant.organization_id
+        )
     await session.commit()
 
     warning = await revocation.finish(session, user_id, removal.revoked)

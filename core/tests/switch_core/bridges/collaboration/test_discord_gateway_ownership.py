@@ -165,6 +165,7 @@ async def _with_gateway(
         members=False,
         install_service=AsyncMock(),
         on_connected=attach,
+        feature_flags={},
     )
     connection = _Connection(discord)
     gateway._connection = connection  # type: ignore[assignment]

@@ -307,7 +307,7 @@ class TestTheServerDefault:
 
         assert isinstance(outcome, Unavailable)
         assert outcome.reason is not None
-        assert "Decision routing" in outcome.reason
+        assert "Message routing" in outcome.reason
 
     async def test_the_flag_off_is_unavailable(
         self,

@@ -89,8 +89,30 @@ describe("ReferenceDetailPage", () => {
     show();
 
     expect(await screen.findByText("Couldn't open this reference: You can't read this reference.")).toBeTruthy();
+    // A link naming no workspace opens in the browser's last one.
+    expect(screen.getByText("This may be in another workspace — switch workspace or check the link.")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Back to references" }));
     expect(screen.getByTestId("where").textContent).toBe("/resources?tab=references");
+  });
+
+  it("says whose a reference the viewer can't change is, and leads back to the resources", async () => {
+    answerFetch({ ...PAGE_READS, "GET /references/r1": [200, { ...REF, owner_id: "u2", owner_name: "Grace", can_edit: false, can_manage: false }] });
+    show();
+
+    expect(
+      await screen.findByText("This reference belongs to Grace. Only they or a workspace admin can change it."),
+    ).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Back to resources" }));
+    expect(screen.getByTestId("where").textContent).toBe("/resources?tab=references");
+  });
+
+  it("names a former member as the owner of a reference whose owner has no name", async () => {
+    answerFetch({ ...PAGE_READS, "GET /references/r1": [200, { ...REF, owner_id: "u9", owner_name: null, can_edit: false, can_manage: false }] });
+    show();
+
+    expect(
+      await screen.findByText("This reference belongs to a former member. Only a workspace admin can change it."),
+    ).toBeTruthy();
   });
 
   it("will not save it without a name or a URL", async () => {
@@ -149,13 +171,23 @@ describe("ReferenceDetailPage", () => {
     expect(await screen.findByDisplayValue("Roadmap")).toBeTruthy();
   });
 
-  it("offers a workspace admin each private package it is in as a link, as they can open it", async () => {
+  it("names every package it is in to a workspace admin, whose package list holds them all", async () => {
     signedInAs({ admin: true });
-    answerFetch({ "GET /references/r1": [200, REF], ...PAGE_READS });
+    answerFetch({
+      "GET /references/r1": [200, REF],
+      ...PAGE_READS,
+      "GET /packages": [
+        200,
+        [
+          { id: "p1", name: "Onboarding", description: "" },
+          { id: "p-hidden", name: "Grace's kit", description: "" },
+        ],
+      ],
+    });
     show();
 
     expect(await screen.findByText("Onboarding")).toBeTruthy();
-    expect(screen.getByText("Someone's private package")).toBeTruthy();
+    expect(screen.getByText("Grace's kit")).toBeTruthy();
     expect(screen.queryByText(/you can't open/)).toBeNull();
   });
 

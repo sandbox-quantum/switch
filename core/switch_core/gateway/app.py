@@ -39,6 +39,7 @@ from switch_core.gateway.agent_sessions import router as agent_sessions_router
 from switch_core.gateway.agents import router as agents_router
 from switch_core.gateway.api_keys import router as api_keys_router
 from switch_core.gateway.auth_routes import router as auth_router
+from switch_core.gateway.browser_handoff import router as browser_handoff_router
 from switch_core.gateway.changes import router as changes_router
 from switch_core.gateway.chats import chat_error_response
 from switch_core.gateway.chats import router as chats_router
@@ -86,6 +87,7 @@ from switch_core.gateway.references import router as references_router
 from switch_core.gateway.room_groups import router as room_groups_router
 from switch_core.gateway.room_links import router as room_links_router
 from switch_core.gateway.room_schedules import router as room_schedules_router
+from switch_core.gateway.rooms import auto_route_router as room_auto_route_router
 from switch_core.gateway.rooms import router as rooms_router
 from switch_core.gateway.service_connections import (
     router as service_connections_router,
@@ -319,12 +321,15 @@ def create_gateway_app(
         agent_sessions_router, prefix="/agent-sessions", tags=["session activity"]
     )
     app.include_router(auth_router, tags=["auth"])
+    app.include_router(browser_handoff_router, tags=["auth"])
     app.include_router(oidc_router, tags=["auth"])
     app.include_router(workos_sign_in_router, tags=["auth"])
     app.include_router(tenants_router, tags=["tenants"])
     app.include_router(organizations_router, tags=["organizations"])
     app.include_router(organization_workspaces_router, tags=["organizations"])
     app.include_router(rooms_router, prefix="/rooms", tags=["rooms"])
+    if config.decision_routing_enabled:
+        app.include_router(room_auto_route_router, prefix="/rooms", tags=["rooms"])
     app.include_router(changes_router, tags=["changes"])
     app.include_router(chats_router, prefix="/chats", tags=["chats"])
     app.include_router(room_groups_router, prefix="/room-groups", tags=["room-groups"])
@@ -348,7 +353,8 @@ def create_gateway_app(
     app.include_router(trust_settings_router, tags=["trust-settings"])
     app.include_router(organization_guardrails_router, tags=["organizations"])
     app.include_router(workspace_guardrails_router, tags=["trust-settings"])
-    app.include_router(decision_settings_router, tags=["decision-settings"])
+    if config.decision_routing_enabled:
+        app.include_router(decision_settings_router, tags=["decision-settings"])
     app.include_router(feature_flags_router, tags=["feature-flags"])
     app.include_router(
         messaging_installs_router,

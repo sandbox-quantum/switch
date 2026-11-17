@@ -92,6 +92,7 @@ resources:
     name: "{repo} - Code Review"
     description: "Code review coordination for {repo}. PR discussions, review assignments, and quality standards."
     bridge: "{bridge}"
+    channel_type: channel_private
     agents: [code_reviewer, docs_checker]
     users:
       - {if: "{bridge}", value: ["{$creator}"]}

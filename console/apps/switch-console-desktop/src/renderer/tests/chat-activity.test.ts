@@ -4,6 +4,7 @@ import {
   foldTurnEndNotices,
   groupTurns,
   isThinking,
+  latestTurnReply,
   placeRequests,
   ORPHANED_SUBAGENT_TEXT,
   subagentStatus,
@@ -129,7 +130,9 @@ describe('placeRequests', () => {
   it('keeps an answered request above the text posted after the answer', () => {
     const turn = withRequests([approval('t1', { state: 'answered', answeredAt: at(2) })]);
     const messages = [said('q1', null, 0), said('r1', 'helper', 1), said('r2', 'helper', 3)];
-    expect(ids(placeRequests(messages, 'helper', new Map([['q1', turn]]), 'q1', turn))).toEqual({
+    const bound = new Map([['q1', turn]]);
+    expect(latestTurnReply(messages, 'helper', bound, 'q1')).toBe('r2');
+    expect(ids(placeRequests(messages, 'helper', bound, 'q1', turn))).toEqual({
       r1: ['req-t1'],
     });
   });
@@ -283,6 +286,28 @@ describe('placeTurns', () => {
     expect(ids(placeTurns(messages, 'helper', new Map([['q1', retried]])))).toEqual({
       q1: ['t2'],
     });
+  });
+
+  it('moves running activity to the latest own reply across steered messages', () => {
+    const running = {
+      ...turn('t1', 'running'),
+      items: [row('t1', 'tool')],
+    };
+    const bound = new Map([['q1', running]]);
+    const messages = [said('q1', null), said('r1', 'helper')];
+    expect(latestTurnReply(messages, 'helper', bound, 'q1')).toBe('r1');
+    messages.push(said('steer', null), said('r2', 'helper'), said('other', 'reviewer'));
+    expect(latestTurnReply(messages, 'helper', bound, 'q1')).toBe('r2');
+    messages.push({
+      ...said('notice', 'helper'),
+      body: 'I finished without replying.',
+    });
+    expect(latestTurnReply(messages, 'helper', bound, 'q1')).toBe('r2');
+    messages.push(said('q2', null), said('r3', 'helper'));
+    bound.set('q2', turn('t2', 'queued'));
+    expect(latestTurnReply(messages, 'helper', bound, 'q1')).toBe('r2');
+    expect(latestTurnReply(messages, 'helper', bound, 'q2')).toBe('r3');
+    expect(latestTurnReply(messages, 'helper', bound, 'missing')).toBe('missing');
   });
 
   it('does not wait on a reply from a turn that ended with an error', () => {

@@ -77,6 +77,7 @@ from switch_core.db.session_version_ddl import (
     DROP_SESSION_VERSION_TRIGGER,
 )
 from switch_core.db.tenant_lookup import attach_tenant_lookups
+from switch_core.template_use_cases import USE_CASES
 from switch_core.tenant_context import current_organization_id, current_tenant_id
 
 #: The highest boot number `agent_event_boot` hands out. An agent's own event
@@ -1699,6 +1700,10 @@ class Template(TenantScoped, Base):
             name="fk_templates_created_by_agent",
             ondelete="SET NULL (created_by_agent_id)",
         ),
+        CheckConstraint(
+            "use_case IN ({})".format(", ".join(f"'{u}'" for u in USE_CASES)),
+            name="ck_templates_use_case",
+        ),
     )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
@@ -1716,6 +1721,8 @@ class Template(TenantScoped, Base):
         Text, nullable=False, server_default="private"
     )
     content: Mapped[str] = mapped_column(Text, nullable=False)
+    # What it is for, from ``template_use_cases``; NULL when nobody said.
+    use_case: Mapped[str | None] = mapped_column(Text, nullable=True)
     version: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
     # The agent that saved it through an agent operation, NULL for a person.
     # ``owner_id`` is the agent's owner either way; only this agent may change
@@ -1843,11 +1850,18 @@ class TemplateRunRecord(TenantScoped, Base):
     """One run of a template in this workspace, counted for the catalogue.
 
     ``template_id`` is an ``official:`` id or a stored template's, so there is
-    no foreign key: an official template is not a row. A person's run is
-    reported by the client that ran it, once the whole run has succeeded; an
-    agent's is recorded by the operation that ran it. Nothing here says who
-    ran it, so the rows go with their template (``TemplateStore.delete``) or
-    their workspace, and erasing a person leaves nothing behind in them.
+    no foreign key: an official template is not a row. An agent's run is
+    recorded by the operation that ran it, and a person's by the route that
+    ran it when the run went through the server with the template's id.
+    Switch Console also reports every run of a template once the whole run
+    has succeeded, however it ran, and that report is believed at most once
+    per person and template in ``REPORTED_RUN_WINDOW``
+    (``TemplateStore.record_reported_run``), so a run the server counted is
+    not counted again and a reader cannot inflate a count by reporting.
+    ``run_by`` names the person a run was counted for, for that check alone
+    (an agent's run names nobody); it is cleared when their account goes.
+    The rows go with their template (``TemplateStore.delete``) or their
+    workspace.
     """
 
     __tablename__ = "template_run_records"
@@ -1857,6 +1871,13 @@ class TemplateRunRecord(TenantScoped, Base):
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
     template_id: Mapped[str] = mapped_column(Text, nullable=False)
+    run_by: Mapped[str | None] = mapped_column(
+        Text,
+        ForeignKey(
+            "users.id", ondelete="SET NULL", name="fk_template_run_records_run_by"
+        ),
+        nullable=True,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -2037,7 +2058,7 @@ class CollaborationBridge(TenantScoped, Base):
     is_default: Mapped[bool] = mapped_column(
         Boolean, server_default="false", nullable=False
     )
-    # Registered by the deployment's own setup step — the bundled Mattermost —
+    # Registered by the deployment's own setup step — a connector it bundles —
     # rather than by a person. Telemetry reads it so that "time to first
     # connector" measures a person connecting their platform, not a
     # deployment booting.
@@ -2723,6 +2744,12 @@ class BridgeMessageMap(TenantScoped, Base):
         ),
         UniqueConstraint("bridge_id", "transport_event_id"),
         UniqueConstraint("bridge_id", "external_post_id"),
+        # A reply to any part of a message the platform split resolves to it.
+        Index(
+            "ix_bridge_message_map_further_post_ids",
+            "further_post_ids",
+            postgresql_using="gin",
+        ),
         ForeignKeyConstraint(
             ["tenant_id", "bridge_id"],
             ["collaboration_bridges.tenant_id", "collaboration_bridges.id"],
@@ -2740,6 +2767,13 @@ class BridgeMessageMap(TenantScoped, Base):
     # answers, so a second process handling the same message finds the claim
     # and does not post it again (`CollaborationCore._claim_outbound`).
     external_post_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The platform's other posts for this one message, when it split it to fit
+    # (Telegram's 4,096-character cap): `external_post_id` is the first, which
+    # edits and deletes go to, and a reply to any of these is a reply to it.
+    # Null for a message posted whole.
+    further_post_ids: Mapped[list[str] | None] = mapped_column(
+        ARRAY(Text), nullable=True
+    )
     # The press that answered the card this message carries, `{"by", "label"}`;
     # null until a press is delivered. A card takes one answer.
     card_answer: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
@@ -5340,6 +5374,118 @@ class ServerAuditEvent(Base):
     target_type: Mapped[str] = mapped_column(Text, nullable=False)
     target_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     details: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+
+class AuthAttempt(Base):
+    """Password sign-ins and sign-ups, counted against what they came with
+    (`gateway/login_limits.py`), here so that a limit holds across replicas.
+
+    `kind` says what is counted against what: failed sign-ins against the
+    email address typed, whether or not it has an account, failed sign-ins
+    against the client's address, or accounts signed up from it. `key` is a
+    SHA-256 digest of that email or address, so neither is kept in the clear.
+    `attempts` counts from `window_started_at`, and no attempt is taken before
+    `locked_until`. Past `expires_at` the row means nothing, and the next
+    attempt to come along deletes it.
+
+    Not tenant-scoped: an address belongs to no workspace, and a sign-in has
+    no workspace yet when it is counted.
+    """
+
+    __tablename__ = "auth_attempts"
+    __table_args__ = (Index("ix_auth_attempts_expires_at", "expires_at"),)
+
+    kind: Mapped[str] = mapped_column(Text, primary_key=True)
+    key: Mapped[str] = mapped_column(Text, primary_key=True)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False)
+    window_started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    locked_until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+
+class RevokedSession(Base):
+    """A session someone signed out of (`/auth/logout`). Every copy of its
+    cookie carries its id (`gateway/auth.py`'s `sid` claim) and is refused
+    from then on, wherever it was copied to.
+
+    Kept until no copy of the session could still be live, `SESSION_MAX_AGE`
+    after it signed in, however often it was refreshed; the next sign-out
+    after that deletes it.
+
+    Not tenant-scoped: a session is a person's, across their workspaces, and
+    the row holds only its random id.
+    """
+
+    __tablename__ = "revoked_sessions"
+    __table_args__ = (Index("ix_revoked_sessions_expires_at", "expires_at"),)
+
+    session_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+
+class BrowserHandoff(Base):
+    """A one-time sign-in Switch Console hands a browser, so a dashboard page
+    it opens there is already signed in (`gateway/browser_handoff.py`).
+
+    Console's own session never leaves Console. It mints one of these, and
+    the browser redeems the code once, within a minute, for a session of its
+    own. Only the code's SHA-256 is kept.
+
+    The new session takes the minting one's workspace, sign-in time and
+    session version, so it never outlives Console's and ends with "Sign out of
+    all devices". `workspace_claim` is only what that session selects,
+    re-checked against a membership on every request as a session's
+    `tenant_id` claim is: it has no foreign key, and is not called
+    `tenant_id`, since a `tenant_id` keyed to `tenants` would make the table
+    tenant-scoped.
+
+    `console_sid` is the minting session's id, null for a cookie from before
+    sessions had ids, and `browser_sid` the session the code was redeemed for.
+    Signing out of the first signs out the second (`auth.sign_out_session`),
+    so a redeemed row that links them is kept as long as that session could
+    be live, `SESSION_MAX_AGE` after `auth_time`; any other row goes an hour
+    after it expired.
+
+    Not tenant-scoped: it is redeemed before any workspace is known, by a
+    browser that may hold no session at all.
+    """
+
+    __tablename__ = "browser_handoffs"
+    __table_args__ = (
+        UniqueConstraint("code_hash", name="uq_browser_handoffs_code_hash"),
+        Index("ix_browser_handoffs_expires_at", "expires_at"),
+        Index("ix_browser_handoffs_user_id_created_at", "user_id", "created_at"),
+        Index("ix_browser_handoffs_console_sid", "console_sid"),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    code_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    user_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    workspace_claim: Mapped[str | None] = mapped_column(Text, nullable=True)
+    next_path: Mapped[str] = mapped_column(Text, nullable=False)
+    auth_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    session_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    console_sid: Mapped[str | None] = mapped_column(Text, nullable=True)
+    browser_sid: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    used_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class WorkspaceServiceSetting(TenantScoped, Base):

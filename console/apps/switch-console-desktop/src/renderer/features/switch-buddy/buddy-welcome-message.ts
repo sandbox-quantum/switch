@@ -31,15 +31,15 @@ export function buddyWelcomeMessage({
 }): string {
   return [
     // The intro calls it switch-buddy; the name it goes by from here on carries the person too.
-    `Hi${firstName ? ` ${firstName}` : ''}, I’m **${agentName}**, your ${agentName === 'switch-buddy' ? 'assistant' : 'switch-buddy'} for everything Switch. 👋`,
+    `Hi${firstName ? ` ${firstName}` : ''}, I’m **${agentName}**, your ${agentName === 'switch-buddy' ? 'assistant' : 'switch-buddy'} for everything Switch Rooms. 👋`,
     '',
-    `Switch brings your agents to where your team already works: ${platformList()}. Your team talks to agents in the channels they already use, and people and agents work together in shared rooms.`,
+    `Switch Rooms brings your agents to where your team already works: ${platformList()}. Your team talks to agents in the channels they already use, and people and agents work together in shared rooms.`,
     '',
     'I can help you:',
-    '- 🔌 Connect your team’s chat app',
+    '- 🔌 Connect your team’s messaging app',
     '- 🤖 Create agents and bring them into your channels',
     '- 🏠 Set up rooms where your team and agents work together',
-    '- 💬 Answer anything about Switch',
+    '- 💬 Answer anything about Switch Rooms',
     '',
     'For example, teams use rooms to:',
     '- 🔍 Review pull requests, with an agent working alongside the engineers',

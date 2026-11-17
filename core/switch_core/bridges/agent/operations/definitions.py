@@ -61,7 +61,8 @@ from switch_core.clients.agent_admin import DELETE_CONFIRM_SECONDS
 from switch_core.db.models import CollaborationBridge, User, require_tenant_id
 from switch_core.db.session_scope import shared_tenant_session
 from switch_core.db.stores.template_store import TemplateStore
-from switch_core.feature_flags import AGENT_MANAGEMENT, SWITCH_BUDDY
+from switch_core.feature_flags import SWITCH_BUDDY
+from switch_core.names import refuse_hidden_characters
 from switch_core.providers.registry import offered_provider_ids
 from switch_core.rooms_yaml import GroupSpec, RoomReader, template_json_schema
 from switch_core.template_guide import TEMPLATE_GUIDE
@@ -326,7 +327,7 @@ async def connect_to_room(
         bridge,
         include_general=include_general_instructions,
     )
-    resources = await protocol.list_room_resources(room.id)
+    resources = await protocol.list_room_resources(agent_id, room.id)
     linked_rooms = await _decorate_linked_rooms(
         protocol, agent_id, resources["linked_rooms"]
     )
@@ -505,13 +506,17 @@ async def list_references() -> dict[str, Any]:
 
     Packages bundle other refs and documents and have their own
     `instructions`; their `references` and `documents` arrays mirror the
-    same shape as the top-level fields.
+    same shape as the top-level fields. An entry in a package marked
+    `"withheld": true` is someone else's, which they keep private: the
+    package's owner cannot share it, so it comes without its `value` or
+    `instructions` and cannot be loaded. Say so if you need it, rather than
+    guessing at what it holds.
     """
     agent_id = get_agent_id()
     room_id = await require_connected_room()
     protocol = get_protocol()
     await protocol.require_room_member(agent_id, room_id)
-    return await protocol.list_room_resources(room_id)
+    return await protocol.list_room_resources(agent_id, room_id)
 
 
 @operation
@@ -536,7 +541,7 @@ async def list_linked_rooms() -> list[dict[str, Any]]:
     room_id = await require_connected_room()
     protocol = get_protocol()
     await protocol.require_room_member(agent_id, room_id)
-    resources = await protocol.list_room_resources(room_id)
+    resources = await protocol.list_room_resources(agent_id, room_id)
     return await _decorate_linked_rooms(protocol, agent_id, resources["linked_rooms"])
 
 
@@ -551,7 +556,7 @@ async def load_internal_documents(ids: list[str]) -> list[dict[str, Any]]:
     Returns:
         List of {id, description, content} entries in the same order as
         the requested ids. Raises an error if any id is not attached to the
-        current room.
+        current room, or is withheld in the package it reaches the room by.
 
     """
     agent_id = get_agent_id()
@@ -982,15 +987,12 @@ async def create_room(
 ) -> dict[str, Any]:
     """Create a new Switch room.
 
-    Rooms are bridged by default: omitting `bridge_id` uses the instance's
-    default bridge (on a standalone deployment, the bundled Mattermost), so the
-    room is readable by humans without the caller knowing the deployment's
-    topology. Pass `bridge_id` to choose a specific bridge — call
-    `list_bridges` to discover ids and present the choice to the user. Pass
-    `internal_only=True` for an agent-only room with no external channel.
-
-    If the instance has no default bridge configured and you omit `bridge_id`,
-    the room is created internal-only.
+    Omitting `bridge_id` uses the instance's default bridge if one is
+    configured; otherwise the room is unbridged and its people (its creator and
+    the `user_names` given) read it in Switch Console. Pass `bridge_id` to
+    choose a specific bridge — call `list_bridges` to discover ids and present
+    the choice to the user. Pass `internal_only=True` for an agent-only room
+    with no external channel.
 
     Args:
         name: Display name for the room.
@@ -1007,7 +1009,7 @@ async def create_room(
             `your_usernames`). Only meaningful for bridged rooms; to put your
             owner in an internal-only room, use `include_owner`.
         channel_type: One of "channel_public", "channel_private", or "direct".
-            Required when `bridge_id` is set; ignored for internal-only rooms.
+            Omitted, a new channel is private.
             Use "direct" to open a 1:1 DM room — exactly one entry in
             `agent_names` and one in `user_names`. On Slack this is provisioned
             as a private channel with that user invited; the user must already
@@ -1029,10 +1031,11 @@ async def create_room(
             entry is `{"target_room_id": "...", "label": "..."}`.
         read_visibility: Who may see the room: "public" (everyone in the
             workspace) or "private" (those taking part, its owner and
-            admins). Omit it and the room follows its channel: a private
-            channel or DM makes a private room, a public channel or no
-            channel a public one. Only the owner and admins change a room,
-            whichever it is.
+            admins). Omit it and the room follows its channel: a public
+            channel makes a public room, anything else a private one, and a
+            room is private unless you ask for public. A private channel or
+            DM cannot have a public room. Only the owner and admins change a
+            room, whichever it is.
         write_visibility: Ignored. Accepted so older instructions that pass
             it still work; a room has no write visibility of its own.
         group_name: Optional existing room group to file this room under (a
@@ -1077,6 +1080,7 @@ async def create_room(
         after the room was created (race-time failures only; predictable
         errors like missing ids abort creation upfront).
     """
+    refuse_hidden_characters(name)
     agent_id = get_agent_id()
     protocol = get_protocol()
     async with _refusals_reported("create_room"):
@@ -1862,6 +1866,7 @@ async def create_room_group(
         member_rooms, child_groups} for the new group (room_count 0, empty
         member_rooms/child_groups). `path` is the root-first ancestry.
     """
+    refuse_hidden_characters(name)
     agent_id = get_agent_id()
     protocol = get_protocol()
     return await protocol.create_room_group(
@@ -1903,7 +1908,9 @@ async def create_room_from_yaml(
 
     A ``kickoff:`` is posted with your authority, not your owner's, and with
     the run so far appended: the rooms that led here and who made them. The
-    call is refused, with nothing created, when the kickoff mentions an agent
+    call is refused, with nothing created, when a room names an agent that
+    takes requests from neither your owner nor you (as `create_room` is),
+    when the kickoff mentions an agent
     that does not accept messages from you, when you ask for a room with the
     same kickoff as one you already made further up the same path (the run is
     then paused until your owner lets it continue), when the run was paused
@@ -2047,6 +2054,7 @@ async def _provision_as_agent(
     await _require_agents_exist(
         [n for spec, _ in room_specs for n in spec.agents if n not in created_names]
     )
+    await rooms_yaml.check_invites(parsed, user_id=owner.id, agent_id=agent.id)
     kickoffs = [
         (text, list(spec.agents), dict(spec.aliases or {}))
         for spec, text in room_specs
@@ -2140,7 +2148,6 @@ def _agent_templates() -> AgentTemplates:
     return AgentTemplates(
         TemplateStore(),
         max_bytes=protocol.config.template_max_bytes,
-        agent_management=protocol.config.feature_flags[AGENT_MANAGEMENT],
         switch_buddy=protocol.config.feature_flags[SWITCH_BUDDY],
         telemetry=protocol.telemetry,
     )
@@ -2297,7 +2304,7 @@ async def _count_run(template_id: str) -> None:
     reported as failed to an agent that might then run it again."""
     try:
         async with get_protocol().session_factory() as session:
-            await TemplateStore().record_run(session, template_id)
+            await TemplateStore().record_run(session, template_id, run_by=None)
             await session.commit()
     except Exception:
         logger.exception("Could not count a run of template %s", template_id)
@@ -2519,6 +2526,9 @@ async def list_agents(
         connection_model, tool_count, model_count, owner_id, owner_name,
         oauth_client_id, created_at, parent_agent_id, known_agent_type,
         known_agent_options}.
+        `known_agent_options` and `oauth_client_id`, how an agent is set up
+        on its owner's machine, are null unless your owner owns the agent or
+        administers the workspace.
         `icon_url` is null when the agent has no icon set. `display_name` is
         null when the agent has no display name set; fall back to `name`.
         Address agents by `name`: `display_name` is a human label that routes
@@ -2538,7 +2548,10 @@ async def get_agent_detail(agent_id: str) -> dict[str, Any]:
 
     Readable for any agent (not just your own). Use it to inspect another
     agent's configuration, capabilities, room memberships, and live sessions.
-    A room your owner cannot read is not named in it.
+    A room your owner cannot read is not named in it, and nor is a session
+    there. Unless your owner owns the agent or administers the workspace,
+    `known_agent_options`, `oauth_client_id` and a session's `controller_id`
+    (how and where it is set up on its owner's machine) are null.
 
     Args:
         agent_id: The target agent's id (from `list_participants` or
@@ -2809,7 +2822,8 @@ async def get_room_detail(room_id: str) -> dict[str, Any]:
     Returns:
         {id, name, description, channel_type, admin_mode, instructions,
         matrix_room_id, created_at, bridge_id, bridge_display_name,
-        external_channel_id, group_id, group_name, group_path (the group's
+        external_channel_id, channel_url (an https link that opens the room's
+        channel on its app, or null), group_id, group_name, group_path (the group's
         root-first ancestry, e.g. "Parent / Child"; null when standalone),
         agent_names, agent_statuses (keyed by agent name), connected_user_names,
         aliases (per-room agent aliases, keyed by agent name → alias),
@@ -2886,6 +2900,8 @@ async def update_room(
         The full, updated room detail (same shape as get_room_detail),
         including the room's current `aliases` map.
     """
+    if name is not None:
+        refuse_hidden_characters(name)
     agent_id = get_agent_id()
     protocol = get_protocol()
     detail = await protocol.update_room(

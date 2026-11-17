@@ -13,7 +13,7 @@ import {
 import { useState } from "react";
 import { createReference, loadReferenceTypes } from "../../data/api";
 import { AccessSelect } from "../../components/AccessControls";
-import { type AccessLevel, fromAccessLevel } from "../../data/visibility";
+import { type AccessLevel, LISTED_RESOURCE_HELPERS, fromAccessLevel } from "../../data/visibility";
 import { useLoad } from "../workspace/useLoad";
 import UrlsValueForm from "./value_forms/UrlsValueForm";
 
@@ -146,7 +146,12 @@ export default function CreateReferenceDialog({ open, onClose, onCreated }: Prop
             helperText="Sent to agents on connect. Explain how to use this reference."
           />
 
-          <AccessSelect value={access} onChange={setAccess} disabled={submitting} />
+          <AccessSelect
+            value={access}
+            onChange={setAccess}
+            disabled={submitting}
+            helpers={LISTED_RESOURCE_HELPERS}
+          />
 
           {error && <Alert severity="error">{error}</Alert>}
         </Stack>

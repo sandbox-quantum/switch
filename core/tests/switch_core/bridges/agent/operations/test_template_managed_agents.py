@@ -672,8 +672,12 @@ agent:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("channel_type", ["direct", "group"])
+@pytest.mark.parametrize(
+    ("owner_in_it", "refusal"),
+    [(False, "join_unknown_room"), (True, "join_fixed_membership")],
+)
 async def test_a_new_agent_never_joins_a_direct_or_group_conversation(
-    managed, channel_type
+    managed, channel_type, owner_in_it, refusal
 ):
     """Its platform fixes who is in it, however writable its room is: a DM the
     bridge adopted is writable by every member of the workspace."""
@@ -689,6 +693,7 @@ async def test_a_new_agent_never_joins_a_direct_or_group_conversation(
                 transport_room_id="!someones-dm:test.local",
                 name="someones-dm",
                 description="d",
+                owner_id=managed["user_id"] if owner_in_it else None,
                 channel_type=channel_type,
                 write_visibility="public",
             )
@@ -706,7 +711,10 @@ agent:
     stored = await _stored(managed, template, kind="agent")
     with pytest.raises(AgentsNotCreated) as e:
         await _as(managed["agent_id"], run_template, template_id=stored)
-    assert {p.code for p in e.value.problems} == {"join_fixed_membership"}
+    # Someone else's DM or group is hidden from the agent's owner, so it is
+    # not a room the template can name at all; one they are in is refused
+    # for what it is.
+    assert {p.code for p in e.value.problems} == {refusal}
     assert managed["management"].created == []
     assert added == []
 

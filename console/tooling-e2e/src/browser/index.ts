@@ -2,13 +2,7 @@ import { expect } from 'vitest';
 import { ROLE_MATRIX_SCENARIOS } from './role-matrix/index.ts';
 import { browserHeader, type BrowserScenario } from './scenario.ts';
 
-/** The start page of each layout, by its heading. */
-const START_PAGE_HEADING = { current: 'Rooms', v2: 'Overview' } as const;
-
-/**
- * The login form signs the admin in, and the app opens on its start page: the
- * rooms list, or Overview in the new layout.
- */
+/** The login form signs the admin in, and the app opens on Home. */
 const signIn: BrowserScenario = {
   header: browserHeader('gateway-sign-in', [
     'GET /gateway/auth/config',
@@ -17,9 +11,8 @@ const signIn: BrowserScenario = {
   ]),
   async run({ ui }) {
     await ui.signIn();
-    const heading = START_PAGE_HEADING[ui.layout];
     await expect
-      .poll(() => ui.page.getByRole('heading', { name: heading, level: 5 }).isVisible())
+      .poll(() => ui.page.getByRole('heading', { name: 'Home', level: 5 }).isVisible())
       .toBe(true);
     await ui.settled();
   },

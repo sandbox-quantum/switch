@@ -22,8 +22,7 @@ just run                 # run switch-core locally (:8000)
 just gateway-dev         # run the gateway frontend (separate terminal)
 ```
 
-`just up` starts the **supporting services** in Docker — PostgreSQL and
-Mattermost. You run **switch-core** and the **gateway** yourself so you get
+`just up` starts the **supporting services** in Docker — PostgreSQL. You run **switch-core** and the **gateway** yourself so you get
 hot-reload while developing: `just run` (switch-core on `:8000`) and
 `just gateway-dev` (the frontend), each in its own terminal. Stop the stack with
 `just down`, or `just reset` to also wipe the volumes.

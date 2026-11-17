@@ -139,7 +139,10 @@
     {
       "route": "DELETE /gateway/decision-settings",
       "auth": "session",
-      "flags": []
+      "flags": [
+        "decision_routing",
+        "follow_the_conversation"
+      ]
     },
     {
       "route": "DELETE /gateway/documents/{document_id}",
@@ -149,23 +152,17 @@
     {
       "route": "DELETE /gateway/management/agents/{agent_id}",
       "auth": "session",
-      "flags": [
-        "agent_management"
-      ]
+      "flags": []
     },
     {
       "route": "DELETE /gateway/management/controllers/{controller_id}",
       "auth": "session",
-      "flags": [
-        "agent_management"
-      ]
+      "flags": []
     },
     {
       "route": "DELETE /gateway/management/controllers/{controller_id}/provider-logins/{provider}",
       "auth": "session",
-      "flags": [
-        "agent_management"
-      ]
+      "flags": []
     },
     {
       "route": "DELETE /gateway/messaging-apps/installs/{install_id}",
@@ -201,16 +198,12 @@
     {
       "route": "DELETE /gateway/organizations/current/workspaces/{workspace_id}/devices/{controller_id}",
       "auth": "session",
-      "flags": [
-        "agent_management"
-      ]
+      "flags": []
     },
     {
       "route": "DELETE /gateway/organizations/current/workspaces/{workspace_id}/managed-agents/{agent_id}",
       "auth": "session",
-      "flags": [
-        "agent_management"
-      ]
+      "flags": []
     },
     {
       "route": "DELETE /gateway/organizations/current/workspaces/{workspace_id}/members/{user_id}",
@@ -360,11 +353,6 @@
     },
     {
       "route": "DELETE /gateway/trust-settings",
-      "auth": "session",
-      "flags": []
-    },
-    {
-      "route": "DELETE /gateway/users/{user_id}",
       "auth": "session",
       "flags": []
     },
@@ -610,7 +598,10 @@
     {
       "route": "GET /gateway/decision-settings",
       "auth": "session",
-      "flags": []
+      "flags": [
+        "decision_routing",
+        "follow_the_conversation"
+      ]
     },
     {
       "route": "GET /gateway/docs",
@@ -692,37 +683,27 @@
     {
       "route": "GET /gateway/management/agents",
       "auth": "session",
-      "flags": [
-        "agent_management"
-      ]
+      "flags": []
     },
     {
       "route": "GET /gateway/management/agents/{agent_id}",
       "auth": "session",
-      "flags": [
-        "agent_management"
-      ]
+      "flags": []
     },
     {
       "route": "GET /gateway/management/controllers",
       "auth": "session",
-      "flags": [
-        "agent_management"
-      ]
+      "flags": []
     },
     {
       "route": "GET /gateway/management/controllers/{controller_id}/provider-logins",
       "auth": "session",
-      "flags": [
-        "agent_management"
-      ]
+      "flags": []
     },
     {
       "route": "GET /gateway/management/operations",
       "auth": "session",
-      "flags": [
-        "agent_management"
-      ]
+      "flags": []
     },
     {
       "route": "GET /gateway/management/providers",
@@ -732,9 +713,7 @@
     {
       "route": "GET /gateway/management/workspace",
       "auth": "session",
-      "flags": [
-        "agent_management"
-      ]
+      "flags": []
     },
     {
       "route": "GET /gateway/messaging-apps",
@@ -749,11 +728,6 @@
     {
       "route": "GET /gateway/openapi.json",
       "auth": "none",
-      "flags": []
-    },
-    {
-      "route": "GET /gateway/operator/workspaces",
-      "auth": "session",
       "flags": []
     },
     {
@@ -790,9 +764,7 @@
     {
       "route": "GET /gateway/organizations/current/devices",
       "auth": "session",
-      "flags": [
-        "agent_management"
-      ]
+      "flags": []
     },
     {
       "route": "GET /gateway/organizations/current/guardrails",
@@ -824,6 +796,11 @@
     },
     {
       "route": "GET /gateway/organizations/current/workspaces/{workspace_id}/members/{user_id}/removal",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "GET /gateway/organizations/without-workspace",
       "auth": "session",
       "flags": []
     },
@@ -1172,11 +1149,6 @@
       "flags": []
     },
     {
-      "route": "GET /gateway/users",
-      "auth": "session",
-      "flags": []
-    },
-    {
       "route": "GET /gateway/version",
       "auth": "session",
       "flags": []
@@ -1216,16 +1188,12 @@
     {
       "route": "PATCH /gateway/management/agents/{agent_id}",
       "auth": "session",
-      "flags": [
-        "agent_management"
-      ]
+      "flags": []
     },
     {
       "route": "PATCH /gateway/management/controllers/{controller_id}",
       "auth": "session",
-      "flags": [
-        "agent_management"
-      ]
+      "flags": []
     },
     {
       "route": "PATCH /gateway/organizations/current",
@@ -1320,6 +1288,21 @@
     {
       "route": "POST /gateway/api-keys",
       "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/auth/handoff",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/auth/handoff/peek",
+      "auth": "none",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/auth/handoff/redeem",
+      "auth": "none",
       "flags": []
     },
     {
@@ -1459,7 +1442,10 @@
     {
       "route": "POST /gateway/decision-settings/test",
       "auth": "session",
-      "flags": []
+      "flags": [
+        "decision_routing",
+        "follow_the_conversation"
+      ]
     },
     {
       "route": "POST /gateway/documents",
@@ -1525,6 +1511,11 @@
       "flags": []
     },
     {
+      "route": "POST /gateway/invitations/preview",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "POST /gateway/joinable-tenants/{tenant_id}/join",
       "auth": "session",
       "flags": []
@@ -1532,30 +1523,22 @@
     {
       "route": "POST /gateway/management/agents",
       "auth": "session",
-      "flags": [
-        "agent_management"
-      ]
+      "flags": []
     },
     {
       "route": "POST /gateway/management/controllers",
       "auth": "session",
-      "flags": [
-        "agent_management"
-      ]
+      "flags": []
     },
     {
       "route": "POST /gateway/management/enrollment-codes",
       "auth": "session",
-      "flags": [
-        "agent_management"
-      ]
+      "flags": []
     },
     {
       "route": "POST /gateway/management/operations",
       "auth": "session",
-      "flags": [
-        "agent_management"
-      ]
+      "flags": []
     },
     {
       "route": "POST /gateway/messaging-apps/{platform}/claim",
@@ -1602,6 +1585,11 @@
     },
     {
       "route": "POST /gateway/organizations/current/workspaces/{workspace_id}/restore",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/organizations/{organization_id}/leave",
       "auth": "session",
       "flags": []
     },
@@ -1874,16 +1862,6 @@
       "flags": []
     },
     {
-      "route": "POST /gateway/users",
-      "auth": "session",
-      "flags": []
-    },
-    {
-      "route": "POST /gateway/users/{user_id}/sessions/revoke",
-      "auth": "session",
-      "flags": []
-    },
-    {
       "route": "PUT /gateway/agents/{agent_id}/addressing-policy",
       "auth": "session",
       "flags": []
@@ -1950,21 +1928,20 @@
     {
       "route": "PUT /gateway/decision-settings",
       "auth": "session",
-      "flags": []
+      "flags": [
+        "decision_routing",
+        "follow_the_conversation"
+      ]
     },
     {
       "route": "PUT /gateway/management/agents/{agent_id}",
       "auth": "session",
-      "flags": [
-        "agent_management"
-      ]
+      "flags": []
     },
     {
       "route": "PUT /gateway/management/controllers/{controller_id}/provider-logins/{provider}",
       "auth": "session",
-      "flags": [
-        "agent_management"
-      ]
+      "flags": []
     },
     {
       "route": "PUT /gateway/organizations/current/connector-apps/{service}",
@@ -2005,7 +1982,10 @@
     {
       "route": "PUT /gateway/rooms/{room_id}/auto-route",
       "auth": "session",
-      "flags": []
+      "flags": [
+        "decision_routing",
+        "follow_the_conversation"
+      ]
     },
     {
       "route": "PUT /gateway/rooms/{room_id}/group",

@@ -15,12 +15,10 @@ from pydantic import AliasChoices, BaseModel, Field, field_validator, model_vali
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from switch_core.feature_flags import (
-    AGENT_CHATS,
-    AGENT_MANAGEMENT,
+    ALWAYS_ON_FEATURE_FLAGS,
     BUDDY_SLACK_HANDOFF,
     DECISION_ROUTING,
     FOLLOW_THE_CONVERSATION,
-    GROUP_CHATS,
     HOSTED_AGENTS,
     HOSTED_AWAKE_BUDGETS,
     HOSTED_CLOUD_FILES,
@@ -237,9 +235,9 @@ class SwitchConfig(BaseSettings):
     outbound_allowed_private_hosts: str = ""
 
     # Feature flags that are on for this deployment: comma-separated keys from
-    # `feature_flags.KNOWN_FEATURE_FLAGS`. Every other flag is off. Fixed for
-    # the life of the process; an unknown key is a startup error rather than a
-    # silently ignored typo.
+    # `feature_flags.KNOWN_FEATURE_FLAGS`. Every other flag is off, except the
+    # `ALWAYS_ON_FEATURE_FLAGS`. Fixed for the life of the process; an unknown
+    # key is a startup error rather than a silently ignored typo.
     feature_flags_enabled: str = ""
     # Set by Switch Console on a server it runs for someone (MANAGED_BY_CONSOLE),
     # so an agent can tell them apart from Switch Cloud and a self-hosted server.
@@ -355,6 +353,33 @@ class SwitchConfig(BaseSettings):
     # OIDC first sign-in alike), read from the users table so it holds across
     # replicas. Sign-up is refused once the count reaches this.
     gateway_signup_max_per_hour: int = Field(default=20, ge=1)
+    # Sign-ups from one client address in an hour, in front of the cap above,
+    # so that one client cannot spend everyone's (`gateway/login_limits.py`).
+    gateway_signup_max_per_hour_per_address: int = Field(default=5, ge=1)
+    # Password sign-in guessing (`gateway/login_limits.py`). Failures with one
+    # email address, whether or not an account has it, lock it out for
+    # `gateway_login_lock_minutes` once there are this many within the window,
+    # and the few before that make each next attempt wait a little longer. A
+    # client address may fail more often, as many people can share one. A
+    # success clears the email's count; the operator can clear it too
+    # (`DELETE /users/{id}/sign-in-lock`). Kept in the `auth_attempts` table,
+    # so the counts hold across replicas. Behind a proxy, client addresses are
+    # counted only once uvicorn trusts the proxy (`FORWARDED_ALLOW_IPS`).
+    #
+    # The per-email lock is a trade-off, made on purpose: since failures from
+    # anywhere count, anyone who knows a person's email can pause that
+    # person's password sign-in for `gateway_login_lock_minutes` by failing
+    # `gateway_login_max_failures` times with it, and keep it paused by
+    # repeating that. It never touches their sessions or single sign-on.
+    # Raising `gateway_login_max_failures` or shortening
+    # `gateway_login_lock_minutes` makes such a lock cheaper to sit out and
+    # costlier to keep up, at the price of more guesses at a password;
+    # lowering them does the reverse. `switch.auth.sign_in_lockouts` counts
+    # the lock-outs, so a run of them aimed at one person shows.
+    gateway_login_max_failures: int = Field(default=10, ge=1)
+    gateway_login_max_failures_per_address: int = Field(default=50, ge=1)
+    gateway_login_failure_window_minutes: int = Field(default=15, ge=1)
+    gateway_login_lock_minutes: int = Field(default=15, ge=1)
     # The name of a request header that a trusted edge in front of the server
     # (prod's WAF) adds to requests from countries where new accounts are not
     # offered. A request carrying it, with any value (empty included), may not
@@ -362,7 +387,8 @@ class SwitchConfig(BaseSettings):
     # the two ways a person creates their own. The edge must therefore add it
     # only to requests it refuses, never set it to a "no" value for the rest.
     # Existing accounts sign in as before, and accounts that are not sign-ups
-    # (`POST /users`, the seeded admin, the bootstrap owner) are unaffected.
+    # (`switch-accounts create`, the seeded admin, the bootstrap owner) are
+    # unaffected.
     # Trusting the header's presence is safe, since a client that sends it
     # only refuses itself; its absence proves nothing, because the edge
     # decides where a request comes from and this server never checks. Unset
@@ -370,8 +396,6 @@ class SwitchConfig(BaseSettings):
     gateway_signup_refused_header: str | None = None
     # How many cloud machines the bound tenant may have at once; 0 means this
     # server cannot run them. The `hosted_agents` flag is what offers them.
-    # Cloud machines run the agent controller, so above 0 this needs the
-    # `agent_management` flag.
     hosted_launch_capacity: int = Field(default=0, ge=0, le=100)
     hosted_idle_stop_minutes: int = Field(default=30, ge=0, le=1440)
     # How long a message may wait for room on a full box before it's let go and the agent shows
@@ -487,8 +511,8 @@ class SwitchConfig(BaseSettings):
     #   gateway_max_workspaces_per_user.
     #
     # Who may sign in at all is the IdP's decision, not this one: this only
-    # decides where a new account lands. Accounts an administrator creates
-    # (`POST /users`) always join that administrator's workspace.
+    # decides where a new account lands. Accounts the operator creates
+    # (`switch-accounts create`) join no workspace.
     gateway_signup_mode: Literal["default_tenant", "invite_only", "open"] = (
         "default_tenant"
     )
@@ -989,15 +1013,14 @@ class SwitchConfig(BaseSettings):
     # `AGENT_AUTH_CACHE_TTL_SECONDS` or while the signal connection listens.
     room_access_cache_max_entries: int = Field(default=20_000, ge=1)
 
-    # AGENT_MANAGEMENT_ENABLED, replaced by the `agent_management` feature flag.
-    # Read only to refuse a deployment that still turns it on, which would
-    # otherwise lose agent management without a word.
+    # AGENT_MANAGEMENT_ENABLED, replaced: agent management is always on. Read
+    # only to refuse a deployment that still turns it on.
     legacy_agent_management_enabled: bool | None = Field(
         default=None, validation_alias="agent_management_enabled"
     )
-    # Signs controller access tokens. Required (at least 32 characters) when
-    # agent management is on, and deliberately separate from SECRET_KEYS so
-    # rotating one never invalidates the other.
+    # Signs controller access tokens. Required (at least 32 characters), and
+    # deliberately separate from SECRET_KEYS so rotating one never invalidates
+    # the other.
     controller_token_secret: str | None = None
     # How often a controller must report status. Sent to controllers as
     # `report_within_s`; a controller that has not reported for three of these
@@ -1120,22 +1143,14 @@ class SwitchConfig(BaseSettings):
             )
         if self.legacy_agent_management_enabled:
             raise ValueError(
-                "AGENT_MANAGEMENT_ENABLED has been replaced by a feature flag: "
-                f"remove it and add {AGENT_MANAGEMENT!r} to FEATURE_FLAGS_ENABLED."
+                "AGENT_MANAGEMENT_ENABLED has been replaced: remove it. "
+                "Agent management is always on."
             )
-        if not self.agent_management_enabled:
-            if self.hosted_launch_capacity > 0:
-                raise ValueError(
-                    "HOSTED_LAUNCH_CAPACITY needs the "
-                    f"{AGENT_MANAGEMENT!r} feature flag: cloud machines run the "
-                    "agent controller."
-                )
-            return self
         if not self.controller_token_secret:
             raise ValueError(
-                "CONTROLLER_TOKEN_SECRET is required when the "
-                f"{AGENT_MANAGEMENT!r} feature flag is on: it signs the access "
-                "tokens agent controllers use."
+                "CONTROLLER_TOKEN_SECRET is required: it signs the access "
+                "tokens agent controllers use. Set it to a random value of at "
+                "least 32 characters."
             )
         if len(self.controller_token_secret) < 32:
             raise ValueError(
@@ -1536,8 +1551,9 @@ class SwitchConfig(BaseSettings):
 
     @property
     def feature_flags(self) -> dict[str, bool]:
-        """Every known flag and whether this deployment turned it on."""
-        enabled = self._enabled_feature_flags()
+        """Every known flag and whether this deployment turned it on, or
+        whether it is on whatever the deployment says."""
+        enabled = self._enabled_feature_flags() | ALWAYS_ON_FEATURE_FLAGS
         return {key: key in enabled for key in sorted(KNOWN_FEATURE_FLAGS)}
 
     @property
@@ -1549,10 +1565,6 @@ class SwitchConfig(BaseSettings):
         if self.managed_by_console:
             return "managed_by_console"
         return "self_hosted"
-
-    @property
-    def agent_management_enabled(self) -> bool:
-        return self.feature_flags[AGENT_MANAGEMENT]
 
     @property
     def hosted_agents_enabled(self) -> bool:
@@ -1581,14 +1593,6 @@ class SwitchConfig(BaseSettings):
     @property
     def decision_routing_enabled(self) -> bool:
         return self.feature_flags[DECISION_ROUTING]
-
-    @property
-    def agent_chats_enabled(self) -> bool:
-        return self.feature_flags[AGENT_CHATS]
-
-    @property
-    def group_chats_enabled(self) -> bool:
-        return self.feature_flags[GROUP_CHATS]
 
     @property
     def buddy_slack_handoff_enabled(self) -> bool:

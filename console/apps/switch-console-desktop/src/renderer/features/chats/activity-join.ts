@@ -204,6 +204,24 @@ export function placeTurns(
   return placed;
 }
 
+/** The latest own reply after a turn's work-log anchor, stopping at its next turn. */
+export function latestTurnReply(
+  messages: readonly ChatMessage[],
+  agentId: string,
+  bound: ReadonlyMap<string, TurnActivity>,
+  anchorId: string
+): string {
+  const start = messages.findIndex((each) => each.messageId === anchorId);
+  if (start === -1) return anchorId;
+  let anchor = anchorId;
+  for (let next = start + 1; next < messages.length; next++) {
+    const each = messages[next];
+    if (bound.has(each.messageId)) break;
+    if (isAgentReply(each, agentId)) anchor = each.messageId;
+  }
+  return anchor;
+}
+
 /**
  * The host's notices of turns that ended without a reply, each matched to the
  * turn it reports: the agent's latest turn before it that shows the same

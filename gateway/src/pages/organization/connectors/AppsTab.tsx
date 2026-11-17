@@ -19,6 +19,7 @@ import {
   PUBLIC_URL_BANNER,
   attention,
   cardState,
+  changeBlocked,
   missingPublicUrl,
   notSetUpSentence,
   sentBackTo,
@@ -48,17 +49,20 @@ function AppRow({
   app,
   checkFailure,
   selected,
+  publicUrl,
   onOpen,
   onSetUp,
 }: {
   app: ConnectorApp;
   checkFailure: string | null;
   selected: boolean;
+  publicUrl: string | null;
   onOpen: () => void;
   onSetUp: () => void;
 }) {
   const state = cardState(app, checkFailure);
-  const offerSetUp = state === "not_set_up" && app.setup_blocked === null;
+  // Held back for the same reasons as the panel's own button.
+  const offerSetUp = state === "not_set_up" && !changeBlocked(app, publicUrl);
   return (
     <Stack
       direction="row"
@@ -110,7 +114,7 @@ function AppRow({
 }
 
 /**
- * Organization settings › Connectors and apps › Apps & accounts: the vendor
+ * Organization settings › Connectors › Apps & accounts: the vendor
  * apps the organization's workspaces sign in through, one row each, and the
  * row's detail in a panel beside the page. The panel is today's card, with
  * its checks, secret updates, switching and removal: the job is done rarely,
@@ -141,9 +145,11 @@ export default function AppsTab({
   useEffect(() => {
     if (setupFor === null) return;
     const app = apps.apps.find((candidate) => candidate.slug === setupFor);
-    if (app !== undefined && app.setup_blocked === null) setSettingUp(app);
+    // One that can't be set up yet opens its panel, which says why.
+    if (app !== undefined && !changeBlocked(app, apps.public_url)) setSettingUp(app);
+    else if (app !== undefined) onOpenApp(app.slug);
     onSetupDone();
-  }, [setupFor, apps.apps, onSetupDone]);
+  }, [setupFor, apps.apps, apps.public_url, onOpenApp, onSetupDone]);
 
   return (
     <ConnectorAppScopeContext.Provider value="organization">
@@ -160,6 +166,7 @@ export default function AppsTab({
             app={app}
             checkFailure={checkFailures[app.slug] ?? null}
             selected={app.slug === openApp}
+            publicUrl={apps.public_url}
             onOpen={() => onOpenApp(app.slug === openApp ? null : app.slug)}
             onSetUp={() => setSettingUp(app)}
           />
@@ -190,6 +197,7 @@ export default function AppsTab({
             <ConnectorAppCard
               app={opened}
               publicUrl={apps.public_url}
+              openSetup={false}
               checkFailure={checkFailures[opened.slug] ?? null}
               onCheckFailure={(message) =>
                 setCheckFailures((current) => {

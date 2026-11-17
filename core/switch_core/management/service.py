@@ -153,7 +153,9 @@ OPERATION_LEASE = timedelta(minutes=5)
 OPERATION_TTL = timedelta(hours=1)
 OPERATION_LIST_LIMIT = 200
 
-V1_OPERATION_KINDS = frozenset({"agent.restart", "provider.recheck"})
+V1_OPERATION_KINDS = frozenset(
+    {"agent.restart", "provider.recheck", "controller.restart"}
+)
 
 # What a Switch Cloud machine's controller is called, whatever enrolled it.
 CLOUD_MACHINE_NAME = "Switch Cloud"
@@ -2150,6 +2152,16 @@ class ManagementService:
             if params:
                 raise ManagementError(
                     422, reason_codes.VALIDATION_ERROR, "agent.restart takes no params."
+                )
+        elif kind == "controller.restart":
+            # The controller process itself, for a fix that only a fresh start
+            # picks up. A controller too old to know the kind fails it, saying
+            # so, rather than doing anything else.
+            if agent_id is not None or params:
+                raise ManagementError(
+                    422,
+                    reason_codes.VALIDATION_ERROR,
+                    "controller.restart takes no agent_id and no params.",
                 )
         else:
             provider = params.get("provider")

@@ -71,7 +71,7 @@ def test_each_route_names_the_flags_it_is_mounted_behind() -> None:
         for entry in json.loads(surface.render())["gatewayRoutes"]
     }
     assert routes["POST /gateway/rooms"] == []
-    assert routes["POST /gateway/management/agents"] == ["agent_management"]
+    assert routes["POST /gateway/management/agents"] == []
     assert routes["GET /gateway/service-connections"] == ["service_connections"]
 
 

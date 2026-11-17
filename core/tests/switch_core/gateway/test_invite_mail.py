@@ -9,9 +9,11 @@ import pytest
 
 from switch_core.gateway import invite_mail
 from switch_core.gateway.invite_mail import (
+    AdminChangeEmail,
     InviteEmail,
     InviteEmailFailed,
     SmtpInviteMailer,
+    build_admin_change_message,
     build_invite_message,
     invite_link,
 )
@@ -168,3 +170,40 @@ async def test_an_unreachable_relay_is_reported_as_a_failed_send(
 
     with pytest.raises(InviteEmailFailed):
         await _mailer("starttls").send_invitation(_INVITE)
+
+
+_ADMIN_CHANGE = AdminChangeEmail(
+    to="cy@example.com",
+    subject="Bob is no longer an organization admin of <Acme>",
+    summary="Ada made Bob a member of <Acme>, so they are no longer an "
+    "organization admin there.",
+    occurred_at=datetime(2030, 1, 2, 3, 4, tzinfo=UTC),
+    reason="Restoring access <after> the lockout",
+    audit_log_link="https://switch.example.com/settings/org/audit-log",
+)
+
+
+def test_an_admin_change_says_what_when_and_links_the_audit_log() -> None:
+    message = build_admin_change_message(_ADMIN_CHANGE, "switch@example.com")
+
+    assert message["To"] == "cy@example.com"
+    assert message["From"] == "switch@example.com"
+    assert message["Subject"] == _ADMIN_CHANGE.subject
+    plain, rich = _parts(message)
+    assert _ADMIN_CHANGE.summary in plain
+    assert "2030-01-02 03:04 UTC" in plain
+    assert "Restoring access <after> the lockout" in plain
+    assert _ADMIN_CHANGE.audit_log_link in plain
+    assert f'href="{_ADMIN_CHANGE.audit_log_link}"' in rich
+    assert "&lt;Acme&gt;" in rich and "<Acme>" not in rich
+    assert "&lt;after&gt;" in rich
+
+
+def test_an_admin_change_without_a_reason_names_none() -> None:
+    message = build_admin_change_message(
+        AdminChangeEmail(**{**_ADMIN_CHANGE.__dict__, "reason": None}),
+        "switch@example.com",
+    )
+
+    plain, _rich = _parts(message)
+    assert "reason" not in plain

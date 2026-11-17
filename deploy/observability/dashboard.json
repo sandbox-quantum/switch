@@ -1854,6 +1854,25 @@
     },
     {
       "definition": {
+        "type": "timeseries",
+        "title": "Password sign-in lock-outs, by limit (email lock-outs with no client_address ones beside them: someone keeping a person out)",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.auth.sign_in_lockouts{$service,$flint_env} by {limit}.as_count()",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 185,
+        "width": 12,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
         "type": "note",
         "content": "**Hosted agents v2 (boxes).** Empty unless `HOSTED_BOX_PROVISIONING` is on. What only a box reports, beside the v1 panels above, which cover boxes too under `backend:box`: the operator's open alerts, sessions waiting for room, restarts, out-of-memory kills and evictions, the memory guard and valve, the provider gateway, and box memory. Counts and fixed words only.",
         "background_color": "gray",
@@ -1867,7 +1886,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 181,
+        "y": 189,
         "width": 12,
         "height": 2
       }
@@ -1886,7 +1905,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 183,
+        "y": 191,
         "width": 6,
         "height": 4
       }
@@ -1905,7 +1924,7 @@
       },
       "layout": {
         "x": 6,
-        "y": 183,
+        "y": 191,
         "width": 6,
         "height": 4
       }
@@ -1932,7 +1951,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 187,
+        "y": 195,
         "width": 6,
         "height": 4
       }
@@ -1955,7 +1974,7 @@
       },
       "layout": {
         "x": 6,
-        "y": 187,
+        "y": 195,
         "width": 6,
         "height": 4
       }
@@ -1978,7 +1997,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 191,
+        "y": 199,
         "width": 6,
         "height": 4
       }
@@ -2001,7 +2020,7 @@
       },
       "layout": {
         "x": 6,
-        "y": 191,
+        "y": 199,
         "width": 6,
         "height": 4
       }

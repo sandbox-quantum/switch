@@ -108,6 +108,20 @@ describe("ConnectorAppsPage", () => {
     expect(screen.getByText(/People are sent back to https:\/\/switch\.example\.test\./)).toBeTruthy();
   });
 
+  it("opens the setup of the app a link named, and only one that still needs setting up", async () => {
+    window.history.pushState({}, "", "/settings/org/connector-apps?set_up=google-workspace");
+    serve(listOf(GITHUB, NONE_GOOGLE));
+    render(<ConnectorAppsPage />);
+    expect(await screen.findByRole("dialog")).toBeTruthy();
+    cleanup();
+
+    window.history.pushState({}, "", "/settings/org/connector-apps?set_up=github");
+    render(<ConnectorAppsPage />);
+    expect(await screen.findByText("Ready")).toBeTruthy();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    window.history.pushState({}, "", "/");
+  });
+
   it("says a GitHub App short of write lets agents read only, and reads it again after a check", async () => {
     const readOnly = { ...GITHUB, read_only: true, lacks_write: ["Contents", "Pull requests"] };
     let listed = readOnly;

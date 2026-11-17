@@ -25,6 +25,12 @@ from switch_core.db.models import (
     ServerAuditEvent,
 )
 
+# Set, to true, in the details of every audit event a platform operator's
+# server command records (`switch-accounts`, `switch-connector-apps`,
+# `switch-promote-org-admin`): no account is behind the change, so the event
+# names no actor.
+PLATFORM_OPERATOR_COMMAND = "platform_operator_command"
+
 
 class AuditAction(StrEnum):
     TENANT_CREATED = "tenant.created"
@@ -76,6 +82,9 @@ class AuditAction(StrEnum):
     SERVICE_GRANT_SET = "service_grant.set"
     SERVICE_GRANT_REMOVED = "service_grant.removed"
     AGENT_DELETION_REQUESTED = "agent.deletion_requested"
+    # Someone other than its owner, a workspace admin, narrowed who may
+    # address an agent.
+    AGENT_ADDRESSING_CHANGED = "agent.addressing_changed"
     AGENT_DELETED = "agent.deleted"
     WORKSPACE_SERVICE_ENABLED = "workspace_service.enabled"
     WORKSPACE_SERVICE_DISABLED = "workspace_service.disabled"
@@ -109,6 +118,9 @@ class AuditAction(StrEnum):
     # the clean-up of rooms made before rooms followed their channel
     # (`private_channel_rooms.py`).
     ROOM_MADE_PRIVATE = "room.made_private"
+    # Switch Console signed a browser in to the workspace with a one-time
+    # link, opening a dashboard page (`details.next`).
+    BROWSER_HANDOFF = "auth.browser_handoff"
 
 
 class OrganizationAuditAction(StrEnum):
@@ -119,8 +131,17 @@ class OrganizationAuditAction(StrEnum):
     WORKSPACE_ARCHIVED = "organization.workspace_archived"
     WORKSPACE_RESTORED = "organization.workspace_restored"
     MEMBER_ADDED_TO_WORKSPACE = "organization.member_added_to_workspace"
+    # An org admin changed someone's role in one of its workspaces, from the
+    # organization's pages (Manage admins included), or removed them from one.
+    MEMBER_WORKSPACE_ROLE_CHANGED = "organization.member_workspace_role_changed"
+    MEMBER_REMOVED_FROM_WORKSPACE = "organization.member_removed_from_workspace"
+    # Someone new to the organization joined one of its workspaces.
+    MEMBER_JOINED_BY_INVITATION = "organization.member_joined_by_invitation"
+    MEMBER_JOINED_BY_DOMAIN = "organization.member_joined_by_domain"
     ROLE_CHANGED = "organization.role_changed"
     MEMBER_REMOVED = "organization.member_removed"
+    # Someone in none of its workspaces left it themselves.
+    MEMBER_LEFT = "organization.member_left"
     CONNECTOR_APP_SAVED = "organization.connector_app_saved"
     CONNECTOR_APP_REMOVED = "organization.connector_app_removed"
     SERVICE_SET = "organization.service_set"
@@ -157,12 +178,21 @@ class ServerAuditAction(StrEnum):
     CONNECTOR_APP_SAVED = "connector_app.saved"
     CONNECTOR_APP_IMPORTED = "connector_app.imported"
     CONNECTOR_APP_REMOVED = "connector_app.removed"
+    # An operator added an account, in no workspace (`switch-accounts create`).
+    USER_CREATED = "user.created"
+    # An operator made an account a platform operator, or a platform operator
+    # a regular account (`switch-accounts grant-operator`, `revoke-operator`).
+    USER_PROMOTED = "user.promoted"
+    USER_DEMOTED = "user.demoted"
     USER_DELETED = "user.deleted"
     USER_DELETION_REFUSED = "user.deletion_refused"
     USER_DELETION_FAILED = "user.deletion_failed"
     # Every session the account held was ended, by the person ("Sign out of
     # all devices") or by the operator for them.
     USER_SESSIONS_ENDED = "user.sessions_ended"
+    # The operator lifted the lock failed password sign-ins put on an account's
+    # email address, so its owner could try again at once.
+    USER_SIGN_IN_LOCK_CLEARED = "user.sign_in_lock_cleared"
     WORKSPACE_DELETED = "workspace.deleted"
     # A run of the operator's purge of an organization at its owner's request
     # (`accounts/organization_purge.py`) began deleting, naming the accounts
@@ -300,6 +330,33 @@ async def list_audit_events(
         query.order_by(AuditEvent.occurred_at.desc(), AuditEvent.id.desc()).limit(limit)
     )
     return list(result.scalars().all())
+
+
+async def last_removed_by_someone_else(
+    session: AsyncSession, *, tenant_id: str, user_id: str
+) -> bool:
+    """Whether the last time `user_id` was removed from `tenant_id`, someone
+    other than themselves removed them: an admin, an organization admin, or
+    the organization's directory. False for someone never removed, or who
+    last left on their own.
+
+    Read from the workspace's own log, the one record of who removed whom,
+    which the runtime role can add to but not rewrite. Names its tenant as
+    `list_audit_events` does.
+    """
+    actor = await session.execute(
+        select(AuditEvent.actor_user_id)
+        .where(
+            AuditEvent.tenant_id == tenant_id,
+            AuditEvent.action == AuditAction.MEMBER_REMOVED.value,
+            AuditEvent.target_type == "user",
+            AuditEvent.target_id == user_id,
+        )
+        .order_by(AuditEvent.occurred_at.desc(), AuditEvent.id.desc())
+        .limit(1)
+    )
+    row = actor.first()
+    return row is not None and row[0] != user_id
 
 
 async def list_organization_audit_events(

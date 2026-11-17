@@ -5,7 +5,7 @@ import type {
 } from '@shared/core/managed-agents/managed-agents';
 import { providerDisplayName } from '@shared/core/providers/agent-provider-registry';
 import { isLoopbackUrl } from '@shared/core/switch-servers/loopback';
-import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
+import { runsOnThisComputer, type SwitchServer } from '@shared/core/switch-servers/switch-servers';
 
 export type MachineTone = 'ok' | 'warning' | 'problem' | 'idle';
 
@@ -338,6 +338,8 @@ export function emptyCategoryText(
     case 'cloud':
       return 'Your Switch Cloud device shows here once you create an agent with Switch Cloud as its run location.';
     case 'computer':
+      if (runsOnThisComputer(server))
+        return 'This computer joins when you run a managed agent on it.';
       return 'This computer joins when you run a managed agent on it, and another computer once it is enrolled with Add device.';
     case 'ssh-host':
       if (server.managed && server.managementKind === 'remote')
@@ -346,6 +348,19 @@ export function emptyCategoryText(
         return `${server.name} runs on this computer and only this computer can reach it, so an SSH host cannot run its agents. To run agents on another computer, use a server it can reach.`;
       return 'An SSH host joins when you create an agent with it as the run location, and Switch Console sets its controller up.';
   }
+}
+
+/**
+ * Why Add device is not offered for a server, or null where it is. A server
+ * Console runs on this computer listens on loopback only, so no other device
+ * could reach it to enroll, and asking it for a code would only be to refuse
+ * it. Any other server is asked when the dialog opens (`enrollmentRefusal`).
+ */
+export function addDeviceRefusal(
+  server: Pick<SwitchServer, 'name' | 'managed' | 'managementKind'>
+): string | null {
+  if (!runsOnThisComputer(server)) return null;
+  return `${server.name} runs on this computer and only this computer can reach it, so no other device can be added. To run agents on other devices, use a server they can reach.`;
 }
 
 /**

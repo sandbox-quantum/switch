@@ -2,6 +2,7 @@ import { useMutation, useMutationState, useQuery, useQueryClient } from '@tansta
 import { useCallback, useEffect, useMemo } from 'react';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { events, rpc } from '@renderer/lib/ipc';
+import { cliActionFailure } from '@renderer/lib/providers/cli-action-failure';
 import type {
   AgentInstallationStatus,
   AgentPayload,
@@ -94,11 +95,21 @@ export function useAgentInstallationStatuses(connectionId?: string) {
         if (!connectionId) void recheckThisComputer(queryClient);
         toast({ title: `${name} successfully installed` });
       } else {
-        toast({ title: `Failed to install ${name}`, variant: 'destructive' });
+        toast({
+          title: `Failed to install ${name}`,
+          description: cliActionFailure(
+            (result as { error: Parameters<typeof cliActionFailure>[0] }).error
+          ),
+          variant: 'destructive',
+        });
       }
     },
-    onError: (_, vars) => {
-      toast({ title: `Failed to install ${nameOf(vars.id)}`, variant: 'destructive' });
+    onError: (error, vars) => {
+      toast({
+        title: `Failed to install ${nameOf(vars.id)}`,
+        description: error.message,
+        variant: 'destructive',
+      });
     },
   });
 
@@ -118,11 +129,21 @@ export function useAgentInstallationStatuses(connectionId?: string) {
         if (!connectionId) void recheckThisComputer(queryClient);
         toast({ title: `${name} successfully updated` });
       } else {
-        toast({ title: `Failed to update ${name}`, variant: 'destructive' });
+        toast({
+          title: `Failed to update ${name}`,
+          description: cliActionFailure(
+            (result as { error: Parameters<typeof cliActionFailure>[0] }).error
+          ),
+          variant: 'destructive',
+        });
       }
     },
-    onError: (_, vars) => {
-      toast({ title: `Failed to update ${nameOf(vars.id)}`, variant: 'destructive' });
+    onError: (error, vars) => {
+      toast({
+        title: `Failed to update ${nameOf(vars.id)}`,
+        description: error.message,
+        variant: 'destructive',
+      });
     },
   });
 
@@ -141,11 +162,21 @@ export function useAgentInstallationStatuses(connectionId?: string) {
       if ((result as { success: boolean }).success) {
         toast({ title: `${name} successfully uninstalled` });
       } else {
-        toast({ title: `Failed to uninstall ${name}`, variant: 'destructive' });
+        toast({
+          title: `Failed to uninstall ${name}`,
+          description: cliActionFailure(
+            (result as { error: Parameters<typeof cliActionFailure>[0] }).error
+          ),
+          variant: 'destructive',
+        });
       }
     },
-    onError: (_, vars) => {
-      toast({ title: `Failed to uninstall ${nameOf(vars.id)}`, variant: 'destructive' });
+    onError: (error, vars) => {
+      toast({
+        title: `Failed to uninstall ${nameOf(vars.id)}`,
+        description: error.message,
+        variant: 'destructive',
+      });
     },
   });
 

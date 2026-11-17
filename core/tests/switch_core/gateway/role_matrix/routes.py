@@ -80,6 +80,15 @@ W = f"{G}/tenants/{{tenant}}"
 # Each persona acting on its own account or its own things.
 SELF = anyone()
 
+# The deployment's connector apps are the operator's, and also the
+# organization admin's on a deployment with only their organization
+# (`auth.deployment_manager`). This world has two, the default workspace's
+# and the matrix's own, so the organization admin is refused here.
+ONLY_ORGANIZATION = (
+    "The operator's, and the only organization's admins' where there is one; "
+    "this world has two organizations."
+)
+
 ROUTES: dict[str, Case] = {
     # ── Agents ───────────────────────────────────────────────────────────
     "GET /gateway/agents": get(f"{G}/agents", anyone()),
@@ -157,12 +166,13 @@ ROUTES: dict[str, Case] = {
     ),
     "POST /gateway/agents/register-known-bulk": post(
         f"{G}/agents/register-known-bulk",
-        owner_or_admins(),
+        owner(refused=403),
         json={
             "agent_type": "claude-code",
             "parent_agent_id": "{agent}",
             "subagents": [{"subagent_name": "reviewer", "description": ""}],
         },
+        why="Its owner's alone: the subagents sit under the parent, in its working directory.",
     ),
     "GET /gateway/agent-sessions/approvals": get(f"{G}/agent-sessions/approvals", SELF),
     "POST /gateway/agent-sessions/{agent_id}/{session_id}/approvals/{request_id}/answer": post(
@@ -195,6 +205,12 @@ ROUTES: dict[str, Case] = {
     ),
     "GET /gateway/auth/session": get(f"{G}/auth/session", SELF),
     "POST /gateway/auth/refresh": post(f"{G}/auth/refresh", SELF),
+    "POST /gateway/auth/handoff": post(
+        f"{G}/auth/handoff",
+        SELF,
+        json={"next": "/rooms"},
+        why="A sign-in link to a browser, as the caller themselves.",
+    ),
     "PATCH /gateway/auth/me": patch(f"{G}/auth/me", SELF, json={"name": "Renamed"}),
     "PUT /gateway/auth/me/password": put(
         f"{G}/auth/me/password",
@@ -240,7 +256,11 @@ ROUTES: dict[str, Case] = {
         json={"message_retention_days": 30},
         why="Deleting messages can't be undone: its admins by their own membership.",
     ),
-    "DELETE /gateway/tenants/{tenant_id}/retention": delete(f"{W}/retention", admins()),
+    "DELETE /gateway/tenants/{tenant_id}/retention": delete(
+        f"{W}/retention",
+        admin_by_membership(),
+        why="As setting a policy: its admins by their own membership.",
+    ),
     "GET /gateway/tenants/{tenant_id}/private-channel-rooms": get(
         f"{W}/private-channel-rooms", admins()
     ),
@@ -272,7 +292,6 @@ ROUTES: dict[str, Case] = {
             "membership; let through, then told nobody has that id."
         ),
     ),
-    "GET /gateway/operator/workspaces": get(f"{G}/operator/workspaces", operator()),
     "GET /gateway/tenants/{tenant_id}/members": get(f"{W}/members", anyone()),
     "PATCH /gateway/tenants/{tenant_id}/members/{user_id}": patch(
         f"{W}/members/{{member_target}}", admins(), json={"role": "member"}
@@ -333,6 +352,12 @@ ROUTES: dict[str, Case] = {
         json={"token": "no-such-invitation"},
         why="Whoever holds the token; this one matches no invitation.",
     ),
+    "POST /gateway/invitations/preview": post(
+        f"{G}/invitations/preview",
+        anyone(ok=404),
+        json={"token": "no-such-invitation"},
+        why="Whoever holds the token; this one matches no invitation.",
+    ),
     "GET /gateway/invitations/mine": get(f"{G}/invitations/mine", SELF),
     "POST /gateway/invitations/mine/accept": post(
         f"{G}/invitations/mine/accept",
@@ -365,6 +390,14 @@ ROUTES: dict[str, Case] = {
     ),
     # ── Organizations ────────────────────────────────────────────────────
     "GET /gateway/organizations": get(f"{G}/organizations", SELF),
+    "GET /gateway/organizations/without-workspace": get(
+        f"{G}/organizations/without-workspace", SELF
+    ),
+    "POST /gateway/organizations/{organization_id}/leave": post(
+        f"{G}/organizations/no-such-organization/leave",
+        anyone(ok=404),
+        why="Your own membership; nobody here is in this organization.",
+    ),
     "POST /gateway/organizations": post(
         f"{G}/organizations", SELF, json={"name": "{tag}-org"}
     ),
@@ -502,20 +535,6 @@ ROUTES: dict[str, Case] = {
         state="matrix",
     ),
     # ── Operator ─────────────────────────────────────────────────────────
-    "GET /gateway/users": get(f"{G}/users", operator()),
-    "POST /gateway/users": post(
-        f"{G}/users",
-        operator(),
-        json={
-            "name": "New",
-            "email": "{tag}-new@example.invalid",
-            "password": "a-long-enough-password",
-        },
-    ),
-    "DELETE /gateway/users/{user_id}": delete(f"{G}/users/{{user_target}}", operator()),
-    "POST /gateway/users/{user_id}/sessions/revoke": post(
-        f"{G}/users/{{user_target}}/sessions/revoke", operator()
-    ),
     "POST /gateway/auth/sessions/revoke": post(
         f"{G}/auth/sessions/revoke",
         SELF,
@@ -538,23 +557,29 @@ ROUTES: dict[str, Case] = {
         why="Gone: guardrails are set per organization; still the operator's.",
     ),
     "GET /gateway/workspace/guardrails": get(f"{G}/workspace/guardrails", SELF),
-    "GET /gateway/connector-apps": get(f"{G}/connector-apps", operator()),
+    "GET /gateway/connector-apps": get(
+        f"{G}/connector-apps", operator(), why=ONLY_ORGANIZATION
+    ),
     "PUT /gateway/connector-apps/{service}": put(
         f"{G}/connector-apps/github",
         operator(),
         json={"client_id": "example", "replace": False},
+        why=ONLY_ORGANIZATION,
     ),
     "POST /gateway/connector-apps/{service}/import": post(
-        f"{G}/connector-apps/github/import", operator()
+        f"{G}/connector-apps/github/import", operator(), why=ONLY_ORGANIZATION
     ),
     "POST /gateway/connector-apps/{service}/check": post(
-        f"{G}/connector-apps/github/check", operator()
+        f"{G}/connector-apps/github/check", operator(), why=ONLY_ORGANIZATION
     ),
     "GET /gateway/connector-apps/{service}/impact": get(
-        f"{G}/connector-apps/github/impact", operator(), client_id="example"
+        f"{G}/connector-apps/github/impact",
+        operator(),
+        ONLY_ORGANIZATION,
+        client_id="example",
     ),
     "DELETE /gateway/connector-apps/{service}": delete(
-        f"{G}/connector-apps/github", operator()
+        f"{G}/connector-apps/github", operator(), why=ONLY_ORGANIZATION
     ),
     # ── Rooms ────────────────────────────────────────────────────────────
     "GET /gateway/rooms": get(f"{G}/rooms", anyone()),
@@ -587,9 +612,11 @@ ROUTES: dict[str, Case] = {
         },
         why="Run as a saved template the caller may read: a private one isn't there to anyone else.",
     ),
-    "GET /gateway/rooms/{room_id}": get(f"{G}/rooms/{{room}}", owner_or_admins()),
+    "GET /gateway/rooms/{room_id}": get(
+        f"{G}/rooms/{{room}}", owner_or_admins(refused=404)
+    ),
     "GET /gateway/rooms/{room_id}/yaml": get(
-        f"{G}/rooms/{{room}}/yaml", owner_or_admins()
+        f"{G}/rooms/{{room}}/yaml", owner_or_admins(refused=404)
     ),
     "PATCH /gateway/rooms/{room_id}": patch(
         f"{G}/rooms/{{room}}", owner_or_admins(), json={"description": "changed"}
@@ -602,16 +629,16 @@ ROUTES: dict[str, Case] = {
         f"{G}/rooms/{{room}}/unarchive", owner_or_admins()
     ),
     "GET /gateway/rooms/{room_id}/admins": get(
-        f"{G}/rooms/{{room}}/admins", owner_or_admins()
+        f"{G}/rooms/{{room}}/admins", owner_or_admins(refused=404)
     ),
     "PUT /gateway/rooms/{room_id}/admins/{target_user_id}": put(
         f"{G}/rooms/{{room}}/admins/{{member_target}}",
-        owner_or_admins(ok=400),
+        owner_or_admins(ok=400, refused=404),
         why="Let through, then refused: the person isn't in the room.",
     ),
     "DELETE /gateway/rooms/{room_id}/admins/{target_user_id}": delete(
         f"{G}/rooms/{{room}}/admins/{{member_target}}",
-        owner_or_admins(),
+        owner_or_admins(refused=404),
         why="Taking off someone who isn't a room admin changes nothing.",
     ),
     "POST /gateway/rooms/{room_id}/sync-name": post(
@@ -620,7 +647,7 @@ ROUTES: dict[str, Case] = {
         why="Let through, then refused: the room has no platform channel to name.",
     ),
     "GET /gateway/rooms/{room_id}/roles": get(
-        f"{G}/rooms/{{room}}/roles", owner_or_admins()
+        f"{G}/rooms/{{room}}/roles", owner_or_admins(refused=404)
     ),
     "POST /gateway/rooms/{room_id}/roles": post(
         f"{G}/rooms/{{room}}/roles",
@@ -650,7 +677,7 @@ ROUTES: dict[str, Case] = {
         why="A room setting: the room's owner and admins (`room_policy`).",
     ),
     "GET /gateway/rooms/{room_id}/schedules": get(
-        f"{G}/rooms/{{room}}/schedules", owner_or_admins()
+        f"{G}/rooms/{{room}}/schedules", owner_or_admins(refused=404)
     ),
     "POST /gateway/rooms/{room_id}/schedules": post(
         f"{G}/rooms/{{room_agent}}/schedules",
@@ -693,25 +720,27 @@ ROUTES: dict[str, Case] = {
         f"{G}/rooms/{{room}}/observe", owner_or_admins(), json={"observe_config": {}}
     ),
     "POST /gateway/rooms/{room_id}/agents": post(
-        f"{G}/rooms/{{room}}/agents", owner_or_admins(), json={"agent_ids": ["{agent}"]}
+        f"{G}/rooms/{{room}}/agents",
+        owner_or_admins(refused=404),
+        json={"agent_ids": ["{agent}"]},
     ),
     "PATCH /gateway/rooms/{room_id}/agents/{agent_id}": patch(
         f"{G}/rooms/{{room_agent}}/agents/{{agent}}",
-        owner_or_admins(),
+        owner_or_admins(refused=404),
         json={"receives_join_events": True},
     ),
     "DELETE /gateway/rooms/{room_id}/agents/{agent_id}": delete(
-        f"{G}/rooms/{{room_agent}}/agents/{{agent}}", owner_or_admins()
+        f"{G}/rooms/{{room_agent}}/agents/{{agent}}", owner_or_admins(refused=404)
     ),
     "POST /gateway/rooms/{room_id}/users": post(
         f"{G}/rooms/{{room}}/users",
-        owner_or_admins(ok=400),
+        owner_or_admins(ok=400, refused=404),
         json={"user_names": []},
         why="Let through, then refused: people join through the room's platform channel, and it has none.",
     ),
     "POST /gateway/rooms/{room_id}/users/remove": post(
         f"{G}/rooms/{{room}}/users/remove",
-        owner_or_admins(ok=400),
+        owner_or_admins(ok=400, refused=404),
         json={"user_names": ["nobody"]},
         why="Removing a person is the owner's or an admin's; let through, then refused, as the room has no platform channel to take them out of.",
     ),
@@ -735,10 +764,10 @@ ROUTES: dict[str, Case] = {
     ),
     "GET /gateway/linked-rooms/graph": get(f"{G}/linked-rooms/graph", anyone()),
     "GET /gateway/rooms/{room_id}/linked-rooms": get(
-        f"{G}/rooms/{{room}}/linked-rooms", owner_or_admins()
+        f"{G}/rooms/{{room}}/linked-rooms", owner_or_admins(refused=404)
     ),
     "GET /gateway/rooms/{room_id}/linked-rooms/inbound": get(
-        f"{G}/rooms/{{room}}/linked-rooms/inbound", owner_or_admins()
+        f"{G}/rooms/{{room}}/linked-rooms/inbound", owner_or_admins(refused=404)
     ),
     "POST /gateway/rooms/{room_id}/linked-rooms": post(
         f"{G}/rooms/{{room}}/linked-rooms",
@@ -749,7 +778,7 @@ ROUTES: dict[str, Case] = {
         f"{G}/rooms/{{linked_room}}/linked-rooms/{{other_room}}", owner_or_admins()
     ),
     "GET /gateway/rooms/{room_id}/references": get(
-        f"{G}/rooms/{{room}}/references", owner_or_admins()
+        f"{G}/rooms/{{room}}/references", owner_or_admins(refused=404)
     ),
     "POST /gateway/rooms/{room_id}/references/{reference_id}": post(
         f"{G}/rooms/{{room}}/references/{{reference}}", owner_or_admins()
@@ -758,19 +787,21 @@ ROUTES: dict[str, Case] = {
         f"{G}/rooms/{{room_reference}}/references/{{reference}}", owner_or_admins()
     ),
     "GET /gateway/rooms/{room_id}/documents": get(
-        f"{G}/rooms/{{room}}/documents", owner_or_admins()
+        f"{G}/rooms/{{room}}/documents", owner_or_admins(refused=404)
     ),
     "GET /gateway/rooms/{room_id}/documents/{document_id}": get(
-        f"{G}/rooms/{{room_document}}/documents/{{document}}", owner_or_admins()
+        f"{G}/rooms/{{room_document}}/documents/{{document}}",
+        owner_or_admins(refused=404),
     ),
     "POST /gateway/rooms/{room_id}/documents/{document_id}": post(
         f"{G}/rooms/{{room}}/documents/{{document}}", owner_or_admins()
     ),
     "DELETE /gateway/rooms/{room_id}/documents/{document_id}": delete(
-        f"{G}/rooms/{{room_document}}/documents/{{document}}", owner_or_admins()
+        f"{G}/rooms/{{room_document}}/documents/{{document}}",
+        owner_or_admins(refused=404),
     ),
     "GET /gateway/rooms/{room_id}/packages": get(
-        f"{G}/rooms/{{room}}/packages", owner_or_admins()
+        f"{G}/rooms/{{room}}/packages", owner_or_admins(refused=404)
     ),
     "POST /gateway/rooms/{room_id}/packages/{package_id}": post(
         f"{G}/rooms/{{room}}/packages/{{package}}", owner_or_admins()
@@ -1504,8 +1535,14 @@ UNAUTHENTICATED: dict[str, str] = {
     "GET /gateway/auth/oidc/callback": "A sign-in coming back from the identity provider.",
     "GET /gateway/auth/oidc/login": "Starting a sign-in.",
     "POST /gateway/auth/oidc/exchange": "Finishing a sign-in with its one-time code.",
+    "POST /gateway/auth/handoff/peek": (
+        "Whose browser sign-in link this is, before the browser has a session."
+    ),
+    "POST /gateway/auth/handoff/redeem": (
+        "A browser redeeming a sign-in link for a session of its own."
+    ),
     "POST /gateway/auth/login": "Signing in.",
-    "POST /gateway/auth/logout": "Signing out, which only clears the cookie.",
+    "POST /gateway/auth/logout": "Signing out of the session the cookie belongs to.",
     "POST /gateway/auth/signup": "Signing up.",
     "GET /gateway/docs": "The API's own documentation.",
     "GET /gateway/docs/oauth2-redirect": "The API's own documentation.",
