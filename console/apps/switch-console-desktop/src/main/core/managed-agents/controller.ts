@@ -232,7 +232,8 @@ export const managedAgentsController = createRPCController({
    * A one-time code to enroll a new machine with, and the address it enrolls
    * against: the one the server names, else the one Console reaches it at,
    * which `fallback` discloses. `loopback` says that address only works on
-   * this computer.
+   * this computer, and `remoteDevices` is what the server says about another
+   * device enrolling at all.
    */
   machineEnrollment: (serverId: string): Promise<MachineEnrollment> =>
     withReachableServerWorkspaceSession(serverId, async (server) => {
@@ -246,6 +247,7 @@ export const managedAgentsController = createRPCController({
         serverUrl,
         loopback: isLoopbackUrl(serverUrl),
         fallback: named === null,
+        remoteDevices: issued.remoteDevices,
       };
     }),
 

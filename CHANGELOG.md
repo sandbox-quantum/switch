@@ -4316,6 +4316,15 @@ version of their own to them without also giving them a release of their own.
   agent"; it was the only place Console showed that name.
 
 #### Fixed
+- **Add device no longer shows commands that can't work.** On a server
+  Switch Console runs on this computer, Settings › Devices no longer offers
+  Add device and says why: no other device can reach it. On any other
+  server, when the server says no other device can reach it, or the address
+  the commands would use is this computer's own (such as
+  `http://localhost:8000`), the dialog says why and what to change instead of
+  showing install and enroll commands that would fail on another device.
+  Enrolling this computer, and the SSH hosts Switch Console sets up, works as
+  before.
 - **Cursor, Goose, Kiro and Mistral Vibe can be installed on Windows.** Each
   offers its vendor's Windows install, which works from PowerShell or Command
   Prompt, where before it said "Not found" with nothing to install. Cursor and

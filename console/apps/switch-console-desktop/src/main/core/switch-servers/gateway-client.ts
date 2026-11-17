@@ -15,6 +15,7 @@ import { rememberBridgePlatforms } from '@main/core/telemetry/bridge-platform';
 import { assertedTenant } from '@main/core/workspaces/asserted-tenant';
 import { type CloudMachine, cloudMachineSchema } from '@shared/core/cloud-agents/cloud-agents';
 import type { RemoteFeatureFlag } from '@shared/core/feature-flags/feature-flags';
+import type { RemoteDevices } from '@shared/core/managed-agents/machine-enrollment';
 import type {
   AdvancedConfigField,
   ManagedAgentTemplate,
@@ -5161,11 +5162,15 @@ export async function enrollConsoleController(
  * A one-time code a headless controller enrolls with
  * (`POST /gateway/management/enrollment-codes`): single use, valid for ten
  * minutes. A secret until it is spent. `serverUrl` is the agent bridge's public
- * origin as the server names it; null when it names none.
+ * origin as the server names it; null when it names none. `remoteDevices` is
+ * whether another device could enroll at all; null from a server too old to say.
  */
-export async function issueMachineEnrollment(
-  server: SwitchServer
-): Promise<{ code: string; expiresAt: string; serverUrl: string | null }> {
+export async function issueMachineEnrollment(server: SwitchServer): Promise<{
+  code: string;
+  expiresAt: string;
+  serverUrl: string | null;
+  remoteDevices: RemoteDevices | null;
+}> {
   const res = await managementFetch(server, '/enrollment-codes', {
     authenticated: true,
     method: 'POST',
@@ -5174,8 +5179,14 @@ export async function issueMachineEnrollment(
     code: string;
     expires_at: string;
     server_url: string | null;
+    remote_devices?: RemoteDevices;
   };
-  return { code: json.code, expiresAt: json.expires_at, serverUrl: json.server_url ?? null };
+  return {
+    code: json.code,
+    expiresAt: json.expires_at,
+    serverUrl: json.server_url ?? null,
+    remoteDevices: json.remote_devices ?? null,
+  };
 }
 
 /** Just the code of a fresh enrollment, for a controller Console enrolls itself. */
