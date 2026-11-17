@@ -393,7 +393,11 @@ describe('the first-run flow', () => {
 
     await addFromConnectPage(el);
 
-    expect(addServer).toHaveBeenCalledWith('switch.example.com', 'https://switch.example.com');
+    expect(addServer).toHaveBeenCalledWith(
+      'switch.example.com',
+      'https://switch.example.com',
+      false
+    );
   });
 
   it('keeps the flow on screen after the server is added, for the sign-in still to come', async () => {
@@ -548,7 +552,7 @@ describe('the server address form', () => {
     await type(field(el, 'Server address')!, 'https://new.example.com');
     await choose(el, 'Save changes');
 
-    expect(updateServer).toHaveBeenCalledWith('srv-1', 'Team', 'https://new.example.com');
+    expect(updateServer).toHaveBeenCalledWith('srv-1', 'Team', 'https://new.example.com', false);
     expect(onSuccess).toHaveBeenCalledOnce();
   });
 });

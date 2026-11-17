@@ -34,6 +34,8 @@ import {
 export type HostStatusKind =
   /** SSH authentication failed — will not self-heal, the user must fix it. */
   | 'auth-failed'
+  /** The host's SSH key was refused — the user has to decide about the key. */
+  | 'host-key-refused'
   /** We cannot reach the host, so we cannot say anything about readiness. */
   | 'unreachable'
   /** Reachable, but nothing has ever been observed about it. */
@@ -86,10 +88,14 @@ export function deriveHostStatus(
   plan: HostSetupPlan | null
 ): HostStatus {
   if (isHostBlocked(reachability)) {
-    const authFailed = reachability.status === 'suspended';
+    const blocked =
+      reachability.status === 'suspended'
+        ? ({ kind: 'auth-failed', label: 'SSH auth failed' } as const)
+        : reachability.status === 'untrusted'
+          ? ({ kind: 'host-key-refused', label: 'Host key refused' } as const)
+          : ({ kind: 'unreachable', label: 'Unreachable' } as const);
     return {
-      kind: authFailed ? 'auth-failed' : 'unreachable',
-      label: authFailed ? 'SSH auth failed' : 'Unreachable',
+      ...blocked,
       tone: 'danger',
       readinessKnown: false,
       done: 0,

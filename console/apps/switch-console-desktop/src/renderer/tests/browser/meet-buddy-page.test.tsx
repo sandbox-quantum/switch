@@ -19,12 +19,14 @@ type Reported = { provider: string; ready: boolean; problem: string | null; deta
 
 const state = vi.hoisted(() => ({
   computer: { kind: 'starting' } as
+    | { kind: 'off' }
     | { kind: 'starting' }
     | { kind: 'ready'; machine: { id: string; providers: Reported[] } }
     | { kind: 'failed'; error: string },
   early: null as Reported[] | null,
   agents: [] as { agentId: string; name: string }[],
   createBuddy: vi.fn(),
+  turnOn: vi.fn(async () => {}),
 }));
 
 vi.mock('@renderer/features/switch-buddy/use-this-computer', () => ({
@@ -32,6 +34,8 @@ vi.mock('@renderer/features/switch-buddy/use-this-computer', () => ({
     state: state.computer,
     recheck: vi.fn(),
     earlyProviders: state.early,
+    retry: vi.fn(),
+    turnOn: state.turnOn,
   }),
 }));
 vi.mock('@renderer/features/switch-buddy/create-buddy', () => ({
@@ -41,7 +45,10 @@ vi.mock('@renderer/features/managed-agents/use-managed-agents', () => ({
   useManagedAgents: () => ({ data: state.agents }),
 }));
 vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
-  switchServersStore: { statusFor: () => ({ user: { name: 'Max Tam', email: null } }) },
+  switchServersStore: {
+    statusFor: () => ({ user: { name: 'Max Tam', email: null } }),
+    serverById: () => ({ name: 'Acme', url: 'https://switch.example.com' }),
+  },
 }));
 vi.mock('@renderer/features/switch-buddy/meet-buddy-intro', () => ({
   MeetBuddyIntro: ({ after }: { after: React.ReactNode }) => <div>{after}</div>,
@@ -83,6 +90,7 @@ beforeEach(() => {
   state.early = null;
   state.agents = [];
   state.createBuddy.mockReset();
+  state.turnOn.mockClear();
   onCreated.mockReset();
 });
 
@@ -112,6 +120,14 @@ async function render() {
       />
     )
   );
+}
+
+function click(text: string) {
+  const found = [...container!.querySelectorAll('button')].find((b) =>
+    b.textContent?.startsWith(text)
+  );
+  if (!found) throw new Error(`No button "${text}" in: ${container!.textContent}`);
+  return act(async () => found.click());
 }
 
 /** Every button but the heading's explanation of what a provider is. */
@@ -170,6 +186,58 @@ describe('MeetBuddyPage', () => {
       expect.objectContaining({ machineId: 'm-1', provider: 'claude' })
     );
     expect(onCreated).toHaveBeenCalledWith({ agentId: 'a-1', name: 'switch-buddy-max-tam' });
+  });
+
+  it('asks to turn this computer on when a provider is picked while it is off, then starts it', async () => {
+    state.computer = { kind: 'off' };
+    state.early = [ready('claude'), signedOut('codex')];
+    state.createBuddy.mockResolvedValue({ agentId: 'a-1', name: 'switch-buddy-max-tam' });
+    await render();
+
+    await click('Claude Code');
+    expect(container!.textContent).toContain('Run managed agents on this computer?');
+    expect(container!.textContent).toContain(
+      'Acme (switch.example.com) can then start, change and stop agents on this computer'
+    );
+    // One question at a time: the page's own turn-on button waits behind it.
+    expect(buttons()).not.toContain('Run managed agents on this computer');
+    expect(state.turnOn).not.toHaveBeenCalled();
+    expect(state.createBuddy).not.toHaveBeenCalled();
+
+    await click('Turn on and start');
+    expect(state.turnOn).toHaveBeenCalledTimes(1);
+    expect(state.createBuddy).not.toHaveBeenCalled();
+
+    state.computer = { kind: 'starting' };
+    await render();
+    state.computer = machine(ready('claude'), signedOut('codex'));
+    await render();
+    expect(state.createBuddy).toHaveBeenCalledWith(
+      expect.objectContaining({ machineId: 'm-1', provider: 'claude' })
+    );
+    expect(onCreated).toHaveBeenCalledWith({ agentId: 'a-1', name: 'switch-buddy-max-tam' });
+  });
+
+  it('starts nothing when the person will not turn this computer on, and still offers to', async () => {
+    state.computer = { kind: 'off' };
+    state.early = [ready('claude'), signedOut('codex')];
+    await render();
+
+    await click('Claude Code');
+    await click('Cancel');
+    expect(state.turnOn).not.toHaveBeenCalled();
+    expect(container!.textContent).not.toContain('Run managed agents on this computer?');
+    // No spinner left on the tile: it can be picked again.
+    const tile = [...container!.querySelectorAll('button')].find((b) =>
+      b.textContent?.startsWith('Claude Code')
+    )!;
+    expect(tile.disabled).toBe(false);
+    expect(tile.querySelector('[data-provider-icon="claude"]')).not.toBeNull();
+    expect(buttons()).toContain('Run managed agents on this computer');
+
+    state.computer = machine(ready('claude'), signedOut('codex'));
+    await render();
+    expect(state.createBuddy).not.toHaveBeenCalled();
   });
 
   it('tells the page holding it when the person opens the other providers', async () => {

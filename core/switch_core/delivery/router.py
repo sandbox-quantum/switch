@@ -131,6 +131,7 @@ from switch_core.delivery.recipient import (
     file_index,
     post_anchor,
 )
+from switch_core.delivery.send_limits import SendLimits
 from switch_core.logging_context import STRUCTURED_FIELDS, StructuredValue, log_context
 from switch_core.observability.catalogue import (
     DECISION_NOTICES,
@@ -975,12 +976,16 @@ class MessageRouter:
         conversation: ConversationRules,
         decisions: DynamicDecisionClient | None,
         decision_max_age_seconds: float,
+        send_limits: SendLimits,
     ) -> None:
         """`decisions` is the decision client, None when this server does
         not route by decision (the `decision_routing` flag is off). A message
         still waiting for a decision after `decision_max_age_seconds` is
-        dropped."""
+        dropped. `send_limits` are what every sender is held to: each row
+        stored is held to its length here, and the paths a person or an agent
+        sends by admit their messages through it first."""
         self.services = services
+        self.send_limits = send_limits
         self._messages = message_store
         self._conversation = conversation
         self._decisions = decisions
@@ -1069,7 +1074,11 @@ class MessageRouter:
         stored is neither written nor routed again, and None comes back: the
         id was derived from what caused the write (`transport/derived_ids.py`),
         and an earlier run of the same cause wrote it and owed what it owed.
+
+        Raises `MessageTooLong`, before anything is read or written, for a
+        body longer than any row may be (`SendLimits.require_row_length`).
         """
+        self.send_limits.require_row_length(message.body)
         reads = await RoomReads.load(
             session,
             services=self.services,

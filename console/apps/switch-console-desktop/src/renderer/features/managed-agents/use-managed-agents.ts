@@ -1,6 +1,7 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect } from 'react';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
+import { recordOwnBuddy } from '@renderer/features/switch-buddy/own-buddies';
 import { serverAvailability } from '@renderer/features/switch-servers/server-availability';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
@@ -116,7 +117,11 @@ export function useManagedAgents(serverId: string | null) {
   }, [queryClient, serverId]);
   return useQuery({
     queryKey: [MANAGED_AGENTS_KEY, serverId, workspaceId, user?.id ?? null],
-    queryFn: () => rpc.managedAgents.list(serverId!),
+    queryFn: async () => {
+      const agents = await rpc.managedAgents.list(serverId!);
+      recordOwnBuddy(serverId!, workspaceId, agents);
+      return agents;
+    },
     enabled: signedIn,
     // Null is not final while the flags say otherwise: without asking again,
     // a server that answered so while it started would hide every agent,

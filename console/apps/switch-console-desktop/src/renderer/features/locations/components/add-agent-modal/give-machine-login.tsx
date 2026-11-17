@@ -1,5 +1,13 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { CircleAlert, CircleCheck, KeyRound, TriangleAlert, Upload } from 'lucide-react';
+import {
+  CircleAlert,
+  CircleCheck,
+  KeyRound,
+  ShieldAlert,
+  ShieldCheck,
+  TriangleAlert,
+  Upload,
+} from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { MANAGED_AGENTS_KEY } from '@renderer/features/managed-agents/use-managed-agents';
 import { failureText } from '@renderer/lib/errors/describe-failure';
@@ -9,7 +17,11 @@ import { Input } from '@renderer/lib/ui/input';
 import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import { Textarea } from '@renderer/lib/ui/textarea';
-import type { MachineLoginInput, OwnedMachine } from '@shared/core/managed-agents/managed-agents';
+import type {
+  MachineLoginInput,
+  MachineSealingKey,
+  OwnedMachine,
+} from '@shared/core/managed-agents/managed-agents';
 import {
   type AgentProviderId,
   providerDisplayName,
@@ -66,10 +78,115 @@ function hint(provider: AgentProviderId, kind: LoginKind, source: VertexSource):
   return `Paste a ${displayName(provider)} API key.`;
 }
 
+function Fingerprint({ value }: { value: string }) {
+  return <code className="font-mono text-[11px] text-foreground">{value}</code>;
+}
+
+/**
+ * Where the login goes: the fingerprint of the key it is sealed to, and why
+ * Console takes that key for the machine's. A key Switch changed since the
+ * first login is shown beside the old one, and sealed to only once trusted.
+ */
+function SealingKeyNote({
+  machineName,
+  sealingKey,
+  error,
+  trusting,
+  trustError,
+  onTrust,
+}: {
+  machineName: string;
+  sealingKey: MachineSealingKey | undefined;
+  error: unknown;
+  trusting: boolean;
+  trustError: unknown;
+  onTrust: (fingerprint: string) => void;
+}) {
+  if (error)
+    return (
+      <p className="flex items-start gap-2 text-xs" role="alert">
+        <CircleAlert className="mt-0.5 size-3.5 shrink-0 text-amber-500" />
+        {failureText(error, `Could not look up ${machineName}’s key.`)}
+      </p>
+    );
+  if (!sealingKey)
+    return (
+      <p className="flex items-center gap-2 text-xs text-foreground-muted" role="status">
+        <Spinner className="size-3.5" />
+        Looking up {machineName}’s key…
+      </p>
+    );
+  switch (sealingKey.state) {
+    case 'verified':
+      return (
+        <p className="flex items-start gap-2 text-xs text-foreground-muted" role="note">
+          <ShieldCheck className="mt-0.5 size-3.5 shrink-0 text-emerald-500" />
+          <span>
+            Sealed to {machineName}’s key <Fingerprint value={sealingKey.fingerprint} />
+            {sealingKey.source === 'machine'
+              ? ', read from the machine itself.'
+              : ', the one Console sealed its first login to.'}
+          </span>
+        </p>
+      );
+    case 'first-use':
+      return (
+        <p className="flex items-start gap-2 text-xs text-foreground-muted" role="note">
+          <KeyRound className="mt-0.5 size-3.5 shrink-0" />
+          <span>
+            Sealed to the key Switch reports for {machineName}:{' '}
+            <Fingerprint value={sealingKey.fingerprint} />. Console remembers it and refuses
+            another. To be sure it is the machine’s, compare it with the login key{' '}
+            <code>switch-agent-controller status</code> shows there.
+          </span>
+        </p>
+      );
+    case 'changed':
+      return (
+        <div className="space-y-2 rounded-md border border-amber-500/40 p-2 text-xs" role="alert">
+          <p className="flex items-start gap-2">
+            <ShieldAlert className="mt-0.5 size-3.5 shrink-0 text-amber-500" />
+            <span>
+              {machineName}’s key changed. Console sealed its logins to{' '}
+              <Fingerprint value={sealingKey.previousFingerprint} />, and Switch now sends{' '}
+              <Fingerprint value={sealingKey.fingerprint} />. A machine keeps its key until it is
+              enrolled again, which makes it a new machine, so whoever runs the server may be trying
+              to read the login. Compare the new key with{' '}
+              <code>switch-agent-controller status</code> on the machine before trusting it.
+            </span>
+          </p>
+          {trustError ? (
+            <p className="text-foreground-muted">
+              {failureText(trustError, 'Could not trust the new key.')}
+            </p>
+          ) : null}
+          <div className="flex justify-end">
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={trusting}
+              onClick={() => onTrust(sealingKey.fingerprint)}
+            >
+              Trust the new key
+            </Button>
+          </div>
+        </div>
+      );
+    case 'refused':
+      return (
+        <p className="flex items-start gap-2 text-xs" role="alert">
+          <ShieldAlert className="mt-0.5 size-3.5 shrink-0 text-amber-500" />
+          {sealingKey.reason}
+        </p>
+      );
+  }
+}
+
 /**
  * Gives a machine a provider login, on demand: sealed in Console to the
- * machine's own key, so the server only relays it, and taken up by the machine
- * at once. Says whether the provider signs in with it there.
+ * machine's own key (read from it, or the one Console pinned the first time),
+ * so the server only relays it, and taken up by the machine at once. Says
+ * whether the provider signs in with it there.
  */
 export function GiveMachineLogin({
   serverId,
@@ -95,8 +212,24 @@ export function GiveMachineLogin({
   const [operationId, setOperationId] = useState<string | null>(null);
   const name = displayName(provider);
 
+  const sealingKeyQueryKey = [MANAGED_AGENTS_KEY, serverId, 'sealing-key', machine.id];
+  const sealingKey = useQuery({
+    queryKey: sealingKeyQueryKey,
+    queryFn: () => rpc.managedAgents.machineSealingKey({ serverId, machineId: machine.id }),
+    staleTime: 0,
+  });
+  const trust = useMutation({
+    mutationFn: (fingerprint: string) =>
+      rpc.managedAgents.trustMachineSealingKey({ serverId, machineId: machine.id, fingerprint }),
+    onSettled: () => void queryClient.invalidateQueries({ queryKey: sealingKeyQueryKey }),
+  });
+  const key = sealingKey.data;
+  const sealTo =
+    key && (key.state === 'verified' || key.state === 'first-use') ? key.fingerprint : null;
+
   const give = useMutation({
     mutationFn: () => {
+      if (sealTo === null) throw new Error(`There is no key to seal ${machine.name}’s login to.`);
       const login: MachineLoginInput =
         kind === 'vertex'
           ? {
@@ -116,6 +249,7 @@ export function GiveMachineLogin({
         machineId: machine.id,
         provider,
         login,
+        fingerprint: sealTo,
       });
     },
     onSuccess: ({ operationId: id }) => {
@@ -123,6 +257,8 @@ export function GiveMachineLogin({
       setPickedFile(null);
       setOperationId(id);
     },
+    // A refusal may be a key that changed since it was shown.
+    onError: () => void queryClient.invalidateQueries({ queryKey: sealingKeyQueryKey }),
   });
 
   const outcome = useQuery({
@@ -148,6 +284,7 @@ export function GiveMachineLogin({
     give.isPending || (operationId !== null && (!result || result.state === 'pending'));
   const needsCredential = kind === 'vertex' ? vertexSource === 'key' : kind !== 'this-computer';
   const ready =
+    sealTo !== null &&
     (!needsCredential || credential.trim() !== '') &&
     (kind !== 'vertex' || (project.trim() !== '' && region.trim() !== ''));
 
@@ -284,6 +421,14 @@ export function GiveMachineLogin({
           disabled={waiting}
         />
       )}
+      <SealingKeyNote
+        machineName={machine.name}
+        sealingKey={key}
+        error={sealingKey.error}
+        trusting={trust.isPending}
+        trustError={trust.error}
+        onTrust={(fingerprint) => trust.mutate(fingerprint)}
+      />
       {waiting && operationId !== null && (
         <p className="flex items-center gap-2 text-xs text-foreground-muted" role="status">
           <Spinner className="size-3.5" />

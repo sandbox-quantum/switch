@@ -273,6 +273,8 @@ class SwitchConfig(BaseSettings):
         "decision_endpoint_url",
         "decision_api_key",
         "gateway_signup_refused_header",
+        "gateway_public_url",
+        "messaging_public_url",
         mode="before",
     )
     @classmethod
@@ -353,6 +355,33 @@ class SwitchConfig(BaseSettings):
     # OIDC first sign-in alike), read from the users table so it holds across
     # replicas. Sign-up is refused once the count reaches this.
     gateway_signup_max_per_hour: int = Field(default=20, ge=1)
+    # Sign-ups from one client address in an hour, in front of the cap above,
+    # so that one client cannot spend everyone's (`gateway/login_limits.py`).
+    gateway_signup_max_per_hour_per_address: int = Field(default=5, ge=1)
+    # Password sign-in guessing (`gateway/login_limits.py`). Failures with one
+    # email address, whether or not an account has it, lock it out for
+    # `gateway_login_lock_minutes` once there are this many within the window,
+    # and the few before that make each next attempt wait a little longer. A
+    # client address may fail more often, as many people can share one. A
+    # success clears the email's count; the operator can clear it too
+    # (`DELETE /users/{id}/sign-in-lock`). Kept in the `auth_attempts` table,
+    # so the counts hold across replicas. Behind a proxy, client addresses are
+    # counted only once uvicorn trusts the proxy (`FORWARDED_ALLOW_IPS`).
+    #
+    # The per-email lock is a trade-off, made on purpose: since failures from
+    # anywhere count, anyone who knows a person's email can pause that
+    # person's password sign-in for `gateway_login_lock_minutes` by failing
+    # `gateway_login_max_failures` times with it, and keep it paused by
+    # repeating that. It never touches their sessions or single sign-on.
+    # Raising `gateway_login_max_failures` or shortening
+    # `gateway_login_lock_minutes` makes such a lock cheaper to sit out and
+    # costlier to keep up, at the price of more guesses at a password;
+    # lowering them does the reverse. `switch.auth.sign_in_lockouts` counts
+    # the lock-outs, so a run of them aimed at one person shows.
+    gateway_login_max_failures: int = Field(default=10, ge=1)
+    gateway_login_max_failures_per_address: int = Field(default=50, ge=1)
+    gateway_login_failure_window_minutes: int = Field(default=15, ge=1)
+    gateway_login_lock_minutes: int = Field(default=15, ge=1)
     # The name of a request header that a trusted edge in front of the server
     # (prod's WAF) adds to requests from countries where new accounts are not
     # offered. A request carrying it, with any value (empty included), may not
@@ -858,6 +887,23 @@ class SwitchConfig(BaseSettings):
     # a collaboration bridge will relay out). Uploads over this raise instead
     # of being truncated or silently dropped.
     agent_media_max_bytes: int = 20 * 1024 * 1024
+
+    # The longest message, in characters, a sender may write to a room. Every
+    # room row is copied to each agent in the room, so one message costs this
+    # many times the agents there. A longer message is refused with a reason
+    # its sender can act on, never cut short. What Switch writes into a
+    # message (a Switch Trust note, a line for a file it could not relay) is
+    # not counted against its sender (`delivery/send_limits.py`).
+    max_message_chars: int = Field(default=64 * 1024, ge=1)
+
+    # How fast one sender's messages are accepted: `message_rate_burst` at
+    # once, then `message_rate_per_second`. One allowance per sender, shared
+    # by every room they write in, by design: an agent busy in several rooms
+    # draws on the one allowance. Counted in each process, so with several
+    # replicas a sender whose messages are spread across them gets that many
+    # times the rate.
+    message_rate_burst: int = Field(default=30, ge=1)
+    message_rate_per_second: float = Field(default=2.0, gt=0)
 
     # Development only. No agent host speaks the session interaction contract
     # yet, so there is no session whose requests could reach a channel. With

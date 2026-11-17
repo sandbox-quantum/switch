@@ -27,7 +27,7 @@ import { classifyVersionDrift, type DeployedVersion } from '../deployed-version'
 import { detectDocker } from '../docker';
 import { readEnvValue } from '../env-file';
 import { errorText } from '../error-text';
-import type { LocalServerPorts } from '../free-port';
+import { assertIpv6LoopbackFree, loopbackUrl, type LocalServerPorts } from '../free-port';
 import type { ServerHost } from '../host/types';
 import {
   finishUpgrade,
@@ -157,7 +157,8 @@ function portFree(port: number): Promise<boolean> {
 /**
  * Refuse a start whose ports something else has taken since they were chosen,
  * in the words a failed bind uses, so the start-failure explainer offers to
- * move the server to another port.
+ * move the server to another port. The ports Console and agents reach must be
+ * free on the IPv6 loopback too.
  */
 async function assertPortsFree(ports: LocalServerPorts): Promise<void> {
   for (const port of [ports.api, ports.postgres]) {
@@ -165,6 +166,7 @@ async function assertPortsFree(ports: LocalServerPorts): Promise<void> {
       throw new Error(`bind 127.0.0.1:${port}: address already in use`);
     }
   }
+  await assertIpv6LoopbackFree([ports.api, ports.mattermost]);
 }
 
 /**
@@ -243,7 +245,7 @@ async function startNativeMattermost(
     ...params,
     beforeSeed: () =>
       pointMattermostBridgeAt(
-        `http://localhost:${params.mattermostPort}`,
+        loopbackUrl(params.mattermostPort),
         mattermostCallbackBaseUrl(process.platform, params.callbackPort)
       ),
   });

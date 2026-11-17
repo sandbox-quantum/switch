@@ -41,6 +41,7 @@ class _FakeHumanActor:
         thread_root_id=None,
         group=None,
         extra_content=None,
+        authored=None,
     ):  # noqa: ANN001, ANN201
         self.media.append(
             {
@@ -54,6 +55,7 @@ class _FakeHumanActor:
                 "thread_root_id": thread_root_id,
                 "group": group,
                 "extra_content": extra_content,
+                "authored": authored,
             }
         )
         return f"$evt-{len(self.media) - 1}"
@@ -67,12 +69,14 @@ class _FakeHumanActor:
         format=None,
         thread_root_id=None,
         extra_content=None,
+        authored=None,
     ):  # noqa: ANN001, ANN201, A002
         self.messages.append(
             {
                 "content": content,
                 "thread_root_id": thread_root_id,
                 "extra_content": extra_content,
+                "authored": authored,
             }
         )
         return "$evt-text"
@@ -238,6 +242,8 @@ async def test_attachment_failures_are_disclosed_alongside_text() -> None:
     assert "huge.zip" in body
     assert "too large" in body
     assert "attachment not relayed" in body
+    # The note is Switch's, so the sender's length limit is held to their words.
+    assert bridge.human_actor.messages[0]["authored"] == "see attached"
 
 
 async def test_attachment_failures_are_disclosed_when_text_is_empty() -> None:
@@ -281,6 +287,7 @@ async def test_attachment_failures_ride_on_the_caption_of_relayed_media() -> Non
     caption = bridge.human_actor.media[0]["caption"]
     assert "two files, one failed" in caption
     assert "huge.zip" in caption
+    assert bridge.human_actor.media[0]["authored"] == "two files, one failed"
 
 
 async def test_a_post_from_an_app_is_marked_as_one() -> None:

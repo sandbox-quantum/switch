@@ -59,6 +59,7 @@ describe('SshConnectionManager', () => {
         config: { sock: new PassThrough(), username: 'alice' },
         cleanup: () => cleanupCalls.push('ssh-1'),
         debugLogs: [],
+        hostKeyRejection: () => undefined,
       };
     });
 
@@ -106,6 +107,7 @@ describe('SshConnectionManager', () => {
         config: { sock: new PassThrough(), username: `alice-${call}` },
         cleanup: () => cleanupCalls.push(`cleanup-${call}`),
         debugLogs: [],
+        hostKeyRejection: () => undefined,
       };
     });
 
@@ -257,6 +259,7 @@ describe('SshConnectionManager', () => {
         config: { sock: new PassThrough(), username: 'alice' },
         cleanup: () => cleanupCalls.push('cleanup'),
         debugLogs: [],
+        hostKeyRejection: () => undefined,
       };
     });
 
@@ -328,6 +331,7 @@ describe('SshConnectionManager', () => {
         config: { sock: new PassThrough(), username: 'alice' },
         cleanup: () => {},
         debugLogs: [],
+        hostKeyRejection: () => undefined,
       }));
       manager.on('connection-event', (event) => events.push(event.type));
 
@@ -384,6 +388,7 @@ describe('SshConnectionManager', () => {
           config: { sock: new PassThrough(), username: 'alice' },
           cleanup: () => {},
           debugLogs: [],
+          hostKeyRejection: () => undefined,
         };
       });
       manager.on('connection-event', (event) => events.push(event.type));
@@ -424,6 +429,7 @@ describe('SshConnectionManager', () => {
       config: { sock: new PassThrough(), username: 'alice' },
       cleanup: () => {},
       debugLogs: [],
+      hostKeyRejection: () => undefined,
     }));
 
     const firstConnect = manager.connect('ssh-1');
@@ -524,6 +530,7 @@ describe('SshConnectionManager', () => {
           config: { sock: new PassThrough(), username: 'alice' },
           cleanup: () => {},
           debugLogs: [],
+          hostKeyRejection: () => undefined,
         };
       });
       manager.on('connection-event', (event) => events.push(event.type));
@@ -567,6 +574,7 @@ describe('SshConnectionManager', () => {
           config: { sock: new PassThrough(), username: 'alice' },
           cleanup: () => {},
           debugLogs: [],
+          hostKeyRejection: () => undefined,
         };
       });
       manager.on('connection-event', (event) => events.push(event.type));
@@ -619,6 +627,7 @@ describe('SshConnectionManager', () => {
         config: { sock: new PassThrough(), username: 'alice' },
         cleanup: () => {},
         debugLogs: [],
+        hostKeyRejection: () => undefined,
       }));
       const events: string[] = [];
       manager.on('connection-event', (event) => events.push(event.type));
@@ -667,6 +676,7 @@ describe('SshConnectionManager', () => {
       config: { sock: new PassThrough(), username: 'alice' },
       cleanup: () => {},
       debugLogs: [],
+      hostKeyRejection: () => undefined,
     }));
 
     const proxy = await manager.connect('ssh-1');
@@ -712,6 +722,7 @@ describe('SshConnectionManager', () => {
         config: { sock: new PassThrough(), username: 'alice' },
         cleanup: () => {},
         debugLogs: [],
+        hostKeyRejection: () => undefined,
       };
     });
 
@@ -760,6 +771,7 @@ describe('SshConnectionManager', () => {
           config: { sock: new PassThrough(), username: 'alice' },
           cleanup: () => {},
           debugLogs: [],
+          hostKeyRejection: () => undefined,
         };
       });
 
@@ -809,6 +821,7 @@ describe('SshConnectionManager', () => {
         config: { sock: new PassThrough(), username: 'alice' },
         cleanup: () => {},
         debugLogs: [],
+        hostKeyRejection: () => undefined,
       }));
       const events: string[] = [];
       manager.on('connection-event', (event) => events.push(event.type));
@@ -867,6 +880,7 @@ describe('SshConnectionManager', () => {
         config: { sock: new PassThrough(), username: 'alice' },
         cleanup: () => cleanups.push(clients.length),
         debugLogs: [],
+        hostKeyRejection: () => undefined,
       }));
       const events: string[] = [];
       manager.on('connection-event', (event) => events.push(event.type));

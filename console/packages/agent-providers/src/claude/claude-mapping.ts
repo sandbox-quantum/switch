@@ -285,33 +285,67 @@ export function parseAskUserQuestionInput(input: Record<string, unknown>): Parse
 }
 
 /**
- * Claude expands `${NAME}` references in MCP configuration against the CLI's
- * environment before starting a stdio server. Keep forwarded values in that
- * environment: the Agent SDK serializes this configuration into `--mcp-config`,
- * where resolving them here would expose credentials in the process argv.
+ * The session's MCP servers as Claude Code takes them, and the environment to
+ * start it with.
+ *
+ * The Agent SDK serializes this configuration into `--mcp-config`, on the
+ * CLI's command line, which other users on the machine can read (`ps`,
+ * `/proc/<pid>/cmdline`). So no header or environment value of a server is
+ * written there: each goes into the CLI's environment under a variable of its
+ * own, and the configuration names it as `${NAME}`, which Claude Code expands
+ * from that environment when it starts a stdio server and when it sends an
+ * HTTP request. A stdio server's `envVars` are in the environment already and
+ * are named as they are.
  */
-export function toMcpServerConfig(
-  spec: McpServerSpec,
+export function claudeMcpLaunch(
+  specs: Record<string, McpServerSpec>,
   env: Record<string, string>
-): McpServerConfig {
-  if (spec.transport === 'stdio') {
-    const forwarded: Record<string, string> = {};
-    for (const name of spec.envVars ?? []) {
-      if (env[name] !== undefined) forwarded[name] = `\${${name}}`;
+): { mcpServers: Record<string, McpServerConfig>; env: Record<string, string> } {
+  const launchEnv = { ...env };
+  const reference = (server: string, key: string, value: string): string => {
+    const base = `SWITCH_MCP_${envSegment(server)}_${envSegment(key)}`;
+    let name = base;
+    for (let n = 2; name in launchEnv; n++) name = `${base}_${n}`;
+    launchEnv[name] = value;
+    return `\${${name}}`;
+  };
+  const mcpServers: Record<string, McpServerConfig> = {};
+  for (const [server, spec] of Object.entries(specs)) {
+    if (spec.transport === 'stdio') {
+      const named: Record<string, string> = {};
+      for (const name of spec.envVars ?? []) {
+        if (env[name] !== undefined) named[name] = `\${${name}}`;
+      }
+      for (const [name, value] of Object.entries(spec.env ?? {}))
+        named[name] = reference(server, name, value);
+      mcpServers[server] = {
+        type: 'stdio',
+        command: spec.command,
+        args: spec.args,
+        ...(Object.keys(named).length > 0 ? { env: named } : {}),
+      };
+      continue;
     }
-    const resolved = { ...forwarded, ...spec.env };
-    return {
-      type: 'stdio',
-      command: spec.command,
-      args: spec.args,
-      ...(Object.keys(resolved).length > 0 ? { env: resolved } : {}),
+    mcpServers[server] = {
+      type: 'http',
+      url: spec.url,
+      ...(spec.headers
+        ? {
+            headers: Object.fromEntries(
+              Object.entries(spec.headers).map(([name, value]) => [
+                name,
+                reference(server, name, value),
+              ])
+            ),
+          }
+        : {}),
     };
   }
-  return {
-    type: 'http',
-    url: spec.url,
-    ...(spec.headers ? { headers: spec.headers } : {}),
-  };
+  return { mcpServers, env: launchEnv };
+}
+
+function envSegment(value: string): string {
+  return value.toUpperCase().replace(/[^A-Z0-9]+/g, '_');
 }
 
 export function textFromToolResultContent(content: unknown): string | undefined {

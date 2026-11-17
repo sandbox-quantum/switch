@@ -74,23 +74,50 @@ function compareIdentifier(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
 }
 
+/** Semver precedence of two parsed versions: negative, zero or positive. */
+function compareParsed(a: Version, b: Version): number {
+  for (let index = 0; index < 3; index++)
+    if (a.core[index] !== b.core[index]) return a.core[index]! - b.core[index]!;
+  if (a.pre.length === 0 || b.pre.length === 0) return b.pre.length - a.pre.length;
+  for (let index = 0; index < Math.min(a.pre.length, b.pre.length); index++) {
+    const order = compareIdentifier(a.pre[index]!, b.pre[index]!);
+    if (order !== 0) return order;
+  }
+  return a.pre.length - b.pre.length;
+}
+
 /**
  * Whether `candidate` is a later release than `current`, by semver precedence:
  * `0.31.0-dev.3` < `0.31.0-dev.12` < `0.31.0`. A version that is neither form
- * never is.
+ * never is; where that must not read as "not newer", use `compareVersions`.
  */
 export function isNewer(candidate: string, current: string): boolean {
   const a = parseVersion(candidate);
   const b = parseVersion(current);
-  if (!a || !b) return false;
-  for (let index = 0; index < 3; index++)
-    if (a.core[index] !== b.core[index]) return a.core[index]! > b.core[index]!;
-  if (a.pre.length === 0 || b.pre.length === 0) return a.pre.length === 0 && b.pre.length > 0;
-  for (let index = 0; index < Math.min(a.pre.length, b.pre.length); index++) {
-    const order = compareIdentifier(a.pre[index]!, b.pre[index]!);
-    if (order !== 0) return order > 0;
+  return a !== null && b !== null && compareParsed(a, b) > 0;
+}
+
+/** A version that is not `x.y.z` or `x.y.z-<prerelease>`, so cannot be ranked against another. */
+export class UnreadableVersionError extends Error {
+  constructor(readonly version: string) {
+    super(
+      `'${version}' is not a version this controller can compare: it is not x.y.z or x.y.z-<prerelease>.`
+    );
+    this.name = 'UnreadableVersionError';
   }
-  return a.pre.length > b.pre.length;
+}
+
+/**
+ * How `candidate` ranks against `current` by semver precedence: positive when
+ * it is later, zero when it is the same release, negative when it is older.
+ * Throws `UnreadableVersionError` naming either one when it is neither form.
+ */
+export function compareVersions(candidate: string, current: string): number {
+  const a = parseVersion(candidate);
+  if (!a) throw new UnreadableVersionError(candidate);
+  const b = parseVersion(current);
+  if (!b) throw new UnreadableVersionError(current);
+  return compareParsed(a, b);
 }
 
 /**

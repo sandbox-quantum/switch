@@ -1,8 +1,13 @@
+# Every port binds to loopback: switch-core runs on this machine and reaches
+# each service on localhost. POSTGRES_BIND_ADDR and MATTERMOST_BIND_ADDR move
+# Postgres and Mattermost off it, one at a time, for whoever knowingly wants
+# them reachable from elsewhere; SWITCH_BIND_ADDR does not, since in the
+# standalone stack it is what opens Switch itself to a team.
 services:
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:81e77a4833487b8132fe4b00bedd39dc3f74b8641e387f19312a48f7de218c2e
     ports:
-      - "${SWITCH_BIND_ADDR:-127.0.0.1}:5432:5432"
+      - "${POSTGRES_BIND_ADDR:-127.0.0.1}:5432:5432"
     environment:
       # The container's bootstrapped superuser is the SCHEMA OWNER
       # (DB_OWNER_USER), not the runtime role Switch serves requests as
@@ -21,7 +26,7 @@ services:
       retries: 10
 
   init-db:
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:81e77a4833487b8132fe4b00bedd39dc3f74b8641e387f19312a48f7de218c2e
     environment:
       PGPASSWORD: ${DB_OWNER_PASSWORD}
     # Runs as the owner: creating a database and a role both need privileges
@@ -51,13 +56,13 @@ services:
         condition: service_healthy
 
   mattermost:
-    image: mattermost/mattermost-team-edition:latest
+    image: mattermost/mattermost-team-edition:12.1.0@sha256:35927b9c535a9eb74f0e45385d3fe5d8308b16e0464031f157a834da8af3ee73
     platform: linux/amd64
     # It calls back to switch-core on the host for button presses; see `setup`.
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
-      - "${SWITCH_BIND_ADDR:-127.0.0.1}:8065:8065"
+      - "${MATTERMOST_BIND_ADDR:-127.0.0.1}:8065:8065"
     volumes:
       - mmdata:/mattermost/data
     environment:
@@ -128,11 +133,11 @@ services:
   # (the `mail` profile keeps it out of `just up`). It accepts anything on
   # 1025 and shows it at http://localhost:8025; nothing is delivered onwards.
   mailpit:
-    image: axllent/mailpit:latest
+    image: axllent/mailpit:v1.33.1@sha256:aef2aacc11f075ec0fb6874275ee4a421e688e11a96ebb296134d1735c7761ce
     profiles: ["mail"]
     ports:
-      - "${SWITCH_BIND_ADDR:-127.0.0.1}:1025:1025"
-      - "${SWITCH_BIND_ADDR:-127.0.0.1}:8025:8025"
+      - "127.0.0.1:1025:1025"
+      - "127.0.0.1:8025:8025"
 
   # ── Decision service (auto-route) ───────────────────────────────────────────
   # `just decision-up [cpu|gpu|strands]`, or one of these profiles. Each starts
@@ -154,7 +159,7 @@ services:
   # On CPU each decision takes several seconds (far over the one-second target
   # a GPU meets), hence the longer timeout; fine for trying auto-route out.
   decision-model-download:
-    image: curlimages/curl:8.11.1
+    image: curlimages/curl:8.11.1@sha256:c1fe1679c34d9784c1b0d1e5f62ac0a79fca01fb6377cdd33e90473c6f9f9a69
     profiles: ["decision", "decision-gpu"]
     # The fresh named volume is root's.
     user: "0:0"
@@ -196,7 +201,7 @@ services:
       - decision-models:/models
 
   decision-model:
-    image: ghcr.io/ggml-org/llama.cpp:server
+    image: ghcr.io/ggml-org/llama.cpp:server@sha256:7751a6c0dc3d019c231d42678abbb0fac1a13a24c17c956109ed27533139f280
     profiles: ["decision"]
     command:
       - -m
@@ -223,7 +228,7 @@ services:
         condition: service_completed_successfully
 
   decision-model-gpu:
-    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda@sha256:d68ec493c0ff9105ddfe2e909fff304117bc6e1fffbbd8d94182bd455983c264
     profiles: ["decision-gpu"]
     command:
       - -m
@@ -301,7 +306,7 @@ services:
     image: switch-decision:local
     profiles: ["decision", "decision-gpu"]
     ports:
-      - "${SWITCH_BIND_ADDR:-127.0.0.1}:${DECISION_PORT:-8230}:8230"
+      - "127.0.0.1:${DECISION_PORT:-8230}:8230"
     # Docker Desktop and OrbStack define host.docker.internal; Linux Docker
     # only does when asked. It is how this container reaches a collector on
     # the host (see OTLP_ENDPOINT below).

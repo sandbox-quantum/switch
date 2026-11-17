@@ -143,7 +143,13 @@ export function AgentIconPicker({
           !disabled && 'cursor-pointer hover:opacity-80'
         )}
       >
-        <AgentAvatar name={seedName} iconUrl={shownIconUrl} serverId={serverId} size={size} />
+        <AgentAvatar
+          agentId={null}
+          name={seedName}
+          iconUrl={shownIconUrl}
+          serverId={serverId}
+          size={size}
+        />
         {/* Shown at rest rather than on hover: that the picture is editable at
             all is not guessable, and a hover-only affordance answers the
             question only for someone who already suspected the answer. */}
@@ -184,7 +190,13 @@ export function AgentIconPicker({
                       selected ? 'ring-border-focus' : 'ring-transparent hover:ring-border'
                     )}
                   >
-                    <AgentAvatar name={seedName} iconUrl={choice} serverId={serverId} size={44} />
+                    <AgentAvatar
+                      agentId={null}
+                      name={seedName}
+                      iconUrl={choice}
+                      serverId={serverId}
+                      size={44}
+                    />
                   </button>
                 );
               })}
@@ -214,7 +226,13 @@ export function AgentIconPicker({
         ) : (
           <div className="flex flex-col gap-2">
             <div className="flex items-center gap-2.5 rounded-md bg-background-tertiary p-2.5">
-              <AgentAvatar name={seedName} iconUrl={shownIconUrl} serverId={serverId} size={44} />
+              <AgentAvatar
+                agentId={null}
+                name={seedName}
+                iconUrl={shownIconUrl}
+                serverId={serverId}
+                size={44}
+              />
               <Input
                 value={urlDraft}
                 placeholder="https://example.com/avatar.png"

@@ -58,8 +58,8 @@ describe('buildNativeCoreSettings', () => {
   });
 
   it('points every public URL at switch-core, which serves the gateway too', () => {
-    expect(settings.FRONTEND_BASE_URL).toBe('http://localhost:51001');
-    expect(settings.GATEWAY_PUBLIC_URL).toBe('http://localhost:51001');
+    expect(settings.FRONTEND_BASE_URL).toBe('http://127.0.0.1:51001');
+    expect(settings.GATEWAY_PUBLIC_URL).toBe('http://127.0.0.1:51001');
   });
 
   it('tells the server Switch Console runs it, as the Docker stack does', () => {
@@ -77,7 +77,9 @@ describe('buildNativeCoreSettings', () => {
 
 describe('mattermost', () => {
   it('runs the image the bundled compose pins', () => {
-    expect(mattermostImage()).toMatch(/^mattermost\/mattermost-team-edition:\d+\.\d+\.\d+$/);
+    expect(mattermostImage()).toMatch(
+      /^mattermost\/mattermost-team-edition:\d+\.\d+\.\d+@sha256:[0-9a-f]{64}$/
+    );
   });
 
   it('shares the host network on Linux and listens on loopback only', () => {

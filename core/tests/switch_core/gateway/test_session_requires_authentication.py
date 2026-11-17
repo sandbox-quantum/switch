@@ -73,6 +73,9 @@ _ROUTES_WITH_NO_TENANT_BOUND = {
     # "Sign out of all devices" moves the caller's `users` row on, which has no
     # tenant, and must work for a caller with no workspace selected.
     ("POST", "/auth/sessions/revoke"),
+    # Signing out of one session records its id in `revoked_sessions`, which
+    # belongs to no workspace, and needs no valid session to clear a cookie.
+    ("POST", "/auth/logout"),
 }
 
 # Every route that does not resolve a tenant, for any reason. `get_current_user`
@@ -117,9 +120,6 @@ _ROUTES_THAT_NEVER_BIND_A_TENANT = {
     # What a signed-in caller's session resolves to — including that it
     # resolves to no workspace, which is the answer a caller with none needs.
     ("GET", "/auth/session"),
-    # A deployment-wide constant — the agent types this build knows about.
-    # Nothing tenant-specific to scope it to.
-    ("GET", "/known-types"),
     # A caller with several memberships and no selection cannot reach
     # `get_current_user` by construction, and these are the routes such a
     # caller needs: list the workspaces, make one, pick one.

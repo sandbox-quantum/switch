@@ -84,6 +84,7 @@ const h = vi.hoisted(() => {
     importAgentConfig: vi.fn(async (_params: Record<string, unknown>) => false),
     completedGeneration: vi.fn(async () => 0),
     markComplete: vi.fn(async () => undefined),
+    ignored: vi.fn(async (_relPath: string) => 'outside-git'),
   };
 });
 
@@ -97,6 +98,7 @@ vi.mock('./agent-workdir-fs', () => ({
   resolveWorkdirFsFor: vi.fn(async () => ({
     fs: h.state.workdir,
     homeFs: h.state.workdir,
+    ignored: h.ignored,
     close: () => {},
   })),
 }));
@@ -107,7 +109,7 @@ vi.mock('@main/core/switch-servers/gateway-client', () => ({ fetchAgentDetail: v
 vi.mock('@main/core/switch-servers/servers-store', () => ({ getServer: vi.fn() }));
 vi.mock('@main/lib/logger', () => ({ log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
 vi.mock('./agent-storage-migration-marker', () => ({
-  AGENT_STORAGE_MIGRATION_GENERATION: 4,
+  AGENT_STORAGE_MIGRATION_GENERATION: 5,
   completedAgentStorageMigrationGeneration: h.completedGeneration,
   markAgentStorageMigrationComplete: h.markComplete,
 }));
@@ -297,7 +299,7 @@ describe('migrateAgentStorage', () => {
   });
 
   it('skips the whole pass (no workdir opened) once the current generation is latched', async () => {
-    h.completedGeneration.mockResolvedValueOnce(4);
+    h.completedGeneration.mockResolvedValueOnce(5);
     const resolveWorkdirFsFor = (await import('./agent-workdir-fs')).resolveWorkdirFsFor;
 
     await migrateAgentStorage();
@@ -367,7 +369,10 @@ describe('migrateAgentStorage', () => {
 
   it('re-running after generation 3 protects existing credentials without rewriting them', async () => {
     h.completedGeneration.mockResolvedValueOnce(3);
-    const ws = fakeFs({ '.switch/agents/cc-agent-main.json': credsJson('sw-1') });
+    const ws = fakeFs({
+      '.switch/agents/cc-agent-main.json': credsJson('sw-1'),
+      '.switch/agents/.gitignore': '*\n',
+    });
     const protectSecret = vi.spyOn(ws, 'protectSecret');
     const write = vi.spyOn(ws, 'write');
     h.state.workdir = ws;
@@ -524,6 +529,109 @@ describe('migrateAgentStorage', () => {
     await migrateAgentStorage();
 
     expect(h.markComplete).not.toHaveBeenCalled();
+  });
+
+  describe('after generation 4: one copy of the token', () => {
+    const legacySubagent = '.claude/switch-subagents/cc-agent-main.settings.json';
+    const legacyShared = '.claude/settings.local.json';
+    const withHooks = (agentId: string) =>
+      JSON.stringify({ ...JSON.parse(credsJson(agentId)), hooks: { Stop: [] } });
+
+    beforeEach(() => {
+      h.completedGeneration.mockResolvedValueOnce(4);
+    });
+
+    it('takes the token out of the legacy copies of this agent’s credentials, keeping the rest', async () => {
+      const ws = fakeFs({
+        '.switch/agents/cc-agent-main.json': credsJson('sw-1'),
+        '.switch/agents/.gitignore': '*\n',
+        [legacySubagent]: withHooks('sw-1'),
+        [legacyShared]: withHooks('sw-1'),
+      });
+      h.state.workdir = ws;
+
+      await migrateAgentStorage();
+
+      for (const path of [legacySubagent, legacyShared]) {
+        expect(JSON.parse((await ws.read(path)) as string)).toEqual({
+          env: { SWITCH_API_ENDPOINT: 'http://switch.example', SWITCH_AGENT_ID: 'sw-1' },
+          hooks: { Stop: [] },
+        });
+      }
+      expect(await ws.read('.switch/agents/cc-agent-main.json')).toBe(credsJson('sw-1'));
+      expect(h.readLaunchEnv).not.toHaveBeenCalled();
+      expect(h.markComplete).toHaveBeenCalledTimes(1);
+    });
+
+    it('leaves a legacy file naming another agent, or none, as it is', async () => {
+      const noAgent = JSON.stringify({ env: { SWITCH_API_TOKEN: 'tok-other' } });
+      const ws = fakeFs({
+        '.switch/agents/cc-agent-main.json': credsJson('sw-1'),
+        [legacySubagent]: noAgent,
+        [legacyShared]: credsJson('sw-other'),
+      });
+      h.state.workdir = ws;
+
+      await migrateAgentStorage();
+
+      expect(await ws.read(legacySubagent)).toBe(noAgent);
+      expect(await ws.read(legacyShared)).toBe(credsJson('sw-other'));
+    });
+
+    it('keeps the legacy copies while the per-agent file does not hold this agent’s token', async () => {
+      const tokenless = JSON.stringify({
+        env: { SWITCH_API_ENDPOINT: 'http://switch.example', SWITCH_AGENT_ID: 'sw-1' },
+      });
+      for (const [i, own] of [tokenless, credsJson('sw-other'), null].entries()) {
+        const ws = fakeFs({
+          ...(own === null ? {} : { '.switch/agents/cc-agent-main.json': own }),
+          [legacySubagent]: credsJson('sw-1'),
+          [legacyShared]: credsJson('sw-1'),
+        });
+        h.state.workdir = ws;
+        if (i > 0) h.completedGeneration.mockResolvedValueOnce(4);
+
+        await migrateAgentStorage();
+
+        expect(await ws.read(legacySubagent)).toBe(credsJson('sw-1'));
+        expect(await ws.read(legacyShared)).toBe(credsJson('sw-1'));
+      }
+    });
+
+    it('makes a .gitignore a repository put in .switch/agents Console’s again', async () => {
+      const ws = fakeFs({
+        '.switch/agents/cc-agent-main.json': credsJson('sw-1'),
+        '.switch/agents/.gitignore': '# placeholder\n',
+      });
+      h.state.workdir = ws;
+
+      await migrateAgentStorage();
+
+      expect(await ws.read('.switch/agents/.gitignore')).toBe('*\n');
+      expect(log.warn).not.toHaveBeenCalled();
+    });
+
+    it('warns, deleting nothing, when git still would commit the credentials file', async () => {
+      const ws = fakeFs({
+        '.switch/agents/cc-agent-main.json': credsJson('sw-1'),
+        '.switch/agents/.gitignore': '*\n',
+      });
+      h.state.workdir = ws;
+      h.ignored.mockResolvedValueOnce('not-ignored');
+
+      await migrateAgentStorage();
+
+      expect(h.ignored).toHaveBeenCalledWith('.switch/agents/cc-agent-main.json');
+      expect(log.warn).toHaveBeenCalledWith(
+        expect.stringContaining('tracks an agent’s credentials file'),
+        expect.objectContaining({
+          agentId: 'agent-id-1',
+          path: '.switch/agents/cc-agent-main.json',
+        })
+      );
+      expect(await ws.read('.switch/agents/cc-agent-main.json')).toBe(credsJson('sw-1'));
+      expect(h.markComplete).toHaveBeenCalledTimes(1);
+    });
   });
 
   it('latches the marker after a clean pass', async () => {

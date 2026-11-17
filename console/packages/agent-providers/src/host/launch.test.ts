@@ -1,10 +1,18 @@
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { once } from 'node:events';
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, expect, it, vi } from 'vitest';
-import { detachedSupervision, ensureSharedProcess, inProcessSupervision } from './launch';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  detachedSupervision,
+  ensureSharedProcess,
+  inProcessSupervision,
+  SDK_SESSIONS_DIR_ENV,
+  sharedSessionRoot,
+  sharedSessionsBase,
+} from './launch';
 import { killProcessTree } from './process-fence';
 import { SessionLinks } from './session-channel';
 import { owedSessionStart, type HostStartSource } from './session-start';
@@ -87,9 +95,48 @@ async function fixture() {
     startSource: null as HostStartSource | null,
   };
 }
+describe('sharedSessionsBase', () => {
+  afterEach(() => {
+    delete process.env[SDK_SESSIONS_DIR_ENV];
+  });
+
+  it("keeps session state in the folder an agent controller names, and in the user's otherwise", () => {
+    expect(sharedSessionsBase()).toBe(join(homedir(), '.local', 'state', 'switch', 'sdk-sessions'));
+    process.env.SWITCH_SDK_SESSIONS_DIR = join(tmpdir(), 'controller', 'sdk-sessions');
+    expect(sharedSessionsBase()).toBe(join(tmpdir(), 'controller', 'sdk-sessions'));
+    expect(sharedSessionRoot('session')).toBe(
+      join(
+        tmpdir(),
+        'controller',
+        'sdk-sessions',
+        createHash('sha256').update('session').digest('hex')
+      )
+    );
+  });
+
+  it('refuses a relative folder', () => {
+    process.env.SWITCH_SDK_SESSIONS_DIR = 'sdk-sessions';
+    expect(() => sharedSessionsBase()).toThrow('must be an absolute path');
+  });
+});
+
 it('refuses to replace missing conversation state with a fresh session', async () => {
   await expect(ensureSharedProcess(await fixture())).rejects.toThrow('no saved SDK conversation');
 });
+it.skipIf(process.platform === 'win32')(
+  'tightens a session root an earlier build left open before using it',
+  async () => {
+    const input = await fixture();
+    await chmod(input.root, 0o755);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await expect(ensureSharedProcess(input)).rejects.toThrow('no saved SDK conversation');
+    } finally {
+      warn.mockRestore();
+    }
+    expect((await stat(input.root)).mode & 0o777).toBe(0o700);
+  }
+);
 it('waits for the old owner to exit before starting its replacement', async () => {
   const input = await fixture();
   await writeFile(join(input.root, 'config.json'), JSON.stringify(input.config));

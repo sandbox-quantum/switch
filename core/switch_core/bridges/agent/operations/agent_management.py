@@ -19,7 +19,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from switch_core.bridges.agent.operations.context import get_agent_id, get_protocol
+from switch_core.bridges.agent.agent_change_requests import (
+    hold_new_agent,
+    new_agent_fields_to_confirm,
+    record_new_agent_by_agent,
+)
+from switch_core.bridges.agent.operations.context import (
+    get_agent_id,
+    get_protocol,
+    require_connected_room,
+)
 from switch_core.bridges.agent.operations.registry import (
     disable_operation_group,
     enable_operation_group,
@@ -203,6 +212,16 @@ async def create_agent(
     Confirm the name, machine and provider with the person asking before you
     call this: it creates a real agent on their computer.
 
+    An agent with bypass mode on (`auto_approve`, or `permissionMode`
+    "bypassPermissions" in `advanced_config`), or a `directory` other than
+    its machine's own workspace for it, is not created by this call: your
+    owner confirms it themselves. Every check is made first, then
+    the request is posted in the room you are connected to (connect to one
+    first) and waits for your owner to send `!agent-change <name> confirm`
+    there within two minutes; otherwise it lapses and nothing is created.
+    Only the owner can confirm it, never you or another agent. Tell the
+    person what it creates and what to send.
+
     The machine must be online and have the provider installed and logged in.
     When it is not, nothing is created and the error says why (with a reason
     code such as `controller_offline`, `provider_not_installed`,
@@ -228,14 +247,16 @@ async def create_agent(
             machine's own workspace for the agent; Switch fills that path in
             when the machine has reported where it keeps workspaces, and the
             machine makes the directory if it is missing. Any other directory
-            must already exist there.
+            must be an absolute path with no `..` in it, must already exist
+            there, and waits for your owner to confirm it.
         auto_mode: Auto mode, on by default: the provider's own automatic
             review lets safe actions run without asking and still asks a
             person before risky ones. Leave it on unless the person asks for
             every action to be approved.
         auto_approve: Bypass mode: the agent runs every tool without any
             permission check, and this overrides `auto_mode`. Unsafe; set it
-            only when the person explicitly asks for bypass.
+            only when the person explicitly asks for bypass, and it waits for
+            your owner to confirm it.
         display_name: A human label shown next to `name`, or null for none.
         icon_url: An https link to the agent's icon, or null for the icon
             its name generates, the same one Switch Console offers first. A
@@ -248,30 +269,50 @@ async def create_agent(
         `desired_state` is "running" or "stopped". Check the agent with
         `list_managed_agents` straight away; while its `actual` is still
         null, "pending" or "starting", check again every 2 seconds, for at
-        most a minute.
+        most a minute. When it waits for your owner instead: {status:
+        "awaiting_confirmation", agent_name, owner, machine: {id, name},
+        fields, needs_confirmation_for, confirm_with, expires_in_seconds,
+        message}, and nothing exists yet.
     """
     permitted = await permitted_to_manage()
-    return await _management().create_agent(
-        permitted.tenant_id,
-        permitted.owner.id,
-        NewManagedAgent(
-            name=name,
-            description=description,
-            display_name=display_name,
-            icon_url=icon_url,
-            machine=machine,
-            provider=provider,
-            model=model,
-            advanced_config={} if advanced_config is None else advanced_config,
-            instructions=instructions,
-            directory=directory,
-            auto_mode=auto_mode,
-            auto_approve=auto_approve,
-            isolation="shared",
-            start=start,
-        ),
-        get_protocol(),
+    port = _management()
+    protocol = get_protocol()
+    spec = NewManagedAgent(
+        name=name,
+        description=description,
+        display_name=display_name,
+        icon_url=icon_url,
+        machine=machine,
+        provider=provider,
+        model=model,
+        advanced_config={} if advanced_config is None else advanced_config,
+        instructions=instructions,
+        directory=directory,
+        auto_mode=auto_mode,
+        auto_approve=auto_approve,
+        isolation="shared",
+        start=start,
     )
+    placement = await port.check_new_agent(
+        permitted.tenant_id, permitted.owner.id, spec
+    )
+    confirming = new_agent_fields_to_confirm(spec, placement)
+    if confirming:
+        return await hold_new_agent(
+            protocol,
+            port,
+            room_id=await require_connected_room(),
+            caller_id=get_agent_id(),
+            owner=permitted.owner,
+            spec=spec,
+            placement=placement,
+            confirming=confirming,
+        )
+    created = await port.create_agent(
+        permitted.tenant_id, permitted.owner.id, spec, protocol
+    )
+    await record_new_agent_by_agent(protocol, caller_id=get_agent_id(), created=created)
+    return created
 
 
 @gated_operation(AGENT_MANAGEMENT_OPERATIONS)

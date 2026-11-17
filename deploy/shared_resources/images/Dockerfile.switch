@@ -14,13 +14,13 @@ COPY gateway/ .
 COPY console/apps/switch-console-desktop/src/shared/core/switch-servers/dashboard-pages.ts /console/apps/switch-console-desktop/src/shared/core/switch-servers/
 RUN npm run build
 
-FROM python:3.12-slim
+FROM python:3.12.16-slim-trixie@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b
 
 # Pin uv and install exactly what uv.lock resolves, so the image matches what
 # `uv sync` produces locally. Installing from pyproject.toml alone lets
 # transitive deps (e.g. mcp/fastmcp) float on rebuild and silently change
 # behaviour.
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.13.1@sha256:4a1f3666816dafadd20ceb71eac9a7d56d7ef30279f7d64048519ab901ada336 /uv /bin/uv
 
 WORKDIR /app
 
@@ -52,6 +52,15 @@ RUN uv sync --frozen --no-dev
 
 COPY --from=gateway-ui /gateway/dist /app/gateway-ui
 ENV GATEWAY_UI_DIR=/app/gateway-ui
+
+# The server runs as a user of its own, not root. It writes nothing in the
+# image (uploads spool to /tmp), so everything above stays root's, read-only
+# to it; the Helm chart pins the same uid and mounts /tmp writable over a
+# read-only root.
+RUN groupadd --system --gid 10001 switch \
+    && useradd --system --uid 10001 --gid 10001 --no-create-home --home-dir /nonexistent \
+       --shell /usr/sbin/nologin switch
+USER 10001:10001
 
 # The commit and repository this image was built from, reported with every
 # metric and log so two builds of the same version can be told apart. Declared

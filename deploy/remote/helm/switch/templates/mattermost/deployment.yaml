@@ -22,8 +22,9 @@ spec:
       {{- if .Values.global.imagePullSecrets }}
       {{- include "switch.imagePullSecrets" . | nindent 6 }}
       {{- end }}
+      automountServiceAccountToken: false
       securityContext:
-        fsGroup: 2000
+        {{- toYaml .Values.mattermost.podSecurityContext | nindent 8 }}
       initContainers:
         {{- include "switch.waitFor" (dict "name" "postgres" "host" (include "switch.postgresHost" .) "port" (include "switch.postgresPort" .)) | nindent 8 }}
       containers:
@@ -99,6 +100,8 @@ spec:
               port: 8065
             initialDelaySeconds: 30
             periodSeconds: 30
+          securityContext:
+            {{- toYaml .Values.mattermost.securityContext | nindent 12 }}
           volumeMounts:
             - name: data
               mountPath: /mattermost/data

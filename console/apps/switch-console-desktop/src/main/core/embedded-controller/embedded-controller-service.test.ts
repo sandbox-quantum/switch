@@ -8,16 +8,25 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
+import {
+  DEVICE_CONSENT_NEEDED_KIND,
+  DEVICE_POLICY_CHANGED_KIND,
+  type DeviceConsentNeed,
+  readDevicePolicy,
+} from '@switch-console/agent-providers';
 import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from 'vitest';
 import { MovedAgentsHereError } from '@shared/core/agent-migration/agent-migration';
 import type {
+  DeviceConsentEvent,
   EmbeddedControllerPhase,
   EmbeddedControllerStateEvent,
 } from '@shared/core/embedded-controller/embedded-controller';
 import {
+  changeControllerPolicy,
   controllerDataDir,
   credentialSecretKey,
+  DeviceConsentDenialFile,
   EnrollmentFile,
   turnOffWatchers,
   wipeControllerIdentity,
@@ -43,6 +52,7 @@ const NOW = Date.parse('2026-01-01T00:00:00Z');
 let base: string;
 let secrets: Map<string, string>;
 let events: EmbeddedControllerStateEvent[];
+let consent: DeviceConsentEvent[];
 let calls: SpawnCall[];
 let management: { [K in keyof ManagementPort]: Mock<ManagementPort[K]> };
 let services: EmbeddedControllerService[];
@@ -73,6 +83,8 @@ function service(overrides: Partial<EmbeddedControllerDeps> = {}): EmbeddedContr
       dataDir: (serverId) => controllerDataDir(base, serverId),
       turnOffWatchers,
       wipeIdentity: wipeControllerIdentity,
+      readPolicy: readDevicePolicy,
+      changePolicy: changeControllerPolicy,
     },
     bundles: {
       controller: () => '/app/dist-sidecar/agent-controller.mjs',
@@ -83,6 +95,8 @@ function service(overrides: Partial<EmbeddedControllerDeps> = {}): EmbeddedContr
     execPath: '/app/electron',
     env: () => ({ PATH: '/usr/bin', HOME: '/home/someone' }),
     emit: (event) => events.push(event),
+    emitConsent: (event) => consent.push(event),
+    denials: new DeviceConsentDenialFile(() => join(base, 'device-consent-denials.json')),
     log: { info: () => {}, warn: () => {}, error: () => {} },
     controllerLine: () => {},
     now: () => NOW,
@@ -149,6 +163,7 @@ beforeEach(() => {
   base = mkdtempSync(join(tmpdir(), 'embedded-controller-'));
   secrets = new Map();
   events = [];
+  consent = [];
   services = [];
   apiUrl = 'https://switch.example.com';
   moved = [];
@@ -605,5 +620,96 @@ describe('EmbeddedControllerService', () => {
       message: 'Console no longer knows this Switch server, so it cannot say where to connect.',
     });
     expect(calls).toHaveLength(0);
+  });
+});
+
+describe('what agents ask of this device', () => {
+  const ASK: DeviceConsentNeed = {
+    agentId: 'agent-1',
+    name: 'scout',
+    displayName: 'Scout',
+    bypass: true,
+    directory: null,
+  };
+
+  function policyFile(): { mode: number; body: unknown } {
+    const path = join(dataDir(), 'device-policy.json');
+    return { mode: statSync(path).mode & 0o777, body: JSON.parse(readFileSync(path, 'utf8')) };
+  }
+
+  async function asked(needs: DeviceConsentNeed[]): Promise<DeviceConsentEvent> {
+    const before = consent.length;
+    calls[0]!.child.emit('message', { kind: DEVICE_CONSENT_NEEDED_KIND, needs });
+    await waitFor(() => consent.length > before, 'the asks passed on');
+    return consent.at(-1)!;
+  }
+
+  it('allows an agent by writing the device policy and telling the controller', async () => {
+    const created = await enabled();
+    await created.allowForAgent(SERVER, 'agent-1', { bypass: true, directory: '/srv/repo' });
+    const written = policyFile();
+    if (process.platform !== 'win32') expect(written.mode).toBe(0o600);
+    expect(written.body).toEqual({
+      version: 1,
+      agents: { 'agent-1': { bypass: true, directories: [resolve('/srv/repo')] } },
+    });
+    expect(calls[0]!.child.sent).toContainEqual({ kind: DEVICE_POLICY_CHANGED_KIND });
+    expect(await created.deviceGrants(SERVER)).toEqual([
+      { agentId: 'agent-1', bypass: true, directories: [resolve('/srv/repo')] },
+    ]);
+  });
+
+  it('takes back what it allowed, and tells the controller', async () => {
+    const created = await enabled();
+    await created.allowForAgent(SERVER, 'agent-1', { bypass: true, directory: '/srv/repo' });
+    calls[0]!.child.sent.length = 0;
+    await created.revokeForAgent(SERVER, 'agent-1', { bypass: true, directory: null });
+    expect(policyFile().body).toEqual({
+      version: 1,
+      agents: { 'agent-1': { directories: [resolve('/srv/repo')] } },
+    });
+    await created.revokeForAgent(SERVER, 'agent-1', 'all');
+    expect(policyFile().body).toEqual({ version: 1, agents: {} });
+    expect(calls[0]!.child.sent).toEqual([
+      { kind: DEVICE_POLICY_CHANGED_KIND },
+      { kind: DEVICE_POLICY_CHANGED_KIND },
+    ]);
+  });
+
+  it('allows nothing for a server this computer does not run agents for', async () => {
+    const created = service();
+    await expect(
+      created.allowForAgent(SERVER, 'agent-1', { bypass: true, directory: null })
+    ).rejects.toThrow(/does not run managed agents/);
+  });
+
+  it('does not put an ask the person said no to again, but does put a new one', async () => {
+    const created = await enabled();
+    expect((await asked([ASK])).asks).toEqual([ASK]);
+
+    await created.denyForAgent(SERVER, 'agent-1', { bypass: true, directory: null });
+    expect(consent.at(-1)).toEqual({ serverId: SERVER, asks: [] });
+    expect((await asked([ASK])).asks).toEqual([]);
+    expect(await created.consentAsks()).toEqual([]);
+
+    const wider = { ...ASK, directory: '/srv/repo' };
+    expect((await asked([wider])).asks).toEqual([{ ...wider, bypass: false }]);
+    expect(await created.consentAsks()).toEqual([
+      { serverId: SERVER, asks: [{ ...wider, bypass: false }] },
+    ]);
+
+    // Kept by Console across restarts, not in the policy the controller reads.
+    const again = service();
+    await again.denyForAgent(SERVER, 'agent-1', { bypass: false, directory: '/srv/repo' });
+    expect(readFileSync(join(base, 'device-consent-denials.json'), 'utf8')).toContain('/srv/repo');
+  });
+
+  it('asks again for what was refused once the person allows it after all and takes it back', async () => {
+    const created = await enabled();
+    await asked([ASK]);
+    await created.denyForAgent(SERVER, 'agent-1', { bypass: true, directory: null });
+    await created.allowForAgent(SERVER, 'agent-1', { bypass: true, directory: null });
+    await created.revokeForAgent(SERVER, 'agent-1', 'all');
+    expect((await asked([ASK])).asks).toEqual([ASK]);
   });
 });

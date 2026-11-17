@@ -20,14 +20,7 @@ vi.mock('@main/core/dependencies/registry', () => ({
   DEPENDENCIES: [],
 }));
 
-vi.mock('../settings/provider-settings-service', () => ({
-  providerOverrideSettings: {
-    getItemWithMeta: vi.fn(),
-  },
-}));
-
 const { getPlugin, listPlugins } = await import('@main/core/providers/plugin-registry');
-const { providerOverrideSettings } = await import('../settings/provider-settings-service');
 void (await import('@main/core/dependencies/registry'));
 
 const dummyIcon = {
@@ -80,16 +73,9 @@ function makeDependencyManager(states: Record<string, Partial<DependencyState>>)
   };
 }
 
-const defaultSettings = () => ({
-  value: {},
-  defaults: {},
-  overrides: {},
-});
-
 describe('buildAgentPayload', () => {
-  it('merges provider, status and settings into a payload', async () => {
+  it('merges provider and status into a payload, with no provider settings', async () => {
     vi.mocked(getPlugin).mockReturnValue(makeProvider('claude', 'claude'));
-    vi.mocked(providerOverrideSettings.getItemWithMeta).mockResolvedValue(defaultSettings());
 
     const mgr = makeDependencyManager({
       claude: {
@@ -113,7 +99,7 @@ describe('buildAgentPayload', () => {
     expect(payload!.latestVersion).toBeNull();
     expect(payload!.updateAvailable).toBe(false);
     expect(payload!.command).toBe('/usr/local/bin/claude');
-    expect(payload!.settings).toBeDefined();
+    expect(payload).not.toHaveProperty('settings');
     expect(payload!.capabilities.models).toEqual({ kind: 'none' });
     expect(payload!.capabilities.effort).toEqual({ kind: 'none' });
     expect(Array.isArray(payload!.installOptions)).toBe(true);
@@ -122,7 +108,6 @@ describe('buildAgentPayload', () => {
 
   it('uses missing status when agent is not in the dependency manager', async () => {
     vi.mocked(getPlugin).mockReturnValue(makeProvider('claude', 'claude'));
-    vi.mocked(providerOverrideSettings.getItemWithMeta).mockResolvedValue(defaultSettings());
 
     const mgr = makeDependencyManager({});
 
@@ -140,7 +125,6 @@ describe('buildAgentPayload', () => {
     vi.mocked(getPlugin).mockImplementation(() => {
       throw new Error('No plugin found');
     });
-    vi.mocked(providerOverrideSettings.getItemWithMeta).mockResolvedValue(null);
 
     const { buildAgentPayload } = await import('./agent-payload-builder');
     await expect(buildAgentPayload('unknown-agent')).rejects.toThrow('No plugin found');
@@ -159,7 +143,6 @@ describe('buildAgentPayload', () => {
       },
     };
     vi.mocked(getPlugin).mockReturnValue(provider);
-    vi.mocked(providerOverrideSettings.getItemWithMeta).mockResolvedValue(defaultSettings());
 
     const { buildAgentPayload } = await import('./agent-payload-builder');
     const payload = await buildAgentPayload('codex');
@@ -178,7 +161,6 @@ describe('buildAgentPayloads', () => {
       makeProvider('codex', 'codex'),
     ]);
     vi.mocked(getPlugin).mockImplementation((id) => makeProvider(id, id));
-    vi.mocked(providerOverrideSettings.getItemWithMeta).mockResolvedValue(defaultSettings());
 
     const { buildAgentPayloads } = await import('./agent-payload-builder');
     const payloads = await buildAgentPayloads();

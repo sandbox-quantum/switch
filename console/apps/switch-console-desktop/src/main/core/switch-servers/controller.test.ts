@@ -1,11 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as WorkspaceSession from '@main/core/workspaces/workspace-session';
 import { HostUnreachableError } from '@shared/core/remote-hosts/reachability';
+import type * as ServerAddress from './server-address';
 
 const fetchMe = vi.hoisted(() => vi.fn());
 const getServer = vi.hoisted(() => vi.fn());
 const isManagedServerRunning = vi.hoisted(() => vi.fn());
 const managedServerHostBlocked = vi.hoisted(() => vi.fn((): unknown => null));
+const managedServerStoppedPhase = vi.hoisted(() => vi.fn((): unknown => null));
+const getSessionCookie = vi.hoisted(() => vi.fn());
+const deleteSessionCookie = vi.hoisted(() => vi.fn());
 const fetchAuthConfig = vi.hoisted(() => vi.fn());
 const trackEvent = vi.hoisted(() => vi.fn());
 const addServer = vi.hoisted(() => vi.fn());
@@ -57,7 +61,9 @@ vi.mock('@main/core/telemetry/telemetry-service', () => ({ trackEvent }));
 vi.mock('@main/core/managed-switch-server/managed-server-status', () => ({
   isManagedServerRunning,
   managedServerHostBlocked,
+  managedServerStoppedPhase,
 }));
+vi.mock('./console-identity', () => ({ consoleIdentityHeaders: async () => ({}) }));
 // Reads this install's own workspace rows, and through them the database client.
 vi.mock('@main/core/workspaces/reconcile-workspaces', () => ({
   reconcileServerWorkspaces,
@@ -114,7 +120,9 @@ vi.mock('./gateway-client', () => ({
   registerKnownAgent: vi.fn(),
   GatewayError: class GatewayError extends Error {},
 }));
-vi.mock('./server-address', () => ({
+vi.mock('./server-address', async (importOriginal) => ({
+  assertEncryptedOrConfirmed: (await importOriginal<typeof ServerAddress>())
+    .assertEncryptedOrConfirmed,
   assertServerAddress,
   assertServesDashboard,
   NotTheServerAddressError,
@@ -125,7 +133,8 @@ vi.mock('./servers-store', () => ({
   DuplicateServerUrlError,
   findServerByUrl,
   findServerByWebAddress,
-  deleteSessionCookie: vi.fn(),
+  deleteSessionCookie,
+  getSessionCookie,
   listServers: vi.fn(),
   removeServer: vi.fn(),
   renameServer: vi.fn(),
@@ -135,6 +144,7 @@ vi.mock('./servers-store', () => ({
 }));
 
 const { switchServersController } = await import('./controller');
+const { log } = await import('@main/lib/logger');
 
 const USER = { id: 'u1', name: 'Dev', email: 'dev@example.com', role: 'admin' };
 
@@ -680,6 +690,7 @@ describe('editing a server', () => {
       id: 'srv',
       name: 'S',
       url: 'https://switch.example.com',
+      allowUnencrypted: false,
     });
 
     expect(result.propagation.urlChanged).toBe(true);
@@ -697,6 +708,7 @@ describe('editing a server', () => {
       id: 'srv',
       name: 'Renamed',
       url: 'http://localhost:8000/',
+      allowUnencrypted: false,
     });
 
     expect(result.propagation).toEqual({ urlChanged: false, agents: [] });
@@ -714,15 +726,31 @@ describe('editing a server', () => {
         id: 'srv',
         name: 'S',
         url: 'https://switch-gateway.example.com',
+        allowUnencrypted: false,
       })
     ).rejects.toThrow('answered with a web page');
     expect(updateServer).not.toHaveBeenCalled();
     expect(propagateServerApiUrl).not.toHaveBeenCalled();
   });
+
+  it('saves nothing when the new address is plain http to another machine and not confirmed', async () => {
+    getServer.mockResolvedValue(server({ url: 'https://switch.example.com' }));
+
+    await expect(
+      switchServersController.updateServer({
+        id: 'srv',
+        name: 'S',
+        url: 'http://switch.example.com',
+        allowUnencrypted: false,
+      })
+    ).rejects.toThrow(/not encrypted/);
+    expect(updateServer).not.toHaveBeenCalled();
+    expect(assertServerAddress).not.toHaveBeenCalled();
+  });
 });
 
 describe('adding a server by URL', () => {
-  const params = { name: 'S', url: 'http://switch' };
+  const params = { name: 'S', url: 'http://switch', allowUnencrypted: true };
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -746,6 +774,25 @@ describe('adding a server by URL', () => {
       outcome: 'success',
       failure_reason: 'none',
     });
+  });
+
+  it('refuses plain http to another machine unless the user confirmed it', async () => {
+    await expect(
+      switchServersController.addServer({ ...params, allowUnencrypted: false })
+    ).rejects.toThrow(/not encrypted/);
+    expect(addServer).not.toHaveBeenCalled();
+  });
+
+  it('adds plain http to this computer without asking', async () => {
+    addServer.mockResolvedValue(server({ id: 'local' }));
+
+    await switchServersController.addServer({
+      name: 'S',
+      url: 'http://127.0.0.1:8000',
+      allowUnencrypted: false,
+    });
+
+    expect(addServer).toHaveBeenCalledWith({ name: 'S', url: 'http://127.0.0.1:8000' });
   });
 
   it('describes an address that failed to register by the address itself', async () => {
@@ -988,5 +1035,61 @@ describe('cloud machines', () => {
       'does not have cloud machines turned on'
     );
     expect(ensureCloudMachine).not.toHaveBeenCalled();
+  });
+});
+
+describe('signing out', () => {
+  const fetchMock = vi.fn();
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubGlobal('fetch', fetchMock);
+    managedServerHostBlocked.mockReturnValue(null);
+    managedServerStoppedPhase.mockReturnValue(null);
+    getServer.mockResolvedValue(server({ url: 'https://switch.example.com' }));
+    getSessionCookie.mockResolvedValue('jwt-held');
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('ends the session on the server before forgetting it here', async () => {
+    fetchMock.mockResolvedValue(new Response('{"ok":true}', { status: 200 }));
+
+    await switchServersController.logout('srv');
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://switch.example.com/gateway/auth/logout',
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({ Cookie: 'switch_auth=jwt-held' }),
+      })
+    );
+    expect(deleteSessionCookie).toHaveBeenCalledWith('srv');
+    expect(fetchMock.mock.invocationCallOrder[0]).toBeLessThan(
+      deleteSessionCookie.mock.invocationCallOrder[0]!
+    );
+  });
+
+  it('still forgets the session here when the server cannot be reached', async () => {
+    fetchMock.mockRejectedValue(new TypeError('fetch failed'));
+
+    await switchServersController.logout('srv');
+
+    expect(deleteSessionCookie).toHaveBeenCalledWith('srv');
+    expect(log.warn).toHaveBeenCalledWith(
+      expect.stringMatching(/Could not reach the server/),
+      expect.objectContaining({ serverId: 'srv' })
+    );
+  });
+
+  it('calls nothing on the server without a session to end', async () => {
+    getSessionCookie.mockResolvedValue(null);
+
+    await switchServersController.logout('srv');
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(deleteSessionCookie).toHaveBeenCalledWith('srv');
   });
 });

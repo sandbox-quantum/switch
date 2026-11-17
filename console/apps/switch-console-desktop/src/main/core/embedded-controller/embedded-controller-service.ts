@@ -1,5 +1,15 @@
+import {
+  allowInPolicy,
+  type DeviceConsentNeed,
+  type DevicePolicy,
+  disallowInPolicy,
+} from '@switch-console/agent-providers';
 import { MovedAgentsHereError } from '@shared/core/agent-migration/agent-migration';
 import type {
+  DeviceAgentGrant,
+  DeviceConsentAsk,
+  DeviceConsentChoice,
+  DeviceConsentEvent,
   EmbeddedControllerEnrollment,
   EmbeddedControllerOverview,
   EmbeddedControllerPhase,
@@ -9,6 +19,9 @@ import type {
 } from '@shared/core/embedded-controller/embedded-controller';
 import {
   credentialSecretKey,
+  type DeviceConsentDenial,
+  type DeviceConsentDenials,
+  denialsFor,
   type EnrollmentRecord,
   type EnrollmentRecords,
 } from './controller-files';
@@ -48,6 +61,13 @@ export interface ControllerFilesPort {
   dataDir(serverId: string): string;
   turnOffWatchers(dataDir: string): Promise<number>;
   wipeIdentity(dataDir: string): Promise<void>;
+  /** The device policy in a controller's data directory (`readDevicePolicy`). */
+  readPolicy(dataDir: string): Promise<DevicePolicy>;
+  /** Changes it, one writer at a time (`changeDevicePolicy`); the policy written. */
+  changePolicy(
+    dataDir: string,
+    change: (policy: DevicePolicy) => DevicePolicy
+  ): Promise<DevicePolicy>;
 }
 
 export type ServiceLog = {
@@ -77,6 +97,10 @@ export type EmbeddedControllerDeps = {
   execPath: string;
   env: () => NodeJS.ProcessEnv;
   emit: (event: EmbeddedControllerStateEvent) => void;
+  /** What a server's agents still ask of this computer, whenever that changes. */
+  emitConsent: (event: DeviceConsentEvent) => void;
+  /** What the person said no to, kept by Console so it is not asked again. */
+  denials: DeviceConsentDenials;
   log: ServiceLog;
   /** Where the controller's own log lines go. */
   controllerLine: (serverId: string, level: ControllerLogLevel, line: string) => void;
@@ -115,6 +139,37 @@ export function unsupportedPlatformReason(platform: NodeJS.Platform): string | n
 
 type Runner = { supervisor: ControllerSupervisor; phase: EmbeddedControllerPhase };
 
+/** The parts of `need` the person has not said no to; null when nothing is left to ask. */
+function stillAsked(
+  serverId: string,
+  need: DeviceConsentNeed,
+  denials: DeviceConsentDenial[]
+): DeviceConsentAsk | null {
+  const denied = (part: DeviceConsentDenial) =>
+    denials.some(
+      (denial) =>
+        denial.serverId === part.serverId &&
+        denial.agentId === part.agentId &&
+        denial.ask === part.ask &&
+        (part.ask !== 'directory' ||
+          (denial.ask === 'directory' && denial.directory === part.directory))
+    );
+  const bypass = need.bypass && !denied({ serverId, agentId: need.agentId, ask: 'bypass' });
+  const directory =
+    need.directory !== null &&
+    !denied({ serverId, agentId: need.agentId, ask: 'directory', directory: need.directory })
+      ? need.directory
+      : null;
+  if (!bypass && directory === null) return null;
+  return {
+    agentId: need.agentId,
+    name: need.name,
+    displayName: need.displayName,
+    bypass,
+    directory,
+  };
+}
+
 /**
  * "Run managed agents on this computer", per signed-in Switch server: enrolls
  * this Console as an agent controller of kind `console`, keeps its credential
@@ -130,6 +185,8 @@ export class EmbeddedControllerService {
   private readonly phases = new Map<string, EmbeddedControllerPhase>();
   /** Servers with an enable or disable in flight, so two cannot interleave. */
   private readonly busy = new Set<string>();
+  /** What each server's controller last said its agents ask of this device. */
+  private readonly needs = new Map<string, DeviceConsentNeed[]>();
   private disposed = false;
 
   constructor(private readonly deps: EmbeddedControllerDeps) {}
@@ -274,6 +331,91 @@ export class EmbeddedControllerService {
       this.phases.delete(serverId);
       this.startRunner(serverId);
     });
+  }
+
+  /**
+   * What every server's agents ask of this computer that the person has
+   * neither allowed nor said no to: what the controllers last listed.
+   */
+  async consentAsks(): Promise<DeviceConsentEvent[]> {
+    const denials = await this.deps.denials.all();
+    return [...this.needs].flatMap(([serverId, needs]) => {
+      const asks = needs.flatMap((need) => stillAsked(serverId, need, denials) ?? []);
+      return asks.length ? [{ serverId, asks }] : [];
+    });
+  }
+
+  /** What this computer allows the agents of `serverId`, whatever their definitions say. */
+  async deviceGrants(serverId: string): Promise<DeviceAgentGrant[]> {
+    const policy = await this.deps.files.readPolicy(this.deps.files.dataDir(serverId));
+    return Object.entries(policy.agents).map(([agentId, grant]) => ({
+      agentId,
+      bypass: grant.bypass === true,
+      directories: grant.directories ?? [],
+    }));
+  }
+
+  /**
+   * Allows an agent of `serverId` what it asked for on this computer: writes
+   * it into the controller's device policy and tells the controller. Anything
+   * said no to before for the same is forgotten.
+   */
+  async allowForAgent(
+    serverId: string,
+    agentId: string,
+    choice: DeviceConsentChoice
+  ): Promise<void> {
+    await this.changePolicy(serverId, (policy) => allowInPolicy(policy, agentId, choice));
+    await this.deps.denials.remove(denialsFor(serverId, agentId, choice));
+    this.deps.log.info('Allowed an agent on this computer', { serverId, agentId, ...choice });
+    await this.emitAsks(serverId);
+  }
+
+  /** Says no to what an agent of `serverId` asked: kept, so the same ask is not put again. */
+  async denyForAgent(
+    serverId: string,
+    agentId: string,
+    choice: DeviceConsentChoice
+  ): Promise<void> {
+    await this.deps.denials.add(denialsFor(serverId, agentId, choice));
+    this.deps.log.info('Refused an agent on this computer', { serverId, agentId, ...choice });
+    await this.emitAsks(serverId);
+  }
+
+  /** Takes back what this computer allowed an agent of `serverId`; `'all'` takes back everything. */
+  async revokeForAgent(
+    serverId: string,
+    agentId: string,
+    choice: DeviceConsentChoice | 'all'
+  ): Promise<void> {
+    await this.changePolicy(serverId, (policy) => disallowInPolicy(policy, agentId, choice));
+    this.deps.log.info('Took back what this computer allowed an agent', { serverId, agentId });
+  }
+
+  private async changePolicy(
+    serverId: string,
+    change: (policy: DevicePolicy) => DevicePolicy
+  ): Promise<void> {
+    const record = await this.deps.records.get(serverId);
+    if (record?.kind !== 'enrolled')
+      throw new Error('This computer does not run managed agents for this server.');
+    const dataDir = this.deps.files.dataDir(serverId);
+    await this.deps.files.changePolicy(dataDir, change);
+    this.runners.get(serverId)?.supervisor.policyChanged();
+  }
+
+  private async receiveNeeds(serverId: string, needs: DeviceConsentNeed[]): Promise<void> {
+    if (needs.length) this.needs.set(serverId, needs);
+    else this.needs.delete(serverId);
+    await this.emitAsks(serverId);
+  }
+
+  private async emitAsks(serverId: string): Promise<void> {
+    const denials = await this.deps.denials.all();
+    const asks = (this.needs.get(serverId) ?? []).flatMap(
+      (need) => stillAsked(serverId, need, denials) ?? []
+    );
+    this.deps.emitConsent({ serverId, asks });
   }
 
   /**
@@ -463,6 +605,13 @@ export class EmbeddedControllerService {
         onPhase: (phase) => this.setRunnerPhase(serverId, phase),
         onFinal: (exit) => void this.onFinal(serverId, exit),
         onLine: (level, line) => this.deps.controllerLine(serverId, level, line),
+        onConsentNeeded: (needs) =>
+          void this.receiveNeeds(serverId, needs).catch((error: unknown) =>
+            this.deps.log.error('Could not pass on what an agent asks of this computer', {
+              serverId,
+              error: error instanceof Error ? error.message : String(error),
+            })
+          ),
         now: this.deps.now,
         backoff: this.deps.backoff,
       }),
@@ -609,6 +758,8 @@ export class EmbeddedControllerService {
   }
 
   private async forget(serverId: string): Promise<void> {
+    if (this.needs.delete(serverId)) this.deps.emitConsent({ serverId, asks: [] });
+    await this.deps.denials.forgetServer(serverId);
     await this.deps.secrets.deleteSecret(credentialSecretKey(serverId));
     await this.deps.files.wipeIdentity(this.deps.files.dataDir(serverId));
     await this.deps.records.delete(serverId);

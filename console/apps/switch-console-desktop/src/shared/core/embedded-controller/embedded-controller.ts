@@ -89,3 +89,28 @@ export type EmbeddedControllerStateEvent = {
   serverId: string;
   phase: EmbeddedControllerPhase;
 };
+
+/**
+ * What a managed agent the server assigned to this computer asks for that the
+ * person using it has not allowed: to run every command without asking
+ * (`bypass`), to work in a folder outside the controller's workspaces
+ * (`directory`), or both. The controller runs the agent with approvals, or
+ * not at all, until they allow it here; the server cannot.
+ */
+export type DeviceConsentAsk = {
+  agentId: string;
+  /** The agent's unique name on the server. */
+  name: string;
+  displayName: string | null;
+  bypass: boolean;
+  directory: string | null;
+};
+
+/** What a server's agents still ask of this computer, with any the person said no to left out. */
+export type DeviceConsentEvent = { serverId: string; asks: DeviceConsentAsk[] };
+
+/** One thing to allow, refuse or take back for an agent: `bypass`, a directory, or both. */
+export type DeviceConsentChoice = { bypass: boolean; directory: string | null };
+
+/** What this computer allows one agent of a server, whatever its definition says. `*` is every agent. */
+export type DeviceAgentGrant = { agentId: string; bypass: boolean; directories: string[] };

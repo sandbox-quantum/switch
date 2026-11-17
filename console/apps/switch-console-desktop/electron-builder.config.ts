@@ -210,7 +210,15 @@ const config: Configuration = {
   mac: {
     category: 'public.app-category.developer-tools',
     hardenedRuntime: true,
-    entitlements: 'build/entitlements.mac.plist',
+    // A Developer ID build signs every nested native module with the same team,
+    // so the app's own executable keeps library validation: nothing unsigned can
+    // be loaded into the process the keychain trusts with the safeStorage key.
+    // The ad-hoc fallback has no team to match and keeps
+    // disable-library-validation (see adhocSignMac). Nested executables (the
+    // helpers and the local server's toolchain) keep it either way.
+    entitlements: hasDeveloperIdCert
+      ? 'build/entitlements.mac.developer-id.plist'
+      : 'build/entitlements.mac.plist',
     entitlementsInherit: 'build/entitlements.mac.plist',
     signIgnore: localServerSignIgnore(),
     // No `arch` here, for the same reason as `linux` below: naming an arch makes
@@ -307,11 +315,37 @@ const config: Configuration = {
     perMachine: false,
   },
   npmRebuild: false,
-  // Encrypt Chromium's on-disk cookie store (in-app browser logins) with OS-level
-  // keys, like Chrome does. One-way: never disable once shipped or existing
-  // cookie stores become unreadable.
+  // Flipped in the packaged binary only; `pnpm run dev` runs the stock Electron
+  // from node_modules, which has none of them. Every fuse electron-builder can
+  // set is named, so none is left to whatever the Electron release defaults to.
   electronFuses: {
+    // Encrypt Chromium's on-disk cookie store (in-app browser logins) with OS-level
+    // keys, like Chrome does. One-way: never disable once shipped or existing
+    // cookie stores become unreadable.
     enableCookieEncryption: true,
+    // Left on, and needed: Console runs its own Node payloads by starting this
+    // binary with ELECTRON_RUN_AS_NODE — the embedded agent controller and its
+    // provider precheck, the local SDK host, and agent migration's scripts.
+    // Turning it off needs a separate Node runtime for them first.
+    runAsNode: true,
+    // The app's own process takes no debugger: --inspect flags and SIGUSR1 do
+    // nothing there. A process started with ELECTRON_RUN_AS_NODE is plain Node,
+    // inspector included, for as long as runAsNode stays on.
+    enableNodeCliInspectArguments: false,
+    // Left on: the same fuse governs NODE_EXTRA_CA_CERTS, which a network behind a
+    // TLS-inspecting proxy relies on for Console's Node-side HTTPS (the main
+    // process's server calls, the controller, the SDK host). While runAsNode is
+    // on, turning it off would protect nothing.
+    enableNodeOptionsEnvironmentVariable: true,
+    // App code loads only from app.asar, and app.asar is checked against the hash
+    // electron-builder writes into the bundle (macOS and Windows; Linux has no
+    // such check). The unpacked natives and extra resources sit outside the
+    // archive and load as before.
+    onlyLoadAppFromAsar: true,
+    enableEmbeddedAsarIntegrityValidation: true,
+    // The window is served from app://; nothing is loaded as a file:// page.
+    grantFileProtocolExtraPrivileges: false,
+    loadBrowserProcessSpecificV8Snapshot: false,
   },
 };
 

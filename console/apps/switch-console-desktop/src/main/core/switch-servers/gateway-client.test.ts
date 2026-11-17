@@ -109,6 +109,7 @@ const {
   fetchAuthConfig,
   fetchBridges,
   fetchMe,
+  gatewayFetch,
   ownsOwnerAddressedAgent,
   recordTemplateRun,
   registerKnownAgent,
@@ -2487,6 +2488,35 @@ describe('sign-up support', () => {
       name: 'GatewayError',
       status: 502,
     });
+  });
+
+  it('hands back a page someone uploaded from a route that serves files', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response('<!doctype html><title>report</title>', {
+        status: 200,
+        headers: { 'content-type': 'text/html', 'content-disposition': 'attachment' },
+      })
+    );
+    const response = await gatewayFetch(SERVER, '/chats/room-1/media?uri=mxc%3A%2F%2Fx%2Fy', {
+      authenticated: true,
+      servesFiles: true,
+    });
+    expect(await response.text()).toBe('<!doctype html><title>report</title>');
+  });
+
+  it('still says a route that serves files is not routed when a proxy’s 404 page answers', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response('<html>Not Found</html>', {
+        status: 404,
+        headers: { 'content-type': 'text/html' },
+      })
+    );
+    await expect(
+      gatewayFetch(SERVER, '/chats/room-1/media?uri=mxc%3A%2F%2Fx%2Fy', {
+        authenticated: true,
+        servesFiles: true,
+      })
+    ).rejects.toMatchObject({ name: 'NoManagementApiError' });
   });
 
   it('warms the cloud machine with an authenticated POST', async () => {

@@ -34,6 +34,15 @@
 #   SWITCH_IMAGE_NAMESPACE  (default sandbox-quantum)
 #   SWITCH_VERSION          (REQUIRED — no default, on purpose)
 #
+# Published ports bind to loopback unless told otherwise. SWITCH_BIND_ADDR is
+# the interface for Switch's own ports, the API (`switch`, 8000) and the
+# dashboard (`gateway`, 3000): set it to make the server reachable by a team.
+# Postgres and Mattermost stay on loopback whatever it says: Postgres's login
+# here is the schema owner, and Mattermost is set up for this machine (its
+# site URL is localhost).
+# POSTGRES_BIND_ADDR and MATTERMOST_BIND_ADDR move them, one at a time, for
+# whoever knowingly wants them off this machine.
+#
 # SWITCH_VERSION has no fallback. It used to default to `latest`, so a missing
 # or misspelt env var silently floated the whole stack to whatever had most
 # recently been published — a different switch-core on every `up`, with nothing
@@ -60,9 +69,9 @@ x-switch-contract:
 
 services:
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:81e77a4833487b8132fe4b00bedd39dc3f74b8641e387f19312a48f7de218c2e
     ports:
-      - "${SWITCH_BIND_ADDR:-127.0.0.1}:${POSTGRES_HOST_PORT:-5432}:5432"
+      - "${POSTGRES_BIND_ADDR:-127.0.0.1}:${POSTGRES_HOST_PORT:-5432}:5432"
     environment:
       # The container's bootstrapped superuser is the SCHEMA OWNER
       # (DB_OWNER_USER), not the runtime role Switch serves requests as
@@ -85,7 +94,7 @@ services:
       retries: 10
 
   init-db:
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:81e77a4833487b8132fe4b00bedd39dc3f74b8641e387f19312a48f7de218c2e
     # No profile here on purpose — see the note above the profile table. This
     # runs on every `up`, collab or not, because switch alone needs the
     # runtime role it creates.
@@ -143,13 +152,13 @@ services:
     # Pinned rather than `latest`: Switch Console embeds this Mattermost's web UI
     # and depends on its DOM structure, so an unattended upgrade could break
     # the embedded room view on a `docker compose pull` no one initiated.
-    image: mattermost/mattermost-team-edition:11.9.0
+    image: mattermost/mattermost-team-edition:11.9.0@sha256:1c538cf33c2144ba2c825571cd414aaaebf8d8c231d4b18081b811cd0ca0ef2a
     # Mattermost publishes team-edition for amd64 only, so an Apple Silicon or
     # other arm64 host fails the pull outright without this. Runs emulated.
     platform: linux/amd64
     profiles: ["collab"]
     ports:
-      - "${SWITCH_BIND_ADDR:-127.0.0.1}:${MATTERMOST_HOST_PORT:-8065}:8065"
+      - "${MATTERMOST_BIND_ADDR:-127.0.0.1}:${MATTERMOST_HOST_PORT:-8065}:8065"
     volumes:
   # Kept deliberately after Tuwunel was removed. It still holds every media
   # blob and the raw history, and it is the only copy — the backfill moved the
@@ -165,7 +174,10 @@ services:
       # boot. Mattermost's own schema has no row-level security in it, so
       # there is no isolation reason to run it as the restricted role too.
       MM_SQLSETTINGS_DATASOURCE: postgres://${DB_OWNER_USER}:${DB_OWNER_PASSWORD}@postgres:5432/mattermost?sslmode=disable
-      MM_SERVICESETTINGS_SITEURL: http://localhost:${MATTERMOST_HOST_PORT:-8065}
+      # Switch Console sets MATTERMOST_SITE_HOST to 127.0.0.1, the address it
+      # reaches Mattermost at: `localhost` resolves to the IPv6 loopback first,
+      # which the published port does not hold.
+      MM_SERVICESETTINGS_SITEURL: http://${MATTERMOST_SITE_HOST:-localhost}:${MATTERMOST_HOST_PORT:-8065}
       MM_SERVICESETTINGS_ENABLELOCALMODE: "true"
       # The first-run onboarding checklist opens a modal over a dimmed page,
       # which in the embedded room view is chrome the user cannot meaningfully

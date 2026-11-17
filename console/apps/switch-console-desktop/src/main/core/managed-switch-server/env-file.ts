@@ -121,9 +121,13 @@ export function buildEnvFile(params: LocalServerEnvParams): string {
     `SWITCH_IMAGE_NAMESPACE=${namespace}`,
     `SWITCH_VERSION=${version}`,
     `SWITCH_BIND_ADDR=${LOCAL_SERVER_BIND_ADDR}`,
+    `POSTGRES_BIND_ADDR=${LOCAL_SERVER_BIND_ADDR}`,
+    `MATTERMOST_BIND_ADDR=${LOCAL_SERVER_BIND_ADDR}`,
     `GATEWAY_HOST_PORT=${ports.gateway}`,
     `API_HOST_PORT=${ports.api}`,
     `MATTERMOST_HOST_PORT=${ports.mattermost}`,
+    // The host Mattermost's own links name: the address Console reaches it at.
+    `MATTERMOST_SITE_HOST=${LOCAL_SERVER_BIND_ADDR}`,
     `POSTGRES_HOST_PORT=${ports.postgres}`,
     '',
     'DB_HOST=postgres',

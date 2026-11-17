@@ -24,6 +24,7 @@ vi.mock('./reachability-store', () => ({
 }));
 
 class AuthError extends Error {}
+class HostKeyError extends Error {}
 
 function makeService(probe: (sshHost: string) => Promise<void>) {
   const published: HostReachability[] = [];
@@ -31,6 +32,7 @@ function makeService(probe: (sshHost: string) => Promise<void>) {
   const service = new HostReachabilityService({
     probe,
     isAuthError: (error) => error instanceof AuthError,
+    isHostKeyError: (error) => error instanceof HostKeyError,
     publish: (reachability) => published.push(reachability),
     log: { info: () => {}, warn: () => {} },
     setTimer: (fn, ms) => {
@@ -82,6 +84,27 @@ describe('HostReachabilityService', () => {
 
     expect(svc.get('vm').status).toBe('suspended');
     expect(timers).toHaveLength(0);
+  });
+
+  it('holds a host whose key was refused as untrusted and never probes it on its own', async () => {
+    const probe = vi.fn(async () => {
+      throw new HostKeyError('The SSH host key for vm has changed');
+    });
+    const { service: svc, timers } = makeService(probe);
+
+    await svc.checkNow('vm');
+    svc.reportFailure('vm', new HostKeyError('The SSH host key for vm has changed'));
+    await settle();
+
+    expect(svc.get('vm').status).toBe('untrusted');
+    expect(svc.isBlocked('vm')).toBe(true);
+    expect(() => svc.requireReachable('vm')).toThrow(/host key/);
+    expect(timers).toHaveLength(0);
+
+    probe.mockClear();
+    svc.handleSystemResume();
+    await settle();
+    expect(probe).not.toHaveBeenCalled();
   });
 
   it('backs off between probes instead of retrying at a fixed interval', async () => {

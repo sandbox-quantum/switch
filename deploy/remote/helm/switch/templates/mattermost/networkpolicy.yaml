@@ -1,0 +1,29 @@
+{{- if and .Values.mattermost.enabled .Values.networkPolicy.enabled .Values.networkPolicy.ingressFrom }}
+# Mattermost's port admits networkPolicy.ingressFrom, where its users come
+# from, and the release's switch-core and setup Job. Rendered only once
+# ingressFrom names who reaches it (see networkPolicy in values.yaml).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "switch.fullname" . }}-mattermost
+  labels:
+    {{- include "switch.labels" . | nindent 4 }}
+    {{- include "switch.selectorLabels" (dict "Release" .Release "component" "mattermost") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "switch.selectorLabels" (dict "Release" .Release "component" "mattermost") | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        {{- toYaml .Values.networkPolicy.ingressFrom | nindent 8 }}
+        {{- range (list "switch-core" "setup") }}
+        - podSelector:
+            matchLabels:
+              {{- include "switch.selectorLabels" (dict "Release" $.Release "component" .) | nindent 14 }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: 8065
+{{- end }}

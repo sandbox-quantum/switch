@@ -54,6 +54,7 @@ const AgentCrumb = observer(function AgentCrumb({ agent }: { agent: Agent | null
           // not what a crumb naming one agent is for.
           icon: agent ? (
             <AgentAvatar
+              agentId={agent.switchAgentId}
               name={label}
               iconUrl={iconUrl}
               serverId={agent.serverId}

@@ -202,6 +202,15 @@ function toKeychain(value: string): string {
   return ENCODED + Buffer.from(value, 'utf8').toString('base64');
 }
 
+/**
+ * The keychain account for a secret: quoted on the same `security -i` line
+ * as the value, so a data directory holding a quote, backslash or newline is
+ * encoded the same way. An entry for any other directory keeps its account.
+ */
+function keychainAccount(dataDir: string, name: string): string {
+  return toKeychain(account(dataDir, name));
+}
+
 function fromKeychain(stored: string): string {
   if (!stored.startsWith(ENCODED)) return stored;
   return Buffer.from(stored.slice(ENCODED.length), 'base64').toString('utf8');
@@ -229,7 +238,7 @@ export class KeychainSecretStore implements SecretStore {
     try {
       const { stdout } = await this.run(
         'security',
-        ['find-generic-password', '-s', SERVICE, '-a', account(this.dataDir, name), '-w'],
+        ['find-generic-password', '-s', SERVICE, '-a', keychainAccount(this.dataDir, name), '-w'],
         null
       );
       return fromKeychain(stdout.trim());
@@ -241,7 +250,7 @@ export class KeychainSecretStore implements SecretStore {
   }
 
   async set(name: string, value: string): Promise<void> {
-    const command = `add-generic-password -U -s ${SERVICE} -a "${account(this.dataDir, name)}" -w "${toKeychain(value)}"\n`;
+    const command = `add-generic-password -U -s ${SERVICE} -a "${keychainAccount(this.dataDir, name)}" -w "${toKeychain(value)}"\n`;
     await this.run('security', ['-i'], command);
   }
 
@@ -249,7 +258,7 @@ export class KeychainSecretStore implements SecretStore {
     try {
       await this.run(
         'security',
-        ['delete-generic-password', '-s', SERVICE, '-a', account(this.dataDir, name)],
+        ['delete-generic-password', '-s', SERVICE, '-a', keychainAccount(this.dataDir, name)],
         null
       );
     } catch (error) {

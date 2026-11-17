@@ -108,6 +108,32 @@ export const enrollResultSchema = z.discriminatedUnion('ok', [
 ]);
 
 /**
+ * The public key the controller seals provider logins to, read on the host
+ * through its own `sealing-key` command, so Console seals to the machine's
+ * key rather than the copy Switch relays. The command only reads; it never
+ * makes a key. A bundle from before the command answers `ok: false`.
+ *
+ * Options: `{ node, bundle, dataDir }`.
+ */
+export const SEALING_KEY_SCRIPT = String.raw`${EXPAND}
+const o = JSON.parse(process.argv[1]);
+const result = cp.spawnSync(o.node, [expand(o.bundle), 'sealing-key', '--data-dir', expand(o.dataDir)], { encoding: 'utf8', timeout: 20000 });
+if (result.error) throw result.error;
+const last = (text) => String(text || '').trim().split('\n').filter(Boolean).pop() || '';
+if (result.status !== 0) {
+  console.log(JSON.stringify({ ok: false, reason: (last(result.stderr) || last(result.stdout) || ('exit ' + result.status)).replace(/^switch-agent-controller: /, '') }));
+} else {
+  const answer = JSON.parse(last(result.stdout));
+  console.log(JSON.stringify({ ok: true, publicKey: answer.publicKey }));
+}
+`;
+
+export const sealingKeyResultSchema = z.discriminatedUnion('ok', [
+  z.object({ ok: z.literal(true), publicKey: z.string().min(1).nullable() }),
+  z.object({ ok: z.literal(false), reason: z.string() }),
+]);
+
+/**
  * Keeps the controller running under the supervisor: started again on exit
  * code 1 with a backoff, and left stopped on 0 (stopped), 2 (configuration),
  * 3 (revoked), 4 (taken over), 5 (needs a newer controller) and 6 (credential

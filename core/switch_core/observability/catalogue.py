@@ -232,6 +232,21 @@ SEND_FAILURES = _spec(
     "kind",
     "actor",
 )
+# A message or room command a person or an agent sent that was refused before
+# it reached the router (`delivery/send_limits.py`). `reason` is `too_long` or
+# `rate_limited`; `actor` is `human` or `agent`.
+MESSAGES_REFUSED = _spec(
+    "switch.messages.refused",
+    "sum",
+    "{message}",
+    "Messages and room commands a person or an agent sent that were refused "
+    "before they were written: `reason:too_long` for one longer than "
+    "MAX_MESSAGE_CHARS, `reason:rate_limited` for one sent faster than one "
+    "sender's allowance (MESSAGE_RATE_BURST, MESSAGE_RATE_PER_SECOND). The "
+    "sender is told why. `actor` is who sent it: human or agent.",
+    "reason",
+    "actor",
+)
 DELIVERY_FAILURES = _spec(
     "switch.messages.delivery_failures",
     "sum",
@@ -950,6 +965,21 @@ AUTH_SIGN_IN_FAILURES = _spec(
     "Password sign-ins refused for a wrong password or an unknown email. No "
     "attributes: never the email, the account or the caller's address.",
 )
+# `limit` is `email` or `client_address`, the sign-in limit that locked
+# (`gateway/login_limits.py`). Email lock-outs coming steadily with no
+# address lock-outs beside them are someone keeping one person out on
+# purpose, which the per-email lock lets anyone who knows the email do.
+AUTH_SIGN_IN_LOCKOUTS = _spec(
+    "switch.auth.sign_in_lockouts",
+    "sum",
+    "{lockout}",
+    "Password sign-in lock-outs, by the limit that locked: `email` (failures "
+    "with one email address, whether or not an account has it) or "
+    "`client_address` (failures from one client address). Counted when the "
+    "failed attempt that reached the limit is refused, never the email, the "
+    "account or the address.",
+    "limit",
+)
 CONTROLLER_CREDENTIAL_REFUSALS = _spec(
     "switch.controller.credential_refusals",
     "sum",
@@ -959,6 +989,22 @@ CONTROLLER_CREDENTIAL_REFUSALS = _spec(
     "`other`), never the path or any part of the credential.",
     "reason",
     "route",
+)
+
+# ── Switch Trust ───────────────────────────────────────────────────────────
+# `reason` is `timeout`, `refused` or `error` (`trust/client.py`).
+TRUST_CHECK_FAILURES = _spec(
+    "switch.trust.check_failures",
+    "sum",
+    "{check}",
+    "Switch Trust checks that did not complete, so the message or file went "
+    "through unchecked with a visible note: `reason:timeout` when Switch Trust "
+    "did not answer within SWITCH_TRUST_TIMEOUT_SECONDS, `reason:refused` when "
+    "it answered with an error status, `reason:error` for anything else (not "
+    "reachable, an answer that could not be read, settings that could not be "
+    "read). A run of timeouts is worth a look: each one lets a message through "
+    "unchecked.",
+    "reason",
 )
 
 # ── Unhandled exceptions ────────────────────────────────────────────────────
@@ -996,6 +1042,7 @@ CATALOGUE: dict[str, MetricSpec] = {
         MESSAGES_SENT,
         MESSAGES_DELIVERED,
         SEND_FAILURES,
+        MESSAGES_REFUSED,
         DELIVERY_FAILURES,
         OBSERVER_FAILURES,
         DELIVERY_BACKLOG_SKIPPED,
@@ -1062,7 +1109,9 @@ CATALOGUE: dict[str, MetricSpec] = {
         HOSTED_CONTROLLER_ERRORS,
         HOSTED_CONTROLLER_RESTARTS,
         AUTH_SIGN_IN_FAILURES,
+        AUTH_SIGN_IN_LOCKOUTS,
         CONTROLLER_CREDENTIAL_REFUSALS,
+        TRUST_CHECK_FAILURES,
         RUNTIME_UNHANDLED_EXCEPTIONS,
     )
 }

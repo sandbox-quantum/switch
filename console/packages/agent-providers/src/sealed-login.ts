@@ -72,6 +72,16 @@ export function sealingKeyId(publicKey: string): string {
   return createHash('sha256').update(rawKey(publicKey, 'public key')).digest('hex').slice(0, 16);
 }
 
+/**
+ * A key's fingerprint as people compare it: the first 128 bits of its SHA-256,
+ * in eight groups of four hex digits. Console shows it where a login is given,
+ * and the controller's `status` and `sealing-key` print the same.
+ */
+export function sealingKeyFingerprint(publicKey: string): string {
+  const hex = createHash('sha256').update(rawKey(publicKey, 'public key')).digest('hex');
+  return (hex.slice(0, 32).match(/.{4}/g) ?? []).join(' ');
+}
+
 export function sealProviderLogin(input: {
   publicKey: string;
   controllerId: string;

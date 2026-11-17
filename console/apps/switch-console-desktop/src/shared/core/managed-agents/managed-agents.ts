@@ -113,6 +113,25 @@ export type MachineLoginOutcome =
   | { state: 'succeeded' }
   | { state: 'failed'; code: string; message: string };
 
+/**
+ * The key a login given to a machine would be sealed to, by its fingerprint,
+ * and why Console takes it for the machine's:
+ *
+ * - `verified`: read from the machine itself (`machine`, an SSH host of this
+ *   Console), or the key Console pinned the first time it sealed a login to
+ *   the machine, which Switch still sends (`pinned`);
+ * - `first-use`: no login has been sealed to this machine from here, so the
+ *   key is Switch's word, pinned when a login is given;
+ * - `changed`: Switch sends another key than the one pinned, so no login is
+ *   sealed until the user trusts the new one;
+ * - `refused`: no key here can be the machine's, and why.
+ */
+export type MachineSealingKey =
+  | { state: 'verified'; fingerprint: string; source: 'machine' | 'pinned' }
+  | { state: 'first-use'; fingerprint: string }
+  | { state: 'changed'; fingerprint: string; previousFingerprint: string }
+  | { state: 'refused'; reason: string };
+
 /** What a machine is to this Console: this computer, one of its SSH hosts, or neither. */
 export type MachineLocal = { kind: 'this-computer' } | { kind: 'ssh-host'; sshHost: string } | null;
 
@@ -120,7 +139,10 @@ export type MachineLocal = { kind: 'this-computer' } | { kind: 'ssh-host'; sshHo
 export type OwnedMachine = ManagedMachine & {
   /** Empty before the machine has reported. */
   providers: MachineProvider[];
-  /** It can be given a provider login sealed to its key: its controller registered one. */
+  /**
+   * It can be given a provider login sealed to its key: its controller
+   * registered one. Never this computer, whose controller keeps none.
+   */
   acceptsLogins: boolean;
   /** The owner's Switch Cloud machine, offered as "Switch Cloud" rather than by name. */
   cloud: boolean;

@@ -34,6 +34,15 @@ const DISCORD_TOKEN_SHAPE = ['MTA5NjE4NzQ5NDI4Nzk0MjA5', 'GhIjKl', DISCORD_TOKEN
 const TELEGRAM_TOKEN_TAIL = 'AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw';
 const TELEGRAM_TOKEN_SHAPE = ['110201543', TELEGRAM_TOKEN_TAIL].join(':');
 
+/**
+ * Shaped like a Switch agent key (`secrets.token_urlsafe(32)`: 43 characters
+ * of base64url, no prefix) and plainly invented.
+ */
+const SWITCH_TOKEN_SHAPE = 'FAKEagentTOKENforLOGredactionTESTS0123456-_';
+
+/** One log line as the writer builds it, with `data` holding the structured argument. */
+const logLine = (data: unknown) => JSON.stringify({ level: 'info', message: 'x', data: [data] });
+
 describe('redactDiagnosticLog', () => {
   it('redacts common secrets in free-form text', () => {
     const redacted = redactDiagnosticLog(
@@ -151,6 +160,88 @@ describe('redactDiagnosticLog', () => {
     const redacted = redactDiagnosticLog('Authorization: Bot abcdefghijklmnop');
 
     expect(redacted).not.toContain('abcdefghijklmnop');
+  });
+
+  it.each([
+    [
+      'an agent token under SWITCH_API_TOKEN',
+      logLine({ env: { SWITCH_API_TOKEN: SWITCH_TOKEN_SHAPE } }),
+      SWITCH_TOKEN_SHAPE,
+    ],
+    [
+      'an agent token under apiToken',
+      logLine({ apiToken: SWITCH_TOKEN_SHAPE }),
+      SWITCH_TOKEN_SHAPE,
+    ],
+    [
+      'a bare agent token in a message',
+      `{"message":"agent minted ${SWITCH_TOKEN_SHAPE}"}`,
+      SWITCH_TOKEN_SHAPE,
+    ],
+    [
+      'an agent token in a query string',
+      `{"message":"GET http://h/x?api_token=${SWITCH_TOKEN_SHAPE}"}`,
+      SWITCH_TOKEN_SHAPE,
+    ],
+    ['accessToken', logLine({ accessToken: 'ya29.A0FAKE-access-token-value' }), 'ya29.A0FAKE'],
+    ['refreshToken', logLine({ refreshToken: '1//0gFAKErefreshtokenvalue' }), 'FAKErefresh'],
+    ['idToken', logLine({ idToken: 'FAKE-id-token-value' }), 'FAKE-id-token'],
+    ['sessionToken', logLine({ sessionToken: 'FAKE-session-token-value' }), 'FAKE-session'],
+    ['clientSecret', logLine({ clientSecret: 'GOCSPX-FAKEclientsecretvalue' }), 'FAKEclientsecret'],
+    ['apiKey', logLine({ apiKey: 'FAKE-api-key-value' }), 'FAKE-api-key'],
+    ['privateKey', logLine({ privateKey: 'FAKE-private-key-value' }), 'FAKE-private-key'],
+    ['private_key_id', logLine({ private_key_id: 'abc123FAKEkeyid' }), 'abc123FAKEkeyid'],
+    ['access_token', logLine({ access_token: 'FAKE_snake_value_123456' }), 'FAKE_snake_value'],
+    ['camelCase unquoted', 'refreshToken=FAKE-unquoted-refresh', 'FAKE-unquoted-refresh'],
+    [
+      'Authorization: Basic',
+      '{"message":"sent Authorization: Basic dXNlcjpGQUtFcGFzc3dvcmQ="}',
+      'dXNlcjpGQUtFcGFzc3dvcmQ',
+    ],
+    [
+      'a Cookie header',
+      '{"message":"Cookie: theme=dark; session=FAKEopaqueSessionValue"}',
+      'FAKEopaqueSessionValue',
+    ],
+    ['a Set-Cookie header', 'Set-Cookie: switch_auth=FAKEopaque; HttpOnly; Path=/', 'FAKEopaque'],
+    ['a cookie under a JSON key', logLine({ cookie: 'switch_auth=FAKEopaque' }), 'FAKEopaque'],
+  ])('redacts %s, on disk and in the export', (_label, input, secret) => {
+    expect(redactSecrets(input)).not.toContain(secret);
+    expect(redactDiagnosticLog(input)).not.toContain(secret);
+  });
+
+  it('redacts every pair of a cookie header, not only the first', () => {
+    const redacted = redactSecrets('Cookie: session=FAKEone; csrf=FAKEtwo');
+
+    expect(redacted).toBe('Cookie: [REDACTED]');
+  });
+
+  it('names a bare agent token as one', () => {
+    expect(redactSecrets(`token minted: ${SWITCH_TOKEN_SHAPE}.`)).not.toContain(SWITCH_TOKEN_SHAPE);
+    expect(redactSecrets(`minted ${SWITCH_TOKEN_SHAPE}`)).toBe('minted [REDACTED_SWITCH_TOKEN]');
+  });
+
+  it.each([
+    ['a UUID', '123e4567-e89b-12d3-a456-426614174000'],
+    ['an event id', 'sw_0123456789abcdef0123456789abcdef'],
+    ['a git commit', '0123456789abcdef0123456789abcdef01234567'],
+    ['a SHA-256 digest', '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'],
+    ['a padded base64 key', 'q0Lr3Zx9Wm2Kp7Vb4Nt6Ys8Hd1Fg5Jc0Qe9Ua3Ri7Ok='],
+    ['an old event id', '$q0Lr3Zx9Wm2Kp7Vb4Nt6Ys8Hd1Fg5Jc0Qe9Ua3Ri7Ok'],
+    ['a long name with no digit', 'registerSealingKeyWithTheServerAndWaitForIt'],
+    ['a longer run', 'q0Lr3Zx9Wm2Kp7Vb4Nt6Ys8Hd1Fg5Jc0Qe9Ua3Ri7OkXyz'],
+    ['a path', '/opt/switch/agent-controller/servers/abc/data'],
+  ])('leaves %s alone', (_label, value) => {
+    expect(redactSecrets(`saw ${value} here`)).toBe(`saw ${value} here`);
+  });
+
+  it('leaves token counts alone', () => {
+    const line = 'inputTokens: 123, maxTokens=4096, max_tokens: 2048, tokenCount=5';
+
+    expect(redactSecrets(line)).toBe(line);
+    expect(redactSecrets(logLine({ inputTokens: 123, outputTokens: 45 }))).toBe(
+      logLine({ inputTokens: 123, outputTokens: 45 })
+    );
   });
 
   it('leaves non-secret keys alone', () => {

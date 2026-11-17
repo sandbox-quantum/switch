@@ -28,6 +28,7 @@ import type {
 import { mcpApprovalContent, toolInputDetail } from '../mcp-approval';
 import { noopLogger, type ProviderLogger } from '../transport/stdio-json-rpc';
 import { mergeUsage } from '../usage';
+import { type PathScope, pathScope } from '../workspace-scope';
 import {
   assertNoShadowingServers,
   PI_EXTENSION_SOURCE,
@@ -73,8 +74,14 @@ const READ_ONLY_TOOLS = new Set([
   'list_mcp_resources',
   'list_mcp_resource_templates',
 ]);
+/** The read-only tools that name a file or folder in `path`, the working directory when absent. */
+const PATH_READ_TOOLS = new Set(['read', 'grep', 'find', 'ls']);
 const READ_RESOURCE_TOOL = 'read_mcp_resource';
 const COMMAND_TOOLS = new Set(['bash', 'powershell']);
+/** What `pathScope` reads from the session's environment. */
+const PATH_ENV = ['HOME', 'USERPROFILE', 'LOCALAPPDATA', 'APPDATA'];
+const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g;
+const SCOPE_RANK: Record<PathScope, number> = { workspace: 0, protected: 1, outside: 2 };
 const EDIT_TOOLS = new Set(['edit', 'write']);
 
 const APPROVAL_OPTIONS: ApprovalOption[] = [
@@ -159,6 +166,8 @@ interface State {
   /** The Switch extension's path, as Pi names the extension in its errors. */
   extension: string;
   cwd: string;
+  /** The variables naming the home and application data folders, which `pathScope` reads. */
+  pathEnv: Record<string, string>;
   runtimeMode: RuntimeMode;
   servers: SessionServer[];
   turn: string | null;
@@ -178,7 +187,11 @@ interface State {
   declined: Set<string>;
   usage: TokenUsage[];
   approvals: Map<string, PendingApproval>;
-  /** What "Approve for this session" allowed: `edits`, `command:<command>`, `tool:<name>`. */
+  /**
+   * What "Approve for this session" allowed: `edits` (in the workspace),
+   * `edit:<path>` and `read:<path>` (one path beyond it), `command:<command>`,
+   * `tool:<name>`.
+   */
   allowed: Set<string>;
 }
 
@@ -306,6 +319,9 @@ export class PiAdapter implements ProviderAdapter {
       dir,
       extension,
       cwd,
+      pathEnv: Object.fromEntries(
+        PATH_ENV.flatMap((name) => (input.env[name] ? [[name, input.env[name]]] : []))
+      ),
       runtimeMode: input.runtimeMode,
       // Longest prefix first, so `mcp__a__b__` is not taken for server `a`.
       servers: Object.keys(input.mcpServers)
@@ -898,16 +914,36 @@ export class PiAdapter implements ProviderAdapter {
 
   /**
    * Whether a tool call needs a person, and how to ask. A tool on one of the
-   * session's own MCP servers runs in every mode, as do tools that only read
-   * and reading a resource of one of those servers; full access runs
-   * everything. Auto mode allows edits and asks before commands, as
-   * accept-edits does: Pi has no automatic review of its own.
+   * session's own MCP servers runs in every mode, as does reading a resource
+   * of one of those servers; full access runs everything. Auto mode allows
+   * edits in the workspace and asks before commands, as accept-edits does: Pi
+   * has no automatic review of its own.
+   *
+   * Pi enforces no workspace of its own, so that is decided here, on the
+   * path's real location (`pathScope`, which counts a file with more than
+   * one hard link as outside): reading outside the working directory asks,
+   * and so does changing a file outside it or in a part of it where a change
+   * runs code or widens the agent's own permissions (git's directory, the
+   * home directory's dot entries, Switch's state), in every mode but full
+   * access.
    */
   private gate(state: State, call: PiToolCall): Ask | null {
     const { toolName, input } = call;
     const server = this.serverOf(state, toolName);
     if (server && !server.connector) return null;
-    if (state.runtimeMode === 'full-access' || READ_ONLY_TOOLS.has(toolName)) return null;
+    if (state.runtimeMode === 'full-access') return null;
+    if (READ_ONLY_TOOLS.has(toolName)) {
+      const path = text(input.path);
+      if (!PATH_READ_TOOLS.has(toolName) || !path) return null;
+      const { scope, real } = this.scopeOf(state, path);
+      if (scope !== 'outside' || state.allowed.has(`read:${real}`)) return null;
+      return {
+        requestType: 'directory_access_approval',
+        title: `Read outside ${state.cwd}`,
+        detail: path,
+        allows: `read:${real}`,
+      };
+    }
     if (toolName === READ_RESOURCE_TOOL) {
       const name = text(input.server);
       const own = state.servers.find((other) => other.name === name);
@@ -922,13 +958,28 @@ export class PiAdapter implements ProviderAdapter {
       };
     }
     if (EDIT_TOOLS.has(toolName)) {
-      if (state.runtimeMode !== 'approval-required' || state.allowed.has('edits')) return null;
       const path = text(input.path);
+      const { scope, real } = path
+        ? this.scopeOf(state, path)
+        : { scope: 'outside' as const, real: '' };
+      if (scope === 'workspace') {
+        if (state.runtimeMode !== 'approval-required' || state.allowed.has('edits')) return null;
+        return {
+          requestType: 'file_change_approval',
+          title: 'Apply file changes',
+          detail: path,
+          allows: 'edits',
+        };
+      }
+      if (real && state.allowed.has(`edit:${real}`)) return null;
       return {
         requestType: 'file_change_approval',
-        title: 'Apply file changes',
+        title:
+          scope === 'outside'
+            ? `Change a file outside ${state.cwd}`
+            : 'Change a file that can run code or change permissions',
         ...(path ? { detail: path } : {}),
-        allows: 'edits',
+        allows: `edit:${real}`,
       };
     }
     if (COMMAND_TOOLS.has(toolName)) {
@@ -960,6 +1011,22 @@ export class PiAdapter implements ProviderAdapter {
       ...(detail ? { detail } : {}),
       allows: `tool:${toolName}`,
     };
+  }
+
+  /**
+   * Where a path Pi names lies: the worse of the path as written and as Pi
+   * reads it, which drops a leading `@` and turns Unicode spaces into plain
+   * ones (`expandPath` in Pi's tools).
+   */
+  private scopeOf(state: State, path: string): { scope: PathScope; real: string } {
+    const spaced = path.replace(UNICODE_SPACES, ' ');
+    const candidates = [path, spaced, path.replace(/^@/, ''), spaced.replace(/^@/, '')];
+    let worst: { scope: PathScope; real: string } | null = null;
+    for (const candidate of new Set(candidates)) {
+      const placed = pathScope(candidate, { cwd: state.cwd, env: state.pathEnv });
+      if (worst === null || SCOPE_RANK[placed.scope] > SCOPE_RANK[worst.scope]) worst = placed;
+    }
+    return worst!;
   }
 
   private serverOf(state: State, toolName: string): SessionServer | undefined {

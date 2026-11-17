@@ -8,6 +8,7 @@ import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
 import { Switch } from '@renderer/lib/ui/switch';
 import { cn } from '@renderer/utils/utils';
+import type { AgentReach } from './agent-permissions';
 import type { ConnectionState } from './managed-run';
 import { hasPlaceholder, interpolate, type Values } from './use-template-model';
 
@@ -160,7 +161,93 @@ export type SlotRuntime = {
   connections: ConnectionState[];
   /** A managed agent on one of the deployer's machines, rather than one this Console runs. */
   managed: boolean;
+  /** Whether it runs every tool without asking; null when the template says so in a form Switch Console cannot read. */
+  bypass: boolean | null;
+  /** Who may talk to it, a room named by what the deployer will see it called. */
+  reach: AgentReach;
+  /** Its instructions, the inputs filled in. */
+  instructions: string;
 };
+
+/** How a reach reads. */
+export function reachText(reach: AgentReach): string {
+  switch (reach.kind) {
+    case 'owner':
+      return 'Only you';
+    case 'owner-agents':
+      return 'You and your agents';
+    case 'anyone':
+      return 'Anyone in the workspace';
+    case 'rooms':
+      return `Anyone in ${reach.rooms.join(', ')}`;
+    case 'unknown':
+      return 'Set in a form Switch Console cannot read';
+  }
+}
+
+/** Whether a reach lets in people the deployer has not chosen: anyone at all, or nobody can tell. */
+export function reachIsOpen(reach: AgentReach): boolean {
+  return reach.kind === 'anyone' || reach.kind === 'unknown';
+}
+
+/** How a bypass setting reads. */
+function bypassText(bypass: boolean | null): string {
+  if (bypass === false) return 'Asks before risky actions';
+  if (bypass === true) return 'Bypass: runs every command without asking';
+  return 'Set in a form Switch Console cannot read; it may run every command without asking';
+}
+
+/** A row that says what the agent will be allowed to do, red when it lets more in. */
+function PermissionRow({ label, value, risky }: { label: string; value: string; risky: boolean }) {
+  return (
+    <div className="flex items-baseline gap-3 text-xs">
+      <span className="w-[72px] shrink-0 text-foreground-passive">{label}</span>
+      <span
+        className={cn(
+          'flex min-w-0 flex-1 items-baseline gap-1.5',
+          risky ? 'font-medium text-destructive' : 'text-foreground-muted'
+        )}
+      >
+        {risky && <TriangleAlert className="size-3 shrink-0 translate-y-[1px]" />}
+        {value}
+      </span>
+    </div>
+  );
+}
+
+/** The instructions the agent is created with, open unless there are none. */
+function InstructionsRow({ instructions }: { instructions: string }) {
+  const empty = instructions.trim() === '';
+  const [open, setOpen] = useState(!empty);
+  return (
+    <div className="flex flex-col gap-1.5 text-xs">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        disabled={empty}
+        className="flex w-max cursor-pointer items-center gap-3 text-left disabled:cursor-default"
+      >
+        <span className="w-[72px] shrink-0 text-foreground-passive">Instructions</span>
+        <span className="flex items-center gap-1 text-foreground-muted">
+          {empty ? (
+            'None'
+          ) : (
+            <>
+              <ChevronRight className={cn('size-3 transition-transform', open && 'rotate-90')} />
+              {open ? 'Hide' : 'Show'}
+            </>
+          )}
+        </span>
+      </button>
+      {open && !empty && (
+        <div className="max-h-48 overflow-auto rounded-md border border-border bg-background-1 px-2.5 py-2 leading-relaxed whitespace-pre-wrap text-foreground-muted">
+          {instructions}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function RuntimeRow({ label, value }: { label: string; value: string | null }) {
   return (
@@ -207,7 +294,13 @@ export function AgentSlotCard({
   return (
     <Card className={cn(slot.status === 'failed' && 'border-destructive/50')}>
       <div className="flex items-center gap-3">
-        <AgentAvatar name={shownName || 'agent'} iconUrl={null} serverId={serverId} size={28} />
+        <AgentAvatar
+          agentId={null}
+          name={shownName || 'agent'}
+          iconUrl={null}
+          serverId={serverId}
+          size={28}
+        />
         <div className="min-w-0 flex-1">
           <div
             className={cn(
@@ -260,6 +353,17 @@ export function AgentSlotCard({
           <RuntimeRow label={runtime.managed ? 'Machine' : 'Runs on'} value={runtime.location} />
           <RuntimeRow label="Directory" value={runtime.directory} />
           {runtime.model && <RuntimeRow label="Model" value={runtime.model} />}
+          <PermissionRow
+            label="Permissions"
+            value={bypassText(runtime.bypass)}
+            risky={runtime.bypass !== false}
+          />
+          <PermissionRow
+            label="Talks to"
+            value={reachText(runtime.reach)}
+            risky={reachIsOpen(runtime.reach)}
+          />
+          <InstructionsRow instructions={runtime.instructions} />
           {runtime.connections.length > 0 && (
             <div className="flex items-baseline gap-3 text-xs">
               <span className="w-[72px] shrink-0 text-foreground-passive">Connections</span>

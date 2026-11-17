@@ -75,7 +75,7 @@ export function chatError(error: unknown): unknown {
 async function call(
   server: SwitchServer,
   path: string,
-  options: { method?: string; body?: unknown; formData?: FormData }
+  options: { method?: string; body?: unknown; formData?: FormData; servesFiles?: true }
 ): Promise<Response> {
   try {
     return await gatewayFetch(server, path, { authenticated: true, ...options });
@@ -390,7 +390,9 @@ export async function fetchChatMedia(
   roomId: string,
   uri: string
 ): Promise<{ mimeType: string; bytes: Uint8Array }> {
-  const response = await call(server, `${room(roomId)}/media?${new URLSearchParams({ uri })}`, {});
+  const response = await call(server, `${room(roomId)}/media?${new URLSearchParams({ uri })}`, {
+    servesFiles: true,
+  });
   return {
     mimeType: response.headers.get('content-type') ?? 'application/octet-stream',
     bytes: new Uint8Array(await response.arrayBuffer()),

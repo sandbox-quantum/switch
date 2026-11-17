@@ -76,6 +76,14 @@ class AuditAction(StrEnum):
     SERVICE_GRANT_SET = "service_grant.set"
     SERVICE_GRANT_REMOVED = "service_grant.removed"
     AGENT_DELETION_REQUESTED = "agent.deletion_requested"
+    # An agent changed another of its owner's agents, or created one, with
+    # nobody confirming (`bridges/agent/agent_change_requests.py`).
+    AGENT_CHANGED_BY_AGENT = "agent.changed_by_agent"
+    AGENT_CREATED_BY_AGENT = "agent.created_by_agent"
+    # An agent asked for a change its owner has to confirm, and the owner
+    # confirmed one, which was then made.
+    AGENT_CHANGE_REQUESTED = "agent.change_requested"
+    AGENT_CHANGE_CONFIRMED = "agent.change_confirmed"
     AGENT_DELETED = "agent.deleted"
     WORKSPACE_SERVICE_ENABLED = "workspace_service.enabled"
     WORKSPACE_SERVICE_DISABLED = "workspace_service.disabled"
@@ -145,6 +153,9 @@ class ServerAuditAction(StrEnum):
     # Every session the account held was ended, by the person ("Sign out of
     # all devices") or by the operator for them.
     USER_SESSIONS_ENDED = "user.sessions_ended"
+    # The operator lifted the lock failed password sign-ins put on an account's
+    # email address, so its owner could try again at once.
+    USER_SIGN_IN_LOCK_CLEARED = "user.sign_in_lock_cleared"
     WORKSPACE_DELETED = "workspace.deleted"
     # A run of the operator's purge of an organization at its owner's request
     # (`accounts/organization_purge.py`) began deleting, naming the accounts

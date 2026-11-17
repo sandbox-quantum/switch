@@ -291,6 +291,7 @@ async def _signed_in(factory, user) -> str:
         TENANT_ZERO_ID,
         session_version=0,
         auth_time=datetime.now(UTC),
+        session_id=secrets.token_urlsafe(16),
     )
 
 
@@ -412,6 +413,31 @@ async def test_a_web_sign_in_that_fails_unexpectedly_still_returns_to_the_page(
     )
     assert any(
         record.levelname == "ERROR" and "from the web failed" in record.message
+        for record in caplog.records
+    )
+
+
+async def test_a_console_sign_in_that_fails_unexpectedly_fails_the_flow_and_says_why(
+    github_app, caplog
+):
+    client, github, _, factory = github_app
+    flow_id = await authorize(client)
+    await relay(client, flow_id)
+    github.request.side_effect = RuntimeError("synthetic failure")
+    failed = await complete(client, flow_id)
+    saved = "Switch couldn't save your GitHub connection. Connect again."
+    assert (failed.status_code, failed.json()) == (500, {"detail": saved})
+    status = (await client.get(BASE + f"/flows/{flow_id}")).json()
+    assert (status["status"], status["error"]) == ("failed", saved)
+    async with factory() as session:
+        assert (
+            await session.scalar(
+                select(ServiceConnection).where(ServiceConnection.service == "github")
+            )
+            is None
+        )
+    assert any(
+        record.levelname == "ERROR" and "from Switch Console failed" in record.message
         for record in caplog.records
     )
 

@@ -18,6 +18,7 @@ import asyncio
 import contextlib
 import importlib.util
 import json
+import secrets
 import tempfile
 import uuid
 from dataclasses import dataclass
@@ -488,6 +489,7 @@ class People:
             TENANT,
             session_version=0,
             auth_time=datetime.now(UTC),
+            session_id=secrets.token_urlsafe(16),
         )
         return {"cookie": f"switch_auth={token}"}
 

@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal, Protocol
 
 import httpx
@@ -23,9 +23,20 @@ from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.organization_trust_settings_store import (
     OrganizationTrustSettingsStore,
 )
+from switch_core.file_text import TRUST_FILE_TEXT_LIMIT
 from switch_core.keys import Keyring
+from switch_core.observability.catalogue import TRUST_CHECK_FAILURES
+from switch_core.observability.metrics import metrics
 
 logger = logging.getLogger(__name__)
+
+# The most of one message sent to Switch Trust, for the reason a file's text
+# is capped (`TRUST_FILE_TEXT_LIMIT`): a check must answer within
+# `switch_trust_timeout_seconds`, and a check that times out lets the message
+# through. Without the cap, padding a message would make its check time out
+# on purpose. A message cut here carries a visible note that only the start
+# of it was checked, and a WARNING is logged.
+TRUST_MESSAGE_TEXT_LIMIT = TRUST_FILE_TEXT_LIMIT
 
 Role = Literal["user", "assistant"]
 
@@ -74,6 +85,10 @@ class GuardrailsRefusedError(GuardrailsCheckError):
         self.status_code = status_code
 
 
+class GuardrailsTimeoutError(GuardrailsCheckError):
+    """Switch Trust did not answer within the timeout."""
+
+
 class GuardrailBlockedError(Exception):
     """A message was refused by the guardrails policy.
 
@@ -118,6 +133,9 @@ class TrustCheckResult:
     # redact — callers must not send the original content in that case either,
     # but that situation has not come up against the real endpoint yet.
     redacted_content: str | None = None
+    # Set when only the start of the message was checked ("the first 20,000
+    # characters"): the rest reached the room unchecked (`check_message`).
+    checked_part: str | None = None
 
     @property
     def blocked(self) -> bool:
@@ -361,6 +379,10 @@ class HttpTrustClient:
                 headers=headers,
                 timeout=self._timeout_seconds,
             )
+        except httpx.TimeoutException as error:
+            raise GuardrailsTimeoutError(
+                f"POST {self._url} did not answer within {self._timeout_seconds}s"
+            ) from error
         except httpx.HTTPError as error:
             raise GuardrailsCheckError(f"POST {self._url} failed: {error}") from error
         if response.status_code >= 400:
@@ -423,15 +445,26 @@ def trust_annotation(result: TrustCheckResult) -> str | None:
     reaction: `mark_activity` (the "working"/"queued" badge) is scoped to a
     specific agent's identity on platforms that track per-agent reactions, and
     a Switch Trust verdict belongs to no agent.
-    `None` for every other outcome, including BLOCKED (handled separately) and
-    REDACTED (the redaction itself is the signal)."""
+    A message checked only in part says so, whatever the verdict on the part
+    checked. `None` for every other outcome, including BLOCKED (handled
+    separately) and REDACTED (the redaction itself is the signal)."""
+    if result.outcome == "blocked":
+        return None
+    if result.outcome == "errored":
+        return "⚠️ _Switch Trust could not check this message_"
+    notes = []
     if result.outcome == "alerted":
         categories = ", ".join(sorted({f.category for f in result.findings}))
         detail = categories or "policy alert"
-        return f"⚠️  _Switch Trust flagged this message (not blocked - {detail})._"
-    if result.outcome == "errored":
-        return "⚠️ _Switch Trust could not check this message_"
-    return None
+        notes.append(
+            f"⚠️  _Switch Trust flagged this message (not blocked - {detail})._"
+        )
+    if result.checked_part is not None:
+        notes.append(
+            f"⚠️ _Switch Trust checked only {result.checked_part} of this message; "
+            "the rest was not checked._"
+        )
+    return "\n".join(notes) or None
 
 
 def trust_redaction_notice(result: TrustCheckResult) -> str | None:
@@ -453,19 +486,58 @@ async def check_message(
 ) -> TrustCheckResult:
     """`client.check`, failing open: a Switch Trust outage degrades to
     unchecked messages rather than to no messaging at all. Logged loudly
-    either way, since this is the one place that gap is visible. Reported as
-    `outcome="errored"` rather than `"ok"`, so callers give it the same
-    quiet in-chat annotation as an engine-side error."""
+    either way, since this is the one place that gap is visible, and counted
+    by why (`TRUST_CHECK_FAILURES`): a timeout apart from other failures.
+    Reported as `outcome="errored"` rather than `"ok"`, so callers give it
+    the same quiet in-chat annotation as an engine-side error.
+
+    Only the first `TRUST_MESSAGE_TEXT_LIMIT` characters are sent. The result
+    then says so (`checked_part`, which `trust_annotation` turns into a note),
+    and a redaction keeps the unchecked rest after the redacted start."""
+    checked = content[:TRUST_MESSAGE_TEXT_LIMIT]
     try:
-        return await client.check(
-            tenant_id=tenant_id, role=role, content=content, room_id=room_id
+        result = await client.check(
+            tenant_id=tenant_id, role=role, content=checked, room_id=room_id
         )
-    except GuardrailsCheckError:
+    except GuardrailsTimeoutError:
+        metrics().increment(TRUST_CHECK_FAILURES, {"reason": "timeout"})
         logger.warning(
-            "Switch Trust check failed; message allowed through unchecked",
+            "Switch Trust did not answer in time; message allowed through "
+            "unchecked in room %s",
+            room_id,
             exc_info=True,
         )
         return TrustCheckResult(outcome="errored", policy_id=None, policy_name=None)
+    except GuardrailsCheckError as error:
+        reason = "refused" if isinstance(error, GuardrailsRefusedError) else "error"
+        metrics().increment(TRUST_CHECK_FAILURES, {"reason": reason})
+        logger.warning(
+            "Switch Trust check failed (%s); message allowed through unchecked "
+            "in room %s",
+            reason,
+            room_id,
+            exc_info=True,
+        )
+        return TrustCheckResult(outcome="errored", policy_id=None, policy_name=None)
+    if len(checked) == len(content):
+        return result
+    checked_part = f"the first {TRUST_MESSAGE_TEXT_LIMIT:,} characters"
+    logger.warning(
+        "Switch Trust checked only %s of a %d-character message in room %s; the "
+        "rest reaches the room unchecked",
+        checked_part,
+        len(content),
+        room_id,
+    )
+    return replace(
+        result,
+        checked_part=checked_part,
+        redacted_content=(
+            None
+            if result.redacted_content is None
+            else result.redacted_content + content[len(checked) :]
+        ),
+    )
 
 
 async def trust_is_active(client: TrustClient, tenant_id: str) -> bool:
