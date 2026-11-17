@@ -144,6 +144,7 @@ class _Adapter:
                 username=query,
                 display_name=query,
                 email=None,
+                has_handle=True,
             )
         ]
 
