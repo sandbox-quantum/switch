@@ -14,8 +14,10 @@ import { switchServersStore } from '@renderer/features/switch-servers/switch-ser
 import { useListedRoomsInActiveScope } from '@renderer/features/switch-servers/use-listed-rooms';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
+import { events, rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { sidebarStore } from '@renderer/lib/stores/app-state';
+import { userChangesChannel } from '@shared/events/userChangesEvents';
 import { AgentTree } from './agent-tree';
 import { SidebarMainSection } from './main-section';
 import { RoomTree } from './room-tree';
@@ -23,24 +25,21 @@ import { SessionDiscoveryStatus } from './session-discovery-status';
 import { SessionsSectionHeader } from './sessions-section-header';
 import { useScrollSelectionIntoView } from './sidebar-auto-scroll';
 import { showsAgentsAndRooms, sidebarEmptyState } from './sidebar-empty-state';
-import {
-  agentsInActiveScope,
-  refreshSidebarOnRoomChanges,
-  refreshSidebarRoomState,
-} from './sidebar-tree-data';
-
-/**
- * How often the room state is reconciled against the servers while the window
- * is visible. A safety net for changes made outside this app, not the primary
- * path — mutations made here refresh immediately. Kept short enough that a
- * change nothing here initiated (a bridge adopting a channel, an agent joining
- * a room server-side) does not sit invisible for a noticeable stretch.
- */
-const ROOM_STATE_RECONCILE_MS = 20_000;
+import { POLLED_RECONCILE_MS, SidebarRoomPushes } from './sidebar-room-pushes';
+import { agentsInActiveScope, refreshSidebarRoomState } from './sidebar-tree-data';
 
 /** @see refreshSidebarRoomState — shared so every trigger, including the
  * mutations in other components, refreshes the same set. */
 const loadSidebarState = refreshSidebarRoomState;
+
+/** The workspaces on screen whose server is connected: the ones whose rooms are read. */
+function connectedWorkspacesInScope(): { workspaceId: string; serverId: string }[] {
+  const activeId = workspacesStore.activeId;
+  return workspacesStore.workspaces
+    .filter((w) => (activeId ? w.id === activeId : true))
+    .filter((w) => switchServersStore.isConnected(w.serverId))
+    .map((w) => ({ workspaceId: w.id, serverId: w.serverId }));
+}
 
 /**
  * The sidebar body: loads what both trees read, then hands over to whichever
@@ -59,12 +58,26 @@ export const SidebarGroupedList = observer(function SidebarGroupedList() {
   useEffect(() => {
     roomConnectionsStore.ensureLoaded();
     void hostReachabilityStore.hydrate();
+    // The servers push what changes in their rooms; this reads it.
+    const pushes = new SidebarRoomPushes({
+      refreshAll: () => loadSidebarState(true),
+      refreshRooms: (workspaceId, roomIds) => switchRoomsStore.refreshRooms(workspaceId, roomIds),
+      watch: (serverId, workspaceId) => rpc.userChanges.watch(serverId, workspaceId),
+      unwatch: (serverId, workspaceId) => rpc.userChanges.unwatch(serverId, workspaceId),
+      liveKinds: (serverId, workspaceId) => rpc.userChanges.liveKinds(serverId, workspaceId),
+      now: () => Date.now(),
+      setTimer: (fn, ms) => setTimeout(fn, ms),
+      clearTimer: (timer) => clearTimeout(timer),
+    });
+    const stopPushes = events.on(userChangesChannel, (event) => pushes.onEvent(event));
     // The servers have to be known before their rooms can be asked for, but the
     // agents and their membership do not wait on that.
     void loadSidebarState(false);
     void switchServersStore.init().then(() => switchRoomsStore.loadRoomNames());
 
-    const onFocus = () => void loadSidebarState(true);
+    const onFocus = () => {
+      if (pushes.focusDue()) void pushes.readWhole();
+    };
     window.addEventListener('focus', onFocus);
 
     // Two things make the loaded state wrong without any mutation here:
@@ -81,24 +94,29 @@ export const SidebarGroupedList = observer(function SidebarGroupedList() {
           .sort()
           .join(','),
       }),
-      () => void loadSidebarState(true),
+      () => {
+        pushes.follow(connectedWorkspacesInScope());
+        void pushes.readWhole();
+      },
       { equals: (a, b) => a.active === b.active && a.connected === b.connected }
     );
+    pushes.follow(connectedWorkspacesInScope());
 
-    // Nothing pushes room state to the app: a membership changed from Slack,
-    // the gateway or another install is invisible until something asks again.
-    // Focus is not enough on its own — a window left in the foreground never
-    // refocuses — so reconcile on a slow timer as well.
+    // A membership changed from Slack, the gateway or another install is
+    // pushed by servers that have the change socket, and is otherwise invisible
+    // until something asks again. Focus is not enough on its own (a window left
+    // in the foreground never refocuses), so reconcile on a timer as well: every
+    // tick while some workspace is not pushed, every few minutes while all are,
+    // for a notice that was lost.
     const reconcile = setInterval(() => {
       if (document.hidden) return;
-      void loadSidebarState(true);
-    }, ROOM_STATE_RECONCILE_MS);
-
-    const stopRoomChanges = refreshSidebarOnRoomChanges();
+      if (pushes.reconcileDue()) void pushes.readWhole();
+    }, POLLED_RECONCILE_MS);
 
     return () => {
       window.removeEventListener('focus', onFocus);
-      stopRoomChanges();
+      stopPushes();
+      pushes.stop();
       stopWatchingServers();
       clearInterval(reconcile);
     };

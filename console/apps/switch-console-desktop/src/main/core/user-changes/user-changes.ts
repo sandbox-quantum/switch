@@ -76,6 +76,8 @@ const defaultDeps: UserChangesDeps = {
 class ServerSocket {
   watchers = 0;
   live = false;
+  /** The kinds the server said it sends notices for, while the socket is live. */
+  kinds: string[] = [];
   /** This server has said hello at least once, so it has the socket. */
   private supported = false;
   /** When the socket last went away, while it has not come back. */
@@ -169,6 +171,7 @@ class ServerSocket {
         this.supported = true;
         this.downSince = null;
         this.live = true;
+        this.kinds = hello.kinds;
         this.arm(socket, hello.ping_interval_s);
         this.deps.emit(userChangesChannel, {
           serverId: this.serverId,
@@ -218,6 +221,7 @@ class ServerSocket {
   private setDown(): void {
     if (!this.live) return;
     this.live = false;
+    this.kinds = [];
     this.deps.emit(userChangesChannel, {
       serverId: this.serverId,
       workspaceId: this.workspaceId,
@@ -271,6 +275,15 @@ export function createUserChangesService(deps: UserChangesDeps = defaultDeps) {
     /** Whether the server is pushing changes for this workspace right now. */
     isLive(serverId: string, workspaceId: string | null = null): boolean {
       return sockets.get(keyOf(serverId, workspaceId))?.live ?? false;
+    },
+    /**
+     * The kinds the server pushes changes for in this workspace right now, or
+     * null while it is not pushing. A view that started watching after the
+     * socket said hello missed its `live` notice, which carries them.
+     */
+    liveKinds(serverId: string, workspaceId: string | null = null): string[] | null {
+      const socket = sockets.get(keyOf(serverId, workspaceId));
+      return socket?.live ? [...socket.kinds] : null;
     },
   };
 }

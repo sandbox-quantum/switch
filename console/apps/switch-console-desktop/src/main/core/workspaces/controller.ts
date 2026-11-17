@@ -58,6 +58,7 @@ import {
   fetchRoomRoles,
   fetchRoomSchedules,
   fetchRooms,
+  fetchRoomsById,
   fetchRoomsOfAgents,
   fetchTemplateDetail,
   fetchTemplateRuns,
@@ -567,6 +568,16 @@ export const workspacesController = createRPCController({
 
   listRooms: (workspaceId: string): Promise<RemoteRoomSummary[]> =>
     withWorkspaceSession(workspaceId, fetchRooms),
+
+  /**
+   * Some rooms of a workspace as its room list has them. `whole` when the
+   * server is too old to read only those, and answered with its whole list.
+   */
+  listRoomsById: (params: {
+    workspaceId: string;
+    roomIds: string[];
+  }): Promise<{ rooms: RemoteRoomSummary[]; whole: boolean }> =>
+    withWorkspaceSession(params.workspaceId, (server) => fetchRoomsById(server, params.roomIds)),
 
   /** Admins only; the gateway refuses anyone else with a 403. */
   listInvitations: listWorkspaceInvitations,

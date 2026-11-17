@@ -30,7 +30,9 @@ const {
   fetchArchivedRooms,
   fetchRoomAgentCandidates,
   fetchRoomDetail,
+  fetchRoomsById,
   fetchRoomsOfAgents,
+  ROOMS_PER_REQUEST,
   setRoomAdmin,
   setRoomAgentJoinEvents,
   setRoomArchived,
@@ -623,5 +625,46 @@ describe('many agents’ rooms in one read', () => {
         }) as unknown as Response
     );
     expect(await fetchRoomsOfAgents(SERVER, ['a-1'])).toBeNull();
+  });
+});
+
+describe('some rooms by id', () => {
+  const summary = (id: string) => ({ ...ROOM, id });
+
+  it('asks for only those rooms, and says the answer is not the whole list', async () => {
+    fetchMock.mockImplementation(async () => jsonResponse([summary('room-2')]));
+
+    const found = await fetchRoomsById(SERVER, ['room-1', 'room-2']);
+
+    expect(found.whole).toBe(false);
+    expect(found.rooms.map((room) => room.id)).toEqual(['room-2']);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(lastCall().url).toMatch(/\/rooms\?room_id=room-1&room_id=room-2$/);
+  });
+
+  it('asks no more rooms to a request than the server takes', async () => {
+    const ids = Array.from({ length: ROOMS_PER_REQUEST + 1 }, (_, i) => `room-${i}`);
+    fetchMock.mockImplementation(async (url: string) =>
+      jsonResponse(new URL(url).searchParams.getAll('room_id').map(summary))
+    );
+
+    const found = await fetchRoomsById(SERVER, ids);
+
+    const asked = fetchMock.mock.calls.map(
+      ([url]) => new URL(url).searchParams.getAll('room_id').length
+    );
+    expect(asked).toEqual([ROOMS_PER_REQUEST, 1]);
+    expect(found.rooms.map((room) => room.id)).toEqual(ids);
+  });
+
+  it('takes the answer of a server that ignores the ids for its whole list', async () => {
+    fetchMock.mockImplementation(async () =>
+      jsonResponse([summary('room-1'), summary('room-elsewhere')])
+    );
+
+    const found = await fetchRoomsById(SERVER, ['room-1']);
+
+    expect(found.whole).toBe(true);
+    expect(found.rooms.map((room) => room.id)).toEqual(['room-1', 'room-elsewhere']);
   });
 });

@@ -107,6 +107,21 @@ describe('user changes', () => {
     ]);
   });
 
+  it('says which kinds it pushes while live, and none once down', async () => {
+    // A view that starts watching a socket already live missed its `live`
+    // notice, so it asks for the kinds instead.
+    const { service } = setup();
+    service.watch('s1');
+    await tick();
+    expect(service.liveKinds('s1')).toBeNull();
+    const socket = FakeSocket.opened[0];
+    socket.fire('open');
+    socket.frame('hello', { kinds: ['managed_agent', 'room'], ping_interval_s: 25 });
+    expect(service.liveKinds('s1')).toEqual(['managed_agent', 'room']);
+    socket.fire('close', { code: 1012 });
+    expect(service.liveKinds('s1')).toBeNull();
+  });
+
   it('answers pings', async () => {
     const { service } = setup();
     service.watch('s1');

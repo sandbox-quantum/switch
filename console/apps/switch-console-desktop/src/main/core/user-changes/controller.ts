@@ -7,6 +7,9 @@ export const userChangesController = createRPCController({
     userChangesService.watch(serverId, workspaceId);
     return userChangesService.isLive(serverId, workspaceId);
   },
+  /** The kinds the server pushes for this workspace now, or null while it is not pushing. */
+  liveKinds: async (serverId: string, workspaceId: string | null): Promise<string[] | null> =>
+    userChangesService.liveKinds(serverId, workspaceId),
   unwatch: async (serverId: string, workspaceId: string | null): Promise<void> => {
     userChangesService.unwatch(serverId, workspaceId);
   },

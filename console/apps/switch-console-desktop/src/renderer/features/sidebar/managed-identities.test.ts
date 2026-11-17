@@ -9,16 +9,10 @@ const local = vi.hoisted(() => ({
   agents: [] as { id: string; workspaceId: string; switchAgentId: string }[],
   moved: new Set<string>(),
   ensure: vi.fn(async (_ids: unknown) => {}),
-  listeners: [] as ((event: unknown) => void)[],
 }));
 
 vi.mock('@renderer/lib/ipc', () => ({
-  events: {
-    on: (_channel: unknown, listener: (event: unknown) => void) => {
-      local.listeners.push(listener);
-      return () => {};
-    },
-  },
+  events: { on: () => () => {} },
   rpc: { workspaces: { backfillAgentIcons: async () => ({}) } },
 }));
 vi.mock('@renderer/features/locations/stores/agents-store', () => ({
@@ -46,12 +40,8 @@ vi.mock('@renderer/features/workspaces/workspaces-store', () => ({
   workspacesStore: { idOnServerInScope: () => 'ws-a' },
 }));
 
-const {
-  managedIdentities,
-  refreshSidebarOnRoomChanges,
-  refreshSidebarRoomState,
-  switchIdentities,
-} = await import('./sidebar-tree-data');
+const { managedIdentities, refreshSidebarRoomState, switchIdentities } =
+  await import('./sidebar-tree-data');
 const { queryClient } = await import('@renderer/lib/query-client');
 
 describe('managedIdentities', () => {
@@ -98,25 +88,5 @@ describe('local membership tracking', () => {
     expect(switchIdentities()).toEqual([]);
     await refreshSidebarRoomState(true);
     expect(local.ensure).toHaveBeenCalledWith([], { force: true });
-  });
-
-  it('refreshes when a server says a room changed, and not for other kinds', async () => {
-    local.listeners = [];
-    refreshSidebarOnRoomChanges();
-    const [listener] = local.listeners;
-    listener({
-      type: 'changed',
-      serverId: 'srv',
-      workspaceId: null,
-      changes: [{ kind: 'machine', id: 'm' }],
-    });
-    expect(local.ensure).not.toHaveBeenCalled();
-    listener({
-      type: 'changed',
-      serverId: 'srv',
-      workspaceId: null,
-      changes: [{ kind: 'room', id: 'r' }],
-    });
-    await vi.waitFor(() => expect(local.ensure).toHaveBeenCalledTimes(1));
   });
 });

@@ -10,7 +10,7 @@ import {
   type RetireOutcome,
   type RoomVisibility,
 } from '@shared/core/switch-servers/switch-servers';
-import { administersWorkspace } from '@shared/core/workspaces/workspaces';
+import { administersWorkspace, type Workspace } from '@shared/core/workspaces/workspaces';
 import { UNBRIDGED_FILTER_VALUE } from '@shared/view-state';
 import { type RoomPermissions, roomPermissionsFor } from './room-permissions';
 import { serverAvailability } from './server-availability';
@@ -369,40 +369,110 @@ export class SwitchRoomsStore {
     await Promise.all(
       connected.map(async (workspace) => {
         try {
-          const rooms = await rpc.workspaces.listRooms(workspace.id);
-          // Ownership is per server: the same person is a different user row on
-          // each gateway, so match against that server's signed-in identity.
-          const signedInUserId = switchServersStore.statusFor(workspace.serverId)?.user?.id ?? null;
-          runInAction(() => {
-            this.roomListErrors.delete(workspace.id);
-            for (const room of rooms) {
-              this.roomNames.set(room.id, room.name);
-              this.roomWorkspaceById.set(room.id, workspace.id);
-              if (room.bridgeType) this.bridgeTypeByRoom.set(room.id, room.bridgeType);
-              else this.bridgeTypeByRoom.delete(room.id);
-              if (room.externalChannelUrl)
-                this.channelUrlByRoom.set(room.id, room.externalChannelUrl);
-              else this.channelUrlByRoom.delete(room.id);
-            }
-            const active = rooms.filter((r) => !r.archived);
-            this.allRoomsByWorkspace.set(workspace.id, active);
-            this.ownedRoomsByWorkspace.set(
-              workspace.id,
-              signedInUserId
-                ? active.filter((r) => r.ownerId === signedInUserId || r.viewerIsMember)
-                : []
-            );
-          });
+          this.takeRoomList(workspace, await rpc.workspaces.listRooms(workspace.id));
         } catch (cause) {
-          runInAction(() => {
-            this.roomListErrors.set(
-              workspace.id,
-              failureText(cause, `Could not load the rooms in ${workspace.name}.`)
-            );
-          });
+          this.noteRoomListFailed(workspace, cause);
         }
       })
     );
+  }
+
+  /**
+   * Catch up with a change the server pushed about some rooms of a workspace:
+   * read those rooms, and the membership of the agents this store follows
+   * there, instead of the workspace's whole room list.
+   *
+   * Which of the agents joined or left a room is not in the notice, so their
+   * membership is read in one request for the workspace (`listRoomsOfAgents`),
+   * which costs the server the same however many rooms the workspace has.
+   */
+  async refreshRooms(workspaceId: string, roomIds: string[]): Promise<void> {
+    const workspace = workspacesStore.byId(workspaceId);
+    if (!workspace || !switchServersStore.isConnected(workspace.serverId)) return;
+    const readRooms = async () => {
+      try {
+        const found = await rpc.workspaces.listRoomsById({ workspaceId, roomIds });
+        if (found.whole) this.takeRoomList(workspace, found.rooms);
+        else this.takeRooms(workspace, roomIds, found.rooms);
+      } catch (cause) {
+        this.noteRoomListFailed(workspace, cause);
+      }
+    };
+    const followed = [...this.followedIdentities().values()]
+      .filter((identity) => identity.workspaceId === workspaceId)
+      .map((identity) => identity.switchAgentId);
+    await Promise.all([
+      readRooms(),
+      followed.length > 0 ? this.fetchRoomsOfAgents(workspaceId, followed) : null,
+    ]);
+  }
+
+  /** Remember what a room says about itself: its name, workspace and platform. */
+  private noteRoom(workspaceId: string, room: RemoteRoomSummary): void {
+    this.roomNames.set(room.id, room.name);
+    this.roomWorkspaceById.set(room.id, workspaceId);
+    if (room.bridgeType) this.bridgeTypeByRoom.set(room.id, room.bridgeType);
+    else this.bridgeTypeByRoom.delete(room.id);
+    if (room.externalChannelUrl) this.channelUrlByRoom.set(room.id, room.externalChannelUrl);
+    else this.channelUrlByRoom.delete(room.id);
+  }
+
+  /** Whether the sidebar lists a room for being the signed-in user's own. */
+  private ownedBy(room: RemoteRoomSummary, signedInUserId: string | null): boolean {
+    return signedInUserId !== null && (room.ownerId === signedInUserId || room.viewerIsMember);
+  }
+
+  /** A workspace's whole room list, as read. */
+  private takeRoomList(workspace: Workspace, rooms: RemoteRoomSummary[]): void {
+    // Ownership is per server: the same person is a different user row on
+    // each gateway, so match against that server's signed-in identity.
+    const signedInUserId = switchServersStore.statusFor(workspace.serverId)?.user?.id ?? null;
+    runInAction(() => {
+      this.roomListErrors.delete(workspace.id);
+      for (const room of rooms) this.noteRoom(workspace.id, room);
+      const active = rooms.filter((r) => !r.archived);
+      this.allRoomsByWorkspace.set(workspace.id, active);
+      this.ownedRoomsByWorkspace.set(
+        workspace.id,
+        active.filter((r) => this.ownedBy(r, signedInUserId))
+      );
+    });
+  }
+
+  /**
+   * Some rooms of a workspace, as read: each one found replaces what was
+   * known of it, and one asked for and not found (deleted, or no longer
+   * readable) or archived leaves the lists. The rest of the list stays as it was.
+   */
+  private takeRooms(workspace: Workspace, asked: string[], found: RemoteRoomSummary[]): void {
+    const signedInUserId = switchServersStore.statusFor(workspace.serverId)?.user?.id ?? null;
+    runInAction(() => {
+      for (const room of found) this.noteRoom(workspace.id, room);
+      const active = new Map(found.filter((r) => !r.archived).map((r) => [r.id, r]));
+      const replace = (rooms: RemoteRoomSummary[], keep: (r: RemoteRoomSummary) => boolean) => {
+        const kept = rooms.filter((room) => !asked.includes(room.id));
+        return [...kept, ...[...active.values()].filter(keep)];
+      };
+      this.allRoomsByWorkspace.set(
+        workspace.id,
+        replace(this.allRoomsByWorkspace.get(workspace.id) ?? [], () => true)
+      );
+      this.ownedRoomsByWorkspace.set(
+        workspace.id,
+        replace(this.ownedRoomsByWorkspace.get(workspace.id) ?? [], (r) =>
+          this.ownedBy(r, signedInUserId)
+        )
+      );
+    });
+  }
+
+  private noteRoomListFailed(workspace: Workspace, cause: unknown): void {
+    runInAction(() => {
+      this.roomListErrors.set(
+        workspace.id,
+        failureText(cause, `Could not load the rooms in ${workspace.name}.`)
+      );
+    });
   }
 
   /**
@@ -541,9 +611,7 @@ export class SwitchRoomsStore {
     runInAction(() => {
       this.trackedIdentities = agents;
     });
-    const identities = new Map(agents.map((a) => [key(a.workspaceId, a.switchAgentId), a]));
-    for (const [k, watched] of this.watchedIdentities)
-      if (!identities.has(k)) identities.set(k, watched);
+    const identities = this.followedIdentities();
     // Asked a workspace at a time: the server answers for all of a workspace's
     // agents in one read.
     const byWorkspace = new Map<string, string[]>();
@@ -556,6 +624,16 @@ export class SwitchRoomsStore {
     await Promise.all(
       [...byWorkspace].map(([workspaceId, ids]) => this.fetchRoomsOfAgents(workspaceId, ids))
     );
+  }
+
+  /** The agents whose membership this store keeps current: tracked, or on screen. */
+  private followedIdentities(): Map<string, { workspaceId: string; switchAgentId: string }> {
+    const identities = new Map(
+      this.trackedIdentities.map((a) => [key(a.workspaceId, a.switchAgentId), a])
+    );
+    for (const [k, watched] of this.watchedIdentities)
+      if (!identities.has(k)) identities.set(k, watched);
+    return identities;
   }
 
   /**

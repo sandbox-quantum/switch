@@ -3777,6 +3777,36 @@ export async function fetchRooms(server: SwitchServer): Promise<RemoteRoomSummar
   return json.map(mapRoomSummary);
 }
 
+/** The most rooms one `GET /rooms?room_id=…` answers for; the server refuses more. */
+export const ROOMS_PER_REQUEST = 100;
+
+/**
+ * Some rooms, each as {@link fetchRooms} lists it, asked
+ * {@link ROOMS_PER_REQUEST} to a request. A room that is gone, or that the
+ * signed-in user may no longer read, is left out.
+ *
+ * A server from before `room_id` ignores it and answers with every room it
+ * lists: then `whole` is true and `rooms` is the whole list, read once. It is
+ * told apart by answering with a room nobody asked for.
+ */
+export async function fetchRoomsById(
+  server: SwitchServer,
+  roomIds: readonly string[]
+): Promise<{ rooms: RemoteRoomSummary[]; whole: boolean }> {
+  const asked = new Set(roomIds);
+  const rooms: RemoteRoomSummary[] = [];
+  for (let start = 0; start < roomIds.length; start += ROOMS_PER_REQUEST) {
+    const query = new URLSearchParams(
+      roomIds.slice(start, start + ROOMS_PER_REQUEST).map((id) => ['room_id', id])
+    );
+    const res = await gatewayFetch(server, `/rooms?${query}`, { authenticated: true });
+    const found = ((await res.json()) as RoomSummaryJson[]).map(mapRoomSummary);
+    if (found.some((room) => !asked.has(room.id))) return { rooms: found, whole: true };
+    rooms.push(...found);
+  }
+  return { rooms, whole: false };
+}
+
 /** The gateway `RoomDetail` wire shape — `RoomSummary` plus the fields only a
  * single-room read carries. */
 type RoomDetailJson = RoomSummaryJson & {

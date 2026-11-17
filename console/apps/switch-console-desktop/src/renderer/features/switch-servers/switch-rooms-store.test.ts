@@ -4,6 +4,7 @@ import type { RemoteRoomSummary } from '@shared/core/switch-servers/switch-serve
 const listRooms = vi.hoisted(() => vi.fn());
 const listAgentRooms = vi.hoisted(() => vi.fn());
 const listRoomsOfAgents = vi.hoisted(() => vi.fn());
+const listRoomsById = vi.hoisted(() => vi.fn());
 const serversStore = vi.hoisted(() => ({
   servers: [] as {
     id: string;
@@ -30,7 +31,7 @@ const workspaces = vi.hoisted(() => ({
 
 vi.mock('@renderer/lib/ipc', () => ({
   events: { on: vi.fn() },
-  rpc: { workspaces: { listRooms, listAgentRooms, listRoomsOfAgents } },
+  rpc: { workspaces: { listRooms, listAgentRooms, listRoomsOfAgents, listRoomsById } },
 }));
 vi.mock('@renderer/features/workspaces/workspaces-store', () => ({
   workspacesStore: workspaces,
@@ -648,6 +649,132 @@ describe('agent memberships', () => {
 
     expect(store.roomsFor('ws-a', 'agent-1')?.[0].roomId).toBe('room-in-ws-a');
     expect(store.roomsFor('ws-b', 'agent-1')?.[0].roomId).toBe('room-in-ws-b');
+  });
+});
+
+describe('rooms a server says changed', () => {
+  const membership = (roomId: string) => ({
+    roomId,
+    roomName: roomId,
+    archived: false,
+    status: 'live',
+    roomRole: null,
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    serversStore.servers = [{ id: 'srv-a' }, { id: 'srv-b' }];
+    twoWorkspaces();
+    workspaces.activeId = 'ws-a';
+    listRooms.mockImplementation(async (workspaceId: string) =>
+      workspaceId === 'ws-a'
+        ? [
+            room('kept', 'user-of-srv-a'),
+            room('renamed', 'user-of-srv-a'),
+            room('archived-soon', 'user-of-srv-a'),
+            room('gone-soon', 'user-of-srv-a'),
+          ]
+        : []
+    );
+  });
+
+  async function loaded() {
+    const store = new SwitchRoomsStore();
+    await store.loadRoomNames();
+    listRooms.mockClear();
+    return store;
+  }
+
+  it('reads only the rooms named, and leaves the rest of the list as it was', async () => {
+    const store = await loaded();
+    listRoomsById.mockResolvedValue({
+      rooms: [
+        room('renamed', 'user-of-srv-a', { name: 'new name' }),
+        room('archived-soon', 'user-of-srv-a', { archived: true }),
+        room('new', 'user-of-srv-a'),
+      ],
+      whole: false,
+    });
+
+    await store.refreshRooms('ws-a', ['renamed', 'archived-soon', 'gone-soon', 'new']);
+
+    expect(listRooms).not.toHaveBeenCalled();
+    expect(listRoomsById).toHaveBeenCalledExactlyOnceWith({
+      workspaceId: 'ws-a',
+      roomIds: ['renamed', 'archived-soon', 'gone-soon', 'new'],
+    });
+    expect(store.listedRoomsInActiveScope.map((r) => r.id).sort()).toEqual([
+      'kept',
+      'new',
+      'renamed',
+    ]);
+    expect(store.roomNameById('renamed')).toBe('new name');
+    expect(store.roomWorkspaceId('new')).toBe('ws-a');
+  });
+
+  it('drops a room from the user’s own once they are no longer in it', async () => {
+    const store = await loaded();
+    listRoomsById.mockResolvedValue({
+      rooms: [room('kept', 'user-of-someone-else')],
+      whole: false,
+    });
+
+    await store.refreshRooms('ws-a', ['kept']);
+
+    expect(store.listedRoomsInActiveScope.map((r) => r.id)).not.toContain('kept');
+    expect(store.readableRoomsInWorkspace('ws-a').map((r) => r.id)).toContain('kept');
+  });
+
+  it('takes the whole list from a server too old to read only some rooms', async () => {
+    const store = await loaded();
+    listRoomsById.mockResolvedValue({ rooms: [room('only-one', 'user-of-srv-a')], whole: true });
+
+    await store.refreshRooms('ws-a', ['renamed']);
+
+    expect(store.listedRoomsInActiveScope.map((r) => r.id)).toEqual(['only-one']);
+  });
+
+  it('re-reads the membership of the workspace’s agents in one request, not the other workspace’s', async () => {
+    listRoomsOfAgents.mockImplementation(async ({ agentIds }: { agentIds: string[] }) =>
+      Object.fromEntries(agentIds.map((id) => [id, [membership(`room-of-${id}`)]]))
+    );
+    const store = await loaded();
+    await store.ensureMembershipsFor([
+      { workspaceId: 'ws-a', switchAgentId: 'agent-1' },
+      { workspaceId: 'ws-a', switchAgentId: 'agent-2' },
+      { workspaceId: 'ws-b', switchAgentId: 'agent-3' },
+    ]);
+    listRoomsOfAgents.mockClear();
+    listRoomsById.mockResolvedValue({ rooms: [], whole: false });
+
+    await store.refreshRooms('ws-a', ['kept']);
+
+    expect(listRoomsOfAgents.mock.calls.map(([params]) => params)).toEqual([
+      { workspaceId: 'ws-a', agentIds: ['agent-1', 'agent-2'] },
+    ]);
+  });
+
+  it('says the room list is stale when the rooms could not be read', async () => {
+    const store = await loaded();
+    listRoomsById.mockRejectedValue(new Error('boom'));
+
+    await store.refreshRooms('ws-a', ['renamed']);
+
+    expect(store.workspacesThatFailedToLoad.map((w) => w.id)).toEqual(['ws-a']);
+    expect(store.listedRoomsInActiveScope).toHaveLength(4);
+  });
+
+  it('asks nothing of a workspace whose server is not connected', async () => {
+    const store = await loaded();
+    const connected = serversStore.isConnected;
+    serversStore.isConnected = () => false;
+    try {
+      await store.refreshRooms('ws-a', ['renamed']);
+    } finally {
+      serversStore.isConnected = connected;
+    }
+
+    expect(listRoomsById).not.toHaveBeenCalled();
   });
 });
 
