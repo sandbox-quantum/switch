@@ -12,10 +12,13 @@ import {
   PROVIDER_RECHECKED_KIND,
   type ProviderRecheckReply,
   OWNER_MARKER_ENV,
+  windowsRegistryPath,
+  withWindowsPathEntries,
 } from '@switch-console/agent-providers-box';
 import {
   withWindowsAgyBinDir,
   withWindowsCodexBinDir,
+  withWindowsInstallerBinDirs,
   withWindowsGitBashDir,
 } from '@switch-console/plugins/agents';
 import packageJson from '../package.json' with { type: 'json' };
@@ -72,12 +75,7 @@ import {
 } from './live-status';
 import { createLogger, errorCode, errorMessage, type Logger } from './log';
 import { givenLoginCheck } from './login-check';
-import {
-  loginShellPath,
-  windowsRegistryPath,
-  withUserBinDirs,
-  withWindowsPathEntries,
-} from './login-path';
+import { loginShellPath, withUserBinDirs } from './login-path';
 import { guardLimitsFromEnv } from './memory-guard';
 import { type OwnerMarkers, openOwnerMarkers, processesOf, signalProven } from './owner-marker';
 import { dataLayout, ensureDataDir, resolveDataDir, serverWorkspacesDir } from './paths';
@@ -460,8 +458,11 @@ function pathRefresher(log: Logger): () => Promise<void> {
         homedir()
       );
       process.env.PATH = withWindowsGitBashDir(
-        withWindowsCodexBinDir(
-          withWindowsAgyBinDir(current, process.env.LOCALAPPDATA),
+        withWindowsInstallerBinDirs(
+          withWindowsCodexBinDir(
+            withWindowsAgyBinDir(current, process.env.LOCALAPPDATA),
+            process.env.LOCALAPPDATA
+          ),
           process.env.LOCALAPPDATA
         ),
         {
@@ -710,6 +711,9 @@ async function runCommand(args: string[]): Promise<number> {
             now: Date.now,
           })
         : null;
+    // Switch Console starts its controllers again when they end on their own.
+    const supervised =
+      updatedBy === 'console' || isSupervised(separateUsers, values.launchd === true, process.env);
     if (controllerId !== undefined && values.server !== undefined) {
       const previousServer = store.identity()?.server;
       const adopted = adoptIdentity(
@@ -873,6 +877,7 @@ async function runCommand(args: string[]): Promise<number> {
         version: VERSION,
         updatedBy,
         selfUpdate,
+        supervised,
         now: Date.now,
         random: Math.random,
         timing: DEFAULT_TIMING,

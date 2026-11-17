@@ -7,6 +7,10 @@ import { checkProviderReadiness } from '../host/provider-readiness';
 // A stand-in for `opencode serve`: says it is listening, then answers the two
 // routes the sign-in check asks.
 const FAKE_SERVE = `
+if (process.argv.includes('--version')) {
+  console.log('1.19.5');
+  process.exit(0);
+}
 const http = require('node:http');
 const port = Number(process.argv.find((arg) => arg.startsWith('--port=')).slice(7));
 http
@@ -18,6 +22,10 @@ http
     response.end('{}');
   })
   .listen(port, '127.0.0.1', () => console.log('opencode server listening on http://127.0.0.1:' + port));
+`;
+
+const OPENCODE_2 = `
+console.log('2.3.0');
 `;
 
 const FAILING_SERVE = `
@@ -70,6 +78,14 @@ function check(binaryPath: string) {
 describe('the OpenCode sign-in check, with spaces in every path', () => {
   it('starts the CLI and reads its connected backends', async () => {
     expect((await check(installCli(FAKE_SERVE))).status).toBe('authenticated');
+  }, 60_000);
+
+  it('says OpenCode 2 is not supported, and how to install OpenCode 1', async () => {
+    const result = await check(installCli(OPENCODE_2));
+    expect(result.status).toBe('unconfigured');
+    expect(result.loginHelps).toBe(false);
+    expect(result.message).toContain('OpenCode 2 isn’t supported yet');
+    expect(result.message).toContain('npm install -g opencode-ai');
   }, 60_000);
 
   it('says what the CLI printed when it does not start', async () => {

@@ -230,3 +230,4 @@ export {
 } from './host/box-valve';
 export { isValveFrame, ValveServer } from './host/box-valve-wire';
 export { HubHostValve, HubValveChannel } from './host/box-valve-client';
+export { windowsRegistryPath, withWindowsPathEntries } from './windows-registry-path';

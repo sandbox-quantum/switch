@@ -109,6 +109,7 @@ async function started(
     listTimeoutMs,
     callTimeoutMs: 5_000,
     fetch: fetchImpl,
+    describe: (tools) => tools,
   });
   servers.push(vendors);
   return { ...vendors, asked: parent.asked, redactions, shown };
@@ -306,6 +307,7 @@ describe('a granted vendor’s MCP servers', () => {
       listTimeoutMs: 300,
       callTimeoutMs: 300,
       fetch: () => Promise.reject(new Error('the vendor is not reached')),
+      describe: (tools) => tools,
     });
     servers.push(vendors);
     const started_at = Date.now();
@@ -406,6 +408,7 @@ describe('a granted vendor’s MCP servers', () => {
         listTimeoutMs: 1_000,
         callTimeoutMs: 1_000,
         fetch,
+        describe: (tools) => tools,
       })
     ).rejects.toThrow('not served over HTTPS');
   });

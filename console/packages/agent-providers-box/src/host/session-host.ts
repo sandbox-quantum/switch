@@ -338,27 +338,13 @@ export class HostedSession {
       // Cleared on every start, recovered or not: the mark speaks only for the stop just before this start.
       await clearStopAsked(root);
       if (recovered) {
-        const snapshot = host.replica.snapshot();
-        for (const request of snapshot.requests)
-          if (request.state === 'open' || request.state === 'submitting')
-            await host.publish({
-              type: 'request.settled',
-              requestId: request.requestId,
-              revision: request.revision + 1,
-              outcome: 'interrupted',
-              commandId: null,
-              result: null,
-            });
-        for (const turn of snapshot.turns)
-          if (turn.status === 'running' || turn.status === 'queued') {
-            await host.publish({ ...turn, status: 'interrupted' });
-            // The host died mid-turn (a crash, an out-of-memory kill, an
-            // upgrade): say so in the turn's room once, rather than leave the
-            // person waiting on a reply that will never come.
-            if (!stopAsked) host.tellRoomAfterRestart(turn.turnId);
-          }
+        const cutOff = await host.interruptOpenWork();
+        // The host died mid-turn (a crash, an out-of-memory kill, an
+        // upgrade): say so in each cut-off turn's room once, rather than leave
+        // the person waiting on a reply that will never come.
+        if (!stopAsked) for (const turnId of cutOff) host.tellRoomAfterRestart(turnId);
         // A line an earlier start owed but never confirmed: its turn already
-        // reads "interrupted", so the loop above no longer finds it.
+        // reads "interrupted", so interruptOpenWork no longer finds it.
         for (const [turnId, state] of host.restartReplies)
           if (state === 'pending') host.tellRoomAfterRestart(turnId);
         for (const command of host.commands.values()) {
@@ -1168,12 +1154,16 @@ export class HostedSession {
         // to a steering failure.
         // Into the turn running now, once the provider has it: a message
         // asked to steer while nothing runs, or before the running turn has
-        // reached the provider, waits as a turn of its own.
+        // reached the provider, waits as a turn of its own. So does one sent
+        // while the turn waits on a question or an approval: the provider is
+        // blocked on that answer, and a message pushed into it is either read
+        // as the answer or left unread until the turn gives up.
         const running = this.activeTurn;
         const taken =
           body.delivery === 'steer' &&
           running !== null &&
           this.dispatched.has(running) &&
+          !this.awaitingAnswer() &&
           (await this.steerMessage(command, running));
         if (!taken) await this.queueMessage(command);
       } else if (body.type === 'session.compact') {
@@ -1408,6 +1398,12 @@ export class HostedSession {
    * failure leaves the outcome unknown: the message is shown, recorded as
    * dispatched and never resent.
    */
+  private awaitingAnswer(): boolean {
+    return this.snapshot().requests.some(
+      (request) => request.state === 'open' || request.state === 'submitting'
+    );
+  }
+
   private async steerMessage(command: Command, expectedTurnId: string): Promise<boolean> {
     if (command.body.type !== 'message.send') return false;
     const body = command.body;
@@ -1734,22 +1730,7 @@ export class HostedSession {
     )
       return;
     if (event.type === 'session.exited') {
-      for (const request of this.snapshot().requests)
-        if (request.state === 'open' || request.state === 'submitting')
-          await this.publish({
-            type: 'request.settled',
-            requestId: request.requestId,
-            revision: request.revision + 1,
-            outcome: 'interrupted',
-            commandId: null,
-            result: null,
-          });
-      const cutOff: string[] = [];
-      for (const turn of this.snapshot().turns)
-        if (turn.status === 'running' || turn.status === 'queued') {
-          await this.publish({ ...turn, status: 'interrupted' });
-          cutOff.push(turn.turnId);
-        }
+      const cutOff = await this.interruptOpenWork();
       this.queue.length = 0;
       this.activeTurn = null;
       this.questions.clear();
@@ -2001,8 +1982,36 @@ export class HostedSession {
       await this.adapter.stopSession(this.config.session.sessionId);
     await this.serial;
     await this.eventSerial;
-    await this.publishing;
-    this.unsubscribe();
+    // The provider's exit is not published while stopping, so its open turn is ended here.
+    try {
+      await this.interruptOpenWork();
+    } finally {
+      await this.publishing;
+      this.unsubscribe();
+    }
+  }
+
+  /** Ends what the provider can no longer finish: open requests and unfinished turns.
+   * Returns the turns it interrupted. */
+  private async interruptOpenWork(): Promise<string[]> {
+    const snapshot = this.snapshot();
+    const cutOff: string[] = [];
+    for (const request of snapshot.requests)
+      if (request.state === 'open' || request.state === 'submitting')
+        await this.publish({
+          type: 'request.settled',
+          requestId: request.requestId,
+          revision: request.revision + 1,
+          outcome: 'interrupted',
+          commandId: null,
+          result: null,
+        });
+    for (const turn of snapshot.turns)
+      if (turn.status === 'running' || turn.status === 'queued') {
+        await this.publish({ ...turn, status: 'interrupted' });
+        cutOff.push(turn.turnId);
+      }
+    return cutOff;
   }
 }
 
