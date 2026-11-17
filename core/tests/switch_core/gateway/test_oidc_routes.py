@@ -150,6 +150,7 @@ class TestSigningInWithADirectory:
                 session_factory=session_factory,
                 user_store=UserStore(),
                 organization_directory=directory,  # type: ignore[arg-type]
+                hosted=None,
             )
             user = await UserStore().get_by_email(session, "dana@example.com")
 
@@ -177,6 +178,7 @@ class TestSigningInWithADirectory:
                 session_factory=session_factory,
                 user_store=UserStore(),
                 organization_directory=directory,  # type: ignore[arg-type]
+                hosted=None,
             )
 
         assert response.status_code == 303
@@ -202,6 +204,7 @@ class TestSigningInWithADirectory:
                 session_factory=session_factory,
                 user_store=UserStore(),
                 organization_directory=_Directory([]),  # type: ignore[arg-type]
+                hosted=None,
             )
 
         assert response.status_code == 303
@@ -227,6 +230,7 @@ class TestSigningInWithADirectory:
                     session_factory=session_factory,
                     user_store=UserStore(),
                     organization_directory=_Directory([]),  # type: ignore[arg-type]
+                    hosted=None,
                 )
 
         assert refused.value.status_code == 409
@@ -251,6 +255,7 @@ class TestSigningInWithADirectory:
                     session_factory=session_factory,
                     user_store=UserStore(),
                     organization_directory=_Directory([]),  # type: ignore[arg-type]
+                    hosted=None,
                 )
             stored = await UserStore().get_by_email(session, "dana@example.com")
 
@@ -282,6 +287,7 @@ class TestOidcCallback:
                 session_factory=session_factory,
                 user_store=UserStore(),
                 organization_directory=LocalDirectory(),
+                hosted=None,
             )
 
             assert response.status_code == 303
@@ -332,6 +338,7 @@ class TestOidcCallback:
                     session_factory=session_factory,
                     user_store=UserStore(),
                     organization_directory=LocalDirectory(),
+                    hosted=None,
                 )
             assert exc.value.status_code == 401
 
@@ -364,6 +371,7 @@ class TestOidcCallback:
                 session_factory=session_factory,
                 user_store=UserStore(),
                 organization_directory=LocalDirectory(),
+                hosted=None,
             )
 
             assert response.status_code == 303
@@ -392,6 +400,7 @@ class TestOidcCallback:
                     session_factory=session_factory,
                     user_store=UserStore(),
                     organization_directory=LocalDirectory(),
+                    hosted=None,
                 )
             assert exc.value.status_code == 401
 
@@ -432,6 +441,7 @@ class TestOidcCallback:
                     session_factory=session_factory,
                     user_store=UserStore(),
                     organization_directory=LocalDirectory(),
+                    hosted=None,
                 )
             assert exc.value.status_code == 409
 
@@ -473,6 +483,7 @@ class TestOidcCallback:
                 session_factory=session_factory,
                 user_store=UserStore(),
                 organization_directory=LocalDirectory(),
+                hosted=None,
             )
             assert response.status_code == 303
 
@@ -513,6 +524,7 @@ class TestOidcCallback:
                 session_factory=session_factory,
                 user_store=UserStore(),
                 organization_directory=LocalDirectory(),
+                hosted=None,
             )
             assert first.status_code == 303
             carol = await UserStore().get_by_email(session, "carol@example.com")
@@ -539,6 +551,7 @@ class TestOidcCallback:
                 session_factory=session_factory,
                 user_store=UserStore(),
                 organization_directory=LocalDirectory(),
+                hosted=None,
             )
             assert response.status_code == 303
             linked = await UserStore().get_by_oidc_identity(
@@ -589,6 +602,7 @@ class TestOidcCallback:
                 session_factory=session_factory,
                 user_store=UserStore(),
                 organization_directory=LocalDirectory(),
+                hosted=None,
             )
             assert response.status_code == 303
 
@@ -629,6 +643,7 @@ class TestOidcCallback:
                     session_factory=session_factory,
                     user_store=_AlwaysRacingStore(),  # type: ignore[arg-type]
                     organization_directory=LocalDirectory(),
+                    hosted=None,
                 )
             assert exc.value.status_code == 503
             assert exc.value.headers is not None
@@ -662,6 +677,7 @@ class TestOidcCallback:
                     session_factory=session_factory,
                     user_store=UserStore(),
                     organization_directory=LocalDirectory(),
+                    hosted=None,
                 )
             assert not session.in_transaction()
             stored = await UserStore().get_by_email(session, "far.away@example.com")
@@ -714,6 +730,7 @@ class TestOidcCallback:
                 session_factory=session_factory,
                 user_store=UserStore(),
                 organization_directory=LocalDirectory(),
+                hosted=None,
             )
             assert response.status_code == 303
             linked = await UserStore().get_by_oidc_identity(
@@ -745,6 +762,7 @@ class TestOidcCallback:
                 session_factory=session_factory,
                 user_store=UserStore(),
                 organization_directory=LocalDirectory(),
+                hosted=None,
             )
             assert first.status_code == 303
             again = await oidc_routes.oidc_callback(
@@ -756,6 +774,7 @@ class TestOidcCallback:
                 session_factory=session_factory,
                 user_store=UserStore(),
                 organization_directory=LocalDirectory(),
+                hosted=None,
             )
             assert again.status_code == 303
 
@@ -776,6 +795,7 @@ class TestOidcCallback:
                     session_factory=session_factory,
                     user_store=UserStore(),
                     organization_directory=LocalDirectory(),
+                    hosted=None,
                 )
             assert exc.value.status_code == 401
 
@@ -804,6 +824,7 @@ class TestOidcCallback:
                     session_factory=session_factory,
                     user_store=UserStore(),
                     organization_directory=LocalDirectory(),
+                    hosted=None,
                 )
             assert exc.value.status_code == 502
             assert exc.value.detail == "OIDC provider did not respond"
@@ -833,6 +854,7 @@ class TestOidcCallback:
                     session_factory=session_factory,
                     user_store=UserStore(),
                     organization_directory=LocalDirectory(),
+                    hosted=None,
                 )
             assert exc.value.status_code == 502
             assert exc.value.detail == "OIDC provider did not respond"
@@ -864,6 +886,7 @@ class TestOidcCallback:
                     session_factory=session_factory,
                     user_store=UserStore(),
                     organization_directory=LocalDirectory(),
+                    hosted=None,
                 )
             assert exc.value.status_code == 503
             assert exc.value.detail == (
@@ -912,6 +935,7 @@ class TestTheCallbackPlacesTheUserInATenant:
                 session_factory=session_factory,
                 user_store=UserStore(),
                 organization_directory=LocalDirectory(),
+                hosted=None,
             )
             user = await UserStore().get_by_email(session, "jit@example.com")
             assert user is not None
@@ -957,6 +981,7 @@ class TestTheCallbackPlacesTheUserInATenant:
                 session_factory=session_factory,
                 user_store=UserStore(),
                 organization_directory=LocalDirectory(),
+                hosted=None,
             )
             memberships = await self._memberships(session, user_id)
 
@@ -997,6 +1022,7 @@ class TestTheCallbackPlacesTheUserInATenant:
                 session_factory=session_factory,
                 user_store=UserStore(),
                 organization_directory=LocalDirectory(),
+                hosted=None,
             )
             memberships = await self._memberships(session, user_id)
 
@@ -1045,6 +1071,7 @@ class TestSignUpWithoutADefaultTenant:
                 session_factory=session_factory,
                 user_store=UserStore(),
                 organization_directory=LocalDirectory(),
+                hosted=None,
             )
             user = await UserStore().get_by_email(session, email)
             assert user is not None
@@ -1083,6 +1110,7 @@ class TestSignUpWithoutADefaultTenant:
                 session_factory=session_factory,
                 user_store=UserStore(),
                 organization_directory=LocalDirectory(),
+                hosted=None,
             )
             identity = (
                 await session.execute(
@@ -1130,6 +1158,7 @@ class TestSignUpWithoutADefaultTenant:
                 session_factory=session_factory,
                 user_store=UserStore(),
                 organization_directory=LocalDirectory(),
+                hosted=None,
             )
 
         set_cookie = response.headers.get("set-cookie")
@@ -1418,6 +1447,7 @@ class TestLoginOptionsAndHandoff:
                 session_factory=session_factory,
                 user_store=UserStore(),
                 organization_directory=LocalDirectory(),
+                hosted=None,
             )
             # No cookie in the browser: the code goes back to the app.
             assert response.headers.get("set-cookie") is None

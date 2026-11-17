@@ -1,6 +1,6 @@
+import { BuddyFace, useBuddyExpression } from '@switch-console/chat-ui/components/buddy-face';
 import { motion, useReducedMotion } from 'motion/react';
 import { type CSSProperties, useState } from 'react';
-import { BuddyFace, useBuddyExpression } from '@renderer/features/switch-buddy/buddy-face';
 import { cn } from '@renderer/utils/utils';
 
 const TILE = 78;

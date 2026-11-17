@@ -66,6 +66,7 @@ async def signup_app(session_factory):
         gateway_oidc_login_options=[],
         hosted_launch_capacity=2,
         hosted_agents_enabled=True,
+        gateway_onboarding_enabled=False,
         keyring=TEST_KEYRING,
         gateway_cookie_secure=False,
         **LOGIN_LIMIT_DEFAULTS,
@@ -181,6 +182,15 @@ async def test_auth_config_reports_signup(signup_app):
     assert (await app.client.get("/auth/config")).json()["signup_enabled"] is True
     app.config.gateway_signup_open = False
     assert (await app.client.get("/auth/config")).json()["signup_enabled"] is False
+
+
+async def test_auth_config_offers_signup_on_the_web_behind_its_flag(signup_app):
+    app = signup_app
+    assert (await app.client.get("/auth/config")).json()["web_signup_enabled"] is False
+    app.config.gateway_onboarding_enabled = True
+    assert (await app.client.get("/auth/config")).json()["web_signup_enabled"] is True
+    app.config.gateway_signup_open = False
+    assert (await app.client.get("/auth/config")).json()["web_signup_enabled"] is False
 
 
 async def test_disabled_signup_is_refused(signup_app):
@@ -738,3 +748,52 @@ async def test_the_owner_stopping_and_starting_their_machine_is_reported(
     assert reported.events("cloud_machine_stopped") == [{}]
     assert reported.events("cloud_machine_started") == [{"stopped_by": "owner"}]
     assert reported.events("cloud_machine_woken") == []
+
+
+async def _plain_user(app, email: str) -> User:
+    with tenant_scope(TENANT_ZERO_ID):
+        async with app.factory() as session:
+            user = User(name=email.split("@")[0], email=email, role="user")
+            await UserStore().create(session, user)
+            await session.commit()
+            return user
+
+
+async def test_a_sign_in_warms_the_machine_where_getting_started_on_the_web_is_on(
+    signup_app,
+):
+    app = signup_app
+    user = await _plain_user(app, "sso@example.com")
+    settings = app.app.state.hosted_controller_settings
+
+    await hosted_machines.warm_after_sign_in(
+        app.factory, user.id, TENANT_ZERO_ID, app.config, settings
+    )
+    assert await _machines(app) == []
+
+    app.config.gateway_onboarding_enabled = True
+    await hosted_machines.warm_after_sign_in(
+        app.factory, user.id, None, app.config, settings
+    )
+    assert await _machines(app) == []
+
+    await hosted_machines.warm_after_sign_in(
+        app.factory, user.id, TENANT_ZERO_ID, app.config, settings
+    )
+    (machine,) = await _machines(app)
+    assert (machine.owner_id, machine.desired_state) == (user.id, "running")
+
+
+async def test_a_sign_in_that_cannot_have_a_machine_still_signs_in(signup_app):
+    app = signup_app
+    app.config.gateway_onboarding_enabled = True
+    app.config.hosted_launch_capacity = 0
+    user = await _plain_user(app, "sso@example.com")
+    await hosted_machines.warm_after_sign_in(
+        app.factory,
+        user.id,
+        TENANT_ZERO_ID,
+        app.config,
+        app.app.state.hosted_controller_settings,
+    )
+    assert await _machines(app) == []

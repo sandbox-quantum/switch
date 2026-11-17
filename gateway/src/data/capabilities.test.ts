@@ -57,6 +57,9 @@ describe("featureFlagsFrom", () => {
       organization_connector_apps: false,
       switch_buddy: false,
       gateway_chats: false,
+      gateway_onboarding: false,
+      hosted_agents: false,
+      buddy_slack_handoff: false,
     });
   });
 });

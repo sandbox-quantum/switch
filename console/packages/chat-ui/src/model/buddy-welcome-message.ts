@@ -1,4 +1,4 @@
-import { platformLogoMarkdown } from '@switch-console/chat-ui/model/platform-logo';
+import { platformLogoMarkdown } from './platform-logo';
 
 /** The messaging apps the welcome names, each with its logo. */
 const PLATFORMS: { type: string; name: string }[] = [

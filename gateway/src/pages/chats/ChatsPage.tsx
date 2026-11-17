@@ -12,6 +12,8 @@ import { ChatRow, RoomRow, UnsavedChatRow } from "@switch-console/chat-ui/compon
 import { NewRoomRow } from "@switch-console/chat-ui/components/new-room-row";
 import { RoomAppChips } from "@switch-console/chat-ui/components/room-app-chips";
 import type { ChatSummary } from "@switch-console/chat-ui/contracts/chats";
+import { isBuddy } from "@switch-console/chat-ui/model/buddy";
+import { buddySetupCardsEnabled } from "@switch-console/chat-ui/model/buddy-setup-step";
 import { AgentAvatar, useChatHost, useOptionalChatHost } from "@switch-console/chat-ui/host";
 import {
   agentConversations,
@@ -42,6 +44,8 @@ import {
 } from "react-router";
 import { type AgentListEntry, fetchAgent, fetchRoom, loadAgents, loadRooms } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
+import { RoomChat } from "./RoomChat";
+import { WebBuddySetupCards } from "./WebBuddySetupCards";
 import { useWebChats } from "./WebChatHost";
 import { webChatsClient, webFailures } from "./webChatClient";
 import { WEB_SERVER_ID } from "./webServer";
@@ -135,12 +139,20 @@ const ROOM_APP_KEY = "gateway.chats.roomApp";
 type Tab = "agents" | "rooms";
 
 /**
+ * How often the lists of agents and rooms are read again while the page is
+ * open: an agent or a room made elsewhere (switch-buddy running a template,
+ * say) carries no chat event to the person, so it shows within seconds, and
+ * on coming back to the tab.
+ */
+const KEEP_FRESH = { refetchInterval: 10_000, refetchOnWindowFocus: true } as const;
+
+/**
  * The rooms the Chats page lists, as Console's sidebar does: the person's
  * rooms but their 1-1 chats with agents (those are under each agent), and the
  * group chats they are in.
  */
 function useListedRooms(chats: ChatsStore): ListedRoom[] | null {
-  const rooms = useQuery({ queryKey: ["chat-rooms"], queryFn: loadRooms });
+  const rooms = useQuery({ queryKey: ["chat-rooms"], queryFn: loadRooms, ...KEEP_FRESH });
   if (!rooms.data) return null;
   const listed: ListedRoom[] = rooms.data
     .filter(
@@ -243,12 +255,7 @@ const RoomList = observer(function RoomList({
 /** A room opened from the Rooms list: its conversation when it is one of the person's chats. */
 const RoomPane = observer(function RoomPane({ roomId }: { roomId: string }) {
   const { chats } = useChatHost();
-  if (chats.chat(roomId))
-    return (
-      <div className="relative flex min-w-0 flex-1 flex-col">
-        <ChatPanel key={roomId} serverId={serverId} roomId={roomId} />
-      </div>
-    );
+  if (chats.chat(roomId)) return <RoomChat key={roomId} serverId={serverId} roomId={roomId} />;
   if (chats.userId === null && !chats.listError)
     return (
       <Typography color="text.secondary" sx={{ m: "auto" }}>
@@ -290,6 +297,7 @@ function useAgentRooms(agentId: string) {
         archived: room.archived,
       }));
     },
+    ...KEEP_FRESH,
   });
 }
 
@@ -299,13 +307,17 @@ function useAgentRooms(agentId: string) {
  * conversation from here, as they could from Console.
  */
 function NotYourChat({ roomId }: { roomId: string }) {
-  const { chats } = useChatHost();
+  const host = useChatHost();
+  const { chats } = host;
   const userId = useAuth().user?.id ?? null;
   const room = useQuery({ queryKey: ["chat-room", roomId], queryFn: () => fetchRoom(roomId) });
   const [joining, setJoining] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const joinable =
     room.data?.can_manage === true && room.data.bridge_id === null && userId !== null;
+  // A room on a messaging app is talked in there, as Console opens it there.
+  const app = room.data?.bridge_id ? host.bridgePlatformLabel(room.data.bridge_type ?? null) : null;
+  const channelUrl = room.data?.external_channel_url ?? null;
   const join = async () => {
     setJoining(true);
     setError(null);
@@ -323,11 +335,15 @@ function NotYourChat({ roomId }: { roomId: string }) {
   return (
     <Stack sx={{ flex: 1, alignItems: "center", justifyContent: "center", gap: 1.5, p: 4 }}>
       {room.data?.name && <Typography variant="h6">{room.data.name}</Typography>}
-      <Typography sx={{ fontWeight: 600 }}>This room isn't one of your chats</Typography>
+      <Typography sx={{ fontWeight: 600 }}>
+        {app ? `This room's conversation is on ${app}` : "This room isn't one of your chats"}
+      </Typography>
       <Typography color="text.secondary" sx={{ maxWidth: 420, textAlign: "center" }}>
-        {joinable
-          ? "You manage this room, so you can join its conversation."
-          : "Being able to see a room doesn't let you read its conversation. Ask its owner to add you."}
+        {app
+          ? `Its people and agents talk in its ${app} channel. Open it there to read and join in.`
+          : joinable
+            ? "You manage this room, so you can join its conversation."
+            : "Being able to see a room doesn't let you read its conversation. Ask its owner to add you."}
       </Typography>
       {error && <Typography color="error">{error}</Typography>}
       <Stack direction="row" spacing={1}>
@@ -336,12 +352,22 @@ function NotYourChat({ roomId }: { roomId: string }) {
             Join the conversation
           </Button>
         )}
+        {app && channelUrl && (
+          <Button variant="contained" href={channelUrl} target="_blank" rel="noopener noreferrer">
+            Open in {app}
+          </Button>
+        )}
         <Button component={RouterLink} to={`/rooms/${encodeURIComponent(roomId)}`}>
           Open the room's page
         </Button>
       </Stack>
     </Stack>
   );
+}
+
+/** The buddy's Welcome chat, where its chat-app tiles are drawn: the direct chat named so, on no messaging app. */
+function isWelcomeChat(chat: ChatSummary | undefined): boolean {
+  return chat !== undefined && chat.name === "Welcome" && chat.bridgeType === null;
 }
 
 /**
@@ -355,7 +381,9 @@ const AgentPage = observer(function AgentPage({ agent }: { agent: AgentListEntry
   const web = useWebChats()!;
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
-  const userId = useAuth().user?.id ?? null;
+  const { user, capabilities } = useAuth();
+  const userId = user?.id ?? null;
+  const setupCards = buddySetupCardsEnabled(capabilities.features);
   const agentId = agent.id;
   const agentRooms = useAgentRooms(agentId);
   const { direct, rooms } = agentConversations(
@@ -481,12 +509,26 @@ const AgentPage = observer(function AgentPage({ agent }: { agent: AgentListEntry
       <div className="relative flex min-w-0 flex-1 flex-col">
         {shownRoom ? (
           chats.chat(shownRoom) ? (
-            <ChatPanel key={shownRoom} serverId={serverId} roomId={shownRoom} />
+            <RoomChat key={shownRoom} serverId={serverId} roomId={shownRoom} />
           ) : listed ? (
             <NotYourChat roomId={shownRoom} />
           ) : null
         ) : roomId ? (
-          <ChatPanel key={roomId} serverId={serverId} roomId={roomId} />
+          <ChatPanel
+            key={roomId}
+            serverId={serverId}
+            roomId={roomId}
+            afterMessages={
+              setupCards && isBuddy(agent) && isWelcomeChat(chats.chat(roomId)) ? (
+                <WebBuddySetupCards
+                  serverId={serverId}
+                  roomId={roomId}
+                  agentId={agentId}
+                  agentName={agent.name}
+                />
+              ) : null
+            }
+          />
         ) : listed ? (
           <Stack sx={{ flex: 1, alignItems: "center", justifyContent: "center", gap: 1 }}>
             <Typography color="text.secondary">No chat open</Typography>
@@ -527,7 +569,7 @@ const Chats = observer(function Chats() {
   const inRooms = useLocation().pathname.startsWith("/chats/rooms/");
   const roomId = inRooms ? null : (linkedRoomId ?? null);
   const shownRoom = inRooms ? (linkedRoomId ?? null) : null;
-  const agents = useQuery({ queryKey: ["chat-agents"], queryFn: loadAgents });
+  const agents = useQuery({ queryKey: ["chat-agents"], queryFn: loadAgents, ...KEEP_FRESH });
   const { chats } = useChatHost();
   const userId = useAuth().user?.id ?? null;
   const rooms = useListedRooms(chats);
