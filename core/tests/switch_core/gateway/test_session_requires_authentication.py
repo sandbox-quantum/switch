@@ -73,6 +73,15 @@ _ROUTES_WITH_NO_TENANT_BOUND = {
     # "Sign out of all devices" moves the caller's `users` row on, which has no
     # tenant, and must work for a caller with no workspace selected.
     ("POST", "/auth/sessions/revoke"),
+    # Signing out of one session records its id in `revoked_sessions`, which
+    # belongs to no workspace, and needs no valid session to clear a cookie.
+    ("POST", "/auth/logout"),
+    # A browser opened from Switch Console, which may hold no session yet,
+    # asks whose sign-in link it holds and redeems it. Both read the global
+    # `browser_handoffs` and `users`; the workspace the link names is read,
+    # and its audit event written, in a `tenant_session` of its own.
+    ("POST", "/auth/handoff/peek"),
+    ("POST", "/auth/handoff/redeem"),
 }
 
 # Every route that does not resolve a tenant, for any reason. `get_current_user`
@@ -105,6 +114,11 @@ _ROUTES_THAT_NEVER_BIND_A_TENANT = {
     ("POST", "/auth/login"),
     ("POST", "/auth/signup"),
     ("POST", "/auth/logout"),
+    # Switch Console's sign-in link for a browser: the browser has no session
+    # yet, so nothing to bind from. The link itself names the workspace its
+    # new session selects, which every request re-checks.
+    ("POST", "/auth/handoff/peek"),
+    ("POST", "/auth/handoff/redeem"),
     # Signing out of all devices acts on the account, not a workspace, and a
     # caller with several and none selected must be able to reach it.
     ("POST", "/auth/sessions/revoke"),
@@ -134,10 +148,18 @@ _ROUTES_THAT_NEVER_BIND_A_TENANT = {
     # The same for organizations: list the caller's, make one.
     ("GET", "/organizations"),
     ("POST", "/organizations"),
+    # The organizations the caller is left in with none of their workspaces,
+    # and leaving one: there is no workspace of theirs to bind. Each opens an
+    # `organization_session` of its own — see `leave_organization`.
+    ("GET", "/organizations/without-workspace"),
+    ("POST", "/organizations/{organization_id}/leave"),
     # Accepting an invitation binds the tenant the *token* names, which is
     # neither the one on the caller's session nor one they belong to yet. It
     # opens its own `tenant_session` around that id — see `accept_invitation`.
     ("POST", "/invitations/accept"),
+    # Previewing one opens a `tenant_session` around the same tenant, and
+    # changes nothing — see `preview_invitation`.
+    ("POST", "/invitations/preview"),
     # Invitations addressed to the caller are in workspaces they are not in, so
     # no session of theirs is bound to one. Listing opens a `tenant_session`
     # per tenant `tenants_with_invitations_for` names; accepting opens one

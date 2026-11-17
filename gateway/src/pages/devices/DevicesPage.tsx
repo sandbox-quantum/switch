@@ -1,6 +1,7 @@
 import AddCircleOutline from "@mui/icons-material/AddCircleOutline";
 import DeleteOutline from "@mui/icons-material/DeleteOutline";
 import EditOutlined from "@mui/icons-material/EditOutlined";
+import InfoOutlined from "@mui/icons-material/InfoOutlined";
 import LinkOffOutlined from "@mui/icons-material/LinkOffOutlined";
 import PauseCircleOutline from "@mui/icons-material/PauseCircleOutline";
 import PlayCircleOutline from "@mui/icons-material/PlayCircleOutline";
@@ -22,6 +23,7 @@ import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } fro
 import ConfirmDialog from "../../components/ConfirmDialog";
 import DataTable, { TableEmptyState } from "../../components/DataTable";
 import InfoTip from "../../components/InfoTip";
+import SuccessSnackbar from "../../components/SuccessSnackbar";
 import PageBanner from "../../components/PageBanner";
 import type { RowAction } from "../../components/RowActionsMenu";
 import { useAuth } from "../../data/AuthContext";
@@ -52,6 +54,7 @@ import AddMachineDialog from "../machines/AddMachineDialog";
 import EditMachineDialog from "../machines/EditMachineDialog";
 import ManagedAgentDialog from "../machines/ManagedAgentDialog";
 import { cloudPresentation } from "./cloudMachine";
+import DeviceDetailsDialog from "./DeviceDetailsDialog";
 import DevicesTable, { type DeviceTableRow } from "./DevicesTable";
 import ManagedAgentsTable, { type ManagedAgentTableRow, managedAgentRows } from "./ManagedAgentsTable";
 
@@ -119,6 +122,11 @@ export function withCloud(
       providers: [],
       agents_total: 0,
       agents_running: 0,
+      connection: null,
+      release: null,
+      update: null,
+      updated_by_console: false,
+      provider_reports: [],
       can_edit: false,
       can_recheck: false,
       can_remove: false,
@@ -182,6 +190,8 @@ function Devices({
   // its words; the `…Open` flags alone open and close them.
   const [removing, setRemoving] = useState<DeviceTableRow | null>(null);
   const [removeOpen, setRemoveOpen] = useState(false);
+  const [detailsOf, setDetailsOf] = useState<DeviceTableRow | null>(null);
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const [unmanaging, setUnmanaging] = useState<ManagedAgentTableRow | null>(null);
   const [unmanageOpen, setUnmanageOpen] = useState(false);
   const [deleting, setDeleting] = useState<ManagedAgentTableRow | null>(null);
@@ -268,6 +278,17 @@ function Devices({
     (row: DeviceTableRow): RowAction[] => {
       const actions: RowAction[] = [];
       const cloudOfYours = row.type === "cloud" && row.owner_id === userId;
+      // A cloud device not yet enrolled here has reported nothing to show.
+      if (!row.id.startsWith("cloud:")) {
+        actions.push({
+          label: "Details",
+          icon: <InfoOutlined fontSize="small" />,
+          onClick: () => {
+            setDetailsOf(row);
+            setDetailsOpen(true);
+          },
+        });
+      }
       if (row.can_recheck) {
         actions.push({
           label: "Refresh",
@@ -287,6 +308,25 @@ function Devices({
                   }),
                 ),
               ),
+            ),
+        });
+      }
+      if (row.can_recheck && row.type !== "cloud") {
+        // The controller process itself, for a fix only a fresh start picks
+        // up. Its agents stop and start again with it. A cloud device has
+        // its own lifecycle actions instead.
+        actions.push({
+          label: "Restart device",
+          icon: <RestartAltOutlined fontSize="small" />,
+          disabledReason: unreachable(row.name, row.state),
+          onClick: () =>
+            void act(`Asked ${row.name} to restart. Its agents come back with it.`, () =>
+              createOperation({
+                controller_id: row.id,
+                agent_id: null,
+                kind: "controller.restart",
+                params: {},
+              }),
             ),
         });
       }
@@ -420,7 +460,14 @@ function Devices({
         field: "kind",
         headerName: "Operation",
         width: 160,
-        valueGetter: (value) => (value === "agent.restart" ? "Restart" : value === "provider.recheck" ? "Re-check" : value),
+        valueGetter: (value) =>
+          value === "agent.restart"
+            ? "Restart"
+            : value === "provider.recheck"
+              ? "Re-check"
+              : value === "controller.restart"
+                ? "Restart device"
+                : value,
       },
       {
         field: "target",
@@ -466,11 +513,7 @@ function Devices({
     </Card>
   );
   const emptyAgents = (
-    <Card variant="outlined" sx={{ borderRadius: "16px" }}>
-      <Box sx={{ px: 3, py: 6, textAlign: "center" }}>
-        <TableEmptyState title="No managed agents yet">Place one on a device to get started.</TableEmptyState>
-      </Box>
-    </Card>
+    <TableEmptyState title="No managed agents yet">Place one on a device to get started.</TableEmptyState>
   );
 
   let body: ReactNode;
@@ -492,7 +535,13 @@ function Devices({
   } else {
     body = (
       <Stack spacing={4}>
-        <DevicesTable rows={deviceRows} showOwner={showOwner} actionsFor={deviceActions} emptyState={emptyDevices} />
+        <DevicesTable
+          rows={deviceRows}
+          showOwner={showOwner}
+          providerLabel={label}
+          actionsFor={deviceActions}
+          emptyState={emptyDevices}
+        />
         <Box>
           <Stack direction="row" spacing={2} sx={{ alignItems: "center", justifyContent: "space-between", mb: 2 }}>
             <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
@@ -549,8 +598,8 @@ function Devices({
           <Typography variant="h5">Devices</Typography>
           <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
             {showOwner
-              ? `The devices that run agents in ${workspace}.`
-              : `Your devices that run agents in ${workspace}.`}
+              ? `Computers running an agents controller in ${workspace}.`
+              : `Your computers running an agents controller in ${workspace}.`}
           </Typography>
         </Box>
         <Button variant="contained" startIcon={<AddCircleOutline />} onClick={() => setAddOpen(true)}>
@@ -575,7 +624,7 @@ function Devices({
           <PageBanner tone="warning">Couldn't read your cloud device, so it may be missing: {cloudError}</PageBanner>
         )}
         {providersError !== null && <PageBanner tone="warning">{providersError}</PageBanner>}
-        {notice && (
+        {notice && notice.severity !== "success" && (
           <Alert severity={notice.severity} onClose={() => setNotice(null)}>
             {notice.text}
           </Alert>
@@ -593,6 +642,14 @@ function Devices({
           setNotice({ severity: "success", text: `Saved ${saved.name}.` });
           void load();
         }}
+      />
+
+      <DeviceDetailsDialog
+        open={detailsOpen}
+        // The row as it is now, so the dialog follows each refresh.
+        device={deviceRows.find((row) => row.id === detailsOf?.id) ?? detailsOf}
+        providerLabel={label}
+        onClose={() => setDetailsOpen(false)}
       />
 
       <ManagedAgentDialog
@@ -689,6 +746,10 @@ function Devices({
               : { severity: "success", text: `Deleted ${name}.` },
           );
         }}
+      />
+      <SuccessSnackbar
+        message={notice?.severity === "success" ? notice.text : null}
+        onClose={() => setNotice(null)}
       />
     </Box>
   );

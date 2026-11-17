@@ -51,7 +51,12 @@ export default function RoomResourcesSection({
   inRoom,
   viewerId,
 }: Props) {
-  const { data: roomPackages, refetch: refetchPackages } = useRoomPackages(roomId);
+  const {
+    data: roomPackages,
+    loading: packagesLoading,
+    error: packagesError,
+    refetch: refetchPackages,
+  } = useRoomPackages(roomId);
   const attachedPackageIds = useMemo(
     () => new Set((roomPackages ?? []).map((p) => p.id)),
     [roomPackages],
@@ -97,6 +102,8 @@ export default function RoomResourcesSection({
         inRoom={inRoom}
         viewerId={viewerId}
         packages={roomPackages ?? []}
+        loading={packagesLoading}
+        loadError={packagesError}
         refetch={refetchPackages}
       />
     </Stack>
@@ -204,11 +211,11 @@ function RoomReferences({
       <Typography variant="body2" sx={{ fontWeight: 500 }}>
         References
       </Typography>
-      {error && <Alert severity="error">{error}</Alert>}
+      {error && <Alert severity="error">Couldn't load the references: {error}</Alert>}
       {error_ && <Alert severity="error">{error_}</Alert>}
       {loading ? (
         <CircularProgress size={20} />
-      ) : (attached ?? []).length === 0 ? (
+      ) : error ? null : (attached ?? []).length === 0 ? (
         <Typography variant="body2" color="text.secondary">
           No references attached.
         </Typography>
@@ -335,11 +342,11 @@ function RoomDocuments({
       <Typography variant="body2" sx={{ fontWeight: 500 }}>
         Documents
       </Typography>
-      {error && <Alert severity="error">{error}</Alert>}
+      {error && <Alert severity="error">Couldn't load the documents: {error}</Alert>}
       {error_ && <Alert severity="error">{error_}</Alert>}
       {loading ? (
         <CircularProgress size={20} />
-      ) : (attached ?? []).length === 0 ? (
+      ) : error ? null : (attached ?? []).length === 0 ? (
         <Typography variant="body2" color="text.secondary">
           No documents attached.
         </Typography>
@@ -472,6 +479,8 @@ function RoomPackages({
   inRoom,
   viewerId,
   packages,
+  loading,
+  loadError,
   refetch,
 }: {
   roomId: string;
@@ -486,6 +495,8 @@ function RoomPackages({
     can_read?: boolean;
     owner_id?: string;
   }>;
+  loading: boolean;
+  loadError: string | null;
   refetch: () => void;
 }) {
   const navigate = useNavigate();
@@ -526,8 +537,11 @@ function RoomPackages({
       <Typography variant="body2" sx={{ fontWeight: 500 }}>
         Packages
       </Typography>
+      {loadError && <Alert severity="error">Couldn't load the packages: {loadError}</Alert>}
       {error && <Alert severity="error">{error}</Alert>}
-      {packages.length === 0 ? (
+      {loading ? (
+        <CircularProgress size={20} />
+      ) : loadError ? null : packages.length === 0 ? (
         <Typography variant="body2" color="text.secondary">
           No packages attached.
         </Typography>
@@ -627,7 +641,7 @@ interface PickerProps {
 }
 
 function ReferencePicker({ attachedIds, onClose, onSubmit }: PickerProps) {
-  const { data, loading } = useReferences();
+  const { data, loading, error } = useReferences();
   const options = useMemo<PickerOption[]>(
     () =>
       (data ?? [])
@@ -655,6 +669,7 @@ function ReferencePicker({ attachedIds, onClose, onSubmit }: PickerProps) {
       submitLabel="Attach"
       options={options}
       loading={loading}
+      loadError={error}
       onClose={onClose}
       onSubmit={onSubmit}
     />
@@ -662,7 +677,7 @@ function ReferencePicker({ attachedIds, onClose, onSubmit }: PickerProps) {
 }
 
 function DocumentPicker({ attachedIds, onClose, onSubmit }: PickerProps) {
-  const { data, loading } = useDocuments();
+  const { data, loading, error } = useDocuments();
   const options = useMemo<PickerOption[]>(
     () =>
       (data ?? [])
@@ -682,6 +697,7 @@ function DocumentPicker({ attachedIds, onClose, onSubmit }: PickerProps) {
       submitLabel="Attach"
       options={options}
       loading={loading}
+      loadError={error}
       onClose={onClose}
       onSubmit={onSubmit}
     />
@@ -689,7 +705,7 @@ function DocumentPicker({ attachedIds, onClose, onSubmit }: PickerProps) {
 }
 
 function PackagePicker({ attachedIds, onClose, onSubmit }: PickerProps) {
-  const { data, loading } = usePackages();
+  const { data, loading, error } = usePackages();
   const options = useMemo<PickerOption[]>(
     () =>
       (data ?? [])
@@ -710,6 +726,7 @@ function PackagePicker({ attachedIds, onClose, onSubmit }: PickerProps) {
       submitLabel="Attach"
       options={options}
       loading={loading}
+      loadError={error}
       onClose={onClose}
       onSubmit={onSubmit}
     />

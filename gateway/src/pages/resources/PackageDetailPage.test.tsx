@@ -68,6 +68,17 @@ describe("PackageDetailPage", () => {
     await screen.findByDisplayValue("Onboarding");
     expect(screen.queryByRole("button", { name: "Transfer ownership" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Delete package" })).toBeNull();
+    expect(screen.queryByText(/Only they or a workspace admin can change it/)).toBeNull();
+  });
+
+  it("says whose a package the viewer can't change is", async () => {
+    answerFetch({
+      "GET /packages/p1": [200, { ...PKG, owner_id: "u2", owner_name: "Grace", can_edit: false, can_manage: false }],
+      ...READS,
+    });
+    show();
+
+    expect(await screen.findByText("This package belongs to Grace. Only they or a workspace admin can change it.")).toBeTruthy();
   });
 
   it("asks before deleting, with nothing said about packages a package is not in", async () => {

@@ -18,6 +18,7 @@ import asyncio
 import contextlib
 import importlib.util
 import json
+import secrets
 import tempfile
 import uuid
 from dataclasses import dataclass
@@ -242,6 +243,9 @@ class _Bridges:
     def supports_private_channels(self, bridge_type: str) -> bool:
         return True
 
+    def typed_commands(self, bridge_type, connection_config):
+        return {}
+
     def channel_creation_blocker(
         self, bridge_type: str, connection_config: object
     ) -> str | None:
@@ -252,6 +256,9 @@ class _Bridges:
 
     def supports_directory_search(self, bridge_type: str) -> bool:
         return True
+
+    def directory_search_hint(self, bridge_id: str, bridge_type: str) -> str:
+        return "Your name or handle"
 
     def receives_webhooks(self, bridge_type: str) -> bool:
         return False
@@ -488,6 +495,7 @@ class People:
             TENANT,
             session_version=0,
             auth_time=datetime.now(UTC),
+            session_id=secrets.token_urlsafe(16),
         )
         return {"cookie": f"switch_auth={token}"}
 

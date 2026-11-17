@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import unicodedata
 from datetime import datetime
 from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
@@ -8,6 +7,7 @@ from urllib.parse import urlsplit
 from pydantic import (
     AfterValidator,
     BaseModel,
+    BeforeValidator,
     ConfigDict,
     Field,
     StringConstraints,
@@ -30,6 +30,8 @@ from switch_core.db.models import (
     MAX_MESSAGE_RETENTION_DAYS,
     UsageMetric,
 )
+from switch_core.names import Name, OneLineName, no_hidden_characters
+from switch_core.template_use_cases import USE_CASES, UseCase, is_use_case
 
 # ── Rooms ─────────────────────────────────────────────────────────────────────
 
@@ -212,11 +214,13 @@ class RoomDetail(RoomSummary):
     # when it has not seen one. A room not named after its channel can take
     # it with `POST /rooms/{id}/sync-name`.
     linked_channel_name: str | None = None
-    auto_route: RoomAutoRoute
+    # Null on a server with the `decision_routing` flag off, where rooms have
+    # no auto-route to show.
+    auto_route: RoomAutoRoute | None
 
 
 class RoomCreateRequest(BaseModel):
-    name: str
+    name: Name
     description: str
     instructions: str | None = None
     channel_type: str | None = None
@@ -244,7 +248,7 @@ class RoomCreateRequest(BaseModel):
 
 
 class RoomUpdateRequest(BaseModel):
-    name: str | None = None
+    name: Name | None = None
     description: str | None = None
     instructions: str | None = None
     admin_mode: bool | None = None
@@ -311,11 +315,20 @@ class RoomDeleteResponse(BaseModel):
     channel: RetireOutcome | None
 
 
+class BulkRoomRefusal(BaseModel):
+    """A room a bulk action left alone, and why: in the words the route for
+    that one room would refuse it with."""
+
+    room_id: str
+    reason: str
+
+
 class BulkDeleteResponse(BaseModel):
     deleted: int
     # Per deleted room id, what became of its platform channel. Rooms without
     # one are absent.
     channels: dict[str, RetireOutcome]
+    refused: list[BulkRoomRefusal]
 
 
 class BulkArchiveRequest(BaseModel):
@@ -326,6 +339,7 @@ class BulkArchiveRequest(BaseModel):
 
 class BulkArchiveResponse(BaseModel):
     updated: int
+    refused: list[BulkRoomRefusal]
 
 
 # ── Room groups ───────────────────────────────────────────────────────────────
@@ -343,7 +357,7 @@ class RoomGroupDetail(BaseModel):
 
 
 class RoomGroupCreateRequest(BaseModel):
-    name: str
+    name: Name
     description: str | None = None
     color: str | None = None
     parent_group_id: str | None = None
@@ -364,7 +378,7 @@ class RoomGroupUpdateRequest(BaseModel):
     # the request body, so callers can reparent to a group, reparent to top-level
     # (`null`), or leave the parent unchanged (omit the key entirely). The
     # endpoint distinguishes these via `model_fields_set`.
-    name: str | None = None
+    name: Name | None = None
     description: str | None = None
     color: str | None = None
     parent_group_id: str | None = None
@@ -435,6 +449,9 @@ class AgentRoomMembership(BaseModel):
     archived: bool
     status: str
     room_role: str | None
+    # Whether the agent has had a turn in this room: someone addressed it there
+    # and one of its sessions took the message up.
+    answered_here: bool
 
 
 class AgentSessionDetail(BaseModel):
@@ -486,7 +503,8 @@ class AgentCapabilities(BaseModel):
     """
 
     # Edit its icon, display name, description and who may address it, and
-    # delete it: its owner or a workspace admin.
+    # delete it: its owner or a workspace admin. Only its owner lets more
+    # people or agents address it (`can_widen_addressing`).
     can_manage: bool
     # Edit its options: `can_manage`, for an agent Switch Console runs from a
     # spec it knows. Any other agent has no options to edit.
@@ -540,6 +558,9 @@ class GatewayAgentDetail(AgentDetail, AgentCapabilities):
     # Its owner only, not an admin: turning on that it may manage its
     # owner's agents.
     can_change_manage_agents: bool
+    # Its owner only: letting more people or agents address it. Anyone with
+    # `can_manage` may narrow who can.
+    can_widen_addressing: bool
     # Granting it service access: its owner only, since a grant is made on
     # the owner's own connections, while service connections are switched on,
     # and for an agent Switch Console runs from a spec it knows, since nothing
@@ -895,12 +916,21 @@ class BridgeDetail(BaseModel):
     # nobody has used yet — a question worth not asking rather than asking
     # badly.
     directory_search_supported: bool = True
+    # What the account search can find a person by on this connection, as its
+    # field's placeholder ("Your name or handle"). Only what really matches:
+    # Slack offers email only when the app may read addresses.
+    directory_search_hint: str
     # Whether this connection receives its platform's events on an address of
     # its own, and that address — the one the operator gives the platform. The
     # address is None where the deployment has not set `MESSAGING_PUBLIC_URL`,
     # which is then what stands between this connection and its events.
     receives_webhooks: bool = False
     webhook_url: str | None = None
+    # The commands a person is told to type here, keyed by command name, as
+    # this platform spells them, with `{agent}` (an agent's name) and `{code}`
+    # (a link code) left for the client to fill in. Clients show these rather
+    # than keeping a per-platform list of their own.
+    commands: dict[str, str]
     # What the caller may do with it: change its settings, Teams placement
     # and confirmation rules, or delete it — a workspace admin. That chats
     # still connected through it must be disconnected first is answered when
@@ -1031,6 +1061,9 @@ class ExternalUserSummary(BaseModel):
     bridge_id: str
     external_user_id: str
     external_username: str
+    # When Switch first saw this account, so a client waiting for someone to
+    # say hello to the bot can tell a new arrival from the people it knew.
+    first_seen_at: str
     # Everyone who has claimed this platform account. A list, not one user:
     # claiming is not exclusive, so an account shared by several Switch users
     # satisfies an owner rule for any of them.
@@ -1048,6 +1081,10 @@ class DirectoryUserSummary(BaseModel):
     username: str
     display_name: str
     email: str | None = None
+    # False where `username` is a handle Switch made up for a person the
+    # platform gave none (a Telegram account without a username): shown by
+    # `display_name` alone, never as `@username`.
+    has_handle: bool = True
     # Set when this person has already spoken on the bridge and so has an
     # ExternalUser row; claiming reuses it rather than creating a duplicate.
     known_external_user_id: str | None = None
@@ -1115,6 +1152,12 @@ class LinkedIdentity(BaseModel):
     bridge_type: str
     external_user_id: str
     external_username: str
+    # How to name the account: the person's name as the platform shows it,
+    # and whether `external_username` is a handle of theirs rather than one
+    # Switch made up (a Telegram account without a username), which is then
+    # never shown as `@external_username`.
+    external_display_name: str
+    has_handle: bool
     # False for a link made before accounts had to confirm them: it works,
     # and Console asks its owner to confirm it.
     verified: bool
@@ -1141,6 +1184,9 @@ class PendingIdentity(BaseModel):
     bridge_type: str
     external_user_id: str
     external_username: str
+    # As on `LinkedIdentity`.
+    external_display_name: str
+    has_handle: bool
     # Who started it, when that was someone else (an admin); null when it was
     # the user themselves or the admin has since been deleted.
     requested_by_name: str | None
@@ -1238,13 +1284,15 @@ class OperatorUserResponse(UserResponse):
     """An account as the deployment operator manages it. `can_delete`: not
     their own, which they delete from their account settings, and not the
     server's administrator account (`accounts.deletion.is_server_administrator`).
-    What else stands in the way is answered when it is asked."""
+    `can_demote`: another platform operator, on the same terms. What else
+    stands in the way is answered when it is asked."""
 
     can_delete: bool
+    can_demote: bool
 
 
 class CreateUserRequest(BaseModel):
-    name: str
+    name: Name
     email: Email
     password: Password
     # Only the exact string "admin" grants operator rights (`require_admin`),
@@ -1263,7 +1311,9 @@ class UpdateMeRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     name: Annotated[
-        str, StringConstraints(strip_whitespace=True, min_length=1, max_length=255)
+        str,
+        StringConstraints(strip_whitespace=True, min_length=1, max_length=255),
+        AfterValidator(no_hidden_characters),
     ]
 
 
@@ -1287,7 +1337,9 @@ class SignupRequest(BaseModel):
     password: Password
     display_name: (
         Annotated[
-            str, StringConstraints(strip_whitespace=True, min_length=1, max_length=255)
+            str,
+            StringConstraints(strip_whitespace=True, min_length=1, max_length=255),
+            AfterValidator(no_hidden_characters),
         ]
         | None
     ) = None
@@ -1406,13 +1458,13 @@ class CurrentTenantResponse(TenantMembershipResponse):
 
 
 class TenantCreateRequest(BaseModel):
-    name: str
+    name: OneLineName
 
 
 class OrganizationCreateRequest(BaseModel):
-    name: str
+    name: OneLineName
     # The first workspace's name; the organization's when left out.
-    workspace_name: str | None = None
+    workspace_name: OneLineName | None = None
 
 
 class OrganizationSummary(BaseModel):
@@ -1422,6 +1474,14 @@ class OrganizationSummary(BaseModel):
     slug: str
     name: str
     role: str
+
+
+class OrganizationWithoutWorkspace(BaseModel):
+    """An organization the caller is still a member of, though in none of
+    its workspaces, which they may leave."""
+
+    id: str
+    name: str
 
 
 class CurrentOrganizationResponse(BaseModel):
@@ -1481,7 +1541,7 @@ class OrganizationCreateResponse(BaseModel):
 
 
 class WorkspaceCreateRequest(BaseModel):
-    name: str
+    name: OneLineName
 
 
 class TenantDeleteRequest(BaseModel):
@@ -1489,35 +1549,12 @@ class TenantDeleteRequest(BaseModel):
     name: str
 
 
-def _shown_on_one_line(name: str) -> str:
-    """A name shown on one line, as a breadcrumb or a switcher shows it: with
-    a character in it that can be seen, so it is never blank there, and no
-    control character, such as a line break, to break the line."""
-    if any(unicodedata.category(char) == "Cc" for char in name):
-        raise PydanticCustomError(
-            "control_character", "A name can't contain a line break or a tab."
-        )
-    if not any(char.isprintable() and not char.isspace() for char in name):
-        raise PydanticCustomError(
-            "nothing_visible", "A name needs at least one visible character."
-        )
-    return name
-
-
 class TenantRenameRequest(BaseModel):
-    name: Annotated[
-        str,
-        StringConstraints(strip_whitespace=True, min_length=1, max_length=255),
-        AfterValidator(_shown_on_one_line),
-    ]
+    name: OneLineName
 
 
 class OrganizationRenameRequest(BaseModel):
-    name: Annotated[
-        str,
-        StringConstraints(strip_whitespace=True, min_length=1, max_length=255),
-        AfterValidator(_shown_on_one_line),
-    ]
+    name: OneLineName
 
 
 class OrganizationRenameResponse(BaseModel):
@@ -1613,6 +1650,24 @@ class InvitationAcceptRequest(BaseModel):
     # browser history and `Referer` headers, and this one is a bearer
     # credential.
     token: str
+
+
+class InvitationAcceptResponse(TenantMembershipResponse):
+    """The workspace an accepted invitation is for, and the caller's standing
+    there. `already_member`: they were in it already with a role at least the
+    invitation's, so nothing changed and nothing was spent."""
+
+    already_member: bool
+
+
+class InvitationPreviewResponse(BaseModel):
+    """What an invitation is to, for the person about to accept it: nothing
+    beyond these three."""
+
+    workspace_name: str
+    # None only for a workspace from before organizations.
+    organization_name: str | None
+    role: str
 
 
 class AddressedInvitation(BaseModel):
@@ -1791,11 +1846,14 @@ class OrganizationMemberDetail(BaseModel):
     # operator restoring an `org_admin` included;
     # `can_grant_org_admin` too, unless the organization's members come from
     # a directory Switch cannot change; `can_remove` for its `org_admin` only.
-    # The last `org_admin`, someone still in a workspace, and a directory that
-    # wants a sign-in first are answered when it is asked.
+    # Neither for the last `org_admin`, which the `_blocked_reason` beside
+    # each says. Someone still in a workspace, and a directory that wants a
+    # sign-in first, are answered when it is asked.
     can_change_role: bool
+    change_role_blocked_reason: str | None
     can_grant_org_admin: bool
     can_remove: bool
+    remove_blocked_reason: str | None
 
 
 class OrganizationMemberListEntry(OrganizationMemberDetail):
@@ -1824,6 +1882,7 @@ class AuthConfigResponse(BaseModel):
     # authenticated everywhere (CHOO-1865).
     password_login_enabled: bool
     signup_enabled: bool
+    test_account_reset_enabled: bool
     oidc_enabled: bool
     oidc_provider_label: str | None
     # The sign-in buttons for the OIDC provider (`id`, `label`); empty for one
@@ -1889,8 +1948,9 @@ class ReferenceDetail(BaseModel):
     type: str
     name: str
     description: str
-    instructions: str
-    value: dict[str, Any]
+    # Null when `can_read` is false: what is in it is withheld.
+    instructions: str | None
+    value: dict[str, Any] | None
     attached_rooms_count: int = 0
     # Of `attached_rooms_count`, rooms the caller may not read, which are
     # never named to them. Counted only for whoever may manage the resource
@@ -1901,13 +1961,16 @@ class ReferenceDetail(BaseModel):
     # Resolved server-side, unfiltered by the type's visibility: the caller can
     # already read the raw slug. Null when the slug resolves to no type at all.
     type_display_name: str | None = None
-    # What the caller may do with it (`switch_core.authz`). `can_read`: open
-    # it — its owner, an admin, or anyone when it is publicly readable. Every
-    # route returns only what the caller may read, except a package's or a
-    # room's list, which names a private item to everyone who may read the
-    # package or room. `can_edit`: change it — its owner, an admin, or anyone
-    # when it is publicly writable. `can_manage`: delete it, change who may see
-    # or edit it, transfer it — its owner or an admin.
+    # What the caller may do with it (`switch_core.authz`). `can_read`: what
+    # is in it came with it, and its own page opens for them — true wherever it
+    # is returned whole, false only where that is withheld. Its owner, an
+    # admin, and anyone when it is publicly readable read it; so does whoever
+    # may read a room it is attached to, or a package that shares it
+    # (`can_read_in_package`). Only a package's list withholds it: someone
+    # else's private item in it, which the package's owner cannot share.
+    # `can_edit`: change it — its owner, an admin, or anyone when it is
+    # publicly writable. `can_manage`: delete it, change who may see or edit
+    # it, transfer it — its owner or an admin.
     can_read: bool
     can_edit: bool
     can_manage: bool
@@ -1917,7 +1980,7 @@ class ReferenceCreateRequest(BaseModel):
     read_visibility: str = "private"
     write_visibility: str = "private"
     type: str
-    name: str
+    name: Name
     description: str
     instructions: str
     value: dict[str, Any]
@@ -1926,7 +1989,7 @@ class ReferenceCreateRequest(BaseModel):
 class ReferenceUpdateRequest(BaseModel):
     read_visibility: str | None = None
     write_visibility: str | None = None
-    name: str | None = None
+    name: Name | None = None
     description: str | None = None
     instructions: str | None = None
     value: dict[str, Any] | None = None
@@ -2121,9 +2184,8 @@ class DocumentDetail(BaseModel):
     created_at: str
     # As on `ReferenceDetail`, and `can_transfer`, which `can_manage` gives.
     # Those three are false for a room's own document, which is changed and
-    # removed in its room, not through the library. `can_read` is whether the
-    # library opens it; the room routes say otherwise for a room's own document
-    # (`RoomDocumentDetail`).
+    # removed in its room, not through the library. A detail is always
+    # returned whole, so its `can_read` is true.
     can_read: bool
     can_edit: bool
     can_manage: bool
@@ -2136,10 +2198,9 @@ class DocumentDetail(BaseModel):
 
 
 class RoomDocumentDetail(DocumentDetail):
-    """A document as seen from a room it is in. Its `can_read` is true for a
-    room's own document, which the room opens for everyone who may read the
-    room; an attached library document keeps the library's rule, which says
-    whether its own page opens."""
+    """A document as seen from a room it is in: the room shares what is in
+    it, whether the room's own or attached, with everyone who may read the
+    room."""
 
     can_remove: bool
 
@@ -2152,7 +2213,8 @@ class DocumentSummary(BaseModel):
     write_visibility: str
     name: str
     description: str
-    instructions: str
+    # Null when `can_read` is false: what is in it is withheld.
+    instructions: str | None
     attached_rooms_count: int = 0
     # Of `attached_rooms_count`, rooms the caller may not read, which are
     # never named to them. Counted only for whoever may manage the resource
@@ -2172,7 +2234,7 @@ class DocumentSummary(BaseModel):
 
 
 class RoomDocumentSummary(DocumentSummary):
-    """A document as listed in a room it is in. `can_read` as on
+    """A document as listed in a room it is in, whole, as on
     `RoomDocumentDetail`."""
 
     can_remove: bool
@@ -2181,7 +2243,7 @@ class RoomDocumentSummary(DocumentSummary):
 class DocumentCreateRequest(BaseModel):
     read_visibility: str = "private"
     write_visibility: str = "private"
-    name: str
+    name: Name
     description: str
     instructions: str
     content: str
@@ -2190,7 +2252,7 @@ class DocumentCreateRequest(BaseModel):
 class DocumentUpdateRequest(BaseModel):
     read_visibility: str | None = None
     write_visibility: str | None = None
-    name: str | None = None
+    name: Name | None = None
     description: str | None = None
     instructions: str | None = None
     content: str | None = None
@@ -2222,10 +2284,9 @@ class PackageDetail(BaseModel):
     # (`gateway/resource_rooms.py`); for anyone else those rooms are left out.
     hidden_rooms_count: int = 0
     created_at: str
-    # Whether the caller may open the package. Every route returns only
-    # packages the caller may read, except a room's package list: a private
-    # package its owner attached is listed to every reader of the room, and the
-    # Gateway shows that one without a link.
+    # Whether the caller may open the package. Every route returns a package
+    # whole, and only to whoever may open it: those who may read it, and
+    # readers of a room it is attached to, which shares it.
     can_read: bool
     # As on `ReferenceDetail`.
     can_edit: bool
@@ -2235,7 +2296,7 @@ class PackageDetail(BaseModel):
 class PackageCreateRequest(BaseModel):
     read_visibility: str = "private"
     write_visibility: str = "private"
-    name: str
+    name: Name
     description: str
     instructions: str
 
@@ -2243,7 +2304,7 @@ class PackageCreateRequest(BaseModel):
 class PackageUpdateRequest(BaseModel):
     read_visibility: str | None = None
     write_visibility: str | None = None
-    name: str | None = None
+    name: Name | None = None
     description: str | None = None
     instructions: str | None = None
 
@@ -2282,6 +2343,12 @@ class TemplateSummary(BaseModel):
     name: str
     description: str
     kind: str
+    # What it is for (see `template_use_cases`); None when nobody said.
+    use_case: UseCase | None
+    # How many agents and rooms the document describes, conditional ones
+    # included; None for a document that does not parse.
+    agent_count: int | None
+    room_count: int | None
     read_visibility: str
     write_visibility: str
     # Comes with Switch: served by the server on every workspace, and changed
@@ -2296,8 +2363,9 @@ class TemplateSummary(BaseModel):
     # greyed Run; None when nothing stands in the way. Advice, not a refusal.
     run_blocked_reason: str | None
     # How many times it has been run in this workspace, by people and agents,
-    # since runs were first counted.
+    # since runs were first counted, and when last; None if never.
     run_count: int
+    last_run_at: datetime | None
     version: int
     size_bytes: int
     created_at: str
@@ -2311,6 +2379,9 @@ class TemplateDetail(TemplateSummary):
 class TemplateRunRecorded(BaseModel):
     template_id: str
     run_count: int
+    # False when a run of it was already counted for the caller a moment ago
+    # (`REPORTED_RUN_WINDOW`), so this report was not.
+    counted: bool
 
 
 # The document has its own budget (TEMPLATE_MAX_BYTES); these are the labels
@@ -2322,6 +2393,21 @@ TEMPLATE_DESCRIPTION_MAX = 2000
 TEMPLATE_KIND_MAX = 64
 
 
+def _known_use_case(value: object) -> object:
+    """Refuse a use case outside the list, naming the list: the type alone
+    would answer with a message that does not say which field it means."""
+    if value is not None and not is_use_case(value):
+        raise PydanticCustomError(
+            "unknown_use_case",
+            "'{value}' is not a use case. Use one of: {known}, or null for none.",
+            {"value": value, "known": ", ".join(USE_CASES)},
+        )
+    return value
+
+
+TemplateUseCase = Annotated[UseCase | None, BeforeValidator(_known_use_case)]
+
+
 class TemplateCreateRequest(BaseModel):
     # Same stance as the update request: a body naming a field this does not
     # have is a caller expecting something, and ignoring it silently answers
@@ -2331,6 +2417,7 @@ class TemplateCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=TEMPLATE_NAME_MAX)
     description: str = Field(default="", max_length=TEMPLATE_DESCRIPTION_MAX)
     kind: str = Field(default="room", min_length=1, max_length=TEMPLATE_KIND_MAX)
+    use_case: TemplateUseCase = None
     # Shared with the workspace and changed by the owner or an admin, unless said otherwise.
     read_visibility: str = "public"
     write_visibility: str = "private"
@@ -2344,6 +2431,8 @@ class TemplateUpdateRequest(BaseModel):
     description: str | None = Field(default=None, max_length=TEMPLATE_DESCRIPTION_MAX)
     kind: str | None = Field(default=None, min_length=1, max_length=TEMPLATE_KIND_MAX)
     content: str | None = Field(default=None, min_length=1)
+    # Sent as null to clear it; left out to leave it as it is.
+    use_case: TemplateUseCase = None
     read_visibility: str | None = None
     write_visibility: str | None = None
 

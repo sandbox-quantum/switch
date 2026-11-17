@@ -431,7 +431,7 @@ class TestAnArchivedWorkspace:
 
         async def current(user_id: str) -> bool:
             return await session_still_enters(
-                session_factory, UserStore(), user_id, 0, org.second
+                session_factory, UserStore(), user_id, 0, "stream-session", org.second
             )
 
         before = await current(org.bob)

@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { appendFile, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, readlink, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { isProcessAlive } from '@switch-console/agent-providers';
@@ -245,6 +245,38 @@ export async function stopCluster(
     ['stop', '-D', layout.pgdata, '-m', 'fast', '-w', '-t', '60'],
     { cwd: layout.root, env: pgEnv(binaries), onLine: onLog, timeoutMs: 90_000 }
   );
+}
+
+/**
+ * The executable of the postmaster running the cluster, read off the process
+ * its lock file names, or null when none runs or the system will not say
+ * (Windows, or a process another account owns).
+ */
+export async function runningPostmasterBinary(layout: NativeLayout): Promise<string | null> {
+  let pid: number;
+  try {
+    const lock = await readFile(path.join(layout.pgdata, 'postmaster.pid'), 'utf8');
+    pid = Number(lock.split('\n')[0]);
+  } catch {
+    return null;
+  }
+  if (!Number.isInteger(pid) || pid <= 0 || !isProcessAlive(pid, 'recorded')) return null;
+  try {
+    if (process.platform === 'linux') return await readlink(`/proc/${pid}/exe`);
+    if (process.platform === 'darwin') {
+      const { stdout } = await execFileAsync('/bin/ps', ['-o', 'comm=', '-p', String(pid)], {
+        timeout: 10_000,
+      });
+      const binary = stdout.trim();
+      return path.isAbsolute(binary) ? binary : null;
+    }
+  } catch (error) {
+    log.warn('local-switch-server: could not tell which PostgreSQL is running', {
+      pid,
+      error: String(error),
+    });
+  }
+  return null;
 }
 
 /**

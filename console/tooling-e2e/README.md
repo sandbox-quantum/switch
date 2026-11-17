@@ -45,8 +45,7 @@ just e2e-fast -- -t mattermost      # arguments after -- go to vitest
 `just e2e-browser` does the same for the browser lane. It also builds the
 gateway UI from `gateway/` and serves it on :4173 with `vite preview`, whose
 proxy sends `/gateway` requests to the server as nginx does in a deployment.
-On first run Playwright installs its Chromium. `just e2e-browser-v2` runs the
-same lane with the dashboard's new layout turned on (`gateway_v2`).
+On first run Playwright installs its Chromium.
 
 Its log, JUnit report and the stack's per-run secrets go to `build/e2e/ephemeral/`.
 The repository's own `.env` is never read or written.
@@ -176,21 +175,18 @@ saved under `screenshots/` in the output directory.
 | `gateway-room-from-list` | A room made over the API is listed, and its page opens from the list. |
 | `gateway-create-room` | The new-room form makes a room with an agent and no bridge, and opens it; the server has it as asked. |
 | `gateway-sign-out` | Signing out returns to the login form, and the app stays there. |
-| `role-matrix-org-admin`, `role-matrix-workspace-admin`, `role-matrix-member`, `role-matrix-operator` | A real account in the role signs in and is shown what the role matrix says: the rail, each settings menu, every page and settings area opened by URL (the page, its "isn't built yet" slot, or the no-access page), and every redirect followed to where it lands. Pages that open one thing get one the account owns, and must show its name. |
+| `role-matrix-org-admin`, `role-matrix-workspace-admin`, `role-matrix-member`, `role-matrix-operator` | A real account in the role signs in and is shown what the role matrix says: the rail, each settings menu, every page and settings area opened by URL (the page, or the no-access page), and every redirect followed to where it lands. Pages that open one thing get one the account owns, and must show its name. |
 | `role-matrix-two-workspaces` | An admin of one workspace and a member of another in the same organization switches between them with the app's switcher, and each shows the view of the role held there. |
 | `role-matrix-two-organizations` | An organization admin who is a member in another organization: the switcher groups their workspaces by organization, the organization's reach makes them an admin of a workspace they are no member of, and the other organization's workspace shows them a member's view. |
 
 None runs against `prod`: a page may write on load, and the browser goes
 around the clients' read-only guard.
 
-The lane checks whichever layout of the dashboard the server serves:
-`gateway_v2` on is the new layout, off is today's. `just e2e-browser` runs it
-on today's and `just e2e-browser-v2` on the new one; CI runs both. Signing in
-lands on the layout's start page, the rooms list or Overview.
+Signing in lands on Home.
 
 ### The role matrix
 
-Who may open each page, role by role and layout by layout, is written down in
+Who may open each page, role by role, is written down in
 `gateway/src/routes/roleMatrix.ts`, from the gateway refactor's target matrix
 rather than from the code. Two tests hold the dashboard to it: the gateway's
 own `roleMatrix.test.ts` asks the route table with each role's capabilities on
@@ -261,7 +257,6 @@ beside this file. Never commit one. `just e2e-fast` sets all of them itself.
 | `SWITCH_E2E_SERVER_LOG` | no | The server's log, written with `LOG_FORMAT=json`. When set, a scenario fails if the server logged an error while it ran. The stack script sets it. |
 | `SWITCH_E2E_SECRETS_FILE` | no | File to append each credential the server issues during the run to (agent keys, gateway sessions), for CI's scan of the output. The stack script sets it. |
 | `SWITCH_GATEWAY_UI_URL` | browser and explore lanes | Where the gateway UI is served. Its `/gateway` requests must reach `SWITCH_API_URL`. `just e2e-browser` and `just e2e-explore` set it. |
-| `SWITCH_E2E_GATEWAY_LAYOUT` | no | Read by the stack script only: `v2` starts the browser lane's server with the dashboard's new layout (`gateway_v2`), `current` (the default) without it. The lane itself reads the layout from the server. |
 | `SWITCH_E2E_OUTPUT_DIR` | explore lane | Where the browser lane saves screenshots of failed pages, and the explore lane its trace (in `explore/`). The stack script sets it. |
 | `SWITCH_E2E_EXPLORE_TIME_LIMIT` | no | How long the explore lane explores, e.g. `90s`, `5m` (the default), `1h`. Read only by that lane. |
 | `SWITCH_E2E_DRIVER_MODEL` | agentic lane | Exact model id that plays the human, e.g. `claude-sonnet-5`. |
@@ -582,10 +577,10 @@ hand.
 | When | Lane | Environment | Required check |
 | --- | --- | --- | --- |
 | Every PR, and every push to main (`pr-ci.yml`) | fast | ephemeral | yes |
-| PRs that touch the gateway, the server or the harness, and every push to main (`pr-ci.yml`) | browser, in both layouts | ephemeral | not yet |
+| PRs that touch the gateway, the server or the harness, and every push to main (`pr-ci.yml`) | browser | ephemeral | not yet |
 | After a merge to main (`e2e-scheduled.yml`) | provider | ephemeral | no |
 | Nightly (`e2e-scheduled.yml`) | provider | ephemeral | no |
-| A release tag, candidates included (`e2e-scheduled.yml`) | fast; provider; agentic; browser, in both layouts | ephemeral | no |
+| A release tag, candidates included (`e2e-scheduled.yml`) | fast; provider; agentic; browser | ephemeral | no |
 | By hand (`e2e.yml`, dispatch) | any, including browser and explore | ephemeral | no |
 
 - **Secrets.** An ephemeral fast run generates every secret it uses on the

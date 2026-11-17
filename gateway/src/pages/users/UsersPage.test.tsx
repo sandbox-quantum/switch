@@ -8,14 +8,15 @@ vi.mock("../../data/AuthContext", () => ({ useAuth: vi.fn() }));
 
 vi.mock("../../components/DataTable", () => import("../../test/FakeDataTable"));
 
-function user(id: string, can_delete: boolean): ListedUser {
+function user(id: string, can_delete: boolean, can_demote = false): ListedUser {
   return {
     id,
     name: id,
     email: `${id}@example.com`,
-    role: "user",
+    role: can_demote ? "admin" : "user",
     created_at: "2026-10-01T00:00:00Z",
     can_delete,
+    can_demote,
   };
 }
 
@@ -109,6 +110,40 @@ describe("UsersPage", () => {
     await waitFor(() =>
       expect(screen.queryByRole("button", { name: "Actions for op@example.com" })).toBeNull(),
     );
+  });
+
+  it("makes another operator a regular account, once confirmed", async () => {
+    const fetchMock = answer({
+      "GET /users": [200, [user("root", true, true)]],
+      "POST /users/root/demote": [200, { ...user("root", true), role: "user" }],
+    });
+    render(<UsersPage />);
+
+    const menu = await openActions("root@example.com");
+    expect(within(menu).getByRole("menuitem", { name: "Delete account" })).toBeTruthy();
+    fireEvent.click(within(menu).getByRole("menuitem", { name: "Make regular account" }));
+    const dialog = await screen.findByRole("dialog", { name: "Make root a regular account?" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Make regular account" }));
+
+    expect(await screen.findByText("root is now a regular account.")).toBeTruthy();
+    expect(
+      fetchMock.mock.calls.some(
+        ([input, init]) => String(input).endsWith("/users/root/demote") && init?.method === "POST",
+      ),
+    ).toBe(true);
+  });
+
+  it("offers to demote only the operators the server says may be demoted", async () => {
+    answer({ "GET /users": [200, [user("configured", false, false), user("ada", true)]] });
+    render(<UsersPage />);
+
+    const ada = await openActions("ada@example.com");
+    expect(within(ada).queryByRole("menuitem", { name: "Make regular account" })).toBeNull();
+    fireEvent.keyDown(ada, { key: "Escape" });
+
+    const configured = await openActions("configured@example.com");
+    expect(within(configured).queryByRole("menuitem", { name: "Make regular account" })).toBeNull();
+    expect(within(configured).queryByRole("menuitem", { name: "Delete account" })).toBeNull();
   });
 
   it("shows why the list failed to load, not an empty list", async () => {

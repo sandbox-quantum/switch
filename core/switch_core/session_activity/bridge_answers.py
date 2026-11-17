@@ -3,7 +3,8 @@
 The inbound half of `bridge_publisher`. A press carries the card's token and
 the option; a typed answer names the card by its handle (`A3 yes`, `A3 q1=2
 q2=use staging`), or is a bare "yes" / "no" as the first reply to an approval
-card. Either resolves to one `approval_request_posts` row, and from there to
+card, or is one option of a single-question card, word for word or by number,
+replied in that card's thread. Either resolves to one `approval_request_posts` row, and from there to
 the request itself, which `AgentSessionActivityService.answer_approval` checks:
 open, unexpired, fits what was asked, and from someone who may address the
 agent.
@@ -24,6 +25,7 @@ from switch_core.bridges.collaboration.models import InboundInteraction, Inbound
 from switch_core.bridges.collaboration.session.form import (
     Unanswerable,
     posted_form,
+    resolve_plain_reply,
     resolve_pressed_option,
     resolve_pressed_position,
     resolve_text_answer,
@@ -61,6 +63,14 @@ _NO_IDENTITY = "Switch does not know who this account belongs to"
 
 
 @dataclass(frozen=True)
+class Waiting:
+    """A card is waiting on an answer from the person who just spoke."""
+
+    text: str
+    card_ref: str | None
+
+
+@dataclass(frozen=True)
 class Answered:
     """The answer was recorded. The card redraws itself from the change."""
 
@@ -84,6 +94,7 @@ class ApprovalAnswers:
         self._is_first_reply = is_first_reply
         self._posts = ApprovalRequestPostStore()
         self._approvals = ApprovalRequestStore()
+        self._noticed: set[tuple[str, str, str]] = set()
 
     async def for_press(
         self, interaction: InboundInteraction
@@ -126,9 +137,86 @@ class ApprovalAnswers:
         return await self._answer(interaction, post, answer)
 
     async def for_text(self, message: InboundMessage) -> Answered | Refused | None:
-        answer = parse_text_answer(message.content)
-        if answer is None or message.sender_is_app:
+        if message.sender_is_app:
             return None
+        answer = parse_text_answer(message.content)
+        if answer is not None and answer.handle is not None:
+            return await self._named(message, answer)
+        if message.root_id is None:
+            return None
+        async with tenant_session(self._sessions, require_tenant_id()) as db:
+            post = await self._posts.get_by_post(
+                db, self._bridge_id, message.channel_id, message.root_id
+            )
+            direct = post is not None
+            if post is None:
+                post = await self._posts.latest_in_thread(
+                    db, self._bridge_id, message.channel_id, message.root_id
+                )
+            if post is None or post.external_post_id is None:
+                return None
+            row = await self._request_of(db, post)
+        if row is None:
+            return _gone(post) if answer is not None and direct else None
+        request = approval_request(row, None)
+        form = posted_form(request)
+        if answer is not None and takes_a_bare_decision(form):
+            if not direct or not await self._is_first_reply(
+                message.channel_id, message.root_id, message.message_ref
+            ):
+                return None
+            return await self._answer(message, post, resolve_text_answer(form, answer))
+        if row.state != "open":
+            return None
+        picked = resolve_plain_reply(request, form, message.content)
+        if picked is None or isinstance(picked, Unanswerable):
+            return None
+        answered = await self._answer(message, post, picked)
+        # A reply that read as an option but was refused (the sender may not
+        # answer for this agent, or it was answered a moment ago) was chat all
+        # along, and is not told off as a failed answer.
+        return answered if isinstance(answered, Answered) else None
+
+    async def waiting_notice(self, message: InboundMessage) -> Waiting | None:
+        """Once per card, tell someone who could answer it that it is waiting.
+
+        For a message that was not an answer, sent while a card in the channel
+        is open: the agent is blocked on that card and reads the message only
+        after it is answered, so the person is told how to answer rather than
+        left wondering why nothing happened. Only someone who may answer is
+        told, and only the first time, so the channel's other talk is left
+        alone. Remembered per bridge process: after a restart it may be said
+        once more.
+        """
+        if message.sender_is_app:
+            return None
+        async with tenant_session(self._sessions, require_tenant_id()) as db:
+            post = await self._posts.newest_open_in_channel(
+                db, self._bridge_id, message.channel_id
+            )
+            if post is None:
+                return None
+            key = (post.agent_id, post.session_id, post.request_id)
+            if key in self._noticed:
+                return None
+            row = await self._request_of(db, post)
+        if row is None or row.room_id is None:
+            return None
+        mxid = await self._identify(message)
+        if mxid is None:
+            return None
+        try:
+            await self._service.authorize_room_control(
+                post.agent_id, row.room_id, PlatformPerson(mxid), doing="answer it"
+            )
+        except SessionError:
+            return None
+        self._noticed.add(key)
+        return Waiting(text=_waiting(post.handle), card_ref=_card_thread(post))
+
+    async def _named(
+        self, message: InboundMessage, answer: TextAnswer
+    ) -> Answered | Refused | None:
         async with tenant_session(self._sessions, require_tenant_id()) as db:
             post = await self._post_for(db, message, answer)
             if post is None:
@@ -144,27 +232,16 @@ class ApprovalAnswers:
         if row is None:
             return _gone(post)
         form = posted_form(approval_request(row, None))
-        if answer.handle is None:
-            assert message.root_id is not None
-            if not takes_a_bare_decision(form) or not await self._is_first_reply(
-                message.channel_id, message.root_id, message.message_ref
-            ):
-                return None
         return await self._answer(message, post, resolve_text_answer(form, answer))
 
     async def _post_for(
         self, db: AsyncSession, message: InboundMessage, answer: TextAnswer
     ) -> ApprovalRequestPost | None:
-        if answer.handle is not None:
-            if not answer.handle.upper().startswith(HANDLE_PREFIX):
-                return None
-            return await self._posts.get_by_handle(
-                db, self._bridge_id, message.channel_id, answer.handle
-            )
-        if message.root_id is None:
+        assert answer.handle is not None
+        if not answer.handle.upper().startswith(HANDLE_PREFIX):
             return None
-        return await self._posts.get_by_post(
-            db, self._bridge_id, message.channel_id, message.root_id
+        return await self._posts.get_by_handle(
+            db, self._bridge_id, message.channel_id, answer.handle
         )
 
     async def _request_of(
@@ -224,6 +301,14 @@ def _card_thread(post: ApprovalRequestPost) -> str | None:
     when it was posted at the top level. A platform threads a reply under a
     root, not under another reply."""
     return post.thread_ref or post.external_post_id
+
+
+def _waiting(handle: str) -> str:
+    return (
+        f"The agent is waiting for an answer to {handle} and will read your "
+        f"message once it is answered. Press a button on {handle}, reply "
+        f"`{handle} 1`, or reply in its thread with one of its options."
+    )
 
 
 def _gone(post: ApprovalRequestPost) -> Refused:

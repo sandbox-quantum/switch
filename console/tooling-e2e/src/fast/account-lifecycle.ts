@@ -6,13 +6,13 @@ import type { FastScenario } from "./scenario.ts";
  * What ends: ownership, a workspace and an account. The harness admin hands a
  * package to a colleague, who cannot hand on what is not theirs. A second
  * person makes a workspace of their own and deletes it, once they type its
- * name right. Asked before deleting, the colleague's account could go and the
- * operator's own could not. The colleague cannot delete anyone's account; the
- * operator deletes theirs, which ends their sign-in.
+ * name right. Asked before deleting, the colleague's account could go, and so
+ * could the operator's own while another operator remains: only the server's
+ * administrator account is kept. The colleague cannot delete anyone's
+ * account; the operator deletes theirs, which ends their sign-in.
  *
  * The workspace maker is a deployment operator, so they can make a
- * workspace, and an operator's account cannot be deleted, so this runs only
- * on a stack thrown away after the run.
+ * workspace, and this runs only on a stack thrown away after the run.
  */
 export const accountLifecycle: FastScenario = {
   header: {
@@ -44,15 +44,13 @@ export const accountLifecycle: FastScenario = {
 
     const password = `e2e-${names.runId}-${crypto.randomUUID()}`;
     const email = `${names.name("colleague")}@e2e.invalid`;
-    const { id: colleagueId } = await switchClient.createUser({
+    // A member of the harness admin's workspace, where the transfer happens.
+    const { id: colleagueId, client: colleague } = await switchClient.createMember({
       name: "E2E colleague",
       email,
       password,
       role: "user",
     });
-    const colleague = switchClient.as(email, password);
-    // Signing in joins the default workspace, where the transfer happens.
-    await colleague.tenantId();
 
     const given = await switchClient.createPackage({
       name: names.name("given"),
@@ -120,10 +118,12 @@ export const accountLifecycle: FastScenario = {
       await colleague.accountDeletionRefusal(),
       "a member asking whether their account can go",
     ).toBeNull();
+    // Only the server's administrator account is kept whatever happens;
+    // another operator may go while one remains.
     expect(
       await maker.accountDeletionRefusal(),
       "an operator asking whether their account can go",
-    ).toContain("administrator account");
+    ).toBeNull();
 
     const [notOperator] = await status(() => colleague.deleteUser(makerId));
     expect(notOperator, "a member deleting someone's account").toBe(403);

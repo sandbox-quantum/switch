@@ -156,12 +156,13 @@ ROUTES: dict[str, Case] = {
     ),
     "POST /gateway/agents/register-known-bulk": post(
         f"{G}/agents/register-known-bulk",
-        owner_or_admins(),
+        owner(refused=403),
         json={
             "agent_type": "claude-code",
             "parent_agent_id": "{agent}",
             "subagents": [{"subagent_name": "reviewer", "description": ""}],
         },
+        why="Its owner's alone: the subagents sit under the parent, in its working directory.",
     ),
     "GET /gateway/agent-sessions/approvals": get(f"{G}/agent-sessions/approvals", SELF),
     "POST /gateway/agent-sessions/{agent_id}/{session_id}/approvals/{request_id}/answer": post(
@@ -194,6 +195,12 @@ ROUTES: dict[str, Case] = {
     ),
     "GET /gateway/auth/session": get(f"{G}/auth/session", SELF),
     "POST /gateway/auth/refresh": post(f"{G}/auth/refresh", SELF),
+    "POST /gateway/auth/handoff": post(
+        f"{G}/auth/handoff",
+        SELF,
+        json={"next": "/rooms"},
+        why="A sign-in link to a browser, as the caller themselves.",
+    ),
     "PATCH /gateway/auth/me": patch(f"{G}/auth/me", SELF, json={"name": "Renamed"}),
     "PUT /gateway/auth/me/password": put(
         f"{G}/auth/me/password",
@@ -239,7 +246,11 @@ ROUTES: dict[str, Case] = {
         json={"message_retention_days": 30},
         why="Deleting messages can't be undone: its admins by their own membership.",
     ),
-    "DELETE /gateway/tenants/{tenant_id}/retention": delete(f"{W}/retention", admins()),
+    "DELETE /gateway/tenants/{tenant_id}/retention": delete(
+        f"{W}/retention",
+        admin_by_membership(),
+        why="As setting a policy: its admins by their own membership.",
+    ),
     "GET /gateway/tenants/{tenant_id}/private-channel-rooms": get(
         f"{W}/private-channel-rooms", admins()
     ),
@@ -332,6 +343,12 @@ ROUTES: dict[str, Case] = {
         json={"token": "no-such-invitation"},
         why="Whoever holds the token; this one matches no invitation.",
     ),
+    "POST /gateway/invitations/preview": post(
+        f"{G}/invitations/preview",
+        anyone(ok=404),
+        json={"token": "no-such-invitation"},
+        why="Whoever holds the token; this one matches no invitation.",
+    ),
     "GET /gateway/invitations/mine": get(f"{G}/invitations/mine", SELF),
     "POST /gateway/invitations/mine/accept": post(
         f"{G}/invitations/mine/accept",
@@ -364,6 +381,14 @@ ROUTES: dict[str, Case] = {
     ),
     # ── Organizations ────────────────────────────────────────────────────
     "GET /gateway/organizations": get(f"{G}/organizations", SELF),
+    "GET /gateway/organizations/without-workspace": get(
+        f"{G}/organizations/without-workspace", SELF
+    ),
+    "POST /gateway/organizations/{organization_id}/leave": post(
+        f"{G}/organizations/no-such-organization/leave",
+        anyone(ok=404),
+        why="Your own membership; nobody here is in this organization.",
+    ),
     "POST /gateway/organizations": post(
         f"{G}/organizations", SELF, json={"name": "{tag}-org"}
     ),
@@ -514,6 +539,14 @@ ROUTES: dict[str, Case] = {
     "DELETE /gateway/users/{user_id}": delete(f"{G}/users/{{user_target}}", operator()),
     "POST /gateway/users/{user_id}/sessions/revoke": post(
         f"{G}/users/{{user_target}}/sessions/revoke", operator()
+    ),
+    "POST /gateway/users/{user_id}/demote": post(
+        f"{G}/users/{{user_target}}/demote",
+        operator(ok=409),
+        why="The operator's; this account is no operator, which is what they're told.",
+    ),
+    "DELETE /gateway/users/{user_id}/sign-in-lock": delete(
+        f"{G}/users/{{user_target}}/sign-in-lock", operator()
     ),
     "POST /gateway/auth/sessions/revoke": post(
         f"{G}/auth/sessions/revoke",
@@ -1387,8 +1420,14 @@ UNAUTHENTICATED: dict[str, str] = {
     "GET /gateway/auth/oidc/callback": "A sign-in coming back from the identity provider.",
     "GET /gateway/auth/oidc/login": "Starting a sign-in.",
     "POST /gateway/auth/oidc/exchange": "Finishing a sign-in with its one-time code.",
+    "POST /gateway/auth/handoff/peek": (
+        "Whose browser sign-in link this is, before the browser has a session."
+    ),
+    "POST /gateway/auth/handoff/redeem": (
+        "A browser redeeming a sign-in link for a session of its own."
+    ),
     "POST /gateway/auth/login": "Signing in.",
-    "POST /gateway/auth/logout": "Signing out, which only clears the cookie.",
+    "POST /gateway/auth/logout": "Signing out of the session the cookie belongs to.",
     "POST /gateway/auth/signup": "Signing up.",
     "GET /gateway/docs": "The API's own documentation.",
     "GET /gateway/docs/oauth2-redirect": "The API's own documentation.",

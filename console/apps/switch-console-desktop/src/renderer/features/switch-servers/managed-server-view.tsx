@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { ArrowUpCircle, Power, ShieldCheck } from 'lucide-react';
+import { ArrowUpCircle, Power, Settings } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useState } from 'react';
 import { type GuardResult, type ViewDefinition } from '@renderer/app/view-registry';
@@ -58,9 +58,9 @@ function useServerId(): string {
   return useParams('managedServer').params.serverId;
 }
 
-/** Part of the Admin page, whose menu it is drawn beside, so titled as it is. */
+/** Opened from Settings, which stays lit in the sidebar while it is open, so titled as it is. */
 const ManagedServerTitlebar = observer(function ManagedServerTitlebar() {
-  return <ServerSectionTitlebar serverId={useServerId()} icon={ShieldCheck} label="Admin" />;
+  return <ServerSectionTitlebar serverId={useServerId()} icon={Settings} label="Settings" />;
 });
 
 /** One line of recent activity, from either kind of record. */

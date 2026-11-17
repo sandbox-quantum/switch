@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from typing import TYPE_CHECKING, Any
 
 import discord
@@ -79,8 +79,11 @@ class DiscordGatewayClient:
         members: bool,
         install_service: MessagingInstallService,
         on_connected: Callable[[DiscordConnection], Awaitable[None]],
+        feature_flags: Mapping[str, bool],
     ) -> None:
         self._message_content = message_content
+        # The deployment's: which commands are registered with Discord.
+        self._feature_flags = feature_flags
         self._members = members
         self._install_service = install_service
         # Fired once, after the first successful connect: boot walks the running
@@ -172,7 +175,9 @@ class DiscordGatewayClient:
         )
         # Commands register globally, once for the application, and each
         # invocation is routed to a bridge by the guild it carries (decision #7).
-        await self._connection.connect(commands=build_app_commands(self._on_slash))
+        await self._connection.connect(
+            commands=build_app_commands(self._on_slash, self._feature_flags)
+        )
         logger.info(
             "Discord shared Gateway connection started (message_content=%s, "
             "members=%s)",

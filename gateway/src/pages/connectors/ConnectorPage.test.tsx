@@ -13,7 +13,7 @@ import ConnectorPage from "./ConnectorPage";
 
 vi.mock("../../data/AuthContext", () => ({ useAuth: vi.fn() }));
 
-function signedIn({ admin = false, orgAdmin = false } = {}) {
+function signedIn({ admin = false, orgAdmin = false, operator = false } = {}) {
   vi.mocked(useAuth).mockReturnValue({
     session: {
       user: { id: "me", name: "Ada", email: "ada@example.test", is_operator: false },
@@ -22,7 +22,7 @@ function signedIn({ admin = false, orgAdmin = false } = {}) {
     capabilities: {
       administersWorkspace: admin,
       administersOrganization: orgAdmin,
-      features: { gateway_v2: true },
+      isOperator: operator,
     },
     isOperator: false,
   } as unknown as ReturnType<typeof useAuth>);
@@ -75,7 +75,8 @@ function answer(routes: Record<string, unknown>): Call[] {
       const key = `${method} ${path}`;
       if (!(key in routes))
         return new Response(JSON.stringify({ detail: `unmocked ${key}` }), { status: 404 });
-      const reply = routes[key];
+      const route = routes[key];
+      const reply = typeof route === "function" ? route() : route;
       if (reply instanceof Reply) return new Response(JSON.stringify(reply.body), { status: reply.status });
       return new Response(JSON.stringify(reply), { status: 200 });
     }),
@@ -91,6 +92,7 @@ function server(
 ) {
   return answer({
     "GET /service-connections": { connections: [connection] },
+    "GET /agents": [],
     [`GET /service-connections/${connection.slug}/agents`]: agents,
     ...(workspace ? { [`GET /service-connections/${connection.slug}/workspace`]: workspace } : {}),
     ...extra,
@@ -186,9 +188,9 @@ describe("a connector's page", () => {
     renderPage("datadog");
 
     fireEvent.click(await screen.findByRole("button", { name: "Add keys" }));
-    const dialog = await screen.findByRole("dialog");
+    const dialog = await screen.findByRole("dialog", { name: "Connect Datadog" });
     fireEvent.change(within(dialog).getByLabelText("API key"), { target: { value: "dd-key" } });
-    fireEvent.click(within(dialog).getByRole("button", { name: "Add keys" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Connect" }));
 
     await waitFor(() =>
       expect(calls).toContainEqual({
@@ -197,6 +199,7 @@ describe("a connector's page", () => {
         body: { fields: { api_key: "dd-key", site: "datadoghq.com" } },
       }),
     );
+    expect(await screen.findByText("Connected Datadog.")).toBeTruthy();
   });
 
   it("says the organization turned it off, and only its admins can change that", async () => {
@@ -218,7 +221,7 @@ describe("a connector's page", () => {
     expect(screen.queryByText("Connect from Switch Console")).toBeNull();
   });
 
-  it("says a workspace admin turned it off, and who can turn it back on", async () => {
+  it("says a workspace admin turned it off, who can turn it back on, and where it is set", async () => {
     signedIn();
     server(serviceConnection({ workspace_enabled: false, decided_by: "workspace" }));
     renderPage();
@@ -227,6 +230,91 @@ describe("a connector's page", () => {
       await screen.findByText(/Switched off in Acme by a workspace admin.*A workspace admin can turn it on/),
     ).toBeTruthy();
     expect(screen.queryByRole("link", { name: "Workspace settings" })).toBeNull();
+    expect(screen.getByRole("link", { name: "Settings › Connectors" })).toHaveProperty("pathname", "/settings/connectors");
+  });
+
+  it("greys the way to connect one that is off here, saying why on it", async () => {
+    signedIn();
+    server(serviceConnection({ web_sign_in: true, workspace_enabled: false, decided_by: "workspace" }));
+    renderPage();
+
+    const connect = (await screen.findByRole("button", { name: "Connect" })) as HTMLButtonElement;
+    expect(connect.disabled).toBe(true);
+    expect(connect.parentElement?.getAttribute("aria-label")).toMatch(/^Switched off in Acme by a workspace admin/);
+    expect(screen.getByText("Off in Acme")).toBeTruthy();
+
+    cleanup();
+    server(serviceConnection({ auth_type: "api_key", connectable: false, unavailable_reason: "Example can't be connected here." }));
+    renderPage();
+    const keys = (await screen.findByRole("button", { name: "Add keys" })) as HTMLButtonElement;
+    expect(keys.disabled).toBe(true);
+    expect(keys.parentElement?.getAttribute("aria-label")).toBe("Example can't be connected here.");
+  });
+
+  it("says a connector not built yet is coming, not off, and claims nothing of how it signs in", async () => {
+    signedIn({ admin: true });
+    server(serviceConnection({ enabled: false, workspace_enabled: false, decided_by: "workspace" }));
+    renderPage();
+
+    expect(await screen.findByText("Coming soon")).toBeTruthy();
+    expect(screen.queryByText(/A workspace admin can turn it on/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Connect" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Workspace settings" })).toBeNull();
+    expect(screen.queryByText("Sign-in")).toBeNull();
+    expect(screen.queryByText("Agent access lasts")).toBeNull();
+  });
+
+  it("lets a workspace admin turn it on from here, then reads the page again", async () => {
+    signedIn({ admin: true });
+    let on = false;
+    const calls = answer({
+      "GET /service-connections": () => ({
+        connections: [serviceConnection({ workspace_enabled: on, decided_by: "workspace" })],
+      }),
+      "GET /service-connections/example/agents": [],
+      "GET /service-connections/example/workspace": { people: [], agents: [] },
+      "PUT /workspace/services/example": () => {
+        on = true;
+        return { warning: null };
+      },
+    });
+    renderPage();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Turn on" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Turn on" })).toBeNull());
+    expect(calls).toContainEqual({ method: "PUT", path: "/workspace/services/example", body: { enabled: true } });
+    expect(screen.queryByText(/Switched off in Acme/)).toBeNull();
+  });
+
+  it("shows why turning it on was refused", async () => {
+    signedIn({ admin: true });
+    server(serviceConnection({ workspace_enabled: false, decided_by: "workspace" }), [], { people: [], agents: [] }, {
+      "PUT /workspace/services/example": new Reply(409, { detail: "Your organization locked it off." }),
+    });
+    renderPage();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Turn on" }));
+    expect(await screen.findByText("Your organization locked it off.")).toBeTruthy();
+  });
+
+  it("sends the operator to set up an app that isn't, and tells everyone else who can", async () => {
+    const unset = serviceConnection({
+      connectable: false,
+      unavailable_code: "app_not_set_up",
+      unavailable_reason: "Switch's Example app isn't set up. Whoever runs Switch can set it up.",
+    });
+    signedIn({ operator: true });
+    server(unset);
+    renderPage();
+
+    expect(await screen.findByRole("link", { name: "Set up" })).toHaveProperty("search", "?set_up=example");
+    cleanup();
+
+    signedIn();
+    server(unset);
+    renderPage();
+    expect(await screen.findByText(/Whoever runs Switch can set it up/)).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "Set up" })).toBeNull();
   });
 
   it("shows a member their own agents, and adds one", async () => {
@@ -342,12 +430,15 @@ describe("a connector's page", () => {
           { agent_id: "b1", name: "bobs-agent", owner_id: "u2", owner_name: "Bob", grant: grant(), addressing_open: true },
         ],
       },
-      { "DELETE /service-connections/example/people/u2": { warning: null } },
+      {
+        "DELETE /service-connections/example/people/u2": { warning: null },
+        "GET /agents": [{ id: "b1", connector_type: "Codex CLI" }],
+      },
     );
     renderPage();
 
     const card = await screen.findByTestId("connector-agent-b1");
-    expect(within(card).getByText("Bob")).toBeTruthy();
+    expect(within(card).getByText("Codex CLI · Bob")).toBeTruthy();
     // Others can have Bob's agent act as Bob: the admin is told, in Bob's name.
     expect(within(card).getByText("Others can address it; it would act as Bob.")).toBeTruthy();
     // Nobody grants on someone else's connector, admins included.
@@ -356,6 +447,7 @@ describe("a connector's page", () => {
     expect(within(people).queryByText("Ada")).toBeNull();
     const bob = within(people).getByTestId("connected-u2");
     expect(within(bob).getByText("Connected 2026-11-03 · 2 agents using it")).toBeTruthy();
+    expect(within(bob).queryByText("Suspended")).toBeNull();
     fireEvent.click(within(bob).getByRole("button", { name: "Revoke" }));
     const dialog = await screen.findByRole("dialog");
     expect(within(dialog).getByText("Revoke Bob's Example access?")).toBeTruthy();
@@ -366,6 +458,20 @@ describe("a connector's page", () => {
         "DELETE /service-connections/example/people/u2",
       ),
     );
+  });
+
+  it("marks everyone's connection suspended while the workspace has it off", async () => {
+    signedIn({ admin: true });
+    server(serviceConnection({ workspace_enabled: false, decided_by: "workspace" }), [], {
+      people: [
+        { user_id: "u2", name: "Bob", status: "active", connected_at: "2026-11-03T09:00:00Z", agents: 0, can_revoke: true },
+      ],
+      agents: [],
+    });
+    renderPage();
+
+    const bob = await screen.findByTestId("connected-u2");
+    expect(within(bob).getByText("Suspended")).toBeTruthy();
   });
 
   it("counts the repositories of someone else's GitHub grant rather than listing their numbers", async () => {
@@ -398,6 +504,7 @@ describe("a connector's page", () => {
     signedIn({ admin: true });
     answer({
       "GET /service-connections": { connections: [serviceConnection({ status: "active", consent: "write" })] },
+      "GET /agents": [],
       "GET /service-connections/example/agents": [],
     });
     renderPage();
@@ -408,11 +515,15 @@ describe("a connector's page", () => {
     expect(screen.queryByRole("region", { name: "Connected in Acme" })).toBeNull();
   });
 
-  it("disconnects after asking", async () => {
+  it("disconnects after asking, counting the agents that lose it", async () => {
     signedIn();
     const calls = server(
       serviceConnection({ status: "active", consent: "read", can_revoke: true }),
-      [],
+      [
+        agent({ agent_id: "a1", granted: true, grant: grant() }),
+        agent({ agent_id: "a2", name: "planner", granted: true, grant: grant() }),
+        agent({ agent_id: "a3", name: "idle" }),
+      ],
       null,
       { "DELETE /service-connections/example": { warning: null } },
     );
@@ -420,6 +531,7 @@ describe("a connector's page", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Disconnect" }));
     const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText(/^All 2 agents you granted access lose it immediately/)).toBeTruthy();
     fireEvent.click(within(dialog).getByRole("button", { name: "Disconnect" }));
 
     await waitFor(() =>
@@ -430,9 +542,9 @@ describe("a connector's page", () => {
   it("goes back to the page that opened it", async () => {
     signedIn();
     server(serviceConnection());
-    renderPage("example", { back: { label: "Connectors and apps", to: "/settings/org/connectors" } });
+    renderPage("example", { back: { label: "Connectors", to: "/settings/org/connectors" } });
 
-    fireEvent.click(await screen.findByRole("button", { name: "Connectors and apps" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Connectors" }));
 
     await waitFor(() =>
       expect(screen.getByTestId("where").textContent).toBe("/settings/org/connectors"),
@@ -554,6 +666,47 @@ describe("connecting from a connector's page", () => {
     expect(await screen.findByText("That Example sign-in has expired. Connect again.")).toBeTruthy();
   });
 
+  it("keeps Back leading to the page that opened it across the vendor's sign-in", async () => {
+    signedIn();
+    server(serviceConnection({ web_sign_in: true }), [], null, {
+      "POST /service-connections/example/flows/web": { id: "flow-1", url: "https://switch.example.test/authorize?state=flow-1" },
+      "GET /service-connections/example/flows/flow-1": {
+        status: "connected",
+        account: "ada@example.test",
+        error: null,
+        warning: null,
+      },
+      "DELETE /service-connections/example/flows/flow-1": {},
+    });
+    renderPage("example", { back: { label: "planner", to: "/agents/a1" } });
+    fireEvent.click(await screen.findByRole("button", { name: "Connect" }));
+    await waitFor(() => expect(assign).toHaveBeenCalled());
+    cleanup();
+
+    // The vendor sends the browser back by a fresh load, with no history state.
+    renderPage("example", null, "?sign_in=flow-1");
+    expect(await screen.findByText("Connected to Example as ada@example.test.")).toBeTruthy();
+    await waitFor(() => expect(screen.getByTestId("query").textContent).toBe(""));
+    fireEvent.click(screen.getByRole("button", { name: "planner" }));
+    await waitFor(() => expect(screen.getByTestId("where").textContent).toBe("/agents/a1"));
+  });
+
+  it("doesn't take the Back kept for another connector's sign-in", async () => {
+    signedIn();
+    window.sessionStorage.setItem(
+      "switch.connectorBackAfterSignIn",
+      JSON.stringify({ service: "other", back: { label: "planner", to: "/agents/a1" }, at: Date.now() }),
+    );
+    server(serviceConnection({ web_sign_in: true }), [], null, {
+      "GET /service-connections/example/flows/flow-1": { status: "connected", account: null, error: null, warning: null },
+      "DELETE /service-connections/example/flows/flow-1": {},
+    });
+    renderPage("example", null, "?sign_in=flow-1");
+
+    expect(await screen.findByRole("button", { name: "Connectors" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "planner" })).toBeNull();
+  });
+
   it("reads GitHub's outcome from its own flow", async () => {
     signedIn();
     server(serviceConnection({ slug: "github", name: "GitHub", web_sign_in: true }), [], null, {
@@ -598,7 +751,7 @@ describe("connecting by pasting a token in place of a sign-in", () => {
         body: { method: "token", fields: { pat: "ddpat_example" }, choices: { site: "datadoghq.eu" } },
       }),
     );
-    expect(await screen.findByText("Datadog is connected.")).toBeTruthy();
+    expect(await screen.findByText("Connected Datadog.")).toBeTruthy();
   });
 
   it("pastes keys instead where the server takes them", async () => {

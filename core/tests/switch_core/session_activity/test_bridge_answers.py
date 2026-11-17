@@ -339,3 +339,157 @@ async def test_a_bare_yes_does_not_answer_a_questions_card(
         await answers.for_text(_typed(bridged, "yes", root_id="1700000000.0003"))
         is None
     )
+
+
+CONFIRM_POST = "1700000000.0004"
+CONFIRM_THREAD = "1700000000.0001"
+
+
+@pytest.fixture
+async def confirm_card(service, session_factory, bridged) -> ApprovalRequestPost:
+    await service.open_approval(
+        AGENT,
+        SESSION,
+        request_id="req-c",
+        turn_id="turn-1",
+        kind="questions",
+        title="Create the room?",
+        detail=None,
+        options=[],
+        questions=[
+            Question(
+                id="q-go",
+                title="Create it?",
+                prompt="This makes a channel.",
+                options=[
+                    QuestionOption("yes", "✅ Yes, create it", None),
+                    QuestionOption("no", "Not yet", None),
+                ],
+                multi_select=False,
+                allow_custom_answer=False,
+            )
+        ],
+        room_id=bridged.room_id,
+        thread_id=None,
+        expires_at=None,
+    )
+    post = ApprovalRequestPost(
+        bridge_id=bridged.bridge_id,
+        agent_id=AGENT,
+        session_id=SESSION,
+        request_id="req-c",
+        token="tok-c",
+        handle="A3",
+        external_channel_id=bridged.channel_id,
+        external_post_id=CONFIRM_POST,
+        thread_ref=CONFIRM_THREAD,
+    )
+    async with session_factory() as db, db.begin():
+        db.add(post)
+    return post
+
+
+async def _confirm_state(session_factory) -> tuple[str, list | None]:
+    async with session_factory() as db:
+        row = await db.scalar(
+            select(ApprovalRequest).where(ApprovalRequest.request_id == "req-c")
+        )
+    return row.state, row.answers
+
+
+@pytest.mark.parametrize(
+    ("typed", "root_id", "picked"),
+    [
+        ("yes, create it!", CONFIRM_THREAD, "yes"),
+        ("YES CREATE IT", CONFIRM_POST, "yes"),
+        ("not yet", CONFIRM_THREAD, "no"),
+        ("2", CONFIRM_THREAD, "no"),
+    ],
+)
+async def test_a_reply_in_the_thread_that_is_an_option_answers_the_card(
+    service, session_factory, bridged, confirm_card, people, typed, root_id, picked
+):
+    answers = _answers(service, session_factory, bridged, people.owner)
+    outcome = await answers.for_text(_typed(bridged, typed, root_id=root_id))
+    assert outcome == Answered(handle="A3")
+    state, chosen = await _confirm_state(session_factory)
+    assert state == "answered"
+    assert chosen[0]["selected_option_ids"] == [picked]
+
+
+@pytest.mark.parametrize(
+    ("typed", "root_id"),
+    [
+        ("yes, create it and invite Ada", CONFIRM_THREAD),
+        ("yes", CONFIRM_THREAD),
+        ("3", CONFIRM_THREAD),
+        ("yes, create it", None),
+        ("yes, create it", "1700000000.0777"),
+    ],
+)
+async def test_anything_else_in_the_thread_is_left_as_chat(
+    service, session_factory, bridged, confirm_card, people, typed, root_id
+):
+    answers = _answers(service, session_factory, bridged, people.owner)
+    assert await answers.for_text(_typed(bridged, typed, root_id=root_id)) is None
+    assert (await _confirm_state(session_factory))[0] == "open"
+
+
+async def test_an_option_said_by_someone_who_may_not_answer_is_left_as_chat(
+    service, session_factory, bridged, confirm_card, people
+):
+    async with session_factory() as db, db.begin():
+        await db.execute(
+            update(Agent)
+            .where(Agent.id == AGENT)
+            .values(addressing_policy=owner_only_policy([]).model_dump())
+        )
+    answers = _answers(service, session_factory, bridged, people.stranger)
+    outcome = await answers.for_text(
+        _typed(bridged, "yes, create it", root_id=CONFIRM_THREAD)
+    )
+    assert outcome is None
+    assert (await _confirm_state(session_factory))[0] == "open"
+
+
+async def test_a_plain_reply_does_not_answer_a_card_of_several_questions(
+    service, session_factory, bridged, questions_card, people
+):
+    answers = _answers(service, session_factory, bridged, people.owner)
+    assert (
+        await answers.for_text(_typed(bridged, "staging", root_id="1700000000.0003"))
+        is None
+    )
+
+
+async def test_someone_who_could_answer_is_told_once_that_the_card_waits(
+    service, session_factory, bridged, confirm_card, people
+):
+    answers = _answers(service, session_factory, bridged, people.owner)
+    first = await answers.waiting_notice(_typed(bridged, "did you do it?"))
+    assert first is not None
+    assert "waiting for an answer to A3" in first.text
+    assert "`A3 1`" in first.text
+    assert first.card_ref == CONFIRM_THREAD
+    assert await answers.waiting_notice(_typed(bridged, "hello?")) is None
+
+
+async def test_nobody_is_told_once_the_card_is_answered(
+    service, session_factory, bridged, confirm_card, people
+):
+    answers = _answers(service, session_factory, bridged, people.owner)
+    await answers.for_text(_typed(bridged, "A3 1"))
+    assert await answers.waiting_notice(_typed(bridged, "did you do it?")) is None
+
+
+async def test_someone_who_may_not_answer_is_not_told(
+    service, session_factory, bridged, confirm_card, people
+):
+    async with session_factory() as db, db.begin():
+        await db.execute(
+            update(Agent)
+            .where(Agent.id == AGENT)
+            .values(addressing_policy=owner_only_policy([]).model_dump())
+        )
+    answers = _answers(service, session_factory, bridged, people.stranger)
+    assert await answers.waiting_notice(_typed(bridged, "anyone there?")) is None

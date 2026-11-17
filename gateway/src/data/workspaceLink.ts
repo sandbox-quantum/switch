@@ -106,3 +106,13 @@ export function takeLinkAfterSignIn(): WorkspaceLink | null {
 export function forgetLinkForSignIn(): void {
   window.sessionStorage.removeItem(AFTER_SIGN_IN_KEY);
 }
+
+/** What a page opened by id adds when the server answered that it can't
+ * find the thing or won't show it: a link that names no workspace opens in
+ * whichever one this browser used last, which need not be the thing's.
+ * Null for any other failure. */
+export function mayBeInAnotherWorkspace(status: number | null | undefined): string | null {
+  return status === 404 || status === 403
+    ? "This may be in another workspace — switch workspace or check the link."
+    : null;
+}

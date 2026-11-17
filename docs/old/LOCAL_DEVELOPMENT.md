@@ -148,11 +148,9 @@ password) plus a second workspace that only the org admin can open, and saves
 their logins, with the gateway admin's from `.env` as the operator, to
 `gateway/.dev-role-accounts.json` (gitignored). It is safe to run again.
 
-With the new layout turned on (`FEATURE_FLAGS_ENABLED=gateway_v2`),
 `just gateway-dev` then shows a **Role:** control at the right end of the top
 bar. Sign in once as anyone, such as the gateway admin from `.env`: the
-server tells a signed-out page none of its flags, so the control is not on
-the sign-in page. Picking a role signs you in as that account, an ordinary
+control is not on the sign-in page. Picking a role signs you in as that account, an ordinary
 password sign-in, and reloads the page, staying in the same workspace when
 that account can open it. The server sees only that account, so what you see is
 exactly what a person with that role gets.
@@ -186,6 +184,11 @@ registers against (the Agent Bridge / MCP surface), calls the gateway
 management API under `/gateway/*` on it (signing in, listing agents and
 rooms, the reachability check), and opens dashboard pages on it — the
 **Open** button under "Full admin interface", and links to rooms and agents.
+They open in your default browser, signed in as Console's account: Console
+asks the server for a one-time sign-in link (`POST /gateway/auth/handoff`)
+and the browser redeems it on the dashboard's `/auth/handoff` page for a
+session of its own. Without a Console session, or on a server from before
+the link, the page opens signed out.
 
 Those dashboard pages are the one thing that needs more than `just run`:
 switch-core serves them only when `GATEWAY_UI_DIR` names a built dashboard
