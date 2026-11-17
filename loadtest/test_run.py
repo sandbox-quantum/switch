@@ -283,3 +283,15 @@ def test_seed_only_keeps_what_it_makes_and_reuses_nothing() -> None:
         parse_args([*base, "--keep", "--seed-only", "--reuse", "x"])
     a = parse_args([*base, "--keep", "--seed-only", "--concurrency", "4"])
     assert a.seed_only and a.concurrency == 4
+
+
+def test_admin_bulk_is_refused_past_the_servers_batch_cap():
+    with pytest.raises(SystemExit):
+        _args("--scenarios", "admin-bulk", "--bulk-batch", "201")
+
+
+def test_admin_bulk_clicks_must_start_inside_the_window():
+    with pytest.raises(SystemExit):
+        _args("--scenarios", "admin-bulk", "--duration", "60", "--bulk-at", "60")
+    a = _args("--scenarios", "admin-bulk", "--duration", "60", "--bulk-at", "10")
+    assert a.bulk_rooms == 400 and a.bulk_batch == 200

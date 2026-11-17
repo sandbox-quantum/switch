@@ -3820,7 +3820,8 @@ class TestPrivateChannelRoomsRoutes:
             SimpleNamespace(get=lambda b: core if b == bridge_id else None)
         )
         app.dependency_overrides[gw_deps.get_room_service] = lambda: SimpleNamespace(
-            room_changed=lambda tenant_id, room_id: None
+            room_changed=lambda tenant_id, room_id: None,
+            rooms_changed=lambda tenant_id, room_ids: None,
         )
         return app
 

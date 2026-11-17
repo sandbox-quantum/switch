@@ -629,7 +629,12 @@ class ChatService:
     def room_changed(self, tenant_id: str, room_id: str, client_ids: list[str]) -> None:
         """A room's own details changed (its name, say): wake the streams of
         the people in it, from a task of its own, so they re-send its summary."""
-        task = asyncio.create_task(self._room_details_changed(tenant_id, room_id))
+        self.rooms_changed(tenant_id, [room_id])
+
+    def rooms_changed(self, tenant_id: str, room_ids: list[str]) -> None:
+        """`room_changed` for many rooms at once: one task, one session and one
+        query for all of them, however many there are."""
+        task = asyncio.create_task(self._room_details_changed(tenant_id, room_ids))
         self._tasks.add(task)
         task.add_done_callback(self._task_done)
 
@@ -642,21 +647,22 @@ class ChatService:
                 exc_info=task.exception(),
             )
 
-    async def _room_details_changed(self, tenant_id: str, room_id: str) -> None:
+    async def _room_details_changed(self, tenant_id: str, room_ids: list[str]) -> None:
         async with tenant_session(self.session_factory, tenant_id) as session:
             user_ids = (
                 await session.execute(
                     select(Client.user_id)
+                    .distinct()
                     .join(ClientRoom, ClientRoom.client_id == Client.id)
                     .where(
-                        ClientRoom.room_id == room_id,
+                        ClientRoom.room_id.in_(room_ids),
                         Client.type == MEMBER_CLIENT_TYPE,
                         Client.user_id.is_not(None),
                     )
                 )
             ).scalars()
             members = sorted(user_id for user_id in user_ids if user_id is not None)
-        self._memberships_changed(tenant_id, members, [room_id])
+        self._memberships_changed(tenant_id, members, room_ids)
 
     async def agent_changed(self, tenant_id: str, agent_id: str) -> None:
         """Tell everyone who sees a room with this agent that it changed, and

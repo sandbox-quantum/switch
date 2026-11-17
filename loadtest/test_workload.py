@@ -16,6 +16,7 @@ from kube import Refused, guard_target  # noqa: E402
 from workload import (  # noqa: E402
     build_membership,
     build_schedule,
+    bulk_plan,
     fingerprint,
     payload,
 )
@@ -109,3 +110,18 @@ def test_allows_other_namespaces():
         "switch-test",
         "http://switch-test-switch-core.switch-test.svc.cluster.local:8000",
     )
+
+
+def test_an_admin_bulk_window_carries_the_steady_traffic_and_nothing_more():
+    steady = _schedule(7, "steady")
+    bulk = _schedule(7, "admin-bulk")
+    assert bulk and abs(len(bulk) - len(steady)) < 0.2 * len(steady)
+
+
+def test_the_bulk_rooms_go_in_batches_a_gap_apart():
+    clicks = bulk_plan(rooms=426, batch=200, at=15, gap=2)
+    assert [(c.at, c.start, c.end) for c in clicks] == [
+        (15, 0, 200),
+        (17, 200, 400),
+        (19, 400, 426),
+    ]
