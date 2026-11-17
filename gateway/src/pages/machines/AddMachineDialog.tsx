@@ -53,12 +53,19 @@ function CopyBlock({ text, label }: { text: string; label: string }) {
   );
 }
 
+/** Said when Switch refuses other devices without giving its reason. */
+const NO_REMOTE_DEVICES = "Other devices can't reach this Switch, so none can be added here.";
+
 /**
  * Issues a one-time enrollment code and shows the commands that install a
  * machine's agent controller and enroll it with that code. The code is shown
  * once: closing the dialog discards it, and a new open issues a new one. The
  * optional name and description go into the commands, so the machine enrolls
  * with them.
+ *
+ * Where Switch says no other device could reach it (Switch Console runs it,
+ * or its public address is a loopback one), the dialog says why and shows no
+ * command or code, since none of them could work.
  */
 export default function AddMachineDialog({
   open,
@@ -78,6 +85,8 @@ export default function AddMachineDialog({
     description.trim().length > MAX_MACHINE_DESCRIPTION
       ? `At most ${MAX_MACHINE_DESCRIPTION} characters.`
       : null;
+
+  const refused = enrollment !== null && !enrollment.remote_devices.supported;
 
   useEffect(() => {
     if (!open) return;
@@ -102,16 +111,21 @@ export default function AddMachineDialog({
     <Dialog open={open} onClose={onClose} maxWidth="md" fullWidth>
       <DialogTitle>Add a device</DialogTitle>
       <DialogContent>
-        <DialogContentText sx={{ mb: 2 }}>
-          Run the agent controller on the device that should run your agents (a laptop, a
-          desktop or your own VM). Enroll it once with the code below; it then runs whatever agents
-          you place on it here. It needs Linux or macOS with Node 22.13 or later, and the CLI of
-          each provider your agents use (such as <code>claude</code> or <code>codex</code>),
-          signed in as the user the controller runs as.
-        </DialogContentText>
+        {!refused && (
+          <DialogContentText sx={{ mb: 2 }}>
+            Run the agent controller on the device that should run your agents (a laptop, a
+            desktop or your own VM). Enroll it once with the code below; it then runs whatever
+            agents you place on it here. It needs Linux or macOS with Node 22.13 or later, and the
+            CLI of each provider your agents use (such as <code>claude</code> or <code>codex</code>),
+            signed in as the user the controller runs as.
+          </DialogContentText>
+        )}
         {error && <Alert severity="error">Could not issue an enrollment code: {error}</Alert>}
         {!error && !enrollment && <CircularProgress size={24} />}
-        {enrollment && (
+        {enrollment && refused && (
+          <Alert severity="warning">{enrollment.remote_devices.reason ?? NO_REMOTE_DEVICES}</Alert>
+        )}
+        {enrollment && !refused && (
           <Stack spacing={2}>
             <Stack spacing={2}>
               <TextField

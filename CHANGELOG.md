@@ -673,6 +673,14 @@ version of their own to them without also giving them a release of their own.
   of as well as the rooms.
 
 #### Fixed
+- **Add a device no longer shows commands that can't work.** On a Switch
+  that Switch Console runs, or whose public address (`GATEWAY_PUBLIC_URL`)
+  is a loopback one such as `http://localhost:8000`, no other device can
+  reach it, so the dashboard's Add a device dialog now says why and what to
+  do instead of printing install and enroll commands that would fail.
+  `POST /gateway/management/enrollment-codes` also returns `remote_devices`,
+  `{supported, reason}`, saying whether another device could enroll and, if
+  not, why. The code is still issued.
 - **A sign-out that fails in the dashboard says so.** Signing out, or out of
   every device, from the account menu or the screens before a workspace said
   nothing when Switch didn't answer, and a failed sign-out of this browser
