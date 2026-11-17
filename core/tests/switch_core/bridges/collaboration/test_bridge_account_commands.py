@@ -112,6 +112,9 @@ def _bridge(world: _World) -> tuple[SimpleNamespace, _Adapter]:
     async def _no_room(**_kwargs: object) -> None:
         raise AssertionError("an account command must not create a room")
 
+    async def _remember_nobody(sender_id: str, sender_name: str) -> None:
+        return None
+
     bridge = SimpleNamespace(
         _bridge_id=world.bridge_id,
         _bridge_tenant_id=TENANT_ZERO_ID,
@@ -121,6 +124,7 @@ def _bridge(world: _World) -> tuple[SimpleNamespace, _Adapter]:
         _adapter=adapter,
         _channel_to_room={},
         _create_room_for_channel=_no_room,
+        _remember_lobby_sender=_remember_nobody,
     )
     bridge._handle_account_command = CollaborationCore._handle_account_command.__get__(
         bridge

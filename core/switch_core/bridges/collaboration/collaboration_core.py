@@ -1363,6 +1363,22 @@ class CollaborationCore:
             agent = await self._agent_store.get(session, agent_id)
         return agent.name if agent is not None else None
 
+    async def _remember_lobby_sender(self, sender_id: str, sender_name: str) -> None:
+        """Know someone who wrote to the app directly, on a platform with no
+        directory.
+
+        There, the only people Switch can offer to link are the ones it has
+        seen, and a direct message to the bot (pressing Start on Telegram) is
+        the first thing a new person does. Recording them then is what lets
+        Console say "Is this you?" before they have joined any group, and lets
+        a link code sent in that same chat find their account.
+        """
+        if self._adapter.supports_directory_search:
+            return
+        await self.ensure_external_user(
+            external_user_id=sender_id, external_username=sender_name
+        )
+
     async def _handle_lobby_message(self, msg: InboundMessage) -> None:
         """The Slack app's DM ("lobby") is deprecated for talking to agents.
         Reply with a pointer to the onboarding docs instead of routing."""
@@ -1392,9 +1408,10 @@ class CollaborationCore:
             )
             return None
         if msg.channel_type == "lobby":
-            # The Slack app's DM ("lobby") is deprecated as a place to talk to
+            # The app's direct messages ("lobby") are not a place to talk to
             # agents: point the user at the docs instead of auto-creating a room
-            # and routing the message. Only Slack im/mpim map to "lobby".
+            # and routing the message.
+            await self._remember_lobby_sender(msg.sender_id, msg.sender_name)
             await self._handle_lobby_message(msg)
             return None
         # An answer typed in words, or a word that a card is waiting. It does
@@ -1872,6 +1889,8 @@ class CollaborationCore:
         await self._adapter.answer_command(cmd, reply)
 
     async def _handle_inbound_command(self, cmd: InboundCommand) -> None:
+        if cmd.channel_type == "lobby":
+            await self._remember_lobby_sender(cmd.sender_id, cmd.sender_name)
         if cmd.command in ACCOUNT_COMMANDS:
             await self._handle_account_command(cmd)
             return

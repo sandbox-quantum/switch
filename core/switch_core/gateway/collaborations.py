@@ -4,6 +4,7 @@ import logging
 import math
 from collections.abc import Iterable
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Annotated, Literal
 
 import httpx
@@ -659,12 +660,19 @@ async def list_bridge_users(
             bridge_id=u.bridge_id,
             external_user_id=u.external_user_id,
             external_username=u.external_username,
+            first_seen_at=_first_seen(u),
             claimed_by=_claimants(
                 claims.get(u.id, []), names, Principal(user.id, is_admin)
             ),
         )
         for u in users
     ]
+
+
+def _first_seen(external_user: ExternalUser) -> str:
+    # Typed as text on the model, but the column is a timestamp.
+    seen: object = external_user.created_at
+    return seen.isoformat() if isinstance(seen, datetime) else str(seen)
 
 
 async def _user_names(
@@ -1211,6 +1219,7 @@ async def _identity_summary(
         bridge_id=external_user.bridge_id,
         external_user_id=external_user.external_user_id,
         external_username=external_user.external_username,
+        first_seen_at=_first_seen(external_user),
         claimed_by=_claimants(claims.get(external_user.id, []), names, viewer),
         link_request=link_request,
     )

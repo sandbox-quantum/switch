@@ -1036,6 +1036,9 @@ class ExternalUserSummary(BaseModel):
     bridge_id: str
     external_user_id: str
     external_username: str
+    # When Switch first saw this account, so a client waiting for someone to
+    # say hello to the bot can tell a new arrival from the people it knew.
+    first_seen_at: str
     # Everyone who has claimed this platform account. A list, not one user:
     # claiming is not exclusive, so an account shared by several Switch users
     # satisfies an owner rule for any of them.

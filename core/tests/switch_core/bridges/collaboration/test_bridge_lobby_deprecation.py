@@ -75,9 +75,13 @@ async def test_inbound_lobby_message_short_circuits_routing() -> None:
         ensure_calls.append(kwargs)
         return None
 
+    async def _remember_lobby_sender(sender_id: str, sender_name: str) -> None:
+        return None
+
     bridge = SimpleNamespace(
         _is_registered_agent=_is_registered_agent,
         _handle_lobby_message=_handle_lobby_message,
+        _remember_lobby_sender=_remember_lobby_sender,
         _ensure_human_in_room=_ensure_human_in_room,
         _handle_text_answer=_no_text_answer,
         _channel_to_room={},
@@ -118,3 +122,31 @@ async def test_inbound_non_lobby_message_is_not_short_circuited() -> None:
 
     # A normal channel message does not hit the lobby deprecation handler.
     assert handled == []
+
+
+async def _remembering(*, directory: bool) -> list[dict[str, str]]:
+    recorded: list[dict[str, str]] = []
+
+    async def ensure_external_user(**kwargs: str) -> None:
+        recorded.append(kwargs)
+
+    bridge = SimpleNamespace(
+        _adapter=SimpleNamespace(supports_directory_search=directory),
+        ensure_external_user=ensure_external_user,
+    )
+    await CollaborationCore._remember_lobby_sender(bridge, "U1", "alice")
+    return recorded
+
+
+async def test_a_direct_message_makes_its_sender_known_where_there_is_no_directory() -> (
+    None
+):
+    """Pressing Start on Telegram is how a new person first reaches the bot, and
+    without a directory Switch can offer to link only people it has seen."""
+    assert await _remembering(directory=False) == [
+        {"external_user_id": "U1", "external_username": "alice"}
+    ]
+
+
+async def test_a_platform_with_a_directory_does_not_record_direct_messages() -> None:
+    assert await _remembering(directory=True) == []
