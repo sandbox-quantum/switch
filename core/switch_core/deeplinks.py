@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import logging
 import re
+import socket
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from ipaddress import ip_address
+from ipaddress import IPv4Address, IPv6Address, ip_address
 from urllib.parse import parse_qs, urlsplit
 
 logger = logging.getLogger(__name__)
@@ -67,11 +68,46 @@ def deeplink_for_platform(
     return switchdash_to_gateway(deeplink_url, gateway_public_url) or deeplink_url
 
 
+# A host made only of what an IPv4 address can be written with, in any of the
+# forms `inet_aton` reads: decimal, octal or hex parts, one to four of them.
+_NUMERIC_HOST = re.compile(r"[0-9a-fx.]+", re.IGNORECASE)
+
+
+def url_host_address(url: str) -> IPv4Address | IPv6Address | None:
+    """The IP address `url`'s host is written as, read as the operating
+    system reads it; None for a name.
+
+    `ipaddress` alone misses spellings a resolver accepts: a trailing root
+    dot (`0.0.0.0.`), and the shorthand IPv4 forms `inet_aton` reads (`127.1`,
+    `0`, `0x7f.1`). An IPv4-mapped IPv6 address (`[::ffff:127.0.0.1]`) is
+    returned as the IPv4 address it maps, since it is one: earlier Python
+    3.12 releases, which `requires-python` allows, call it neither loopback
+    nor unspecified.
+    """
+    host = urlsplit(url).hostname
+    if host is None:
+        return None
+    host = host.rstrip(".")
+    try:
+        address = ip_address(host)
+    except ValueError:
+        if not _NUMERIC_HOST.fullmatch(host):
+            return None
+        try:
+            return IPv4Address(socket.inet_aton(host))
+        except OSError:
+            return None
+    if isinstance(address, IPv6Address) and address.ipv4_mapped is not None:
+        return address.ipv4_mapped
+    return address
+
+
 def gateway_url_is_loopback(gateway_public_url: str) -> bool:
     """Whether a gateway origin only resolves on the machine that serves it.
 
     Names are judged as well as literals: RFC 6761 reserves `localhost`, and
-    every name under it, for the loopback interface.
+    every name under it, for the loopback interface. Literals are read as
+    `url_host_address` reads them.
     """
     host = urlsplit(gateway_public_url).hostname
     if host is None:
@@ -79,10 +115,8 @@ def gateway_url_is_loopback(gateway_public_url: str) -> bool:
     host = host.rstrip(".")
     if host == "localhost" or host.endswith(".localhost"):
         return True
-    try:
-        return ip_address(host).is_loopback
-    except ValueError:
-        return False
+    address = url_host_address(gateway_public_url)
+    return address is not None and address.is_loopback
 
 
 def gateway_url_warning(

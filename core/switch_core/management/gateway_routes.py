@@ -14,9 +14,7 @@ Failures use the same error envelope as the controller routes.
 
 from __future__ import annotations
 
-from ipaddress import ip_address
 from typing import Annotated, Any
-from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -27,7 +25,7 @@ from switch_core.config import DeploymentKind, SwitchConfig
 from switch_core.connections.broker import ServiceBroker, get_service_broker
 from switch_core.db.models import ServiceTokenIssuance, User, require_tenant_id
 from switch_core.db.stores.user_store import UserStore
-from switch_core.deeplinks import gateway_url_is_loopback
+from switch_core.deeplinks import gateway_url_is_loopback, url_host_address
 from switch_core.gateway.auth import get_current_user, get_tenant_is_admin
 from switch_core.gateway.dependencies import (
     get_config,
@@ -137,15 +135,11 @@ def remote_devices(
 
 
 def _names_no_one_address(url: str) -> bool:
-    """Whether `url`'s host is the unspecified address (`0.0.0.0`, `::`): one
-    a server binds to listen everywhere, which no device can connect to."""
-    host = urlsplit(url).hostname
-    if host is None:
-        return False
-    try:
-        return ip_address(host).is_unspecified
-    except ValueError:
-        return False
+    """Whether `url`'s host is the unspecified address (`0.0.0.0`, `::`, or
+    another way of writing one, as `url_host_address` reads it): one a server
+    binds to listen everywhere, which no device can connect to."""
+    address = url_host_address(url)
+    return address is not None and address.is_unspecified
 
 
 @router.post("/enrollment-codes", status_code=201)
