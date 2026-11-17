@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { ResolvedShellProfile } from '@main/core/terminal-shell/types';
-import { classifyInstallCommandFailure, runLocalInstallCommand } from './install-runner';
+import {
+  classifyInstallCommandFailure,
+  missingCommandIn,
+  runLocalInstallCommand,
+} from './install-runner';
 
 vi.mock('@main/utils/userEnv', () => ({ ensureUserBinDirsInPath: vi.fn() }));
 const profile: ResolvedShellProfile = {
@@ -56,5 +60,39 @@ describe('noninteractive install commands', () => {
     expect(classifyInstallCommandFailure({ exitCode: 1, output: 'failed' }).type).toBe(
       'command-failed'
     );
+  });
+});
+
+describe('a program the install command needed but could not find', () => {
+  it.each([
+    [
+      'Windows PowerShell',
+      "npm : The term 'npm' is not recognized as the name of a cmdlet, function, script file, or operable program. Check the spelling of the name, or if a path was included, verify that the path is correct and try again.",
+      'npm',
+    ],
+    [
+      'PowerShell 7',
+      "winget: The term 'winget' is not recognized as a name of a cmdlet, function, script file, or executable program.",
+      'winget',
+    ],
+    ['cmd.exe', "'npm.cmd' is not recognized as an internal or external command,", 'npm'],
+    ['bash', 'bash: line 1: npm: command not found', 'npm'],
+    ['sh', 'sh: 1: npm: not found', 'npm'],
+    ['a path', "The term 'C:\\tools\\curl.exe' is not recognized as the name of a cmdlet", 'curl'],
+  ])('names it from %s', (_shell, output, command) => {
+    expect(missingCommandIn(output)).toBe(command);
+  });
+
+  it('names nothing for an ordinary failure', () => {
+    expect(missingCommandIn('npm ERR! code E404\nnpm ERR! 404 Not Found')).toBeNull();
+  });
+
+  it('is reported as the missing program, not a generic failure', () => {
+    expect(
+      classifyInstallCommandFailure({
+        exitCode: 1,
+        output: "npm : The term 'npm' is not recognized as the name of a cmdlet, function",
+      })
+    ).toMatchObject({ type: 'command-failed', missingCommand: 'npm' });
   });
 });

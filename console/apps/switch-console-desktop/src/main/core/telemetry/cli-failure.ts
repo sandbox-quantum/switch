@@ -30,9 +30,11 @@ const CLI_FAILURE_CODES: Record<string, TelemetryCliFailure> = {
 
 export function cliFailureReason(result: {
   success: boolean;
-  error?: { type?: string };
+  error?: { type?: string; missingCommand?: string };
 }): TelemetryCliFailure {
   if (result.success) return 'none';
   const type = result.error?.type;
+  // Which program was missing stays out of the payload; that one was is enough.
+  if (type === 'command-failed' && result.error?.missingCommand) return 'missing_prerequisite';
   return (type && CLI_FAILURE_CODES[type]) || 'error';
 }

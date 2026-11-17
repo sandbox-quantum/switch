@@ -71,6 +71,9 @@ export function isCloudMachine(machine: Pick<ManagedMachine, 'kind'>): boolean {
 }
 
 /** A provider on a machine, as the machine last reported it. */
+/** `MachineProvider.problem` for a provider whose CLI the machine did not find. */
+export const PROVIDER_NOT_INSTALLED = 'not installed';
+
 export type MachineProvider = {
   /** The Switch definition provider id (`claude`, `codex`, …). */
   provider: string;
