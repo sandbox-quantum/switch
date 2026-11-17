@@ -731,6 +731,13 @@ CHECKS: dict[str, Check] = {
                 match=("id", "user_target"),
             ),
         ],
+        "the session": [
+            Check(
+                "can_manage_connector_apps",
+                _get(f"{G}/auth/session"),
+                _act("GET", f"{G}/connector-apps"),
+            ),
+        ],
     }.items()
     for check in checks
 }

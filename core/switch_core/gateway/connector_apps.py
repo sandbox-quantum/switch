@@ -1,9 +1,13 @@
-"""The operator sets up the apps connectors sign in through.
+"""The apps connectors sign in through, set up for the whole deployment.
 
-Deployment-operator only: `require_admin` (`users.role == "admin"`) gates
-every route here, never `require_tenant_admin`, since one app serves every
-workspace on the server. A workspace admin keeps the switch per service
-(`gateway/workspace_services.py`) and nothing more. Mounted only with the
+`require_deployment_manager` gates every route here, never
+`require_tenant_admin`, since one app serves every workspace on the server:
+the platform operator, or, on a deployment with exactly one organization,
+that organization's `org_admin`s, re-checked on every request so they lose
+it once a second organization exists. A workspace admin keeps the switch per
+service (`gateway/workspace_services.py`) and nothing more. The operator of a
+deployment with several organizations may use `switch-connector-apps` where
+switch-core runs (`connector_apps_admin.py`) instead. Mounted only with the
 `service_connections` flag, with the rest of service connections, so a
 server without the feature shows none of it; an app saved earlier still
 loads at boot and serves GitHub's own sign-in.
@@ -62,7 +66,7 @@ from switch_core.db.models import (
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.app_secrets import MissingSecretsError
 from switch_core.db.tenant_lookup import all_tenant_ids
-from switch_core.gateway.auth import require_admin
+from switch_core.gateway.auth import DeploymentManager, require_deployment_manager
 from switch_core.gateway.dependencies import get_session, get_session_factory
 from switch_core.keys import UndecryptableError
 from switch_core.providers.github_installation import GitHubInstallationCredentials
@@ -721,7 +725,7 @@ async def list_connector_apps(
     session_factory: Annotated[Any, Depends(get_session_factory)],
     apps: Annotated[ConnectorApps, Depends(get_connector_apps)],
     organization_apps: Annotated[bool, Depends(organization_apps_on)],
-    _admin: Annotated[User, Depends(require_admin)],
+    _manager: Annotated[DeploymentManager, Depends(require_deployment_manager)],
 ) -> dict[str, Any]:
     reads = [(spec, await _read(session, apps, spec)) for spec in apps.specs.values()]
     # The request's connection goes back before the scan opens one per workspace.
@@ -745,7 +749,7 @@ async def save_connector_app(
     apps: Annotated[ConnectorApps, Depends(get_connector_apps)],
     broker: Annotated[ServiceBroker, Depends(get_service_broker)],
     organization_apps: Annotated[bool, Depends(organization_apps_on)],
-    admin: Annotated[User, Depends(require_admin)],
+    manager: Annotated[DeploymentManager, Depends(require_deployment_manager)],
 ) -> dict[str, Any] | JSONResponse:
     spec = app_spec(apps, service)
     _refuse_while_configured(apps.effective(service))
@@ -770,14 +774,17 @@ async def save_connector_app(
             settings=checked.result.settings,
             secrets=checked.given,
             secret_names=spec.secret_names,
-            updated_by=admin.id,
+            updated_by=manager.user.id,
         )
     except MissingSecretsError as error:
         raise HTTPException(422, str(error)) from None
-    details = checked.details(service, body.client_id)
+    details = {
+        **checked.details(service, body.client_id),
+        **manager.audit_details(),
+    }
     await record_server_audit_event(
         session,
-        actor_user_id=admin.id,
+        actor_user_id=manager.user.id,
         action=ServerAuditAction.CONNECTOR_APP_SAVED,
         target_type="service",
         target_id=service,
@@ -787,9 +794,9 @@ async def save_connector_app(
     await apps.apply(service, broker=broker, state=request.app.state)
     apps.announce(service)
     logger.warning(
-        "The operator saved %s's app: user=%s fields=%s",
+        "Saved %s's app: user=%s fields=%s",
         spec.name,
-        admin.id,
+        manager.user.id,
         details["fields_changed"],
     )
     # What the vendor said, notes included, for the page to show as a check's.
@@ -806,7 +813,7 @@ async def import_connector_app(
     session_factory: Annotated[Any, Depends(get_session_factory)],
     apps: Annotated[ConnectorApps, Depends(get_connector_apps)],
     organization_apps: Annotated[bool, Depends(organization_apps_on)],
-    admin: Annotated[User, Depends(require_admin)],
+    manager: Annotated[DeploymentManager, Depends(require_deployment_manager)],
 ) -> dict[str, Any]:
     """Copy the app configuration names into a saved one, so the
     configuration can be removed with nothing retyped."""
@@ -843,11 +850,11 @@ async def import_connector_app(
         settings=effective.values.settings,
         secrets=effective.values.secrets,
         secret_names=spec.secret_names,
-        updated_by=admin.id,
+        updated_by=manager.user.id,
     )
     await record_server_audit_event(
         session,
-        actor_user_id=admin.id,
+        actor_user_id=manager.user.id,
         action=ServerAuditAction.CONNECTOR_APP_IMPORTED,
         target_type="service",
         target_id=service,
@@ -855,6 +862,7 @@ async def import_connector_app(
             "service": service,
             "client_id": effective.values.client_id,
             "source_variables": list(effective.configuration_variables),
+            **manager.audit_details(),
         },
     )
     await session.commit()
@@ -870,7 +878,7 @@ async def check_connector_app(
     session: Annotated[AsyncSession, Depends(get_session)],
     apps: Annotated[ConnectorApps, Depends(get_connector_apps)],
     broker: Annotated[ServiceBroker, Depends(get_service_broker)],
-    admin: Annotated[User, Depends(require_admin)],
+    manager: Annotated[DeploymentManager, Depends(require_deployment_manager)],
 ) -> dict[str, Any]:
     """Ask the vendor about the app in use. What it says of a saved app that
     passes the check is stored again where it changed, audited as a save, and
@@ -899,13 +907,13 @@ async def check_connector_app(
             service=service,
             client_id=values.client_id,
             settings=result.settings,
-            updated_by=admin.id,
+            updated_by=manager.user.id,
         )
         changed = fields_changed(values, values.client_id, result.settings, {})
         if recorded is not None:
             await record_server_audit_event(
                 session,
-                actor_user_id=admin.id,
+                actor_user_id=manager.user.id,
                 action=ServerAuditAction.CONNECTOR_APP_SAVED,
                 target_type="service",
                 target_id=service,
@@ -913,6 +921,7 @@ async def check_connector_app(
                     "service": service,
                     "fields_changed": changed,
                     "client_id": values.client_id,
+                    **manager.audit_details(),
                 },
             )
         await session.commit()
@@ -923,7 +932,7 @@ async def check_connector_app(
                 "Checking %s's app stored what the vendor now says of it: user=%s "
                 "fields=%s",
                 spec.name,
-                admin.id,
+                manager.user.id,
                 changed,
             )
     return {"ok": result.ok, "checks": checks_body(result)}
@@ -936,7 +945,7 @@ async def connector_app_impact(
     session_factory: Annotated[Any, Depends(get_session_factory)],
     apps: Annotated[ConnectorApps, Depends(get_connector_apps)],
     organization_apps: Annotated[bool, Depends(organization_apps_on)],
-    _admin: Annotated[User, Depends(require_admin)],
+    _manager: Annotated[DeploymentManager, Depends(require_deployment_manager)],
 ) -> dict[str, int]:
     """Who would have to reconnect if `client_id` replaced the app in use."""
     app_spec(apps, service)
@@ -956,7 +965,7 @@ async def remove_connector_app(
     apps: Annotated[ConnectorApps, Depends(get_connector_apps)],
     broker: Annotated[ServiceBroker, Depends(get_service_broker)],
     organization_apps: Annotated[bool, Depends(organization_apps_on)],
-    admin: Annotated[User, Depends(require_admin)],
+    manager: Annotated[DeploymentManager, Depends(require_deployment_manager)],
 ) -> dict[str, int]:
     """Remove the saved app. The connections made through it are kept, and
     unusable until an app is set up again; they can still be disconnected."""
@@ -967,16 +976,20 @@ async def remove_connector_app(
         raise HTTPException(404, f"{spec.name} has no saved app.")
     await record_server_audit_event(
         session,
-        actor_user_id=admin.id,
+        actor_user_id=manager.user.id,
         action=ServerAuditAction.CONNECTOR_APP_REMOVED,
         target_type="service",
         target_id=service,
-        details={"service": service, "client_id": removed.client_id},
+        details={
+            "service": service,
+            "client_id": removed.client_id,
+            **manager.audit_details(),
+        },
     )
     await session.commit()
     await apps.apply(service, broker=broker, state=request.app.state)
     apps.announce(service)
-    logger.warning("The operator removed %s's app: user=%s", spec.name, admin.id)
+    logger.warning("Removed %s's app: user=%s", spec.name, manager.user.id)
     return (
         (await _usages(session_factory, organization_apps))
         .of(service)

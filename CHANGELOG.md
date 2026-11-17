@@ -53,6 +53,14 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **On a deployment with one organization, its admins manage the
+  deployment's connector apps.** The connector apps every workspace signs in
+  through were the platform operator's alone. When the deployment has
+  exactly one organization, that organization's admins may now set them up
+  too. This is checked again on every request, so they lose it as soon as a
+  second organization exists. `GET /auth/session` reports
+  `can_manage_connector_apps`, and the server audit log notes when a change
+  came from an organization admin rather than the operator.
 - **An organization's admins are e-mailed when one of them stops being an
   admin.** When an organization admin is made a member by another admin,
   steps down, is removed from the organization, leaves it, or has their

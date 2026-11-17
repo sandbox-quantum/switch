@@ -1569,6 +1569,10 @@ class SessionStateResponse(BaseModel):
     # Whether an invitation addressed to an e-mail is sent there, or only
     # minted for the admin to share.
     invite_email_enabled: bool
+    # Whether the caller may set up the deployment's connector apps
+    # (`gateway/connector_apps.py`): the platform operator, or an `org_admin`
+    # of the deployment's only organization (`auth.deployment_manager`).
+    can_manage_connector_apps: bool
 
 
 MAX_INVITATION_USES = 100

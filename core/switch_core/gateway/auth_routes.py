@@ -41,6 +41,7 @@ from switch_core.gateway.auth import (
     SIGNUP_REFUSED_DETAIL,
     AuthenticatedCaller,
     AuthenticatedSession,
+    deployment_manager,
     describe_session_state,
     get_authenticated_caller,
     get_authenticated_session,
@@ -444,6 +445,8 @@ async def session_state(
         tenants,
         entered,
         client_lifecycle.tenants_isolated,
+        can_manage_connector_apps=await deployment_manager(session_factory, user)
+        is not None,
     )
 
 
