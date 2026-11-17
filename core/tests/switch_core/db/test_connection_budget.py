@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.config import SwitchConfig
 from switch_core.db.connection_budget import (
+    LEASE_CONNECTIONS,
     LISTENING_CONNECTIONS,
     ConnectionBudgetError,
     check_connection_budget,
@@ -25,11 +26,11 @@ def test_one_replica_is_replaced_and_several_are_rolled() -> None:
     assert processes_at_once(3) == 4
 
 
-def test_a_process_holds_its_pool_and_its_listeners(
+def test_a_process_holds_its_pool_its_listeners_and_its_lease(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config = _config(monkeypatch, DB_POOL_SIZE="10", DB_MAX_OVERFLOW="5")
-    assert per_process(config) == 15 + LISTENING_CONNECTIONS
+    assert per_process(config) == 15 + LISTENING_CONNECTIONS + LEASE_CONNECTIONS
 
 
 def test_exporting_metrics_adds_the_sampler(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -40,7 +41,7 @@ def test_exporting_metrics_adds_the_sampler(monkeypatch: pytest.MonkeyPatch) -> 
         OTLP_ENDPOINT="https://collector.example",
         DEPLOYMENT_ID="0e5d1b3a-6c1f-4c22-9a4c-3a9f5a2b7d10",
     )
-    assert per_process(config) == 15 + LISTENING_CONNECTIONS + 1
+    assert per_process(config) == 15 + LISTENING_CONNECTIONS + LEASE_CONNECTIONS + 1
 
 
 def _sized(monkeypatch: pytest.MonkeyPatch, replicas: int, pool: int) -> SwitchConfig:

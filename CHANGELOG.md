@@ -852,6 +852,13 @@ version of their own to them without also giving them a release of their own.
   delivered unchecked.
 
 #### Fixed
+- **A full database pool no longer makes a pod drop everything it holds.**
+  Each switch-core process renews its lease on a database connection of its
+  own, outside the shared pool. Before, the renewal borrowed from the same
+  pool as requests and streams, so when they filled it the renewal timed out,
+  the lease lapsed, and the pod stopped its owned work and put every agent
+  and controller it held offline. Each process now holds one more
+  connection, which the boot-time connection budget counts.
 - **A room Discord refuses to make a channel for says why.** When Discord
   turned down the new channel, for example because the Switch bot's role
   lacks Manage Channels, creating the room failed with a bare 500 and
