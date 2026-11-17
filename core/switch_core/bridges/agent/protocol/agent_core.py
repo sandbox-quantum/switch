@@ -222,6 +222,12 @@ LIST_ALL_ROOMS_MAX = 500
 # agent is already registered and its caller answered; this only bounds the
 # background task, and the bridge's own identity sync retries what it misses.
 BRIDGE_IDENTITY_CREATE_TIMEOUT_S = 60.0
+# How long registration waits for those identities before it answers. A
+# healthy messaging app is done well inside it, so the agent can be put in a
+# channel the moment its caller has the answer; one that is slow or not
+# answering costs the caller this much and no more, and finishes in the
+# background.
+BRIDGE_IDENTITY_WAIT_S = 5.0
 # How long one bridge gets to say whether a rename's handle is free. A bridge
 # that does not answer in time does not hold the rename up: it is reported as
 # not yet updated, and catches up when it answers.
@@ -758,7 +764,11 @@ class AgentCore:
         async with self.session_factory() as session:
             registered = await self.agent_store.get(session, agent_id)
         if registered is not None:
-            self._create_bridge_identities(tenant_id, agent_identity(registered))
+            creating = self._create_bridge_identities(
+                tenant_id, agent_identity(registered)
+            )
+            if creating:
+                await asyncio.wait(creating, timeout=BRIDGE_IDENTITY_WAIT_S)
 
         return RegistrationResult(
             agent_id=agent_id,
@@ -978,14 +988,17 @@ class AgentCore:
         if self._agent_profile_listener is not None:
             await self._agent_profile_listener(require_tenant_id(), agent_id)
 
-    def _create_bridge_identities(self, tenant_id: str, agent: AgentIdentity) -> None:
+    def _create_bridge_identities(
+        self, tenant_id: str, agent: AgentIdentity
+    ) -> list[asyncio.Task[None]]:
         """Start creating the agent's platform identity on the bridges of
-        `tenant_id` — and only that tenant's bridges — without waiting.
+        `tenant_id` — and only that tenant's bridges — and return the tasks.
 
         Each bridge gets its own background task, bounded by
         `BRIDGE_IDENTITY_CREATE_TIMEOUT_S`, so a messaging app that is slow or
-        not answering never holds up the registration. A failure is logged;
-        the bridge's own identity sync, which runs when it learns of the new
+        not answering holds up the registration no longer than its caller
+        chooses to wait (`BRIDGE_IDENTITY_WAIT_S`). A failure is logged; the
+        bridge's own identity sync, which runs when it learns of the new
         agent and on every start, provisions what was missed.
 
         The tenant is passed in rather than read from the ambient context so
@@ -994,12 +1007,15 @@ class AgentCore:
         instead would repeat the cross-tenant identity leak this method exists
         to avoid.
         """
+        tasks: list[asyncio.Task[None]] = []
         for collaboration_core in self.collab_lifecycle.bridges_for_tenant(tenant_id):
             task = asyncio.create_task(
                 _create_bridge_identity(collaboration_core.adapter, agent)
             )
             _identity_tasks.add(task)
             task.add_done_callback(_identity_tasks.discard)
+            tasks.append(task)
+        return tasks
 
     async def update_bridge_identities(self, agent_id: str) -> list[str]:
         """Tell the tenant's bridges an agent's display name or description

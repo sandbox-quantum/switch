@@ -69,8 +69,11 @@ async def _settle() -> None:
 
 class TestRegistrationDoesNotWaitOnBridges:
     async def test_a_bridge_that_hangs_does_not_hold_up_registration(
-        self, session_factory: async_sessionmaker[AsyncSession]
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        monkeypatch.setattr(agent_core, "BRIDGE_IDENTITY_WAIT_S", 0.2)
         hanging = _HangingAdapter()
         quick = _QuickAdapter()
         svc = make_service(session_factory)
@@ -83,7 +86,6 @@ class TestRegistrationDoesNotWaitOnBridges:
         assert time.monotonic() - started < 1.0
         async with session_factory() as session:
             assert await svc.agent_store.get(session, agent_id) is not None
-        await asyncio.sleep(0)
         assert quick.created == ["slow-app-bot"]
         assert hanging.created == []
 
@@ -92,6 +94,20 @@ class TestRegistrationDoesNotWaitOnBridges:
 
         assert hanging.created == ["slow-app-bot"]
 
+    async def test_a_healthy_bridge_has_the_identity_ready_when_registration_answers(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """Callers put a new agent in a channel straight away, so a bridge
+        that answers promptly is waited for."""
+        quick = _QuickAdapter()
+        svc = make_service(session_factory)
+        svc.collab_lifecycle = _Bridges([_Bridge(quick)])  # type: ignore[assignment]
+        owner = await make_owner(session_factory)
+
+        await register(svc, "ready-bot", owner)
+
+        assert quick.created == ["ready-bot"]
+
     async def test_a_bridge_past_its_deadline_is_logged_and_left_to_its_sync(
         self,
         session_factory: async_sessionmaker[AsyncSession],
@@ -99,6 +115,7 @@ class TestRegistrationDoesNotWaitOnBridges:
         caplog: pytest.LogCaptureFixture,
     ) -> None:
         monkeypatch.setattr(agent_core, "BRIDGE_IDENTITY_CREATE_TIMEOUT_S", 0.05)
+        monkeypatch.setattr(agent_core, "BRIDGE_IDENTITY_WAIT_S", 0.01)
         hanging = _HangingAdapter()
         svc = make_service(session_factory)
         svc.collab_lifecycle = _Bridges([_Bridge(hanging)])  # type: ignore[assignment]

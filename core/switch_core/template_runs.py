@@ -182,7 +182,7 @@ async def one_attempt_at_a_time(
     while one is going is refused with `RunInProgress` rather than left to
     wait, so a person retrying sees at once that the first is still going."""
     key = _run_lock_key(tenant_id, owner_id, run_key)
-    async with session_factory() as session:
+    async with tenant_session(session_factory, tenant_id) as session:
         got = (await session.execute(select(func.pg_try_advisory_lock(key)))).scalar()
         if not got:
             raise RunInProgress()
@@ -200,7 +200,7 @@ async def attempt_in_flight(
 ) -> bool:
     """Whether an attempt of run `run_key` holds its slot right now."""
     key = _run_lock_key(tenant_id, owner_id, run_key)
-    async with session_factory() as session:
+    async with tenant_session(session_factory, tenant_id) as session:
         got = (await session.execute(select(func.pg_try_advisory_lock(key)))).scalar()
         if got:
             await session.execute(select(func.pg_advisory_unlock(key)))
@@ -223,6 +223,7 @@ def derived_run_key(*parts: Any) -> str:
 
 async def agent_run_key(
     session_factory: async_sessionmaker[AsyncSession],
+    tenant_id: str,
     owner_id: str,
     request: str,
     now: datetime,
@@ -234,7 +235,7 @@ async def agent_run_key(
     key, so the retry finishes it. Otherwise it is a run of its own, with a
     key no earlier run has. A run that made nothing has nothing to finish."""
     prefix = f"{request}#"
-    async with session_factory() as session:
+    async with tenant_session(session_factory, tenant_id) as session:
         latest_room = (
             await session.execute(
                 select(Room.metadata_[TEMPLATE_RUN_KEY].astext, Room.created_at)

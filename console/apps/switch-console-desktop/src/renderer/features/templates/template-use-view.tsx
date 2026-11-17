@@ -111,6 +111,7 @@ import {
   type Values,
   valueProblem,
 } from './use/use-template-model';
+import { RUN_READ_BACK_MS, useWhileRunning } from './use/use-while-running';
 
 type Params = {
   serverId: string;
@@ -1370,17 +1371,16 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
     finish('Opening Your Agents…', () => navigate('serverAgents', { serverId }));
   };
 
-  /**
-   * The request outlasted Switch Console's wait, or an earlier attempt of the
-   * run is still going: read back what the server has made and show each
-   * step as it really stands, instead of calling the run failed. A run the
-   * server finished is opened as if the answer had come in time.
-   */
-  const reconcileAfterWait = async (pending: { i: number; name: string }[]) => {
+  // The steps a run that outlasted the wait was making, for the read-backs
+  // that follow it.
+  const outlastedSteps = useRef<{ i: number; name: string }[]>([]);
+
+  /** Show each step as the server's read-back of the run says it stands. */
+  const applyReadBack = async (
+    soFar: Awaited<ReturnType<typeof rpc.workspaces.templateRunSoFar>> | null
+  ) => {
     if (workspaceId === null) return;
-    const soFar = await rpc.workspaces
-      .templateRunSoFar({ workspaceId, runKey: runKey.current })
-      .catch(() => null);
+    const pending = outlastedSteps.current;
     const run = reconcileRun({
       agentNames: pending.map((p) => p.name),
       roomCount: makesRoom ? (parsed?.rooms.length ?? 1) : 0,
@@ -1407,6 +1407,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
       await refreshSidebarRoomState(true).catch(() => {});
     }
     if (run.complete) {
+      setOutlasted(null);
       const roomId = run.room?.roomId ?? null;
       if (roomId !== null) {
         finish(`Opening ${run.room?.roomName ?? 'the room'}…`, () => navigate('room', { roomId }));
@@ -1419,6 +1420,32 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
     setCreateError(run.message);
     setPhase('failed');
   };
+
+  /**
+   * The request outlasted Switch Console's wait, or an earlier attempt of the
+   * run is still going: read back what the server has made and show each
+   * step as it really stands, instead of calling the run failed. A run the
+   * server finished is opened as if the answer had come in time; one still
+   * going is read again every few seconds (`useWhileRunning`) until it is not.
+   */
+  const reconcileAfterWait = async (pending: { i: number; name: string }[]) => {
+    if (workspaceId === null) return;
+    outlastedSteps.current = pending;
+    const soFar = await rpc.workspaces
+      .templateRunSoFar({ workspaceId, runKey: runKey.current })
+      .catch(() => null);
+    await applyReadBack(soFar);
+  };
+
+  // A run still going on the server is read back in place until it settles.
+  // A read-back that fails changes nothing: the next one tries again.
+  useWhileRunning(phase === 'failed' && outlasted === 'running', RUN_READ_BACK_MS, async () => {
+    if (workspaceId === null) return;
+    const soFar = await rpc.workspaces
+      .templateRunSoFar({ workspaceId, runKey: runKey.current })
+      .catch(() => null);
+    if (soFar !== null) await applyReadBack(soFar);
+  });
 
   const createAll = async () => {
     if (!loaded || workspaceId === null || blockedReason !== null) return;

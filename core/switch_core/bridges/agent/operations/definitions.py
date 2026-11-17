@@ -1998,6 +1998,7 @@ async def _provision_as_agent(
     from_room_id = await connected_room()
     run_key = await agent_run_key(
         protocol.session_factory,
+        require_tenant_id(),
         owner.id,
         derived_run_key(
             agent.id,
