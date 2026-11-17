@@ -26,6 +26,7 @@ import DataTable, {
 import PageBanner from "../../components/PageBanner";
 import PageHeader from "../../components/PageHeader";
 import RowActionsMenu, { type RowAction } from "../../components/RowActionsMenu";
+import SuccessSnackbar from "../../components/SuccessSnackbar";
 import { TransferOwnershipDialog } from "../../components/TransferOwnershipSection";
 import { useAuth } from "../../data/AuthContext";
 import {
@@ -58,10 +59,7 @@ const STATUS: Record<AgentListEntry["status"], { label: string; color: string; d
   },
 };
 
-const STATUS_OPTIONS: FilterOption[] = (["online", "offline", "not_tracked"] as const).map((value) => ({
-  value,
-  label: STATUS[value].label,
-}));
+const STATUSES = ["online", "offline", "not_tracked"] as const;
 
 /** Kept stable: a fresh array each render would rebuild the grid's columns. */
 const PINNED = ["actions"];
@@ -99,6 +97,16 @@ export function deviceLabels(agents: readonly AgentListEntry[]): Map<string, str
 }
 
 const byLabel = (a: FilterOption, b: FilterOption) => a.label.localeCompare(b.label);
+
+/** Plain text for a cell with no value to show, in the muted ink an em
+ * dash takes, with what it means on hover. */
+function MutedCell({ text, title }: { text: string; title?: string }) {
+  return (
+    <Box component="span" title={title} sx={{ color: "text.secondary" }}>
+      {text}
+    </Box>
+  );
+}
 
 function StatusCell({ status }: { status: AgentListEntry["status"] }) {
   const meta = STATUS[status];
@@ -205,6 +213,10 @@ function AgentList({
       ...[...devices.entries()].map(([value, label]) => ({ value, label })).sort(byLabel),
       ...(rows.some((agent) => !agent.device) ? [{ value: NO_DEVICE, label: "No device" }] : []),
     ];
+    // Only the statuses some agent here has, so none returns nothing.
+    const statusOptions: FilterOption[] = STATUSES.filter((status) => rows.some((agent) => agent.status === status)).map(
+      (value) => ({ value, label: STATUS[value].label }),
+    );
 
     return [
       {
@@ -244,7 +256,7 @@ function AgentList({
         field: "status",
         headerName: "Status",
         width: 120,
-        filter: { value: (agent) => agent.status, options: STATUS_OPTIONS },
+        filter: { value: (agent) => agent.status, options: statusOptions },
         renderCell: ({ row }) => <StatusCell status={row.status} />,
       },
       {
@@ -253,13 +265,13 @@ function AgentList({
         width: 140,
         filter: { value: (agent) => agent.parent_agent_id ?? TOP_LEVEL, options: parents },
         valueGetter: (value) => (value ? (nameById.get(value as string) ?? value) : ""),
-        renderCell: ({ value }) => value || EM_DASH,
+        renderCell: ({ value }) => value || <MutedCell text={EM_DASH} title="Top-level agent" />,
       },
       {
         field: "description",
         headerName: "Description",
         flex: 2,
-        minWidth: 125,
+        minWidth: 220,
         sortable: false,
         renderCell: ({ value }) => (
           <Box
@@ -271,14 +283,16 @@ function AgentList({
           </Box>
         ),
       },
-      { field: "tool_count", headerName: "Tools", width: 64, type: "number" },
-      { field: "model_count", headerName: "Models", width: 72, type: "number" },
+      // Counts sit under their headers, left-aligned like every other column.
+      { field: "tool_count", headerName: "Tools", width: 64, type: "number", align: "left", headerAlign: "left" },
+      { field: "model_count", headerName: "Models", width: 72, type: "number", align: "left", headerAlign: "left" },
       {
         field: "owner_name",
         headerName: "Owner",
         width: 140,
         ...(!yours && { filter: { value: (agent: AgentListEntry) => agent.owner_id ?? NO_OWNER, options: owners } }),
-        renderCell: ({ value }) => value ?? EM_DASH,
+        // An owner whose name can't be found is still an owner.
+        renderCell: ({ value, row }) => value ?? <MutedCell text={row.owner_id ? "Unknown" : "No owner"} />,
       },
       ...(showDevices
         ? [
@@ -360,9 +374,9 @@ function AgentList({
   const emptyCard = (
     <Card variant="outlined" sx={{ borderRadius: "16px" }}>
       <Stack spacing={2} sx={{ alignItems: "center", px: 3, py: 8 }}>
-        <SmartToyOutlined aria-hidden sx={{ color: "text.secondary" }} />
+        <SmartToyOutlined aria-hidden sx={{ fontSize: 24, color: "text.secondary" }} />
         <TableEmptyState
-          title={workspaceEmpty ? `No agents in ${workspace} yet` : `You don't own any agents in ${workspace}`}
+          title={workspaceEmpty ? `No agents in ${workspace} yet` : `You don’t own any agents in ${workspace}`}
         >
           {workspaceEmpty
             ? "Add an agent to let it join rooms and work alongside the people in this workspace."
@@ -404,6 +418,7 @@ function AgentList({
         search={search}
         selectFilters={selectFilters}
         initialSort={{ field: "created_at", sort: "desc" }}
+        yours={yours}
         pinnedRight={PINNED}
         onRowClick={(params) => navigate(`/agents/${params.id}`)}
         sx={{ "& .MuiDataGrid-row": { cursor: "pointer" } }}
@@ -439,7 +454,7 @@ function AgentList({
         </Box>
       )}
 
-      {notice && (
+      {notice && notice.severity !== "success" && (
         <Alert severity={notice.severity} onClose={() => setNotice(null)} sx={{ mb: 2 }}>
           {notice.lines.map((line) => (
             <div key={line}>{line}</div>
@@ -528,6 +543,11 @@ function AgentList({
           );
           void refetch();
         }}
+      />
+
+      <SuccessSnackbar
+        message={notice?.severity === "success" ? notice.lines.join(" ") : null}
+        onClose={() => setNotice(null)}
       />
     </Box>
   );

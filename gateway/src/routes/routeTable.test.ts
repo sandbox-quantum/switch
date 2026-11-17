@@ -1,37 +1,75 @@
 import { describe, expect, it } from "vitest";
 import type { Capabilities } from "../data/capabilities";
 import { featureFlagsFrom } from "../data/featureFlags";
-import { RAIL, accessTo, areaOf, menuOf, routesFor } from "./routeTable";
+import { RAIL, ROUTES, accessTo, areaOf, menuOf } from "./routeTable";
 
-describe("the new layout's reach", () => {
-  it("answers every URL of today's layout, with a page or a redirect", () => {
-    const v2 = new Set(routesFor("v2").map((route) => route.path));
-    const missing = routesFor("current")
-      .filter((route) => route.kind === "page")
-      .map((route) => route.path)
-      .filter((path) => !v2.has(path));
-    expect(missing).toEqual([]);
+/** Every page URL the dashboard had before the settings areas. Links to them
+ * live on in older Switch Consoles, the docs and bookmarks. */
+const EARLIER_URLS = [
+  "/",
+  "/ecosystem",
+  "/rooms",
+  "/rooms/new",
+  "/rooms/groups",
+  "/rooms/graph",
+  "/rooms/:roomId",
+  "/rooms/:roomId/documents/:documentId",
+  "/resources",
+  "/resources/references/:id",
+  "/resources/documents/:id",
+  "/resources/packages/:id",
+  "/resources/templates/:id",
+  "/agents",
+  "/agents/:agentId",
+  "/connectors",
+  "/machines",
+  "/collaborations",
+  "/registration-keys",
+  "/workspace",
+  "/workspace/private-channel-rooms",
+  "/organization",
+  "/usage",
+  "/users",
+  "/operator/workspaces",
+];
+
+describe("the route table's reach", () => {
+  it("still answers every URL the dashboard had, with a page or a redirect", () => {
+    const answered = new Set(ROUTES.map((route) => route.path));
+    expect(EARLIER_URLS.filter((path) => !answered.has(path))).toEqual([]);
+  });
+
+  it("sends each redirect to a page", () => {
+    const pages = new Set(ROUTES.filter((r) => r.kind !== "redirect").map((r) => r.path));
+    const dangling = ROUTES.filter((r) => r.kind === "redirect" && !pages.has(r.to)).map(
+      (r) => r.path,
+    );
+    expect(dangling).toEqual([]);
+  });
+
+  it("lights Home on the ecosystem graph, which Home opens, and Settings on Usage & budget", () => {
+    const standsFor = (label: string) => RAIL.find((item) => item.label === label)?.activeFor ?? [];
+    expect(standsFor("Home")).toContain("/ecosystem");
+    expect(standsFor("Settings")).toContain("/usage");
   });
 
   it("keeps only the settings areas at the foot of the rail", () => {
-    expect(RAIL.v2.filter((item) => item.bottom).map((item) => item.to)).toEqual(["/settings"]);
-    expect(RAIL.current.some((item) => item.bottom)).toBe(false);
+    expect(RAIL.filter((item) => item.bottom).map((item) => item.to)).toEqual(["/settings"]);
   });
 });
 
 describe("areaOf", () => {
   it("names the settings area a page is in", () => {
-    expect(areaOf("/settings/org/users", "v2")).toBe("organization");
-    expect(areaOf("/settings/org", "v2")).toBe("organization");
-    expect(areaOf("/usage", "v2")).toBe("workspace");
-    expect(areaOf("/settings/org/connector-apps", "v2")).toBe("organization");
+    expect(areaOf("/settings/org/users")).toBe("organization");
+    expect(areaOf("/settings/org")).toBe("organization");
+    expect(areaOf("/usage")).toBe("workspace");
+    expect(areaOf("/settings/org/connector-apps")).toBe("organization");
   });
 
   it("names none for a page outside them, or a URL that only redirects", () => {
-    expect(areaOf("/rooms", "v2")).toBeNull();
-    expect(areaOf("/usage", "current")).toBeNull();
-    expect(areaOf("/settings/org", "current")).toBeNull();
-    expect(areaOf("/platform/users", "v2")).toBeNull();
+    expect(areaOf("/rooms")).toBeNull();
+    expect(areaOf("/organization")).toBeNull();
+    expect(areaOf("/platform/users")).toBeNull();
   });
 });
 
@@ -49,33 +87,32 @@ describe("Connector apps", () => {
       canManageConnectorApps,
       connectorAppsInDashboard: null,
       features: featureFlagsFrom(
-        ["agent_management", "service_connections", "organization_connector_apps", "gateway_v2"].map(
-          (key) => ({ key, enabled: true }),
-        ),
+        ["agent_management", "service_connections", "organization_connector_apps"].map((key) => ({
+          key,
+          enabled: true,
+        })),
       ),
     };
   }
 
   const inMenu = (caps: Capabilities) =>
-    menuOf("organization", "v2", caps).some((item) => item.path === "/settings/org/connector-apps");
+    menuOf("organization", caps).some((item) => item.path === "/settings/org/connector-apps");
 
   it("is in Organization settings, and opens, for an admin who may set them up", () => {
     const caps = orgAdmin(true);
     expect(inMenu(caps)).toBe(true);
-    expect(accessTo("/settings/org/connector-apps", "v2", caps)?.allowed).toBe(true);
-    expect(accessTo("/connectors", "current", caps)?.allowed).toBe(true);
+    expect(accessTo("/settings/org/connector-apps", caps)?.allowed).toBe(true);
   });
 
   it("is neither listed nor opened by an admin who may not", () => {
     const caps = orgAdmin(false);
     expect(inMenu(caps)).toBe(false);
-    expect(accessTo("/settings/org/connector-apps", "v2", caps)?.allowed).toBe(false);
-    expect(accessTo("/connectors", "current", caps)?.allowed).toBe(false);
+    expect(accessTo("/settings/org/connector-apps", caps)?.allowed).toBe(false);
   });
 
-  it("sits right after Connectors and apps", () => {
-    const labels = menuOf("organization", "v2", orgAdmin(true)).map((item) => item.label);
-    expect(labels.indexOf("Connector apps")).toBe(labels.indexOf("Connectors and apps") + 1);
+  it("sits right after Connectors", () => {
+    const labels = menuOf("organization", orgAdmin(true)).map((item) => item.label);
+    expect(labels.indexOf("Connector apps")).toBe(labels.indexOf("Connectors") + 1);
   });
 
   /** Someone in a workspace of no organization, as an older release could
@@ -92,9 +129,9 @@ describe("Connector apps", () => {
 
   it("opens from a workspace in no organization for whoever may set them up, and nothing else there does", () => {
     const caps = outsideAnOrganization(true);
-    expect(accessTo("/settings/org", "v2", caps)?.allowed).toBe(true);
-    expect(accessTo("/settings/org/connector-apps", "v2", caps)?.allowed).toBe(true);
-    expect(menuOf("organization", "v2", caps).map((item) => item.path)).toEqual([
+    expect(accessTo("/settings/org", caps)?.allowed).toBe(true);
+    expect(accessTo("/settings/org/connector-apps", caps)?.allowed).toBe(true);
+    expect(menuOf("organization", caps).map((item) => item.path)).toEqual([
       "/settings/org/connector-apps",
     ]);
     for (const path of [
@@ -103,7 +140,7 @@ describe("Connector apps", () => {
       "/settings/org/users",
       "/settings/org/audit-log",
     ]) {
-      expect(accessTo(path, "v2", caps)).toEqual({
+      expect(accessTo(path, caps)).toEqual({
         allowed: false,
         reason: "not_permitted",
         message: "This workspace belongs to no organization.",
@@ -113,21 +150,22 @@ describe("Connector apps", () => {
 
   it("keeps Organization settings shut, from a workspace in no organization, to anyone else", () => {
     const caps = outsideAnOrganization(false);
-    expect(accessTo("/settings/org", "v2", caps)).toEqual({
+    expect(accessTo("/settings/org", caps)).toEqual({
       allowed: false,
       reason: "not_permitted",
       message: "This workspace belongs to no organization.",
     });
-    expect(accessTo("/settings/org/connector-apps", "v2", caps)?.allowed).toBe(false);
+    expect(accessTo("/settings/org/connector-apps", caps)?.allowed).toBe(false);
   });
 });
 
 describe("Organization settings for everyone else", () => {
   it("still admits only the organization's admins and the operator to its pages", () => {
     const flags = featureFlagsFrom(
-      ["agent_management", "service_connections", "organization_connector_apps", "gateway_v2"].map(
-        (key) => ({ key, enabled: true }),
-      ),
+      ["agent_management", "service_connections", "organization_connector_apps"].map((key) => ({
+        key,
+        enabled: true,
+      })),
     );
     const member: Capabilities = {
       isOperator: false,
@@ -141,7 +179,7 @@ describe("Organization settings for everyone else", () => {
       features: flags,
     };
     for (const path of ["/settings/org", "/settings/org/general", "/settings/org/users"]) {
-      expect(accessTo(path, "v2", member)).toEqual({
+      expect(accessTo(path, member)).toEqual({
         allowed: false,
         reason: "not_permitted",
         message: "Only the organization's admins can open this page.",
@@ -149,7 +187,7 @@ describe("Organization settings for everyone else", () => {
     }
     const operator = { ...member, isOperator: true, canManageConnectorApps: true };
     for (const path of ["/settings/org/general", "/settings/org/users", "/settings/org/connector-apps"]) {
-      expect(accessTo(path, "v2", operator)?.allowed).toBe(true);
+      expect(accessTo(path, operator)?.allowed).toBe(true);
     }
   });
 });

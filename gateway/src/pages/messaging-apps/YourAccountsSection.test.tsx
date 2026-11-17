@@ -94,6 +94,7 @@ describe("YourAccountsSection", () => {
 
     expect(api.releaseBridgeIdentity).toHaveBeenCalledWith("b1", "a1");
     expect(mine.refresh).toHaveBeenCalled();
+    expect(await screen.findByText("Unlinked @ada.")).toBeTruthy();
   });
 
   it("cancels a waiting link without unlinking anything", async () => {

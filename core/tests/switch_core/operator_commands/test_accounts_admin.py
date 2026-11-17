@@ -189,6 +189,20 @@ class TestCreate:
         assert password not in str(refused.value)
         assert await _server_events(rls_harness) == []
 
+    async def test_a_name_holding_a_hidden_character_is_refused(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        with pytest.raises(CommandRefused, match="U\\+202E"):
+            await create_account(
+                rls_harness.restricted,
+                email="fresh@example.invalid",
+                name="report \u202eslrep.exe",
+                password="correct-horse-battery-staple",
+                operator=False,
+            )
+
+        assert await _server_events(rls_harness) == []
+
     def test_the_password_comes_from_a_file_without_its_line_ending(
         self, tmp_path: Path
     ) -> None:

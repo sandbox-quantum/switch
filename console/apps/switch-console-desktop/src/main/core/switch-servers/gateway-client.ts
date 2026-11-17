@@ -3536,8 +3536,10 @@ export async function updateTemplate(
 /**
  * Count a run of a stored or official template (`POST /templates/{id}/runs`),
  * once the whole run has succeeded, whichever way it ran. Only a count for the
- * catalogue. False when the server did not count it (404): one from before
- * runs were counted, or a template the person can no longer read.
+ * catalogue. The server counts a person's report once per template in a few
+ * minutes, and not after a run it counted itself, so reporting every run is
+ * safe. False when the server refused it (404): one from before runs were
+ * counted, or a template the person can no longer read.
  */
 export async function recordTemplateRun(
   server: SwitchServer,

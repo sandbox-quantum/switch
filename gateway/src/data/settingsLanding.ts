@@ -1,25 +1,30 @@
-/** Where the settings areas send someone who arrives without naming a page:
- * back to the page they last had open, or, after switching workspace from a
- * settings page, to that same page in the new workspace. Either way the area
- * checks the page against what they may open there, and falls back to its
- * first page; see `SettingsIndex`. */
+/** Where a workspace switch lands, and where the settings areas send someone
+ * who arrives without naming a page: back to the page they last had open, or,
+ * after switching workspace from a settings page, to that same page in the new
+ * workspace. Either way the area checks the page against what they may open
+ * there, and falls back to its first page; see `SettingsIndex`. */
 
 export type SettingsArea = "workspace" | "organization";
 
 const AFTER_SWITCH_KEY = "switch.settings.afterSwitch";
 const LAST_PAGE_KEY = "switch.settings.lastPage";
 
+/** The lists a switch stays on: each shows the new workspace's own. */
+const LIST_PAGES: readonly string[] = ["/agents", "/rooms", "/templates", "/resources", "/connectors"];
+
 // `/usage` stays where it is until Usage & budget is rebuilt, but sits in
-// Workspace settings in the new layout.
+// Workspace settings.
 function inSettings(pathname: string): boolean {
   return pathname === "/settings" || pathname.startsWith("/settings/") || pathname === "/usage";
 }
 
-/** Where to load after switching workspace from `pathname`. A settings page
- * is carried across; anything else starts again from the landing page,
- * because what it showed belonged to the workspace being left. */
-export function landingAfterSwitch(pathname: string, newLayout: boolean): string {
-  if (!newLayout || !inSettings(pathname)) return "/";
+/** Where to load after switching workspace from `pathname`. A list stays
+ * where it is and a settings page is carried across; anything else, such as
+ * one agent or room, starts again from the landing page, because what it
+ * showed belonged to the workspace being left. */
+export function landingAfterSwitch(pathname: string): string {
+  if (LIST_PAGES.includes(pathname)) return pathname;
+  if (!inSettings(pathname)) return "/";
   window.sessionStorage.setItem(AFTER_SWITCH_KEY, pathname);
   return "/settings";
 }

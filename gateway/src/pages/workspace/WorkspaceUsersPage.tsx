@@ -38,7 +38,6 @@ export default function WorkspaceUsersPage() {
         description={
           <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
             Everyone in {tenant.name}.
-            {!administers && " Ask a workspace admin to invite someone."}
           </Typography>
         }
         actions={

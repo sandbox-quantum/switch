@@ -12,13 +12,13 @@ import ForceGraph2D from "react-force-graph-2d";
 import { useNavigate } from "react-router";
 import { useAuth } from "../../data/AuthContext";
 import { loadRoomsWithArchived } from "../../data/api";
-import { GATEWAY_V2 } from "../../data/featureFlags";
 import { useRoomGraph, useRoomGroups } from "../../data/hooks";
 import { type ListScope, listScopeOf, roomsInScope } from "../../data/listScope";
 import { useLoad } from "../workspace/useLoad";
 import { branchColor, buildGroupIndex, topAncestor } from "./groupTree";
 import { RoomFilters, filterRooms, useRoomFilterState } from "./roomFilters";
 import { useGraphCanvasTheme } from "../graphCanvasTheme";
+import { graphTooltip } from "../graphTooltip";
 
 interface GraphNode {
   id: string;
@@ -46,19 +46,24 @@ interface LegendEntry {
 
 const UNGROUPED_COLOR = "#5A5F66";
 
+/** `1 room`, `3 rooms`: a count with its noun. */
+function count(n: number, noun: string): string {
+  return `${n} ${noun}${n === 1 ? "" : "s"}`;
+}
+
 export default function RoomsGraphPage() {
   const navigate = useNavigate();
   const { capabilities } = useAuth();
   const filters = useRoomFilterState();
 
   // Nodes come from the same rooms the list shows, narrowed the same way for
-  // a member in the new layout, so the graph never shows a room the list
+  // a member, so the graph never shows a room the list
   // hides; the link edges come from the link graph. Group colouring uses the
   // group tree.
-  const scope: ListScope = capabilities.features[GATEWAY_V2] ? listScopeOf(capabilities) : "workspace";
+  const scope: ListScope = listScopeOf(capabilities);
   const { data: allRooms, loading: roomsLoading, error: roomsError } = useLoad(loadRoomsWithArchived);
   const rooms = useMemo(() => (allRooms ? roomsInScope(allRooms, scope) : null), [allRooms, scope]);
-  const { data: groups } = useRoomGroups();
+  const { data: groups, error: groupsError } = useRoomGroups();
   const { data: graph, loading: graphLoading, error: graphError } = useRoomGraph();
 
   const loading = roomsLoading || graphLoading;
@@ -207,22 +212,29 @@ export default function RoomsGraphPage() {
   return (
     <Box sx={{ display: "flex", flexDirection: "column", height: "100%" }}>
       <Stack direction="row" alignItems="center" spacing={1} mb={2}>
-        <IconButton onClick={() => navigate("/rooms")} size="small" aria-label="Back">
+        <IconButton onClick={() => navigate("/rooms")} size="small" aria-label="Back to rooms">
           <ArrowBack />
         </IconButton>
         <Typography variant="h5" sx={{ flexGrow: 1 }}>
           Rooms graph
         </Typography>
-        <Typography variant="caption" color="text.secondary">
-          {`${nodes.length} rooms · ${links.length} links · ${legend.length} groups`}
-        </Typography>
+        {!loading && error === null && (
+          <Typography variant="caption" color="text.secondary">
+            {[count(nodes.length, "room"), count(links.length, "link"), count(legend.length, "group")].join(" · ")}
+          </Typography>
+        )}
       </Stack>
 
       <RoomFilters rooms={rooms ?? []} groups={groupList} byId={groupIndex} state={filters} />
 
       {error && (
         <Alert severity="error" sx={{ mb: 2 }}>
-          {error}
+          Couldn't load the rooms graph: {error}
+        </Alert>
+      )}
+      {groupsError && (
+        <Alert severity="warning" sx={{ mb: 2 }}>
+          Couldn't load the room groups, so rooms aren't coloured by group: {groupsError}
         </Alert>
       )}
 
@@ -301,7 +313,7 @@ export default function RoomsGraphPage() {
             </Stack>
           </Box>
         )}
-        {!loading && nodes.length === 0 && (
+        {!loading && error === null && nodes.length === 0 && (
           <Box
             sx={{
               position: "absolute",
@@ -340,9 +352,7 @@ export default function RoomsGraphPage() {
           onNodeClick={(n) => handleNodeClick(n as GraphNode)}
           nodeLabel={(n) => {
             const node = n as GraphNode;
-            return node.description
-              ? `${node.label}\n${node.description}`
-              : node.label;
+            return graphTooltip(node.label, node.description);
           }}
           cooldownTicks={120}
           enableZoomInteraction

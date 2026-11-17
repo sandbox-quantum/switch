@@ -36,7 +36,7 @@ interface Props {
 }
 
 export default function BudgetDialog({ tenantId, budget, open, onClose, onSaved }: Props) {
-  const { data: agents } = useAgents();
+  const { data: agents, error: agentsError } = useAgents();
   const [agentId, setAgentId] = useState(WHOLE_WORKSPACE);
   const [metric, setMetric] = useState<UsageMetric>("output_tokens");
   const [model, setModel] = useState("");
@@ -95,6 +95,11 @@ export default function BudgetDialog({ tenantId, budget, open, onClose, onSaved 
       <DialogContent>
         <Stack spacing={2} sx={{ mt: 1 }}>
           {error && <Alert severity="error">{error}</Alert>}
+          {agentsError && !budget && (
+            <Alert severity="error">
+              Couldn't load the agents, so a budget can only cover the whole workspace: {agentsError}
+            </Alert>
+          )}
           {budget && (
             <Alert severity="info">
               What a budget covers is fixed. To cover something else, add another budget.
@@ -106,7 +111,7 @@ export default function BudgetDialog({ tenantId, budget, open, onClose, onSaved 
             value={agentId}
             onChange={(e) => setAgentId(e.target.value)}
             disabled={budget !== null}
-            helperText="A workspace budget caps what all agents spend together."
+            helperText="A workspace budget limits what all agents spend together."
             fullWidth
           >
             <MenuItem value={WHOLE_WORKSPACE}>Every agent in the workspace</MenuItem>
@@ -155,7 +160,11 @@ export default function BudgetDialog({ tenantId, budget, open, onClose, onSaved 
               required
               fullWidth
               error={limitInvalid}
-              helperText={limitInvalid ? `A whole number from 1 to ${formatAmount(MAX_BUDGET_AMOUNT)}.` : undefined}
+              helperText={
+                limitInvalid
+                  ? `A whole number from 1 to ${formatAmount(MAX_BUDGET_AMOUNT)}.`
+                  : "A soft limit: work already running can go past it."
+              }
               slotProps={{ htmlInput: { min: 1, max: MAX_BUDGET_AMOUNT, step: 1 } }}
             />
             <TextField

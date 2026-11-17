@@ -9,10 +9,19 @@ import type { UseQueryResult } from "../../data/hooks";
 import { bridgeDetail, linkedIdentity, pendingIdentity } from "../collaborations/testFixtures";
 import MessagingAppsPage from "./MessagingAppsPage";
 
-vi.mock("../../components/DataTable", async () => ({
-  ...(await import("../../test/FakeDataTable")),
-  TableEmptyState: ({ title }: { title: string }) => <div>{title}</div>,
-}));
+/** The order the table opens in. */
+const openingOrder = vi.hoisted(() => ({ current: undefined as unknown }));
+vi.mock("../../components/DataTable", async () => {
+  const fake = await import("../../test/FakeDataTable");
+  return {
+    ...fake,
+    default: (props: Parameters<typeof fake.default>[0] & { initialSort?: unknown }) => {
+      openingOrder.current = props.initialSort;
+      return fake.default(props);
+    },
+    TableEmptyState: ({ title }: { title: string }) => <div>{title}</div>,
+  };
+});
 
 vi.mock("../../data/AuthContext", () => ({ useAuth: vi.fn() }));
 
@@ -105,6 +114,13 @@ describe("MessagingAppsPage", () => {
     expect(screen.getByRole("button", { name: "Add messaging app" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Your accounts" })).toBeTruthy();
     expect(await screen.findByText("Slack · Acme Slack")).toBeTruthy();
+  });
+
+  it("opens the apps busiest first, with the arrow on Rooms", () => {
+    setup({ bridges: [bridgeDetail({ display_name: "Acme Slack", bridge_type: "slack" })] });
+    render(<MessagingAppsPage />);
+
+    expect(openingOrder.current).toEqual({ field: "room_count", sort: "desc" });
   });
 
   it("gives a member only their own accounts, with no copy of the workspace's settings", async () => {

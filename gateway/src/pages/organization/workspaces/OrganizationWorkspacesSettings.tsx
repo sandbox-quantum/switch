@@ -1,15 +1,16 @@
 import Add from "@mui/icons-material/Add";
-import { Alert, Box, Button, CircularProgress, Snackbar, Stack, Typography } from "@mui/material";
+import { Alert, Box, Button, CircularProgress, Stack, Typography } from "@mui/material";
 import { useCallback, useState } from "react";
 import InfoTip from "../../../components/InfoTip";
 import PageHeader from "../../../components/PageHeader";
+import SuccessSnackbar from "../../../components/SuccessSnackbar";
 import { useAuth } from "../../../data/AuthContext";
 import { fetchCurrentOrganization, fetchOrganizationWorkspaces } from "../../../data/api";
 import { useLoad } from "../../workspace/useLoad";
 import CreateWorkspaceDialog from "./CreateWorkspaceDialog";
 import WorkspacesTable from "./WorkspacesTable";
 
-/** Organization settings › Workspaces, in the new layout: every workspace in
+/** Organization settings › Workspaces: every workspace in
  * the organization, who administers each, and for an organization admin,
  * what can be done with one. The platform operator may open it too, read
  * only: running the organization's workspaces is its admins'. */
@@ -42,10 +43,11 @@ export default function OrganizationWorkspacesSettings() {
         description={
           <Stack direction="row" spacing={0.5} sx={{ alignItems: "center", mt: 0.5 }}>
             <Typography variant="body2" color="text.secondary">
-              The workspaces in {organization.data?.name ?? ""}.
+              The workspaces in {organization.data?.name ?? "this organization"}.
             </Typography>
             <InfoTip>
-              Org admins administer every workspace, so they aren't listed under Admins.
+              Org admins administer every workspace, so they aren't listed under Admins, and each
+              workspace's users include them.
             </InfoTip>
           </Stack>
         }
@@ -84,12 +86,7 @@ export default function OrganizationWorkspacesSettings() {
           }}
         />
       )}
-      <Snackbar
-        open={notice !== null}
-        autoHideDuration={5000}
-        onClose={() => setNotice(null)}
-        message={notice}
-      />
+      <SuccessSnackbar message={notice} onClose={() => setNotice(null)} />
     </Box>
   );
 }

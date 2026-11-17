@@ -6,10 +6,18 @@ server one address, the one agents already use, rather than the API on one
 origin and the dashboard on another.
 
 It answers ahead of the bearer middleware, because a person loading a page
-holds a cookie rather than an agent key. So what it answers is an exact list
-and never a fallback: the built files by name, and the dashboard's page paths,
-which `test_gateway_ui.py` holds equal to the routes the dashboard declares.
-Everything else passes through untouched.
+holds a cookie rather than an agent key. So what it answers is an exact list:
+the built files by name, and the dashboard's page paths, which
+`test_gateway_ui.py` holds equal to the routes the dashboard declares. The one
+fallback is a browser navigating to a path nothing else answers (a mistyped or
+retired link): it gets the dashboard with a 404, so the dashboard's own "no
+page here" shows rather than the bearer middleware's 401, which reads as a
+sign-in problem. Everything else passes through untouched.
+
+Every page carries a Content-Security-Policy and refuses to be framed. Names
+and descriptions anyone in a workspace can set are drawn on these pages, so
+script the dashboard didn't ship must not run, and another site must not be
+able to put a signed-in page under someone's clicks.
 
 The API wins any path both could answer. `/agents` is where they meet: the
 dashboard has pages at `/agents` and `/agents/{agent_id}`, while the API
@@ -36,12 +44,13 @@ from switch_core.observability.http import GATEWAY_UI_SCOPE_KEY
 logger = logging.getLogger(__name__)
 
 # The dashboard's page routes, as `gateway/src/App.tsx` and its route table
-# (`gateway/src/routes/routeTable.tsx`) declare them, in both of its layouts.
+# (`gateway/src/routes/routeTable.tsx`) declare them, the URLs that only
+# redirect to a page that moved included.
 PAGE_PATHS: tuple[str, ...] = (
     "/",
     "/login",
     "/invite",
-    # Where Switch Console's sign-in link opens, in either layout.
+    # Where Switch Console's sign-in link opens.
     "/auth/handoff",
     "/ecosystem",
     "/rooms",
@@ -65,13 +74,13 @@ PAGE_PATHS: tuple[str, ...] = (
     "/workspace",
     "/workspace/private-channel-rooms",
     "/organization",
-    # The new layout's (`gateway_v2`). With it off they redirect to today's.
     "/overview",
     "/templates",
     "/templates/{id}",
     "/connectors/{connector_id}",
     "/settings",
     "/settings/general",
+    "/settings/general/private-channel-rooms",
     "/settings/users",
     "/settings/messaging-apps",
     "/settings/connectors",
@@ -88,7 +97,7 @@ PAGE_PATHS: tuple[str, ...] = (
     "/settings/org/guardrails",
     "/settings/org/devices",
     "/settings/org/audit-log",
-    # Pages the dashboard no longer has, which it redirects in either layout.
+    # Pages the dashboard no longer has, which it redirects.
     "/users",
     "/operator/workspaces",
     "/platform",
@@ -117,6 +126,28 @@ _PAGE_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
 _HASHED_PREFIX = "/assets/"
 _IMMUTABLE = "public, max-age=31536000, immutable"
 _REVALIDATE = "no-cache"
+
+# Styles inline because MUI writes its styles into the page at runtime. Images
+# from anywhere over HTTPS because connector logos and agent icons are hosted
+# by their vendors. Everything else only from this origin.
+_CONTENT_SECURITY_POLICY = "; ".join(
+    (
+        "default-src 'self'",
+        "script-src 'self'",
+        "style-src 'self' 'unsafe-inline'",
+        "img-src 'self' data: blob: https:",
+        "font-src 'self' data:",
+        "connect-src 'self'",
+        "object-src 'none'",
+        "base-uri 'self'",
+        "frame-ancestors 'none'",
+    )
+)
+_PAGE_HEADERS = {
+    "Content-Security-Policy": _CONTENT_SECURITY_POLICY,
+    "X-Frame-Options": "DENY",
+    "X-Content-Type-Options": "nosniff",
+}
 
 
 def is_page(path: str) -> bool:
@@ -170,6 +201,17 @@ class GatewayUi:
         return None
 
 
+def _is_navigation(scope: Scope) -> bool:
+    """Whether a browser is loading this path as a page, not an API call."""
+    headers: list[tuple[bytes, bytes]] = scope.get("headers", [])
+    for name, value in headers:
+        if name == b"sec-fetch-mode":
+            return value == b"navigate"
+        if name == b"accept" and b"text/html" in value:
+            return True
+    return False
+
+
 def _api_answers(router: Router, scope: Scope) -> bool:
     """Whether a route on `router` would take this request as a GET or a HEAD.
 
@@ -202,10 +244,18 @@ class GatewayUiMiddleware:
             await self.app(scope, receive, send)
             return
         resolved = self.ui.resolve(scope["path"])
+        status_code = 200
+        if resolved is None and _is_navigation(scope):
+            resolved = (self.ui.index, _REVALIDATE)
+            status_code = 404
         if resolved is None or _api_answers(self.router, scope):
             await self.app(scope, receive, send)
             return
         file, cache_control = resolved
         scope[GATEWAY_UI_SCOPE_KEY] = True
-        response = FileResponse(file, headers={"Cache-Control": cache_control})
+        response = FileResponse(
+            file,
+            status_code=status_code,
+            headers={"Cache-Control": cache_control, **_PAGE_HEADERS},
+        )
         await response(scope, receive, send)

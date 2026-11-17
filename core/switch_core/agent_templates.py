@@ -40,7 +40,7 @@ from switch_core.template_runs import (
     NewAgentPlan,
     Problem,
 )
-from switch_core.template_v2 import compile_v2, is_v2
+from switch_core.template_v2 import compile_v2, is_v2, resource_types
 
 TemplateKind = Literal["room", "group", "agent"]
 
@@ -82,6 +82,39 @@ def template_kind(text: str) -> TemplateKind:
     if agents:
         return "agent" if len(agents) == 1 else "group"
     return "room"
+
+
+@dataclass(frozen=True)
+class TemplateCounts:
+    """How many agents and rooms a document describes: what the catalogue
+    says a template creates."""
+
+    agents: int
+    rooms: int
+
+
+def template_counts(text: str) -> TemplateCounts:
+    """The agents and rooms a document describes, counting the ones a
+    condition may leave out, since which are created depends on the inputs.
+    An agent a room merely invites is not one it creates. Raises ValueError
+    for a document that does not parse.
+
+    Version 2 counts its resources by type; a group's rooms are resources of
+    their own. Version 1 counts its ``agent:`` or ``agents:``, and its
+    ``room:`` or the ``rooms:`` of a ``group:``."""
+    data = _load(text)
+    if is_v2(data):
+        types = resource_types(data)
+        return TemplateCounts(agents=types.count("agent"), rooms=types.count("room"))
+    rooms = data.get("rooms")
+    return TemplateCounts(
+        agents=len(_agents(data)),
+        rooms=(
+            sum(isinstance(r, dict) for r in rooms)
+            if isinstance(rooms, list)
+            else int(isinstance(data.get("room"), dict))
+        ),
+    )
 
 
 # Past this a display name is not slugged, as in the Console's agent-slug.

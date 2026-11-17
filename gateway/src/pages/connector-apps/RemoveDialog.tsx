@@ -76,7 +76,7 @@ export default function RemoveDialog({
           onClick={() => void remove()}
           startIcon={busy ? <CircularProgress size={16} /> : undefined}
         >
-          Remove
+          Remove app
         </Button>
       </DialogActions>
     </Dialog>

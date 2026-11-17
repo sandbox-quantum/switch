@@ -143,7 +143,7 @@ export default function OverviewPage() {
     <Box>
       <PageHeader
         sx={{ mb: 3 }}
-        title={<Typography variant="h5">Overview</Typography>}
+        title={<Typography variant="h5">Home</Typography>}
         actions={
           <Button component={RouterLink} to="/ecosystem" variant="outlined" startIcon={<AccountTreeOutlined />}>
             View graph

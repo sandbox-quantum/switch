@@ -291,9 +291,27 @@ async def test_the_servers_admin_account_is_refused(
 ) -> None:
     deletion, _, _ = _deletion(session_factory)
     async with session_factory() as session:
-        admin = await _user(session, "admin", role="admin")
+        admin = User(name="admin", email=ADMIN_EMAIL, role="admin")
+        session.add(admin)
         await session.commit()
         assert "administrator" in (await deletion.refusal(session, admin, []) or "")
+
+
+async def test_another_operator_is_refused_only_as_the_last_one(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Any operator but the server's administrator account may be deleted,
+    so long as the server keeps one."""
+    deletion, _, _ = _deletion(session_factory)
+    async with session_factory() as session:
+        operator = await _user(session, "operator", role="admin")
+        await session.commit()
+        alone = await deletion.refusal(session, operator, [])
+        await _user(session, "other-operator", role="admin")
+        await session.commit()
+        beside_another = await deletion.refusal(session, operator, [])
+    assert alone is not None and "only platform operator" in alone
+    assert beside_another is None
 
 
 async def test_the_only_admin_of_a_shared_workspace_is_refused(

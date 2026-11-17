@@ -151,11 +151,9 @@ database directly, as `switch-accounts create` makes them, so it needs the
 same `.env` as `just run`; the roles are given through the running server. It
 is safe to run again.
 
-With the new layout turned on (`FEATURE_FLAGS_ENABLED=gateway_v2`),
 `just gateway-dev` then shows a **Role:** control at the right end of the top
 bar. Sign in once as anyone, such as the gateway admin from `.env`: the
-server tells a signed-out page none of its flags, so the control is not on
-the sign-in page. Picking a role signs you in as that account, an ordinary
+control is not on the sign-in page. Picking a role signs you in as that account, an ordinary
 password sign-in, and reloads the page, staying in the same workspace when
 that account can open it. The server sees only that account, so what you see is
 exactly what a person with that role gets.

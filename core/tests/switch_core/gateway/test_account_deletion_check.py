@@ -256,3 +256,41 @@ async def test_deleting_an_org_admin_emails_after_the_response_holding_nothing(
     ]
     async with session_factory() as session:
         assert await session.get(User, leaving) is None
+
+
+async def test_another_operator_may_delete_their_own_account(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    await _people(session_factory)
+    other_operator = await _make_member(
+        session_factory,
+        name="second-operator",
+        tenant_id=TENANT_ZERO_ID,
+        role="member",
+        user_role="admin",
+    )
+    async with _client(
+        _app(session_factory), other_operator, "second-operator@example.invalid"
+    ) as client:
+        response = await client.get("/auth/me/deletion")
+    assert response.status_code == 200, response.text
+    assert response.json() == {"refusal": None}
+
+
+async def test_the_only_operator_is_refused(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    only_operator = await _make_member(
+        session_factory,
+        name="only-operator",
+        tenant_id=TENANT_ZERO_ID,
+        role="member",
+        user_role="admin",
+    )
+    async with _client(
+        _app(session_factory), only_operator, "only-operator@example.invalid"
+    ) as client:
+        response = await client.get("/auth/me/deletion")
+    assert response.status_code == 200, response.text
+    refusal = response.json()["refusal"]
+    assert refusal is not None and "only platform operator" in refusal

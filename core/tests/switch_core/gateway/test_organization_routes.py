@@ -57,6 +57,7 @@ from switch_core.gateway.invite_mail import InviteMailer
 from switch_core.gateway.organization_workspaces import (
     router as organization_workspaces_router,
 )
+from switch_core.gateway.organizations import LAST_ORGANIZATION_ADMIN_REFUSAL
 from switch_core.gateway.organizations import router as organizations_router
 from switch_core.gateway.tenants import router as tenants_router
 from switch_core.gateway.workos_sign_in_routes import (
@@ -681,11 +682,15 @@ class TestThePlatformOperator:
         assert (row["can_change_role"], row["can_remove"]) == (True, False)
         assert restored.status_code == 200, restored.text
         assert restored.json()["role"] == "org_admin"
-        # Now an `org_admin`, they may change and remove their own row.
+        # Now its only `org_admin`, their own row says why they may neither
+        # step down nor leave yet.
         assert (
             restored.json()["can_change_role"],
             restored.json()["can_remove"],
-        ) == (True, True)
+        ) == (False, False)
+        assert restored.json()["change_role_blocked_reason"] == (
+            LAST_ORGANIZATION_ADMIN_REFUSAL
+        )
 
     async def test_once_the_operator_restores_someone_else_their_way_in_closes(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -1017,6 +1022,47 @@ class TestListingOrganizationsAndWorkspaces:
         assert (row["users"], row["agents"], row["rooms"]) == (3, 0, 1)
         assert row["admins"] == [carol]
         assert row["created_at"]
+
+    async def test_a_member_is_told_only_of_their_own_agents_and_the_rooms_they_may_read(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """A private room they are not in is not counted to them, nor another
+        person's agent: as their own Rooms and Agents lists hold them."""
+        ada, carol, bob = _name("ada"), _name("carol"), _name("bob")
+        tenant_id = await _workspace(
+            session_factory,
+            {
+                ada: ("admin", "org_admin"),
+                carol: ("admin", "member"),
+                bob: ("member", "member"),
+            },
+        )
+        async with tenant_session(session_factory, tenant_id) as session:
+            session.add(Room(transport_room_id="!open", name="Open", description=""))
+            session.add(
+                Room(
+                    transport_room_id="!private",
+                    name="Leadership",
+                    description="",
+                    owner_id=carol,
+                    read_visibility="private",
+                    write_visibility="private",
+                )
+            )
+            await session.commit()
+        await _agent(session_factory, tenant_id, carol)
+        await _agent(session_factory, tenant_id, bob)
+        app = _app(session_factory)
+
+        counts: dict[str, tuple[int, int, int]] = {}
+        for who in (ada, bob):
+            async with _client(app, who, tenant_id) as client:
+                response = await client.get("/organizations/current/workspaces")
+            assert response.status_code == 200, response.text
+            [row] = response.json()
+            counts[who] = (row["users"], row["agents"], row["rooms"])
+
+        assert counts == {ada: (3, 2, 2), bob: (3, 1, 1)}
 
     async def test_the_platform_operator_sees_every_workspace_of_it(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -1834,6 +1880,43 @@ class TestWhatTheCallerMayDo:
             bob: (True, True, True),
             cy: (True, True, True),
         }
+
+    async def test_the_only_org_admins_row_says_why_it_cannot_change(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """As the workspace roster does for its last admin: the flags answer
+        what the routes would, and the reason says what to do first."""
+        ada, bob = _name("ada"), _name("bob")
+        tenant_id = await _workspace(
+            session_factory,
+            {ada: ("admin", "org_admin"), bob: ("member", "member")},
+        )
+
+        async with _client(_app(session_factory), ada, tenant_id) as client:
+            listed = await client.get("/organizations/current/members")
+            demoted = await client.patch(
+                f"/organizations/current/members/{ada}", json={"role": "member"}
+            )
+
+        assert listed.status_code == 200, listed.text
+        rows = {row["user_id"]: row for row in listed.json()}
+        assert (
+            rows[ada]["can_change_role"],
+            rows[ada]["change_role_blocked_reason"],
+            rows[ada]["can_remove"],
+            rows[ada]["remove_blocked_reason"],
+        ) == (
+            False,
+            LAST_ORGANIZATION_ADMIN_REFUSAL,
+            False,
+            LAST_ORGANIZATION_ADMIN_REFUSAL,
+        )
+        assert (
+            rows[bob]["can_change_role"],
+            rows[bob]["change_role_blocked_reason"],
+            rows[bob]["can_remove"],
+        ) == (True, None, True)
+        assert demoted.status_code == 409, demoted.text
 
     async def test_the_operator_restoring_an_admin_may_change_roles_and_nothing_more(
         self, session_factory: async_sessionmaker[AsyncSession]

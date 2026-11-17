@@ -3,12 +3,20 @@ import OpenInNew from "@mui/icons-material/OpenInNew";
 import { Card, CardActions, CardContent, IconButton, Link, Stack, Tooltip, Typography } from "@mui/material";
 import { type ReactNode, useState } from "react";
 import PageHeader from "../../components/PageHeader";
+import SuccessSnackbar from "../../components/SuccessSnackbar";
 import { MONO_SX } from "../../theme/format";
 
+/** What Switch Trust does not check, said wherever a policy is shown, so no
+ *  one takes it to cover every file. Mirrors `file_text.py`'s kinds. */
+export const TRUST_COVERAGE =
+  "Switch Trust reads text: each message and the text in attached files, up to the first 20,000 characters, " +
+  "with a note on anything past that. Images, audio, video, archives, and Office files other than Word " +
+  "documents can't be read, so they are delivered unchecked.";
+
 /**
- * The Switch Trust policy that checks messages, as a card: its name, when
- * Switch Trust gave one as the policy was connected, its ID, to copy, and
- * where to see it on Switch Trust, which lists its detectors.
+ * The Switch Trust policy that checks messages, as a card: headed by its
+ * name, when Switch Trust gave one as the policy was connected, its ID, to
+ * copy, and where to see it on Switch Trust, which lists its detectors.
  *
  * `actions` go in the card's corner: the organization's page puts
  * Disconnect there; the workspace's, which only reads the policy, nothing.
@@ -42,16 +50,11 @@ export default function GuardrailPolicyCard({
         <PageHeader
           title={
             <Typography variant="subtitle1" component="h2" sx={{ fontWeight: 600 }}>
-              Switch Trust policy
+              {policyName ?? "Switch Trust policy"}
             </Typography>
           }
           description={
             <>
-              {policyName && (
-                <Typography variant="body1" sx={{ mt: 0.5 }}>
-                  {policyName}
-                </Typography>
-              )}
               <Stack direction="row" spacing={0.5} sx={{ alignItems: "center", mt: 0.5 }}>
                 <Typography component="span" sx={{ ...MONO_SX, wordBreak: "break-all" }}>
                   {policyId}
@@ -63,11 +66,7 @@ export default function GuardrailPolicyCard({
                 </Tooltip>
               </Stack>
               <Typography variant="caption" color="text.secondary" role="status" sx={{ display: "block" }}>
-                {copied === "yes"
-                  ? "Copied the policy ID."
-                  : copied === "refused"
-                    ? "Your browser blocked the clipboard. Select the ID and copy it."
-                    : ""}
+                {copied === "refused" ? "Your browser blocked the clipboard. Select the ID and copy it." : ""}
               </Typography>
             </>
           }
@@ -78,6 +77,9 @@ export default function GuardrailPolicyCard({
             Its detectors for user and assistant messages are listed on Switch Trust.
           </Typography>
         )}
+        <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+          {TRUST_COVERAGE}
+        </Typography>
       </CardContent>
       {policyUrl && (
         <CardActions sx={{ borderTop: "1px solid var(--sw-border)", px: 2 }}>
@@ -89,6 +91,7 @@ export default function GuardrailPolicyCard({
           </Link>
         </CardActions>
       )}
+      <SuccessSnackbar message={copied === "yes" ? "Copied the policy ID." : null} onClose={() => setCopied(null)} />
     </Card>
   );
 }

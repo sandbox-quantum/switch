@@ -110,6 +110,8 @@ export const accountLifecycle: FastScenario = {
       await colleague.client.accountDeletionRefusal(),
       "a member asking whether their account can go",
     ).toBeNull();
+    // Only the server's administrator account is kept whatever happens;
+    // another operator may go while one remains.
     expect(
       await switchClient.accountDeletionRefusal(),
       "Switch's administrator asking whether their account can go",

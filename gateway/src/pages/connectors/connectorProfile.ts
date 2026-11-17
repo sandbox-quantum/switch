@@ -176,6 +176,18 @@ export function personLine(person: ConnectedPerson, format: (iso: string) => str
   return `Connected ${format(person.connected_at)} · ${agents} using it`;
 }
 
+/** What disconnecting your own connection costs: how many of your agents
+ * lose it, where that was read (null where it wasn't), and that their grants
+ * go with it. */
+export function disconnectDescription(connector: string, grantedAgents: number | null): string {
+  if (grantedAgents === null)
+    return `Your agents lose ${connector}: their grants on it are removed, and what was handed out to them is revoked.`;
+  if (grantedAgents === 0) return `No agent of yours is using ${connector}.`;
+  if (grantedAgents === 1)
+    return "The agent you granted access loses it immediately: its grant is removed, and what was handed out to it is revoked.";
+  return `All ${grantedAgents} agents you granted access lose it immediately: their grants are removed, and what was handed out to them is revoked.`;
+}
+
 export function revokeConfirmation(
   person: Pick<ConnectedPerson, "name" | "agents">,
   connector: string,

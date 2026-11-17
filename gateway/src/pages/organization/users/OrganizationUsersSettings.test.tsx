@@ -34,8 +34,10 @@ function member(
     warning: null,
     service_account: false,
     can_change_role: true,
+    change_role_blocked_reason: null,
     can_grant_org_admin: true,
     can_remove: true,
+    remove_blocked_reason: null,
     workspaces: [],
     ...overrides,
   };
@@ -180,6 +182,50 @@ describe("OrganizationUsersSettings", () => {
     ]);
   });
 
+  it("tells the only org admin to make someone else one first, not to step down", async () => {
+    const reason = "This is the organization's only org admin. Make someone else an org admin first.";
+    const onlyMe = {
+      ...ME,
+      can_change_role: false,
+      change_role_blocked_reason: reason,
+      can_remove: false,
+      remove_blocked_reason: reason,
+    };
+    answerFetch({
+      "GET /organizations/current/members": [200, [onlyMe, BOB]],
+      "GET /organizations/current/workspaces": [200, WORKSPACES],
+    });
+    renderPage();
+    await screen.findByTestId("row-me");
+
+    expect(menuItems("Me")).toEqual([
+      { label: "Step down to Member", reason },
+      { label: "Add to a workspace", reason: null },
+      {
+        label: "Change role in a workspace",
+        reason: "An org admin administers every workspace already; their role in one is not changed here.",
+      },
+      {
+        label: "Leave a workspace",
+        reason: `An org admin stays in every workspace while they are one. ${reason}`,
+      },
+      { label: "Leave organization", reason },
+    ]);
+  });
+
+  it("greys Invite users with the reason while every workspace is archived", async () => {
+    answerFetch({
+      "GET /organizations/current/members": [200, [ME, BOB]],
+      "GET /organizations/current/workspaces": [200, [workspace("w3", "Old", true)]],
+    });
+    renderPage();
+    await screen.findByTestId("row-bob");
+
+    const invite = screen.getByRole("button", { name: "Invite users" }) as HTMLButtonElement;
+    expect(invite.disabled).toBe(true);
+    expect(invite.parentElement?.getAttribute("aria-label")).toBe("Every workspace in the organization is archived.");
+  });
+
   it("says why no one can be added to a workspace while the workspaces can't be read", async () => {
     answerFetch({
       "GET /organizations/current/members": [200, [ME, BOB]],
@@ -224,7 +270,9 @@ describe("OrganizationUsersSettings", () => {
         body: { user_id: "bob", role: "admin" },
       }),
     );
-    expect(await screen.findByText("Added Bob to Lab as Workspace admin.")).toBeTruthy();
+    const added = await screen.findByText("Added Bob to Lab as Workspace admin.");
+    // A plain success is the snackbar's, not a notice left on the page.
+    expect(added.closest(".MuiAlert-root")).toBeNull();
   });
 
   it("changes someone's role in one of their workspaces", async () => {

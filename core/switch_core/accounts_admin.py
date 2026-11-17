@@ -82,6 +82,7 @@ from switch_core.gateway.auth import hash_password_off_loop, list_held_membershi
 from switch_core.gateway.login_limits import clear_login_failures
 from switch_core.gateway.schemas import Email, Password
 from switch_core.main import build_connector_apps, build_service_broker
+from switch_core.names import hidden_character_refusal
 from switch_core.operator_commands import (
     CommandRefused,
     account_by_email,
@@ -152,6 +153,9 @@ async def create_account(
     name = " ".join(name.split())
     if not name or len(name) > 255:
         raise CommandRefused("--name must be 1 to 255 characters.")
+    refusal = hidden_character_refusal(name)
+    if refusal is not None:
+        raise CommandRefused(refusal)
     user_store = UserStore()
     with no_tenant():
         async with session_factory() as session:
@@ -258,28 +262,16 @@ async def unlock(session_factory: async_sessionmaker[AsyncSession], email: str) 
 # ── grant-operator, revoke-operator ───────────────────────────────────────────
 
 
-async def _lock_operators(session: AsyncSession) -> set[str]:
-    """The platform operators' ids, their rows locked to the end of the
-    transaction, in id order so two callers lock them alike."""
-    return set(
-        await session.scalars(
-            select(User.id)
-            .where(User.role == OPERATOR_ROLE)
-            .order_by(User.id)
-            .with_for_update()
-        )
-    )
-
-
 async def grant_operator(
     session_factory: async_sessionmaker[AsyncSession], email: str
 ) -> User:
     """Make the account a platform operator, who administers every
     workspace. Never the agent-registration service account, whose agents
     would act with that power."""
+    user_store = UserStore()
     with no_tenant():
         async with session_factory() as session:
-            user = await UserStore().get_by_email(session, email)
+            user = await user_store.get_by_email(session, email)
             if user is None:
                 raise CommandRefused(f"No account has the email {email}.")
             if is_bootstrap_owner(user):
@@ -313,9 +305,10 @@ async def revoke_operator(
     GATEWAY_ADMIN_EMAIL, which Switch recreates as an operator every time it
     starts, and never the last operator: the operators' rows are locked until
     the change commits, so two revocations at once can't take both."""
+    user_store = UserStore()
     with no_tenant():
         async with session_factory() as session:
-            user = await UserStore().get_by_email(session, email)
+            user = await user_store.get_by_email(session, email)
             if user is None:
                 raise CommandRefused(f"No account has the email {email}.")
             if user.email.lower() == admin_email.lower():
@@ -324,7 +317,7 @@ async def revoke_operator(
                     "which stays a platform operator: Switch recreates it every "
                     "time it starts."
                 )
-            operators = await _lock_operators(session)
+            operators = await user_store.lock_operators(session)
             if user.id not in operators:
                 raise CommandRefused(f"{email} is not a platform operator.")
             if not operators - {user.id}:

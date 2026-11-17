@@ -275,6 +275,14 @@ _RAW_SESSION_FACTORY_MODULES = {
     # (`rls_ddl.GLOBAL_TABLES`); every workspace and organization it touches
     # is bound.
     "switch_core.accounts.organization_purge",
+    # Deleting an account counts the server's other platform operators, a
+    # read of `users` alone (`rls_ddl.GLOBAL_TABLES`); every workspace and
+    # organization the account leaves is bound.
+    "switch_core.accounts.deletion",
+    # Leaving an organization one has no workspace in reads the person's own
+    # `users` row (`rls_ddl.GLOBAL_TABLES`) for the organizations they may
+    # be left in; the workspace and organization it reads next are bound.
+    "switch_core.gateway.organizations",
     # The WorkOS mirror reads and moves its cursor (`directory_event_cursors`)
     # and reads `oidc_identities` to match people, both global
     # (`rls_ddl.GLOBAL_TABLES`); every organization it changes is bound.

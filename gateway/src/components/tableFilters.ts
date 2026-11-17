@@ -102,7 +102,8 @@ export function toggleQuickFilter(selection: FilterSelection, quick: QuickFilter
  *  filter the header menu does, so the two never disagree. */
 export interface SelectFilter {
   field: string;
-  /** The dropdown's own label, which may be shorter than the column's. */
+  /** The dropdown's name for assistive technology, which may be shorter
+   *  than the column's. It is not shown: `allLabel` says what it filters. */
   label: string;
   /** What it reads with nothing picked: "All types". */
   allLabel: string;
