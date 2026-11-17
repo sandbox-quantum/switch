@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { settingsForAdminSection } from '@renderer/features/admin/admin-sections';
-import { switchStanding, switchTiles } from '@renderer/features/admin/workspace-switches';
+import {
+  cannotWorkOnThisServer,
+  switchStanding,
+  switchTiles,
+} from '@renderer/features/admin/workspace-switches';
 import type {
   ConnectionCatalogEntry,
   WorkspaceService,
