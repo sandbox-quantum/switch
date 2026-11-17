@@ -50,14 +50,17 @@ export async function checkOpencodeSignIn(input: SignInCheckInput): Promise<Prov
     });
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
-    if (detail.includes('no session table'))
-      return loginWontHelp(
-        readiness(
-          'unconfigured',
-          'OpenCode Desktop 2 has migrated the shared database, so OpenCode 1 cannot open it.'
-        )
-      );
-    throw error;
+    const cause = detail.split('\n').find((line) => line.includes('no session table'));
+    if (!cause) throw error;
+    const chosen = input.env.OPENCODE_DB;
+    return loginWontHelp(
+      readiness(
+        'unconfigured',
+        chosen
+          ? `OPENCODE_DB points at ${chosen}, which OpenCode 1 cannot open; OpenCode Desktop 2 may have migrated it. Point OPENCODE_DB at a new file, or unset it. (${cause.trim()})`
+          : `OpenCode 1 cannot open its database. (${cause.trim()})`
+      )
+    );
   }
   try {
     const response = await fetch(`${server.url}/provider`, {

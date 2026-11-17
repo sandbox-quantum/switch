@@ -60,6 +60,7 @@ async function findFreePort(): Promise<number> {
 export async function startOpencodeServer(input: StartServerInput): Promise<OpencodeServerHandle> {
   const password = randomBytes(24).toString('base64url');
   const port = await findFreePort();
+  const databaseEnv = opencodeV1DatabaseEnv(input.env);
   const configHome = await prepareOpencodeHome(input.config, input.skills, input.env);
 
   const child = spawnProvider(
@@ -69,7 +70,7 @@ export async function startOpencodeServer(input: StartServerInput): Promise<Open
       cwd: input.cwd,
       env: {
         ...input.env,
-        ...opencodeV1DatabaseEnv(input.env),
+        ...databaseEnv,
         XDG_CONFIG_HOME: configHome,
         OPENCODE_SERVER_PASSWORD: password,
       },

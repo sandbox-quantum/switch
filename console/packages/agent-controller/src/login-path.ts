@@ -84,7 +84,7 @@ function merged(shellPath: string, current: string): string | null {
 /**
  * `path` with the folders provider installers put CLIs in that it lacks, added
  * after it: `~/.local/bin` (Claude Code, and OpenCode from npm) and
- * `~/.opencode/bin` (OpenCode's Windows release zip). Both are often missing
+ * `~/.opencode/bin` (OpenCode's own installer, and its Windows release zip). Both are often missing
  * from a process started before the install. Switch Console adds the same
  * folders to its own PATH, so what it installed is found here too.
  */

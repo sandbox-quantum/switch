@@ -43,7 +43,10 @@ export const SHELL_ENV_CAPTURE_GUARD: Record<string, string> = {
   DISABLE_AUTO_UPDATE: 'true',
 };
 
-const USER_BIN_DIRS = [path.join(os.homedir(), '.local', 'bin')];
+const USER_BIN_DIRS = [
+  path.join(os.homedir(), '.local', 'bin'),
+  path.join(os.homedir(), '.opencode', 'bin'),
+];
 
 function pathEntryExists(entry: string): boolean {
   try {
@@ -157,7 +160,7 @@ export function ensureWindowsGitBashInPath(
 /**
  * Brings this process's PATH up to date with what was installed since it
  * started: the PATH the registry now gives a new process (the machine's, then
- * the user's), the user's `.local\\bin`, and the provider folders above. An
+ * the user's), the user's `.local\\bin` and `.opencode\\bin`, and the provider folders above. An
  * installer adds its folder to the registry and to nothing already running, so
  * without this a CLI installed from Console reads as not installed until
  * Console restarts. Keeps the current PATH when the registry cannot be read,
@@ -189,13 +192,23 @@ export async function refreshWindowsPath(env: NodeJS.ProcessEnv = process.env): 
   ensureWindowsGitBashInPath(env, fs.existsSync);
 }
 
+let windowsPathRefresh: Promise<void> | null = null;
+
 /**
  * Refreshes PATH for a CLI that may have been installed since start: the
  * registry's on Windows, the user's own bin folders elsewhere.
  */
-export async function refreshInstalledCliPath(): Promise<void> {
-  if (process.platform === 'win32') await refreshWindowsPath();
-  else ensureUserBinDirsInPath();
+export function refreshInstalledCliPath(): Promise<void> {
+  if (process.platform !== 'win32') {
+    ensureUserBinDirsInPath();
+    return Promise.resolve();
+  }
+  // Readiness checks run side by side; they share one registry read rather
+  // than each starting reg.exe and rewriting Path at the same time.
+  windowsPathRefresh ??= refreshWindowsPath().finally(() => {
+    windowsPathRefresh = null;
+  });
+  return windowsPathRefresh;
 }
 
 /**
@@ -212,7 +225,7 @@ export async function resolveUserEnv(): Promise<void> {
     // The process inherits its parent's PATH, which stays stale after an
     // installer updates the registry. Read the registry, then add the
     // installer folders that parent never had.
-    await refreshWindowsPath();
+    await refreshInstalledCliPath();
     return;
   }
 
