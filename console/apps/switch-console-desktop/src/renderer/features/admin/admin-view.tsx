@@ -136,6 +136,7 @@ const AdminPanel = observer(function AdminPanel() {
       section={section}
       openApp={params.app ?? null}
       workspace={workspace}
+      workspaceName={server ? workspaceDisplayName(workspace, server) : workspace.name}
       serverName={serverName}
     />
   );
@@ -153,6 +154,7 @@ function Admin({
   section,
   openApp,
   workspace,
+  workspaceName,
   serverName,
 }: {
   serverId: string;
@@ -161,6 +163,8 @@ function Admin({
   section: 'connectors' | 'apps';
   openApp: string | null;
   workspace: { id: string; name: string };
+  /** The workspace as people know it, as `workspaceDisplayName` gives it. */
+  workspaceName: string;
   serverName: string;
 }) {
   const { navigate } = useNavigate();
@@ -212,7 +216,7 @@ function Admin({
               description={
                 section === 'apps'
                   ? `Some connectors sign people in through an app you register with the vendor. Set each up once, and every workspace on ${serverName} uses it.`
-                  : `Choose which services people in ${server ? workspaceDisplayName(workspace, server) : workspace.name} can connect and give to their agents.`
+                  : `Choose which services people in ${workspaceName} can connect and give to their agents.`
               }
             >
               <div className="space-y-2">
