@@ -41,6 +41,8 @@ const Account = observer(function Account({
   user: SwitchUser;
 }) {
   const showDeleteAccount = useShowModal('deleteAccountModal');
+  const resetEnabled =
+    showDevTools() && switchServersStore.authConfigFor(server.id)?.testAccountResetEnabled === true;
   // Only a server that signs people in with a password, and only an account
   // that has one: one made through single sign-on has no password to change.
   const passwords =
@@ -102,7 +104,7 @@ const Account = observer(function Account({
         </Button>
       </div>
 
-      {showDevTools() && (
+      {resetEnabled && (
         <div className="space-y-3 rounded-lg border border-destructive/40 p-4">
           <div className="space-y-0.5">
             <p className="text-sm text-destructive">Reset test account</p>

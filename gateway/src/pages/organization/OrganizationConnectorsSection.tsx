@@ -22,6 +22,7 @@ export default function OrganizationConnectorsSection() {
   return (
     <ConnectorAppsList
       scope="organization"
+      setUp={null}
       heading={(publicUrl) => <Heading publicUrl={publicUrl} />}
     />
   );

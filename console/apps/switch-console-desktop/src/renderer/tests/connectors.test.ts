@@ -167,6 +167,28 @@ describe('the state a connector card shows', () => {
     );
     // The server's reason wins over the workspace's switch.
     expect(connectorCardState(everything, MEMBER).kind).toBe('unavailable');
+    // An app to set up: workspace off wins, turn it on first.
+    expect(
+      connectorCardState(
+        entry({
+          unavailable_code: 'app_not_set_up',
+          unavailable_reason: 'Not set up.',
+          workspace_enabled: false,
+        }),
+        MEMBER
+      ).kind
+    ).toBe('workspace_off');
+    // Other server reasons still win over workspace off.
+    expect(
+      connectorCardState(
+        entry({
+          unavailable_code: 'needs_https',
+          unavailable_reason: 'Needs https.',
+          workspace_enabled: false,
+        }),
+        MEMBER
+      ).kind
+    ).toBe('unavailable');
     // Off in the workspace wins over a sign-in that needs renewing.
     expect(connectorCardState({ ...everything, unavailable_reason: null }, MEMBER).kind).toBe(
       'workspace_off'
@@ -331,8 +353,8 @@ describe('what each person is told about a connector that cannot be used', () =>
     expect(quick(github, OPERATOR)).toBeNull();
     expect(quick(entry({ workspace_enabled: false }), ADMIN)).toBe('turn_on');
     expect(quick(entry({ workspace_enabled: false }), MEMBER)).toBeNull();
-    // A server's reason still wins over the workspace's switch, fix and all.
-    expect(quick({ ...notSetUp, workspace_enabled: false }, OPERATOR)).toBe('set_up');
+    // An app to set up waits on the workspace's switch. Other server reasons win.
+    expect(quick({ ...notSetUp, workspace_enabled: false }, OPERATOR)).toBe('turn_on');
     expect(quick({ ...github, workspace_enabled: false }, ADMIN)).toBeNull();
   });
 
