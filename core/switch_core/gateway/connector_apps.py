@@ -284,7 +284,7 @@ def refuse_while_blocked(spec: AppSpec, public_url: str | None) -> None:
         raise HTTPException(409, blocked)
 
 
-def _redirects(
+def server_app_redirects(
     apps: ConnectorApps, spec: AppSpec, effective: EffectiveCredentials
 ) -> list[str]:
     """Every address the vendor sends people back to Switch at, for the
@@ -515,7 +515,7 @@ def _entry(
         saved_ignored=effective.saved_ignored,
         unreadable=effective.unreadable,
         load_error=effective.load_error,
-        redirects=_redirects(apps, spec, effective),
+        redirects=server_app_redirects(apps, spec, effective),
         usage=usage,
         lacks_write=(
             () if effective.github_app is None else effective.github_app.lacks_write
@@ -538,7 +538,7 @@ async def _one_entry(
     return _entry(apps, spec, read, usages.of(spec.service))
 
 
-def _refuse_while_configured(effective: EffectiveCredentials) -> None:
+def refuse_while_configured(effective: EffectiveCredentials) -> None:
     if effective.source == "configuration":
         variables = " and ".join(effective.configuration_variables)
         verb = "are" if len(effective.configuration_variables) > 1 else "is"
@@ -752,7 +752,7 @@ async def save_connector_app(
     manager: Annotated[DeploymentManager, Depends(require_deployment_manager)],
 ) -> dict[str, Any] | JSONResponse:
     spec = app_spec(apps, service)
-    _refuse_while_configured(apps.effective(service))
+    refuse_while_configured(apps.effective(service))
     refuse_while_blocked(spec, apps.public_url)
     row = await apps.store.get(session, service)
     checked = await checked_save(
@@ -762,7 +762,7 @@ async def save_connector_app(
         None
         if row is None
         else StoredApp(row.client_id, row.settings, lambda: apps.store.secrets(row)),
-        _redirects(apps, spec, apps.effective(service)),
+        server_app_redirects(apps, spec, apps.effective(service)),
     )
     if isinstance(checked, JSONResponse):
         return checked
@@ -895,7 +895,9 @@ async def check_connector_app(
             409, "HOSTED_GITHUB_CONFIG_PATH names no private key to check."
         )
     values = effective.values
-    result = await check_values(apps, spec, values, _redirects(apps, spec, effective))
+    result = await check_values(
+        apps, spec, values, server_app_redirects(apps, spec, effective)
+    )
     if (
         effective.source == "saved"
         and result.ok
@@ -970,7 +972,7 @@ async def remove_connector_app(
     """Remove the saved app. The connections made through it are kept, and
     unusable until an app is set up again; they can still be disconnected."""
     spec = app_spec(apps, service)
-    _refuse_while_configured(apps.effective(service))
+    refuse_while_configured(apps.effective(service))
     removed: ServiceAppCredential | None = await apps.store.remove(session, service)
     if removed is None:
         raise HTTPException(404, f"{spec.name} has no saved app.")

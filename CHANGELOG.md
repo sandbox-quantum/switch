@@ -53,6 +53,25 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **Server commands for the platform operator.** Three commands run where
+  switch-core runs, with its configuration:
+  - `switch-orgs list` shows every organization with its admins and
+    workspaces.
+  - `switch-accounts` lists, creates, deletes and signs out accounts, and
+    grants or revokes platform operator.
+  - `switch-connector-apps` lists, sets and removes the deployment's
+    connector apps.
+
+  `switch-accounts create` reads the password from a file or standard input,
+  never the command line. `switch-accounts delete` uses the same account
+  deletion and refusals as the dashboard and only shows what it would do
+  until given `--execute`. It also refuses while the account owns agents,
+  devices or open chats, which only a running server can remove.
+  `switch-connector-apps set` checks the app with the vendor first, as the
+  dashboard does, and never prints a secret. The account at
+  `GATEWAY_ADMIN_EMAIL` stays an operator, and the server keeps at least
+  one. Every change is recorded in the audit log as made by a platform
+  operator command.
 - **On a deployment with one organization, its admins manage the
   deployment's connector apps.** The connector apps every workspace signs in
   through were the platform operator's alone. When the deployment has

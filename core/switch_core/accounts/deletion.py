@@ -118,7 +118,6 @@ from switch_core.tenant_context import no_tenant, tenant_scope
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-    from switch_core.bridges.agent.protocol.agent_core import AgentCore
     from switch_core.bridges.resource.service import ResourceService
     from switch_core.connections.broker import ServiceBroker
     from switch_core.connections.sign_in_flows import SignInFlows
@@ -127,7 +126,6 @@ if TYPE_CHECKING:
     from switch_core.db.stores.organization_store import OrganizationStore
     from switch_core.db.stores.template_store import TemplateStore
     from switch_core.db.stores.user_store import UserStore
-    from switch_core.room_service import RoomService
 
 logger = logging.getLogger(__name__)
 
@@ -318,6 +316,42 @@ async def _hand_over_server_settings(
     )
 
 
+@dataclass(frozen=True)
+class Held:
+    """What the person holds in a workspace that deleting the account stops
+    or archives first: their agents, their machines' controllers and their
+    open chats."""
+
+    agent_ids: list[str]
+    controller_ids: list[str]
+    chat_ids: list[str]
+
+    def __bool__(self) -> bool:
+        return bool(self.agent_ids or self.controller_ids or self.chat_ids)
+
+
+class AgentKeys(Protocol):
+    def invalidate(self, key_hash: str) -> None: ...
+
+
+class AgentRemoval(Protocol):
+    """Deletes one of the person's agents, and forgets a key deleted with
+    them. The agent bridge's (`AgentCore`)."""
+
+    @property
+    def api_key_cache(self) -> AgentKeys: ...
+
+    async def delete_agent(
+        self, *, agent_id: str | None = None, agent_name: str | None = None
+    ) -> object: ...
+
+
+class ChatArchive(Protocol):
+    """Archives one of the person's chats. The room service's."""
+
+    async def set_room_archived(self, room_id: str, archived: bool) -> None: ...
+
+
 class TenantClients(Protocol):
     """Stops the clients the server runs for a deleted workspace, here and in
     every other process. The client lifecycle's."""
@@ -378,11 +412,11 @@ def is_server_administrator(user: User, admin_email: str) -> bool:
 @dataclass
 class AccountDeletion:
     session_factory: async_sessionmaker[AsyncSession]
-    protocol: AgentCore
+    protocol: AgentRemoval
     management: ControllerRevoker | None
     broker: ServiceBroker
     resources: ResourceService
-    rooms: RoomService
+    rooms: ChatArchive
     sign_in_flows: SignInFlows
     users: UserStore
     organizations: OrganizationStore
@@ -654,6 +688,35 @@ class AccountDeletion:
             raise RuntimeError(f"User {user_id}, who asked for a deletion, is gone")
         return Person(found.id, found.name, found.email)
 
+    async def held(self, user_id: str, tenant_id: str) -> Held:
+        """What deleting the account stops or archives in `tenant_id` before
+        it removes anything, through the running server's services."""
+        async with tenant_session(self.session_factory, tenant_id) as session:
+            return await self._held(session, user_id)
+
+    async def _held(self, session: AsyncSession, user_id: str) -> Held:
+        return Held(
+            agent_ids=[
+                agent.id for agent in await self.agents.get_by_owner(session, user_id)
+            ],
+            controller_ids=list(
+                await session.scalars(
+                    select(AgentController.id).where(
+                        AgentController.owner_id == user_id
+                    )
+                )
+            ),
+            chat_ids=list(
+                await session.scalars(
+                    select(Room.id).where(
+                        Room.owner_id == user_id,
+                        Room.read_visibility == "private",
+                        Room.archived_at.is_(None),
+                    )
+                )
+            ),
+        )
+
     async def _leave_workspace(
         self, user: User, workspace: Workspace, actor_id: str | None
     ) -> None:
@@ -666,25 +729,12 @@ class AccountDeletion:
                 workspace,
                 "Nothing of theirs there has changed",
             )
-            agent_ids = [
-                agent.id for agent in await self.agents.get_by_owner(session, user_id)
-            ]
-            controller_ids = list(
-                await session.scalars(
-                    select(AgentController.id).where(
-                        AgentController.owner_id == user_id
-                    )
-                )
-            )
-            chat_ids = list(
-                await session.scalars(
-                    select(Room.id).where(
-                        Room.owner_id == user_id,
-                        Room.read_visibility == "private",
-                        Room.archived_at.is_(None),
-                    )
-                )
-            )
+            held = await self._held(session, user_id)
+        agent_ids, controller_ids, chat_ids = (
+            held.agent_ids,
+            held.controller_ids,
+            held.chat_ids,
+        )
 
         with tenant_scope(tenant_id):
             for agent_id in agent_ids:
