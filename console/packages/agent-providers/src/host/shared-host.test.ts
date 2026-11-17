@@ -1875,6 +1875,36 @@ it('reports the turn a fault ended, and the fault, before it stops', async () =>
   expect(String(await host.stop())).toContain('HOST_FAULTED');
 });
 
+it.each([false, true])(
+  'reports a turn stopping cut short as interrupted, within a bound (Switch unreachable=%s)',
+  async (unreachable) => {
+    const host = await start({ rooms: true });
+    await host.parent.ask({ type: 'room', handoff: roomMessage(1, 'hi') });
+    await until(() => expect(host.turns).toHaveLength(1));
+    const turnId = host.turns[0]!.turnId;
+    host.switchCore.state.unavailable = unreachable;
+    const interrupted = () =>
+      host.switchCore.calls.filter((c) => {
+        const row = c.body as { kind: string; status: string; turn_id: string };
+        return (
+          c.path.endsWith('/activity') &&
+          row.kind === 'turn' &&
+          row.status === 'interrupted' &&
+          row.turn_id === turnId
+        );
+      });
+    const sentBefore = host.switchCore.calls.length;
+    const stopping = performance.now();
+    expect(await host.stop()).toBeNull();
+    // Every call to Switch until then ended with the stop; the last report is made after it.
+    if (unreachable) expect(host.switchCore.calls.length).toBeGreaterThan(sentBefore);
+    else expect(interrupted()).toHaveLength(1);
+    // Retried while unreachable, but stopping waits no longer than the last report's bound.
+    expect(performance.now() - stopping).toBeLessThan(unreachable ? 8000 : 3000);
+  },
+  20000
+);
+
 it('runs a room message again on a retry asked for there, and says so when it cannot', async () => {
   const host = await start({ rooms: true });
   const asks = () =>

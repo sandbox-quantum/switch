@@ -317,6 +317,9 @@ export async function runSharedHost(
   let failure: unknown = null;
   let shutdown: Promise<void> | null = null;
   let reporting: Promise<void> | null = null;
+  let finalReport: (() => Promise<void>) | null = null;
+  // Calls to Switch end with execution, except the one last report after it.
+  let callSignal = executionSignal;
   let stopHearingTools: (() => void) | null = null;
 
   const callOnce = async (
@@ -330,11 +333,11 @@ export async function runSharedHost(
         method,
         headers: { authorization: `Bearer ${options.token}`, 'content-type': 'application/json' },
         body: method === 'POST' ? JSON.stringify(body) : undefined,
-        signal: AbortSignal.any([executionSignal, AbortSignal.timeout(5000)]),
+        signal: AbortSignal.any([callSignal, AbortSignal.timeout(5000)]),
         redirect: 'error',
       });
     } catch (error) {
-      if (executionSignal.aborted) throw error;
+      if (callSignal.aborted) throw error;
       throw new TransportError(`Switch unavailable: ${String(error)}`);
     }
     if ([429, 500, 502, 503, 504].includes(response.status))
@@ -359,7 +362,7 @@ export async function runSharedHost(
   const agentSessions = async (path: string, method: 'GET' | 'POST', body: unknown) => {
     let disconnected = false;
     while (true) {
-      executionSignal.throwIfAborted();
+      callSignal.throwIfAborted();
       try {
         const result = await callOnce(`/agent-sessions${path}`, method, body);
         if (disconnected) console.info('Connection to Switch restored.');
@@ -368,7 +371,7 @@ export async function runSharedHost(
         if (!(error instanceof TransportError)) throw error;
         if (!disconnected) console.warn(error.message);
         disconnected = true;
-        await delay(500, undefined, { signal: executionSignal });
+        await delay(500, undefined, { signal: callSignal });
       }
     }
   };
@@ -564,6 +567,7 @@ export async function runSharedHost(
     // One report at a time: the loop below and the last one before a fault share the cursor.
     let reportChain: Promise<void> = Promise.resolve();
     const reportInTurn = () => (reportChain = reportChain.catch(() => {}).then(report));
+    finalReport = reportInTurn;
     const report = async () => {
       if (reportingUnsupported) return;
       const { events } = host!.replay(reporter.cursor);
@@ -1153,6 +1157,13 @@ export async function runSharedHost(
     await reporting;
     try {
       await stopExecution();
+      // Stopping ended the open turn; Switch would otherwise show it running until the next start.
+      if (finalReport) {
+        callSignal = AbortSignal.timeout(FINAL_REPORT_MS);
+        await finalReport().catch((error: unknown) =>
+          console.warn(`Could not report this session's last events: ${String(error)}`)
+        );
+      }
       await state.journal.append({ type: 'quiesced' });
     } catch (error) {
       if (failure)
