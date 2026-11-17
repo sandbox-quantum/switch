@@ -4872,6 +4872,10 @@ version of their own to them without also giving them a release of their own.
   agent"; it was the only place Console showed that name.
 
 #### Fixed
+- **Creating an agent no longer flashes "An agent called … already exists
+  on this server".** The form checked the name against the server's agent
+  list, which picks up the new agent before the dialog closes, so for a moment
+  it reported its own agent as a clash.
 - **Connectors stops trusting an old answer about who sets up connector
   apps.** When asking the server again failed, the page said it couldn't
   check but still offered Set up by the last answer; it now goes by none, as
