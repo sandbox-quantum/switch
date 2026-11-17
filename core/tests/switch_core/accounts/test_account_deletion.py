@@ -47,6 +47,7 @@ from switch_core.db.models import (
     ReferenceType,
     Room,
     ServerAuditEvent,
+    ServiceConnection,
     Template,
     Tenant,
     TenantMember,
@@ -98,6 +99,15 @@ class _Protocol:
 
 
 class _Broker:
+    async def connections(self, session: AsyncSession, user_id: str) -> list[str]:
+        return list(
+            await session.scalars(
+                select(ServiceConnection.service)
+                .where(ServiceConnection.user_id == user_id)
+                .order_by(ServiceConnection.service)
+            )
+        )
+
     async def remove_connections(self, _session: AsyncSession, _user_id: str) -> list:
         return []
 

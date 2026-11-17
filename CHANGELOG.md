@@ -72,10 +72,17 @@ version of their own to them without also giving them a release of their own.
     connector apps.
 
   `switch-accounts create` reads the password from a file or standard input,
-  never the command line. `switch-accounts delete` uses the same account
-  deletion and refusals as the dashboard and only shows what it would do
-  until given `--execute`. It also refuses while the account owns agents,
-  devices or open chats, which only a running server can remove.
+  never the command line. `switch-accounts delete` first lists what is
+  connected to the account: its workspaces and role in each, the
+  organizations it is an admin of, and in each workspace its agents,
+  devices, open chats, API keys and service connections, and the rooms and
+  invitations that stay or pass to another admin. It uses the same account
+  deletion and refusals as the dashboard, and also refuses while the account
+  owns agents, devices or open chats, which only a running server can
+  remove; a refusal says what has to happen first and exits non-zero. It
+  only shows what it would do until given `--execute`, and then asks for the
+  account's e-mail to be typed before deleting. `--yes` skips that question
+  for scripts; without it, a run with no terminal to ask on is refused.
   `switch-connector-apps set` checks the app with the vendor first, as the
   dashboard does, and never prints a secret. The account at
   `GATEWAY_ADMIN_EMAIL` stays an operator, and the server keeps at least

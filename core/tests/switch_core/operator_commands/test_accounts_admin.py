@@ -4,14 +4,17 @@ to nothing. Each change lands in the server's audit log with no actor and
 
 from __future__ import annotations
 
+import uuid
 from pathlib import Path
 
 import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.accounts.deletion import AccountDeletionIncomplete
+from switch_core import accounts_admin
+from switch_core.accounts.deletion import AccountDeletion, AccountDeletionIncomplete
 from switch_core.accounts_admin import (
+    DeletionPlan,
     create_account,
     delete_account,
     grant_operator,
@@ -19,6 +22,7 @@ from switch_core.accounts_admin import (
     plan_deletion,
     read_password,
     revoke_operator,
+    run_delete,
     sign_out,
 )
 from switch_core.bridges.agent.registration_bootstrap import (
@@ -26,9 +30,13 @@ from switch_core.bridges.agent.registration_bootstrap import (
 )
 from switch_core.db.models import (
     TENANT_ZERO_ID,
+    AgentController,
+    ApiKey,
     AuditEvent,
     Organization,
+    Room,
     ServerAuditEvent,
+    ServiceConnection,
     Tenant,
     TenantMember,
     User,
@@ -41,7 +49,9 @@ from tests.switch_core.accounts.test_account_deletion import (
     _agent,
     _Broker,
     _deletion,
+    _invitation,
 )
+from tests.switch_core.operator_commands.helpers import email_of, make_organization
 
 pytestmark = pytest.mark.no_ambient_tenant
 
@@ -327,6 +337,327 @@ class TestDelete:
             await delete_account(deletion, rls_harness.restricted, plan)
 
         assert await _user(rls_harness, only_admin.id) is not None
+
+
+class _Terminal:
+    """Standard input, a terminal or not."""
+
+    def __init__(self, tty: bool) -> None:
+        self._tty = tty
+
+    def isatty(self) -> bool:
+        return self._tty
+
+
+class _Operator:
+    """Types `answer` at the prompt, and keeps what it was asked."""
+
+    def __init__(self, answer: str) -> None:
+        self.answer = answer
+        self.asked: list[str] = []
+
+    def __call__(self, prompt: str) -> str:
+        self.asked.append(prompt)
+        return self.answer
+
+
+def _never_asked(prompt: str) -> str:
+    raise AssertionError(f"asked {prompt!r}")
+
+
+@pytest.fixture
+def terminal(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("sys.stdin", _Terminal(True))
+
+
+@pytest.fixture
+def no_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("sys.stdin", _Terminal(False))
+
+
+async def _owns_an_agent(rls_harness: RLSHarness, owner: User, name: str) -> None:
+    with tenant_scope(TENANT_ZERO_ID):
+        async with rls_harness.owner() as session:
+            await _agent(session, TENANT_ZERO_ID, owner, name)
+            await session.commit()
+
+
+class TestDeleteCommand:
+    """`switch-accounts delete` as the operator sees it: what is connected,
+    what blocks it, and the confirmation before anything is deleted."""
+
+    async def test_it_says_everything_connected_to_the_account(
+        self,
+        rls_harness: RLSHarness,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        made = await make_organization(
+            rls_harness,
+            people={
+                "keeper": ("admin", "org_admin"),
+                "leaving": ("member", "org_admin"),
+            },
+        )
+        tenant_id = made.tenant_id
+        with tenant_scope(tenant_id):
+            async with rls_harness.owner() as session:
+                leaving = await session.get(User, made.ids["leaving"])
+                assert leaving is not None
+                await _agent(session, tenant_id, leaving, "helper")
+                await _invitation(session, tenant_id, leaving)
+                session.add_all(
+                    [
+                        AgentController(
+                            tenant_id=tenant_id,
+                            owner_id=leaving.id,
+                            name="laptop",
+                            kind="console",
+                        ),
+                        _room(tenant_id, leaving, "Welcome", private=True),
+                        _room(tenant_id, leaving, "team", private=False),
+                        ApiKey(
+                            tenant_id=tenant_id,
+                            user_id=leaving.id,
+                            key_hash=uuid.uuid4().hex,
+                            encrypted_key="sealed",
+                            label="cli",
+                            type="user",
+                        ),
+                        ServiceConnection(
+                            tenant_id=tenant_id,
+                            user_id=leaving.id,
+                            service="github",
+                            status="active",
+                            consent="read",
+                            granted_scopes=[],
+                            account_id="1001",
+                            external_identity="leaving",
+                            encrypted_secret="sealed",
+                            secret_revision=1,
+                        ),
+                    ]
+                )
+                await session.commit()
+        monkeypatch.setattr("builtins.input", _never_asked)
+        deletion, _, _ = _deletion(rls_harness.restricted)
+
+        status = await run_delete(
+            deletion,
+            rls_harness.restricted,
+            leaving.email,
+            execute=False,
+            yes=False,
+        )
+
+        out = capsys.readouterr().out.splitlines()
+        assert status == 1
+        for line in [
+            f"Account {leaving.email} ({leaving.id}): Leaving",
+            f"  Acme workspace ({tenant_id}), as admin",
+            "Organizations it stops being an organization admin of, whose other "
+            "admins are e-mailed: Acme",
+            f"In Acme workspace ({tenant_id}):",
+            "  Agents it owns (1): helper",
+            "  Devices (1): laptop",
+            "  Open chats (1): Welcome",
+            "  API keys, deleted (2): cli, helper",
+            "  Service connections, removed and signed out (1): github",
+            "  Rooms it created or owns, which stay with no owner for the "
+            "workspace's admins (1): team",
+            f"  Passed to {email_of(made.ids['keeper'])}: 1 invitation(s)",
+            "Nothing changed.",
+        ]:
+            assert line in out
+        assert "sealed" not in "\n".join(out)
+
+    async def test_a_blocked_deletion_lists_what_blocks_it_and_deletes_nothing(
+        self,
+        rls_harness: RLSHarness,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+        terminal: None,
+    ) -> None:
+        only_admin = await _account(rls_harness, "only-admin", workspace_role="admin")
+        await _account(rls_harness, "colleague", workspace_role="member")
+        await _owns_an_agent(rls_harness, only_admin, "helper")
+        monkeypatch.setattr("builtins.input", _never_asked)
+        deletion, _, _ = _deletion(rls_harness.restricted)
+
+        dry_run = await run_delete(
+            deletion, rls_harness.restricted, only_admin.email, execute=False, yes=False
+        )
+        capsys.readouterr()
+        with pytest.raises(CommandRefused, match="What has to happen first"):
+            await run_delete(
+                deletion,
+                rls_harness.restricted,
+                only_admin.email,
+                execute=True,
+                yes=False,
+            )
+
+        out = capsys.readouterr().out
+        assert dry_run == 1
+        assert "Blocked. The account can't be deleted until this is done:" in out
+        assert "  - You're the only admin of" in out
+        assert "1 agent(s)" in out
+        assert "transfer the agents to someone else" in " ".join(out.split())
+        assert await _user(rls_harness, only_admin.id) is not None
+        [event] = await _server_events(rls_harness)
+        assert event.action == "user.deletion_refused"
+        assert event.details is not None
+        assert "only admin" in event.details["reason"]
+        assert "only a running server" in event.details["reason"]
+
+    @pytest.mark.parametrize(
+        "typed",
+        [
+            "",
+            "LEAVING@example.invalid",
+            "leaving@example.invalid ",
+            "keeper@example.invalid",
+        ],
+    )
+    async def test_only_the_exact_email_typed_deletes(
+        self,
+        rls_harness: RLSHarness,
+        monkeypatch: pytest.MonkeyPatch,
+        terminal: None,
+        typed: str,
+    ) -> None:
+        await _account(rls_harness, "keeper", workspace_role="admin")
+        leaving = await _account(rls_harness, "leaving", workspace_role="member")
+        operator = _Operator(typed)
+        monkeypatch.setattr("builtins.input", operator)
+        deletion, _, _ = _deletion(rls_harness.restricted)
+
+        with pytest.raises(CommandRefused, match="isn't the account's e-mail"):
+            await run_delete(
+                deletion, rls_harness.restricted, leaving.email, execute=True, yes=False
+            )
+        assert await _user(rls_harness, leaving.id) is not None
+        assert await _server_events(rls_harness) == []
+
+        operator.answer = leaving.email
+        status = await run_delete(
+            deletion, rls_harness.restricted, leaving.email, execute=True, yes=False
+        )
+
+        assert status == 0
+        assert (
+            operator.asked
+            == [f"\nTo delete it, type the account's e-mail ({leaving.email}): "] * 2
+        )
+        assert await _user(rls_harness, leaving.id) is None
+        [event] = await _server_events(rls_harness)
+        assert event.action == "user.deleted"
+
+    async def test_yes_deletes_without_asking(
+        self,
+        rls_harness: RLSHarness,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+        no_terminal: None,
+    ) -> None:
+        await _account(rls_harness, "keeper", workspace_role="admin")
+        leaving = await _account(rls_harness, "leaving", workspace_role="member")
+        monkeypatch.setattr("builtins.input", _never_asked)
+        deletion, _, _ = _deletion(rls_harness.restricted)
+
+        status = await run_delete(
+            deletion, rls_harness.restricted, leaving.email, execute=True, yes=True
+        )
+
+        assert status == 0
+        assert f"Deleted the account {leaving.email}." in capsys.readouterr().out
+        assert await _user(rls_harness, leaving.id) is None
+
+    async def test_without_a_terminal_or_yes_it_refuses_rather_than_wait(
+        self,
+        rls_harness: RLSHarness,
+        monkeypatch: pytest.MonkeyPatch,
+        no_terminal: None,
+    ) -> None:
+        await _account(rls_harness, "keeper", workspace_role="admin")
+        leaving = await _account(rls_harness, "leaving", workspace_role="member")
+        monkeypatch.setattr("builtins.input", _never_asked)
+        deletion, _, _ = _deletion(rls_harness.restricted)
+
+        with pytest.raises(CommandRefused, match="isn't a terminal.*--yes"):
+            await run_delete(
+                deletion, rls_harness.restricted, leaving.email, execute=True, yes=False
+            )
+
+        assert await _user(rls_harness, leaving.id) is not None
+        assert await _server_events(rls_harness) == []
+
+    async def test_without_execute_it_only_shows(
+        self,
+        rls_harness: RLSHarness,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+        terminal: None,
+    ) -> None:
+        await _account(rls_harness, "keeper", workspace_role="admin")
+        leaving = await _account(rls_harness, "leaving", workspace_role="member")
+        monkeypatch.setattr("builtins.input", _never_asked)
+        deletion, _, _ = _deletion(rls_harness.restricted)
+
+        status = await run_delete(
+            deletion, rls_harness.restricted, leaving.email, execute=False, yes=False
+        )
+
+        assert status == 0
+        assert "Add --execute to delete it." in capsys.readouterr().out
+        assert await _user(rls_harness, leaving.id) is not None
+
+    async def test_what_changes_while_confirming_is_not_deleted(
+        self,
+        rls_harness: RLSHarness,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+        terminal: None,
+    ) -> None:
+        await _account(rls_harness, "keeper", workspace_role="admin")
+        leaving = await _account(rls_harness, "leaving", workspace_role="member")
+        monkeypatch.setattr("builtins.input", _Operator(leaving.email))
+        planned = 0
+
+        async def an_agent_arrives_meanwhile(
+            deletion: AccountDeletion, session_factory: object, email: str
+        ) -> DeletionPlan:
+            nonlocal planned
+            planned += 1
+            if planned == 2:
+                await _owns_an_agent(rls_harness, leaving, "latecomer")
+            return await plan_deletion(deletion, rls_harness.restricted, email)
+
+        monkeypatch.setattr(accounts_admin, "plan_deletion", an_agent_arrives_meanwhile)
+        deletion, _, _ = _deletion(rls_harness.restricted)
+
+        with pytest.raises(CommandRefused, match="Run it again"):
+            await run_delete(
+                deletion, rls_harness.restricted, leaving.email, execute=True, yes=False
+            )
+
+        out = capsys.readouterr().out
+        assert "The account changed while you were confirming." in out
+        assert "  Agents it owns (1): latecomer" in out
+        assert await _user(rls_harness, leaving.id) is not None
+
+
+def _room(tenant_id: str, owner: User, name: str, *, private: bool) -> Room:
+    return Room(
+        tenant_id=tenant_id,
+        transport_room_id=f"!{uuid.uuid4().hex}:test",
+        name=name,
+        description=name,
+        created_by=owner.id,
+        owner_id=owner.id,
+        read_visibility="private" if private else "public",
+        write_visibility="private",
+    )
 
 
 class _FailsOnSecondWorkspace(_Broker):

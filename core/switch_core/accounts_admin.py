@@ -5,11 +5,14 @@
 - `create EMAIL --name NAME [--operator]` adds an account in no workspace,
   as an invitation or a domain join then places it. Its password is read
   from `--password-file` or standard input, never from the command line.
-- `delete EMAIL [--execute]` deletes an account through the account deletion
-  the dashboard uses (`accounts/deletion.py`), with its refusals. Without
-  `--execute` it only says what would happen. It also refuses while the
-  account owns agents, devices or open chats: only a running server can stop
-  and remove those, so they go first, from the dashboard or Switch Console.
+- `delete EMAIL [--execute [--yes]]` deletes an account through the account
+  deletion the dashboard uses (`accounts/deletion.py`), with its refusals.
+  It first shows what is connected to the account, as that deletion finds it.
+  It also refuses while the account owns agents, devices or open chats: only
+  a running server can stop and remove those, so they go first, from the
+  dashboard or Switch Console. Without `--execute` it only says what would
+  happen; with it, the operator types the account's e-mail to confirm, unless
+  `--yes` is given.
 - `sign-out EMAIL` ends every session the account holds.
 - `grant-operator EMAIL` and `revoke-operator EMAIL` make an account a
   platform operator, or a regular account again. The account at
@@ -24,9 +27,10 @@ from __future__ import annotations
 import argparse
 import getpass
 import sys
+import textwrap
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 from pydantic import TypeAdapter, ValidationError
@@ -39,9 +43,10 @@ from switch_core.accounts.deletion import (
     AccountDeletionIncomplete,
     AccountDeletionRefused,
     Held,
+    Named,
     Workspace,
+    WorkspacePreview,
 )
-from switch_core.authz import ORGANIZATION_ADMIN_ROLE
 from switch_core.bridges.agent.registration_bootstrap import is_bootstrap_owner
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.clients.client_signals import CLIENT_CHANGED_SIGNAL
@@ -54,9 +59,8 @@ from switch_core.db.audit import (
     ServerAuditAction,
     record_server_audit_event,
 )
-from switch_core.db.models import Organization, OrganizationMember, Tenant, User
+from switch_core.db.models import User
 from switch_core.db.runtime_role import RuntimeRoleError
-from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.document_store import DocumentStore
@@ -362,42 +366,64 @@ class _ServerClients:
         self.bus.publish(CLIENT_CHANGED_SIGNAL, tenant_id=tenant_id)
 
 
+# Where the command's own wording is wrapped.
+WIDTH = 78
+
+WHAT_GOES_FIRST = (
+    "They go first: in the dashboard, a workspace admin (an admin of its "
+    "organization counts) can transfer the agents to someone else or delete "
+    "them, and remove the devices, and their owner can delete any of them "
+    "from Switch Console or the dashboard. Or the person can delete their own "
+    "account from the dashboard, which removes them with it."
+)
+
+
 @dataclass
 class DeletionPlan:
     user: User
     workspaces: list[Workspace]
     # Why the account deletion refuses, if it does.
     refusal: str | None
-    # What only a running server can stop or archive, by workspace name.
-    held: dict[str, Held] = field(default_factory=dict)
+    # What deleting the account does in each workspace, by workspace id.
+    previews: dict[str, WorkspacePreview]
     # The organizations they are `org_admin` of, by name.
-    administers: list[str] = field(default_factory=list)
+    administers: list[str]
 
     @property
     def needs_the_server(self) -> str | None:
-        """Why this command can't delete the account itself, or None."""
-        if not self.held:
-            return None
+        """Why this command can't delete the account itself, or None: what
+        only a running server can stop or archive."""
         listed = "; ".join(
-            f"{name}: {_held_text(held)}" for name, held in sorted(self.held.items())
+            f"{workspace.name}: {_held_text(self.previews[workspace.id].held)}"
+            for workspace in self.workspaces
+            if self.previews[workspace.id].held
         )
+        if not listed:
+            return None
         return (
-            "The account owns things only a running server can stop and remove "
-            f"({listed}). Delete those first: their owner can, from Switch "
-            "Console or the dashboard, as can a workspace admin for agents and "
-            "devices. Or the person can delete their own account from the "
-            "dashboard, which removes them with it."
+            "The account owns things only a running server can stop and "
+            f"remove ({listed}). {WHAT_GOES_FIRST}"
         )
+
+    @property
+    def reasons(self) -> list[str]:
+        """Everything that stops this command deleting the account."""
+        return [r for r in (self.refusal, self.needs_the_server) if r is not None]
+
+    @property
+    def blocked(self) -> str | None:
+        """`reasons`, in one, or None."""
+        return " ".join(self.reasons) if self.reasons else None
 
 
 def _held_text(held: Held) -> str:
     parts = []
-    if held.agent_ids:
-        parts.append(f"{len(held.agent_ids)} agent(s)")
-    if held.controller_ids:
-        parts.append(f"{len(held.controller_ids)} device(s)")
-    if held.chat_ids:
-        parts.append(f"{len(held.chat_ids)} open chat(s)")
+    if held.agents:
+        parts.append(f"{len(held.agents)} agent(s)")
+    if held.controllers:
+        parts.append(f"{len(held.controllers)} device(s)")
+    if held.chats:
+        parts.append(f"{len(held.chats)} open chat(s)")
     return ", ".join(parts)
 
 
@@ -406,7 +432,8 @@ async def plan_deletion(
     session_factory: async_sessionmaker[AsyncSession],
     email: str,
 ) -> DeletionPlan:
-    """What deleting the account with `email` would do, and what stops it."""
+    """What deleting the account with `email` would do, and what stops it,
+    as the account deletion itself finds them."""
     user = await account_by_email(session_factory, email)
     user_store = UserStore()
     memberships = [
@@ -417,42 +444,101 @@ async def plan_deletion(
     with no_tenant():
         async with session_factory() as session:
             refusal = await deletion.refusal(session, user, workspaces)
-    plan = DeletionPlan(user=user, workspaces=workspaces, refusal=refusal)
-    administered: dict[str, str] = {}
-    for workspace in workspaces:
-        held = await deletion.held(user.id, workspace.id)
-        if held:
-            plan.held[workspace.name] = held
-        async with tenant_session(session_factory, workspace.id) as session:
-            tenant = await session.get(Tenant, workspace.id)
-            if tenant is None or tenant.organization_id is None:
-                continue
-            member = await session.get(
-                OrganizationMember, (tenant.organization_id, user.id)
-            )
-            if member is not None and member.role == ORGANIZATION_ADMIN_ROLE:
-                organization = await session.get(Organization, tenant.organization_id)
-                assert organization is not None
-                administered[organization.id] = organization.name
-    plan.administers = sorted(administered.values())
-    return plan
+    administered = await deletion.organizations_administered(user.id, workspaces)
+    return DeletionPlan(
+        user=user,
+        workspaces=workspaces,
+        refusal=refusal,
+        previews={w.id: await deletion.preview(user.id, w.id) for w in workspaces},
+        administers=sorted(administered.values()),
+    )
 
 
-def print_plan(plan: DeletionPlan) -> None:
+def describe(plan: DeletionPlan) -> list[str]:
+    """What the command shows of `plan`, line by line: what is connected to
+    the account, and anything that blocks deleting it."""
     user = plan.user
-    print(f"Account {user.email} ({user.id}): {user.name}")
-    print(f"Workspaces it leaves ({len(plan.workspaces)}):")
-    for workspace in plan.workspaces:
-        print(f"  {workspace.name} ({workspace.id}), as {workspace.role}")
+    lines = [
+        f"Account {user.email} ({user.id}): {user.name}",
+        "",
+        f"Workspaces it leaves ({len(plan.workspaces)}):",
+        *(f"  {w.name} ({w.id}), as {w.role}" for w in plan.workspaces),
+    ]
     if plan.administers:
-        print(
+        lines.append(
             "Organizations it stops being an organization admin of, whose other "
             f"admins are e-mailed: {', '.join(plan.administers)}"
         )
-    if plan.refusal is not None:
-        print(f"\nThe account can't be deleted: {plan.refusal}")
-    elif plan.needs_the_server is not None:
-        print(f"\nThis command can't delete it yet: {plan.needs_the_server}")
+    for workspace in plan.workspaces:
+        lines += ["", f"In {workspace.name} ({workspace.id}):"]
+        lines += _preview_lines(plan.previews[workspace.id]) or [
+            "  no agents, devices, chats, API keys, connections or rooms, and "
+            "nothing handed over"
+        ]
+    if plan.reasons:
+        lines += ["", "Blocked. The account can't be deleted until this is done:"]
+        for reason in plan.reasons:
+            lines += textwrap.wrap(
+                reason, WIDTH, initial_indent="  - ", subsequent_indent="    "
+            )
+    return lines
+
+
+def _preview_lines(preview: WorkspacePreview) -> list[str]:
+    held = preview.held
+
+    def names(named: list[Named]) -> list[str]:
+        return [n.name for n in named]
+
+    listed = [
+        ("Agents it owns", names(held.agents)),
+        ("Devices", names(held.controllers)),
+        ("Open chats", names(held.chats)),
+        ("API keys, deleted", names(preview.api_keys)),
+        ("Service connections, removed and signed out", preview.services),
+        (
+            "Rooms it created or owns, which stay with no owner for the "
+            "workspace's admins",
+            names(preview.rooms),
+        ),
+    ]
+    lines = [
+        f"  {title} ({len(items)}): {', '.join(items)}"
+        for title, items in listed
+        if items
+    ]
+    if preview.handed_over:
+        counted = ", ".join(
+            f"{count} {kind}(s)" for kind, count in preview.handed_over.items()
+        )
+        if preview.successor is not None:
+            lines.append(f"  Passed to {preview.successor}: {counted}")
+        else:
+            lines.append(f"  Deleted, with no other admin to pass them to: {counted}")
+    return lines
+
+
+def print_plan(plan: DeletionPlan) -> None:
+    print("\n".join(describe(plan)))
+
+
+def confirm(email: str) -> None:
+    """Ask the operator to type the account's `email`; refuse unless they
+    type exactly it. Refuses without asking when standard input isn't a
+    terminal, where nobody could answer and the prompt would wait forever."""
+    if not sys.stdin.isatty():
+        raise CommandRefused(
+            "Standard input isn't a terminal, so nobody can confirm, and "
+            "nothing was deleted. Run it on a terminal, or add --yes to delete "
+            "without asking."
+        )
+    try:
+        typed = input(f"\nTo delete it, type the account's e-mail ({email}): ")
+    except EOFError:
+        print()
+        raise CommandRefused("No e-mail was typed, so nothing was deleted.") from None
+    if typed != email:
+        raise CommandRefused("That isn't the account's e-mail, so nothing was deleted.")
 
 
 async def _record_refusal(
@@ -480,7 +566,7 @@ async def delete_account(
     log as the operator's deletion from the dashboard was: deleted, refused,
     or failed part-way."""
     user_id = plan.user.id
-    reason = plan.refusal or plan.needs_the_server
+    reason = plan.blocked
     if reason is not None:
         await _record_refusal(session_factory, user_id, reason)
         raise CommandRefused(reason)
@@ -525,6 +611,49 @@ async def delete_account(
                 )
                 await session.commit()
                 raise
+
+
+async def run_delete(
+    deletion: AccountDeletion,
+    session_factory: async_sessionmaker[AsyncSession],
+    email: str,
+    *,
+    execute: bool,
+    yes: bool,
+) -> int:
+    """`switch-accounts delete`: show what is connected to the account and
+    anything that blocks deleting it, then, with `execute`, delete it once
+    the operator has typed its e-mail, or at once with `yes`. Returns the
+    exit status; a deletion refused or not confirmed raises
+    `CommandRefused`."""
+    plan = await plan_deletion(deletion, session_factory, email)
+    print_plan(plan)
+    reason = plan.blocked
+    if reason is not None:
+        if not execute:
+            print("\nNothing changed.")
+            return 1
+        await _record_refusal(session_factory, plan.user.id, reason)
+        raise CommandRefused(
+            "Nothing was deleted. What has to happen first is listed above."
+        )
+    if not execute:
+        print("\nNothing changed. Add --execute to delete it.")
+        return 0
+    if not yes:
+        confirm(plan.user.email)
+        # The prompt can wait a long time; delete only what was shown.
+        again = await plan_deletion(deletion, session_factory, email)
+        if describe(again) != describe(plan):
+            print("\nThe account changed while you were confirming. Now:\n")
+            print_plan(again)
+            raise CommandRefused(
+                "Nothing was deleted. Run it again to delete the account as it is now."
+            )
+        plan = again
+    await delete_account(deletion, session_factory, plan)
+    print(f"\nDeleted the account {plan.user.email}.")
+    return 0
 
 
 @asynccontextmanager
@@ -649,19 +778,33 @@ def _parser() -> argparse.ArgumentParser:
             "Delete an account everywhere on this server, as the account's own "
             "deletion does: its workspaces are left, what it owns is deleted "
             "or handed over, and its messages stay under a former member's "
-            "name. Refused, with what to do first, wherever the account "
-            "deletion refuses (the only admin of a workspace or organization "
-            "with other people, a platform operator, a cloud machine), and "
-            "while the account owns agents, devices or open chats, which only "
-            "a running server can stop and remove. Without --execute it only "
-            "says what would happen."
+            "name. It first shows what is connected to the account: the "
+            "workspaces it is in and its role in each, the organizations it is "
+            "an organization admin of, and in each workspace its agents, "
+            "devices, open chats, API keys and service connections, the rooms "
+            "it leaves without an owner, and the invitations and other setup "
+            "that pass to another admin. It is blocked, exiting non-zero with "
+            "what has to happen first, wherever the account deletion refuses "
+            "(the only admin of a workspace or organization with other people, "
+            "a platform operator, a cloud machine), and while the account owns "
+            "agents, devices or open chats, which only a running server can "
+            "stop and remove. Without --execute it stops there. With it, the "
+            "account's e-mail must be typed to confirm before anything is "
+            "deleted; --yes skips that, for scripts. Without --yes it needs a "
+            "terminal to ask on, and refuses otherwise."
         ),
     )
     delete.add_argument("email")
     delete.add_argument(
         "--execute",
         action="store_true",
-        help="delete it. Without this, only show what would happen.",
+        help="delete it, once its e-mail is typed to confirm. Without this, "
+        "only show what would happen.",
+    )
+    delete.add_argument(
+        "--yes",
+        action="store_true",
+        help="with --execute, delete without asking to confirm, for scripts",
     )
     sign_out_command = commands.add_parser(
         "sign-out",
@@ -702,7 +845,9 @@ async def _run(config: SwitchConfig, arguments: argparse.Namespace) -> int:
     command = arguments.command
     try:
         if command == "delete":
-            return await _delete(config, arguments.email, execute=arguments.execute)
+            return await _delete(
+                config, arguments.email, execute=arguments.execute, yes=arguments.yes
+            )
         async with database(config, restricted=False) as session_factory:
             if command == "list":
                 print_accounts(
@@ -739,26 +884,20 @@ async def _run(config: SwitchConfig, arguments: argparse.Namespace) -> int:
     return 0
 
 
-async def _delete(config: SwitchConfig, email: str, *, execute: bool) -> int:
+async def _delete(config: SwitchConfig, email: str, *, execute: bool, yes: bool) -> int:
     try:
         async with (
             database(config, restricted=True) as session_factory,
             deletion_services(config, session_factory) as deletion,
         ):
-            plan = await plan_deletion(deletion, session_factory, email)
-            print_plan(plan)
-            if not execute:
-                print("\nNothing changed. Add --execute to delete it.")
-                blocked = plan.refusal or plan.needs_the_server
-                return 1 if blocked else 0
-            await delete_account(deletion, session_factory, plan)
+            return await run_delete(
+                deletion, session_factory, email, execute=execute, yes=yes
+            )
     except RuntimeRoleError as error:
         # The broker finds a workspace's sign-ins through the tenant policies
         # alone; on a connection they don't bind it would revoke every one.
         print(f"Refused: {error}", file=sys.stderr)
         return 1
-    print(f"\nDeleted the account {email}.")
-    return 0
 
 
 def main() -> None:
