@@ -8,9 +8,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 
 from switch_core.db.models import (
+    ApprovalRequest,
     ApprovalRequestPost,
     SteeredMessageMark,
     TurnStatusPost,
@@ -119,6 +120,32 @@ class ApprovalRequestPostStore:
                 ApprovalRequestPost.external_channel_id == channel_id,
                 ApprovalRequestPost.thread_ref == thread_ref,
                 ApprovalRequestPost.removed_at.is_(None),
+            )
+            .order_by(ApprovalRequestPost.created_at.desc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
+    async def newest_open_in_channel(
+        self, session: AsyncSession, bridge_id: str, channel_id: str
+    ) -> ApprovalRequestPost | None:
+        """The newest card in a channel whose request still waits on an answer."""
+        result = await session.execute(
+            select(ApprovalRequestPost)
+            .join(
+                ApprovalRequest,
+                and_(
+                    ApprovalRequest.agent_id == ApprovalRequestPost.agent_id,
+                    ApprovalRequest.session_id == ApprovalRequestPost.session_id,
+                    ApprovalRequest.request_id == ApprovalRequestPost.request_id,
+                ),
+            )
+            .where(
+                ApprovalRequestPost.bridge_id == bridge_id,
+                ApprovalRequestPost.external_channel_id == channel_id,
+                ApprovalRequestPost.external_post_id.is_not(None),
+                ApprovalRequestPost.removed_at.is_(None),
+                ApprovalRequest.state == "open",
             )
             .order_by(ApprovalRequestPost.created_at.desc())
             .limit(1)

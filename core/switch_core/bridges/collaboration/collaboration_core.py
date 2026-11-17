@@ -1397,8 +1397,7 @@ class CollaborationCore:
             # and routing the message. Only Slack im/mpim map to "lobby".
             await self._handle_lobby_message(msg)
             return None
-        # An answer typed in words. Almost no message is one, and the check is a
-        # parse before it is a query, so this costs a channel nothing. It does
+        # An answer typed in words, or a word that a card is waiting. It does
         # not consume the message: the room still sees what was said.
         await self._handle_text_answer(msg)
         room_ids = self._channel_to_room.get(msg.channel_id)
@@ -2801,6 +2800,32 @@ class CollaborationCore:
         answered = await self._approval_answers.for_text(msg)
         if isinstance(answered, Refused):
             await self._tell_refused(msg, answered, thread_ref=answered.card_ref)
+        elif answered is None:
+            await self._tell_if_waiting(msg)
+
+    async def _tell_if_waiting(self, msg: InboundMessage) -> None:
+        """Tell the sender, once, that an open card is holding the agent up.
+
+        A courtesy, so it never stands between the message and the room: a
+        failure here is logged and the relay carries on.
+        """
+        assert self._approval_answers is not None
+        try:
+            waiting = await self._approval_answers.waiting_notice(msg)
+            if waiting is not None:
+                await self._adapter.tell_actor(
+                    msg.channel_id,
+                    msg.sender_id,
+                    msg.sender_name,
+                    waiting.card_ref,
+                    waiting.text,
+                )
+        except Exception:
+            logger.exception(
+                "Could not tell %s in %s that a card is waiting",
+                msg.sender_name,
+                msg.channel_id,
+            )
 
     async def _tell_refused(
         self, actor: InboundActor, refused: Refused, thread_ref: str | None

@@ -460,3 +460,36 @@ async def test_a_plain_reply_does_not_answer_a_card_of_several_questions(
         await answers.for_text(_typed(bridged, "staging", root_id="1700000000.0003"))
         is None
     )
+
+
+async def test_someone_who_could_answer_is_told_once_that_the_card_waits(
+    service, session_factory, bridged, confirm_card, people
+):
+    answers = _answers(service, session_factory, bridged, people.owner)
+    first = await answers.waiting_notice(_typed(bridged, "did you do it?"))
+    assert first is not None
+    assert "waiting for an answer to A3" in first.text
+    assert "`A3 1`" in first.text
+    assert first.card_ref == CONFIRM_THREAD
+    assert await answers.waiting_notice(_typed(bridged, "hello?")) is None
+
+
+async def test_nobody_is_told_once_the_card_is_answered(
+    service, session_factory, bridged, confirm_card, people
+):
+    answers = _answers(service, session_factory, bridged, people.owner)
+    await answers.for_text(_typed(bridged, "A3 1"))
+    assert await answers.waiting_notice(_typed(bridged, "did you do it?")) is None
+
+
+async def test_someone_who_may_not_answer_is_not_told(
+    service, session_factory, bridged, confirm_card, people
+):
+    async with session_factory() as db, db.begin():
+        await db.execute(
+            update(Agent)
+            .where(Agent.id == AGENT)
+            .values(addressing_policy=owner_only_policy([]).model_dump())
+        )
+    answers = _answers(service, session_factory, bridged, people.stranger)
+    assert await answers.waiting_notice(_typed(bridged, "anyone there?")) is None

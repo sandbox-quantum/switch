@@ -63,6 +63,14 @@ _NO_IDENTITY = "Switch does not know who this account belongs to"
 
 
 @dataclass(frozen=True)
+class Waiting:
+    """A card is waiting on an answer from the person who just spoke."""
+
+    text: str
+    card_ref: str | None
+
+
+@dataclass(frozen=True)
 class Answered:
     """The answer was recorded. The card redraws itself from the change."""
 
@@ -86,6 +94,7 @@ class ApprovalAnswers:
         self._is_first_reply = is_first_reply
         self._posts = ApprovalRequestPostStore()
         self._approvals = ApprovalRequestStore()
+        self._noticed: set[tuple[str, str, str]] = set()
 
     async def for_press(
         self, interaction: InboundInteraction
@@ -167,6 +176,43 @@ class ApprovalAnswers:
         # answer for this agent, or it was answered a moment ago) was chat all
         # along, and is not told off as a failed answer.
         return answered if isinstance(answered, Answered) else None
+
+    async def waiting_notice(self, message: InboundMessage) -> Waiting | None:
+        """Once per card, tell someone who could answer it that it is waiting.
+
+        For a message that was not an answer, sent while a card in the channel
+        is open: the agent is blocked on that card and reads the message only
+        after it is answered, so the person is told how to answer rather than
+        left wondering why nothing happened. Only someone who may answer is
+        told, and only the first time, so the channel's other talk is left
+        alone. Remembered per bridge process: after a restart it may be said
+        once more.
+        """
+        if message.sender_is_app:
+            return None
+        async with tenant_session(self._sessions, require_tenant_id()) as db:
+            post = await self._posts.newest_open_in_channel(
+                db, self._bridge_id, message.channel_id
+            )
+            if post is None:
+                return None
+            key = (post.agent_id, post.session_id, post.request_id)
+            if key in self._noticed:
+                return None
+            row = await self._request_of(db, post)
+        if row is None or row.room_id is None:
+            return None
+        mxid = await self._identify(message)
+        if mxid is None:
+            return None
+        try:
+            await self._service.authorize_room_control(
+                post.agent_id, row.room_id, PlatformPerson(mxid), doing="answer it"
+            )
+        except SessionError:
+            return None
+        self._noticed.add(key)
+        return Waiting(text=_waiting(post.handle), card_ref=_card_thread(post))
 
     async def _named(
         self, message: InboundMessage, answer: TextAnswer
@@ -255,6 +301,14 @@ def _card_thread(post: ApprovalRequestPost) -> str | None:
     when it was posted at the top level. A platform threads a reply under a
     root, not under another reply."""
     return post.thread_ref or post.external_post_id
+
+
+def _waiting(handle: str) -> str:
+    return (
+        f"The agent is waiting for an answer to {handle} and will read your "
+        f"message once it is answered. Press a button on {handle}, reply "
+        f"`{handle} 1`, or reply in its thread with one of its options."
+    )
 
 
 def _gone(post: ApprovalRequestPost) -> Refused:
