@@ -735,11 +735,12 @@ resources naming each other by key, and `if:` as the one conditional.
   param also takes `"Switch Console"`: the room is then on no messaging app,
   with your owner in it as one of their Switch Console chats. That needs the
   server's group chats, and suits a person with no chat app connected.
-  The same template with the same inputs, run again from the same room, is a
-  retry: it counts the agents and finishes the room an earlier attempt made,
-  and posts the room's kickoff only if it never was. After a failure or no
-  answer, check `list_rooms`, then retry `run_template` rather than making
-  the room yourself.
+  The same template with the same inputs, run again from the same room
+  within an hour of the earlier run, is a retry: it counts the agents and
+  finishes the room that run made, and posts the room's kickoff only if it
+  never was. Later than that, it is a new run. After a failure or no answer,
+  check `list_rooms`, then retry `run_template` rather than making the room
+  yourself.
 - **`save_template`**: save a template for your owner, `private` or
   `shared`. Only you can change or delete it afterwards.
 - **`update_template`** / **`delete_template`**: only for templates you saved.

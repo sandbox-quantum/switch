@@ -16,13 +16,14 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from switch_core.bridges.agent.operations.definitions import run_template
 from switch_core.db.models import Agent, User, require_tenant_id, room_agents
 from switch_core.gateway import rooms as gateway_rooms
 from switch_core.gateway.rooms import _run_as_person, template_run_so_far
 from switch_core.template_runs import (
+    AgentsNotCreated,
     RunUndone,
     attempt_in_flight,
     one_attempt_at_a_time,
@@ -216,3 +217,78 @@ async def test_what_a_run_made_so_far_is_read_back_by_its_key(managed):
         ("red-room", True)
     ]
     assert other.agents == [] and other.rooms == []
+
+
+ESCALATION = """\
+version: 1
+room:
+  name: Ops Escalation
+  description: One customer escalation
+  agents: ["claude-code.bob"]
+kickoff: "@claude-code.bob take the escalation."
+"""
+
+
+async def _age_everything(env: dict[str, Any], by: str) -> None:
+    """As if the earlier run last made something `by` ago."""
+    async with env["session_factory"]() as session:
+        await session.execute(
+            text(f"UPDATE rooms SET created_at = created_at - interval '{by}'")
+        )
+        await session.execute(
+            text(f"UPDATE agents SET created_at = created_at - interval '{by}'")
+        )
+        await session.commit()
+
+
+@pytest.mark.asyncio
+async def test_the_same_request_within_the_window_is_a_retry(managed):
+    template_id = await _stored(managed, ESCALATION, kind="room")
+    first = await _as(managed["agent_id"], run_template, template_id=template_id)
+    await _age_everything(managed, "50 minutes")
+
+    again = await _as(managed["agent_id"], run_template, template_id=template_id)
+
+    assert again["room_id"] == first["room_id"]
+    assert len(await _rooms(managed)) == 1
+    assert len(_kickoffs(managed)) == 1
+
+
+@pytest.mark.asyncio
+async def test_the_same_request_after_the_window_is_a_new_run(managed):
+    """Some templates are meant to be run again on purpose (an escalation
+    room per escalation): past the window the same request makes a fresh
+    room and posts its own kickoff."""
+    template_id = await _stored(managed, ESCALATION, kind="room")
+    first = await _as(managed["agent_id"], run_template, template_id=template_id)
+    await _age_everything(managed, "61 minutes")
+
+    again = await _as(managed["agent_id"], run_template, template_id=template_id)
+
+    assert again["room_id"] != first["room_id"]
+    assert len(await _rooms(managed)) == 2
+    assert len(_kickoffs(managed)) == 2
+
+
+@pytest.mark.asyncio
+async def test_after_the_window_an_earlier_run_s_agents_are_not_reused(managed):
+    """A fresh run creates its own agents; ones a run past the window made
+    are any other agent of that name, refused as taken as before."""
+    template_id = await _stored(managed, TEAM)
+    await _as(
+        managed["agent_id"],
+        run_template,
+        template_id=template_id,
+        inputs={"team": "red"},
+    )
+    await _age_everything(managed, "2 hours")
+
+    with pytest.raises(AgentsNotCreated) as refused:
+        await _as(
+            managed["agent_id"],
+            run_template,
+            template_id=template_id,
+            inputs={"team": "red"},
+        )
+
+    assert {p.code for p in refused.value.problems} == {"name_taken"}

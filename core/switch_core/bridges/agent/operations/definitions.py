@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from switch_core.agent_refusals import AgentRefused, record_refusal
@@ -73,6 +73,7 @@ from switch_core.template_runs import (
     NewAgentPlan,
     Problem,
     TemplateAgents,
+    agent_run_key,
     derived_run_key,
     opening_rooms_as_made,
     pending_addressing,
@@ -1985,22 +1986,28 @@ async def _provision_as_agent(
     fail, they are deleted again. ``yaml`` is None for a template that
     creates agents and no room.
 
-    The same request made again by the same agent from the same room is a
-    retry of one run (`derived_run_key`): the agents and the room an earlier
-    attempt made are counted and finished, never refused as taken nor made a
-    second time, and the room's kickoff is posted once.
+    The same request made again by the same agent from the same room, while
+    the earlier run last made something within `AGENT_RETRY_WINDOW`, is a
+    retry of that run (`agent_run_key`): the agents and the room it made are
+    counted and finished, never refused as taken nor made a second time, and
+    the room's kickoff is posted once. Later, it is a run of its own.
     """
     protocol = get_protocol()
     acting = await _acting_for()
     agent, owner = acting.agent, acting.owner
     from_room_id = await connected_room()
-    run_key = derived_run_key(
-        agent.id,
-        from_room_id,
-        yaml,
-        inputs,
-        template_name,
-        sorted(plan.name for plan in new_agents),
+    run_key = await agent_run_key(
+        protocol.session_factory,
+        owner.id,
+        derived_run_key(
+            agent.id,
+            from_room_id,
+            yaml,
+            inputs,
+            template_name,
+            sorted(plan.name for plan in new_agents),
+        ),
+        datetime.now(UTC),
     )
     # An agent acts for its owner but not with the owner's admin reach: a
     # document it writes or a template it runs attaches only what the owner
@@ -2263,11 +2270,12 @@ async def run_template(
     first: it starts real agents on their machines.
 
     Running the same template with the same inputs again, from the same room,
-    is a retry of that run: the agents and the room an earlier attempt made
-    are counted and finished, not refused as taken nor made a second time,
-    and the room's kickoff is posted only if it never was. After a failure or
-    no answer, check ``list_rooms``, then retry this rather than creating the
-    room yourself.
+    within an hour of the earlier run, is a retry of that run: the agents and
+    the room it made are counted and finished, not refused as taken nor made
+    a second time, and the room's kickoff is posted only if it never was.
+    After a failure or no answer, check ``list_rooms``, then retry this rather
+    than creating the room yourself. Later than that, the same call is a new
+    run.
 
     Args:
         template_id: The id from ``list_templates``.

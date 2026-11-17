@@ -684,8 +684,9 @@ version of their own to them without also giving them a release of their own.
   A run's caller can name it (`run_key` on `POST /rooms/from-template` and
   `/rooms/from-template-document`, a query parameter older servers ignore);
   a retry then counts the agents and finishes the room an earlier attempt
-  made, and posts its kickoff only if it never was. An agent's `run_template`
-  retry does the same. `GET /rooms/from-template/runs/{run_key}` says what a
+  made, and posts its kickoff only if it never was. An agent repeating the
+  same `run_template` from the same room does the same within an hour of the
+  earlier run; later, the repeat is a new run. `GET /rooms/from-template/runs/{run_key}` says what a
   run has made so far. A room that fails after its channel was made, before
   the room is recorded, retires the channel instead of leaving it empty.
 - **switch-buddy makes a room as visible as it proposed.** A room for a

@@ -21,10 +21,12 @@ import asyncio
 import hashlib
 import json
 import logging
+import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Any, Literal
+from datetime import datetime, timedelta
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from sqlalchemy import func, select
 
@@ -40,8 +42,9 @@ from switch_core.bridges.agent.protocol.agent_management import (
     NewManagedAgent,
 )
 from switch_core.connections.broker import CheckedGrant, ServiceBroker, ServiceError
-from switch_core.db.models import Agent
+from switch_core.db.models import Agent, Room
 from switch_core.db.session_scope import tenant_session
+from switch_core.db.stores.room_store import TEMPLATE_RUN_KEY
 from switch_core.room_service import FIXED_MEMBERSHIP
 
 if TYPE_CHECKING:
@@ -204,11 +207,64 @@ async def attempt_in_flight(
         return not got
 
 
+# How long after an earlier run of the same request last made something an
+# agent's repeat of that request still counts as a retry of it. Past this, the
+# request starts a run of its own: some templates (an escalation room, say) are
+# meant to be run again on purpose.
+AGENT_RETRY_WINDOW = timedelta(hours=1)
+
+
 def derived_run_key(*parts: Any) -> str:
-    """A run key for a caller that does not choose one: the same request
-    made again gives the same key, so its retry finds what the first made."""
+    """The request part of a run key for a caller that does not choose one:
+    the same request made again gives the same value (`agent_run_key`)."""
     canonical = json.dumps(parts, sort_keys=True, default=str)
     return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+async def agent_run_key(
+    session_factory: async_sessionmaker[AsyncSession],
+    owner_id: str,
+    request: str,
+    now: datetime,
+) -> str:
+    """The run key for an agent's request (`request`, from `derived_run_key`).
+
+    The same request is a retry of the latest run made from it while that run
+    last made something within `AGENT_RETRY_WINDOW` of `now`, and gets its
+    key, so the retry finishes it. Otherwise it is a run of its own, with a
+    key no earlier run has. A run that made nothing has nothing to finish."""
+    prefix = f"{request}#"
+    async with session_factory() as session:
+        latest_room = (
+            await session.execute(
+                select(Room.metadata_[TEMPLATE_RUN_KEY].astext, Room.created_at)
+                .where(
+                    Room.owner_id == owner_id,
+                    Room.metadata_[TEMPLATE_RUN_KEY].astext.startswith(prefix),
+                )
+                .order_by(Room.created_at.desc())
+                .limit(1)
+            )
+        ).first()
+        latest_agent = (
+            await session.execute(
+                select(
+                    Agent.metadata_[TEMPLATE_RUN_META]["key"].astext, Agent.created_at
+                )
+                .where(
+                    Agent.owner_id == owner_id,
+                    Agent.metadata_[TEMPLATE_RUN_META]["key"].astext.startswith(prefix),
+                )
+                .order_by(Agent.created_at.desc())
+                .limit(1)
+            )
+        ).first()
+    candidates = [row for row in (latest_room, latest_agent) if row is not None]
+    if candidates:
+        key, made_at = max(candidates, key=lambda row: cast(datetime, row[1]))
+        if now - cast(datetime, made_at) <= AGENT_RETRY_WINDOW:
+            return str(key)
+    return f"{prefix}{uuid.uuid4().hex}"
 
 
 @dataclass(frozen=True)
