@@ -5,12 +5,14 @@ Nothing it prints or refuses with carries a secret."""
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core import connector_apps_admin
 from switch_core.connections.app_signals import CONNECTOR_APP_CHANGED_SIGNAL
 from switch_core.connector_apps_admin import (
     list_apps,
@@ -21,11 +23,13 @@ from switch_core.connector_apps_admin import (
 )
 from switch_core.db.models import ServerAuditEvent, ServiceAppCredential, User
 from switch_core.operator_commands import CommandRefused
+from tests.conftest import RLSHarness
 from tests.switch_core.connections.fake_vendor import (
     STATIC_CLIENT_ID,
     STATIC_CLIENT_SECRET,
 )
 from tests.switch_core.gateway.test_connector_apps import GOOGLE, PUBLIC, World
+from tests.switch_core.operator_commands.helpers import command_config
 
 ADMIN_EMAIL = "admin@example.invalid"
 COMMAND = {"platform_operator_command": True}
@@ -206,3 +210,19 @@ async def test_removing_a_saved_app_audited_and_announced(
             bus,  # type: ignore[arg-type]
             service=GOOGLE,
         )
+
+
+async def test_an_app_file_that_cant_be_read_is_refused_in_words(
+    rls_harness: RLSHarness, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    missing = tmp_path / "app.json"
+    arguments = connector_apps_admin._parser().parse_args(
+        ["set", "github", "--file", str(missing)]
+    )
+
+    status = await connector_apps_admin._run(command_config(rls_harness), arguments)
+
+    assert status == 1
+    err = capsys.readouterr().err
+    assert err.startswith(f"Refused: Can't read the app file {missing}: ")
+    assert "Traceback" not in err

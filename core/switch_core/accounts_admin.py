@@ -83,6 +83,7 @@ from switch_core.operator_commands import (
     account_by_email,
     admin_notices,
     database,
+    read_text_file,
     run,
     signals,
 )
@@ -185,7 +186,7 @@ def read_password(password_file: Path | None) -> str:
     """The password, from `password_file` or standard input: asked for twice
     on a terminal, read whole from a pipe. One line ending is dropped."""
     if password_file is not None:
-        return _one_line_ending_off(password_file.read_text())
+        return _one_line_ending_off(read_text_file(password_file, "the password file"))
     if sys.stdin.isatty():
         first = getpass.getpass("Password: ")
         if getpass.getpass("Again: ") != first:

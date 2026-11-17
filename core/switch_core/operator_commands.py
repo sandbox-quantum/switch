@@ -18,6 +18,7 @@ import logging
 import uuid
 from collections.abc import AsyncIterator, Callable, Coroutine
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -95,6 +96,20 @@ def admin_notices(
         ),
         dashboard_base_url=config.dashboard_base_url,
     )
+
+
+def read_text_file(path: Path, what: str) -> str:
+    """The text of the file at `path`, which `what` names in a refusal: one
+    that is missing, can't be read or isn't text is refused in plain words
+    rather than a traceback."""
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError as error:
+        raise CommandRefused(
+            f"Can't read {what} {path}: {error.strerror or error}."
+        ) from None
+    except UnicodeDecodeError:
+        raise CommandRefused(f"{what.capitalize()} {path} isn't UTF-8 text.") from None
 
 
 async def account_by_email(

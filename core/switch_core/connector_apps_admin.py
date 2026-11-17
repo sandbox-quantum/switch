@@ -62,6 +62,7 @@ from switch_core.operator_commands import (
     CommandRefused,
     account_by_email,
     database,
+    read_text_file,
     run,
     signals,
 )
@@ -329,7 +330,7 @@ def _parser() -> argparse.ArgumentParser:
 async def _run(config: SwitchConfig, arguments: argparse.Namespace) -> int:
     try:
         body = (
-            parse_save(arguments.file.read_text())
+            parse_save(read_text_file(arguments.file, "the app file"))
             if arguments.command == "set"
             else None
         )

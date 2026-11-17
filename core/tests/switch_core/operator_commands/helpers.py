@@ -1,12 +1,14 @@
 """Fixtures the platform operator's command tests share: an organization
-made through the superuser connection, and a mailer that keeps what it is
-asked to send."""
+made through the superuser connection, a mailer that keeps what it is asked
+to send, and the configuration a command reads where switch-core runs."""
 
 from __future__ import annotations
 
+import secrets
 import uuid
 from dataclasses import dataclass
 
+from switch_core.config import SwitchConfig
 from switch_core.db.models import (
     Organization,
     OrganizationMember,
@@ -17,8 +19,30 @@ from switch_core.db.models import (
 from switch_core.gateway.invite_mail import AdminChangeEmail, InviteEmail
 from switch_core.tenant_context import tenant_scope
 from tests.conftest import RLSHarness
+from tests.switch_core.accounts.test_account_deletion import ADMIN_EMAIL
 
 DASHBOARD = "https://dashboard.example.invalid"
+
+
+def command_config(rls_harness: RLSHarness) -> SwitchConfig:
+    """What a command reads from the environment where switch-core runs,
+    pointed at this test's database as its restricted role, the role a
+    deployment runs as. The keys are the suite's own (`TEST_KEYRING`), so
+    what the tests sealed opens."""
+    url = rls_harness.restricted_engine.url
+    assert url.host and url.port and url.username and url.password and url.database
+    return SwitchConfig(
+        db_host=url.host,
+        db_port=str(url.port),
+        db_user=url.username,
+        db_password=url.password,
+        db_name=url.database,
+        id_server_name="switch.test",
+        agent_registration_token=secrets.token_urlsafe(16),
+        secret_keys="test:" + "column-encryption-secret" * 2,
+        gateway_admin_email=ADMIN_EMAIL,
+        gateway_admin_password=secrets.token_urlsafe(16),
+    )
 
 
 class RecordingMailer:

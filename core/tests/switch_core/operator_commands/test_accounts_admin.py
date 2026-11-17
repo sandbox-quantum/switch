@@ -5,6 +5,7 @@ to nothing. Each change lands in the server's audit log with no actor and
 from __future__ import annotations
 
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -195,6 +196,27 @@ class TestCreate:
         secret.write_text("correct horse battery\n")
 
         assert read_password(secret) == "correct horse battery"
+
+    @pytest.mark.parametrize(
+        ("make", "message"),
+        [
+            (lambda path: None, "Can't read the password file .*: No such file"),
+            (lambda path: path.mkdir(), "Can't read the password file .*directory"),
+            (
+                lambda path: path.write_bytes(b"\xff\xfe\x00"),
+                "The password file .* isn't UTF-8 text",
+            ),
+        ],
+        ids=["missing", "a directory", "not text"],
+    )
+    def test_a_password_file_that_cant_be_read_is_refused_in_words(
+        self, tmp_path: Path, make: Callable[[Path], object], message: str
+    ) -> None:
+        path = tmp_path / "password"
+        make(path)
+
+        with pytest.raises(CommandRefused, match=message):
+            read_password(path)
 
 
 class TestSignOut:
