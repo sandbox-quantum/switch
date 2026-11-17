@@ -1346,6 +1346,13 @@ class PlatformAdapter(ABC):
         """
         return False
 
+    async def sees_only_replies_and_commands(self, channel_id: str) -> bool:
+        """Whether this channel hands the bot only replies to its own messages,
+        mentions of it and commands, so a typed `!command` or a mention of an
+        agent never arrives. False by default: most platforms deliver every
+        message in a channel the bot is in."""
+        return False
+
     async def agent_greeting(
         self, channel_id: str, agent_name: str, greeting: str
     ) -> str:

@@ -1061,12 +1061,15 @@ class TelegramAdapter(PlatformAdapter):
             "follows it.",
         )
 
+    async def sees_only_replies_and_commands(self, channel_id: str) -> bool:
+        return (await self._chat_visibility(channel_id)).status == "mention_only"
+
     async def agent_greeting(
         self, channel_id: str, agent_name: str, greeting: str
     ) -> str:
         """In a group the bot sees only replies and commands in, a tag never
         reaches the agent, so its greeting says to reply to it instead."""
-        if (await self._chat_visibility(channel_id)).status != "mention_only":
+        if not await self.sees_only_replies_and_commands(channel_id):
             return greeting
         return (
             f"Hi! I'm {agent_name}. This group shows me only replies to my "

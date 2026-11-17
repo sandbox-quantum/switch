@@ -222,13 +222,30 @@ _LOBBY_DEPRECATION_NOTICE = (
 )
 
 
-def _no_agents_notice(slash_hint: str | None) -> str:
+def _no_agents_notice(
+    slash_hint: str | None, *, replies_and_commands_only: bool
+) -> str:
     """The agentless-room notice, carrying only the invite forms this bridge has.
 
-    The `!` form works everywhere. The slash form does not — whether it exists
-    at all, and how an argument is spelled, are both per-platform — so the
-    adapter supplies that line, or none on a platform with no slash commands.
+    The `!` form works everywhere the bot sees ordinary messages. The slash
+    form does not — whether it exists at all, and how an argument is spelled,
+    are both per-platform — so the adapter supplies that line, or none on a
+    platform with no slash commands.
+
+    `replies_and_commands_only` is a chat that hands the bot nothing else (a
+    Telegram group with Group Privacy on): there a typed `!invite-agent` and
+    an @-mention of an agent never arrive, so only the slash command is
+    offered, and the way to talk to an agent is to reply to it.
     """
+    if replies_and_commands_only and slash_hint:
+        return (
+            "👋 I've linked this channel to a new Switch room, but there are no "
+            "agents in it yet — so no one is here to respond to messages.\n\n"
+            "**To add an agent**, send the command from the menu (swap in the "
+            f"agent you want):\n• {slash_hint}.\n\n"
+            "This chat shows me only replies and commands, so once an agent is "
+            "in the room, reply to its messages to talk to it."
+        )
     typed = "• `!invite-agent @agent-name` — type it here in the channel"
     invites = f"{typed}, or\n• {slash_hint}." if slash_hint else f"{typed}."
     return (
@@ -1925,6 +1942,9 @@ class CollaborationCore:
                         external_user_store=self._external_user_store,
                         user_store=self._user_store,
                         account=account,
+                        account_name=self._adapter.known_user_label(
+                            account.external_user_id, account.external_username
+                        ).display_name,
                         code=code,
                         only_here=only_here,
                     )
@@ -2374,7 +2394,12 @@ class CollaborationCore:
             )
             await self._adapter.admin_message(
                 channel_id,
-                _no_agents_notice(self._adapter.slash_invite_hint()),
+                _no_agents_notice(
+                    self._adapter.slash_invite_hint(),
+                    replies_and_commands_only=await self._adapter.sees_only_replies_and_commands(
+                        channel_id
+                    ),
+                ),
                 message_type=AdminMessageType.NO_AGENTS,
             )
 

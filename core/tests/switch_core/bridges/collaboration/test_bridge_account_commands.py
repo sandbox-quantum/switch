@@ -23,6 +23,7 @@ from switch_core.bridges.collaboration.models import (
     DirectPrompt,
     InboundCommand,
     InboundInteraction,
+    KnownUserLabel,
 )
 from switch_core.bridges.collaboration.session.renderers import position_action
 from switch_core.chat_account_links import CODE_REFUSED, LINK_USAGE, NOT_LINKED
@@ -51,6 +52,11 @@ class _Adapter:
 
     async def answer_command(self, command: InboundCommand, text: str) -> None:
         self.answers.append((command, text))
+
+    def known_user_label(
+        self, external_user_id: str, external_username: str
+    ) -> KnownUserLabel:
+        return KnownUserLabel(display_name=external_username, has_handle=True)
 
 
 class _World:
@@ -191,6 +197,25 @@ class TestLinkAccount:
         [(answered, text)] = adapter.answers
         assert answered.reply_ref == "https://hooks.slack.com/commands/T1/1/x"
         assert "Linked this Acme Slack account (ada)" in text
+
+    async def test_an_account_without_a_handle_is_named_as_the_platform_names_it(
+        self, world: _World
+    ) -> None:
+        """A Telegram account with no username is stored under a handle Switch
+        made up; the confirmation names the person, as the search does."""
+        code = await _code(world)
+        bridge, adapter = _bridge(world)
+        adapter.known_user_label = lambda _id, _name: KnownUserLabel(  # type: ignore[method-assign]
+            display_name="Ada L", has_handle=False
+        )
+
+        await CollaborationCore._handle_inbound_command(
+            bridge, _command("link-account", code)
+        )
+
+        [(_answered, text)] = adapter.answers
+        assert "Linked this Acme Slack account (Ada L)" in text
+        assert "(ada)" not in text
 
     async def test_a_wrong_code_confirms_nothing(self, world: _World) -> None:
         await _code(world)

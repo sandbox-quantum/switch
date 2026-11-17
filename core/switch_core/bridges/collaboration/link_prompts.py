@@ -298,6 +298,9 @@ async def answer_prompt(
                     account=account,
                     live=live,
                     unlink_instructions=adapter.unlink_account_instructions,
+                    account_name=adapter.known_user_label(
+                        account.external_user_id, account.external_username
+                    ).display_name,
                     pressed=(
                         None if position == len(choices) + 1 else choices[position - 1]
                     ),
@@ -319,6 +322,7 @@ async def _decide(
     account: ExternalUser,
     live: bool,
     unlink_instructions: UnlinkInstructions,
+    account_name: str,
     pressed: int | None,
     external_user_store: ExternalUserStore,
     user_store: UserStore,
@@ -352,6 +356,7 @@ async def _decide(
         session,
         user_store=user_store,
         account=account,
+        account_name=account_name,
         user_id=user_id,
         by="prompt",
         unlink_instructions=unlink_instructions,
