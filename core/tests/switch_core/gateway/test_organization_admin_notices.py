@@ -21,6 +21,7 @@ from switch_core.gateway.invite_mail import (
 from switch_core.organization_admin_notices import (
     AdminChange,
     AdminChangeKind,
+    OrganizationAdminNotices,
     Person,
     describe,
 )
@@ -48,6 +49,13 @@ class _RecordingMailer:
 class _FailingMailer(_RecordingMailer):
     async def send_admin_change(self, email: AdminChangeEmail) -> None:
         raise InviteEmailFailed("relay refused the message")
+
+
+class _BrokenMailer(_RecordingMailer):
+    """Fails with something other than the relay's own refusal."""
+
+    async def send_admin_change(self, email: AdminChangeEmail) -> None:
+        raise ConnectionResetError("connection reset by peer")
 
 
 def _email(name: str) -> str:
@@ -247,6 +255,60 @@ class TestWithoutEmail:
         ]
         # One for each of the three people told.
         assert len(errors) == 3
+
+    async def test_any_failure_sending_leaves_the_change_made(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        tenant_id, ada, bob, _cy = await _three_admins(session_factory)
+
+        with caplog.at_level(logging.ERROR, "switch_core.organization_admin_notices"):
+            async with _client(
+                _app(session_factory, mailer=_BrokenMailer()), ada, tenant_id
+            ) as c:
+                response = await c.patch(
+                    f"/organizations/current/members/{bob}", json={"role": "member"}
+                )
+
+        assert response.status_code == 200, response.text
+        assert await _organization_role(session_factory, tenant_id, bob) == "member"
+        errors = [
+            record
+            for record in caplog.records
+            if record.name == "switch_core.organization_admin_notices"
+            and record.levelno == logging.ERROR
+        ]
+        assert len(errors) == 3
+
+    async def test_a_failure_reading_who_to_tell_is_logged_with_ids_not_raised(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        mailer = _RecordingMailer()
+        notices = OrganizationAdminNotices(session_factory, mailer, DASHBOARD)
+        change = AdminChange(
+            organization_id="org-gone",
+            kind=AdminChangeKind.DEMOTED,
+            target=_person("bob"),
+            actor=_person("ada"),
+            reason=None,
+        )
+
+        with caplog.at_level(logging.ERROR, "switch_core.organization_admin_notices"):
+            await notices.send(change)
+
+        assert mailer.sent == []
+        [error] = [
+            record
+            for record in caplog.records
+            if record.name == "switch_core.organization_admin_notices"
+        ]
+        assert error.levelno == logging.ERROR
+        message = error.getMessage()
+        assert "org-gone" in message and "bob" in message and "demoted" in message
+        assert "@" not in message
 
 
 def _person(name: str) -> Person:

@@ -8,8 +8,9 @@ to the organization's audit log, which records each of these changes.
 
 Sent through the relay invitations go through (`gateway/invite_mail.py`,
 `GATEWAY_SMTP_*`). A deployment without one sends nothing and logs a warning
-for each change. A send that fails is logged as an error and fails nothing:
-the change has already committed.
+for each change. Anything that goes wrong sending, from reading who the
+admins are to the relay, is logged as an error with the change's ids and
+fails nothing: the change has already committed.
 
 Covered: an `org_admin` made a member by another, or stepping down; an
 `org_admin` removed from the organization, or leaving it; an `org_admin`'s
@@ -34,11 +35,7 @@ from switch_core.authz import ORGANIZATION_ADMIN_ROLE
 from switch_core.db.models import Organization
 from switch_core.db.session_scope import organization_session
 from switch_core.db.stores.organization_store import OrganizationStore
-from switch_core.gateway.invite_mail import (
-    AdminChangeEmail,
-    InviteEmailFailed,
-    InviteMailer,
-)
+from switch_core.gateway.invite_mail import AdminChangeEmail, InviteMailer
 
 logger = logging.getLogger(__name__)
 
@@ -138,7 +135,26 @@ class OrganizationAdminNotices:
 
     async def send(self, change: AdminChange) -> None:
         """E-mail `change`, which has committed, to the organization's
-        `org_admin`s as they now stand and to the person it was made to."""
+        `org_admin`s as they now stand and to the person it was made to.
+        Never raises: a failure is logged, with the change's ids rather than
+        anyone's address, and the change stands."""
+        try:
+            await self._send(change)
+        except Exception:
+            logger.exception(
+                "User %s's change in organization %s (%s) committed, but its "
+                "e-mails were not sent",
+                change.target.user_id,
+                change.organization_id,
+                change.kind.value,
+            )
+
+    async def send_all(self, changes: list[AdminChange]) -> None:
+        """`send` each of `changes`, in turn."""
+        for change in changes:
+            await self.send(change)
+
+    async def _send(self, change: AdminChange) -> None:
         occurred_at = datetime.now(UTC)
         async with organization_session(
             self.session_factory, change.organization_id
@@ -194,10 +210,12 @@ class OrganizationAdminNotices:
         )
 
     async def _send_one(self, change: AdminChange, email: AdminChangeEmail) -> None:
+        """One recipient's e-mail; a failure is logged, and the others are
+        sent all the same."""
         assert self.mailer is not None
         try:
             await self.mailer.send_admin_change(email)
-        except InviteEmailFailed:
+        except Exception:
             logger.exception(
                 "User %s's change in organization %s (%s) committed, but its "
                 "e-mail to one of the people told was not sent",
