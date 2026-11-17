@@ -612,7 +612,7 @@ const AgentRow = observer(function AgentRow({
     ) : null;
 
   return (
-    <div className="group flex items-center gap-1 rounded-md hover:bg-[var(--sel-soft)]">
+    <div className="group flex items-center gap-1 rounded-md pr-2 hover:bg-[var(--sel-soft)]">
       {own && serverId ? (
         <button
           type="button"
