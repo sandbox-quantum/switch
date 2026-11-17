@@ -156,6 +156,7 @@ vi.mock('@renderer/lib/modal/modal-provider', () => ({
 
 vi.mock('@renderer/lib/hooks/use-toast', () => ({
   useToast: () => ({ toast: state.toast }),
+  toast: state.toast,
 }));
 
 import {
@@ -973,3 +974,55 @@ function names(): (string | null | undefined)[] {
     (el) => el.textContent
   );
 }
+
+describe("the server's own actions in the switcher", () => {
+  async function openManage(name: string): Promise<void> {
+    const trigger = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(
+      (item) => item.textContent?.trim() === `Manage ${name}`
+    );
+    expect(trigger, `no Manage ${name} row`).toBeDefined();
+    await act(async () => trigger!.click());
+    await settle();
+  }
+
+  function item(label: string): HTMLElement | undefined {
+    return [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(
+      (el) => el.textContent?.trim() === label
+    );
+  }
+
+  it('offers to rename, edit or disconnect from a server someone else runs', async () => {
+    await openSwitcher([server('srv-1', 'Acme')], [workspace('ws-a', 'srv-1')], 'ws-a');
+    await openManage('Acme');
+
+    expect(item('Rename…')).toBeDefined();
+    expect(item('Edit connection…')).toBeDefined();
+    await act(async () => item('Disconnect from server…')!.click());
+    expect(state.showModal).toHaveBeenCalledWith(expect.objectContaining({ serverId: 'srv-1' }));
+  });
+
+  it('offers to delete a server on this computer, which nobody else uses', async () => {
+    await openSwitcher(
+      [{ ...server('srv-1', 'Local'), managed: true, managementKind: 'local' }],
+      [workspace('ws-a', 'srv-1')],
+      'ws-a'
+    );
+    await openManage('Local');
+
+    expect(item('Delete server…')).toBeDefined();
+    expect(item('Edit connection…')).toBeUndefined();
+  });
+
+  it('is in the server switcher too, on a build without Switch Cloud', async () => {
+    state.cloud = 'closed';
+    await openSwitcher(
+      [server('srv-1', 'Acme')],
+      [workspace('ws-a', 'srv-1')],
+      'ws-a',
+      'Switch server'
+    );
+    await openManage('Acme');
+
+    expect(item('Rename…')).toBeDefined();
+  });
+});

@@ -54,6 +54,7 @@ import { SWITCH_CONSOLE_REPO_URL } from '@shared/urls';
 import { localServerStore } from './local-server-store';
 import { ManagedServerDot } from './managed-server-dot';
 import { remoteServerStore } from './remote-server-store';
+import { ServerActionsSubmenu } from './server-actions-menu';
 import { serverAvailability } from './server-availability';
 import { serverIcon } from './server-icon';
 import {
@@ -225,6 +226,7 @@ const ServerMenu = observer(function ServerMenu({ activeServer }: { activeServer
             ))}
           </DropdownMenuGroup>
           <DropdownMenuSeparator />
+          <ServerActionsSubmenu server={activeServer} className="" />
           <DropdownMenuItem onClick={() => showAddServerModal({})}>
             <Plus className="size-4" />
             Add server
@@ -405,6 +407,7 @@ const WorkspaceMenu = observer(function WorkspaceMenu({
           {/* Create organization and Invite live with the server and the
               workspace they act on, so only what belongs to no server is left
               here. */}
+          <ServerActionsSubmenu server={activeServer} className={ACTION_ROW} />
           <DropdownMenuItem className={ACTION_ROW} onClick={() => showAddServerModal({})}>
             <Server className="size-4" />
             Add server…
