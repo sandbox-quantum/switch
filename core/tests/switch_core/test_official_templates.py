@@ -175,12 +175,14 @@ def _playbook_table(heading: str) -> dict[str, list[str]]:
     }
 
 
-def test_switch_buddy_asks_the_work_question_as_a_form_with_skip():
+def test_switch_buddy_asks_the_work_question_as_a_numbered_list_with_skip():
     instructions = _buddy_words()
     assert (
-        'one question form, "What do you mostly work on?", with Engineering, Product, '
-        'Design, Sales, Marketing, Other and "Skip for now", in that order.'
+        'one message, "What do you mostly work on?", listing Engineering, Product, '
+        'Design, Sales, Marketing, Other and "Skip for now", numbered, in that order. '
+        "Not a question form"
     ) in instructions
+    assert "the work question is a form" not in instructions
     assert "Do not repeat it as text." in instructions
     assert 'ask the work question and run "Their first agent"' in instructions
 
@@ -419,7 +421,7 @@ def test_switch_buddy_offers_choices_in_its_question_form():
     assert "use your host's question form" in text
     assert "`AskUserQuestion`" in text
     assert "one single-choice question per form" in text
-    assert "With no question form, list numbered options" in text
+    assert "or no question form: list numbered options" in text
     # Form answers are not consent to create: the proposal is its own form.
     assert "end with a separate proposal" in text
     assert "create only after explicit confirmation" in text
@@ -522,3 +524,13 @@ def test_switch_buddy_offers_something_else_and_asks_what_the_product_is():
     assert "**[Open <room name> →](switchdash://open/room/<room-id>)**" in text
     # Defaults are proposed in plain words, not the template's switch names.
     assert 'never a parameter\'s name or "bypass" / "auto mode"' in text
+
+
+def test_switch_buddy_keeps_question_forms_within_four_options():
+    instructions = _buddy_words()
+    assert "A form takes at most four options per question" in instructions
+    assert "at most 25 options" not in instructions
+    assert (
+        "In a question form, Something else is the form's own typed answer, so the "
+        "form holds at most three suggestions and Skip for now."
+    ) in instructions
