@@ -503,7 +503,7 @@ version of their own to them without also giving them a release of their own.
 
 #### Changed
 - **The dashboard has one layout: the one built behind `gateway_v2`.**
-  Overview, Agents, Rooms, Templates, Connectors and Resources on the rail,
+  Home, Agents, Rooms, Templates, Connectors and Resources on the rail,
   Workspace and Organization settings as their own areas, and the
   operator's pages under Platform, on every server. The earlier layout's
   pages are gone, and each of their URLs redirects to the page that
@@ -513,7 +513,16 @@ version of their own to them without also giving them a release of their own.
   and the server always reports it on, which is how Switch Console picks
   its links into the dashboard. Entries in this release that describe a
   page behind `gateway_v2`, or with it on, describe this layout, which every
-  server now has.
+  server now has; its landing page, called Overview in them, is Home.
+- **The dashboard follows its design more closely.** The landing page is
+  Home. Rooms has the same dropdown filters as the other lists (group,
+  owner, messaging app and connected users), and its Users column, which
+  counted only people reaching the room from a messaging app or a Console
+  chat, is Connected users. Settings and Organization settings have a title
+  bar and a menu of their own, Usage & budget sits before Devices, and Back
+  to workspace returns to the settings page you left. A page you may not
+  open keeps the rail. Successes are a short message at the foot of the
+  window; failures stay on the page.
 - **The dashboard's Templates page is a card library.** All, Official and
   Workspace tabs with live counts, one search (name, description, use case
   and owner), type chips and Only mine; the workspace's own templates come
@@ -1348,12 +1357,12 @@ version of their own to them without also giving them a release of their own.
   and status.
 
 #### Added
-- **The dashboard's new layout.** Overview, Templates and Connectors on the
+- **The dashboard's new layout.** Home, Templates and Connectors on the
   rail; Workspace and Organization settings as areas of their own, each with
   a menu of only the pages you may open, reopening the page you last used;
   and the operator's pages under Platform. Today's pages move into it, and
   their old URLs lead there.
-- **The new layout's Overview counts the workspace's agents, users and
+- **The new layout's Home counts the workspace's agents, users and
   rooms.** Each card opens its list, and View graph opens the ecosystem
   graph, which leaves the new rail. A workspace's admins see its totals; a
   member sees the agents they own and the rooms they take part in, marked
