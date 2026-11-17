@@ -111,12 +111,14 @@ export function useProviderSetup({
 
   // Someone who installed a CLI in a terminal comes back to this window: look
   // again then, so the card does not keep saying it is missing.
+  // When it last did, kept across re-renders: `recheck` changes identity as
+  // its query refetches, which re-subscribes this effect.
+  const lastFocusRecheck = useRef(0);
   useEffect(() => {
     if (working !== null) return;
-    let last = 0;
     const onFocus = () => {
-      if (Date.now() - last < FOCUS_RECHECK_INTERVAL_MS) return;
-      last = Date.now();
+      if (Date.now() - lastFocusRecheck.current < FOCUS_RECHECK_INTERVAL_MS) return;
+      lastFocusRecheck.current = Date.now();
       recheck().catch((cause: unknown) =>
         log.warn('switch-buddy: re-checking providers on focus failed', { error: String(cause) })
       );
