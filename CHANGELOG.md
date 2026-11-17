@@ -505,6 +505,23 @@ version of their own to them without also giving them a release of their own.
   already refused both, so the current Workspace page no longer offers them.
 
 #### Changed
+- **The dashboard no longer has a Platform area, on any deployment.** The
+  platform operator's own pages are gone from both layouts: All workspaces,
+  Users and Platform › Connectors. On the default layout, operators lose the
+  Users and All workspaces pages too. Old addresses still lead somewhere:
+  - in the new layout, `/platform` and `/platform/workspaces` go to
+    Organization settings › Workspaces, `/platform/users` to Organization
+    settings › Users, and `/platform/connectors` to Organization settings ›
+    Connector apps;
+  - in the default layout, `/users`, `/operator/workspaces` and the
+    `/platform` pages go to the Organization page.
+
+  The deployment's connector apps are now in Organization settings ›
+  Connector apps, and on the default layout's Connectors page, for whoever
+  may manage them: the operator, or the admins of a deployment's only
+  organization. On a deployment with several organizations, deployment-wide
+  work (accounts, organizations, connector apps) is done with the
+  `switch-accounts`, `switch-orgs` and `switch-connector-apps` commands.
 - **Switch Trust guardrails are set per organization instead of once for
   the whole server.** Each organization's admins connect its own policy, with
   a policy ID and an API key, under Organization settings › Guardrails. Switch

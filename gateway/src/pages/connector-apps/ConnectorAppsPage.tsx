@@ -94,7 +94,9 @@ export function ConnectorAppsList({
   );
 }
 
-/** The server operator's page: the route table lets no one else in. */
+/** The deployment's connector apps, for whoever may set them up: the
+ * operator, and the admins of its only organization while it has no other.
+ * The route table lets no one else in (`connectorAppManagers`). */
 export default function ConnectorAppsPage() {
   const { capabilities } = useAuth();
   return (

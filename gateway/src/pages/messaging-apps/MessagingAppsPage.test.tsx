@@ -57,6 +57,7 @@ function signIn(isAdmin: boolean, standsHere = true) {
       inOrganization: false,
       canDeleteWorkspace: false,
       canManageDataProtection: false,
+      canManageConnectorApps: false,
       features: ALL_OFF,
     },
   } as unknown as ReturnType<typeof useAuth>);

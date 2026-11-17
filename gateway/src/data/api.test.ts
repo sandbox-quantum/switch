@@ -4,8 +4,8 @@ import {
   addBridgeToTeam,
   cancelLinkRequest,
   claimBridgeIdentity,
+  changePassword,
   createApiKey,
-  createUser,
   errorText,
   fetchSession,
   fetchTeamPlacements,
@@ -66,7 +66,7 @@ describe("fetchSession", () => {
   });
 });
 
-describe("createUser", () => {
+describe("changePassword", () => {
   afterEach(() => vi.unstubAllGlobals());
 
   it("words a rejected password, not [object Object]", async () => {
@@ -74,14 +74,12 @@ describe("createUser", () => {
       detail: [
         {
           type: "string_too_short",
-          loc: ["body", "password"],
+          loc: ["body", "new_password"],
           msg: "String should have at least 8 characters",
         },
       ],
     });
-    const err = await createUser("Ada", "ada@example.com", "hello", "user").catch(
-      (e: unknown) => e,
-    );
+    const err = await changePassword("correct horse", "hello").catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ApiError);
     expect((err as ApiError).message).toBe("String should have at least 8 characters");
   });
