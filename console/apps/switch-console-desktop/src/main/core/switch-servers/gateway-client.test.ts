@@ -2506,6 +2506,22 @@ describe('sign-up support', () => {
     });
   });
 
+  it('leaves a signed-in call that is redirected as a plain refusal', async () => {
+    getSessionCookie.mockResolvedValue(makeJwt(24 * 60 * 60));
+    fetchMock.mockResolvedValueOnce(
+      new Response('<html>Sign in</html>', {
+        status: 302,
+        headers: { 'content-type': 'text/html', location: 'https://login.example.org/' },
+      })
+    );
+    await expect(fetchMe(SERVER)).rejects.toMatchObject({
+      name: 'GatewayError',
+      kind: 'http',
+      status: 302,
+      message: 'Switch gateway returned 302',
+    });
+  });
+
   it('says an address that redirects on its own host is not answering as a Switch server', async () => {
     fetchMock.mockResolvedValueOnce(
       new Response(null, { status: 302, headers: { location: '/login' } })

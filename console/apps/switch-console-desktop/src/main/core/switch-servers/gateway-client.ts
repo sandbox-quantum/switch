@@ -446,8 +446,11 @@ export async function gatewayRequest(
   if (answeredWithPage(response)) {
     throw new NoManagementApiError(server.name, server.url, response.status);
   }
+  // Only a call made without a session can blame the address: a signed-in
+  // call redirected is more likely a sign-in proxy in front of the server
+  // whose own login has lapsed, and is left to the caller as a refusal.
   const location = response.headers.get('location');
-  if (response.status >= 300 && response.status < 400 && location) {
+  if (!options.authenticated && response.status >= 300 && response.status < 400 && location) {
     await response.body?.cancel();
     throw new RedirectedAddressError(server.url, location);
   }
