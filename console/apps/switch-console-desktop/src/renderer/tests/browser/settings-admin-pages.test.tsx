@@ -444,10 +444,10 @@ it('shows a workspace admin which policy checks the workspace, read-only, powere
   expect(button(/Change in Organization settings/, page)).toBeUndefined();
   expect(switchServers.getTrustSettings).not.toHaveBeenCalled();
 
-  await act(async () => button(/^View policy/, page)!.click());
-  expect(openExternalUrl).toHaveBeenCalledWith(
-    'https://app.switchagents.ai/policies/pol_123',
-    'Could not open the policy'
+  await act(async () => button(/^View in Workspace settings/, page)!.click());
+  expect(openServerPage).toHaveBeenCalledWith(
+    'server',
+    expect.stringMatching(/\/settings\/guardrails\?.*tenant-1/)
   );
   expect(page.textContent).toContain('Powered by Switch Trust.');
   await act(async () => button(/^Switch Trust$/, page)!.click());
@@ -468,7 +468,8 @@ it('says when nothing checks the workspace', async () => {
   await vi.waitFor(() =>
     expect(page.textContent).toContain('No guardrails check messages in Acme yet.')
   );
-  expect(button(/^View policy/, page)).toBeUndefined();
+  // The workspace's own Guardrails page says so too, so it is still the way there.
+  expect(button(/^View in Workspace settings/, page)).toBeDefined();
 });
 
 it('sends an organization admin to Organization settings to change them', async () => {
@@ -481,8 +482,7 @@ it('sends an organization admin to Organization settings to change them', async 
   expect(page.querySelector('[role="note"]')!.textContent).toBe(
     'As an organization admin, you are able to change the guardrails for every workspace in your organization.'
   );
-  // Organization settings shows the policy too: one way there, not two.
-  expect(button(/^View policy/, page)).toBeUndefined();
+  expect(button(/^View in Workspace settings/, page)).toBeUndefined();
   await act(async () => button(/Change in Organization settings/, page)!.click());
   expect(openServerPage).toHaveBeenCalledWith(
     'server',

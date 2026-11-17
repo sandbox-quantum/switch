@@ -235,7 +235,7 @@ function WorkspaceGuardrailsView({
       </p>
     );
 
-  const { policyId, policyName, policyUrl, checking } = result.guardrails;
+  const { policyId, policyName, checking } = result.guardrails;
   return (
     <div className="flex flex-col items-start gap-3">
       <p className="text-sm">
@@ -248,34 +248,35 @@ function WorkspaceGuardrailsView({
           `No guardrails check messages in ${workspace.name} yet.`
         )}
       </p>
-      <div className="flex gap-2">
-        {/* Organization settings shows the policy too, so its admins get the one way there. */}
-        {!administersOrganization(workspace) && checking && policyUrl !== null && (
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => void openExternalUrl(policyUrl, 'Could not open the policy')}
-          >
-            View policy
-            <ExternalLink className="size-3.5" />
-          </Button>
-        )}
-        {administersOrganization(workspace) && (
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() =>
-              void openServerPage(
-                server.id,
-                dashboardPageUrl(server, 'settings/org/guardrails', workspace.tenantId)
-              )
-            }
-          >
-            Change in Organization settings
-            <ExternalLink className="size-3.5" />
-          </Button>
-        )}
-      </div>
+      {administersOrganization(workspace) ? (
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() =>
+            void openServerPage(
+              server.id,
+              dashboardPageUrl(server, 'settings/org/guardrails', workspace.tenantId)
+            )
+          }
+        >
+          Change in Organization settings
+          <ExternalLink className="size-3.5" />
+        </Button>
+      ) : (
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() =>
+            void openServerPage(
+              server.id,
+              dashboardPageUrl(server, 'settings/guardrails', workspace.tenantId)
+            )
+          }
+        >
+          View in Workspace settings
+          <ExternalLink className="size-3.5" />
+        </Button>
+      )}
     </div>
   );
 }
