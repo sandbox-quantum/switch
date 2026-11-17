@@ -131,7 +131,7 @@ export async function managedRecordFor(
 /** Thrown where Console would start the watcher of an agent a controller runs. */
 export class AgentManagedByControllerError extends Error {
   constructor(name: string) {
-    super(`${name} runs on a managed machine now: Switch runs it there, not this Console.`);
+    super(`${name} runs on a managed device now: Switch runs it there, not this Console.`);
     this.name = 'AgentManagedByControllerError';
   }
 }

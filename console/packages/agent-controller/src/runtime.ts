@@ -445,7 +445,7 @@ export class InProcessRuntime implements AgentRuntime {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
       throw new ReasonedError(
         'definition_invalid',
-        `The working directory ${expanded} does not exist on this machine.`
+        `The working directory ${expanded} does not exist on this device.`
       );
     }
     if (!isDirectory)

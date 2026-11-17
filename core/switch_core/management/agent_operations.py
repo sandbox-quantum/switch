@@ -47,7 +47,7 @@ NOTHING_CREATED = "Nothing was created"
 NOTHING_CHANGED = "Nothing was changed"
 
 CREATED_HINT = (
-    "The agent is created and its machine has been told. Check it with "
+    "The agent is created and its device has been told. Check it with "
     "list_managed_agents straight away; while its `actual` is still null, "
     "pending or starting, check again every 2 seconds, for at most a minute."
 )
@@ -70,28 +70,28 @@ def _placement_sentence(
     its agents cannot use is not fixed by logging in, and that says so."""
     if code == reason_codes.PROVIDER_LOGIN_MISSING and problem:
         return (
-            f"{provider} cannot be used on machine '{machine}'; your owner "
+            f"{provider} cannot be used on device '{machine}'; your owner "
             f"needs to fix this there: {problem}"
         )
     sentences = {
         reason_codes.CONTROLLER_REVOKED: (
-            f"machine '{machine}' has been removed from Switch; pick another machine"
+            f"device '{machine}' has been removed from Switch; pick another device"
         ),
         reason_codes.CONTROLLER_OFFLINE: (
-            f"machine '{machine}' is not connected to Switch or has not reported "
+            f"device '{machine}' is not connected to Switch or has not reported "
             "recently (it may be asleep, off or disconnected); your owner needs "
-            "to bring it back online, or pick another machine"
+            "to bring it back online, or pick another device"
         ),
         reason_codes.PROVIDER_NOT_INSTALLED: (
-            f"{provider} is not installed on machine '{machine}'; your owner "
-            "needs to install it there, or pick another machine"
+            f"{provider} is not installed on device '{machine}'; your owner "
+            "needs to install it there, or pick another device"
         ),
         reason_codes.PROVIDER_LOGIN_MISSING: (
-            f"{provider} is not logged in on machine '{machine}'; your owner "
+            f"{provider} is not logged in on device '{machine}'; your owner "
             "needs to log in to it there"
         ),
         reason_codes.PROVIDER_LOGIN_EXPIRED: (
-            f"the {provider} login on machine '{machine}' has expired; your "
+            f"the {provider} login on device '{machine}' has expired; your "
             "owner needs to log in to it again there"
         ),
     }
@@ -229,8 +229,8 @@ class ManagementAgentOperations:
         if not named:
             raise AgentManagementRefused(
                 reason_codes.NOT_FOUND,
-                f"{nothing_done}: your owner has no machine with the id or "
-                f"name '{machine}'. list_machines shows the machines you can use.",
+                f"{nothing_done}: your owner has no device with the id or "
+                f"name '{machine}'. list_machines shows the devices you can use.",
             )
         leases = await self._service.leases(session)
         candidates = "; ".join(
@@ -238,7 +238,7 @@ class ManagementAgentOperations:
         )
         raise AgentManagementRefused(
             reason_codes.VALIDATION_ERROR,
-            f"{nothing_done}: your owner has {len(named)} machines named "
+            f"{nothing_done}: your owner has {len(named)} devices named "
             f"'{machine}': {candidates}. Pass the id of the one you mean as "
             "`machine`.",
         )
@@ -439,7 +439,7 @@ class ManagementAgentOperations:
                     reason_codes.NOT_FOUND,
                     f"{NOTHING_CHANGED}: agent {agent_id} is not one of your "
                     "owner's managed agents, so it has no provider, model, "
-                    "machine or run state Switch can set. Only its name-level "
+                    "device or run state Switch can set. Only its name-level "
                     "settings (description, display name, icon, addressing) "
                     "can be changed here.",
                 )

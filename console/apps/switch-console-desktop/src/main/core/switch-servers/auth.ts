@@ -271,7 +271,7 @@ export async function signup(
       user,
       machine: {
         status: 'unavailable',
-        reason: 'The server did not say whether your cloud machine is starting.',
+        reason: 'The server did not say whether your cloud device is starting.',
       },
     });
   }

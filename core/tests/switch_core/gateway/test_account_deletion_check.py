@@ -106,7 +106,7 @@ async def test_an_account_with_a_cloud_machine_is_told(
         response = await client.get("/auth/me/deletion")
     assert response.status_code == 200, response.text
     refusal = response.json()["refusal"]
-    assert refusal is not None and "cloud machine" in refusal
+    assert refusal is not None and "cloud device" in refusal
 
 
 async def test_the_operators_account_is_refused(

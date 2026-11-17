@@ -49,7 +49,7 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
 /**
  * switch-buddy before it exists, drawn as its agent page will be: its one
  * chat, Welcome, open beside the list, with its first message, and in place of
- * the message box a way to connect the AI provider it needs — Switch creates
+ * the message box a way to connect the agent provider it needs — Switch creates
  * no agent until one is ready. Once the person has a buddy this opens its real
  * page, on the same Welcome chat, which then works as any chat does.
  */
@@ -117,18 +117,18 @@ const SwitchBuddyPanel = observer(function SwitchBuddyPanel() {
         </div>
         {/* In place of the message box, and plainly not one: the welcome
             above asks a question the person cannot answer until the buddy
-            has an AI provider, so this says why and is the one thing to do. */}
+            has an agent provider, so this says why and is the one thing to do. */}
         <div className="mx-auto w-full max-w-[860px] px-5 pb-5">
           <div
             data-testid="buddy-needs-provider"
             className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-background px-4 py-3 shadow-sm"
           >
             <p className="min-w-0 flex-1 text-sm text-foreground-muted">
-              {expectedBuddyName(person)} needs an AI provider before it can reply. Connect one and
-              carry on here.
+              {expectedBuddyName(person)} needs an agent provider before it can reply. Connect one
+              and carry on here.
             </p>
             <Button onClick={connect} disabled={workspaceId === null}>
-              Connect an AI provider
+              Connect an agent provider
             </Button>
           </div>
           {workspaceId === null && (

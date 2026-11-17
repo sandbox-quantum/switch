@@ -110,7 +110,7 @@ export function openProviderLogin(input: {
   const sealed = sealedLoginSchema.parse(input.sealed);
   if (sealed.key_id !== sealingKeyId(input.keys.publicKey))
     throw new Error(
-      'The login was sealed to another key than this controller’s; give the machine the login again.'
+      'The login was sealed to another key than this controller’s; give the device the login again.'
     );
   const ephemeralPublic = rawKey(sealed.ephemeral_key, 'ephemeral key');
   const key = derive(

@@ -27,7 +27,7 @@ export function isUnknownCodexMethod(error: unknown, method: string): boolean {
 
 export const CODEX_FILE_STORE_WORKAROUND =
   'Unless your organization enforces the keyring, set cli_auth_credentials_store = "file" in the ' +
-  'Codex config.toml on the execution machine, which keeps the login in plaintext, then run codex ' +
+  'Codex config.toml on the device the agent runs on, which keeps the login in plaintext, then run codex ' +
   'login again and start a new session.';
 
 /**
@@ -108,7 +108,7 @@ export async function readCodexKeyringApiKey(
       () =>
         reject(
           new KeyringLoginError(
-            `Codex on the execution machine did not read its login from the OS keyring within ${timeoutMs / 1000} seconds. The keychain may be locked, or the system may be waiting for someone at that machine to let Codex use its "Codex Auth" keychain item; start the session again once it can.`
+            `Codex on the device the agent runs on did not read its login from the OS keyring within ${timeoutMs / 1000} seconds. The keychain may be locked, or the system may be waiting for someone at that device to let Codex use its "Codex Auth" keychain item; start the session again once it can.`
           )
         ),
       timeoutMs
@@ -120,7 +120,7 @@ export async function readCodexKeyringApiKey(
     if (error instanceof KeyringLoginError) throw error;
     const output = client.stderr.trim();
     throw new Error(
-      `Codex on the execution machine could not report its login: ${error instanceof Error ? error.message : String(error)}${output ? `\n${output}` : ''}`,
+      `Codex on the device the agent runs on could not report its login: ${error instanceof Error ? error.message : String(error)}${output ? `\n${output}` : ''}`,
       { cause: error }
     );
   } finally {
@@ -146,7 +146,7 @@ async function readApiKey(client: StdioJsonRpcClient): Promise<string | null> {
   if (!account) return null;
   if (account.type !== 'apiKey')
     throw new KeyringLoginError(
-      `Codex on the execution machine is signed in with ${loginKind(account.type)} and has no auth.json, so its login is likely in the OS keyring (cli_auth_credentials_store = "keyring" or "auto"). A Switch session can take a login from the keyring only when it is an API key. ${CODEX_FILE_STORE_WORKAROUND}`
+      `Codex on the device the agent runs on is signed in with ${loginKind(account.type)} and has no auth.json, so its login is likely in the OS keyring (cli_auth_credentials_store = "keyring" or "auto"). A Switch session can take a login from the keyring only when it is an API key. ${CODEX_FILE_STORE_WORKAROUND}`
     );
   let status: z.infer<typeof codexAuthStatusSchema>;
   try {
@@ -163,7 +163,7 @@ async function readApiKey(client: StdioJsonRpcClient): Promise<string | null> {
   }
   if (status.authMethod !== 'apikey' || !status.authToken)
     throw new KeyringLoginError(
-      `Codex on the execution machine reported an API-key login but did not hand over the key. ${CODEX_FILE_STORE_WORKAROUND}`
+      `Codex on the device the agent runs on reported an API-key login but did not hand over the key. ${CODEX_FILE_STORE_WORKAROUND}`
     );
   return status.authToken;
 }

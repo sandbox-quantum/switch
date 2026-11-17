@@ -44,7 +44,9 @@ export function fieldCatalogueState(
 ): FieldCatalogueState {
   if (field.key !== 'model' && !field.catalogue) return {};
   if (!catalogue)
-    return { note: 'Loading models from the execution machine. You can also enter a model ID.' };
+    return {
+      note: 'Loading models from the device the agent runs on. You can also enter a model ID.',
+    };
 
   if (catalogue.kind === 'unavailable') {
     // Degrade visibly. The field still works; it just cannot check itself, and

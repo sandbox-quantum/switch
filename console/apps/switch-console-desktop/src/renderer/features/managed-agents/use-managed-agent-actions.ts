@@ -44,7 +44,7 @@ export function useManagedAgentActions(agent: ManagedAgentView) {
   const remove = () =>
     confirm({
       title: `Delete ${label}?`,
-      description: `Its machine stops it and it is deleted from Switch, for every room it is in.`,
+      description: `Its device stops it and it is deleted from Switch, for every room it is in.`,
       confirmLabel: 'Delete',
       onSuccess: () =>
         void act(`${label} could not be deleted.`, async () => {

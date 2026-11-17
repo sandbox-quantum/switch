@@ -97,8 +97,8 @@ function warmCloudMachine(serverId: string): void {
     if (!flags.success || !flags.data.flags['hosted_agents']) return;
     rpc.switchServers.ensureCloudMachine(serverId).catch((cause: unknown) => {
       toast({
-        title: 'Your cloud machine did not start',
-        description: failureText(cause, 'Switch could not start your cloud machine.'),
+        title: 'Your cloud device did not start',
+        description: failureText(cause, 'Switch could not start your cloud device.'),
         variant: 'destructive',
       });
     });

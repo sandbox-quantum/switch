@@ -233,11 +233,11 @@ async function assertEndpointReachable(
     // user to their firewall, where there was nothing to find.
     if (isLoopbackEndpoint(apiEndpoint)) {
       throw new Error(
-        `Host '${host}' is configured to reach Switch at ${apiEndpoint}, which on that host means the host itself — not the machine running Switch Console. No firewall change will make this work. Set this agent's Switch endpoint to an address '${host}' can resolve, such as the Switch server's LAN or public address, then re-run remote setup for it. (probe: ${detail})`
+        `Host '${host}' is configured to reach Switch at ${apiEndpoint}, which on that host means the host itself — not the computer running Switch Console. No firewall change will make this work. Set this agent's Switch endpoint to an address '${host}' can resolve, such as the Switch server's LAN or public address, then re-run remote setup for it. (probe: ${detail})`
       );
     }
     throw new Error(
-      `Host '${host}' could not reach Switch at ${apiEndpoint}. The sidecar polls Switch from the host, so '${host}' itself needs network access to that address — reaching it from this machine is not enough. Check the host's outbound access and that the endpoint is correct for it. (probe: ${detail})`
+      `Host '${host}' could not reach Switch at ${apiEndpoint}. The sidecar polls Switch from the host, so '${host}' itself needs network access to that address — reaching it from this computer is not enough. Check the host's outbound access and that the endpoint is correct for it. (probe: ${detail})`
     );
   }
 }

@@ -56,11 +56,11 @@ describe("RoomScopedDocumentView", () => {
     expect(screen.queryByRole("button", { name: "Delete" })).toBeNull();
   });
 
-  it("offers unlinking, not deleting, a document only attached to the room", () => {
+  it("offers detaching, not deleting, a document only attached to the room", () => {
     showDocument(true, "global");
     render(<RoomScopedDocumentView />);
 
-    screen.getByRole("button", { name: "Unlink from room" });
+    screen.getByRole("button", { name: "Detach from room" });
     expect(screen.queryByRole("button", { name: "Delete" })).toBeNull();
   });
 

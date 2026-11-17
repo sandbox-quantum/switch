@@ -13,7 +13,7 @@ export const GLOSSARY = {
   agent: {
     name: 'Agent',
     meaning:
-      'An AI assistant that answers questions, takes actions and works with your tools. Each one runs on an AI provider.',
+      'An AI assistant that answers questions, takes actions and works with your tools. Each one runs on an agent provider.',
   },
   template: {
     name: 'Template',
@@ -31,7 +31,7 @@ export const GLOSSARY = {
       'The chat app your team already uses: Slack, Microsoft Teams, Discord or Telegram. Connecting one brings your agents and rooms into it.',
   },
   provider: {
-    name: 'AI provider',
+    name: 'Agent provider',
     meaning: 'The AI coding agent an agent runs on, like Claude Code or OpenAI Codex.',
   },
 } as const;

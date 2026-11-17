@@ -122,27 +122,34 @@ async def permitted_to_manage() -> Permitted:
 
 @gated_operation(AGENT_MANAGEMENT_OPERATIONS)
 async def list_machines() -> list[dict[str, Any]]:
-    """List your owner's machines: the computers that can run managed agents.
+    """List your owner's devices: the computers that can run managed agents.
+
+    People call these devices (a Switch cloud host is a cloud device), so say
+    "device" when you talk to them; only this API names them machines, in
+    this tool's name and the `machine` field of `create_agent` and
+    `update_agent_detail`.
 
     Requires the "can manage agents" capability, which your owner turns on for
     you; without it the call is refused with a sentence to relay. Only your
-    owner's machines are listed, never anyone else's, and revoked (removed)
-    machines are left out.
+    owner's devices are listed, never anyone else's, and revoked (removed)
+    devices are left out.
 
     Returns:
-        A list of machines, each {id, name, description, kind, state,
+        A list of devices, each {id, name, description, kind, state,
         last_seen_at, providers, agents_running}.
-        `kind` is "console" (Switch Console's own machine), "daemon" (a
-        headless controller) or "ec2". `state` is "online" (connected to Switch
-        now), "offline" (was connected, and is not now: stopped, asleep, off
-        or disconnected) or "unknown" (has never connected).
-        `providers` lists the agent CLIs the machine last reported, each
+        `kind` is "console" (the computer Switch Console runs on), "daemon"
+        (a headless controller) or "ec2" (a cloud device). `state` is
+        "online" (connected to Switch now), "offline" (was connected, and is
+        not now: stopped, asleep, off or disconnected) or "unknown" (has
+        never connected).
+        `providers` lists the agent CLIs the device last reported, each
         {provider, installed, version, auth, problem}, `auth` being "ok",
         "missing", "expired" or "unknown", and `problem` why its login does
-        not work, in the machine's words, or null when it said nothing.
+        not work, in the device's words, or null when it said nothing.
         `agents_running` counts the managed agents
-        whose process the machine last reported as running, null before it
-        has reported. Pass a machine's `id` or exact `name` to `create_agent`.
+        whose process the device last reported as running, null before it
+        has reported. Pass a device's `id` or exact `name` to `create_agent`
+        as `machine`.
     """
     permitted = await permitted_to_manage()
     return await _management().list_machines(permitted.tenant_id, permitted.owner.id)
@@ -193,17 +200,18 @@ async def create_agent(
     icon_url: str | None = None,
     start: bool = True,
 ) -> dict[str, Any]:
-    """Create a new managed agent for your owner, running on one of their machines.
+    """Create a new managed agent for your owner, running on one of their devices.
 
     Requires the "can manage agents" capability, which your owner turns on for
     you. The new agent is owned by your owner (not by you), runs on the
-    machine you name, and can be addressed by your owner and your owner's
-    other agents (you included) until they say otherwise. It does not get the
-    "can manage agents" capability itself.
-    Confirm the name, machine and provider with the person asking before you
-    call this: it creates a real agent on their computer.
+    device you name as `machine`, and can be addressed by your owner and your
+    owner's other agents (you included) until they say otherwise. It does not
+    get the "can manage agents" capability itself.
+    Confirm the name, device and provider with the person asking before you
+    call this: it creates a real agent on their computer. Say "device" to
+    people; `machine` is only the field's name.
 
-    The machine must be online and have the provider installed and logged in.
+    The device must be online and have the provider installed and logged in.
     When it is not, nothing is created and the error says why (with a reason
     code such as `controller_offline`, `provider_not_installed`,
     `provider_login_missing` or `provider_login_expired`); relay it as it is.
@@ -212,9 +220,9 @@ async def create_agent(
         name: The new agent's name, unique on this Switch instance; it is what
             people address it by.
         description: What the agent is for, shown to people and agents.
-        machine: The machine's `id`, or its exact `name`, from
-            `list_machines`. A name shared by several machines is refused with
-            the candidates listed; pass the id instead.
+        machine: The device to run it on: a device's `id`, or its exact
+            `name`, from `list_machines`. A name shared by several devices is
+            refused with the candidates listed; pass the id instead.
         provider: The agent CLI to run, by its id as `list_machines` reports
             it, such as "claude" for Claude Code. An unknown id is refused
             with the ids Switch runs.
@@ -224,10 +232,10 @@ async def create_agent(
             `get_advanced_config(provider)` lists; a field left out is left
             unset. Each value is checked against that field. Null for none.
         instructions: Standing instructions for the agent (at most 32 KiB).
-        directory: The working directory on the machine, or null for the
-            machine's own workspace for the agent; Switch fills that path in
-            when the machine has reported where it keeps workspaces, and the
-            machine makes the directory if it is missing. Any other directory
+        directory: The working directory on the device, or null for the
+            device's own workspace for the agent; Switch fills that path in
+            when the device has reported where it keeps workspaces, and the
+            device makes the directory if it is missing. Any other directory
             must already exist there.
         auto_mode: Auto mode, on by default: the provider's own automatic
             review lets safe actions run without asking and still asks a
@@ -245,7 +253,8 @@ async def create_agent(
 
     Returns:
         {agent_id, name, machine: {id, name}, desired_state, hint}.
-        `desired_state` is "running" or "stopped". Check the agent with
+        `machine` is the device it was placed on. `desired_state` is
+        "running" or "stopped". Check the agent with
         `list_managed_agents` straight away; while its `actual` is still
         null, "pending" or "starting", check again every 2 seconds, for at
         most a minute.
@@ -289,16 +298,17 @@ async def list_managed_agents() -> list[dict[str, Any]]:
         actions need a person's approval. `auto_approve` is bypass: it runs
         every tool without asking anyone, whatever `auto_mode` says.
         `directory` is the working directory the definition names (null only
-        when its machine has not said where it keeps workspaces).
-        `machine` is {id, name, state} (null when the agent is not placed on
-        a machine), `state` being "online", "offline", "unknown" or "revoked".
+        when its device has not said where it keeps workspaces).
+        `machine` is the device it runs on, {id, name, state} (null when the
+        agent is not placed on a device), `state` being "online", "offline",
+        "unknown" or "revoked".
         `desired_state` is what your owner wants: "running" or "stopped".
-        `actual` is what the machine last reported for the agent,
+        `actual` is what the device last reported for the agent,
         {process, reason, detail, applied_revision, since, directory}, or
         null before it has reported on it; `process` is one of "pending",
         "starting", "running", "stopping", "stopped", "crashed" or "failed",
         and `reason` says why when it is crashed or failed. `actual.directory`
-        is where it runs, null until the machine has resolved it. `revision` is the
+        is where it runs, null until the device has resolved it. `revision` is the
         definition's revision: the agent runs the current definition once
         `actual.applied_revision` equals it.
     """

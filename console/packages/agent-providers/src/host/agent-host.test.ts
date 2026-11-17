@@ -2479,7 +2479,7 @@ function switchOperations(answers: { owner: string | null; refuseTargeted?: bool
   return calls;
 }
 
-const SIGN_IN = 'Sign in on the execution machine with claude auth login.';
+const SIGN_IN = 'Sign in on the device the agent runs on with claude auth login.';
 
 it('stops starting a session whose host failed, keeps its message, and tells its owner once', async () => {
   const root = await mkdtemp(join(tmpdir(), 'shared-watch-failed-start-'));

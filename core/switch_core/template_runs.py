@@ -172,7 +172,7 @@ def _directory(
         return None, Problem(
             plan.slot,
             "directory_unknown",
-            f"its directory starts with {AGENTS_DIR}, and machine "
+            f"its directory starts with {AGENTS_DIR}, and device "
             f"'{placement.machine_name}' has not reported where it keeps agents. "
             "Bring it online once, or give the directory as a full path.",
         )

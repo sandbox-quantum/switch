@@ -31,7 +31,7 @@ const CHECK_PATIENCE_MS = 45_000;
  *
  * A provider already installed and signed in on this computer is offered
  * straight away, for the first two; the others, and providers still to set
- * up, are behind "Use other AI providers". With none signed in it can be
+ * up, are behind "Use other agent providers". With none signed in it can be
  * skipped, for the chat to open without the buddy, asking for a provider
  * there. Someone who already has a buddy (replaying these pages) is offered
  * to open it instead.
@@ -238,7 +238,7 @@ export function StartChoices({
         id="buddy-start-heading"
         className="flex items-center gap-1.5 px-1 text-sm font-medium text-foreground"
       >
-        Pick an AI provider to get started
+        Pick an agent provider to get started
         <TermInfo term="provider" />
       </h2>
       <motion.div
@@ -251,7 +251,7 @@ export function StartChoices({
         {shown === 'checking' ? (
           <span className="flex h-9 items-center gap-1.5 px-1 text-xs text-foreground-muted">
             <Spinner className="size-3" />
-            Checking AI providers…
+            Checking agent providers…
           </span>
         ) : shown === 'signed-in' ? (
           <>
@@ -282,13 +282,13 @@ export function StartChoices({
                 disabled={busy}
                 className="rounded-sm text-foreground underline underline-offset-2 outline-none hover:text-foreground-muted focus-visible:ring-2 focus-visible:ring-border-primary enabled:cursor-pointer disabled:opacity-60"
               >
-                use other providers
+                use other agent providers
               </button>
             </span>
           </>
         ) : (
           <>
-            <Button onClick={onSetUp}>Set up AI provider</Button>
+            <Button onClick={onSetUp}>Set up agent provider</Button>
             <Button variant="ghost" onClick={onSkip}>
               Skip
             </Button>

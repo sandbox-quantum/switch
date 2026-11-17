@@ -117,7 +117,7 @@ export function MachineSelect({
   if (machines === null) {
     return (
       <p className="text-xs text-foreground-muted">
-        This server does not run agent management, so there is no machine to choose.
+        This server does not run agent management, so there is no device to choose.
       </p>
     );
   }
@@ -140,15 +140,11 @@ export function MachineSelect({
       onValueChange={(v) => onChange(v ? (machineIdOf(v) ?? '') : '')}
       disabled={disabled}
     >
-      <SelectTrigger className="w-full" aria-label="Machine">
+      <SelectTrigger className="w-full" aria-label="Device">
         <SelectValue>
           <Icon kind={selected?.icon ?? 'server'} />
           <span className="truncate">
-            {selected
-              ? selected.label
-              : chosen
-                ? machineLabel(chosen)
-                : value || 'Choose a machine'}
+            {selected ? selected.label : chosen ? machineLabel(chosen) : value || 'Choose a device'}
           </span>
         </SelectValue>
       </SelectTrigger>

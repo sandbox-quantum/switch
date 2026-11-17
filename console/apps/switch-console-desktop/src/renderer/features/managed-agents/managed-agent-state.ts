@@ -12,9 +12,9 @@ export type ManagedAgentState = {
 export function managedAgentState(agent: ManagedAgentView): ManagedAgentState {
   const status = agent.status;
   const detail = status?.detail ?? status?.reason ?? null;
-  if (!agent.machine) return { label: 'No machine', tone: 'problem', detail: null };
+  if (!agent.machine) return { label: 'No device', tone: 'problem', detail: null };
   if (agent.machine.state === 'revoked')
-    return { label: 'Machine removed', tone: 'problem', detail: null };
+    return { label: 'Device removed', tone: 'problem', detail: null };
   if (agent.desiredState === 'stopped') {
     const stillUp =
       status && ['pending', 'starting', 'running', 'stopping'].includes(status.process);
@@ -23,7 +23,7 @@ export function managedAgentState(agent: ManagedAgentView): ManagedAgentState {
       : { label: 'Stopped', tone: 'idle', detail: null };
   }
   if (agent.machine.state !== 'online')
-    return { label: 'Machine offline', tone: 'problem', detail: null };
+    return { label: 'Device offline', tone: 'problem', detail: null };
   if (!status) return { label: 'Starting', tone: 'busy', detail: null };
   switch (status.process) {
     case 'running':
@@ -68,10 +68,10 @@ export function machineProblem(
   agent: ManagedAgentView,
   machine: OwnedMachine | null
 ): string | null {
-  if (!agent.machine) return 'This agent is placed on no machine, so nothing runs it.';
+  if (!agent.machine) return 'This agent is placed on no device, so nothing runs it.';
   const name = agent.machine.name;
   if (agent.machine.state === 'revoked')
-    return `${name} was removed from your machines, so nothing runs this agent.`;
+    return `${name} was removed from your devices, so nothing runs this agent.`;
   if (agent.machine.state !== 'online')
     return `${name} stopped answering. The agent resumes when it reconnects.`;
   const state = managedAgentState(agent);

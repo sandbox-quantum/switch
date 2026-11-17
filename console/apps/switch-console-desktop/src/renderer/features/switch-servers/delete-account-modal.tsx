@@ -118,14 +118,14 @@ export const DeleteAccountModal = observer(function DeleteAccountModal({
               <li>For test accounts only.</li>
               <li>
                 Everything this account has on {serverName} is wiped: messaging and Slack installs
-                are disconnected, and its agents, machines, rooms, workspace, organization and user
+                are disconnected, and its agents, devices, rooms, workspace, organization and user
                 are deleted.
               </li>
             </ul>
           ) : (
             <ul className="list-disc space-y-1 pl-5">
               <li>
-                Your agents, the machines you connected, and your templates, references, documents
+                Your agents, the devices you connected, and your templates, references, documents
                 and packages are deleted.
               </li>
               <li>

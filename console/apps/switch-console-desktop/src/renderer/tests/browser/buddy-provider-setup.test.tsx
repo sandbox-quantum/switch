@@ -1,5 +1,5 @@
 /**
- * The card that sets up an AI provider for switch-buddy: it starts the buddy
+ * The card that sets up an agent provider for switch-buddy: it starts the buddy
  * with a provider already signed in, installs one that is missing, and says
  * what went wrong, one error at a time.
  */

@@ -135,7 +135,7 @@ export class SystemdRuntime implements AgentRuntime {
     if (slot === null)
       throw new ReasonedError(
         'capacity_exceeded',
-        `Every one of the ${config.agentUsers} agent users set up on this machine runs an agent. Run the setup again with a larger --agent-users.`
+        `Every one of the ${config.agentUsers} agent users set up on this device runs an agent. Run the setup again with a larger --agent-users.`
       );
     return slot;
   }
@@ -193,7 +193,7 @@ export class SystemdRuntime implements AgentRuntime {
     if (resolved !== seen && !isInside(seen, resolved))
       throw new ReasonedError(
         'definition_invalid',
-        `Agent ${name} would work in ${resolved}, but this machine runs each agent as a user of its own that sees only its own directory, at ${seen}. Leave the directory empty, or name one inside it.`
+        `Agent ${name} would work in ${resolved}, but this device runs each agent as a user of its own that sees only its own directory, at ${seen}. Leave the directory empty, or name one inside it.`
       );
     let path = onMachine;
     for (const part of relative(seen, resolved).split(sep).filter(Boolean)) {

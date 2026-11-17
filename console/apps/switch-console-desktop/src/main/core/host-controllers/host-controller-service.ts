@@ -364,7 +364,7 @@ export class HostControllerService {
    */
   async enrollAgain(sshHost: string, serverId: string): Promise<void> {
     const record = await this.deps.records.get(sshHost, serverId);
-    if (!record) throw new Error(`${sshHost} is not a machine for this server.`);
+    if (!record) throw new Error(`${sshHost} is not a device for this server.`);
     const remote = await this.deps.management.read(record.workspaceId, record.controllerId);
     if (remote.kind !== 'ok')
       throw new Error(
@@ -374,7 +374,7 @@ export class HostControllerService {
       );
     if (remote.controller && remote.controller.state !== 'revoked')
       throw new Error(
-        `Switch still lists ${sshHost} as a machine. Turn it off and on again instead.`
+        `Switch still lists ${sshHost} as a device. Turn it off and on again instead.`
       );
     await this.exclusive(sshHost, serverId, async () => {
       const shell = await this.deps.shell(sshHost);

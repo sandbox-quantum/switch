@@ -71,11 +71,11 @@ describe('managedAgentState', () => {
   it('says its machine is offline or gone rather than guessing at the agent', () => {
     expect(
       managedAgentState({ ...AGENT, machine: { ...AGENT.machine!, state: 'unknown' } }).label
-    ).toBe('Machine offline');
+    ).toBe('Device offline');
     expect(
       managedAgentState({ ...AGENT, machine: { ...AGENT.machine!, state: 'revoked' } }).label
-    ).toBe('Machine removed');
-    expect(managedAgentState({ ...AGENT, machine: null }).label).toBe('No machine');
+    ).toBe('Device removed');
+    expect(managedAgentState({ ...AGENT, machine: null }).label).toBe('No device');
   });
 });
 

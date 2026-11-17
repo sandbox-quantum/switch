@@ -257,7 +257,7 @@ export function AgentSlotCard({
       {runtime && (
         <div className="mt-3 flex flex-col gap-1.5 border-t border-border pt-3">
           <RuntimeRow label="Provider" value={runtime.provider} />
-          <RuntimeRow label={runtime.managed ? 'Machine' : 'Runs on'} value={runtime.location} />
+          <RuntimeRow label={runtime.managed ? 'Device' : 'Runs on'} value={runtime.location} />
           <RuntimeRow label="Directory" value={runtime.directory} />
           {runtime.model && <RuntimeRow label="Model" value={runtime.model} />}
           {runtime.connections.length > 0 && (

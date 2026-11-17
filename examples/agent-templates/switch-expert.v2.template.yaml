@@ -26,12 +26,12 @@ params:
     required: false
   provider:
     type: provider
-    description: The coding agent that runs it. The first one ready on its machine is chosen.
+    description: The coding agent that runs it. The first one ready on its device is chosen.
     default: [claude, codex, opencode]
     input: advanced
   machine:
     type: machine
-    description: The machine it runs on. The first online one that can run it, unless you pick.
+    description: The device it runs on. The first online one that can run it, unless you pick.
     default: [$first]
     input: advanced
   directory:

@@ -15,12 +15,12 @@ params:
     default: switch-buddy
   provider:
     type: provider
-    description: The coding agent that runs it. The first one ready on its machine is chosen.
+    description: The coding agent that runs it. The first one ready on its device is chosen.
     default: [claude, codex, opencode, cursor, antigravity, deepseek-harness, pi, copilot, kiro, mistral-vibe, goose, qwen, droid, cline, junie]
     input: advanced
   machine:
     type: machine
-    description: The machine it runs on. Switch Console picks this computer.
+    description: The device it runs on. Switch Console picks this computer.
     default: [$first]
     input: advanced
   directory:

@@ -50,26 +50,26 @@ describe("ResourceAttachmentsSection", () => {
     vi.unstubAllGlobals();
   });
 
-  it("offers unlinking only from rooms the viewer takes part in", async () => {
+  it("offers detaching only from rooms the viewer takes part in", async () => {
     answerFetch({ "GET /documents/d1/rooms": [200, ATTACHED] });
     show();
 
     await screen.findByText("leadership");
-    screen.getByRole("button", { name: "Unlink from planning" });
-    expect(screen.queryByRole("button", { name: "Unlink from leadership" })).toBeNull();
+    screen.getByRole("button", { name: "Detach from planning" });
+    expect(screen.queryByRole("button", { name: "Detach from leadership" })).toBeNull();
   });
 
-  it("asks before unlinking, and unlinks only once confirmed", async () => {
+  it("asks before detaching, and detaches only once confirmed", async () => {
     const calls = answerFetch({
       "GET /documents/d1/rooms": [200, ATTACHED],
       "DELETE /rooms/r1/documents/d1": [200, {}],
     });
     show();
 
-    fireEvent.click(await screen.findByRole("button", { name: "Unlink from planning" }));
-    const dialog = await screen.findByRole("dialog", { name: "Unlink from planning" });
+    fireEvent.click(await screen.findByRole("button", { name: "Detach from planning" }));
+    const dialog = await screen.findByRole("dialog", { name: "Detach from planning" });
     expect(calls.some((call) => call.method === "DELETE")).toBe(false);
-    fireEvent.click(within(dialog).getByRole("button", { name: "Unlink" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Detach" }));
 
     await vi.waitFor(() => expect(calls.some((call) => call.method === "DELETE")).toBe(true));
   });
@@ -107,7 +107,7 @@ describe("ResourceAttachmentsSection", () => {
 
     expect(await within(picker).findByText("Attached to 1 of 2 rooms. You can't add to design.")).toBeTruthy();
     // Behind the picker, which hides the page from the accessibility tree.
-    expect(await screen.findByRole("button", { name: "Unlink from retro", hidden: true })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Detach from retro", hidden: true })).toBeTruthy();
     // What went in is no longer offered, nor sent again.
     expect(within(picker).getByRole("button", { name: "Attach (1)" })).toBeTruthy();
   });

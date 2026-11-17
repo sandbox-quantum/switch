@@ -73,13 +73,13 @@ function machineProblem(machine: CloudMachine, now: number): string | null {
   if (isAdminStopped(machine))
     return 'A server administrator stopped the machine. Contact them to have it released.';
   if (isBeingDeleted(machine, now)) return null;
-  if (machine.error_code === 'disk_full') return 'The machine’s disk is full.';
+  if (machine.error_code === 'disk_full') return 'The device’s disk is full.';
   if (machine.state !== 'error') return null;
   if (machine.error_code === 'machine_needs_attention')
-    return 'The machine needs attention. Contact your server administrator.';
+    return 'The device needs attention. Contact your server administrator.';
   if (machine.error_code === 'machine_connect_timeout')
-    return 'The machine did not connect in time. Retry, and if it fails again contact your server administrator.';
-  return machine.error ?? 'The machine could not start.';
+    return 'The device did not connect in time. Retry, and if it fails again contact your server administrator.';
+  return machine.error ?? 'The device could not start.';
 }
 
 function machineDisk(machine: CloudMachine): MachineDisk | null {

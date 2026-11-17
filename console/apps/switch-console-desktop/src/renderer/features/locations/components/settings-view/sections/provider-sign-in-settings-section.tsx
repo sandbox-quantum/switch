@@ -32,7 +32,7 @@ export function ProviderSignInSettingsSection({
       {/* An empty directory shares the Add Agent check's result for the same machine. */}
       <ProviderConnectionStatus providerId={agent.providerId} sshHost={location.sshHost} dir="" />
       <FieldDescription className="text-foreground-muted">
-        The agent&apos;s sessions start only when its provider CLI is signed in on the machine they
+        The agent&apos;s sessions start only when its provider CLI is signed in on the device they
         run on.
       </FieldDescription>
     </Field>

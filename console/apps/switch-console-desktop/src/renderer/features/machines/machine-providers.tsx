@@ -48,7 +48,7 @@ export function MachineProviders({
   const thisComputer = machine.local?.kind === 'this-computer';
 
   return (
-    <Card title="AI providers">
+    <Card title="Agent providers">
       {machine.providers.length === 0 ? (
         <p className="text-[13px] text-[var(--fg-dim)]">Not reported yet.</p>
       ) : (
