@@ -97,31 +97,86 @@ describe("the Connectors catalogue", () => {
     Object.defineProperty(window, "location", { configurable: true, writable: true, value: originalLocation });
   });
 
-  it("opens on yours, and All lists everything with what isn't built yet last", async () => {
+  it("opens on Discover with everything, what isn't built yet last, and Yours has what is connected", async () => {
     signedIn();
     const connected: ServiceConnection = { ...atlassian, status: "active", can_revoke: true };
     answer({ "GET /service-connections": { connections: [asana, connected, datadog, google] } });
     renderPage();
 
     expect(await screen.findByRole("img", { name: "Connected to Atlassian" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Yours" }).getAttribute("aria-pressed")).toBe("true");
-    expect(screen.queryByText("Google Workspace")).toBeNull();
-
-    fireEvent.click(screen.getByRole("button", { name: "All" }));
+    expect(screen.getByRole("button", { name: "Discover" }).getAttribute("aria-pressed")).toBe("true");
     const shown = screen.getAllByText(/^(Google Workspace|Atlassian|Datadog|Asana)$/).map((node) => node.textContent);
     expect(shown).toEqual(["Atlassian", "Datadog", "Google Workspace", "Asana"]);
-    expect(screen.getByText("Coming soon")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Supported" })).toBeTruthy();
+    const soon = screen.getByRole("region", { name: "Coming soon" });
+    expect(within(soon).getByText("Asana")).toBeTruthy();
+    expect(within(soon).queryByText("Datadog")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Yours" }));
+    expect(screen.getByText("Atlassian")).toBeTruthy();
+    expect(screen.queryByText("Google Workspace")).toBeNull();
+    expect(screen.queryByRole("img", { name: "Connected to Atlassian" })).toBeNull();
   });
 
-  it("opens on All when nothing is connected yet, and says so on Yours", async () => {
+  it("searches the coming soon section too, and leaves out a section with no match", async () => {
+    signedIn();
+    answer({ "GET /service-connections": { connections: [asana, datadog, google] } });
+    renderPage();
+
+    expect(await screen.findByText("Google Workspace")).toBeTruthy();
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search connectors" }), { target: { value: "asana" } });
+    expect(screen.queryByRole("heading", { name: "Supported" })).toBeNull();
+    expect(within(screen.getByRole("region", { name: "Coming soon" })).getByText("Asana")).toBeTruthy();
+    expect(screen.queryByText("Datadog")).toBeNull();
+  });
+
+  it("says on an empty Yours that nothing is connected yet, with a way back to Discover", async () => {
     signedIn();
     answer({ "GET /service-connections": { connections: [google] } });
     renderPage();
 
     expect(await screen.findByText("Google Workspace")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "All" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("button", { name: "Discover" }).getAttribute("aria-pressed")).toBe("true");
     fireEvent.click(screen.getByRole("button", { name: "Yours" }));
-    expect(screen.getByText("You haven't connected anything yet. The All tab lists every connector.")).toBeTruthy();
+    expect(screen.getByText(/You haven't connected anything yet\./)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Browse all connectors" }));
+    expect(screen.getByRole("button", { name: "Discover" }).getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("ends Yours with a way to the rest of the catalogue on Discover", async () => {
+    signedIn();
+    const connected: ServiceConnection = { ...atlassian, status: "active", can_revoke: true };
+    answer({ "GET /service-connections": { connections: [asana, connected, datadog, google] } });
+    renderPage();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Yours" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Browse all connectors" }));
+    expect(screen.getByRole("button", { name: "Discover" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByText("Google Workspace")).toBeTruthy();
+  });
+
+  it("points a search on Yours that matches nothing connected at Discover, keeping the search", async () => {
+    signedIn();
+    const connected: ServiceConnection = { ...atlassian, status: "active", can_revoke: true };
+    answer({ "GET /service-connections": { connections: [asana, connected, datadog, google] } });
+    renderPage();
+    expect(await screen.findByText("Atlassian")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Yours" }));
+    const search = screen.getByRole("searchbox", { name: "Search connectors" });
+
+    fireEvent.change(search, { target: { value: "drive" } });
+    expect(screen.getByText(/None of your connectors match “drive”\./)).toBeTruthy();
+    fireEvent.change(search, { target: { value: "asana" } });
+    expect(screen.getByText(/None of your connectors match “asana”\./)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Search Discover for “asana”" }));
+    expect(screen.getByRole("button", { name: "Discover" }).getAttribute("aria-pressed")).toBe("true");
+    expect((search as HTMLInputElement).value).toBe("asana");
+    expect(within(screen.getByRole("region", { name: "Coming soon" })).getByText("Asana")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Yours" }));
+    fireEvent.change(search, { target: { value: "zzz" } });
+    expect(screen.getByText('No connector matches “zzz”.')).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Search Discover/ })).toBeNull();
   });
 
   it("connects through the sign-in that comes back here, from the card's plus", async () => {
@@ -168,7 +223,7 @@ describe("the Connectors catalogue", () => {
     expect((screen.getByRole("button", { name: "Connect Google Workspace" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
-  it("stays on All after connecting the first one", async () => {
+  it("stays on Discover after connecting the first one", async () => {
     signedIn();
     const connections = [datadog, google];
     answer({
@@ -184,7 +239,7 @@ describe("the Connectors catalogue", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Add keys" }));
 
     expect(await screen.findByRole("img", { name: "Connected to Datadog" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "All" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("button", { name: "Discover" }).getAttribute("aria-pressed")).toBe("true");
     expect(screen.getByText("Google Workspace")).toBeTruthy();
   });
 
@@ -232,8 +287,20 @@ describe("the Connectors catalogue", () => {
     });
     renderPage();
 
-    expect(await screen.findByText("Off here")).toBeTruthy();
+    expect(await screen.findByText("Off in this workspace")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Connect Google Workspace" })).toBeNull();
+  });
+
+  it("lists the ones that can't be used here last in their section", async () => {
+    signedIn();
+    const off = { ...google, workspace_enabled: false, decided_by: "workspace" as const };
+    const unavailable = { ...atlassian, connectable: false, unavailable_reason: "Not set up." };
+    answer({ "GET /service-connections": { connections: [off, unavailable, datadog, asana] } });
+    renderPage();
+
+    expect(await screen.findByText("Off in this workspace")).toBeTruthy();
+    const shown = screen.getAllByText(/^(Google Workspace|Atlassian|Datadog|Asana)$/).map((node) => node.textContent);
+    expect(shown).toEqual(["Datadog", "Google Workspace", "Atlassian", "Asana"]);
   });
 
   it("says a connector nobody can connect here is unavailable", async () => {
@@ -304,6 +371,20 @@ describe("the Connectors catalogue", () => {
     expect(screen.queryByText("Atlassian")).toBeNull();
   });
 
+  it("offers a connector request on Discover only", async () => {
+    signedIn();
+    answer({ "GET /service-connections": { connections: [atlassian] } });
+    renderPage();
+
+    const link = await screen.findByRole("link", { name: "Request a connector" });
+    expect(link.getAttribute("href")).toBe(
+      "https://github.com/sandbox-quantum/switch/issues/new?template=connector_request.yml",
+    );
+    expect(link.getAttribute("target")).toBe("_blank");
+    fireEvent.click(screen.getByRole("button", { name: "Yours" }));
+    expect(screen.queryByRole("link", { name: "Request a connector" })).toBeNull();
+  });
+
   it("opens a connector's page from its card", async () => {
     signedIn();
     answer({ "GET /service-connections": { connections: [atlassian] } });
@@ -313,3 +394,4 @@ describe("the Connectors catalogue", () => {
     expect(screen.getByTestId("where").textContent).toBe("/connectors/atlassian");
   });
 });
+

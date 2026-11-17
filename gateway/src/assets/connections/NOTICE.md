@@ -15,7 +15,9 @@ switching to the brand's one-colour black or white version on the theme where
 the colour would not stand out from the tile.
 
 All files fetched 2026-09-29, except `airtable.svg`, fetched 2026-10-14, and
-`atlassian.svg` and `google-workspace.svg`, fetched 2026-11-10.
+`atlassian.svg` and `google-workspace.svg`, fetched 2026-11-10, and the
+Simple Icons files added for the coming soon connectors (`pagerduty.svg`
+through `miro.svg` in the table), fetched 2026-11-14.
 
 | File | Brand | Source | License / terms | Colour |
 |---|---|---|---|---|
@@ -32,6 +34,22 @@ All files fetched 2026-09-29, except `airtable.svg`, fetched 2026-10-14, and
 | `airtable.svg` | Airtable | Simple Icons 16.33.0, `airtable` | CC0-1.0 | black in light theme, `#18BFFF` in dark theme |
 | `vercel.svg` | Vercel | Simple Icons 16.33.0, `vercel` | CC0-1.0; guidelines https://vercel.com/geist/brands | theme foreground |
 | `canva.svg` | Canva | Canva "Icon logo" from https://www.canva.dev/assets/connect/Canva-logos.zip | Canva Connect brand guidelines (https://www.canva.dev/docs/connect/guidelines/brand/) permit the unmodified icon logo in an integration's UI; gradient ids renamed only | full colour, unmodified |
+| `pagerduty.svg` | PagerDuty | Simple Icons 16.33.0, `pagerduty` | CC0-1.0; guidelines https://www.pagerduty.com/brand/ | `#06AC38` |
+| `grafana.svg` | Grafana | Simple Icons 16.33.0, `grafana` | CC0-1.0 | `#F46800` |
+| `supabase.svg` | Supabase | Simple Icons 16.33.0, `supabase` | CC0-1.0 | `#3FCF8E` |
+| `cloudflare.svg` | Cloudflare | Simple Icons 16.33.0, `cloudflare` | CC0-1.0; guidelines https://www.cloudflare.com/trademark/ | `#F38020` |
+| `stripe.svg` | Stripe | Simple Icons 16.33.0, `stripe` | CC0-1.0 | `#635BFF` |
+| `hubspot.svg` | HubSpot | Simple Icons 16.33.0, `hubspot` | CC0-1.0; guidelines https://www.hubspot.com/style-guide | `#FF7A59` |
+| `clickup.svg` | ClickUp | Simple Icons 16.33.0, `clickup` | CC0-1.0 | `#7B68EE` |
+| `trello.svg` | Trello | Simple Icons 16.33.0, `trello` | CC0-1.0; guidelines https://atlassian.design/foundations/logos/ | `#0052CC`, white in dark theme |
+| `dropbox.svg` | Dropbox | Simple Icons 16.33.0, `dropbox` | CC0-1.0 | `#0061FF`, white in dark theme |
+| `snowflake.svg` | Snowflake | Simple Icons 16.33.0, `snowflake` | CC0-1.0; guidelines https://www.snowflake.com/brand-guidelines/ | `#29B5E8` |
+| `bigquery.svg` | Google BigQuery | Simple Icons 16.33.0, `googlebigquery` | CC0-1.0; guidelines https://about.google/brand-resource-center/ | `#669DF6` |
+| `intercom.svg` | Intercom | Simple Icons 16.33.0, `intercom` | CC0-1.0; guidelines https://www.intercom.com/press | black in light theme, `#6AFDEF` in dark theme |
+| `zendesk.svg` | Zendesk | Simple Icons 16.33.0, `zendesk` | CC0-1.0; guidelines https://brandland.zendesk.com | `#03363D`, white in dark theme |
+| `calendly.svg` | Calendly | Simple Icons 16.33.0, `calendly` | CC0-1.0; guidelines https://calendly.com/newsroom | `#006BFF`, white in dark theme |
+| `zoom.svg` | Zoom | Simple Icons 16.33.0, `zoom` | CC0-1.0; guidelines https://brand.zoom.us/usage-legal/ | `#0B5CFF`, white in dark theme |
+| `miro.svg` | Miro | Simple Icons 16.33.0, `miro` | CC0-1.0 | `#050038`, white in dark theme |
 
 Simple Icons' CC0 dedication covers the drawings; it does not grant any
 trademark rights, which remain with the owners.

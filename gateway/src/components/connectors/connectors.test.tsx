@@ -20,6 +20,10 @@ const consoleLogos = import.meta.glob<string>(
 );
 
 const catalogSlugs = Object.keys(catalog).map((path) => path.split("/").at(-2)!);
+// Coming soon entries whose owners publish no logo file a product UI may use
+// yet, or none in SVG. Their tiles show initials until one is added.
+const awaitingLogo = new Set(["azure-devops", "launchdarkly", "monday", "servicenow"]);
+const logoSlugs = catalogSlugs.filter((slug) => !awaitingLogo.has(slug));
 const byFile = (files: Record<string, string>) =>
   Object.fromEntries(Object.entries(files).map(([path, svg]) => [path.split("/").pop()!, svg]));
 
@@ -28,8 +32,13 @@ describe("brand logos", () => {
     expect(catalogSlugs).toContain("github");
   });
 
-  it.each(catalogSlugs)("%s has a logo", (slug: string) => {
+  it.each(logoSlugs)("%s has a logo", (slug: string) => {
     expect(brandSvg(slug)).toBeTruthy();
+  });
+
+  it.each([...awaitingLogo])("%s is in the catalog and still has no logo", (slug: string) => {
+    expect(catalogSlugs).toContain(slug);
+    expect(brandSvg(slug)).toBeUndefined();
   });
 
   it("are the same files Console ships", () => {
@@ -38,7 +47,7 @@ describe("brand logos", () => {
   });
 
   it("are sized to their tile whatever their root tag looks like", () => {
-    for (const slug of catalogSlugs) {
+    for (const slug of logoSlugs) {
       expect(brandSvg(slug), slug).toMatch(/^<svg width="100%" height="100%"[\s>]/);
     }
   });

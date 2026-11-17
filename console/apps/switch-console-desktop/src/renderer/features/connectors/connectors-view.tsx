@@ -1,4 +1,4 @@
-import { ArrowRight, Check, Plug, Plus } from 'lucide-react';
+import { ArrowRight, Check, Compass, MessageSquarePlus, Plug, Plus } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useState } from 'react';
 import type { GuardResult, ViewDefinition } from '@renderer/app/view-registry';
@@ -16,6 +16,7 @@ import { failureText } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
+import { openExternalUrl } from '@renderer/lib/open-external';
 import { Alert, AlertAction, AlertDescription } from '@renderer/lib/ui/alert';
 import { Badge } from '@renderer/lib/ui/badge';
 import { Button } from '@renderer/lib/ui/button';
@@ -26,6 +27,7 @@ import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connect
 import { runsOnThisComputer } from '@shared/core/switch-servers/switch-servers';
 import { openConnectorAppSetUp } from './connector-app-set-up';
 import {
+  type ConnectorCardKind,
   type ConnectorViewer,
   FIX_LABEL,
   TONE_BADGE,
@@ -34,10 +36,13 @@ import {
 import { ConnectorProfile } from './connector-profile';
 import { ConnectorTile } from './connector-tile';
 import {
+  CONNECTOR_REQUEST_URL,
   type ConnectorsTab,
   cardQuickAction,
   connectorsInTab,
   connectorsPageAccess,
+  moreOnDiscover,
+  toDiscoverText,
 } from './connectors-catalog';
 import {
   useConnectorCatalog,
@@ -255,8 +260,10 @@ function Connectors({
       ) : (
         <ConnectorGrid
           entries={connectorsInTab(catalog.data, tab, query)}
+          more={tab === 'yours' && moreOnDiscover(catalog.data, query)}
           tab={tab}
           query={query}
+          onBrowse={() => setTab('discover')}
           viewer={viewer}
           turningOn={turningOn}
           onOpen={openProfile}
@@ -271,7 +278,28 @@ function Connectors({
           }
         />
       )}
+      {catalog.data && tab === 'discover' && <RequestConnector />}
     </ServerPage>
+  );
+}
+
+/** The way to ask for a service the catalog does not list: a GitHub issue form, opened in the browser. */
+function RequestConnector() {
+  return (
+    <p className="flex flex-wrap items-center gap-2 text-sm text-foreground-muted">
+      <MessageSquarePlus className="size-4 shrink-0" />
+      Don’t see the service you need?
+      <Button
+        size="sm"
+        variant="link"
+        className="h-auto p-0 text-foreground underline underline-offset-2"
+        onClick={() =>
+          void openExternalUrl(CONNECTOR_REQUEST_URL, 'Could not open the connector request form')
+        }
+      >
+        Request a connector
+      </Button>
+    </p>
   );
 }
 
@@ -290,8 +318,10 @@ function CatalogError({ error, onRetry }: { error: unknown; onRetry: () => void 
 
 function ConnectorGrid({
   entries,
+  more,
   tab,
   query,
+  onBrowse,
   viewer,
   turningOn,
   onOpen,
@@ -300,8 +330,12 @@ function ConnectorGrid({
   onConnect,
 }: {
   entries: ConnectionCatalogEntry[];
+  /** On Yours, whether Discover lists anything for the search that Yours does not. */
+  more: boolean;
   tab: ConnectorsTab;
   query: string;
+  /** Switches to Discover, keeping the search. */
+  onBrowse: () => void;
   viewer: ConnectorViewer;
   /** The services being turned on for the workspace from their card. */
   turningOn: ReadonlySet<string>;
@@ -310,6 +344,17 @@ function ConnectorGrid({
   onTurnOn: (entry: ConnectionCatalogEntry) => void;
   onConnect: (entry: ConnectionCatalogEntry) => void;
 }) {
+  if (entries.length === 0 && more)
+    return (
+      <p className="flex flex-wrap items-center gap-2 text-sm text-foreground-muted">
+        {query.trim()
+          ? `None of your connectors match “${query.trim()}”.`
+          : 'You have not connected anything yet.'}
+        <Button size="sm" variant="outline" onClick={onBrowse}>
+          {toDiscoverText(query)}
+        </Button>
+      </p>
+    );
   if (entries.length === 0)
     return (
       <p className="text-sm text-foreground-muted">
@@ -320,25 +365,88 @@ function ConnectorGrid({
             : 'This server offers no connectors.'}
       </p>
     );
+  const card = (entry: ConnectionCatalogEntry) => (
+    <ConnectorCard
+      key={entry.slug}
+      entry={entry}
+      tab={tab}
+      viewer={viewer}
+      turningOn={turningOn.has(entry.slug)}
+      onOpen={() => onOpen(entry.slug)}
+      onSetUp={() => onSetUp(entry)}
+      onTurnOn={() => onTurnOn(entry)}
+      onConnect={() => onConnect(entry)}
+    />
+  );
+  // Entries nobody can connect yet get a section of their own under the
+  // rest, so a long list of them never pushes the usable ones out of sight.
+  // Ones that can't be used here as things stand (off in the workspace, not
+  // set up, unavailable) go last in their section, so the usable ones lead.
+  const built = entries
+    .filter((entry) => entry.status !== 'coming_soon')
+    .sort((a, b) => Number(blocked(a, viewer)) - Number(blocked(b, viewer)));
+  const comingSoon = entries.filter((entry) => entry.status === 'coming_soon');
+  if (comingSoon.length === 0)
+    return (
+      <div role="group" aria-label="Connectors" className={GRID}>
+        {built.map(card)}
+        {more && (
+          // Inside the grid, where the eye already is: the tabs alone did not
+          // tell people that Yours is not the whole catalog.
+          <button
+            type="button"
+            onClick={onBrowse}
+            className="focus-visible:ring-ring flex cursor-pointer items-center gap-3 rounded-lg border border-dashed border-border p-4 text-left text-sm font-medium text-foreground transition-colors hover:bg-background-tertiary-2 focus-visible:ring-2 focus-visible:outline-none"
+          >
+            <Compass className="size-5 shrink-0 text-foreground-muted" />
+            {toDiscoverText(query)}
+          </button>
+        )}
+      </div>
+    );
   return (
-    <div
-      role="group"
-      aria-label="Connectors"
-      className="grid grid-cols-[repeat(auto-fill,minmax(320px,1fr))] gap-3"
-    >
-      {entries.map((entry) => (
-        <ConnectorCard
-          key={entry.slug}
-          entry={entry}
-          viewer={viewer}
-          turningOn={turningOn.has(entry.slug)}
-          onOpen={() => onOpen(entry.slug)}
-          onSetUp={() => onSetUp(entry)}
-          onTurnOn={() => onTurnOn(entry)}
-          onConnect={() => onConnect(entry)}
-        />
-      ))}
+    <div className="flex flex-col gap-8">
+      {built.length > 0 && (
+        <section aria-labelledby="connectors-built" className="flex flex-col gap-3">
+          <SectionTitle id="connectors-built" title="Supported" count={built.length} />
+          <div role="group" aria-label="Connectors" className={GRID}>
+            {built.map(card)}
+          </div>
+        </section>
+      )}
+      <section aria-labelledby="connectors-coming-soon" className="flex flex-col gap-3">
+        <div>
+          <SectionTitle id="connectors-coming-soon" title="Coming soon" count={comingSoon.length} />
+          <p className="mt-1 text-sm text-foreground-muted">
+            Not available yet. They appear above once they can be connected.
+          </p>
+        </div>
+        <div role="group" aria-label="Coming soon connectors" className={GRID}>
+          {comingSoon.map(card)}
+        </div>
+      </section>
     </div>
+  );
+}
+
+const BLOCKED: ReadonlySet<ConnectorCardKind> = new Set([
+  'needs_setup',
+  'unavailable',
+  'workspace_off',
+]);
+
+function blocked(entry: ConnectionCatalogEntry, viewer: ConnectorViewer): boolean {
+  return BLOCKED.has(connectorCardState(entry, viewer).kind);
+}
+
+const GRID = 'grid grid-cols-[repeat(auto-fill,minmax(320px,1fr))] gap-3';
+
+function SectionTitle({ id, title, count }: { id: string; title: string; count: number }) {
+  return (
+    <h2 id={id} className="flex items-baseline gap-2 text-sm font-semibold">
+      {title}
+      <span className="font-normal text-foreground-muted">{count}</span>
+    </h2>
   );
 }
 
@@ -351,6 +459,7 @@ function ConnectorGrid({
  */
 function ConnectorCard({
   entry,
+  tab,
   viewer,
   turningOn,
   onOpen,
@@ -359,6 +468,7 @@ function ConnectorCard({
   onConnect,
 }: {
   entry: ConnectionCatalogEntry;
+  tab: ConnectorsTab;
   viewer: ConnectorViewer;
   turningOn: boolean;
   onOpen: () => void;
@@ -395,7 +505,9 @@ function ConnectorCard({
           >
             <Plus className="size-4" />
           </Button>
-        ) : quick === 'connected' ? (
+        ) : quick === 'connected' && tab === 'discover' ? (
+          // On Yours every card is connected, so a tick there says nothing
+          // and makes a lone card read as the whole set.
           <span
             role="img"
             aria-label={`${entry.name} connected`}

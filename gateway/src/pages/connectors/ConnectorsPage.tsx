@@ -1,13 +1,18 @@
 import Add from "@mui/icons-material/Add";
 import BlockOutlined from "@mui/icons-material/BlockOutlined";
 import Check from "@mui/icons-material/Check";
+import ExploreOutlined from "@mui/icons-material/ExploreOutlined";
 import PriorityHigh from "@mui/icons-material/PriorityHigh";
+import RateReviewOutlined from "@mui/icons-material/RateReviewOutlined";
 import {
   Alert,
   Box,
+  Button,
+  ButtonBase,
   Chip,
   CircularProgress,
   IconButton,
+  Link,
   Snackbar,
   Stack,
   ToggleButton,
@@ -17,7 +22,7 @@ import {
 } from "@mui/material";
 import { type ReactElement, useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
-import CatalogueGrid from "../../components/connectors/CatalogueGrid";
+import CatalogueGrid, { matchesQuery } from "../../components/connectors/CatalogueGrid";
 import ConnectorCard from "../../components/connectors/ConnectorCard";
 import InfoTip from "../../components/InfoTip";
 import { SCREEN_READER_ONLY } from "../../components/screenReaderOnly";
@@ -28,12 +33,22 @@ import KeyDialog from "./KeyDialog";
 import PasteDialog from "./PasteDialog";
 import { useLeaveToSignIn } from "./signIn";
 
-type Tab = "yours" | "all";
+type Tab = "yours" | "discover";
 
-/** The usable connectors first, then the ones not built yet; each group in
- * the catalog's own order. */
-function ordered(connections: ServiceConnection[]): ServiceConnection[] {
-  return [...connections.filter((c) => c.enabled), ...connections.filter((c) => !c.enabled)];
+/** Ones that can't be used here as things stand (off in the workspace, not
+ * set up, unavailable) go last, so the usable ones lead; the order is kept
+ * otherwise. These are the cards that carry an Off in this workspace or Unavailable badge. */
+function usableFirst(connections: ServiceConnection[]): ServiceConnection[] {
+  const blocked = (c: ServiceConnection) => !c.workspace_enabled || !c.connectable;
+  return [...connections.filter((c) => !blocked(c)), ...connections.filter(blocked)];
+}
+
+/** Where to ask for a service the catalogue does not list. */
+const CONNECTOR_REQUEST_URL = "https://github.com/sandbox-quantum/switch/issues/new?template=connector_request.yml";
+
+/** The way from Yours to Discover, keeping the search. */
+function toDiscoverText(query: string): string {
+  return query.trim() ? `Search Discover for “${query.trim()}”` : "Browse all connectors";
 }
 
 /** A badge whose reason shows on hover, and is read out with the card by a
@@ -58,10 +73,13 @@ function Reason({ label, why, icon }: { label: string; why: string; icon?: React
  * where disconnecting sits beside what it costs. */
 function CardState({
   connection,
+  onYours,
   leaving,
   onConnect,
 }: {
   connection: ServiceConnection;
+  /** On Yours every card is connected, so a tick there says nothing and makes a lone card read as the whole set. */
+  onYours: boolean;
   leaving: boolean;
   onConnect: () => void;
 }) {
@@ -75,7 +93,7 @@ function CardState({
       >
         <PriorityHigh fontSize="small" />
       </Box>
-    ) : (
+    ) : onYours ? null : (
       <Box
         role="img"
         aria-label={`Connected to ${connection.name}`}
@@ -100,7 +118,8 @@ function CardState({
 
 /**
  * Connectors: the services your agents can reach in this workspace, and
- * where you connect your own account to each. Yours and All, and a search.
+ * where you connect your own account to each. It opens on Discover, the
+ * whole catalogue; Yours has what you connected. A search covers both.
  * A connector the workspace has off still shows, saying so, since hiding it
  * would make a decision look like a missing row; whether it is on is
  * Settings › Connectors' to change, never this page's. A workspace admin also
@@ -123,7 +142,7 @@ export default function ConnectorsPage() {
   const [error, setError] = useState<string | null>(null);
   const [peopleError, setPeopleError] = useState<string | null>(null);
   const [connectError, setConnectError] = useState<string | null>(null);
-  const [tab, setTab] = useState<Tab | null>(null);
+  const [tab, setTab] = useState<Tab>("discover");
   const [query, setQuery] = useState("");
   const [keyFor, setKeyFor] = useState<ServiceConnection | null>(null);
   const [pasteFor, setPasteFor] = useState<ServiceConnection | null>(null);
@@ -133,11 +152,8 @@ export default function ConnectorsPage() {
 
   const load = useCallback(async () => {
     try {
-      const listed = ordered(await fetchServiceConnections());
+      const listed = await fetchServiceConnections();
       setConnections(listed);
-      // Yours, unless there is nothing of yours yet to show; chosen on the
-      // first read only, so connecting one later doesn't switch tabs.
-      setTab((chosen) => chosen ?? (listed.some(isConnected) ? "yours" : "all"));
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -159,7 +175,14 @@ export default function ConnectorsPage() {
   }, [admin]);
 
   const connected = useMemo(() => (connections ?? []).filter(isConnected), [connections]);
-  const shown: Tab = tab ?? "all";
+  const shown = tab;
+  // From Yours, whether Discover lists anything for the search that Yours
+  // does not. No number: one would have to say whether it counts services
+  // that are off here, not set up or coming soon.
+  const more = useMemo(
+    () => shown === "yours" && (connections ?? []).some((c) => !isConnected(c) && matchesQuery(c, query)),
+    [connections, shown, query],
+  );
 
   const connect = (connection: ServiceConnection) => {
     setConnectError(null);
@@ -209,7 +232,8 @@ export default function ConnectorsPage() {
         ) : (
           <Box>
             <CatalogueGrid
-              connectors={shown === "yours" ? connected : connections}
+              connectors={shown === "yours" ? connected : usableFirst(connections.filter((c) => c.enabled))}
+              comingSoon={shown === "yours" ? [] : connections.filter((c) => !c.enabled)}
               query={query}
               onQueryChange={setQuery}
               controls={
@@ -223,15 +247,46 @@ export default function ConnectorsPage() {
                   aria-label="Which connectors to show"
                 >
                   <ToggleButton value="yours">Yours</ToggleButton>
-                  <ToggleButton value="all">All</ToggleButton>
+                  <ToggleButton value="discover">Discover</ToggleButton>
                 </ToggleButtonGroup>
               }
               emptyMessage={
-                shown === "yours"
-                  ? query.trim()
-                    ? "You haven't connected anything that matches. The All tab lists every connector."
-                    : "You haven't connected anything yet. The All tab lists every connector."
-                  : `No connectors match "${query.trim()}".`
+                shown !== "yours" ? (
+                  `No connector matches “${query.trim()}”.`
+                ) : more ? (
+                  <>
+                    {query.trim() ? `None of your connectors match “${query.trim()}”.` : "You haven't connected anything yet."}{" "}
+                    <Button size="small" variant="outlined" onClick={() => setTab("discover")} sx={{ ml: 1 }}>
+                      {toDiscoverText(query)}
+                    </Button>
+                  </>
+                ) : query.trim() ? (
+                  `No connector matches “${query.trim()}”.`
+                ) : (
+                  "You haven't connected anything yet."
+                )
+              }
+              trailing={
+                more && (
+                  <ButtonBase
+                    onClick={() => setTab("discover")}
+                    sx={{
+                      justifyContent: "flex-start",
+                      gap: 1.5,
+                      p: 2,
+                      border: "1px dashed var(--sw-border)",
+                      borderRadius: "10px",
+                      textAlign: "left",
+                      fontSize: 14,
+                      fontWeight: 500,
+                      "&:hover": { backgroundColor: "var(--sw-muted)" },
+                      "&.Mui-focusVisible": { outline: "2px solid var(--sw-ring)", outlineOffset: "2px" },
+                    }}
+                  >
+                    <ExploreOutlined fontSize="small" sx={{ color: "text.secondary" }} />
+                    {toDiscoverText(query)}
+                  </ButtonBase>
+                )
               }
               renderCard={(connection) => {
                 const off = connection.enabled ? offNotice(connection, workspaceName) : null;
@@ -243,7 +298,7 @@ export default function ConnectorsPage() {
                       !connection.enabled ? (
                         <Chip size="small" label="Coming soon" />
                       ) : off ? (
-                        <Reason label="Off here" why={off.text} icon={<BlockOutlined />} />
+                        <Reason label="Off in this workspace" why={off.text} icon={<BlockOutlined />} />
                       ) : (
                         !connection.connectable && (
                           <Reason label="Unavailable" why={connection.unavailable_reason ?? "It can't be connected here."} />
@@ -257,6 +312,7 @@ export default function ConnectorsPage() {
                     trailing={
                       <CardState
                         connection={connection}
+                        onYours={shown === "yours"}
                         leaving={leaving === connection.slug}
                         onConnect={() => connect(connection)}
                       />
@@ -265,6 +321,17 @@ export default function ConnectorsPage() {
                 );
               }}
             />
+            {shown === "discover" && (
+              <Stack direction="row" spacing={1} sx={{ mt: 3, alignItems: "center", color: "text.secondary" }}>
+                <RateReviewOutlined fontSize="small" />
+                <Typography variant="body2">
+                  Don&apos;t see the service you need?{" "}
+                  <Link href={CONNECTOR_REQUEST_URL} target="_blank" rel="noopener noreferrer">
+                    Request a connector
+                  </Link>
+                </Typography>
+              </Stack>
+            )}
           </Box>
         )}
       </Stack>

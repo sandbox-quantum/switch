@@ -457,6 +457,14 @@ version of their own to them without also giving them a release of their own.
   already refused both, so the current Workspace page no longer offers them.
 
 #### Changed
+- **The dashboard's Connectors page lists coming soon services in their own
+  section**, under the ones people can use, with a count for each, and
+  the catalog lists 20 more of them. Its All tab is now Discover, where the
+  page always opens, as in Switch Console. Yours ends with a card that opens
+  Discover, and a search there that matches nothing connected offers to search
+  Discover instead, keeping the search.
+  Cards on Yours no longer carry the green connected tick. Discover ends with
+  a link to request a connector on GitHub. A connector's category must now be one of a fixed list.
 - **Switch Trust guardrails are set per organization instead of once for
   the whole server.** Each organization's admins connect its own policy, with
   a policy ID and an API key, under Organization settings › Guardrails. Switch
@@ -4236,6 +4244,13 @@ version of their own to them without also giving them a release of their own.
   A machine cannot be given a Mistral Vibe login from Console yet.
 
 #### Changed
+- **The Connectors page lists coming soon services in their own section**,
+  under the ones people can use, with a count for each. Yours ends with a
+  "Browse all connectors" card that opens Discover, and a search there that
+  matches nothing connected offers to search Discover instead, keeping the
+  search, rather than saying "No connector matches". Cards on Yours no longer
+  carry the green connected tick; Discover keeps it. Discover ends with a
+  link to request a connector on GitHub.
 - **Admin › Switch Trust points to the organization's guardrails on a server
   that sets them per organization.** Such a server no longer has a
   server-wide policy to edit, so the form gives way to its note and a button
