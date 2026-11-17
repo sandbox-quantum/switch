@@ -88,10 +88,17 @@ Pick the format your distro uses:
   ./switch-console-x86_64.AppImage
   ```
 
-  On Ubuntu 22.04+ the AppImage needs FUSE 2 (`sudo apt install libfuse2`), and
-  on 24.04+ AppArmor's restriction on unprivileged user namespaces can break
-  Electron's sandbox. The `.deb` has neither problem — it installs
-  `chrome-sandbox` correctly — so prefer it on Ubuntu.
+  The AppImage does not add itself to the applications menu, so "installing"
+  it is only those two steps. What it needs from the system:
+
+  - **FUSE 2.** On Ubuntu 22.04 the package is `libfuse2`; on 24.04 and later
+    it is `libfuse2t64` (`sudo apt install libfuse2t64`). Without it the
+    AppImage cannot mount itself; `./switch-console-x86_64.AppImage
+    --appimage-extract-and-run` runs it without FUSE instead.
+  - **The Chromium sandbox.** Ubuntu 24.04 and later restrict unprivileged
+    user namespaces with AppArmor. The AppImage detects this and starts
+    without Chromium's sandbox rather than failing; the `.deb` installs
+    `chrome-sandbox` correctly and keeps it, so prefer the `.deb` on Ubuntu.
 
 - **Debian / Ubuntu** (`.deb`):
 
@@ -111,6 +118,20 @@ Pick the format your distro uses:
 > The app does not yet set a `desktopName`, so desktop environments may not
 > associate its windows with the installed `.desktop` entry (the icon can appear
 > as a duplicate or generic entry in the taskbar).
+
+### Virtual machines without 3D acceleration
+
+In a VM whose virtual GPU has 3D turned off (VMware prints
+`VMware: No 3d enabled`), the app starts but its window never appears. Turn 3D
+acceleration on in the VM's display settings, or start the app without the GPU:
+
+```bash
+./switch-console-x86_64.AppImage --disable-gpu
+```
+
+Without a GPU the window cannot paint on Wayland either, so in a Wayland session
+the app restarts itself once on X11 (XWayland) when started with
+`--disable-gpu`. With no X server to reach, it stays on Wayland.
 
 ## Install (Windows x64)
 

@@ -15,8 +15,10 @@ import {
   linuxPasswordStoreFallback,
   probeSecretService,
 } from './app/linux-password-store';
+import { softwareRenderingNeedsX11Restart, X11_SWITCH } from './app/linux-software-rendering';
 import { setupApplicationMenu } from './app/menu';
 import { APP_ORIGIN, registerAppScheme, setupAppProtocol } from './app/protocol';
+import { relaunchApp } from './app/relaunch-app';
 import { LaunchesWhileQuitting } from './app/relaunch-on-quit';
 import { createMainWindow, getMainWindow } from './app/window';
 import { startAutoMigration, stopAutoMigration } from './core/agent-migration/agent-migration';
@@ -82,6 +84,20 @@ const LOCAL_HOST_SHUTDOWN_MS = 5000;
 /** Long enough for switch-core's own stop grace, PostgreSQL and Mattermost's
  * containers; the window is gone by then, so nobody watches it. */
 const LOCAL_SERVER_SHUTDOWN_MS = 30_000;
+
+if (
+  process.platform === 'linux' &&
+  softwareRenderingNeedsX11Restart({
+    disableGpu: app.commandLine.hasSwitch('disable-gpu'),
+    ozonePlatform: app.commandLine.getSwitchValue('ozone-platform'),
+    argv: process.argv.slice(1),
+    env: process.env,
+  })
+) {
+  log.warn('Started with --disable-gpu under Wayland; restarting on X11 so the window can paint');
+  relaunchApp([...process.argv.slice(1), X11_SWITCH]);
+  app.exit(0);
+}
 
 if (process.platform === 'linux') {
   app.commandLine.appendSwitch('ozone-platform-hint', 'auto');
@@ -387,7 +403,7 @@ app.on('before-quit', (event) => {
     });
     const relaunchArgs = launchesWhileQuitting.relaunchArgs();
     if (relaunchArgs && !updaterRestarts) {
-      app.relaunch({ args: relaunchArgs });
+      relaunchApp(relaunchArgs);
     } else if (relaunchArgs && launchesWhileQuitting.deeplink) {
       // Nothing carries a deep link across a restart, so the updated Console
       // starts without it.

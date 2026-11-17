@@ -4,6 +4,7 @@ import { homedir } from 'node:os';
 import { extname, resolve, sep } from 'node:path';
 import type { IDisposable, IInitializable } from '@switch-console/shared';
 import { app, dialog, shell } from 'electron';
+import { relaunchApp } from '@main/app/relaunch-app';
 import {
   freshReplayDirName,
   readsUserDataDirEnv,
@@ -195,7 +196,7 @@ class AppService implements IInitializable, IDisposable {
     process.env[USER_DATA_DIR_ENV] = freshReplayDirName(userDataDirName(), Date.now());
     log.info('Relaunching as a fresh install', { userDataDir: process.env[USER_DATA_DIR_ENV] });
     // before-quit ends in app.exit(0), which honours the relaunch scheduled here.
-    app.relaunch();
+    relaunchApp();
     app.quit();
   }
 
