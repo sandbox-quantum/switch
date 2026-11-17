@@ -57,18 +57,19 @@ version of their own to them without also giving them a release of their own.
   signed in.** `POST /gateway/auth/handoff` gives a signed-in session a
   one-time sign-in link to a dashboard page, good once for 60 seconds, with
   its code in the link's fragment so it reaches no server log; a person can
-  make 20 a minute. The dashboard's new `/auth/handoff` page reads it, asks
-  `POST /gateway/auth/handoff/peek` whose link it is, and redeems it with
+  make 20 a minute, and the 429 for one more says in `Retry-After` when the
+  next will be let through. The dashboard's new `/auth/handoff` page reads it,
+  asks `POST /gateway/auth/handoff/peek` whose link it is, and redeems it with
   `POST /gateway/auth/handoff/redeem` for a session of the browser's own: the
   same account and workspace, and the minting session's sign-in time, so it
-  never outlives that session. A browser signed in as someone else asks
-  before switching. A link that was used or has expired, or whose session
-  was signed out or ended everywhere since, is refused with 410. Signing out
-  of the session that made a link signs out the browser sessions it opened;
-  signing out in the browser leaves the other session alone. Each redeemed
-  link is recorded in the workspace's audit log as `auth.browser_handoff`.
-  The page a link opens must be one of the dashboard's own. The new request
-  bodies raise the `gateway-api` revision to 5.
+  never outlives that session. A browser signed in as someone else asks before
+  switching. A link that was used or has expired, or whose session was signed
+  out or ended everywhere since, is refused with 410. Signing out of the
+  session that made a link signs out the browser sessions it opened; signing
+  out in the browser leaves the other session alone. Each redeemed link is
+  recorded in the workspace's audit log as `auth.browser_handoff`. The page a
+  link opens must be one of the dashboard's own. The new request bodies raise
+  the `gateway-api` revision to 5.
 - **A room's page in the web dashboard says who owns it and where you
   stand.** Room info names the owner, or says the room has none, and a "Your
   access" line says whether you own the room, administer the workspace or

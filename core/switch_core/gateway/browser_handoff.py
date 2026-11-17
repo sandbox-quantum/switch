@@ -23,6 +23,7 @@ account. Nothing here logs a code.
 from __future__ import annotations
 
 import logging
+import math
 from datetime import datetime
 from typing import Annotated
 from urllib.parse import urlsplit
@@ -35,10 +36,7 @@ from switch_core.config import SwitchConfig
 from switch_core.db.audit import AuditAction, record_audit_event
 from switch_core.db.models import Tenant, User
 from switch_core.db.session_scope import tenant_session
-from switch_core.db.stores.browser_handoff_store import (
-    MINT_WINDOW,
-    BrowserHandoffRateLimited,
-)
+from switch_core.db.stores.browser_handoff_store import BrowserHandoffRateLimited
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.auth import (
     BROWSER_HANDOFFS,
@@ -180,7 +178,10 @@ async def mint_handoff(
         raise HTTPException(
             status_code=429,
             detail="Too many sign-in links in the last minute. Try again shortly.",
-            headers={"Retry-After": str(int(MINT_WINDOW.total_seconds()))},
+            # Whole seconds, rounded up, so a retry made then is let through.
+            headers={
+                "Retry-After": str(math.ceil(refusal.retry_after.total_seconds()))
+            },
         ) from None
     await session.commit()
     return MintedHandoffResponse(

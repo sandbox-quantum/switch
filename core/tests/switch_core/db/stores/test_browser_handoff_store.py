@@ -17,9 +17,11 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.db.models import BrowserHandoff, User
+from switch_core.db.stores import browser_handoff_store
 from switch_core.db.stores.browser_handoff_store import (
     HANDOFF_TTL,
     MINT_LIMIT,
+    MINT_WINDOW,
     BrowserHandoffRateLimited,
     BrowserHandoffStore,
 )
@@ -191,6 +193,79 @@ async def test_a_person_may_mint_only_so_many_codes_a_minute(
 
     await _age(session_factory, timedelta(seconds=61))
     await _mint(session_factory, user_id)
+
+
+async def _minted_ago(
+    factory: async_sessionmaker[AsyncSession], *ages: timedelta
+) -> None:
+    """Set when the rows were minted, oldest first: the nth row `ages[n]`
+    ago."""
+    async with factory() as session:
+        ids = list(
+            await session.scalars(
+                select(BrowserHandoff.id).order_by(BrowserHandoff.created_at)
+            )
+        )
+        assert len(ids) == len(ages)
+        for row_id, age in zip(ids, ages, strict=True):
+            await session.execute(
+                update(BrowserHandoff)
+                .where(BrowserHandoff.id == row_id)
+                .values(created_at=func.now() - age)
+            )
+        await session.commit()
+
+
+async def test_a_refusal_says_how_long_until_the_oldest_counted_mint_leaves_the_window(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    user_id = await _user(session_factory)
+    for _ in range(MINT_LIMIT):
+        await _mint(session_factory, user_id)
+    oldest = timedelta(seconds=30)
+    await _minted_ago(
+        session_factory, oldest, *[timedelta(seconds=10)] * (MINT_LIMIT - 1)
+    )
+
+    with pytest.raises(BrowserHandoffRateLimited) as refused:
+        await _mint(session_factory, user_id)
+    wait = refused.value.retry_after
+    assert MINT_WINDOW - oldest - timedelta(seconds=5) < wait <= MINT_WINDOW - oldest
+
+    # Not before that: a little short of it, the oldest still counts.
+    await _age(session_factory, wait - timedelta(seconds=5))
+    with pytest.raises(BrowserHandoffRateLimited):
+        await _mint(session_factory, user_id)
+    # Then it has left the window, and the other mints still count.
+    await _age(session_factory, timedelta(seconds=6))
+    await _mint(session_factory, user_id)
+    with pytest.raises(BrowserHandoffRateLimited):
+        await _mint(session_factory, user_id)
+
+
+async def test_over_the_limit_the_wait_is_until_enough_mints_leave_the_window(
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With more mints in the window than the limit allows, as after the limit
+    is lowered, the next is allowed once fewer than the limit are left."""
+    user_id = await _user(session_factory)
+    for _ in range(3):
+        await _mint(session_factory, user_id)
+    await _minted_ago(
+        session_factory,
+        timedelta(seconds=50),
+        timedelta(seconds=40),
+        timedelta(seconds=5),
+    )
+    monkeypatch.setattr(browser_handoff_store, "MINT_LIMIT", 2)
+
+    with pytest.raises(BrowserHandoffRateLimited) as refused:
+        await _mint(session_factory, user_id)
+
+    # The second oldest, minted 40 seconds ago, leaves it 20 seconds from now.
+    wait = refused.value.retry_after
+    assert timedelta(seconds=15) < wait <= timedelta(seconds=20)
 
 
 async def test_a_burst_sent_at_once_is_counted_exactly(

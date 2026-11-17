@@ -248,8 +248,36 @@ async def test_a_person_may_mint_only_so_many_links_a_minute(
     async with _client(app, _cookie(people.ada)) as console:
         refused = await console.post("/auth/handoff", json={"next": "/rooms"})
     assert refused.status_code == 429
-    assert refused.headers["retry-after"] == "60"
+    assert 0 < int(refused.headers["retry-after"]) <= 60
     await _mint(app, _cookie(people.bob, tenant_id=TENANT_ZERO_ID))
+
+
+async def test_a_refused_mint_says_when_the_next_will_be_let_through(
+    app: FastAPI,
+    people: SimpleNamespace,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """`Retry-After` is the wait until the oldest mint counted leaves the
+    minute, in whole seconds rounded up, not the whole minute."""
+    for _ in range(MINT_LIMIT):
+        await _mint(app, _cookie(people.ada))
+    async with session_factory() as session:
+        await session.execute(
+            update(BrowserHandoff).values(created_at=func.now() - timedelta(seconds=10))
+        )
+        oldest = await session.scalar(select(BrowserHandoff.id).limit(1))
+        await session.execute(
+            update(BrowserHandoff)
+            .where(BrowserHandoff.id == oldest)
+            .values(created_at=func.now() - timedelta(seconds=35))
+        )
+        await session.commit()
+
+    async with _client(app, _cookie(people.ada)) as console:
+        refused = await console.post("/auth/handoff", json={"next": "/rooms"})
+
+    assert refused.status_code == 429
+    assert 20 < int(refused.headers["retry-after"]) <= 25
 
 
 # ── Redeeming ───────────────────────────────────────────────────────────────

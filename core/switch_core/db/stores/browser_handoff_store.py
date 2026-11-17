@@ -31,7 +31,15 @@ _CODE_BYTES = 32
 
 class BrowserHandoffRateLimited(Exception):
     """The person minted `MINT_LIMIT` codes or more in the last
-    `MINT_WINDOW`, and may not mint another yet."""
+    `MINT_WINDOW`, and may not mint another for `retry_after`: until enough
+    of those mints have left the window."""
+
+    def __init__(self, minted: int, retry_after: timedelta) -> None:
+        super().__init__(
+            f"{minted} codes minted in the last {MINT_WINDOW}, of {MINT_LIMIT}; "
+            f"the next can be minted in {retry_after}"
+        )
+        self.retry_after = retry_after
 
 
 @dataclass(frozen=True)
@@ -84,17 +92,23 @@ class BrowserHandoffStore:
             text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
             {"key": f"browser-handoff:{user_id}"},
         )
-        minted = await session.scalar(
-            select(func.count())
-            .select_from(BrowserHandoff)
-            .where(
-                BrowserHandoff.user_id == user_id,
-                BrowserHandoff.created_at > func.now() - MINT_WINDOW,
+        # How long until each mint in the window leaves it, oldest first, on
+        # the database's clock, as the window is read.
+        counted: list[timedelta] = list(
+            await session.scalars(
+                select(BrowserHandoff.created_at + MINT_WINDOW - func.now())
+                .where(
+                    BrowserHandoff.user_id == user_id,
+                    BrowserHandoff.created_at > func.now() - MINT_WINDOW,
+                )
+                .order_by(BrowserHandoff.created_at)
             )
         )
-        if (minted or 0) >= MINT_LIMIT:
+        if len(counted) >= MINT_LIMIT:
+            # The next mint is allowed once fewer than `MINT_LIMIT` are left
+            # in the window.
             raise BrowserHandoffRateLimited(
-                f"{minted} codes minted in the last {MINT_WINDOW}, of {MINT_LIMIT}"
+                len(counted), counted[len(counted) - MINT_LIMIT]
             )
         await self._prune(session)
         code = secrets.token_urlsafe(_CODE_BYTES)
