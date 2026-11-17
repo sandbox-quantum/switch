@@ -151,7 +151,13 @@ describe("DevicesPage", () => {
     render(<DevicesPage />);
 
     expect(await screen.findByText("Your computers running an agents controller in Acme.")).toBeTruthy();
-    expect(await menuOf("laptop", "laptop")).toEqual(["Details", "Refreshlaptop is offline.", "Edit", "Remove"]);
+    expect(await menuOf("laptop", "laptop")).toEqual([
+      "Details",
+      "Refreshlaptop is offline.",
+      "Restart devicelaptop is offline.",
+      "Edit",
+      "Remove",
+    ]);
   });
 
   it("asks an online device to report in", async () => {
@@ -166,6 +172,21 @@ describe("DevicesPage", () => {
     const asked = calls.filter((call) => call.method === "POST" && call.path === "/management/operations");
     expect(asked.map((call) => call.body)).toEqual([
       { controller_id: "laptop", agent_id: null, kind: "provider.recheck", params: { provider: "claude" } },
+    ]);
+  });
+
+  it("asks your own device to restart its controller", async () => {
+    signedInAs("member");
+    const calls = serve([device("laptop")]);
+    render(<DevicesPage />);
+
+    await menuOf("laptop", "laptop");
+    fireEvent.click(screen.getByRole("menuitem", { name: /Restart device/ }));
+
+    expect(await screen.findByText("Asked laptop to restart. Its agents come back with it.")).toBeTruthy();
+    const asked = calls.filter((call) => call.method === "POST" && call.path === "/management/operations");
+    expect(asked.map((call) => call.body)).toEqual([
+      { controller_id: "laptop", agent_id: null, kind: "controller.restart", params: {} },
     ]);
   });
 

@@ -321,7 +321,7 @@ export async function unmanageAgent(agentId: string): Promise<void> {
 export function createOperation(body: {
   controller_id: string;
   agent_id: string | null;
-  kind: "agent.restart" | "provider.recheck";
+  kind: "agent.restart" | "provider.recheck" | "controller.restart";
   params: Record<string, unknown>;
 }): Promise<Operation> {
   return request<Operation>("/operations", { method: "POST", body: JSON.stringify(body) });

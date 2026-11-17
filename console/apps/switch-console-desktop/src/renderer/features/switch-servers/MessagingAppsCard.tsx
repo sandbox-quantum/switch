@@ -54,7 +54,7 @@ import type {
 } from '@shared/core/switch-servers/switch-servers';
 import { bridgeTypesQueryKey, fetchBridgeTypes } from './bridge-platforms-loader';
 import { ConnectedChatsList } from './ConnectedChatsList';
-import { accountHandle, linkRequestFailureText } from './link-accounts-prose';
+import { accountName, linkRequestFailureText } from './link-accounts-prose';
 import { orderBridges } from './messaging-apps-order';
 import {
   hasUnlinkedMessagingApp,
@@ -655,7 +655,7 @@ export function MessagingAppRow({
           {identities === null ? null : identity !== null ? (
             <span className="flex min-w-0 items-center gap-1.5">
               <span className="truncate font-mono text-xs text-foreground-muted">
-                {accountHandle(identity.externalUsername)}
+                {accountName(identity)}
               </span>
               {!identity.verified && <Badge variant="secondary">Not confirmed</Badge>}
             </span>
@@ -663,8 +663,7 @@ export function MessagingAppRow({
             <span className="flex min-w-0 items-center gap-1 text-xs text-foreground-muted">
               <Clock className="size-3 shrink-0" />
               <span className="truncate">
-                <span className="font-mono">{accountHandle(waiting.externalUsername)}</span> ·
-                Waiting for confirmation
+                <span className="font-mono">{accountName(waiting)}</span> · Waiting for confirmation
               </span>
             </span>
           ) : (
@@ -741,13 +740,13 @@ export function MessagingAppRow({
             {identity !== null && (
               <DropdownMenuItem onClick={() => void release(identity.id)}>
                 <Unlink className="size-4" />
-                Unlink {accountHandle(identity.externalUsername)}
+                Unlink {accountName(identity)}
               </DropdownMenuItem>
             )}
             {waiting !== null && (
               <DropdownMenuItem onClick={() => void cancelRequest(waiting.id)}>
                 <X className="size-4" />
-                Cancel link to {accountHandle(waiting.externalUsername)}
+                Cancel link to {accountName(waiting)}
               </DropdownMenuItem>
             )}
             {olderLinks !== null && (

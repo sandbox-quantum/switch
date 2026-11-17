@@ -77,6 +77,7 @@ vi.mock('@renderer/features/switch-servers/workspace-admin', () => ({
 }));
 
 import { ConnectMessagingAppModal } from '@renderer/features/switch-servers/ConnectMessagingAppModal';
+import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { Dialog } from '@renderer/lib/ui/dialog';
 
 const onSuccess = vi.fn();
@@ -463,7 +464,7 @@ describe('linking your account once an app is added', () => {
     });
   });
 
-  it('explains how to link a Telegram account instead of offering a search', async () => {
+  it('neither searches nor toasts after connecting Telegram, which has no directory', async () => {
     listBridgeTypes.mockResolvedValue([
       { key: 'slack', fields: [], channelCreationSupported: true, directorySearchSupported: true },
       {
@@ -486,10 +487,143 @@ describe('linking your account once an app is added', () => {
     await settle();
 
     expect(showModal).not.toHaveBeenCalledWith('claimIdentityModal', expect.anything());
-    expect(toast).toHaveBeenCalledWith({
-      title: 'Link your telegram b-tg account',
-      description: expect.stringContaining('has no directory of users to search'),
-    });
+    // Said where it stays put (the app's row, the buddy's checklist), not in a
+    // toast that vanishes.
+    expect(toast).not.toHaveBeenCalled();
+  });
+});
+
+describe('the connect form for a platform with no guided setup', () => {
+  const field = (key: string, label: string, secret = false) => ({
+    key,
+    label,
+    description: null,
+    required: true,
+    secret,
+    kind: 'string',
+    default: null,
+  });
+  const TYPES = [
+    {
+      key: 'discord',
+      fields: [field('bot_token', 'Bot Token', true), field('guild_id', 'Guild Id')],
+      channelCreationSupported: true,
+      directorySearchSupported: true,
+    },
+    {
+      key: 'telegram',
+      fields: [field('bot_token', 'Bot Token', true), field('bot_username', 'Bot Username')],
+      channelCreationSupported: false,
+      directorySearchSupported: false,
+    },
+    {
+      key: 'teams',
+      fields: [
+        field('app_id', 'App Id'),
+        field('app_password', 'App Password', true),
+        field('tenant_id', 'Tenant Id'),
+        field('team_id', 'Team Id'),
+        field('public_base_url', 'Public Base Url'),
+      ],
+      channelCreationSupported: true,
+      directorySearchSupported: true,
+    },
+  ];
+  const servers = switchServersStore.servers as unknown as Array<Record<string, unknown>>;
+  const dev = { ...servers[0] };
+
+  beforeEach(() => {
+    listBridgeTypes.mockResolvedValue(TYPES);
+    listMessagingApps.mockResolvedValue({ installable: [], claimable: [] });
+    servers[0] = { ...dev };
+  });
+
+  async function renderFor(platform: string): Promise<HTMLElement> {
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    await act(async () =>
+      root!.render(
+        <QueryClientProvider client={client}>
+          <Dialog open onOpenChange={() => {}}>
+            <ConnectMessagingAppModal
+              platform={platform}
+              onSuccess={onSuccess}
+              onClose={onClose}
+              onClosed={() => {}}
+            />
+          </Dialog>
+        </QueryClientProvider>
+      )
+    );
+    await settle();
+    return document.body;
+  }
+
+  /** Each text input with the words its label gives it, as a screen reader announces it. */
+  function labelledInputs(el: HTMLElement): string[] {
+    return typedInputs(el).map((input) => input.labels?.[0]?.textContent?.trim() ?? '(no label)');
+  }
+
+  /** The fields a person types into: not the platform picker's hidden value. */
+  function typedInputs(el: HTMLElement): HTMLInputElement[] {
+    return [...el.querySelectorAll<HTMLInputElement>('input')].filter(
+      (input) => input.getAttribute('aria-hidden') !== 'true' && input.tabIndex !== -1
+    );
+  }
+
+  it('labels every Discord field in plain words, tied to its input', async () => {
+    const el = await renderFor('discord');
+
+    expect(labelledInputs(el)).toEqual(['Name', 'Bot token', 'Server ID']);
+    expect(el.textContent).not.toContain('Guild Id');
+  });
+
+  it('labels the Telegram fields, and says to link before inviting, with Group Privacy off', async () => {
+    const el = await renderFor('telegram');
+
+    expect(labelledInputs(el)).toEqual(['Name', 'Bot token', 'Bot username']);
+    const note = el.querySelector('[role="note"]')!.textContent ?? '';
+    expect(note).toContain('turn off its Group Privacy');
+    expect(note).toContain('/setprivacy');
+    expect(note).toContain('Remove it and add it back, or make it an admin');
+    expect(note.indexOf('link your Telegram account first')).toBeLessThan(
+      note.indexOf('/invite_agent')
+    );
+  });
+
+  it('says Teams needs a public HTTPS address on a server running on this computer', async () => {
+    servers[0] = { ...dev, url: 'http://127.0.0.1:8123', managed: true, managementKind: 'local' };
+    const el = await renderFor('teams');
+
+    const note = el.querySelector('[role="note"]');
+    expect(note?.textContent).toContain('needs a public HTTPS address that Microsoft can reach');
+    expect(findButton(el, 'Teams setup guide')).toBeDefined();
+    // Before the first thing it asks for.
+    expect(
+      note!.compareDocumentPosition(typedInputs(el)[0]!) & Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy();
+    expect(labelledInputs(el)).toEqual([
+      'Name',
+      'App ID',
+      'App password (client secret)',
+      'Directory (tenant) ID',
+      'Team ID',
+      'Public HTTPS address',
+    ]);
+  });
+
+  it('says nothing of the kind for a server at a public address', async () => {
+    servers[0] = {
+      ...dev,
+      url: 'https://switch.example.com',
+      managed: false,
+      managementKind: null,
+    };
+    const el = await renderFor('teams');
+
+    expect(el.textContent).not.toContain('needs a public HTTPS address');
   });
 
   it('names the connection after the platform and focuses its first credential', async () => {

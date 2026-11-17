@@ -44,6 +44,7 @@ import { Input } from '@renderer/lib/ui/input';
 import { Textarea } from '@renderer/lib/ui/textarea';
 import { knownAgentTypeDisplayName } from '@shared/core/providers/agent-provider-registry';
 import { CreateRoomOptions, RoomChannelField } from './create-room-options';
+import { accountName } from './link-accounts-prose';
 import { MessagingAppSelector, SWITCH_CONSOLE } from './messaging-app-selector';
 import { optionsForBridge } from './room-channel-choices';
 import {
@@ -219,7 +220,7 @@ export const CreateRoomModal = observer(function CreateRoomModal({
           {
             participant: { kind: 'person', id: myUserId ?? 'me', name: 'You', detail: '' },
             detail: myAccount
-              ? `@${myAccount.externalUsername}`
+              ? accountName(myAccount)
               : identities === null
                 ? ''
                 : `No linked ${selectedBridge.displayName} account`,

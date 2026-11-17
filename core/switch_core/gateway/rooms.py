@@ -141,6 +141,9 @@ from switch_core.template_v2 import is_v2_text
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+# Mounted only with the `decision_routing` flag on (`gateway/app.py`): a
+# server without auto-route has no such setting to change.
+auto_route_router = APIRouter()
 
 
 def _refuse_fixed_membership(room: Room) -> None:
@@ -288,7 +291,11 @@ async def _build_room_detail(
             for uid, name in await room_store.people_in_room(session, room.id)
             if uid not in taken
         ]
-    auto_route = await auto_route_state(session, decisions, room)
+    auto_route = (
+        _auto_route_detail(await auto_route_state(session, decisions, room))
+        if decisions.enabled
+        else None
+    )
     # Not held across the deeplink, which can ask the platform on a cache miss.
     await session.commit()
     external_channel_url = await _external_channel_url(room)
@@ -348,7 +355,7 @@ async def _build_room_detail(
         ),
         room_admin_candidates=candidates,
         **flags,
-        auto_route=_auto_route_detail(auto_route),
+        auto_route=auto_route,
     )
 
 
@@ -1457,7 +1464,7 @@ async def put_observe(
     )
 
 
-@router.put("/{room_id}/auto-route")
+@auto_route_router.put("/{room_id}/auto-route")
 async def put_auto_route(
     room_id: str,
     req: RoomAutoRouteRequest,

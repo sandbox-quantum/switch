@@ -14,10 +14,12 @@ import pytest
 from switch_core.bridges.collaboration.session.renderers import (
     MARKDOWN,
     RequestReference,
+    turn_state,
 )
 from switch_core.bridges.collaboration.session.renderers.neutral import (
     render_request,
     request_summary,
+    turn_status,
 )
 from switch_core.sessions.contract import (
     ApprovalContent,
@@ -27,6 +29,8 @@ from switch_core.sessions.contract import (
     QuestionsContent,
     SnapshotRequest,
 )
+
+from .session_fixtures import _turn
 
 REFERENCE = RequestReference(token="tok-1", handle="R42")
 
@@ -220,9 +224,20 @@ def test_a_question_whose_options_were_cut_short_is_not_answerable_here():
     assert "Switch Console" in text
 
 
-def test_a_question_whose_title_did_not_fit_is_not_answerable_here():
-    """The number answers a question the reader can only see part of."""
+def test_a_single_question_that_does_not_fit_lists_its_typed_answers():
+    """A card too big for the chat still says which number is which, so a short
+    choice can be answered here; the rest of it is in Console."""
     text = _render(_questions(_question("z" * 4000, "main", "release")))
+
+    assert "Reply with `R42` and your answer" not in text
+    assert "Reply with one of: `R42 1` main · `R42 2` release." in text
+    assert "Switch Console" in text
+
+
+def test_several_questions_that_do_not_fit_send_the_reader_to_console():
+    first = _question("z" * 4000, "main", "release")
+    second = _question("Region?", "eu", "us").model_copy(update={"question_id": "q-2"})
+    text = _render(_questions(first, second))
 
     assert "Reply with" not in text
     assert "Switch Console" in text
@@ -270,14 +285,69 @@ def test_a_description_too_long_for_even_that_stops_the_form_asking():
     assert "Switch Console" in text
 
 
-def test_a_prompt_cut_short_is_not_answered_by_number_either():
-    """The prompt is where a question says what it actually means."""
+def test_a_prompt_cut_short_is_still_answered_by_number():
+    """The prompt explains; the title and options are what is chosen on. A long
+    explanation is cut rather than taking the answer away with it."""
     question = _question("Which one?", "main", "release")
     question = question.model_copy(update={"prompt": "Note that " + "p" * 4000})
     text = _render(_questions(question))
 
-    assert "Reply with" not in text
-    assert "Switch Console" in text
+    assert "Note that " in text
+    assert "…" in text
+    assert "Reply with `R42` and your answer, e.g. `R42 1`." in text
+    assert "Switch Console" not in text
+    assert len(text) <= 4000
+
+
+def test_a_long_explanation_on_discord_keeps_the_buttons():
+    """Discord's 2,000 characters once capped a prompt at 500 and a 600-character
+    explanation dropped the buttons and the typed answer from a confirm card."""
+    question = _question("Create the room?", "Yes, create it", "No")
+    question = question.model_copy(update={"prompt": "This will " + "x" * 590})
+    drawn = render_request(
+        _questions(question),
+        REFERENCE,
+        escape=_identity,
+        limit=2000,
+        markup=MARKDOWN,
+        responder=None,
+        unavailable_reason=None,
+        control_label_limit=80,
+    )
+
+    assert drawn.answerable
+    assert question.prompt in drawn.text
+    assert "Tap an answer, or reply `R42 1`." in drawn.text
+    assert len(drawn.text) <= 2000
+
+
+def test_prompts_share_what_is_left_and_the_form_still_fits():
+    """A short prompt keeps all of itself; the long ones split the rest, and
+    nothing the reader chooses on is cut to make room for them."""
+    short = _question("Which branch?", "main", "release").model_copy(
+        update={"question_id": "q-1", "prompt": "Pick one."}
+    )
+    long = _question("Which region?", "eu", "us").model_copy(
+        update={"question_id": "q-2", "prompt": "Regions differ. " + "r" * 3000}
+    )
+    text = _render(_questions(short, long), limit=600)
+
+    assert "Pick one." in text
+    assert "Regions differ. " in text
+    assert "1. eu" in text and "2. us" in text
+    assert "every question needs an answer" in text
+    assert len(text) <= 600
+
+
+def test_a_prompt_with_no_room_left_is_left_out_rather_than_cut_to_a_word():
+    question = _question("Which one?", "main", "release").model_copy(
+        update={"prompt": "Note that " + "p" * 4000}
+    )
+    text = _render(_questions(question), limit=240)
+
+    assert "Note that" not in text
+    assert "Reply with `R42`" in text
+    assert len(text) <= 240
 
 
 # ── What the buttons already say, where there are buttons ─────────────────────
@@ -480,3 +550,21 @@ def test_a_dropped_line_is_still_measured_against_what_the_card_can_hold():
 
     assert "Reply with" not in "\n".join(lines)
     assert "Too long to show in full here" in "\n".join(lines)
+
+
+def test_a_running_turn_on_a_redraw_on_change_platform_shows_the_exact_time():
+    """Telegram, Discord, Teams and Mattermost redraw a card only when the turn
+    changes, so whole minutes left it reading "Working…" through the first
+    minute's every change; Slack, which redraws on a timer, keeps minutes."""
+    turn = _turn("running")
+    status = turn_status(
+        [],
+        turn,
+        escape=_identity,
+        limit=400,
+        markup=MARKDOWN,
+        elapsed_seconds=23,
+        tool_detail=False,
+    )
+    assert "23s" in status
+    assert turn_state([], turn, tool_detail=True, elapsed_seconds=23) == "Working…"

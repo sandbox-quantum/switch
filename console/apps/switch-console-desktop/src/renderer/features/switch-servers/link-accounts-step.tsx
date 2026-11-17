@@ -27,7 +27,7 @@ import type {
 } from '@shared/core/switch-servers/switch-servers';
 import { AccountLinkConfirmation, type AccountLinkTarget } from './account-link-confirmation';
 import { BridgeIdentitySearch } from './bridge-identity-search';
-import { accountHandle, connectedAppsSummary, LINK_ACCOUNTS_LATER } from './link-accounts-prose';
+import { accountName, connectedAppsSummary, LINK_ACCOUNTS_LATER } from './link-accounts-prose';
 import { orderBridges } from './messaging-apps-order';
 import { linkedIdentityOn } from './messaging-apps-warning';
 import { useMyIdentities, useMyPendingIdentities } from './use-my-identities';
@@ -120,6 +120,7 @@ export const LinkAccountsStep = observer(function LinkAccountsStep({
               bridgeDisplayName={bridge.displayName}
               platform={platform}
               directorySearchSupported={bridge.directorySearchSupported}
+              directorySearchHint={bridge.directorySearchHint}
               autoFocus
               onClaimed={goBack}
               onConfirmationNeeded={(target, code) =>
@@ -273,13 +274,12 @@ function BridgeLinkRow({
         <span className="truncate text-sm font-medium text-foreground">{bridge.displayName}</span>
         {identities === null ? null : identity !== null ? (
           <span className="truncate font-mono text-xs text-foreground-muted">
-            {accountHandle(identity.externalUsername)}
+            {accountName(identity)}
           </span>
         ) : waiting !== null ? (
           <span className="flex items-center gap-1 truncate text-xs text-foreground-muted">
             <Clock className="size-3 shrink-0" />
-            <span className="font-mono">{accountHandle(waiting.externalUsername)}</span> · Waiting
-            for confirmation
+            <span className="font-mono">{accountName(waiting)}</span> · Waiting for confirmation
           </span>
         ) : (
           <span className="flex items-center gap-1 text-xs text-amber-600 dark:text-amber-500">

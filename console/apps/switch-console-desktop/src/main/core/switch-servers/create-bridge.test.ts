@@ -98,6 +98,7 @@ describe('createBridgeOnServer', () => {
         channelCreationSupported: true,
         canCreateChannels: true,
         directorySearchSupported: true,
+        directorySearchHint: 'Your name or handle',
         attention: null,
         teamPlacementSupported: false,
         channelIdsRefused: null,
@@ -106,6 +107,7 @@ describe('createBridgeOnServer', () => {
         publicChannelAddsCreator: false,
         receivesWebhooks: false,
         webhookUrl: null,
+        commands: {},
       },
     });
   });

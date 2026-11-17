@@ -56,3 +56,34 @@ def test_telegram_uses_its_command_spelling() -> None:
     assert f"`/link_account {_CODE}`" in TelegramAdapter.link_code_instructions(
         _CODE, {}
     )
+
+
+def test_each_platform_spells_the_commands_a_person_pastes() -> None:
+    assert PlatformAdapter.typed_command("invite-agent", "@buddy", {}) == (
+        "!invite-agent @buddy"
+    )
+    assert TelegramAdapter.typed_command("invite-agent", "@buddy", {}) == (
+        "/invite_agent @buddy"
+    )
+    assert TelegramAdapter.typed_command("link-account", _CODE, {}) == (
+        f"/link_account {_CODE}"
+    )
+    assert SlackAdapter.typed_command("invite-agent", "@buddy", {}) == (
+        "/invite-agent @buddy"
+    )
+    assert TeamsAdapter.typed_command("invite-agent", "@buddy", {}) == (
+        "!invite-agent @buddy"
+    )
+    assert DiscordAdapter.typed_command("invite-agent", "@buddy", {}) == (
+        "!invite-agent @buddy"
+    )
+    shared = DiscordAdapter.typed_command(
+        "invite-agent", "@buddy", {"event_delivery": "shared"}
+    )
+    assert shared.startswith("/invite-agent ") and shared.endswith(":buddy")
+
+
+def test_telegram_link_instructions_use_its_own_spelling() -> None:
+    assert f"`/link_account {_CODE}`" in TelegramAdapter.link_code_instructions(
+        _CODE, {}
+    )

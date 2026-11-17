@@ -79,6 +79,8 @@ export type SettingsAudience = {
   operatesGatewaylessServer: boolean;
   /** The server has service connections on. */
   serviceConnections: boolean;
+  /** The server has auto-route (`decision_routing`) on. */
+  decisionRouting: boolean;
 };
 
 /**
@@ -95,7 +97,7 @@ export function settingsSections(audience: SettingsAudience): SettingsItem[][] {
     ...(audience.workspaceAdmin && audience.serviceConnections
       ? [{ id: 'connectors' as const, label: 'Connectors' }]
       : []),
-    ...(audience.workspaceAdmin
+    ...(audience.workspaceAdmin && audience.decisionRouting
       ? [{ id: 'decision-routing' as const, label: 'Decision routing' }]
       : []),
     ...(audience.workspaceAdmin ? [{ id: 'guardrails' as const, label: 'Guardrails' }] : []),

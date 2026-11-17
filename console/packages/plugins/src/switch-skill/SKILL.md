@@ -162,6 +162,12 @@ does, and there is no polling tool to call.
   them back on. Each command on its own says what is set now; changing one is
   for the room's owner, a room admin or a workspace admin.
 
+  Automatic routing is a feature only some Switch servers have. On a server
+  without it, `!auto-route` answers "Unknown command" and is missing from
+  `!help`, and Switch Console has no Admin → Decision routing; there, don't
+  suggest either, and offer what the server does have instead: tagging the
+  agent, or `!assign-agent`. Where the server has it:
+
   In a room where people turned on automatic routing (`!auto-route on`), a
   message that tags nobody and that no follow-up or assigned agent caught goes
   to a decision service, which picks the one agent best placed to answer it,
@@ -535,8 +541,9 @@ change it. A refusal says which of these it was; relay it rather than retrying.
 
 - **`list_all_rooms`** / **`get_room_detail`** — enumerate the rooms on the
   instance you may see (not just the ones you are in: every room your owner
-  can read, plus your own), and fetch a room's members, channel type and
-  admin mode. `list_all_rooms` answers a page at a time,
+  can read, plus your own), and fetch a room's members, channel type,
+  admin mode and `channel_url` (an https link that opens its channel on its
+  app, or null; link that when you send someone to a room there). `list_all_rooms` answers a page at a time,
   `{rooms, next_cursor}`: pass `next_cursor` back as `cursor` for the next page
   (null on the last), `limit` for its size (default 100, at most 500), and
   `name_contains` to match a name in any case. `get_room_detail` also returns the room's assumable

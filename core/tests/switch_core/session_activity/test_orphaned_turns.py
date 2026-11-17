@@ -16,7 +16,11 @@ from switch_core.db.models import (
     SwitchCoreProcess,
 )
 from switch_core.session_activity.maintenance import end_orphaned_turns_once
-from switch_core.session_activity.service import ORPHANED_TURN_TEXT
+from switch_core.session_activity.service import (
+    ORPHANED_TURN_TEXT,
+    Question,
+    QuestionOption,
+)
 from switch_core.sessions.contract import ORPHANED_SUBAGENT_TEXT
 
 from .conftest import AGENT, make_room
@@ -89,6 +93,40 @@ async def test_an_offline_agents_quiet_turn_is_ended(service, session_factory) -
     assert await _status(service, "gone") == ("interrupted", 4, ORPHANED_TURN_TEXT)
     assert (await _status(service, "moving"))[0] == "running"
     assert (await _status(service, "done"))[0] == "completed"
+
+
+async def test_a_turn_waiting_on_an_answer_is_not_ended(
+    service, session_factory
+) -> None:
+    """Quiet because nobody has answered yet, not because the host went away."""
+    await _turn(service, "asking", "running")
+    await service.open_approval(
+        AGENT,
+        "asking",
+        request_id="req-1",
+        turn_id="turn-1",
+        kind="questions",
+        title="Create it?",
+        detail=None,
+        options=[],
+        questions=[
+            Question(
+                id="q",
+                title="Confirm",
+                prompt="",
+                options=[QuestionOption("yes", "Create it", None)],
+                multi_select=False,
+                allow_custom_answer=False,
+            )
+        ],
+        room_id=None,
+        thread_id=None,
+        expires_at=None,
+    )
+    await _quiet(session_factory, "asking")
+
+    await end_orphaned_turns_once(session_factory)
+    assert (await _status(service, "asking"))[0] == "running"
 
 
 async def test_a_connected_agent_keeps_a_turn_its_session_is_still_on(

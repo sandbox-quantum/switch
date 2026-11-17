@@ -59,6 +59,9 @@ FOLLOW_THE_CONVERSATION = "follow_the_conversation"
 # workspace's choice, else `DECISION_ENDPOINT_URL`), which picks the one agent
 # that should answer it, or nobody (`delivery/decision.py`). It builds on the
 # follow-the-conversation filters, so the server refuses it without that flag.
+# With it off nothing of auto-route is offered: the decision settings and room
+# auto-route routes are not mounted, rooms carry no `auto_route`, and
+# `!auto-route` is not a command (`bridges/agent/commands.py`).
 DECISION_ROUTING = "decision_routing"
 
 # Agent chats in Switch Console: an agent's page opens on its chats (its

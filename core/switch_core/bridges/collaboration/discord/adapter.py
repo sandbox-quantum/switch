@@ -892,7 +892,7 @@ class DiscordAdapter(PlatformAdapter):
         conn.set_member_change_handler(self._member_changes.add)
         conn.set_permission_change_handler(self._permission_changes.add)
         await conn.connect(
-            commands=build_app_commands(self._handle_slash_command),
+            commands=build_app_commands(self._handle_slash_command, self.feature_flags),
         )
         logger.info(
             "Discord adapter connected as %s (guild %s)",
@@ -1768,6 +1768,17 @@ class DiscordAdapter(PlatformAdapter):
         return None
 
     @classmethod
+    def typed_command(
+        cls, name: str, argument: str, connection_config: Mapping[str, object]
+    ) -> str:
+        if connection_config.get("event_delivery") != "shared":
+            return f"!{name} {argument}"
+        # The shared connection is not given message text, so only the slash
+        # command reaches Switch. Discord names each argument as its own field.
+        option = COMMANDS_BY_NAME[name].args_spec[0].name
+        return f"/{name} {option}:{argument.removeprefix('@')}"
+
+    @classmethod
     def link_code_instructions(
         cls, code: str, connection_config: Mapping[str, object]
     ) -> str:
@@ -1781,6 +1792,13 @@ class DiscordAdapter(PlatformAdapter):
             f"Run {slash} from that account in a server channel Switch is in, "
             f"or post `!link-account {code}` there."
         )
+
+    @classmethod
+    def unlink_account_instructions(
+        cls, name: str, connection_config: Mapping[str, object]
+    ) -> str:
+        option = COMMANDS_BY_NAME["unlink-account"].args_spec[0].name
+        return f"run `/unlink-account {option}:{name}` in a server channel Switch is in"
 
     async def answer_command(self, command: InboundCommand, text: str) -> None:
         """Answer an account command where only its sender sees it.

@@ -23,6 +23,7 @@ const everyone: SettingsAudience = {
   workspaceAdmin: false,
   operatesGatewaylessServer: false,
   serviceConnections: true,
+  decisionRouting: true,
 };
 
 const nobody: SettingsAudience = {
@@ -33,6 +34,7 @@ const nobody: SettingsAudience = {
   workspaceAdmin: false,
   operatesGatewaylessServer: false,
   serviceConnections: false,
+  decisionRouting: false,
 };
 
 const ids = (audience: SettingsAudience) =>
@@ -84,6 +86,14 @@ describe('Settings sections', () => {
     const main = ids({ ...everyone, workspaceAdmin: true, serviceConnections: false })[0];
     expect(main).not.toContain('connectors');
     expect(main).toContain('decision-routing');
+  });
+
+  // Auto-route does not exist on a server with `decision_routing` off.
+  it('keeps Decision routing behind auto-route, and sends a link to it elsewhere', () => {
+    const admin = { ...everyone, workspaceAdmin: true, decisionRouting: false };
+    expect(ids(admin)[0]).not.toContain('decision-routing');
+    expect(ids(admin)[0]).toContain('connectors');
+    expect(shownSettingsTab('decision-routing', settingsSections(admin))).toBe('preferences');
   });
 
   it('gives connector apps only to whoever runs a Switch with no gateway', () => {

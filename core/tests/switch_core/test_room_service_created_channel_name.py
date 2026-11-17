@@ -107,6 +107,9 @@ class _Lifecycle:
     def rooms_changed(self, bridge_id: str) -> None:
         return None
 
+    def typed_commands(self, bridge_type, connection_config):
+        return {}
+
     def channel_creation_blocker(
         self, bridge_type: str, connection_config: object
     ) -> str | None:
