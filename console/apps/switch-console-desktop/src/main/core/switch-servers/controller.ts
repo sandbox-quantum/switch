@@ -159,6 +159,8 @@ import {
 /** A sign-in's own error union, as a reportable code. Never its message. */
 const SIGN_IN_FAILURE: Record<LoginError['kind'], TelemetrySignInFailure> = {
   invalid_credentials: 'invalid_credentials',
+  paused: 'rate_limited',
+  unreachable: 'unreachable',
   cancelled: 'cancelled',
   failed: 'failed',
 };

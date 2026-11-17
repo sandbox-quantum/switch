@@ -171,6 +171,20 @@ describe('reauthenticateManagedServer', () => {
   });
 });
 
+describe('silent re-login after a server that did not answer', () => {
+  // A request that never reached the server counts toward no pause, so the
+  // next call that finds the session gone tries again straight away.
+  it('tries the stored password again on the next call', async () => {
+    const server = { ...(REMOTE as object), id: 'srv-unreachable' } as never;
+    readSecrets.mockResolvedValue({ gatewayAdminPassword: 'pw' });
+    fetchMock.mockRejectedValue(new Error('connect ECONNREFUSED'));
+
+    expect(await reauthenticateManagedServer(server)).toBeNull();
+    expect(await reauthenticateManagedServer(server)).toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe('refreshSession', () => {
   it('identifies the Console to a server it manages while renewing, and keeps the new session', async () => {
     consoleIdentityHeaders.mockResolvedValueOnce({
@@ -240,7 +254,7 @@ describe('passwordLogin', () => {
     expect(result).toEqual({
       success: false,
       error: {
-        kind: 'failed',
+        kind: 'paused',
         message:
           'Password sign-in for this email address is paused after too many failed attempts. Try again in 15 minutes.',
       },

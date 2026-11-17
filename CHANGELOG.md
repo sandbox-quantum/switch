@@ -4410,6 +4410,15 @@ version of their own to them without also giving them a release of their own.
   agent"; it was the only place Console showed that name.
 
 #### Fixed
+- **Switch Console no longer locks out a local server's admin by signing in
+  again and again.** When the session with a server it runs had ended, every
+  part of the app that needed it signed in with the stored password at once,
+  and a refused password was retried on every call, so the server paused
+  password sign-in for its only admin within a minute. One sign-in now
+  answers every call waiting on it, and once the server refuses the password
+  or pauses sign-in, Console waits five minutes before trying it again. A
+  server that didn't answer is tried again at once. A paused sign-in shows
+  the server's own sentence rather than calling it a problem on the server.
 - **Connectors: turn a service on before you set it up.** A connector whose
   app is not set up, and which is off in the workspace, now shows "Turn on" in
   Discover. "Set up" shows after it is on. In Admin → Connectors, the switch of
