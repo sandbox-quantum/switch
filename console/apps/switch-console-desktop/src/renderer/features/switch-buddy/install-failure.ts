@@ -1,5 +1,5 @@
+import { installOutputSummary } from '@renderer/lib/providers/install-output-summary';
 import type { AgentInstallError } from '@shared/core/providers/agent-payload';
-import { installOutputSummary } from './install-output-summary';
 
 /**
  * What to tell someone whose install needed a program this computer lacks:
