@@ -4876,6 +4876,17 @@ version of their own to them without also giving them a release of their own.
   agent"; it was the only place Console showed that name.
 
 #### Fixed
+- **A button with a tooltip is one labelled button.** Back, Forward, the
+  sidebar toggle, Reset to default, the install and copy buttons and a few
+  others sat inside the tooltip's own button, so screen readers met a
+  button within a button, named by nothing. The marks on an agent's row (its
+  device, a failed session, a host problem) were unlabelled buttons inside
+  the row's; each is now an image named by what its tooltip says.
+- **A chat's work log reads in the order the agent worked.** An agent's
+  tool calls all showed in one block above its first reply, even the calls
+  it made after it, and a question it asked showed as a raw AskUserQuestion
+  call far from the question's card. Each call now shows after the agent's
+  message it followed, so the question's call sits beside its card.
 - **Connectors stops trusting an old answer about who sets up connector
   apps.** When asking the server again failed, the page said it couldn't
   check but still offered Set up by the last answer; it now goes by none, as

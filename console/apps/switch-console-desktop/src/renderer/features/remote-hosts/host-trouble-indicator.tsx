@@ -52,16 +52,20 @@ export const HostTroubleIndicator = observer(function HostTroubleIndicator({
   // — previously you had to select the agent to discover its host was failing
   // to connect (CHOO-1682).
   if (status.kind === 'unreachable' || status.kind === 'auth-failed') {
+    const unavailable =
+      status.kind === 'auth-failed'
+        ? `SSH authentication to ${sshHost} failed — work is paused until you retry`
+        : `Host ${sshHost} is unreachable — work is paused until it answers`;
     return (
       <Tooltip>
-        <TooltipTrigger>
-          <ServerOff className={ICON} aria-label="Host unavailable" />
-        </TooltipTrigger>
-        <TooltipContent>
-          {status.kind === 'auth-failed'
-            ? `SSH authentication to ${sshHost} failed — work is paused until you retry`
-            : `Host ${sshHost} is unreachable — work is paused until it answers`}
-        </TooltipContent>
+        <TooltipTrigger
+          render={
+            <span role="img" aria-label={unavailable} className="flex shrink-0 items-center">
+              <ServerOff className={ICON} aria-hidden="true" />
+            </span>
+          }
+        />
+        <TooltipContent>{unavailable}</TooltipContent>
       </Tooltip>
     );
   }
@@ -70,17 +74,21 @@ export const HostTroubleIndicator = observer(function HostTroubleIndicator({
 
   const missing = plan ? outstandingRequiredStepsFor(plan, agentId).map((step) => step.name) : [];
   const hostItself = !plan || outstandingRequiredHostSteps(plan).length > 0;
+  const needs =
+    (hostItself
+      ? `${sshHost} is missing something this agent needs`
+      : `${sshHost} is ready, but this agent's type is not set up on it`) +
+    (missing.length > 0 ? `: ${missing.join(', ')}` : '');
   return (
     <Tooltip>
-      <TooltipTrigger>
-        <Wrench className={ICON} aria-label="Setup required" />
-      </TooltipTrigger>
-      <TooltipContent>
-        {hostItself
-          ? `${sshHost} is missing something this agent needs`
-          : `${sshHost} is ready, but this agent's type is not set up on it`}
-        {missing.length > 0 ? `: ${missing.join(', ')}` : ''}
-      </TooltipContent>
+      <TooltipTrigger
+        render={
+          <span role="img" aria-label={needs} className="flex shrink-0 items-center">
+            <Wrench className={ICON} aria-hidden="true" />
+          </span>
+        }
+      />
+      <TooltipContent>{needs}</TooltipContent>
     </Tooltip>
   );
 });
