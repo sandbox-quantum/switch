@@ -212,7 +212,7 @@ class _PendingOutboundGroup:
 _LOBBY_HELLO = (
     "👋 Hello! Switch has seen your account. Go back to Switch Console to "
     "finish linking it. Agents don't answer here: add one to a group and "
-    "@-mention it there."
+    "reply to its messages there."
 )
 
 _LOBBY_DEPRECATION_NOTICE = (
