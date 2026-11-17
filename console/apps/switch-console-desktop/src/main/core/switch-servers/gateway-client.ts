@@ -123,6 +123,7 @@ import {
   type TeamsTeam,
   type TeamsTeamsResult,
   type TrustSettings,
+  type WorkspaceGuardrails,
   type UnconfirmedLink,
   type UpdateTrustSettingsParams,
   type LinkedRoom,
@@ -132,6 +133,7 @@ import {
   type NewRoomChannel,
   type RoomAccess,
   roomAccessForChannel,
+  DEFAULT_DIRECTORY_SEARCH_HINT,
 } from '@shared/core/switch-servers/switch-servers';
 import type {
   Invitation,
@@ -501,6 +503,7 @@ export async function fetchAuthConfig(server: SwitchServer): Promise<SwitchAuthC
     oidc_enabled: boolean;
     oidc_provider_label: string | null;
     signup_enabled?: boolean;
+    test_account_reset_enabled?: boolean;
     oidc_login_options?: { id: string; label: string }[];
     oidc_browser_handoff?: boolean;
   };
@@ -509,6 +512,7 @@ export async function fetchAuthConfig(server: SwitchServer): Promise<SwitchAuthC
     oidcEnabled: json.oidc_enabled,
     oidcProviderLabel: json.oidc_provider_label,
     signupEnabled: json.signup_enabled === true,
+    testAccountResetEnabled: json.test_account_reset_enabled === true,
     // Absent on servers predating them: one button, in the app's own window.
     oidcLoginOptions: (json.oidc_login_options ?? []).map(({ id, label }) => ({ id, label })),
     oidcBrowserHandoff: json.oidc_browser_handoff === true,
@@ -538,6 +542,26 @@ function mapTrustSettings(json: TrustSettingsJson): TrustSettings {
 export async function fetchTrustSettings(server: SwitchServer): Promise<TrustSettings> {
   const res = await gatewayFetch(server, '/trust-settings', { authenticated: true });
   return mapTrustSettings((await res.json()) as TrustSettingsJson);
+}
+
+type WorkspaceGuardrailsJson = {
+  checking: boolean;
+  policy_id: string | null;
+  policy_name: string | null;
+  policy_url: string | null;
+};
+
+/** The policy that checks the selected workspace's messages, for anyone in it
+ * (`GET /workspace/guardrails`). */
+export async function fetchWorkspaceGuardrails(server: SwitchServer): Promise<WorkspaceGuardrails> {
+  const res = await gatewayFetch(server, '/workspace/guardrails', { authenticated: true });
+  const json = (await res.json()) as WorkspaceGuardrailsJson;
+  return {
+    checking: json.checking,
+    policyId: json.policy_id,
+    policyName: json.policy_name,
+    policyUrl: json.policy_url,
+  };
 }
 
 /** Save Switch Trust's settings, admin-only (`PUT /trust-settings`).
@@ -857,6 +881,28 @@ export class PasswordChangedSessionNotSavedError extends Error {
 export async function fetchMe(server: SwitchServer): Promise<SwitchUser> {
   const res = await gatewayFetch(server, '/auth/me', { authenticated: true });
   return mapUser((await res.json()) as UserResponseJson);
+}
+
+const browserHandoffSchema = z.object({ path: z.string(), expires_at: z.string() });
+
+/**
+ * A one-time link that opens `next` (a dashboard path, with its query and
+ * fragment) in a browser signed in as this session's account
+ * (`POST /auth/handoff`). Console's own session never leaves Console: the
+ * browser redeems the link for a session of its own. `path` carries the code
+ * in its fragment, so never log it.
+ */
+export async function mintBrowserHandoff(
+  server: SwitchServer,
+  next: string
+): Promise<{ path: string; expiresAt: string }> {
+  const res = await gatewayFetch(server, '/auth/handoff', {
+    authenticated: true,
+    method: 'POST',
+    body: { next },
+  });
+  const minted = browserHandoffSchema.parse(await res.json());
+  return { path: minted.path, expiresAt: minted.expires_at };
 }
 
 /** A tenant the signed-in user belongs to, as `GET /tenants` reports it. */
@@ -1544,6 +1590,7 @@ type AgentRoomJson = {
   archived: boolean;
   status: string;
   room_role: string | null;
+  answered_here?: boolean;
 };
 
 function toRemoteAgentRoom(r: AgentRoomJson): RemoteAgentRoom {
@@ -1553,6 +1600,7 @@ function toRemoteAgentRoom(r: AgentRoomJson): RemoteAgentRoom {
     archived: r.archived,
     status: r.status,
     roomRole: r.room_role,
+    answeredHere: r.answered_here ?? false,
   };
 }
 
@@ -1904,6 +1952,8 @@ type BridgeJson = {
   channel_creation_enabled?: boolean;
   // Absent on a server predating Telegram, where every bridge had a directory.
   directory_search_supported?: boolean;
+  // Absent on a server predating it; see `RemoteBridge.directorySearchHint`.
+  directory_search_hint?: string;
   // Both absent on a server predating this pair of fields — read as "nothing
   // to warn about" and "not the distributed Teams app", which is how every
   // bridge behaved before either existed.
@@ -1919,6 +1969,8 @@ type BridgeJson = {
   // Absent on a server predating per-connection webhooks, where none had one.
   receives_webhooks?: boolean;
   webhook_url?: string | null;
+  // Absent on a server predating it; Console then spells commands itself.
+  commands?: Record<string, string>;
 };
 
 function mapBridge(b: BridgeJson): RemoteBridge {
@@ -1935,6 +1987,7 @@ function mapBridge(b: BridgeJson): RemoteBridge {
     channelCreationSupported,
     canCreateChannels: channelCreationSupported && channelCreationEnabled,
     directorySearchSupported: b.directory_search_supported ?? true,
+    directorySearchHint: b.directory_search_hint ?? DEFAULT_DIRECTORY_SEARCH_HINT,
     attention: b.attention ?? null,
     teamPlacementSupported: b.team_placement_supported ?? false,
     channelIdsRefused: b.channel_ids_refused ?? null,
@@ -1943,6 +1996,7 @@ function mapBridge(b: BridgeJson): RemoteBridge {
     publicChannelAddsCreator: b.public_channel_adds_creator ?? false,
     receivesWebhooks: b.receives_webhooks ?? false,
     webhookUrl: b.webhook_url ?? null,
+    commands: b.commands ?? {},
   };
 }
 
@@ -2576,6 +2630,7 @@ type ExternalUserSummaryJson = {
   bridge_id: string;
   external_user_id: string;
   external_username: string;
+  first_seen_at?: string;
   claimed_by?: IdentityClaimantJson[];
   link_request?: { user_id: string; code: LinkCodeJson | null } | null;
 };
@@ -2643,6 +2698,7 @@ export async function searchBridgeDirectory(
     username: string;
     display_name: string;
     email?: string | null;
+    has_handle?: boolean;
     known_external_user_id?: string | null;
     claimed_by?: IdentityClaimantJson[];
   };
@@ -2660,6 +2716,7 @@ export async function searchBridgeDirectory(
       username: u.username,
       displayName: u.display_name,
       email: u.email ?? null,
+      hasHandle: u.has_handle ?? true,
       knownExternalUserId: u.known_external_user_id ?? null,
       claimedBy: (u.claimed_by ?? []).map((c) => ({
         userId: c.user_id,
@@ -2852,6 +2909,8 @@ export async function fetchMyIdentities(server: SwitchServer): Promise<LinkedIde
     bridge_type: string;
     external_user_id: string;
     external_username: string;
+    external_display_name?: string;
+    has_handle?: boolean;
     verified?: boolean;
   }>;
   return json.map((i) => ({
@@ -2861,6 +2920,8 @@ export async function fetchMyIdentities(server: SwitchServer): Promise<LinkedIde
     bridgeType: i.bridge_type,
     externalUserId: i.external_user_id,
     externalUsername: i.external_username,
+    externalDisplayName: i.external_display_name ?? i.external_username,
+    hasHandle: i.has_handle ?? true,
     verified: i.verified ?? true,
   }));
 }
@@ -2885,6 +2946,8 @@ export async function fetchMyPendingIdentities(server: SwitchServer): Promise<Pe
     bridge_type: string;
     external_user_id: string;
     external_username: string;
+    external_display_name?: string;
+    has_handle?: boolean;
     requested_by_name: string | null;
     code_expires_at: string | null;
   }>;
@@ -2895,6 +2958,8 @@ export async function fetchMyPendingIdentities(server: SwitchServer): Promise<Pe
     bridgeType: i.bridge_type,
     externalUserId: i.external_user_id,
     externalUsername: i.external_username,
+    externalDisplayName: i.external_display_name ?? i.external_username,
+    hasHandle: i.has_handle ?? true,
     requestedByName: i.requested_by_name,
     codeExpiresAt: i.code_expires_at,
   }));
@@ -3736,8 +3801,9 @@ type RoomDetailJson = RoomSummaryJson & {
   external_channel_id?: string | null;
   transport_room_id?: string | null;
   archived_at?: string | null;
-  /** Absent from a server that predates decision routing. */
-  auto_route?: RoomAutoRouteJson;
+  /** Absent from a server that predates decision routing, and null on a
+   * server with it switched off. */
+  auto_route?: RoomAutoRouteJson | null;
 };
 
 /** The gateway `RoomAdminEntry` wire shape. */
@@ -4039,6 +4105,7 @@ export async function fetchBridgePeople(
         externalUserId: user.external_user_id,
         linkedUserIds: linked.map((claim) => claim.user_id),
         linkedName: linked[0]?.user_name ?? null,
+        firstSeenAt: user.first_seen_at ?? null,
       };
     })
     .sort((a, b) => a.username.localeCompare(b.username));

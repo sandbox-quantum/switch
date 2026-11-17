@@ -215,6 +215,9 @@ class RoomDetailDescriptor(BaseModel):
     bridge_id: str | None
     bridge_display_name: str | None
     external_channel_id: str | None
+    # An https link that opens the room's channel on its app, or None (no
+    # channel, the bridge is down, or the app gives no web link).
+    channel_url: str | None
     # The group this room belongs to (navigation layer), or null if standalone.
     # `group_path` is the human-readable ancestry, e.g. "Parent / Child".
     group_id: str | None

@@ -6,6 +6,9 @@ the workspace the request is bound to, never another's. No row means the
 server default (`decision/settings.py`). The key is never returned; a key the
 server can no longer decrypt still loads, as set but unreadable, so an admin
 can save a replacement.
+
+Mounted only with the `decision_routing` flag on (`gateway/app.py`): on a
+server without auto-route there is no backend to choose or test.
 """
 
 from __future__ import annotations

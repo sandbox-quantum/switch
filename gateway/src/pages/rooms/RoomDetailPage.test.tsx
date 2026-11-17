@@ -359,6 +359,26 @@ describe("RoomDetailPage permissions", () => {
     screen.getByText(/^In the room\. You can add agents, people and resources\./);
   });
 
+  it("shows no auto-route on a server without it, and the section where it has it", () => {
+    viewAs({ can_write: true, can_manage: false, can_unlink: false, auto_route: null });
+    expect(screen.queryByText("Auto-route")).toBeNull();
+    cleanup();
+
+    viewAs({
+      can_write: true,
+      can_manage: false,
+      can_unlink: false,
+      auto_route: {
+        on: false,
+        available: true,
+        reason: null,
+        fallback_agent: null,
+        fallback_agent_name: null,
+      },
+    });
+    expect(screen.getByText("Auto-route")).toBeTruthy();
+  });
+
   it("lists a Switch Console chat's members as its people, to change in Console", () => {
     vi.mocked(hooks.useRoom).mockReturnValue({
       data: {

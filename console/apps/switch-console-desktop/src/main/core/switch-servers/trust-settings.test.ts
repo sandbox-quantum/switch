@@ -18,8 +18,12 @@ vi.mock('./servers-store', () => ({ getSessionCookie }));
 vi.mock('./auth', () => ({ refreshSession, reauthenticateManagedServer }));
 vi.mock('./console-identity', () => ({ consoleIdentityHeaders: async () => ({}) }));
 
-const { fetchTrustSettingsFromServer, updateTrustSettingsOnServer, clearTrustSettingsOnServer } =
-  await import('./trust-settings');
+const {
+  fetchTrustSettingsFromServer,
+  fetchWorkspaceGuardrailsFromServer,
+  updateTrustSettingsOnServer,
+  clearTrustSettingsOnServer,
+} = await import('./trust-settings');
 
 const SERVER = {
   id: 'srv-1',
@@ -79,6 +83,52 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+});
+
+describe('fetchWorkspaceGuardrailsFromServer', () => {
+  it('reads which policy checks the workspace', async () => {
+    fetchMock.mockResolvedValue(
+      response(200, {
+        checking: true,
+        policy_id: 'pol_123',
+        policy_name: 'Default',
+        policy_url: 'https://app.switchagents.ai/policies/pol_123',
+      })
+    );
+
+    await expect(fetchWorkspaceGuardrailsFromServer(SERVER)).resolves.toEqual({
+      kind: 'loaded',
+      guardrails: {
+        checking: true,
+        policyId: 'pol_123',
+        policyName: 'Default',
+        policyUrl: 'https://app.switchagents.ai/policies/pol_123',
+      },
+    });
+    expect(String(fetchMock.mock.calls[0]![0])).toContain('/gateway/workspace/guardrails');
+  });
+
+  it('calls a server without the route unsupported', async () => {
+    fetchMock.mockResolvedValue(response(404, { detail: 'Not Found' }));
+
+    await expect(fetchWorkspaceGuardrailsFromServer(SERVER)).resolves.toEqual({
+      kind: 'unsupported',
+    });
+  });
+
+  it('maps a rejected session onto unauthenticated', async () => {
+    fetchMock.mockResolvedValue(response(401, 'Token expired'));
+
+    await expect(fetchWorkspaceGuardrailsFromServer(SERVER)).resolves.toEqual({
+      kind: 'unauthenticated',
+    });
+  });
+
+  it('rethrows a server fault', async () => {
+    fetchMock.mockResolvedValue(response(500, 'Internal Server Error'));
+
+    await expect(fetchWorkspaceGuardrailsFromServer(SERVER)).rejects.toMatchObject({ status: 500 });
+  });
 });
 
 describe('fetchTrustSettingsFromServer', () => {

@@ -29,6 +29,7 @@ import {
   type UpdateServerParams,
 } from '@shared/core/switch-servers/switch-servers';
 import { workspaceUnavailability } from '@shared/core/workspaces/workspaces';
+import { clearDashboardWindowSession } from './dashboard-window-sessions';
 import { deleteManagedClaudeCredential } from './managed-claude-credential';
 import { switchCloudEndpoint } from './switch-cloud';
 
@@ -426,6 +427,7 @@ export async function removeServer(id: string): Promise<void> {
 
   await deleteManagedClaudeCredential(id);
   await deleteSessionCookie(id);
+  await clearDashboardWindowSession(id);
   // Before the delete, while the server's workspaces are still readable.
   await clearActiveWorkspaceOnServer(id);
   // Deleting the server takes its workspaces with it and unlinks their agents,

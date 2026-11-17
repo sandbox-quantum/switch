@@ -34,6 +34,7 @@ from switch_core.bridges.agent.protocol.statuses import agent_statuses_by_room
 from switch_core.db.models import (
     Agent,
     AgentSession,
+    AgentSessionActivityItem,
     Client,
     ExternalUser,
     Room,
@@ -44,6 +45,7 @@ from switch_core.db.stores.agent_session_store import AgentSessionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
+from switch_core.db.stores.session_activity_store import TURN_ITEM_ID
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.known_agents import known_agent
 from switch_core.gateway.schemas import (
@@ -208,8 +210,8 @@ async def agent_room_memberships(
     connections: AgentConnectionRegistry,
 ) -> dict[str, list[AgentRoomMembership]]:
     """The rooms each agent is a member of that `visible` holds for, archived
-    rooms included, with the agent's status and role in each, keyed by agent
-    id.
+    rooms included, with the agent's status and role in each and whether it
+    has had a turn there, keyed by agent id.
 
     The same number of statements for one agent and for many, and none of them
     reads a room these agents are not in: whether the reader may see a room is
@@ -226,6 +228,22 @@ async def agent_room_memberships(
     roles = await room_role_store.room_roles_of_agents(
         session, list(rooms_by_agent), room_ids, connections.live_connection_ids()
     )
+    # A turn in a room means someone addressed the agent there.
+    answered = set(
+        (
+            await session.execute(
+                select(
+                    AgentSessionActivityItem.agent_id, AgentSessionActivityItem.room_id
+                )
+                .where(
+                    AgentSessionActivityItem.agent_id.in_(list(rooms_by_agent)),
+                    AgentSessionActivityItem.item_id == TURN_ITEM_ID,
+                    AgentSessionActivityItem.room_id.in_(room_ids),
+                )
+                .distinct()
+            )
+        ).tuples()
+    )
     return {
         agent_id: [
             AgentRoomMembership(
@@ -234,6 +252,7 @@ async def agent_room_memberships(
                 archived=room.archived,
                 status=statuses[room.room_id][agent_id].value,
                 room_role=roles.get((agent_id, room.room_id)),
+                answered_here=(agent_id, room.room_id) in answered,
             )
             for room in rooms
         ]

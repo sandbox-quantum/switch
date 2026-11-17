@@ -379,18 +379,26 @@ it("offers the server's operator to set up an app that is not set up, on the car
   const setUp = page.querySelector<HTMLButtonElement>('button[aria-label="Set up Example"]');
   expect(setUp).not.toBeNull();
   await act(async () => setUp!.click());
-  expect(navigation.view()).toBe('admin');
-  expect(navigation.params()).toEqual({ serverId: 'server', section: 'apps', app: 'example' });
+  expect(navigation.view()).toBe('settings');
+  expect(navigation.params()).toEqual({
+    serverId: 'server',
+    tab: 'connector-apps',
+    app: 'example',
+  });
 
   navigation.navigate('connectors', { connector: 'example' });
   await vi.waitFor(() => expect(page.querySelector('h1')?.textContent).toBe('Example'));
   expect(button(/^Connect to Switch$/, page)).toBeUndefined();
   await act(async () => button(/^Set up$/, page)!.click());
-  expect(navigation.view()).toBe('admin');
-  expect(navigation.params()).toEqual({ serverId: 'server', section: 'apps', app: 'example' });
+  expect(navigation.view()).toBe('settings');
+  expect(navigation.params()).toEqual({
+    serverId: 'server',
+    tab: 'connector-apps',
+    app: 'example',
+  });
 });
 
-it('sends Set up to Admin apps for a server Console does not list', async () => {
+it('sends Set up to Connector apps in Settings for a server Console does not list', async () => {
   admin.operator = true;
   server.servesGateway = true;
   server.listed = false;
@@ -400,8 +408,12 @@ it('sends Set up to Admin apps for a server Console does not list', async () => 
     page.querySelector<HTMLButtonElement>('button[aria-label="Set up Example"]')!.click()
   );
   expect(switchServers.openGatewayPage).not.toHaveBeenCalled();
-  expect(navigation.view()).toBe('admin');
-  expect(navigation.params()).toEqual({ serverId: 'server', section: 'apps', app: 'example' });
+  expect(navigation.view()).toBe('settings');
+  expect(navigation.params()).toEqual({
+    serverId: 'server',
+    tab: 'connector-apps',
+    app: 'example',
+  });
 });
 
 it("opens the gateway's connector apps to set an app up on a server with a web gateway", async () => {
@@ -778,7 +790,7 @@ it('offers an admin the way to the workspace switches, and nobody else', async (
   workspaces.getServiceConnections.mockResolvedValue(CATALOG);
   let page = await render();
   await vi.waitFor(() => expect(grid(page)).not.toBeNull());
-  expect(button(/Manage in Admin/, page)).toBeUndefined();
+  expect(button(/Manage in Settings/, page)).toBeUndefined();
   expect(page.querySelector('button[aria-label="Workspace"]')).toBeNull();
   await act(async () => root!.unmount());
   root = null;
@@ -786,10 +798,10 @@ it('offers an admin the way to the workspace switches, and nobody else', async (
 
   admin.administers = true;
   page = await render();
-  await vi.waitFor(() => expect(button(/Manage in Admin/, page)).toBeDefined());
-  await act(async () => button(/Manage in Admin/, page)!.click());
-  expect(navigation.view()).toBe('admin');
-  expect(navigation.params()).toEqual({ serverId: 'server', section: 'connectors' });
+  await vi.waitFor(() => expect(button(/Manage in Settings/, page)).toBeDefined());
+  await act(async () => button(/Manage in Settings/, page)!.click());
+  expect(navigation.view()).toBe('settings');
+  expect(navigation.params()).toEqual({ serverId: 'server', tab: 'connectors' });
 });
 
 const PASTED_TOKEN = {

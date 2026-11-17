@@ -26,7 +26,7 @@ from typing import Any
 import httpx
 import pytest
 from fastapi import FastAPI
-from sqlalchemy import insert
+from sqlalchemy import insert, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
@@ -61,6 +61,8 @@ from switch_core.gateway.agents import router as agents_router
 from switch_core.gateway.auth import create_jwt
 from switch_core.gateway.rooms import router as rooms_router
 from switch_core.keys import Keyring
+from switch_core.session_activity.service import AgentSessionActivityService
+from switch_core.tenant_context import tenant_scope
 from tests.switch_core.pool_checkouts import PoolCheckouts
 from tests.switch_core.statement_counts import StatementCounts
 
@@ -149,6 +151,7 @@ def _client(app: Any, user: User) -> httpx.AsyncClient:
         TENANT_ZERO_ID,
         session_version=0,
         auth_time=datetime.now(UTC),
+        session_id=secrets.token_urlsafe(16),
     )
     return httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app),
@@ -555,6 +558,7 @@ class TestAgentDetail:
         assert (len(few_detail["rooms"]), len(many_detail["rooms"])) == (1, 7)
         assert few == many, statement_counts.last(f"GET {path}").statements
         assert {m["status"] for m in many_detail["rooms"]} == {"live"}
+        assert not any(m["answered_here"] for m in many_detail["rooms"])
         assert len(many_detail["sessions"]) == 7
         assert all(s["room_name"] for s in many_detail["sessions"])
         assert len(many_detail["children"]) == 7
@@ -694,3 +698,53 @@ class TestAgentRooms:
             )
 
         assert response.status_code == 422, response.text
+
+
+async def test_a_room_the_agent_has_had_a_turn_in_says_so(
+    session_factory: async_sessionmaker[AsyncSession],
+    statement_counts: StatementCounts,
+    pool_checkouts: PoolCheckouts,
+) -> None:
+    """Console ticks "tell the buddy what you work on" from this: a turn in a
+    room means someone addressed the agent there."""
+    seed = _Seed(session_factory)
+    user = await seed.admin()
+    app = _app(session_factory, statement_counts, pool_checkouts)
+    subject = await seed.subject_agent(2)
+    async with session_factory() as session:
+        room_ids = [
+            row.room_id
+            for row in (
+                await session.execute(
+                    select(room_agents.c.room_id).where(
+                        room_agents.c.agent_id == subject.id
+                    )
+                )
+            ).all()
+        ]
+    with tenant_scope(TENANT_ZERO_ID):
+        await AgentSessionActivityService(session_factory).report_item(
+            subject.id,
+            "session-1",
+            turn_id="turn-1",
+            item_id="turn",
+            kind="turn",
+            revision=1,
+            status="completed",
+            title="Working",
+            text="",
+            command_id=None,
+            room_id=room_ids[0],
+            thread_id=None,
+            message_id=None,
+            occurred_at=datetime.now(UTC),
+            usage=[],
+        )
+
+    async with _client(app, user) as client:
+        _, detail = await _count(client, statement_counts, f"/agents/{subject.id}")
+
+    assert {m["room_id"]: m["answered_here"] for m in detail["rooms"]} == {
+        room_ids[0]: True,
+        room_ids[1]: False,
+    }

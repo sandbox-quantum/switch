@@ -290,6 +290,25 @@ function Devices({
             ),
         });
       }
+      if (row.can_recheck && row.type !== "cloud") {
+        // The controller process itself, for a fix only a fresh start picks
+        // up. Its agents stop and start again with it. A cloud device has
+        // its own lifecycle actions instead.
+        actions.push({
+          label: "Restart device",
+          icon: <RestartAltOutlined fontSize="small" />,
+          disabledReason: unreachable(row.name, row.state),
+          onClick: () =>
+            void act(`Asked ${row.name} to restart. Its agents come back with it.`, () =>
+              createOperation({
+                controller_id: row.id,
+                agent_id: null,
+                kind: "controller.restart",
+                params: {},
+              }),
+            ),
+        });
+      }
       // The caller's own cloud machine only: `/hosted-machines` answers
       // nobody else's, and nothing here should act on anyone else's.
       const machine = cloudOfYours ? machineOf.get(row.id) : undefined;
@@ -420,7 +439,14 @@ function Devices({
         field: "kind",
         headerName: "Operation",
         width: 160,
-        valueGetter: (value) => (value === "agent.restart" ? "Restart" : value === "provider.recheck" ? "Re-check" : value),
+        valueGetter: (value) =>
+          value === "agent.restart"
+            ? "Restart"
+            : value === "provider.recheck"
+              ? "Re-check"
+              : value === "controller.restart"
+                ? "Restart device"
+                : value,
       },
       {
         field: "target",

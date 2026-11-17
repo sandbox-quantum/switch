@@ -566,6 +566,7 @@ describe('many agents’ rooms in one read', () => {
     archived: false,
     status: 'live',
     room_role: 'reviewer',
+    answered_here: true,
   };
 
   it('asks for every agent in one request and keys the rooms by agent', async () => {
@@ -584,6 +585,7 @@ describe('many agents’ rooms in one read', () => {
           archived: false,
           status: 'live',
           roomRole: 'reviewer',
+          answeredHere: true,
         },
       ],
       'a-2': [],

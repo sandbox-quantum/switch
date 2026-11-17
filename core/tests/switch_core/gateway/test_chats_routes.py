@@ -973,7 +973,7 @@ def _session_of(chats: _Harness, user: User) -> Callable[[], Awaitable[bool]]:
 
     async def current() -> bool:
         return await session_is_current(
-            chats.factory, UserStore(), user.id, session_version
+            chats.factory, UserStore(), user.id, session_version, "stream-session"
         )
 
     return current
