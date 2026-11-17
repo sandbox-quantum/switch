@@ -27,7 +27,11 @@ import { Button } from '@renderer/lib/ui/button';
 import { SearchInput } from '@renderer/lib/ui/search-input';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import { dashboardPageUrl, type SwitchServer } from '@shared/core/switch-servers/switch-servers';
-import { administersOrganization, type Workspace } from '@shared/core/workspaces/workspaces';
+import {
+  administersOrganization,
+  administersWorkspace,
+  type Workspace,
+} from '@shared/core/workspaces/workspaces';
 import { SWITCH_TRUST_ABOUT_URL } from '@shared/urls';
 import { OnSignedInServer } from './settings-server';
 
@@ -39,6 +43,17 @@ function AdminNotice({ children }: { children: ReactNode }) {
       <AlertTitle>{children}</AlertTitle>
     </Alert>
   );
+}
+
+/**
+ * How a notice names what lets this person act here: their role in the
+ * workspace, or running the server, which lets them administer every
+ * workspace on it without a role in any.
+ */
+function asRole(server: SwitchServer, workspace: Workspace): string {
+  return administersWorkspace(workspace)
+    ? 'As a workspace admin'
+    : `As the person who runs ${server.name}`;
 }
 
 /** The workspace in scope on `serverId`, or a spinner while it is read. */
@@ -73,7 +88,7 @@ export function ConnectorsSettingsPage() {
       {({ server }) => (
         <InWorkspace serverId={server.id}>
           {(workspace) => (
-            <WorkspaceConnectors key={workspace.id} serverId={server.id} workspace={workspace} />
+            <WorkspaceConnectors key={workspace.id} server={server} workspace={workspace} />
           )}
         </InWorkspace>
       )}
@@ -82,11 +97,11 @@ export function ConnectorsSettingsPage() {
 }
 
 function WorkspaceConnectors({
-  serverId,
+  server,
   workspace,
 }: {
-  serverId: string;
-  workspace: { id: string; name: string };
+  server: SwitchServer;
+  workspace: Workspace;
 }) {
   const [query, setQuery] = useState('');
   return (
@@ -97,7 +112,7 @@ function WorkspaceConnectors({
         description={`Choose which services people in ${workspace.name} can connect and give to their agents.`}
       >
         <AdminNotice>
-          As a workspace admin, you are able to turn each service on or off for everyone in{' '}
+          {asRole(server, workspace)}, you are able to turn each service on or off for everyone in{' '}
           {workspace.name}.
         </AdminNotice>
         <div className="space-y-2">
@@ -114,7 +129,7 @@ function WorkspaceConnectors({
           </p>
         </div>
       </PageHeader>
-      <WithServiceConnections serverId={serverId}>
+      <WithServiceConnections serverId={server.id}>
         <WorkspaceSwitchesTab workspaceId={workspace.id} query={query} />
       </WithServiceConnections>
     </div>
@@ -135,7 +150,7 @@ export function DecisionRoutingSettingsPage() {
                 description={`In an auto-route room, Switch asks a decision service which agent should answer a message that tags nobody. Choose the one ${workspace.name}’s rooms use.`}
               >
                 <AdminNotice>
-                  As a workspace admin, you are able to choose the decision service for every
+                  {asRole(server, workspace)}, you are able to choose the decision service for every
                   auto-route room in {workspace.name}.
                 </AdminNotice>
               </PageHeader>
@@ -185,7 +200,7 @@ export function GuardrailsSettingsPage() {
                 <AdminNotice>
                   {administersOrganization(workspace)
                     ? 'As an organization admin, you are able to change the guardrails for every workspace in your organization.'
-                    : `As a workspace admin, you are able to see which guardrails check ${workspace.name}. Only organization admins can change them.`}
+                    : `${asRole(server, workspace)}, you are able to see which guardrails check ${workspace.name}. Only organization admins can change them.`}
                 </AdminNotice>
               </PageHeader>
               <WorkspaceGuardrailsView key={workspace.id} server={server} workspace={workspace} />

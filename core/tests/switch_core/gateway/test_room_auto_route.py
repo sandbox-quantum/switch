@@ -42,6 +42,7 @@ from switch_core.db.stores.user_store import UserStore
 from switch_core.decision.settings import (
     FLAG_OFF_REASON,
     NO_BACKEND_REASON,
+    WORKSPACE_OFF_REASON,
     DecisionAvailability,
     ServerDefault,
 )
@@ -258,7 +259,8 @@ class TestTheRoomDetail:
             detail = (await client.get(f"/rooms/{room.id}")).json()
 
         assert detail["auto_route"]["available"] is False
-        assert "turned auto-route off" in detail["auto_route"]["reason"]
+        assert detail["auto_route"]["reason"] == WORKSPACE_OFF_REASON
+        assert "Switch Console → Settings → Decision routing" in WORKSPACE_OFF_REASON
 
 
 class TestTheToggle:

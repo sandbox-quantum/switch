@@ -75,6 +75,7 @@ vi.mock('@renderer/features/workspaces/workspaces-store', () => ({
       id: 'workspace',
       name: 'Acme',
       tenantId: 'tenant-1',
+      role: admin.administers ? 'admin' : 'member',
       organizationRole: admin.organizationAdmin ? 'org_admin' : null,
     }),
   },
@@ -454,6 +455,20 @@ it('shows a workspace admin which policy checks the workspace, read-only, powere
   expect(openExternalUrl).toHaveBeenCalledWith(
     'https://www.switchagents.ai/trust',
     'Could not open Switch Trust'
+  );
+});
+
+it('names running the server, not a workspace role, for an operator who holds none', async () => {
+  admin.administers = false;
+  admin.operator = true;
+  switchServers.getWorkspaceGuardrails.mockResolvedValue(CHECKED);
+  navigation.navigate('settings', { tab: 'guardrails' });
+  const page = await render();
+
+  await vi.waitFor(() =>
+    expect(page.querySelector('[role="note"]')!.textContent).toBe(
+      'As the person who runs Dev Server, you are able to see which guardrails check Acme. Only organization admins can change them.'
+    )
   );
 });
 

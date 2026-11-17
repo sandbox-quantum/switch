@@ -375,7 +375,6 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
                 }
                 showBundledSignIn={bridge.id === bundledBridgeId}
                 isAdmin={isAdmin}
-                personal={!isAdmin}
                 savingChannelCreation={savingBridgeId === bridge.id}
                 onToggleChannelCreation={(enabled) =>
                   void handleToggleChannelCreation(bridge, enabled)
@@ -476,7 +475,6 @@ export function MessagingAppRow({
   olderLinks,
   showBundledSignIn,
   isAdmin,
-  personal = false,
   savingChannelCreation,
   onToggleChannelCreation,
   onConnectChat,
@@ -500,8 +498,6 @@ export function MessagingAppRow({
   olderLinks: { count: number; onRequireConfirmation: () => void } | null;
   showBundledSignIn: boolean;
   isAdmin: boolean;
-  /** Only your own side of the app, as Settings shows it: no workspace settings in the menu. */
-  personal?: boolean;
   savingChannelCreation: boolean;
   onToggleChannelCreation: (enabled: boolean) => void;
   /** Set on a connection whose chats are connected one at a time, for a user
@@ -771,7 +767,7 @@ export function MessagingAppRow({
               </>
             )}
 
-            {!personal && (
+            {isAdmin && (
               <>
                 <DropdownMenuSeparator />
                 {/* "Off" and "this platform has no such thing" are different claims,
@@ -781,7 +777,7 @@ export function MessagingAppRow({
                 {bridge.channelCreationSupported ? (
                   <DropdownMenuCheckboxItem
                     checked={bridge.canCreateChannels}
-                    disabled={!isAdmin || savingChannelCreation}
+                    disabled={savingChannelCreation}
                     onCheckedChange={(next) => onToggleChannelCreation(next)}
                   >
                     Create channels on {platform}
@@ -794,7 +790,7 @@ export function MessagingAppRow({
                 )}
               </>
             )}
-            {!personal && bridge.receivesWebhooks && (
+            {isAdmin && bridge.receivesWebhooks && (
               <>
                 <DropdownMenuSeparator />
                 {/* The address the platform delivers this connection's events
