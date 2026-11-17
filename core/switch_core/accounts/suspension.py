@@ -21,7 +21,11 @@ Suspending a person (`User.suspended_at`) ends every session they hold and
 refuses any new one (`gateway/auth.py`), refuses their registration keys, and
 suspends every agent they own, in every workspace, marked
 `suspended_with_owner` so that lifting theirs lifts those and leaves any
-agent suspended on its own as it was.
+agent suspended on its own as it was. Their devices are disconnected: each
+controller's stream ends, in every process, once its agents' assignments say
+stopped, and it is refused a token and every route but its assignment while
+the suspension lasts (`management/auth.py`). Its credential is kept, so it
+connects again by itself once the suspension is lifted.
 
 Who may do it, and who may undo it. An agent: its owner, an admin of its
 workspace (or of its organization) and the server's operator. A person: the
@@ -55,6 +59,7 @@ from switch_core.db.audit import (
 )
 from switch_core.db.models import (
     Agent,
+    AgentController,
     AgentDefinition,
     ServiceTokenIssuance,
     User,
@@ -113,6 +118,13 @@ ACCOUNT_SUSPENDED_MESSAGE = (
 )
 
 
+async def owner_is_suspended(session: AsyncSession, user_id: str) -> bool:
+    return (
+        await session.scalar(select(User.suspended_at).where(User.id == user_id))
+        is not None
+    )
+
+
 @dataclass(frozen=True)
 class Suspender:
     """Who suspends or lifts a suspension, and with what standing. `user_id`
@@ -137,11 +149,15 @@ class SuspensionChanges:
 
     `agents` names, by tenant, the agents suspended (`suspended`) or let back
     in; `revisions`, by tenant, the controllers that run any of them, with
-    the assignment revision each was moved to."""
+    the assignment revision each was moved to; `controllers`, by tenant, the
+    controllers of a person just suspended, which are disconnected. Lifting a
+    person's suspension names none: nothing is kept of the refusal, so their
+    controllers are let in the next time they try."""
 
     suspended: bool
     agents: dict[str, list[str]]
     revisions: dict[str, dict[str, int]]
+    controllers: dict[str, list[str]]
 
     def merge(self, other: SuspensionChanges) -> SuspensionChanges:
         if other.suspended != self.suspended:
@@ -152,13 +168,21 @@ class SuspensionChanges:
         revisions = {k: dict(v) for k, v in self.revisions.items()}
         for tenant_id, by_controller in other.revisions.items():
             revisions.setdefault(tenant_id, {}).update(by_controller)
+        controllers = {k: list(v) for k, v in self.controllers.items()}
+        for tenant_id, ids in other.controllers.items():
+            controllers.setdefault(tenant_id, []).extend(ids)
         return SuspensionChanges(
-            suspended=self.suspended, agents=agents, revisions=revisions
+            suspended=self.suspended,
+            agents=agents,
+            revisions=revisions,
+            controllers=controllers,
         )
 
 
 def _nothing(suspended: bool) -> SuspensionChanges:
-    return SuspensionChanges(suspended=suspended, agents={}, revisions={})
+    return SuspensionChanges(
+        suspended=suspended, agents={}, revisions={}, controllers={}
+    )
 
 
 # ── Who may ───────────────────────────────────────────────────────────────────
@@ -476,9 +500,22 @@ async def suspend_user(
                     .execution_options(populate_existing=True)
                 )
             )
-            if not agents and tenant_id not in member_of:
+            controllers = list(
+                await session.scalars(
+                    select(AgentController.id)
+                    .where(
+                        AgentController.tenant_id == tenant_id,
+                        AgentController.owner_id == user_id,
+                        AgentController.revoked_at.is_(None),
+                    )
+                    .order_by(AgentController.id)
+                )
+            )
+            if not agents and not controllers and tenant_id not in member_of:
                 continue
             here = _nothing(True)
+            if controllers:
+                here.controllers[tenant_id] = controllers
             for agent in agents:
                 if agent.suspended_at is None:
                     await _shut_out(
@@ -507,11 +544,13 @@ async def suspend_user(
             await session.commit()
         changes = changes.merge(here)
     logger.warning(
-        "User %s suspended by %s (%s); %d agent(s) suspended with them",
+        "User %s suspended by %s (%s); %d agent(s) suspended with them, "
+        "%d controller(s) disconnected",
         user_id,
         by.user_id or "the operator's command line",
         by.role,
         sum(len(ids) for ids in changes.agents.values()),
+        sum(len(ids) for ids in changes.controllers.values()),
     )
     return PersonSuspension(changed=changed, changes=changes)
 
@@ -600,8 +639,9 @@ async def unsuspend_user(
 
 class SuspensionAssignments(Protocol):
     """Agent management's part (`ManagementService`), injected so the core
-    does not depend on it: Core's bindings follow the agents' new state, and
-    their controllers are nudged to pull it."""
+    does not depend on it: Core's bindings follow the agents' new state,
+    their controllers are nudged to pull it, and a suspended person's
+    controllers are disconnected."""
 
     async def agents_suspension_changed(
         self,
@@ -610,6 +650,8 @@ class SuspensionAssignments(Protocol):
         agent_ids: list[str],
         revisions: dict[str, int],
     ) -> None: ...
+
+    def owner_suspended(self, controller_ids: list[str]) -> None: ...
 
 
 class SuspensionEffects:
@@ -658,3 +700,8 @@ class SuspensionEffects:
                             agent_ids,
                             changes.revisions.get(tenant_id, {}),
                         )
+        # After their agents' assignments say stopped, so a controller is
+        # nudged to pull them before its connection ends.
+        if self._management is not None:
+            for controller_ids in changes.controllers.values():
+                self._management.owner_suspended(controller_ids)

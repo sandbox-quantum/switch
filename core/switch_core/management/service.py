@@ -30,6 +30,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from switch_core.accounts.suspension import owner_is_suspended
 from switch_core.agent_icon import (
     InvalidIconUrl,
     drop_third_party_avatar,
@@ -61,7 +62,6 @@ from switch_core.db.models import (
     ApiKey,
     MachineWorkspace,
     ServiceTokenIssuance,
-    User,
     require_tenant_id,
 )
 from switch_core.db.models import AgentDefinition as AgentDefinitionRow
@@ -483,9 +483,7 @@ class ManagementService:
             or key.expired(self.now())
         ):
             raise invalid
-        if await session.scalar(
-            select(User.suspended_at).where(User.id == key.user_id)
-        ):
+        if await owner_is_suspended(session, key.user_id):
             raise ManagementError(
                 403,
                 reason_codes.ACCOUNT_SUSPENDED,
@@ -609,6 +607,14 @@ class ManagementService:
         if is_revoked(controller):
             raise ManagementError(
                 401, reason_codes.CONTROLLER_REVOKED, "The controller has been revoked."
+            )
+        # Refused, not revoked: the same credential is exchanged again once
+        # the suspension is lifted.
+        if await owner_is_suspended(session, controller.owner_id):
+            raise ManagementError(
+                403,
+                reason_codes.ACCOUNT_SUSPENDED,
+                "The account this controller belongs to is suspended.",
             )
         return tokens.mint_access_token(
             secret=self.settings.token_secret,
@@ -1663,6 +1669,14 @@ class ManagementService:
             await self._bind(session, tenant_id, row)
         await session.commit()
         self._nudge(tenant_id, revisions)
+
+    def owner_suspended(self, controller_ids: list[str]) -> None:
+        """The controllers' owner was suspended, and that has committed: each
+        controller's stream ends, here and in every other process, and it is
+        refused until the suspension is lifted (`management/auth.py`). Not a
+        revocation: its credential stays, and lets it back in after."""
+        for controller_id in controller_ids:
+            self.signals.owner_suspended(controller_id)
 
     async def check_new_managed_agent(
         self,

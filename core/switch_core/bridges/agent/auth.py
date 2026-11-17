@@ -176,7 +176,11 @@ class ControllerPrincipal:
 
 
 class ControllerAuthError(Exception):
-    """A controller credential was refused; ``code`` is a contract reason code."""
+    """A controller credential was refused; ``code`` is a contract reason code.
+    Answered with ``status_code``: 401 for a credential that is no good, 403
+    for one refused while its standing lasts."""
+
+    status_code = 401
 
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
@@ -200,6 +204,9 @@ class ControllerAuthenticator(Protocol):
     `auth_cache` memoises the rows a controller token makes the server read,
     and is kept in step with `presence`.
 
+    `authenticate` is told the path, since what a controller may still do
+    while its owner is suspended depends on the route.
+
     `stopped_by_archive` says whether a binding is stopped because its
     workspace is archived, when a controller may not act for the agent at
     all, as the agent's own key may not.
@@ -217,7 +224,7 @@ class ControllerAuthenticator(Protocol):
 
     def is_controller_token(self, token: str) -> bool: ...
 
-    async def authenticate(self, token: str) -> ControllerPrincipal: ...
+    async def authenticate(self, token: str, path: str) -> ControllerPrincipal: ...
 
     async def stopped_by_archive(self, binding: Binding) -> bool: ...
 
@@ -433,9 +440,11 @@ class BearerAuthMiddleware:
             )(scope, receive, send)
             return
         try:
-            principal = await controller_auth.authenticate(auth_header[7:])
+            principal = await controller_auth.authenticate(auth_header[7:], path)
         except ControllerAuthError as exc:
-            await _controller_refusal(exc.code, exc.message, 401)(scope, receive, send)
+            await _controller_refusal(exc.code, exc.message, exc.status_code)(
+                scope, receive, send
+            )
             return
         scope["controller"] = principal
         with (
@@ -472,9 +481,11 @@ class BearerAuthMiddleware:
         because its workspace is archived is refused as its own key is.
         """
         try:
-            principal = await controller_auth.authenticate(token)
+            principal = await controller_auth.authenticate(token, path)
         except ControllerAuthError as exc:
-            await _controller_refusal(exc.code, exc.message, 401)(scope, receive, send)
+            await _controller_refusal(exc.code, exc.message, exc.status_code)(
+                scope, receive, send
+            )
             return
 
         header = headers.get(AGENT_ID_HEADER, b"").decode() or None

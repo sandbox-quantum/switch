@@ -2,8 +2,9 @@
 it (`accounts/suspension.py`).
 
 - `switch-suspend user EMAIL --reason TEXT` suspends the account with that
-  email: its sessions end, its keys are refused, and every agent it owns, in
-  every workspace, is suspended with it.
+  email: its sessions end, its keys are refused, every agent it owns, in
+  every workspace, is suspended with it, and its devices are disconnected
+  until the suspension is lifted.
 - `switch-suspend agent AGENT_ID --reason TEXT` suspends one agent.
 - `--lift` in place of `--reason` lifts either. A suspension made here is the
   operator's, which no workspace or organization admin can lift.
@@ -57,7 +58,10 @@ from switch_core.db.stores.organization_app_credential_store import (
 )
 from switch_core.db.tenant_lookup import all_tenant_ids
 from switch_core.main import build_connector_apps, build_service_broker
-from switch_core.management.signals import ASSIGNMENT_CHANGED_SIGNAL
+from switch_core.management.signals import (
+    ASSIGNMENT_CHANGED_SIGNAL,
+    OWNER_SUSPENDED_SIGNAL,
+)
 from switch_core.outbound import guarded_async_client
 from switch_core.signals import SignalBus
 from switch_core.tenant_context import no_tenant
@@ -142,8 +146,9 @@ async def announce(
     changes: SuspensionChanges,
 ) -> bool:
     """Tell the running servers what committed, as each tells the others of
-    a change it made: the agents' connections ended, and their controllers'
-    new assignments. Then revoke the service tokens issued to the agents.
+    a change it made: the agents' connections ended, their controllers' new
+    assignments, and then a suspended person's controllers disconnected.
+    Then revoke the service tokens issued to the agents.
     Returns whether any token is still waiting to be revoked, which the
     servers' periodic pass keeps trying."""
     pending = False
@@ -173,6 +178,9 @@ async def announce(
                 controller_id=controller_id,
                 revision=revision,
             )
+    for controller_ids in changes.controllers.values():
+        for controller_id in controller_ids:
+            signals.publish(OWNER_SUSPENDED_SIGNAL, controller_id=controller_id)
     return pending
 
 
@@ -193,6 +201,7 @@ async def _change(
                 "suspended": not arguments.lift,
                 "changed": done.changed,
                 "agents": done.changes.agents,
+                "controllers_disconnected": done.changes.controllers,
             },
             done.changes,
         )

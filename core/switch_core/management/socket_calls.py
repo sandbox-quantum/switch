@@ -153,7 +153,9 @@ async def _run(
     try:
         controller = await authenticator.current(principal)
     except ControllerAuthError as exc:
-        return _result(id_, 401, error_body(exc.code, exc.message, retryable=False))
+        return _result(
+            id_, exc.status_code, error_body(exc.code, exc.message, retryable=False)
+        )
     binding = authenticator.presence.binding(call.agent_id)
     if (
         binding is None

@@ -144,6 +144,7 @@ def _refusal(sent: list[dict]) -> tuple[int, str]:
 class _Management:
     def __init__(self) -> None:
         self.changed: list[tuple[str, list[str], dict[str, int]]] = []
+        self.disconnected: list[str] = []
 
     async def agents_suspension_changed(
         self,
@@ -153,6 +154,9 @@ class _Management:
         revisions: dict[str, int],
     ) -> None:
         self.changed.append((tenant_id, agent_ids, revisions))
+
+    def owner_suspended(self, controller_ids: list[str]) -> None:
+        self.disconnected.extend(controller_ids)
 
 
 def _effects(
@@ -366,7 +370,7 @@ class TestSuspendingAnAgent:
             await session.commit()
 
         assert changes == SuspensionChanges(
-            suspended=False, agents={TENANT: [agent.id]}, revisions={}
+            suspended=False, agents={TENANT: [agent.id]}, revisions={}, controllers={}
         )
         assert await _dispatch(mw, "tok-helper", path) == []
         assert reached == [path]
