@@ -852,6 +852,11 @@ version of their own to them without also giving them a release of their own.
   delivered unchecked.
 
 #### Fixed
+- **The web dashboard no longer opens blank after an upgrade.** The gateway
+  now tells browsers to check for a new `index.html` on every load, and answers
+  a request for a missing built file with a 404 instead of the page itself. A
+  browser that had kept the previous release's page used to ask for files
+  that no longer existed, get HTML back, and show nothing until a hard reload.
 - **A stopped agent's unfinished turn is ended.** The sweep that ends
   abandoned turns now treats a session whose connection closed as gone, so a
   turn left open when its agent stopped is ended after the quiet window.
