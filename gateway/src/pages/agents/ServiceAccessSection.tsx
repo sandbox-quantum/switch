@@ -354,7 +354,7 @@ export const BY_ORGANIZATION_ADMIN =
  * becomes on a deployment whose one organization's admins set the apps up:
  * its own names whoever runs Switch. */
 export function setUpByOrganizationAdmin(name: string): string {
-  return `${name}'s connector app isn't set up on this server yet. ${BY_ORGANIZATION_ADMIN}`;
+  return `${name}'s connector app isn't set up here yet. ${BY_ORGANIZATION_ADMIN}`;
 }
 
 /** Why a service can't be granted and, for one waiting on its connector
