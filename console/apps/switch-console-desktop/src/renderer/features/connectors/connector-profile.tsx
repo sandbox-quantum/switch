@@ -43,16 +43,15 @@ const ACTION_LABEL = {
  * what they allowed, which of their agents use it, and the way to connect,
  * reconnect or disconnect. When the workspace has it off, a member is told
  * who can switch it on and an admin is offered the switch where it could
- * work; when its app is not set up, the server's operator is offered to set
- * it up. Opened right after connecting, the Add agent search under the
- * agents starts open.
+ * work; when its app is not set up, whoever may set it up is offered to, and
+ * anyone else told who does. Opened right after connecting, the Add agent
+ * search under the agents starts open.
  */
 export function ConnectorProfile({
   serverId,
   workspaceId,
   connection,
   viewer,
-  gatewayV2,
   justConnected,
   onBack,
 }: {
@@ -60,8 +59,6 @@ export function ConnectorProfile({
   workspaceId: string;
   connection: ConnectionCatalogEntry;
   viewer: ConnectorViewer;
-  /** The server's `gateway_v2` flag, which decides where the gateway sets apps up. */
-  gatewayV2: boolean;
   /** Set when the profile opens because the service was just connected, with the warning Switch gave. */
   justConnected: { warning: string | null } | null;
   onBack: () => void;
@@ -141,7 +138,7 @@ export function ConnectorProfile({
             {state.fix === 'set_up' && (
               <Button
                 onClick={() =>
-                  openConnectorAppSetUp(serverId, connection.slug, gatewayV2, navigate)
+                  openConnectorAppSetUp(serverId, connection.slug, viewer.appSetUp, navigate)
                 }
               >
                 {FIX_LABEL.set_up}

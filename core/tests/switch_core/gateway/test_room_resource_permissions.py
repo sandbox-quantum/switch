@@ -404,7 +404,7 @@ async def test_those_taking_part_in_a_private_room_read_its_resources(
         assert await listed(world.theirs, world.member) == [doc.id]
         with pytest.raises(HTTPException) as refused:
             await listed(world.hidden, world.member)
-        assert refused.value.status_code == 403
+        assert refused.value.status_code == 404
 
 
 async def test_a_reference_follows_the_same_rules(
@@ -566,7 +566,7 @@ async def test_a_link_reply_names_only_a_room_its_maker_may_read(
         # `owner` may change `public`, but not read `strangers`.
         with pytest.raises(HTTPException) as refused:
             await link(strangers)
-        assert refused.value.status_code == 403
+        assert refused.value.status_code == 404
         assert await link(world.theirs) == "theirs"
 
 

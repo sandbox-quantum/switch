@@ -15,7 +15,7 @@ import { ConnectorAppScopeContext } from "./scope";
 function Heading({ publicUrl }: { publicUrl: string | null }) {
   return (
     <Box mb={2}>
-      <Typography variant="h5">Connectors</Typography>
+      <Typography variant="h5">Connector apps</Typography>
       <Typography variant="body2" color="text.secondary">
         Some connectors sign in through an app you register at the vendor. Set each up once,
         for all of Switch, before anyone can connect it.
@@ -98,7 +98,9 @@ export function ConnectorAppsList({
   );
 }
 
-/** The server operator's page: the route table lets no one else in. */
+/** The deployment's connector apps, for whoever may set them up: the
+ * operator, and the admins of its only organization while it has no other.
+ * The route table lets no one else in (`connectorAppManagers`). */
 export default function ConnectorAppsPage() {
   const { capabilities } = useAuth();
   // Read once: a reload after saving finds the app set up, so nothing reopens.

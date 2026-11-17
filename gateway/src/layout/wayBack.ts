@@ -1,6 +1,6 @@
 import { useRef } from "react";
 import { type Location, NavigationType, useLocation, useNavigationType } from "react-router";
-import { type Layout, outsideWorkspace } from "../routes/routeTable";
+import { underAreaOutsideWorkspace } from "../routes/routeTable";
 
 interface Entry {
   key: string;
@@ -42,23 +42,20 @@ export function follow(trail: Trail, location: Location, type: NavigationType): 
 /** The last page in the workspace before the current one: where it is, and
  * how many steps back in history. Null when the trail holds none, as when an
  * area outside the workspace was opened directly. */
-export function lastWorkspacePage(
-  trail: Trail,
-  layout: Layout,
-): { href: string; delta: number } | null {
+export function lastWorkspacePage(trail: Trail): { href: string; delta: number } | null {
   for (let i = trail.index - 1; i >= 0; i--) {
     const entry = trail.entries[i];
-    if (!outsideWorkspace(entry.pathname, layout)) return { href: entry.href, delta: i - trail.index };
+    if (!underAreaOutsideWorkspace(entry.pathname)) return { href: entry.href, delta: i - trail.index };
   }
   return null;
 }
 
 /** Where "Back to workspace" leads: the page someone left the workspace from,
  * by stepping back through history, or null to fall back to the home page. */
-export function useWayBackToWorkspace(layout: Layout): { href: string; delta: number } | null {
+export function useWayBackToWorkspace(): { href: string; delta: number } | null {
   const location = useLocation();
   const type = useNavigationType();
   const trail = useRef(EMPTY_TRAIL);
   trail.current = follow(trail.current, location, type);
-  return lastWorkspacePage(trail.current, layout);
+  return lastWorkspacePage(trail.current);
 }

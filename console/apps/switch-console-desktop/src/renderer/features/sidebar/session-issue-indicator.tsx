@@ -35,12 +35,16 @@ export function SessionIssueIndicator({ sessionId }: { sessionId: string }) {
   if (!issue) return null;
   return (
     <Tooltip>
-      <TooltipTrigger>
-        <TriangleAlert
-          aria-label={ISSUE_TEXT}
-          className="h-3.5 w-3.5 shrink-0 text-foreground-destructive"
-        />
-      </TooltipTrigger>
+      <TooltipTrigger
+        render={
+          <span role="img" aria-label={ISSUE_TEXT} className="flex shrink-0 items-center">
+            <TriangleAlert
+              aria-hidden="true"
+              className="h-3.5 w-3.5 shrink-0 text-foreground-destructive"
+            />
+          </span>
+        }
+      />
       <TooltipContent>{ISSUE_TEXT}</TooltipContent>
     </Tooltip>
   );

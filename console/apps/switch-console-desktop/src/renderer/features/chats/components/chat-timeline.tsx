@@ -18,9 +18,9 @@ import {
 import { personColour } from '@shared/core/people/person-colour';
 import {
   foldTurnEndNotices,
-  latestTurnReply,
   placeRequests,
   placeTurns,
+  splitTurn,
   type TurnActivity,
 } from '../activity-join';
 import { messageAnchorId, threadChip } from '../chat-threads';
@@ -185,7 +185,11 @@ export const ChatTimelineView = observer(function ChatTimelineView({
   onReply,
 }: Props) {
   const turnsByMessage = new Map<string, { activity: AgentActivity; turn: TurnActivity }[]>();
-  const blocksByAnchor = new Map<string, { activity: AgentActivity; turn: TurnActivity }[]>();
+  /** Each turn's work log, in parts by the message each shows under (`splitTurn`). */
+  const blocksByAnchor = new Map<
+    string,
+    { activity: AgentActivity; turn: TurnActivity; withReasoning: boolean; last: boolean }[]
+  >();
   /** Requests shown after the agent's text that led up to them rather than with their turn. */
   const requestsByAnchor = new Map<
     string,
@@ -204,14 +208,20 @@ export const ChatTimelineView = observer(function ChatTimelineView({
     }
     for (const [anchorId, turns] of placeTurns(timeline.messages, activity.agentId, bound)) {
       for (const turn of turns) {
-        const blockAnchor =
-          turn.status === 'running'
-            ? latestTurnReply(timeline.messages, activity.agentId, bound, anchorId)
-            : anchorId;
-        blocksByAnchor.set(blockAnchor, [
-          ...(blocksByAnchor.get(blockAnchor) ?? []),
-          { activity, turn },
-        ]);
+        const parts = splitTurn(timeline.messages, activity.agentId, bound, anchorId, turn);
+        // The part that carries the turn's state, and the requests placed with it.
+        const blockAnchor = parts[parts.length - 1].anchorId;
+        parts.forEach((part, index) =>
+          blocksByAnchor.set(part.anchorId, [
+            ...(blocksByAnchor.get(part.anchorId) ?? []),
+            {
+              activity,
+              turn: part.turn,
+              withReasoning: part.reasoning,
+              last: index === parts.length - 1,
+            },
+          ])
+        );
         for (const [requestAnchor, requests] of placeRequests(
           timeline.messages,
           activity.agentId,
@@ -459,28 +469,34 @@ export const ChatTimelineView = observer(function ChatTimelineView({
                 <ChatMarkdown>{message.body}</ChatMarkdown>
               </div>
             )}
-            {(blocksByAnchor.get(message.messageId) ?? []).map(({ activity, turn }) => {
-              const turnAgent = agentOf(activity.agentId);
-              const head = turnShown(activity, turn) && startsBlock(activity.agentId);
-              return (
-                <ChatActivityBlock
-                  serverId={serverId}
-                  key={`${activity.agentId}:${turn.turnId}`}
-                  activity={activity}
-                  turn={{
-                    ...turn,
-                    requests: blockRequests.get(`${activity.agentId}:${turn.turnId}`) ?? [],
-                  }}
-                  endReason={endReasons.get(`${activity.agentId}:${turn.turnId}`) ?? null}
-                  head={head}
-                  agent={{
-                    name: turnAgent ? chatAgentLabel(turnAgent) : activity.agentId,
-                    iconUrl: turnAgent?.iconUrl ?? null,
-                  }}
-                  className={spacing(head)}
-                />
-              );
-            })}
+            {(blocksByAnchor.get(message.messageId) ?? []).map(
+              ({ activity, turn, withReasoning, last }) => {
+                const turnAgent = agentOf(activity.agentId);
+                const head =
+                  turnShown(activity, turn, withReasoning) && startsBlock(activity.agentId);
+                return (
+                  <ChatActivityBlock
+                    serverId={serverId}
+                    key={`${activity.agentId}:${turn.turnId}:${message.messageId}`}
+                    activity={activity}
+                    turn={{
+                      ...turn,
+                      requests: last
+                        ? (blockRequests.get(`${activity.agentId}:${turn.turnId}`) ?? [])
+                        : [],
+                    }}
+                    withReasoning={withReasoning}
+                    endReason={endReasons.get(`${activity.agentId}:${turn.turnId}`) ?? null}
+                    head={head}
+                    agent={{
+                      name: turnAgent ? chatAgentLabel(turnAgent) : activity.agentId,
+                      iconUrl: turnAgent?.iconUrl ?? null,
+                    }}
+                    className={spacing(head)}
+                  />
+                );
+              }
+            )}
             {(requestsByAnchor.get(message.messageId) ?? []).map(({ activity, requests }) =>
               requestsRow(`requests:${activity.agentId}:${requests[0].turnId}`, activity, requests)
             )}

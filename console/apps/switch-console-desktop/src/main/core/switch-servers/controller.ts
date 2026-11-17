@@ -26,6 +26,7 @@ import {
 } from '@main/core/workspaces/workspaces-store';
 import { log } from '@main/lib/logger';
 import type {
+  ConnectorAppManagement,
   SaveConnectorAppInput,
   SaveConnectorAppResult,
 } from '@shared/core/switch-servers/connector-apps';
@@ -39,7 +40,6 @@ import {
   normaliseServerUrl,
   type AddServerParams,
   type ApiKeyLifetime,
-  type BundledChatSignIn,
   type ClearDecisionSettingsResult,
   type ClearTrustSettingsResult,
   type CreatedRegistrationKey,
@@ -75,7 +75,6 @@ import {
   type SignupError,
   signup,
 } from './auth';
-import { bundledChatSignInFor } from './bundled-chat-sign-in';
 import { openDashboardPage } from './dashboard-page';
 import {
   clearDecisionSettingsOnServer,
@@ -115,6 +114,7 @@ import {
   GatewayError,
   type RemoteTenant,
   checkConnectorApp,
+  fetchConnectorAppManagement,
   fetchConnectorAppImpact,
   fetchConnectorApps,
   importConnectorApp,
@@ -640,6 +640,15 @@ export const switchServersController = createRPCController({
   getConnectorApps: async (serverId: string) =>
     fetchConnectorApps(await requireReachableServer(serverId)),
 
+  /**
+   * Who sets up the server's connector apps, as the server answers it for the
+   * session `workspaceId` selects: whether this account may, and whether
+   * they are set up in the dashboard or with the server's command. Each is
+   * null where the server does not say, and only its operator may.
+   */
+  connectorAppManagement: (workspaceId: string): Promise<ConnectorAppManagement> =>
+    withReachableWorkspaceSession(workspaceId, fetchConnectorAppManagement),
+
   /** Check a connector's app with its vendor, and save it if the vendor accepts it. */
   saveConnectorApp: async (params: {
     serverId: string;
@@ -826,14 +835,4 @@ export const switchServersController = createRPCController({
       throw cause;
     }
   },
-
-  /**
-   * The bundled chat's address and sign-in for a managed server (CHOO-1787).
-   *
-   * The password crosses IPC only when the renderer asks — the card fetches on
-   * expand, not on render — so it is not sitting in every server page's memory.
-   * Do not log the result.
-   */
-  getBundledChatSignIn: async (serverId: string): Promise<BundledChatSignIn> =>
-    bundledChatSignInFor(await getServer(serverId)),
 });

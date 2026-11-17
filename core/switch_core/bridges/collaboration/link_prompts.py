@@ -259,12 +259,15 @@ async def answer_prompt(
     tenant_id: str,
     external_user_store: ExternalUserStore,
     user_store: UserStore,
+    bridge_id: str,
 ) -> None:
     """Act on a tap on a prompt's buttons, then replace the prompt with what
     happened.
 
     Who tapped is what the platform says, not anything the button carried, and
-    only the account the prompt was sent to can answer it. The request is
+    only the account the prompt was sent to can answer it: the same user id on
+    the same connection (`bridge_id`, one workspace of the platform), so an id
+    that repeats in another workspace answers nothing. The request is
     locked while it is decided, so a tap and a code posted at the same moment
     cannot both confirm it, and a tap racing a newer code finds the newer code
     has retired its token.
@@ -287,7 +290,11 @@ async def answer_prompt(
         else:
             request, account, live = found
             choices = request.prompt_choices or []
-            if account.external_user_id != interaction.sender_id:
+            if (
+                not bridge_id
+                or account.bridge_id != bridge_id
+                or account.external_user_id != interaction.sender_id
+            ):
                 notice = SOMEONE_ELSE
             elif position is None or position > len(choices) + 1:
                 notice = NOT_AN_OPTION

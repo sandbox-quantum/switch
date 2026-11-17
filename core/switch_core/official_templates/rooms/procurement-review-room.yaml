@@ -86,6 +86,7 @@ resources:
     name: "{team} - Procurement"
     description: "Procurement review and approval for {team}. Vendor evaluation, contract review, and spend tracking."
     bridge: "{bridge}"
+    channel_type: channel_private
     agents: [vendor_analyst, spend_tracker]
     users:
       - {if: "{bridge}", value: ["{$creator}"]}

@@ -8,7 +8,7 @@ export const GLOSSARY = {
   room: {
     name: 'Room',
     meaning:
-      'A shared space where your team and AI agents work together, in your chat app or right here in Console.',
+      'A shared space where your team and AI agents work together, in your messaging app or right here in Console.',
   },
   agent: {
     name: 'Agent',
@@ -28,7 +28,7 @@ export const GLOSSARY = {
   messagingApp: {
     name: 'Messaging app',
     meaning:
-      'The chat app your team already uses: Slack, Microsoft Teams, Discord or Telegram. Connecting one brings your agents and rooms into it.',
+      'The messaging app your team already uses: Slack, Microsoft Teams, Discord or Telegram. Connecting one brings your agents and rooms into it.',
   },
   provider: {
     name: 'AI provider',

@@ -36,6 +36,46 @@ SLACK_BOT_EVENTS = ("message.channels", "message.groups", "message.im", "message
 #: Slack refuses a slash command description longer than this.
 _SLACK_DESCRIPTION_MAX = 100
 
+#: What Slack's command picker shows for each command. Slack ignores a
+#: create-app link much longer than about 7,300 characters, and the manifest
+#: rides in that link, so each description is a short phrase; `/help` and
+#: `!help` keep the full text. A command missing here falls back to the first
+#: sentence of its description.
+_SLACK_DESCRIPTIONS: dict[str, str] = {
+    "help": "Show the commands",
+    "reset": "Reset an agent's session",
+    "reset-all-agents": "Reset every agent's session here",
+    "compact": "Compact an agent's context",
+    "compact-all-agents": "Compact every agent's context here",
+    "interrupt": "Stop an agent's current turn",
+    "interrupt-all-agents": "Stop every agent's current turn here",
+    "list-agents": "List the agents here",
+    "agents-status": "Show each agent's status",
+    "roles": "List roles and who holds them",
+    "list-documents": "List the room's documents",
+    "list-references": "List the room's references",
+    "list-aliases": "List agent aliases here",
+    "follow-ups": "Turn follow-ups on or off",
+    "auto-route": "Let Switch pick who answers untagged messages",
+    "assign-agent": "Send every message here to one agent",
+    "unassign-agent": "Stop sending every message to one agent",
+    "add-room-admin": "Make someone a room admin",
+    "remove-room-admin": "Remove a room admin",
+    "list-room-admins": "Show the room's owner and admins",
+    "set-alias": "Give an agent a room alias",
+    "remove-alias": "Remove a room alias",
+    "invite-agent": "Add an agent to this room",
+    "remove-agent": "Remove an agent from this room",
+    "remove-user": "Remove a person from this room",
+    "link-account": "Link this chat account with a code",
+    "unlink-account": "Show or remove your linked Switch users",
+    "rename-agent": "Rename an agent",
+    "delete-agent": "Delete an agent everywhere",
+    "room-url": "Show this room's web address",
+    "list-switch-agents": "List every agent on this server",
+    "agents-greet": "Have the agents introduce themselves",
+}
+
 
 class SetupCheckError(Exception):
     """A token the platform refused, said in words for the person pasting it."""
@@ -59,12 +99,14 @@ def slack_manifest(flags: Mapping[str, bool]) -> dict[str, Any]:
             continue
         entry: dict[str, Any] = {
             "command": f"/{command.name}",
-            "description": _short(command.description),
-            # An argument names an agent or role by its @-mention, which Slack
-            # only hands over as an id when the command escapes it.
-            "should_escape": bool(command.args_spec),
+            "description": _SLACK_DESCRIPTIONS.get(command.name)
+            or _short(command.description),
         }
         if command.args_spec:
+            # An argument names an agent or role by its @-mention, which Slack
+            # only hands over as an id when the command escapes it. Slack's
+            # default is not to escape, so it is left out otherwise.
+            entry["should_escape"] = True
             entry["usage_hint"] = " ".join(f"<{arg.name}>" for arg in command.args_spec)
         commands.append(entry)
     return {
@@ -100,24 +142,39 @@ def slack_manifest(flags: Mapping[str, bool]) -> dict[str, Any]:
 
 
 def slack_create_url(manifest: dict[str, Any]) -> str:
-    """Slack's create-app page, filled in with `manifest`."""
+    """Slack's create-app page, filled in with `manifest`.
+
+    Slack quietly drops a manifest from a link much longer than about 7,300
+    characters and opens its app list instead, so the link is kept short:
+    `/`, `:` and `,`, which a query may carry as they are, are not escaped.
+    """
     return f"{SLACK_CREATE_APP}?" + urlencode(
-        {"new_app": "1", "manifest_json": json.dumps(manifest, separators=(",", ":"))}
+        {"new_app": "1", "manifest_json": json.dumps(manifest, separators=(",", ":"))},
+        safe="/:,",
     )
 
 
-#: Bot scopes Switch cannot do without: reading and posting in channels, and
-#: `users:read`, without which linking a person's Slack account fails. An app
-#: made from the manifest has them all; one built by hand, or from an older
-#: manifest, may not, and is told which to add before it is connected.
+#: Bot scopes Switch cannot do without: reading and posting in channels;
+#: `users:read`, without which linking a person's Slack account fails; and what
+#: confirming that link uses: `im:write` to message the person and `commands`
+#: for `/link-account`. An app made from the manifest has them all; one built by
+#: hand, or from an older manifest, may not, and is told which to add before it
+#: is connected.
 REQUIRED_SLACK_SCOPES: tuple[str, ...] = (
     "channels:history",
     "channels:read",
     "chat:write",
+    "commands",
     "groups:history",
     "groups:read",
+    "im:write",
     "users:read",
 )
+
+
+def missing_slack_scopes(granted: set[str]) -> list[str]:
+    """The required scopes a bot token lacks, in the order they are listed."""
+    return [scope for scope in REQUIRED_SLACK_SCOPES if scope not in granted]
 
 
 @dataclass(frozen=True)
@@ -150,14 +207,17 @@ async def check_slack(
     # Slack lists the token's scopes in a header; an answer without it is
     # not judged.
     if granted is not None:
-        missing = [s for s in REQUIRED_SLACK_SCOPES if s not in granted]
+        missing = missing_slack_scopes(granted)
         if missing:
             raise SetupCheckError(
                 f"The Slack app is missing the {', '.join(missing)} "
                 f"{'scope' if len(missing) == 1 else 'scopes'}. In Slack, open "
                 "OAuth & Permissions, add "
                 f"{'it' if len(missing) == 1 else 'them'} under Bot Token Scopes, "
-                "click Reinstall to Workspace, and paste the new bot token here."
+                "click Reinstall to Workspace, and paste the new bot token here. "
+                "An app built by hand may also lack Interactivity and the slash "
+                "commands, which linking accounts needs: pasting the manifest "
+                "above on the app's App Manifest page sets all of it."
             )
     socket = await _slack_call(http, "apps.connections.open", app_token)
     if not socket.get("ok"):

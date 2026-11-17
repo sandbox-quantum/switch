@@ -144,4 +144,4 @@ def test_the_flag_without_an_endpoint_says_workspaces_must_choose(
 
     assert client.server.configured is False
     assert "DECISION_ENDPOINT_URL is not set" in caplog.text
-    assert "Settings → Decision routing" in caplog.text
+    assert "Settings → Message routing" in caplog.text

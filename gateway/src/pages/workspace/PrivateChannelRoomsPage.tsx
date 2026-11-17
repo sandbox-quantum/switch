@@ -242,8 +242,8 @@ export default function PrivateChannelRoomsPage() {
 
   return (
     <Box sx={{ pb: 10 }}>
-      <Button startIcon={<ArrowBack />} onClick={() => navigate(-1)} sx={{ mb: 1 }}>
-        Back
+      <Button startIcon={<ArrowBack />} onClick={() => navigate("/settings/general")} sx={{ mb: 1 }}>
+        General
       </Button>
       <Typography variant="h5" mb={1}>
         Public rooms on private channels

@@ -5,6 +5,7 @@ import type {
   ManagedAgentView,
 } from '@shared/core/managed-agents/managed-agents';
 import {
+  addDeviceRefusal,
   arrangeMachines,
   controllerRelease,
   emptyCategoryText,
@@ -349,5 +350,28 @@ describe('emptyCategoryText', () => {
 
   it('says how a cloud device appears', () => {
     expect(emptyCategoryText('cloud', external)).toMatch(/Switch Cloud as its run location/);
+  });
+
+  it('points to Add device only where it is offered', () => {
+    expect(emptyCategoryText('computer', external)).toMatch(/enrolled with Add device/);
+    expect(
+      emptyCategoryText('computer', { ...external, managed: true, managementKind: 'local' })
+    ).not.toMatch(/Add device/);
+  });
+});
+
+describe('addDeviceRefusal', () => {
+  const server = { name: 'Local Switch', managed: false, managementKind: null };
+
+  it('refuses on a server Console runs on this computer, and says why', () => {
+    for (const managementKind of ['local', null] as const)
+      expect(addDeviceRefusal({ ...server, managed: true, managementKind })).toMatch(
+        /^Local Switch runs on this computer and only this computer can reach it/
+      );
+  });
+
+  it('leaves a server Console runs on an SSH host, or anyone else’s, to the server to answer', () => {
+    expect(addDeviceRefusal({ ...server, managed: true, managementKind: 'remote' })).toBeNull();
+    expect(addDeviceRefusal(server)).toBeNull();
   });
 });

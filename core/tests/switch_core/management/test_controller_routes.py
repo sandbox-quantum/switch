@@ -115,6 +115,78 @@ class TestEnrollmentCodes:
         assert response.json()["code"].startswith("swce_")
 
 
+async def _enrollment(harness: Harness) -> dict:
+    owner = await add_member(harness.session_factory, "ada")
+    async with harness.client() as client:
+        response = await client.post(
+            "/gateway/management/enrollment-codes", cookies=cookies_for(owner)
+        )
+    assert response.status_code == 201, response.text
+    body: dict = response.json()
+    return body
+
+
+class TestRemoteDevices:
+    """Whether another device could enroll with the code. The code is issued
+    whatever the answer: Switch Console enrolls the SSH hosts it sets up with
+    one, a server it runs included."""
+
+    async def test_a_reachable_public_address_takes_other_devices(
+        self, harness: Harness
+    ) -> None:
+        body = await _enrollment(harness)
+        assert body["remote_devices"] == {"supported": True, "reason": None}
+
+    async def test_no_public_address_is_left_to_the_caller(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        body = await _enrollment(build_harness(session_factory, server_url=None))
+        assert body["remote_devices"] == {"supported": True, "reason": None}
+
+    async def test_a_server_switch_console_runs_takes_none(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        body = await _enrollment(
+            build_harness(session_factory, deployment_kind="managed_by_console")
+        )
+        assert body["code"].startswith("swce_")
+        assert body["remote_devices"]["supported"] is False
+        reason = body["remote_devices"]["reason"]
+        assert "Switch Console" in reason
+        assert "Switch Cloud" in reason
+        # Console rewrites the stack's configuration on every start, so a
+        # setting is not something to send anyone to.
+        assert "GATEWAY_PUBLIC_URL" not in reason
+
+    @pytest.mark.parametrize(
+        "server_url",
+        [
+            "http://localhost:8000",
+            "http://127.0.0.1:8000",
+            "http://127.0.1.1:8000",
+            "http://[::1]:8000",
+            "https://switch.localhost",
+            "http://0.0.0.0:8000",
+            "http://[::]:8000",
+            "http://127.1:8000",
+            "http://0:8000",
+            "http://0.0.0.0.:8000",
+            "http://[::ffff:127.0.0.1]:8000",
+            "http://[::ffff:0.0.0.0]:8000",
+        ],
+    )
+    async def test_a_loopback_public_address_takes_none(
+        self, session_factory: async_sessionmaker[AsyncSession], server_url: str
+    ) -> None:
+        body = await _enrollment(build_harness(session_factory, server_url=server_url))
+        assert body["code"].startswith("swce_")
+        assert body["server_url"] == server_url
+        assert body["remote_devices"]["supported"] is False
+        reason = body["remote_devices"]["reason"]
+        assert server_url in reason
+        assert "GATEWAY_PUBLIC_URL" in reason
+
+
 def _enroll_body(code: str) -> dict:
     body = fixture("enroll_request.json")
     body["proof"]["code"] = code

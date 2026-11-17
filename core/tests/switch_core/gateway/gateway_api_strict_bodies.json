@@ -1,5 +1,5 @@
 {
-  "revision": 5,
+  "revision": 6,
   "bodies": {
     "switch_core.gateway.agent_sessions.AnswerBody": [
       "answer",
@@ -138,6 +138,7 @@
       "kind",
       "name",
       "read_visibility",
+      "use_case",
       "write_visibility"
     ],
     "switch_core.gateway.schemas.TemplateUpdateRequest": [
@@ -146,6 +147,7 @@
       "kind",
       "name",
       "read_visibility",
+      "use_case",
       "write_visibility"
     ],
     "switch_core.gateway.schemas.TemplateValidateRequest": [

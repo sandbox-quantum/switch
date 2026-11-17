@@ -2798,13 +2798,19 @@ class ServiceBroker:
         hands the result to `finish_disconnect`.
         """
         removed = []
-        for connection in await self._store.list_connections(session, user_id):
-            signed_in = await self._remove_connection(
-                session, user_id, connection.service
-            )
+        for service in await self.connections(session, user_id):
+            signed_in = await self._remove_connection(session, user_id, service)
             if signed_in is not None:
-                removed.append((connection.service, signed_in))
+                removed.append((service, signed_in))
         return removed
+
+    async def connections(self, session: AsyncSession, user_id: str) -> list[str]:
+        """The services `user_id` is connected to here: what
+        `remove_connections` removes."""
+        return [
+            connection.service
+            for connection in await self._store.list_connections(session, user_id)
+        ]
 
     async def _remove_connection(
         self, session: AsyncSession, user_id: str, service: str

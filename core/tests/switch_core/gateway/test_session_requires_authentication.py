@@ -148,10 +148,18 @@ _ROUTES_THAT_NEVER_BIND_A_TENANT = {
     # The same for organizations: list the caller's, make one.
     ("GET", "/organizations"),
     ("POST", "/organizations"),
+    # The organizations the caller is left in with none of their workspaces,
+    # and leaving one: there is no workspace of theirs to bind. Each opens an
+    # `organization_session` of its own — see `leave_organization`.
+    ("GET", "/organizations/without-workspace"),
+    ("POST", "/organizations/{organization_id}/leave"),
     # Accepting an invitation binds the tenant the *token* names, which is
     # neither the one on the caller's session nor one they belong to yet. It
     # opens its own `tenant_session` around that id — see `accept_invitation`.
     ("POST", "/invitations/accept"),
+    # Previewing one opens a `tenant_session` around the same tenant, and
+    # changes nothing — see `preview_invitation`.
+    ("POST", "/invitations/preview"),
     # Invitations addressed to the caller are in workspaces they are not in, so
     # no session of theirs is bound to one. Listing opens a `tenant_session`
     # per tenant `tenants_with_invitations_for` names; accepting opens one
@@ -170,10 +178,6 @@ _ROUTES_THAT_NEVER_BIND_A_TENANT = {
     # Feature flags belong to the deployment and come from its config, so
     # there is no workspace to scope them to and no session is opened.
     ("GET", "/feature-flags"),
-    # The platform operator's list of every workspace, to enter one from.
-    # It opens a `tenant_session` per tenant `all_tenant_ids` names, and
-    # answers 403 to anyone but the operator — see `list_every_workspace`.
-    ("GET", "/operator/workspaces"),
 }
 
 

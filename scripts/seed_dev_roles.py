@@ -16,14 +16,19 @@ It also adds a second workspace to the organization, which the org admin and
 the operator can open and the other two cannot, so the two admin levels show
 different things.
 
-Safe to run again: an account that still signs in with the saved password is
-kept, one that does not is deleted and made again, and every role is set
-afresh. Needs `just up` and `just run`; run it as `just seed-dev-roles`, which
-loads the gateway admin's login from `.env`.
+The accounts are made the way `switch-accounts create` makes them, in no
+workspace, then placed in the default workspace as the server's own seeding
+places an account (`UserStore.ensure_membership`); the roles are given over
+HTTP, as the operator, by the routes an org admin uses. Safe to run again: an
+account that still signs in with the saved password is kept, one that does
+not has its password set again, and every role is set afresh. Needs `just up`
+and `just run`; run it as `just seed-dev-roles`, which loads the server's
+configuration and the gateway admin's login from `.env`.
 """
 
 from __future__ import annotations
 
+import asyncio
 import http.cookiejar
 import json
 import os
@@ -34,6 +39,16 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from switch_core.accounts_admin import create_account
+from switch_core.config import SwitchConfig
+from switch_core.db.models import User
+from switch_core.db.stores.user_store import UserStore
+from switch_core.gateway.auth import hash_password_off_loop
+from switch_core.operator_commands import database
+from switch_core.tenant_context import no_tenant, tenant_scope
 
 SERVER = "http://localhost:8000"
 DEFAULT_WORKSPACE_ID = "00000000-0000-0000-0000-000000000000"
@@ -124,32 +139,53 @@ def signs_in(email: str, password: str) -> bool:
     return True
 
 
-def ensure_account(
-    operator: Client,
-    existing: dict[str, Any] | None,
+async def ensure_accounts(password: str) -> dict[str, str]:
+    """Each seeded account's id, by role, made or repaired as needed, through
+    the internals `switch-accounts` uses, on the server's own database."""
+    async with database(SwitchConfig(), restricted=False) as session_factory:
+        return {
+            account.role: await ensure_account(session_factory, account, password)
+            for account in SEEDED
+        }
+
+
+async def ensure_account(
+    session_factory: async_sessionmaker[AsyncSession],
     account: SeededAccount,
     password: str,
 ) -> str:
-    """The account's id, made (again, if its password is lost) as needed. The
-    operator's session is in the default workspace, so a new account joins it."""
-    if existing is not None:
-        if signs_in(account.email, password):
-            return str(existing["id"])
-        print(
-            f"{account.email} does not sign in with the saved password; making it again."
+    """The account's id: made if it is missing, its password set again if it
+    no longer signs in with `password`, and placed in the default workspace,
+    where the roles are given, if it is in none."""
+    user_store = UserStore()
+    with no_tenant():
+        async with session_factory() as session:
+            user = await user_store.get_by_email(session, account.email)
+    if user is None:
+        user = await create_account(
+            session_factory,
+            email=account.email,
+            name=account.name,
+            password=password,
+            operator=False,
         )
-        operator.call("DELETE", f"/users/{existing['id']}")
-    created = operator.call(
-        "POST",
-        "/users",
-        {
-            "name": account.name,
-            "email": account.email,
-            "password": password,
-            "role": "user",
-        },
-    )
-    return str(created["id"])
+    elif not signs_in(account.email, password):
+        print(
+            f"{account.email} does not sign in with the saved password; setting it again."
+        )
+        with no_tenant():
+            async with session_factory() as session:
+                stored = await session.get(User, user.id)
+                assert stored is not None
+                stored.password_hash = await hash_password_off_loop(password)
+                await session.commit()
+    with tenant_scope(DEFAULT_WORKSPACE_ID):
+        async with session_factory() as session:
+            stored = await session.get(User, user.id)
+            assert stored is not None
+            await user_store.ensure_membership(session, stored)
+            await session.commit()
+    return user.id
 
 
 def ensure_second_workspace(operator: Client) -> None:
@@ -197,13 +233,7 @@ def seed(operator_email: str, operator_password: str) -> None:
         )
 
     password = saved_password() or secrets.token_hex(16)
-    users = {user["email"]: user for user in operator.call("GET", "/users")}
-    ids = {
-        account.role: ensure_account(
-            operator, users.get(account.email), account, password
-        )
-        for account in SEEDED
-    }
+    ids = asyncio.run(ensure_accounts(password))
 
     # The organization role first: it decides what someone holds in every
     # workspace, and an org admin's own workspace role cannot be changed at all.
@@ -252,7 +282,7 @@ def main() -> None:
         print(f"  {account.label:<16} {account.email}")
     print(f'"{SECOND_WORKSPACE_NAME}" is open to the org admin and the operator only.')
     print(
-        f"Logins are in {ACCOUNTS_FILE.relative_to(REPO)}; `just gateway-dev` serves them to the switcher, which shows with the gateway_v2 flag on."
+        f"Logins are in {ACCOUNTS_FILE.relative_to(REPO)}; `just gateway-dev` serves them to the switcher."
     )
 
 

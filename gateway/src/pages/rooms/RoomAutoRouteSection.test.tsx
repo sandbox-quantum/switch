@@ -4,7 +4,7 @@ import type { AgentSummary, RoomAutoRoute, RoomDetail } from "../../data/api";
 import RoomAutoRouteSection from "./RoomAutoRouteSection";
 
 const NO_BACKEND =
-  "Auto-route needs a decision service. A workspace admin can set one up in Switch Console → Settings → Decision routing.";
+  "Auto-route needs a decision service. A workspace admin can set one up in Switch Console → Settings → Message routing.";
 
 function agent(id: string, name: string): AgentSummary {
   return {

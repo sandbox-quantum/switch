@@ -160,8 +160,12 @@ it('shows the question form after the text the turn posted, in reading order', a
 
   const text = container.textContent ?? '';
   expect(text).toContain('Which agent would you like me to set up?');
-  // The running work log follows the latest reply, with the open question.
-  const workLog = container.querySelector('[data-turn-id="t1"]')!;
+  // The step the turn took before its replies shows above them; the running
+  // turn's state follows the latest reply, with the open question.
+  const [steps, workLog] = [...container.querySelectorAll('[data-turn-id="t1"]')];
+  expect(text.indexOf(steps.textContent ?? '')).toBeLessThan(
+    text.indexOf('Here are two agents that could help.')
+  );
   expect(text.indexOf(workLog.textContent ?? '')).toBeGreaterThan(text.indexOf('Pick one below.'));
   expect(workLog.textContent).toContain('Which agent would you like me to set up?');
   expect(text.indexOf('Pick one below.')).toBeLessThan(

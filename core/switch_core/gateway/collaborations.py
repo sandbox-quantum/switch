@@ -36,6 +36,7 @@ from switch_core.bridges.collaboration.models import (
     BridgeOperationError,
     BridgeStartRefused,
     DirectoryUser,
+    KnownUserLabel,
 )
 from switch_core.bridges.collaboration.own_app_setup import (
     SetupCheckError,
@@ -481,7 +482,7 @@ async def list_bridges(
     _user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> list[BridgeDetail]:
-    bridges = await bridge_store.get_all(session)
+    bridges = await bridge_store.get_listed(session)
 
     details = []
     for bridge in bridges:
@@ -653,6 +654,9 @@ async def list_bridge_users(
     user_store: Annotated[UserStore, Depends(get_user_store)],
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
+    collab_lifecycle: Annotated[
+        CollaborationBridgeLifecycleService, Depends(get_collab_lifecycle)
+    ],
 ) -> list[ExternalUserSummary]:
     bridge = await bridge_store.get(session, bridge_id)
     if bridge is None:
@@ -661,6 +665,15 @@ async def list_bridge_users(
     users = await external_user_store.get_by_bridge(session, bridge_id)
     claims = await external_user_store.claims_for(session, [u.id for u in users])
     names = await _user_names(session, user_store, claims)
+    adapter = collab_lifecycle.get_adapter(bridge_id)
+    labels = {
+        u.id: (
+            adapter.known_user_label(u.external_user_id, u.external_username)
+            if adapter is not None
+            else KnownUserLabel(display_name=u.external_username, has_handle=True)
+        )
+        for u in users
+    }
     return [
         ExternalUserSummary(
             id=u.id,
@@ -668,6 +681,8 @@ async def list_bridge_users(
             external_user_id=u.external_user_id,
             external_username=u.external_username,
             first_seen_at=_first_seen(u),
+            display_name=labels[u.id].display_name,
+            has_handle=labels[u.id].has_handle,
             claimed_by=_claimants(
                 claims.get(u.id, []), names, Principal(user.id, is_admin)
             ),

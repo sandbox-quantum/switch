@@ -264,7 +264,7 @@ class TestTheRoomDetail:
 
         assert detail["auto_route"]["available"] is False
         assert detail["auto_route"]["reason"] == NO_BACKEND_REASON
-        assert "Switch Console → Settings → Decision routing" in NO_BACKEND_REASON
+        assert "Switch Console → Settings → Message routing" in NO_BACKEND_REASON
 
     async def test_unavailable_when_the_workspace_chose_none(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -286,7 +286,7 @@ class TestTheRoomDetail:
 
         assert detail["auto_route"]["available"] is False
         assert detail["auto_route"]["reason"] == WORKSPACE_OFF_REASON
-        assert "Switch Console → Settings → Decision routing" in WORKSPACE_OFF_REASON
+        assert "Switch Console → Settings → Message routing" in WORKSPACE_OFF_REASON
 
 
 class TestTheToggle:

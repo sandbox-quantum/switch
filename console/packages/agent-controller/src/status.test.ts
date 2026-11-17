@@ -554,7 +554,7 @@ describe('ProviderStatuses with logins given to the machine', () => {
     expect(await statuses.check('codex')).toMatchObject({ auth: 'missing' });
     expect(statuses.loginProblem('codex')).toEqual({
       code: 'internal',
-      message: expect.stringContaining('Only Claude signs in through Vertex AI.'),
+      message: expect.stringContaining('Only Claude and Antigravity sign in through Vertex AI.'),
     });
     expect(runtime.loginProbes).toEqual([]);
   });
@@ -585,7 +585,7 @@ describe('ProviderStatuses with logins given to the machine', () => {
     unopened.readiness = pinned;
     answer = sealedAnswer(vertexCredentialFixture(), 1, 'vertex', 'codex');
     const status = await build(unopened).check('codex');
-    expect(status.auth_problem).toContain('Only Claude signs in through Vertex AI.');
+    expect(status.auth_problem).toContain('Only Claude and Antigravity sign in through Vertex AI.');
     expect(status).toMatchObject({ auth: 'missing', login_helps: false });
 
     const none = new FakeRuntime();

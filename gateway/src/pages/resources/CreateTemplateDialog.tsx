@@ -12,8 +12,9 @@ import {
 } from "@mui/material";
 import { useRef, useState } from "react";
 import { AccessSelect } from "../../components/AccessControls";
-import { createTemplate } from "../../data/api";
+import { type TemplateUseCase, createTemplate } from "../../data/api";
 import { type AccessLevel, fromAccessLevel } from "../../data/visibility";
+import UseCaseSelect from "../templates/UseCaseSelect";
 import TemplateFindings from "./TemplateFindings";
 import { TEMPLATE_ACCESS_HELPERS } from "./templateAccess";
 import { MAX_DOCUMENT_BYTES, formatBytes } from "./templateFormat";
@@ -24,6 +25,7 @@ export interface TemplateDraft {
   name: string;
   description: string;
   kind: string;
+  use_case: TemplateUseCase | null;
   access: AccessLevel;
   content: string;
 }
@@ -32,6 +34,7 @@ const EMPTY: TemplateDraft = {
   name: "",
   description: "",
   kind: "room",
+  use_case: null,
   // Read-only, the registry's own default: the workspace can use it, the
   // owner or an admin changes it.
   access: "read_only",
@@ -61,6 +64,7 @@ export default function CreateTemplateDialog({
   const [name, setName] = useState(start.name);
   const [description, setDescription] = useState(start.description);
   const [kind, setKind] = useState(start.kind);
+  const [useCase, setUseCase] = useState<TemplateUseCase | null>(start.use_case);
   const [access, setAccess] = useState<AccessLevel>(start.access);
   const [content, setContent] = useState(start.content);
   const [submitting, setSubmitting] = useState(false);
@@ -74,6 +78,7 @@ export default function CreateTemplateDialog({
     setName(start.name);
     setDescription(start.description);
     setKind(start.kind);
+    setUseCase(start.use_case);
     setAccess(start.access);
     setContent(start.content);
     setError(null);
@@ -116,6 +121,7 @@ export default function CreateTemplateDialog({
         description,
         kind: kind.trim(),
         content,
+        use_case: useCase,
         ...fromAccessLevel(access),
       });
       reset();
@@ -166,6 +172,7 @@ export default function CreateTemplateDialog({
             disabled={submitting}
             helperText="What this template provisions — room, group, agent."
           />
+          <UseCaseSelect value={useCase} onChange={setUseCase} disabled={submitting} />
           <AccessSelect
             value={access}
             onChange={setAccess}

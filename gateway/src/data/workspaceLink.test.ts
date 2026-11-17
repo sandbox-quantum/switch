@@ -4,6 +4,7 @@ import {
   keepLinkForSignIn,
   linkAddress,
   linkedWorkspace,
+  mayBeInAnotherWorkspace,
   onThisDashboard,
   takeLinkAfterSignIn,
   withoutLinkedWorkspace,
@@ -85,5 +86,20 @@ describe("a link kept for after the sign-in", () => {
     keepLinkForSignIn({ path: "/rooms/r1", workspace: "t2" });
     forgetLinkForSignIn();
     expect(takeLinkAfterSignIn()).toBeNull();
+  });
+});
+
+describe("a page opened by id that couldn't load its object", () => {
+  it("says it may be in another workspace when the server can't find it or won't show it", () => {
+    expect(mayBeInAnotherWorkspace(404)).toBe(
+      "This may be in another workspace — switch workspace or check the link.",
+    );
+    expect(mayBeInAnotherWorkspace(403)).not.toBeNull();
+  });
+
+  it("says nothing of the kind for any other failure", () => {
+    expect(mayBeInAnotherWorkspace(500)).toBeNull();
+    expect(mayBeInAnotherWorkspace(null)).toBeNull();
+    expect(mayBeInAnotherWorkspace(undefined)).toBeNull();
   });
 });
