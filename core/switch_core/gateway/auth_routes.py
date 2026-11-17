@@ -1133,7 +1133,7 @@ async def delete_user(
     return {"ok": True}
 
 
-@router.post("/users/{user_id}/sessions/revoke")
+@router.post("/users/{user_id}/sessions/revoke", response_model=dict[str, bool])
 async def end_user_sessions(
     user_id: str,
     response: Response,
@@ -1141,12 +1141,13 @@ async def end_user_sessions(
     admin: Annotated[User, Depends(require_admin)],
     user_store: Annotated[UserStore, Depends(get_user_store)],
     identity_sessions: Annotated[IdentitySessions, Depends(get_identity_sessions)],
-) -> dict[str, bool]:
+) -> dict[str, bool] | JSONResponse:
     """The deployment operator signs someone out of all their devices, for a
     lost laptop or an account that looks taken over. Recorded in the server's
     audit log, like the operator deleting an account. Their WorkOS AuthKit
     sessions that Switch made are revoked there too; one that could not be is
-    reported with a 502, after their Switch sessions have all ended."""
+    reported with a 502, after their Switch sessions have all ended. Signing
+    out the operator themselves clears this browser's cookie either way."""
     if await user_store.session_version(session, user_id) is None:
         raise HTTPException(status_code=404, detail="User not found")
     await user_store.end_sessions(session, user_id)
@@ -1161,13 +1162,18 @@ async def end_user_sessions(
     await session.commit()
     failed = await identity_sessions.end_all(user_id, keep=None)
     if failed:
-        raise HTTPException(
+        answer = JSONResponse(
             status_code=502,
-            detail=(
-                f"Their Switch sessions have ended, but {failed} of their sign-ins "
-                "could not be ended at WorkOS. Try again in a moment."
-            ),
+            content={
+                "detail": (
+                    f"Their Switch sessions have ended, but {failed} of their "
+                    "sign-ins could not be ended at WorkOS. Try again in a moment."
+                )
+            },
         )
+        if user_id == admin.id:
+            answer.delete_cookie("switch_auth", path="/")
+        return answer
     if user_id == admin.id:
         response.delete_cookie("switch_auth", path="/")
     return {"ok": True}

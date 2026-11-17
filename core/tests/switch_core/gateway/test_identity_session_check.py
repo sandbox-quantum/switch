@@ -491,6 +491,32 @@ async def test_a_session_workos_would_not_revoke_is_reported_and_the_sign_out_st
     assert not await _live(session_factory, here)
 
 
+async def test_the_operator_signing_themselves_out_is_signed_out_even_when_workos_refuses(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    async with session_factory() as session:
+        operator = User(name="Op", email="op-self@example.test", role="admin")
+        await _USERS.create(session, operator)
+        await session.commit()
+        operator_id = operator.id
+    here = await _signed_in(
+        session_factory, operator_id, "s-op-here", datetime.now(UTC)
+    )
+    await _signed_in(session_factory, operator_id, "s-op-stuck", datetime.now(UTC))
+    workos = _AuthKitSignOut()
+    workos.refuse = {"s-op-stuck"}
+    app = _sign_out_app(session_factory, workos)
+    async with _client(
+        app, _cookie(operator_id, "op-self@example.test", here)
+    ) as client:
+        response = await client.post(f"/users/{operator_id}/sessions/revoke")
+    assert response.status_code == 502
+    assert "1 of their sign-ins" in response.json()["detail"]
+    assert 'switch_auth=""' in response.headers["set-cookie"]
+    assert workos.revoked == ["s-op-here"]
+    assert not await _live(session_factory, here)
+
+
 async def test_the_operator_signing_someone_out_revokes_their_sessions_at_workos(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:

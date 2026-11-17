@@ -38,6 +38,7 @@ from switch_core.db.models import (
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
+from switch_core.db.stores.identity_session_store import IdentitySessionStore
 from switch_core.db.stores.organization_store import OrganizationStore
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.user_store import UserStore
@@ -57,6 +58,7 @@ from tests.switch_core.accounts.test_organization_purge import (
     _purge,
     _Signals,
 )
+from tests.switch_core.gateway.test_identity_session_check import _AuthKitSignOut
 from tests.switch_core.hosted_machine_helpers import seed_machine
 
 
@@ -96,6 +98,7 @@ def _app(
         gateway_admin_email=ADMIN_EMAIL,
         gateway_tenant_choice_enabled=False,
         gateway_allow_test_account_reset=enabled,
+        dashboard_base_url="https://switch.example.test",
     )
     return app, installer, signals
 
@@ -266,6 +269,63 @@ async def test_it_purges_an_organization_nobody_else_is_in(
             assert not await session.scalar(
                 select(model.id).where(model.tenant_id == solo)
             )
+
+
+async def test_its_sign_ins_at_workos_end_with_it(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    user_id, email, solo, _ = await _solo_workspace(session_factory)
+    store = IdentitySessionStore()
+    async with session_factory() as session:
+        here = await store.record(
+            session,
+            user_id=user_id,
+            provider="workos",
+            session_id="s-reset-here",
+            followed=True,
+            now=datetime.now(UTC),
+        )
+        elsewhere = await store.record(
+            session,
+            user_id=user_id,
+            provider="workos",
+            session_id="s-reset-laptop",
+            followed=True,
+            now=datetime.now(UTC),
+        )
+        await session.commit()
+    workos = _AuthKitSignOut()
+    app, _, _ = _app(session_factory, enabled=True)
+    follower = IdentitySessions(session_factory, workos)  # type: ignore[arg-type]
+    app.state.identity_sessions = follower
+    app.dependency_overrides[gw_deps.get_identity_sessions] = lambda: follower
+    token = create_jwt(
+        user_id,
+        email,
+        "user",
+        TEST_KEYRING,
+        solo,
+        session_version=0,
+        auth_time=datetime.now(UTC),
+        identity_session=here,
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+        cookies={"switch_auth": token},
+    ) as client:
+        response = await client.post(
+            "/auth/me/reset-test-account", json={"email": email}
+        )
+
+    assert response.status_code == 200, response.text
+    # The other device's sign-in is revoked; this browser goes to end its own.
+    assert workos.revoked == ["s-reset-laptop"]
+    assert "session_id=s-reset-here" in response.json()["end_session_url"]
+    assert 'switch_auth=""' in response.headers["set-cookie"]
+    async with session_factory() as session:
+        assert await store.get(session, here) is None
+        assert await store.get(session, elsewhere) is None
 
 
 async def test_the_runtime_role_purges_the_organization_and_keeps_its_history(
