@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Callable
 from typing import Any
 
+from fastapi import Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
@@ -32,6 +33,10 @@ from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
+from switch_core.gateway.identity_sessions import (
+    IdentitySessions,
+    identity_sessions_of,
+)
 from switch_core.gateway.invite_mail import InviteMailer
 from switch_core.organization_directory import OrganizationDirectory
 from switch_core.room_service import RoomService
@@ -252,6 +257,11 @@ def get_user_changes() -> LocalUserChanges:
 
 def get_config() -> SwitchConfig:
     return _state["config"]  # type: ignore[no-any-return]
+
+
+def get_identity_sessions(request: Request) -> IdentitySessions:
+    """The app's follower of identity-provider sessions (`main.py` sets it)."""
+    return identity_sessions_of(request)
 
 
 def trust_settings_changed(organization_id: str) -> None:

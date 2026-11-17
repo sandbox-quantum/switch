@@ -44,6 +44,7 @@ from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway import dependencies as gw_deps
 from switch_core.gateway.auth import create_jwt
 from switch_core.gateway.auth_routes import router
+from switch_core.gateway.identity_sessions import IdentitySessions
 from tests.conftest import TEST_KEYRING, RLSHarness
 from tests.switch_core.accounts.test_account_deletion import (
     ADMIN_EMAIL,
@@ -77,6 +78,9 @@ def _app(
     overrides[gw_deps.get_system_session] = _session_dep
     overrides[gw_deps.get_session_factory] = lambda: session_factory
     overrides[gw_deps.get_user_store] = lambda: UserStore()
+    overrides[gw_deps.get_identity_sessions] = lambda: IdentitySessions(
+        session_factory, None
+    )
     overrides[gw_deps.get_organization_store] = lambda: OrganizationStore()
     overrides[gw_deps.get_agent_store] = lambda: AgentStore()
     overrides[gw_deps.get_api_key_store] = lambda: ApiKeyStore()
@@ -249,7 +253,7 @@ async def test_it_purges_an_organization_nobody_else_is_in(
         )
 
     assert response.status_code == 200, response.text
-    assert response.json() == {"ok": True}
+    assert response.json() == {"ok": True, "end_session_url": None}
     assert 'switch_auth=""' in response.headers["set-cookie"]
     assert installer.released == [f"T-{solo}"]
     assert ("client.changed", {"tenant_id": solo}) in signals.published

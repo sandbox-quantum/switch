@@ -158,6 +158,82 @@ class IdentitySessions:
         )
         metrics().increment(AUTH_IDENTITY_SESSION_CHECKS, {"outcome": "ended"})
 
+    # ── Ending them ──────────────────────────────────────────────────────────
+
+    async def end_here(
+        self, user_id: str, identity_session: str, return_to: str | None
+    ) -> str | None:
+        """Sign this browser out of the identity session its cookie stands on:
+        mark it ended, so no copy of the cookie stands any more, and answer
+        where the browser goes to end it at WorkOS (`return_to` after), or
+        None with no AuthKit to end it at or no such session of this
+        person's."""
+        async with self._session_factory() as db, db.begin():
+            row = await self._store.get(db, identity_session)
+            if row is None or row.user_id != user_id:
+                return None
+            await self._store.end(db, [row.id], datetime.now(UTC))
+        if self._authkit is None:
+            return None
+        return self._authkit.logout_url(row.session_id, return_to)
+
+    async def live_sessions(self, user_id: str) -> list[IdentitySessionRow]:
+        async with self._session_factory() as db:
+            return await self._store.live_for_user(db, user_id)
+
+    def logout_url(self, row: IdentitySessionRow, return_to: str | None) -> str | None:
+        """Where a browser goes to end `row` at WorkOS, or None with no AuthKit."""
+        if self._authkit is None:
+            return None
+        return self._authkit.logout_url(row.session_id, return_to)
+
+    async def revoke_at_provider(
+        self, user_id: str, rows: list[IdentitySessionRow]
+    ) -> None:
+        """Revoke these sessions at WorkOS, for an account already gone (its
+        rows went with it). One that could not be revoked is logged as an
+        error: the account cannot be put back to try again."""
+        if self._authkit is None:
+            return
+        for row in rows:
+            try:
+                await self._authkit.revoke_session(row.session_id)
+            except AuthKitError as error:
+                logger.error(
+                    "Could not revoke WorkOS session %s of deleted user %s: %s",
+                    row.session_id,
+                    user_id,
+                    error.message,
+                )
+
+    async def end_all(self, user_id: str, *, keep: str | None) -> int:
+        """End every live identity session of this person but `keep` (the one
+        this browser signs out of through `end_here`): revoked at WorkOS, then
+        marked ended. One WorkOS no longer has counts as ended. Answers how
+        many could not be revoked, which are left live, so the caller can say
+        so; with no AuthKit they are only marked ended here."""
+        async with self._session_factory() as db:
+            rows = await self._store.live_for_user(db, user_id)
+        failed = 0
+        for row in rows:
+            if row.id == keep:
+                continue
+            if self._authkit is not None:
+                try:
+                    await self._authkit.revoke_session(row.session_id)
+                except AuthKitError as error:
+                    logger.warning(
+                        "Could not revoke identity session %s of user %s at WorkOS: %s",
+                        row.id,
+                        user_id,
+                        error.message,
+                    )
+                    failed += 1
+                    continue
+            async with self._session_factory() as db, db.begin():
+                await self._store.end(db, [row.id], datetime.now(UTC))
+        return failed
+
     async def aclose(self) -> None:
         """Cancel the checks under way, at shutdown."""
         tasks = list(self._tasks)

@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from typing import Annotated
 
 import httpx
+import jwt
 import pytest
 from fastapi import Depends, FastAPI
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -31,7 +32,7 @@ from switch_core.gateway.auth import (
 )
 from switch_core.gateway.auth_routes import router
 from switch_core.gateway.identity_sessions import CHECK_EVERY, IdentitySessions
-from switch_core.keys import Keyring
+from switch_core.keys import Keyring, Purpose
 from switch_core.workos_authkit import AuthKitUnavailable
 
 _SECRET = "unit-test-jwt-key-unit-test-jwt-key-unit-test"  # gitleaks:allow
@@ -335,3 +336,181 @@ async def test_an_open_socket_asks_again_and_closes_once_the_sign_in_ended(
     assert await current() is True
     await _end(session_factory, row_id)
     assert await current() is False
+
+
+# ── Signing out ──────────────────────────────────────────────────────────────
+
+
+class _AuthKitSignOut(_WorkOS):
+    """Stands in for AuthKit's sign-out and revoke calls."""
+
+    def __init__(self) -> None:
+        super().__init__(set())
+        self.revoked: list[str] = []
+        self.refuse: set[str] = set()
+
+    async def revoke_session(self, session_id: str) -> None:
+        if session_id in self.refuse:
+            raise AuthKitUnavailable("WorkOS answered 503.")
+        self.revoked.append(session_id)
+
+    def logout_url(self, session_id: str, return_to: str | None) -> str:
+        return f"https://api.workos.example.test/logout?session_id={session_id}&return_to={return_to}"
+
+
+def _sign_out_app(
+    session_factory: async_sessionmaker[AsyncSession], workos: _AuthKitSignOut | None
+) -> FastAPI:
+    app, follower = _app(session_factory, workos)
+    app.dependency_overrides[gw_deps.get_identity_sessions] = lambda: follower
+    config = SimpleNamespace(
+        keyring=_KEYRING,
+        gateway_cookie_secure=False,
+        gateway_password_login_enabled=True,
+        gateway_tenant_choice_enabled=False,
+        dashboard_base_url="https://switch.example.test",
+    )
+    app.dependency_overrides[gw_deps.get_config] = lambda: config
+    return app
+
+
+async def _live(session_factory: async_sessionmaker[AsyncSession], row_id: str) -> bool:
+    async with session_factory() as session:
+        row = await _STORE.get(session, row_id)
+    return row is not None and row.ended_at is None
+
+
+async def test_signing_out_ends_the_authkit_session_here_and_at_workos(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    ada = await _person(session_factory, "ada-out@example.test")
+    row_id = await _signed_in(session_factory, ada, "s-out", datetime.now(UTC))
+    app = _sign_out_app(session_factory, _AuthKitSignOut())
+    token = _cookie(ada, "ada-out@example.test", row_id)
+    async with _client(app, token) as client:
+        response = await client.post("/auth/logout")
+    assert response.status_code == 200
+    assert response.json() == {
+        "ok": True,
+        "end_session_url": (
+            "https://api.workos.example.test/logout?session_id=s-out"
+            "&return_to=https://switch.example.test/login"
+        ),
+    }
+    assert 'switch_auth=""' in response.headers["set-cookie"]
+    assert not await _live(session_factory, row_id)
+    # Any copy of the cookie is refused now.
+    async with _client(app, token) as client:
+        assert (await client.get("/auth/me")).status_code == 401
+
+
+async def test_an_expired_cookie_still_ends_what_it_stood_on(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    ada = await _person(session_factory, "ada-expired@example.test")
+    row_id = await _signed_in(session_factory, ada, "s-expired", datetime.now(UTC))
+    expired = jwt.encode(
+        {
+            "sub": ada,
+            "email": "ada-expired@example.test",
+            "role": "user",
+            "tenant_id": None,
+            "sv": 0,
+            "isid": row_id,
+            "iat": 1_700_000_000,
+            "exp": 1_700_000_100,
+        },
+        _KEYRING.derive(Purpose.SESSION),
+        algorithm="HS256",
+        headers={"kid": _KEYRING.current.id},
+    )
+    app = _sign_out_app(session_factory, _AuthKitSignOut())
+    async with _client(app, expired) as client:
+        response = await client.post("/auth/logout")
+    assert response.json()["end_session_url"] is not None
+    assert not await _live(session_factory, row_id)
+
+
+async def test_signing_out_of_a_password_session_sends_the_browser_nowhere(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    ada = await _person(session_factory, "ada-pw-out@example.test")
+    app = _sign_out_app(session_factory, _AuthKitSignOut())
+    async with _client(app, _cookie(ada, "ada-pw-out@example.test", None)) as client:
+        response = await client.post("/auth/logout")
+    assert response.json() == {"ok": True, "end_session_url": None}
+
+
+async def test_without_authkit_signing_out_ends_the_session_here_only(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    ada = await _person(session_factory, "ada-off-out@example.test")
+    row_id = await _signed_in(session_factory, ada, "s-off-out", datetime.now(UTC))
+    app = _sign_out_app(session_factory, None)
+    async with _client(app, _cookie(ada, "ada-off-out@example.test", row_id)) as client:
+        response = await client.post("/auth/logout")
+    assert response.json() == {"ok": True, "end_session_url": None}
+    assert not await _live(session_factory, row_id)
+
+
+async def test_signing_out_everywhere_revokes_switchs_other_sessions_at_workos(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    ada = await _person(session_factory, "ada-all@example.test")
+    here = await _signed_in(session_factory, ada, "s-here", datetime.now(UTC))
+    laptop = await _signed_in(session_factory, ada, "s-laptop", datetime.now(UTC))
+    gone = await _signed_in(session_factory, ada, "s-gone-already", datetime.now(UTC))
+    workos = _AuthKitSignOut()
+    app = _sign_out_app(session_factory, workos)
+    async with _client(app, _cookie(ada, "ada-all@example.test", here)) as client:
+        response = await client.post("/auth/sessions/revoke")
+    assert response.status_code == 200
+    assert sorted(workos.revoked) == ["s-gone-already", "s-laptop"]
+    assert "session_id=s-here" in response.json()["end_session_url"]
+    for row_id in (here, laptop, gone):
+        assert not await _live(session_factory, row_id)
+
+
+async def test_a_session_workos_would_not_revoke_is_reported_and_the_sign_out_still_carried(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    ada = await _person(session_factory, "ada-partial@example.test")
+    here = await _signed_in(session_factory, ada, "s-here-2", datetime.now(UTC))
+    stuck = await _signed_in(session_factory, ada, "s-stuck", datetime.now(UTC))
+    workos = _AuthKitSignOut()
+    workos.refuse = {"s-stuck"}
+    app = _sign_out_app(session_factory, workos)
+    async with _client(app, _cookie(ada, "ada-partial@example.test", here)) as client:
+        response = await client.post("/auth/sessions/revoke")
+    assert response.status_code == 502
+    assert "1 of your sign-ins" in response.json()["detail"]
+    assert "session_id=s-here-2" in response.json()["end_session_url"]
+    assert 'switch_auth=""' in response.headers["set-cookie"]
+    # Left live, to be tried again; the Switch sessions ended regardless.
+    assert await _live(session_factory, stuck)
+    assert not await _live(session_factory, here)
+
+
+async def test_the_operator_signing_someone_out_revokes_their_sessions_at_workos(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    async with session_factory() as session:
+        operator = User(name="Op", email="op-revoke@example.test", role="admin")
+        await _USERS.create(session, operator)
+        await session.commit()
+        operator_id = operator.id
+    eve = await _person(session_factory, "eve-revoked@example.test")
+    row_id = await _signed_in(session_factory, eve, "s-eve", datetime.now(UTC))
+    workos = _AuthKitSignOut()
+    app = _sign_out_app(session_factory, workos)
+    async with _client(
+        app, _cookie(operator_id, "op-revoke@example.test", None)
+    ) as client:
+        response = await client.post(f"/users/{eve}/sessions/revoke")
+        assert response.status_code == 200, response.text
+        workos.refuse = {"s-eve-2"}
+        await _signed_in(session_factory, eve, "s-eve-2", datetime.now(UTC))
+        failed = await client.post(f"/users/{eve}/sessions/revoke")
+    assert workos.revoked == ["s-eve"]
+    assert not await _live(session_factory, row_id)
+    assert failed.status_code == 502

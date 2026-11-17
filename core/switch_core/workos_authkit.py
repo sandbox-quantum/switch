@@ -167,11 +167,14 @@ class AuthKit:
         }
         return f"{self._api_url}/user_management/authorize?{urlencode(query)}"
 
-    def logout_url(self, session_id: str, return_to: str) -> str:
+    def logout_url(self, session_id: str, return_to: str | None) -> str:
         """Where the browser goes to end the AuthKit session, coming back to
-        `return_to`, which must be one of the application's sign-out URIs."""
-        query = urlencode({"session_id": session_id, "return_to": return_to})
-        return f"{self._api_url}/user_management/sessions/logout?{query}"
+        `return_to`, which must be one of the application's sign-out URIs, or
+        to its default sign-out URI with none."""
+        query = {"session_id": session_id}
+        if return_to is not None:
+            query["return_to"] = return_to
+        return f"{self._api_url}/user_management/sessions/logout?{urlencode(query)}"
 
     # ── Calls ────────────────────────────────────────────────────────────────
 

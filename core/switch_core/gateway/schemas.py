@@ -303,6 +303,15 @@ class BulkDeleteRequest(BaseModel):
     retire_channel: bool = False
 
 
+class SignOutResponse(BaseModel):
+    """A sign-out's answer. `end_session_url` is where the browser goes next
+    when the session stood on a WorkOS AuthKit session, to end that too, as
+    other applications sharing it do; None for any other sign-in."""
+
+    ok: bool
+    end_session_url: str | None
+
+
 class RoomDeleteResponse(BaseModel):
     ok: bool
     # What became of the room's platform channel; null when the room had none

@@ -260,6 +260,25 @@ def _session_key(token: str, keyring: Keyring) -> bytes | str:
         raise jwt.InvalidTokenError(str(exc)) from exc
 
 
+def signed_claims(request: HTTPConnection, keyring: Keyring) -> dict | None:
+    """The session cookie's claims, its signature checked but not its
+    expiry, or None with no cookie or one that is not ours. For signing out,
+    which ends what an expired cookie stood on too."""
+    token = request.cookies.get("switch_auth")
+    if token is None:
+        return None
+    try:
+        payload: dict = jwt.decode(
+            token,
+            _session_key(token, keyring),
+            algorithms=[JWT_ALGORITHM],
+            options={"verify_exp": False},
+        )
+    except jwt.InvalidTokenError:
+        return None
+    return payload
+
+
 def decode_jwt(token: str, keyring: Keyring) -> dict:
     try:
         return jwt.decode(

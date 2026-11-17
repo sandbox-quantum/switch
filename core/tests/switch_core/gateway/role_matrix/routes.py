@@ -1388,7 +1388,10 @@ UNAUTHENTICATED: dict[str, str] = {
     "GET /gateway/auth/oidc/login": "Starting a sign-in.",
     "POST /gateway/auth/oidc/exchange": "Finishing a sign-in with its one-time code.",
     "POST /gateway/auth/login": "Signing in.",
-    "POST /gateway/auth/logout": "Signing out, which only clears the cookie.",
+    "POST /gateway/auth/logout": (
+        "Signing out: clears the cookie, and ends the AuthKit session the cookie "
+        "names, if any, which the cookie's own signature proves is its holder's."
+    ),
     "POST /gateway/auth/signup": "Signing up.",
     "GET /gateway/docs": "The API's own documentation.",
     "GET /gateway/docs/oauth2-redirect": "The API's own documentation.",

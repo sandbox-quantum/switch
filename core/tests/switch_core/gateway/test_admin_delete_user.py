@@ -28,12 +28,15 @@ from switch_core.db.models import (
 )
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
+from switch_core.db.stores.identity_session_store import IdentitySessionStore
 from switch_core.db.stores.organization_store import OrganizationStore
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway import dependencies as gw_deps
 from switch_core.gateway.auth import create_jwt
 from switch_core.gateway.auth_routes import router
+from switch_core.gateway.identity_sessions import IdentitySessions
+from switch_core.workos_authkit import AuthKitUnavailable
 from tests.conftest import TEST_KEYRING
 from tests.switch_core.accounts.test_account_deletion import (
     ADMIN_EMAIL,
@@ -63,6 +66,9 @@ def _app(
     overrides[gw_deps.get_system_session] = _session_dep
     overrides[gw_deps.get_session_factory] = lambda: session_factory
     overrides[gw_deps.get_user_store] = lambda: UserStore()
+    overrides[gw_deps.get_identity_sessions] = lambda: IdentitySessions(
+        session_factory, None
+    )
     overrides[gw_deps.get_organization_store] = lambda: OrganizationStore()
     overrides[gw_deps.get_agent_store] = lambda: AgentStore()
     overrides[gw_deps.get_api_key_store] = lambda: ApiKeyStore()
@@ -281,3 +287,93 @@ async def test_a_deletion_that_fails_partway_is_logged_with_what_it_finished(
     [completed] = event.details["workspaces_completed"]
     assert completed != still_in
     assert {completed, still_in} == {TENANT_ZERO_ID, "second"}
+
+
+class _AuthKitRevoke:
+    """Stands in for AuthKit's revoke."""
+
+    def __init__(self, refuse: set[str]) -> None:
+        self.refuse = refuse
+        self.revoked: list[str] = []
+
+    async def revoke_session(self, session_id: str) -> None:
+        if session_id in self.refuse:
+            raise AuthKitUnavailable("WorkOS answered 503.")
+        self.revoked.append(session_id)
+
+
+async def _authkit_session(
+    session_factory: async_sessionmaker[AsyncSession], user_id: str, session_id: str
+) -> str:
+    async with session_factory() as session:
+        row_id = await IdentitySessionStore().record(
+            session,
+            user_id=user_id,
+            provider="workos",
+            session_id=session_id,
+            followed=True,
+            now=datetime.now(UTC),
+        )
+        await session.commit()
+        return row_id
+
+
+def _with_authkit(
+    app: FastAPI,
+    session_factory: async_sessionmaker[AsyncSession],
+    authkit: _AuthKitRevoke,
+) -> FastAPI:
+    follower = IdentitySessions(session_factory, authkit)  # type: ignore[arg-type]
+    app.dependency_overrides[gw_deps.get_identity_sessions] = lambda: follower
+    return app
+
+
+async def test_deleting_an_account_revokes_its_authkit_sessions_first(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Otherwise a device still on one would be signed straight back in and
+    given a new account."""
+    operator, member = await _people(session_factory)
+    await _authkit_session(session_factory, member, "s-leaving")
+    authkit = _AuthKitRevoke(set())
+    app = _with_authkit(_app(session_factory), session_factory, authkit)
+    async with _client(app, operator, ADMIN_EMAIL) as client:
+        response = await client.delete(f"/users/{member}")
+    assert response.status_code == 200, response.text
+    assert authkit.revoked == ["s-leaving"]
+
+
+async def test_a_session_workos_would_not_revoke_keeps_the_account(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    operator, member = await _people(session_factory)
+    await _authkit_session(session_factory, member, "s-stuck")
+    app = _with_authkit(
+        _app(session_factory), session_factory, _AuthKitRevoke({"s-stuck"})
+    )
+    async with _client(app, operator, ADMIN_EMAIL) as client:
+        response = await client.delete(f"/users/{member}")
+    assert response.status_code == 502
+    assert "was not deleted" in response.json()["detail"]
+    async with session_factory() as session:
+        assert await session.get(User, member) is not None
+
+
+async def test_a_refused_deletion_signs_nobody_out(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    operator, _ = await _people(session_factory)
+    other_admin = await _make_member(
+        session_factory,
+        name="kept-admin",
+        tenant_id=TENANT_ZERO_ID,
+        role="member",
+        user_role="admin",
+    )
+    await _authkit_session(session_factory, other_admin, "s-kept")
+    authkit = _AuthKitRevoke(set())
+    app = _with_authkit(_app(session_factory), session_factory, authkit)
+    async with _client(app, operator, ADMIN_EMAIL) as client:
+        response = await client.delete(f"/users/{other_admin}")
+    assert response.status_code == 409
+    assert authkit.revoked == []
