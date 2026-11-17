@@ -53,6 +53,132 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **A room's page in the web dashboard says who owns it and where you
+  stand.** Room info names the owner, or says the room has none, and a "Your
+  access" line says whether you own the room, administer the workspace or
+  its organization, are one of its room admins, take part in it, or can only
+  see it, and what that lets you do. Someone who can only see a channel's
+  room is told how to take part: join the channel from a linked chat account,
+  or ask someone in the room to add them. The notice on settings you can't
+  change names the owner, as Switch Console's does.
+- **An organization's admins can archive one of its workspaces, and restore
+  it.** An archived workspace keeps everything in it but is closed: its
+  members can no longer open it and are told it is archived (their open
+  dashboard and Console connections close too), while the organization's
+  admins still can. Its agents can't connect and those connected are cut
+  off, every agent on its devices is told to stop (nothing is revoked, so
+  Restore starts them again), no new device or managed agent can be set up
+  in it, its messaging apps stop relaying, invite links and domain joins into
+  it are refused, and its room schedules pause, with the runs missed
+  meanwhile skipped on Restore. The workspace you are in and
+  the one everyone joins on signing up can't be archived. Both changes are
+  recorded in the workspace's and the organization's audit logs.
+  `GET /organizations/current/workspaces` also reports each workspace's
+  counts, admins and archive state, and the operator's list of every
+  workspace says which are archived.
+- **An organization's admins see which of its workspaces each person is in,
+  and add someone already in the organization to another one.**
+  `GET /organizations/current/members` lists each person's workspaces in the
+  organization and their role in each, and
+  `POST /organizations/current/workspaces/{id}/members` adds an existing
+  member to a workspace as admin or member, recorded in both audit logs.
+  Someone outside the organization is pointed to an invite link instead.
+- **An organization's admins rename it, and run any of its workspaces from
+  the organization.** `PATCH /organizations/current` renames the
+  organization (its slug stays). Under
+  `/organizations/current/workspaces/{id}`, its admins rename a workspace,
+  choose its admins in one step (`PUT …/admins`), change someone's role or
+  remove them (with the same hand-over preview), and make invite links,
+  each checked as on the workspace's own pages, without switching into it.
+  Creating or renaming a workspace, here or on its own settings, refuses a
+  name another of the organization's workspaces has, in any case.
+- **Organization settings pages in the new dashboard layout.** Behind
+  `gateway_v2`: General renames the organization; Workspaces lists each
+  workspace with its status, people, agents and rooms, its admins and when it
+  was made, and creates, renames, chooses admins for, archives and restores
+  them; Users lists everyone in the organization with the workspaces they are
+  in, makes or unmakes Org admins, adds people to a workspace, changes their
+  role in one or removes them from it, and makes invite links to any
+  workspace; Guardrails connects and disconnects the organization's Switch
+  Trust policy; and, with agent management on, Devices lists every device
+  and managed agent in the organization's workspaces with the workspace each
+  is in, and removes a device or stops managing an agent there
+  (`GET /organizations/current/devices`, and `DELETE` on
+  `/organizations/current/workspaces/{id}/devices/{controller_id}` and
+  `…/managed-agents/{agent_id}`). Today's organization page gains the
+  Guardrails section too, since guardrails are now set only there.
+- **People connect their own connectors from the dashboard.** Behind
+  `gateway_v2`, Connectors is a catalogue of every connector, with Yours and
+  All tabs and a search. Each card shows its category, whether you have
+  connected it, and "Off here" where the workspace has it off; a workspace
+  admin also sees how many people have connected each one. A key-based
+  connector takes its keys from its card or its page. A connector whose
+  sign-ins this server sends back to Switch's own callback (Google
+  Workspace, Airtable, GitLab, Linear, and GitHub) now connects in the
+  browser: Switch exchanges the code at its
+  callback, writes the same connection a sign-in from Switch Console writes,
+  and returns to the connector's page, which says how the sign-in ended or
+  why it failed, and offers Reconnect when a connection needs a fresh
+  sign-in. The callback writes the connection only for the person who
+  started the sign-in, and only in a browser signed in to Switch as them; a
+  page open at another address than `GATEWAY_PUBLIC_URL`, where the vendor
+  returns the browser, is told to connect from there instead.
+  One whose sign-ins come back to Switch Console (Notion and Sentry always,
+  Atlassian and Datadog unless `SERVICE_SIGN_IN_REDIRECT` names `core` for
+  them) still signs in there, as does one that asks for a choice before
+  signing in. Datadog connects from the dashboard all the same: pick the
+  site, then paste a personal access token, or API and application keys
+  where the server allows keys that never expire; Datadog checks them before
+  anything is stored, and a refused token can be replaced from its page.
+  `GET /service-connections` reports `web_sign_in`, and
+  `POST /service-connections/{service}/flows/web` and
+  `POST /provider-connections/github/flows/web` start a sign-in.
+- **Your account in the new dashboard layout.** Behind `gateway_v2`, Settings
+  › Your account shows your display name, which you can change in place, and
+  your email, read-only. It has cards to change your password (not shown for
+  an account made through single sign-on), to sign out of this browser or of
+  every device, and to delete your account. The delete dialog says straight
+  away when deletion isn't possible yet, for example because you're the only
+  admin of a workspace or organization that has other people in it, instead
+  of after you've typed your email. A new `GET /gateway/auth/me/deletion`
+  answers with the reason `DELETE /gateway/auth/me` would give, or null.
+  Change password moves out of the account menu in the new layout. In the
+  settings menu, Your account and the way across to the other settings area
+  each sit in a group of their own, below a divider.
+- **A link into the web dashboard can name its workspace.** A page opened
+  with `?workspace=<id>` switches to that workspace first, then opens the
+  same page there, rather than showing whichever workspace the browser had
+  selected last. It switches only to a workspace you're in, or one your
+  organization admin role covers, so a link can't take the platform operator
+  into someone else's. For any other workspace the page stays where it was
+  and says so. The address drops the parameter once it has been followed. A
+  link followed while signed out opens once you sign in, with a password or
+  through single sign-on, if that is within 15 minutes and in the same tab.
+  Switch Console's links into the dashboard use it.
+- **Workspace settings › API keys, Guardrails and Devices in the new
+  dashboard layout.** Behind `gateway_v2`:
+  - API keys: a workspace's admins (its admins, its organization's admin and
+    the operator) see every key in it, with its owner and fingerprint
+    (`GET /api-keys/workspace`), and delete anyone's key for adding agents.
+    An agent's own key stays with its owner, and the bootstrap key with the
+    operator it was seeded for. Members see their own. Only a key's owner can
+    copy it, as before. `GET /api-keys` is still the caller's own keys, and
+    every key now carries `owner_id`, `owner_name`, `agent_id` and
+    `agent_name`, the agent's name now rather than the one it registered
+    under.
+  - Guardrails: everyone in a workspace sees which Switch Trust policy checks
+    it, with its ID to copy and a link to it on Switch Trust
+    (`GET /workspace/guardrails`, which never returns the key), and its
+    name where Switch Trust gave one as it was connected. Its detectors are
+    listed on Switch Trust.
+  - Devices: a table of devices and one of managed agents. Admins see
+    everyone's and remove any device or managed agent; everyone else sees and
+    acts on their own. `GET /management/workspace` lists them as the caller
+    may see them, each with its owner, its type (computer, remote SSH or
+    cloud), how many of its agents run, and what the caller may do with it;
+    removed devices are left out. What an offline device can't do is greyed
+    out with the reason. The owner's cloud device shows as Switch Console
+    shows it, with Stop, Start and Retry.
 - **Messages sent while an agent works can steer its running turn.** Each
   agent has a `mid_turn_delivery` setting (`steer`, the default, or `queue`),
   kept on the agent so re-registering leaves it alone, changed on the agent's
@@ -331,6 +457,28 @@ version of their own to them without also giving them a release of their own.
   already refused both, so the current Workspace page no longer offers them.
 
 #### Changed
+- **Switch Trust guardrails are set per organization instead of once for
+  the whole server.** Each organization's admins connect its own policy, with
+  a policy ID and an API key, under Organization settings › Guardrails. Switch
+  Trust checks the policy before it is saved, and the dashboard shows its name,
+  ID and key ending. Every message in an organization's workspaces is checked
+  against that organization's policy, or not at all when it has none. On
+  upgrade, the policy the server had is copied into every existing
+  organization, so nothing checked before goes unchecked; a new organization
+  starts with none. The operator's server-wide setting is gone:
+  `/gateway/trust-settings` answers 410 saying where the setting went.
+- **Removing a device takes its agents off it.** They stop, and run again
+  once their owner puts them on another device; they used to stay placed on
+  the removed device until someone moved them.
+- **Nobody renames or removes a cloud device.** Switch names it, and it comes
+  and goes with its machine, so `PATCH` and `DELETE
+  /management/controllers/{id}` on one answer 409 `cloud_managed`, and its
+  `can_edit` and `can_remove` say no. Switch Console already offered
+  neither.
+- **A workspace's admins remove any device and stop managing any agent in
+  it** (`DELETE /management/controllers/{id}` and `DELETE
+  /management/agents/{id}`), as its owner does. Anyone else asking about
+  someone else's is still answered 404.
 - **The Teams default team follows the teams Switch is in.** A Microsoft
   Teams connection made by approving Switch's own Teams app starts with no
   default team, so creating a room with a channel failed until an admin
@@ -546,12 +694,35 @@ version of their own to them without also giving them a release of their own.
   of as well as the rooms.
 
 #### Fixed
+- **A sign-out that fails in the dashboard says so.** Signing out, or out of
+  every device, from the account menu or the screens before a workspace said
+  nothing when Switch didn't answer, and a failed sign-out of this browser
+  looked signed out until the next reload signed it back in. The dashboard
+  now stays signed in and shows what went wrong.
+- **Creating an API key no longer says it won't be shown again.** Its owner
+  can copy it again from the API keys page, as they always could.
+- **Deleting an API key that can't be deleted says why,** instead of closing
+  as if it had worked.
+- **The operator's Users and All workspaces pages say why they could not
+  load**, rather than showing an empty list.
 - **Messaging apps says when a change is refused or the list fails to load.**
   Turning agent greetings or channel creation on or off said nothing when
   Switch refused it, and a list that failed to load showed "No messaging apps
   yet". Both now show what happened.
 - **The retention window picker sits beside "Delete messages older than"
   again** in Workspace settings, rather than stretching across the page.
+- **The WorkOS directory mirror reads WorkOS's events again.** It asked for
+  them from a time written with a `+00:00` offset, which WorkOS refuses as
+  not ISO 8601, so every 30-second pass failed and changes made in WorkOS
+  reached Switch only through the daily check, a restart or a new link. It
+  now sends the time as WorkOS reads it (UTC, ending in `Z`).
+- **A members service at an address Switch won't connect to is reported, not
+  a server error.** With `ORGANIZATION_DIRECTORY=workos`, an Org Admin's role
+  change or removal whose members-service URL resolves to a private address
+  (one not allowed by `OUTBOUND_ALLOWED_PRIVATE_HOSTS`) answered 500. It now
+  says the members service could not be reached, and why: its host does not
+  resolve, or its address is refused, logged at `error`. A WorkOS API address
+  refused the same way is reported the same way.
 - **A GitLab disconnect or reconnect no longer says agents keep their
   access.** Revoking the sign-in at GitLab also ends the access tokens agents
   hold, so neither warns any more that they may keep working until they
@@ -933,6 +1104,19 @@ version of their own to them without also giving them a release of their own.
   polls) and its `device` with whose device it is, which is named to the
   device's owner and to workspace admins.
 - **An agent's page says when you can see the agent but not change it.**
+- **The new layout's Platform area is a place of its own.** Its pages span
+  every workspace, so, as in Organization settings, the rail gives way to
+  the area's menu and the top bar leads back to the workspace. Each of its
+  pages refuses anyone but the operator by itself, not only through the
+  area.
+- **The operator can sign someone out of all their devices.** The Users
+  page offers "Sign out of all devices" on every account but your own, for
+  a lost device or an account that looks taken over: every session it holds
+  ends, Switch Console's included, and the audit log records it. Delete
+  account moves into the same row menu.
+- **The operator's Users and All workspaces lists can be searched and
+  filtered**, by name and email, or by name, slug and organization, with a
+  Role or Organization dropdown and a count, in alphabetical order.
 - **The new layout's Workspace › Connectors chooses which connectors the
   workspace may use.** Each connector says whether it is enabled here and
   what decided that: the organization's lock ("Set by" the organization, with
@@ -3880,6 +4064,18 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **A new Home for each workspace.** One row at the top names the server and
+  workspace, shows the connection, and holds Refresh and the server's actions.
+  Signed out, the page is the sign-in card. Signed in, it offers to connect an
+  AI provider until switch-buddy has one, then a box to ask switch-buddy
+  anything, with up to three suggestions picked from what the workspace still
+  lacks: a messaging app (for admins), a first agent, a room for the team.
+  Sending, or clicking a suggestion, starts a new chat with switch-buddy with
+  the message sent, named from it. The identity card, the count tiles and the messaging apps moved off the
+  page; they are in Settings and Admin.
+- **`home_action` usage event.** Which suggestion on Home was clicked,
+  Connect to AI pressed, or a message sent to switch-buddy from Home. The
+  message itself is never sent.
 - **Confirm a linked chat account with a tap.** When the server can message
   the account, the link screen shows a number to tap in that message, with an
   **Open in …** button that opens the message in the chat app, the code below
@@ -4061,6 +4257,14 @@ version of their own to them without also giving them a release of their own.
   A machine cannot be given a Mistral Vibe login from Console yet.
 
 #### Changed
+- **Admin › Switch Trust points to the organization's guardrails on a server
+  that sets them per organization.** Such a server no longer has a
+  server-wide policy to edit, so the form gives way to its note and a button
+  that opens Organization settings › Guardrails in the dashboard. Servers that
+  still have the server-wide setting keep the form.
+- **Removing a device says what happens to its agents on any Switch:** they
+  stop, and run again once you put them on another device. It used to say
+  they stay placed on it, which newer Switch no longer does.
 - **New agents' generated avatars no longer carry the name.** A new agent
   created without a chosen icon gets the same digest-seeded DiceBear face the
   server generates, and the picker's choices are drawn the same way. Existing
@@ -4125,6 +4329,40 @@ version of their own to them without also giving them a release of their own.
   agent"; it was the only place Console showed that name.
 
 #### Fixed
+- **Cursor, Goose, Kiro and Mistral Vibe can be installed on Windows.** Each
+  offers its vendor's Windows install, which works from PowerShell or Command
+  Prompt, where before it said "Not found" with nothing to install. Cursor and
+  Kiro are found straight after installing, without restarting Switch Console.
+  An agent with no install for your system, such as DeepSeek Harness on
+  Windows, now says it is not available to install there and links its install
+  docs.
+- **DeepSeek Harness installs a version its sessions accept.** The install
+  took npm's latest release, which sessions with approvals refused. It now
+  installs the release they are verified with, with the npm install scripts it
+  needs allowed.
+- **Switch buddy setup finds a CLI installed in a terminal.** The provider
+  card always offers Check again, also before anything was installed from
+  Console, and the step checks again when its window is focused (at most every
+  15 seconds), which is when someone comes back from a terminal. Before, a CLI
+  installed outside Console while the step was open stayed "Not installed".
+- **An install that needs a missing program says so.** When an install command
+  fails because the shell can't find the program it runs (npm, winget, curl),
+  the card says what is missing and how to get it, for example "Installing
+  OpenCode needs Node.js…", instead of PowerShell's "Check the spelling of the
+  name". It is reported as `missing_prerequisite` in `agent_cli_action`.
+- **Workspace settings opens the web dashboard's settings in its new
+  layout.** On a server with the new layout on, Settings › Workspace settings
+  landed on its Users page. It now opens the settings home, on the page you
+  last had open there or else General, and Organization settings opens the
+  organization's. Servers without the new layout open the same pages as
+  before.
+- **Links into the web dashboard open the workspace they're for.** Workspace
+  settings, Organization settings, an agent's page and a room's page could
+  open in another workspace on the same server: the one the browser had
+  selected last or, for the server Switch Console runs, the one Switch Console
+  had last used. An agent or room page then said the agent or room wasn't
+  found. The links now name their workspace, and the dashboard switches to it.
+  A dashboard from before this release ignores it.
 - **A sign-in the vendor refuses no longer waits without a word.** A vendor
   that refuses the sign-in (a wrong redirect URI, a scope the app lacks)
   shows its own error page and never sends the browser back. After a minute,
@@ -4343,6 +4581,11 @@ version of their own to them without also giving them a release of their own.
   stops says why, as Connectors does, even when it is turned on.
 
 #### Removed
+- **The welcome page.** The Switch mark in the sidebar, and deleting the agent
+  or server on screen, now go to the active workspace's Home, or to an "Add a
+  server" page when no server is left. "About Switch" in the workspace menu is
+  now "Switch on GitHub". The `view_opened` event reports `noServer` where it
+  reported `home`.
 - **Usage events nothing needed any more.** `buddy_message_sent` (the Switch
   server counts Console's chats), the setup checklist's
   `onboarding_step_started`, `onboarding_checklist_dismissed` and

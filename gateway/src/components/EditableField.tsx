@@ -24,6 +24,8 @@ interface Props {
   /** The pencil's accessible name, "Rename workspace". */
   editLabel: string;
   maxLength: number;
+  /** How wide the field and its pencil may grow, in pixels. */
+  width: number;
   /** Stores the trimmed draft. A rejection's message shows under the field,
    * which stays open with what was typed. */
   onSave: (draft: string) => Promise<void>;
@@ -49,6 +51,7 @@ export default function EditableField({
   readOnlyHelper,
   editLabel,
   maxLength,
+  width,
   onSave,
 }: Props) {
   const id = useId();
@@ -113,7 +116,7 @@ export default function EditableField({
   const helper = editing ? error : canEdit ? null : readOnlyHelper;
 
   return (
-    <FormControl error={editing && error !== null} sx={{ maxWidth: 420 }} fullWidth>
+    <FormControl error={editing && error !== null} sx={{ maxWidth: width }} fullWidth>
       <InputLabel htmlFor={id}>{label}</InputLabel>
       {editing ? (
         <OutlinedInput

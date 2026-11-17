@@ -67,6 +67,18 @@ class ProviderLoginRunner {
     return { attemptId };
   }
 
+  /**
+   * Types a line into the attempt's sign-in command: the code a CLI asks for
+   * when its browser round trip ends on a page that shows one to paste. A
+   * line for an attempt that has ended or been replaced is refused.
+   */
+  input(attemptId: string, line: string): void {
+    const running = this.current;
+    if (running?.attemptId !== attemptId || !running.child.stdin?.writable)
+      throw new Error('That sign-in has already ended. Start it again.');
+    running.child.stdin.write(`${line.trim()}\n`);
+  }
+
   /** Ends the attempt in progress, with everything it started. */
   cancel(): void {
     const running = this.current;

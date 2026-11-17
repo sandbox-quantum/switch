@@ -1121,6 +1121,13 @@ function isoTimestamp(raw: string): string {
   return parsed.toISOString();
 }
 
+/** `raw` as `isoTimestamp` writes it, or as it came when it does not parse:
+ * a room with an odd date still belongs in the list. */
+function isoTimestampOr(raw: string): string {
+  const parsed = new Date(raw.replace(' ', 'T'));
+  return Number.isNaN(parsed.getTime()) ? raw : parsed.toISOString();
+}
+
 function mapInvitation(json: InvitationJson): Invitation {
   return {
     id: json.id,
@@ -2137,8 +2144,13 @@ export async function fetchBridgeTypes(server: SwitchServer): Promise<RemoteBrid
 /** Slack's create-app page, filled in with the app this server needs. */
 export async function fetchSlackOwnAppSetup(server: SwitchServer): Promise<SlackOwnAppSetup> {
   const res = await gatewayFetch(server, '/collaborations/setup/slack', { authenticated: true });
-  const body = z.object({ create_url: z.string() }).parse(await res.json());
-  return { createUrl: body.create_url };
+  const body = z
+    .object({ create_url: z.string(), manifest: z.record(z.string(), z.unknown()).optional() })
+    .parse(await res.json());
+  return {
+    createUrl: body.create_url,
+    manifestJson: body.manifest ? JSON.stringify(body.manifest, null, 2) : null,
+  };
 }
 
 /**
@@ -3582,6 +3594,8 @@ type RoomSummaryJson = {
   people_are_members?: boolean;
   archived: boolean;
   created_at: string;
+  /** Absent from a server too old to say. */
+  last_message_at?: string | null;
   write_visibility?: string;
   /** What the caller may do with the room, decided by the routes' own rules; absent from an older server. */
   can_write?: boolean;
@@ -3619,7 +3633,10 @@ function mapRoomSummary(r: RoomSummaryJson): RemoteRoomSummary {
     isConsoleChat: r.is_console_chat ?? false,
     ...(r.people_are_members !== undefined ? { peopleAreMembers: r.people_are_members } : {}),
     archived: r.archived,
-    createdAt: r.created_at,
+    // In the same form as every other time Console orders rooms by, which
+    // the server writes with a space where ISO 8601 has a `T`.
+    createdAt: isoTimestampOr(r.created_at),
+    lastMessageAt: r.last_message_at ? isoTimestampOr(r.last_message_at) : null,
     // The same reading as a room's detail, so the list and the room page offer the same changes.
     writeVisibility: visibilityOf(r.write_visibility),
     ...(r.read_visibility !== undefined ? { readVisibility: visibilityOf(r.read_visibility) } : {}),

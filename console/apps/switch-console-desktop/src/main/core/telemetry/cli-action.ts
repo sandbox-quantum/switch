@@ -7,7 +7,7 @@ import { installMethodOf } from './narrow';
 import { trackEvent } from './telemetry-service';
 
 /** As much of a dependency operation's result as reporting needs. */
-type CliActionResult = { success: boolean; error?: { type?: string } };
+type CliActionResult = { success: boolean; error?: { type?: string; missingCommand?: string } };
 
 /** Where the CLI is being installed. The host itself is never named. */
 type CliActionTarget = 'local' | 'remote';

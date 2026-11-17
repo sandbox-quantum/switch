@@ -49,6 +49,7 @@ from switch_core.db.fingerprint import Fingerprint
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.tenant_lookup import all_tenant_ids
 from switch_core.management.bindings import (
+    TenantPlacements,
     reconcile_bindings,
     reconcile_controller_bindings,
 )
@@ -128,7 +129,7 @@ class ControllerSignals:
         self._nudged_operations: dict[str, set[str]] = {}
         # Each tenant's placements as the last full read of the bindings here
         # found them, which the periodic re-check compares first.
-        self._binding_fingerprints: dict[str, Fingerprint] = {}
+        self._binding_fingerprints: dict[str, TenantPlacements] = {}
         # Each tenant's controller connections as the last full read of them
         # here found them, with the processes holding a lease then, which the
         # periodic re-check compares first; and the controllers that read

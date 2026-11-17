@@ -35,7 +35,9 @@ class _FixedTrustClient:
         self._result = result
         self.room_ids: list[str] = []
 
-    async def check(self, *, role: str, content: str, room_id: str) -> TrustCheckResult:
+    async def check(
+        self, *, tenant_id: str, role: str, content: str, room_id: str
+    ) -> TrustCheckResult:
         self.room_ids.append(room_id)
         return self._result
 
@@ -43,7 +45,9 @@ class _FixedTrustClient:
 class _FailingTrustClient:
     """A Switch Trust outage: every check raises, never answers an outcome."""
 
-    async def check(self, *, role: str, content: str, room_id: str) -> TrustCheckResult:
+    async def check(
+        self, *, tenant_id: str, role: str, content: str, room_id: str
+    ) -> TrustCheckResult:
         raise GuardrailsCheckError("boom")
 
 

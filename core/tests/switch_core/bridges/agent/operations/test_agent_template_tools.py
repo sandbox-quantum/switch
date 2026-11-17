@@ -42,6 +42,7 @@ from switch_core.bridges.agent.operations.definitions import (
 from switch_core.db.models import Agent, Room, Template, User
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.template_store import TemplateStore
+from switch_core.providers.registry import provider_ids
 from switch_core.rooms_yaml import RoomSpec
 from switch_core.template_guide import TEMPLATE_GUIDE
 from tests.telemetry_records import recording_telemetry
@@ -97,7 +98,11 @@ kickoff: "@{agent} introduce yourself."
 async def tools(env):
     env["protocol"].config = SimpleNamespace(
         template_max_bytes=64 * 1024,
-        feature_flags={"agent_management": False, "switch_buddy": False},
+        feature_flags={
+            "agent_management": False,
+            "switch_buddy": False,
+            "additional_agent_providers": True,
+        },
     )
     env["protocol"].telemetry = None
     async with env["session_factory"]() as session:
@@ -199,6 +204,7 @@ def test_an_existing_agent_only_stands_in_where_the_template_allows_it():
             {"team": "red"},
             builtins={},
             machines=None,
+            providers=frozenset(provider_ids()),
         )
     assert e.value.reason == "agents_not_created"
     assert "red-triager: the template does not let an existing agent" in str(e.value)
@@ -916,6 +922,7 @@ async def test_a_server_with_switch_buddy_offers_it_instead_of_the_expert(tools)
     tools["protocol"].config.feature_flags = {
         "agent_management": True,
         "switch_buddy": True,
+        "additional_agent_providers": True,
     }
     ids = {r["id"] for r in await _as(tools["agent_id"], list_templates)}
     assert "official:switch-buddy" in ids
@@ -943,6 +950,7 @@ async def test_an_official_template_the_workspace_removed_is_gone_for_agents(too
     tools["protocol"].config.feature_flags = {
         "agent_management": True,
         "switch_buddy": False,
+        "additional_agent_providers": True,
     }
     async with tools["session_factory"]() as session:
         await TemplateStore().hide_official(

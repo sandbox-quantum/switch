@@ -1,5 +1,13 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { ChevronDown, ChevronRight, FileText, Loader2, MoreHorizontal, Plus } from 'lucide-react';
+import {
+  ChevronDown,
+  ChevronRight,
+  FileText,
+  Loader2,
+  MoreHorizontal,
+  Plus,
+  UserPlus,
+} from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { type ReactNode, useState } from 'react';
 import { chatMembersQueryKey } from '@renderer/features/chats/chat-people';
@@ -287,11 +295,24 @@ export const RoomSidePanel = observer(function RoomSidePanel({ roomId }: { roomI
       aria-label="Room"
       className="flex w-[260px] shrink-0 flex-col gap-3 overflow-y-auto border-r border-border p-2"
     >
+      {/* A Console room takes people as well as agents, so its add is its own
+      button, not the + beside Agents, which reads as agents only. */}
+      {consoleChat && controls.addAgents && (
+        <Button
+          variant="outline"
+          size="sm"
+          className="w-full justify-start"
+          onClick={controls.addAgents}
+        >
+          <UserPlus />
+          Add participants
+        </Button>
+      )}
       <Fold
         title="Agents"
         count={agentIds.length}
-        onAdd={controls.addAgents}
-        addLabel={consoleChat ? 'Add participants' : 'Add agents'}
+        onAdd={consoleChat ? null : controls.addAgents}
+        addLabel="Add agents"
       >
         {unreadable ? (
           <Note>{failureText(detail.error, 'Could not read who is in this room.')}</Note>
@@ -334,6 +355,7 @@ export const RoomSidePanel = observer(function RoomSidePanel({ roomId }: { roomI
               <PersonRow
                 key={person.key}
                 name={person.name}
+                userId={person.userIds[0] ?? null}
                 fullName={person.fullName}
                 detail={standing?.isAdmin ? 'room admin' : person.detail}
                 actions={[
@@ -401,6 +423,7 @@ export const RoomSidePanel = observer(function RoomSidePanel({ roomId }: { roomI
                 <PersonRow
                   key={admin.userId}
                   name={name}
+                  userId={admin.userId}
                   fullName={null}
                   detail={admin.userId === viewerId ? 'you' : null}
                   actions={
@@ -619,12 +642,15 @@ type PersonAction = {
 
 function PersonRow({
   name,
+  userId,
   fullName,
   detail,
   actions,
   act,
 }: {
   name: string;
+  /** Their Switch user, when known, for their colour. */
+  userId: string | null;
   /** For a messaging-app username, the name of the Switch user who linked it, shown in brackets. */
   fullName: string | null;
   detail: string | null;
@@ -635,7 +661,7 @@ function PersonRow({
   const [busy, setBusy] = useState(false);
   return (
     <div className="group flex items-center gap-2 rounded-md px-2 py-1 hover:bg-[var(--sel-soft)]">
-      <PersonMark name={name} size="sm" />
+      <PersonMark name={name} userId={userId} size="sm" />
       <span className="min-w-0 flex-1 truncate text-[13px] text-foreground">
         {name}
         {fullName !== null && <span className="text-foreground-muted"> ({fullName})</span>}

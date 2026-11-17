@@ -3,17 +3,18 @@ import ExpandMoreOutlined from "@mui/icons-material/ExpandMoreOutlined";
 import HelpOutlineOutlined from "@mui/icons-material/HelpOutlineOutlined";
 import MenuBookOutlined from "@mui/icons-material/MenuBookOutlined";
 import { Alert, Box, Button, Snackbar, Stack, Typography } from "@mui/material";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { MouseEvent, ReactNode } from "react";
 import { Link as RouterLink, useLocation } from "react-router";
 import { useAuth } from "../data/AuthContext";
+import { useOrganizationRenamed } from "../data/organizationEvents";
 import {
   type OrganizationName,
   loadOrganizationNames,
   organizationName,
 } from "../data/workspaceSwitcher";
 import CreateInvitationDialog from "../pages/workspace/CreateInvitationDialog";
-import { type Layout, areaOf } from "../routes/routeTable";
+import { type Layout, outsideWorkspace } from "../routes/routeTable";
 import { DevRoleSlot } from "./DevRoleSlot";
 import WorkspaceMenu from "./WorkspaceMenu";
 
@@ -86,14 +87,14 @@ function CurrentCrumbs({ section }: { section: string | undefined }) {
 }
 
 /** The new layout's breadcrumb: "Organization / Workspace", which opens the
- * workspace switcher, then the page. In organization settings, the way back
- * to the workspace instead. */
+ * workspace switcher, then the page. In an area outside the workspace,
+ * organization settings or Platform, the way back to it instead. */
 function WorkspaceCrumbs({
   section,
-  inOrganizationSettings,
+  outside,
 }: {
   section: string | undefined;
-  inOrganizationSettings: boolean;
+  outside: boolean;
 }) {
   const { session, switchTo } = useAuth();
   const [organizations, setOrganizations] = useState<OrganizationName[]>([]);
@@ -104,6 +105,9 @@ function WorkspaceCrumbs({
 
   const tenant = session?.tenant ?? null;
   const currentOrganizationId = tenant?.organization_id ?? null;
+  // Bumped when the organization is renamed, so its name is read again.
+  const [renames, setRenames] = useState(0);
+  useOrganizationRenamed(useCallback(() => setRenames((n) => n + 1), []));
   useEffect(() => {
     let cancelled = false;
     loadOrganizationNames(currentOrganizationId).then(
@@ -119,7 +123,7 @@ function WorkspaceCrumbs({
     return () => {
       cancelled = true;
     };
-  }, [currentOrganizationId]);
+  }, [currentOrganizationId, renames]);
 
   const switchWorkspace = async (tenantId: string) => {
     setAnchor(null);
@@ -133,7 +137,7 @@ function WorkspaceCrumbs({
   const organization = organizationName(currentOrganizationId, organizations);
 
   let crumbs: ReactNode;
-  if (inOrganizationSettings) {
+  if (outside) {
     crumbs = (
       <Button
         component={RouterLink}
@@ -190,6 +194,7 @@ function WorkspaceCrumbs({
         <CreateInvitationDialog
           open={inviteOpen}
           tenantId={tenant.id}
+          fromOrganization={false}
           workspaceName={tenant.name}
           emailEnabled={session?.invite_email_enabled ?? false}
           onClose={() => setInviteOpen(false)}
@@ -239,10 +244,7 @@ export default function TopBar({ layout }: { layout: Layout }) {
       }}
     >
       {layout === "v2" ? (
-        <WorkspaceCrumbs
-          section={section}
-          inOrganizationSettings={areaOf(pathname, layout) === "organization"}
-        />
+        <WorkspaceCrumbs section={section} outside={outsideWorkspace(pathname, layout)} />
       ) : (
         <CurrentCrumbs section={section} />
       )}

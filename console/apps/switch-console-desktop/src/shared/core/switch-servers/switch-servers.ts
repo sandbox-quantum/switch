@@ -9,6 +9,8 @@
  * in the encrypted secrets store, never in plain settings.
  */
 
+import { WORKSPACE_PARAM } from './dashboard-pages';
+
 /**
  * Origin (protocol + host + port, lowercased) of a URL, or null if unparseable.
  * Agents are matched to servers by origin rather than full URL: an agent's
@@ -59,6 +61,22 @@ export function normaliseServerUrl(url: string): string {
  * keeps the dashboard elsewhere. */
 export function dashboardOrigin(server: Pick<SwitchServer, 'url' | 'dashboardUrl'>): string {
   return server.dashboardUrl ?? server.url;
+}
+
+/**
+ * The address of one of a server's dashboard pages, in the workspace
+ * `tenantId` names when it names one. The dashboard switches to it on arrival
+ * (`?workspace=`), so the page is that workspace's rather than whichever one
+ * the browser, or the session Console last used, had selected. A dashboard
+ * from before ignores it.
+ */
+export function dashboardPageUrl(
+  server: Pick<SwitchServer, 'url' | 'dashboardUrl'>,
+  path: string,
+  tenantId: string | null
+): string {
+  const page = `${dashboardOrigin(server).replace(/\/+$/, '')}/${path}`;
+  return tenantId === null ? page : `${page}?${WORKSPACE_PARAM}=${encodeURIComponent(tenantId)}`;
 }
 
 /** A registered Switch server. Non-secret connection metadata only. */
@@ -381,6 +399,12 @@ export type RemoteRoomSummary = {
   peopleAreMembers?: boolean;
   archived: boolean;
   createdAt: string;
+  /**
+   * When the room last had a message, from any platform, as ISO 8601: what
+   * room lists order by. Null when it has had none; absent from an older
+   * server.
+   */
+  lastMessageAt?: string | null;
   /** Who may write to the room, when the server says (see `RoomDetail`); absent from an older server. */
   writeVisibility?: RoomVisibility;
   /**
@@ -961,6 +985,9 @@ export type TrustSettings = {
  * non-operator gets `forbidden` rather than an empty form. */
 export type FetchTrustSettingsResult =
   | { kind: 'loaded'; settings: TrustSettings }
+  /** A server that has each organization set its own policy, which no longer
+   * has one for the whole server; `message` is its word on where it went. */
+  | { kind: 'moved'; message: string }
   | { kind: 'unauthenticated' }
   | { kind: 'forbidden' }
   | { kind: 'error'; message: string };

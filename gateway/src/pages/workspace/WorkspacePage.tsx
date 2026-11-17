@@ -126,6 +126,7 @@ function WorkspaceNameField({ tenant }: { tenant: TenantMembership }) {
         readOnlyHelper="An org admin or a workspace admin can change this."
         editLabel="Rename workspace"
         maxLength={WORKSPACE_NAME_MAX}
+        width={420}
         onSave={rename}
       />
       <Snackbar

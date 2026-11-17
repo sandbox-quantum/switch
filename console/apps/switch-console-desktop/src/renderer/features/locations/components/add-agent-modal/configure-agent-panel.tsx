@@ -6,12 +6,12 @@ import {
   PERMISSION_COPY,
   UnsafeBadge,
 } from '@renderer/features/locations/components/settings-view/sections/permission-settings-section';
-import { InfoTooltip } from '@renderer/features/settings/components/InfoTooltip';
 import { AddressingPolicyControl } from '@renderer/features/switch-servers/addressing-policy-control';
 import type { OptionItem } from '@renderer/features/switch-servers/addressing-policy-editor';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { useMyIdentities } from '@renderer/features/switch-servers/use-my-identities';
 import { AgentIconPicker } from '@renderer/lib/components/agent-icon-picker';
+import { InfoTooltip } from '@renderer/lib/components/info-tooltip';
 import { rpc } from '@renderer/lib/ipc';
 import { useWorkspaceAgents } from '@renderer/lib/stores/use-workspace-agents';
 import { Alert, AlertAction, AlertDescription } from '@renderer/lib/ui/alert';

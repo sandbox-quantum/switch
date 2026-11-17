@@ -1,7 +1,7 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { InfoTooltip } from '@renderer/features/settings/components/InfoTooltip';
+import { InfoTooltip } from '@renderer/lib/components/info-tooltip';
 
 describe('InfoTooltip', () => {
   let container: HTMLDivElement;

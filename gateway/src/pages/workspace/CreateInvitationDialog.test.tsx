@@ -36,6 +36,7 @@ function renderDialog(emailEnabled: boolean) {
     <CreateInvitationDialog
       open
       tenantId="t1"
+      fromOrganization={false}
       workspaceName="Acme"
       emailEnabled={emailEnabled}
       onClose={() => {}}
@@ -122,7 +123,7 @@ describe("CreateInvitationDialog", () => {
     vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>((resolve) => (answer = resolve))));
     const onClose = vi.fn();
     render(
-      <CreateInvitationDialog open tenantId="t1" workspaceName="Acme" emailEnabled={false} onClose={onClose} />,
+      <CreateInvitationDialog open tenantId="t1" fromOrganization={false} workspaceName="Acme" emailEnabled={false} onClose={onClose} />,
     );
     pick("Role", "Member");
 

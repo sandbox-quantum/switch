@@ -48,13 +48,14 @@ from switch_core.gateway.auth import (
     get_current_user,
     hash_password_off_loop,
     initial_tenant_claim,
+    list_held_memberships,
     list_tenant_memberships,
     operator_entered_workspace,
     require_admin,
     session_auth_time,
     set_session_cookie,
     signup_refused_by_edge,
-    tenants_bindable_by,
+    tenants_held_by,
     verify_password_off_loop,
 )
 from switch_core.gateway.dependencies import (
@@ -81,6 +82,7 @@ from switch_core.gateway.hosted_machines import (
     hosted_settings,
 )
 from switch_core.gateway.schemas import (
+    AccountDeletionCheck,
     AuthConfigResponse,
     ChangePasswordRequest,
     CreateUserRequest,
@@ -527,6 +529,56 @@ async def my_pending_identities(
     return pending
 
 
+@router.get("/auth/me/deletion")
+async def check_my_account_deletion(
+    request: Request,
+    session: Annotated[AsyncSession, Depends(get_system_session)],
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
+    caller: Annotated[AuthenticatedCaller, Depends(get_authenticated_caller)],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+    organization_store: Annotated[OrganizationStore, Depends(get_organization_store)],
+    agent_store: Annotated[AgentStore, Depends(get_agent_store)],
+    api_key_store: Annotated[ApiKeyStore, Depends(get_api_key_store)],
+    template_store: Annotated[TemplateStore, Depends(get_template_store)],
+    protocol: Annotated[AgentCore, Depends(get_protocol)],
+    resource_service: Annotated[ResourceService, Depends(get_resource_service)],
+    room_service: Annotated[RoomService, Depends(get_room_service)],
+    broker: Annotated[ServiceBroker, Depends(get_service_broker)],
+    client_lifecycle: Annotated[ClientLifecycleService, Depends(get_client_lifecycle)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
+) -> AccountDeletionCheck:
+    """What `DELETE /auth/me` would refuse with now, for the Gateway to say so
+    before the caller types their email rather than after. Changes nothing,
+    and the deletion checks again when it runs: someone else can be made an
+    admin, or stop being one, in between."""
+    user = await user_store.get(session, caller.id)
+    if user is None:
+        raise HTTPException(status_code=401, detail="User not found")
+    deletion = _account_deletion(
+        request,
+        session_factory,
+        protocol,
+        broker,
+        resource_service,
+        room_service,
+        user_store,
+        organization_store,
+        agent_store,
+        api_key_store,
+        template_store,
+        client_lifecycle,
+        config,
+    )
+    workspaces = await _workspaces_to_delete(
+        deletion, session_factory, user_store, user.id
+    )
+    return AccountDeletionCheck(
+        refusal=await deletion.refusal(session, user, workspaces)
+    )
+
+
 @router.delete("/auth/me")
 async def delete_my_account(
     req: DeleteAccountRequest,
@@ -711,7 +763,7 @@ async def _workspaces_to_delete(
 ) -> list[Workspace]:
     memberships = [
         Workspace(id=m.id, name=m.name, role=m.role)
-        for m in await list_tenant_memberships(session_factory, user_store, user_id)
+        for m in await list_held_memberships(session_factory, user_store, user_id)
     ]
     return await deletion.with_former_workspaces(user_id, memberships)
 
@@ -737,7 +789,7 @@ async def update_me(
     # Console chat is their member client's, copied when it was made.
     await rename_member_clients(
         session_factory,
-        await tenants_bindable_by(session_factory, user.id),
+        await tenants_held_by(session_factory, user.id),
         user.id,
         req.name,
     )

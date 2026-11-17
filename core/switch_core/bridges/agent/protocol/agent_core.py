@@ -1779,6 +1779,7 @@ class AgentCore:
         content."""
         check = await check_message(
             self.trust_client,
+            tenant_id=require_tenant_id(),
             role="assistant",
             content=content,
             room_id=room.id,
@@ -1823,12 +1824,18 @@ class AgentCore:
         as the body would. A card it redacts is dropped (returned as None) —
         a card has no redacted form, and its words must not reach the room —
         and the body goes alone. Its alert or error notes join the body's."""
+        tenant_id = require_tenant_id()
         body_check, card_check = await asyncio.gather(
             check_message(
-                self.trust_client, role="assistant", content=content, room_id=room.id
+                self.trust_client,
+                tenant_id=tenant_id,
+                role="assistant",
+                content=content,
+                room_id=room.id,
             ),
             check_message(
                 self.trust_client,
+                tenant_id=tenant_id,
                 role="assistant",
                 content=trust_text(ui),
                 room_id=room.id,
@@ -2129,14 +2136,20 @@ class AgentCore:
         trust_notes: list[str] = []
         file_notes: tuple[str, ...] = ()
         flagged = False
-        if await trust_is_active(self.trust_client):
+        tenant_id = require_tenant_id()
+        if await trust_is_active(self.trust_client, tenant_id):
             files_check_task = check_attachments(
-                self.trust_client, role="assistant", files=files, room_id=room.id
+                self.trust_client,
+                tenant_id=tenant_id,
+                role="assistant",
+                files=files,
+                room_id=room.id,
             )
             if caption_text is not None:
                 caption_check, files_check = await asyncio.gather(
                     check_message(
                         self.trust_client,
+                        tenant_id=tenant_id,
                         role="assistant",
                         content=caption_text,
                         room_id=room.id,

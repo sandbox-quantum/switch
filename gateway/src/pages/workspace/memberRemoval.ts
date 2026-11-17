@@ -30,9 +30,22 @@ function handedOverSummary(handed: HandedOver): string {
 }
 
 /** What the removal moved, and to whom, as the server reports it. */
-export function removalNotice(member: Member, result: MemberRemovalResult, selfId: string): string {
+export function removalNotice(
+  member: Pick<Member, "user_id" | "name">,
+  result: MemberRemovalResult,
+  selfId: string,
+  /** The workspace by name, where the page is not that workspace's own. */
+  workspaceName: string | null,
+): string {
   const leaving = member.user_id === selfId;
-  const done = leaving ? "You left the workspace." : `Removed ${member.name}.`;
+  const done =
+    workspaceName === null
+      ? leaving
+        ? "You left the workspace."
+        : `Removed ${member.name}.`
+      : leaving
+        ? `You left ${workspaceName}.`
+        : `Removed ${member.name} from ${workspaceName}.`;
   const owner = leaving ? "you" : "they";
   const summary = handedOverSummary(result.handed_over);
   if (result.handed_over_to && summary) {
@@ -44,11 +57,19 @@ export function removalNotice(member: Member, result: MemberRemovalResult, selfI
 /** What the removal will do, before it is confirmed: `heir` is who the server
  * would hand what they own to now, or null when the workspace has no other
  * admin. */
-export function removalDescription(member: Member, heir: RemovalHeir | null, selfId: string): string {
+export function removalDescription(
+  member: Pick<Member, "user_id" | "name">,
+  heir: RemovalHeir | null,
+  selfId: string,
+  /** The workspace by name, where the page is not that workspace's own. */
+  workspaceName: string | null,
+): string {
   const leaving = member.user_id === selfId;
+  const where = workspaceName ?? "this workspace";
+  const place = workspaceName === null ? "here" : "there";
   const lose = leaving
-    ? "You will lose access to this workspace, along with your API keys and connector sign-ins here."
-    : `${member.name} will lose access to this workspace, along with their API keys and connector sign-ins here.`;
+    ? `You will lose access to ${where}, along with your API keys and connector sign-ins ${place}.`
+    : `${member.name} will lose access to ${where}, along with their API keys and connector sign-ins ${place}.`;
   const owned = leaving ? "you own" : "they own";
   if (heir === null) {
     return `${lose} The workspace has no other admin, so what ${owned} here stays ${leaving ? "yours" : "theirs"}.`;

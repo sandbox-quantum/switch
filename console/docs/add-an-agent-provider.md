@@ -136,6 +136,8 @@ The plugin is what Console shows and how it finds the CLI. Copy
   Optional fields, all documented in
   `console/packages/core/src/agents/plugins/index.ts`:
   - `cliLabel`: for when the name alone is ambiguous ("Cursor CLI").
+  - `shortName`: the bare product name when the display name carries the
+    vendor ("Codex" for "OpenAI Codex"); it prefixes suggested agent names.
   - `knownAgentType`: defaults to the id.
   - `sessionStartMaySignIn`: set it when starting a session can open a sign-in
     browser, so model listing checks sign-in first.

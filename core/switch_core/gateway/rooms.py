@@ -93,6 +93,7 @@ from switch_core.gateway.schemas import (
     RoomUsersRequest,
 )
 from switch_core.gateway.templates import readable_template
+from switch_core.providers.registry import offered_provider_ids
 from switch_core.room_invites import (
     InviteRefused,
     invitable_agent_ids,
@@ -503,6 +504,7 @@ async def list_rooms(
     chat_members = await room_store.member_users_by_room(
         session, [room.id for room in rooms if people_are_members(room)]
     )
+    last_message_at = await room_store.last_message_at(session, room_ids)
     # Not held across the deeplinks, which can ask the platform on a cache miss.
     await session.commit()
 
@@ -544,6 +546,11 @@ async def list_rooms(
                 read_visibility=room.read_visibility,
                 write_visibility=room.write_visibility,
                 created_at=str(room.created_at),
+                last_message_at=(
+                    last_message_at[room.id].isoformat()
+                    if room.id in last_message_at
+                    else None
+                ),
                 archived=room.archived_at is not None,
                 viewer_is_member=room.id in involved,
                 viewer_is_room_admin=room.id in administered,
@@ -908,7 +915,12 @@ async def run_template_document(
             else None
         )
         plan = plan_template(
-            body.template, body.filled, inputs, builtins=builtins, machines=machines
+            body.template,
+            body.filled,
+            inputs,
+            builtins=builtins,
+            machines=machines,
+            providers=offered_provider_ids(config.feature_flags),
         )
     except AgentsNotCreated as error:
         return _refused_run(error)

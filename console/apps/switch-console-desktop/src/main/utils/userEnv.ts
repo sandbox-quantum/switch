@@ -2,11 +2,13 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { windowsRegistryPath, withWindowsPathEntries } from '@switch-console/agent-providers';
 import { getWindowsEnvValue } from '@switch-console/core/exec';
 import {
   withWindowsAgyBinDir,
   withWindowsCodexBinDir,
   withWindowsGitBashDir,
+  withWindowsInstallerBinDirs,
 } from '@switch-console/plugins/agents';
 import { log } from '@main/lib/logger';
 import { buildExternalToolEnv } from './childProcessEnv';
@@ -106,17 +108,21 @@ export function ensureWindowsNpmGlobalBinInPath(
  * Adds the folders Windows provider installers write CLIs to without telling
  * a running app: Google's Antigravity installer puts `agy.exe` in
  * `%LOCALAPPDATA%\agy\bin`, and OpenAI's official Codex installer puts
- * `codex.exe` in `%LOCALAPPDATA%\Programs\OpenAI\Codex\bin`. Each adds its
- * folder to the user's PATH, which an app started before the install does not
- * see. Added last, in the same order as the agent controller adds them
- * (`withWindowsAgyBinDir`, then `withWindowsCodexBinDir`). Returns the folders
- * added.
+ * `codex.exe` in `%LOCALAPPDATA%\Programs\OpenAI\Codex\bin`, and Cursor's
+ * and Kiro's go to `withWindowsInstallerBinDirs`'s. Each adds its folder to the
+ * user's PATH, which an app started before the install does not see. Added
+ * last, in the same order as the agent controller adds them
+ * (`withWindowsAgyBinDir`, `withWindowsCodexBinDir`, then
+ * `withWindowsInstallerBinDirs`). Returns the folders added.
  */
 export function ensureWindowsUserBinDirsInPath(env: NodeJS.ProcessEnv = process.env): string[] {
   const pathKey = getWindowsPathEnvKey(env);
   const before = env[pathKey] ?? '';
   const localAppData = getWindowsEnvValue(env, 'LOCALAPPDATA');
-  const after = withWindowsCodexBinDir(withWindowsAgyBinDir(before, localAppData), localAppData);
+  const after = withWindowsInstallerBinDirs(
+    withWindowsCodexBinDir(withWindowsAgyBinDir(before, localAppData), localAppData),
+    localAppData
+  );
   if (after === before) return [];
   env[pathKey] = after;
   const had = new Set(before.split(path.win32.delimiter));
@@ -146,6 +152,45 @@ export function ensureWindowsGitBashInPath(
   if (after === before) return null;
   env[pathKey] = after;
   return after.split(path.win32.delimiter).at(-1)!;
+}
+
+/**
+ * Brings this process's PATH up to date with what was installed since it
+ * started: the PATH the registry now gives a new process (the machine's, then
+ * the user's), the user's `.local\\bin`, and the provider folders above. An
+ * installer adds its folder to the registry and to nothing already running, so
+ * without this a CLI installed from Console reads as not installed until
+ * Console restarts. Keeps the current PATH when the registry cannot be read,
+ * and says so.
+ */
+export async function refreshWindowsPath(env: NodeJS.ProcessEnv = process.env): Promise<void> {
+  const pathKey = getWindowsPathEnvKey(env);
+  const registry = await windowsRegistryPath(env);
+  if (registry === null) {
+    log.warn(
+      'Could not read the PATH from the registry; a CLI installed since Switch Console started may not be found until it restarts'
+    );
+  } else {
+    env[pathKey] = withWindowsPathEntries(env[pathKey] ?? '', registry);
+  }
+  const userProfile = getWindowsEnvValue(env, 'USERPROFILE');
+  if (userProfile) {
+    const localBin = path.win32.join(userProfile, '.local', 'bin');
+    if (pathEntryExists(localBin))
+      env[pathKey] = withWindowsPathEntries(env[pathKey] ?? '', localBin);
+  }
+  ensureWindowsNpmGlobalBinInPath(env);
+  ensureWindowsUserBinDirsInPath(env);
+  ensureWindowsGitBashInPath(env, fs.existsSync);
+}
+
+/**
+ * Refreshes PATH for a CLI that may have been installed since start: the
+ * registry's on Windows, the user's own bin folders elsewhere.
+ */
+export async function refreshInstalledCliPath(): Promise<void> {
+  if (process.platform === 'win32') await refreshWindowsPath();
+  else ensureUserBinDirsInPath();
 }
 
 /**

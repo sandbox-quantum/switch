@@ -3,10 +3,12 @@ import { motion } from 'motion/react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useManagedAgents } from '@renderer/features/managed-agents/use-managed-agents';
 import { AgentIcon } from '@renderer/lib/components/agent-icon';
+import { TermInfo } from '@renderer/lib/components/term-info';
+import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { Button } from '@renderer/lib/ui/button';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import { OnboardingSurface, useWizardExit } from '@renderer/lib/ui/wizard-frame';
-import { agentProviders } from '@shared/core/providers/agent-provider-registry';
+import { offeredAgentProviders } from '@shared/core/providers/agent-provider-registry';
 import { BuddyAvatar } from './buddy-avatar';
 import { findBuddy, firstNameOf } from './buddy-identity';
 import { buddyPerson } from './buddy-person';
@@ -66,7 +68,11 @@ export const MeetBuddyPage = observer(function MeetBuddyPage({
           : null,
     [computer, earlyProviders]
   );
-  const providers = useMemo(() => buddyProviders(agentProviders(), reported), [reported]);
+  const flags = useFeatureFlags(serverId);
+  const providers = useMemo(
+    () => buddyProviders(offeredAgentProviders(flags), reported),
+    [reported, flags]
+  );
   const [outOfPatience, setOutOfPatience] = useState(false);
   const machineReady = reported !== null;
   // Counted from when the page opens, not from the first report: a computer
@@ -159,16 +165,7 @@ export const MeetBuddyPage = observer(function MeetBuddyPage({
           >
             Open switch-buddy
           </Button>
-        ) : (
-          <StartChoices
-            checking={computer.kind !== 'failed' && !checked}
-            ready={ready}
-            starting={starting}
-            onStart={start}
-            onSetUp={openSetup}
-            onSkip={skip}
-          />
-        )
+        ) : null
       }
     >
       <MeetBuddyIntro
@@ -177,6 +174,18 @@ export const MeetBuddyPage = observer(function MeetBuddyPage({
         onPlayed={() => {
           introPlayed.current = true;
         }}
+        after={
+          existing ? null : (
+            <StartChoices
+              checking={computer.kind !== 'failed' && !checked}
+              ready={ready}
+              starting={starting}
+              onStart={start}
+              onSetUp={openSetup}
+              onSkip={skip}
+            />
+          )
+        }
       />
       {computer.kind === 'failed' && (
         <div className="flex flex-col items-center gap-2">
@@ -198,10 +207,10 @@ export const MeetBuddyPage = observer(function MeetBuddyPage({
 });
 
 /**
- * How to start the buddy, once this computer's providers are known. With a
- * provider already signed in, those are the way, beside another provider; no
- * Skip, though the flow's own way out stays at the top. With none, set one up
- * or skip.
+ * How to start the buddy, as the chat's last turn: a card asking for an AI
+ * provider. With one already signed in on this computer, each is a tile to
+ * start it with, beside a link to the others; no Skip, though the flow's own
+ * way out stays at the top. With none, set one up or skip.
  */
 export function StartChoices({
   checking,
@@ -221,52 +230,71 @@ export function StartChoices({
   const busy = starting !== null;
   const shown = checking ? 'checking' : ready.length > 0 ? 'signed-in' : 'none';
   return (
-    <motion.div
-      key={shown}
-      initial={{ opacity: 0, y: 6 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ type: 'spring', stiffness: 260, damping: 26 }}
-      className="flex flex-col items-center gap-3"
+    <section
+      aria-labelledby="buddy-start-heading"
+      className="flex max-w-full flex-col gap-3 rounded-2xl bg-foreground/[0.04] p-3 emdark:bg-background-2/60"
     >
-      {shown === 'checking' ? (
-        <span className="flex h-9 items-center gap-1.5 text-xs text-foreground-muted">
-          <Spinner className="size-3" />
-          Checking AI providers…
-        </span>
-      ) : shown === 'signed-in' ? (
-        <>
-          <p className="text-sm text-foreground-muted">How’d you like to power switch-buddy?</p>
-          <div className="flex flex-wrap items-center justify-center gap-2">
-            <span className="text-sm text-foreground-muted">Already signed in:</span>
+      <h2
+        id="buddy-start-heading"
+        className="flex items-center gap-1.5 px-1 text-sm font-medium text-foreground"
+      >
+        Pick an AI provider to get started
+        <TermInfo term="provider" />
+      </h2>
+      <motion.div
+        key={shown}
+        initial={{ opacity: 0, y: 6 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ type: 'spring', stiffness: 260, damping: 26 }}
+        className="flex flex-wrap items-center gap-3"
+      >
+        {shown === 'checking' ? (
+          <span className="flex h-9 items-center gap-1.5 px-1 text-xs text-foreground-muted">
+            <Spinner className="size-3" />
+            Checking AI providers…
+          </span>
+        ) : shown === 'signed-in' ? (
+          <>
             {ready.map((provider) => (
-              <Button
+              <button
                 key={provider.id}
-                variant="outline"
+                type="button"
                 onClick={() => onStart(provider.id)}
                 disabled={busy}
+                className="flex w-40 flex-col items-start gap-3 rounded-xl bg-background p-3 text-left shadow-sm transition-shadow outline-none hover:shadow-md focus-visible:ring-2 focus-visible:ring-border-primary enabled:cursor-pointer disabled:opacity-60 emdark:bg-background-1"
               >
                 {starting === provider.id ? (
-                  <Spinner className="size-3.5" />
+                  <Spinner className="size-5" />
                 ) : (
-                  <AgentIcon id={provider.id} size={16} />
+                  <AgentIcon id={provider.id} size={20} />
                 )}
-                {provider.name}
-              </Button>
+                <span className="flex flex-col">
+                  <span className="text-sm font-medium text-foreground">{provider.name}</span>
+                  <span className="text-xs text-foreground-success">Signed in locally</span>
+                </span>
+              </button>
             ))}
-            <span className="text-sm text-foreground-muted">or</span>
-            <Button variant="outline" onClick={onSetUp} disabled={busy}>
-              Use other AI providers
+            <span className="text-sm text-foreground-muted">
+              or{' '}
+              <button
+                type="button"
+                onClick={onSetUp}
+                disabled={busy}
+                className="rounded-sm text-foreground underline underline-offset-2 outline-none hover:text-foreground-muted focus-visible:ring-2 focus-visible:ring-border-primary enabled:cursor-pointer disabled:opacity-60"
+              >
+                use other providers
+              </button>
+            </span>
+          </>
+        ) : (
+          <>
+            <Button onClick={onSetUp}>Set up AI provider</Button>
+            <Button variant="ghost" onClick={onSkip}>
+              Skip
             </Button>
-          </div>
-        </>
-      ) : (
-        <div className="flex gap-2">
-          <Button variant="outline" onClick={onSkip}>
-            Skip
-          </Button>
-          <Button onClick={onSetUp}>Set up AI provider</Button>
-        </div>
-      )}
-    </motion.div>
+          </>
+        )}
+      </motion.div>
+    </section>
   );
 }

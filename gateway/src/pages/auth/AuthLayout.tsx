@@ -1,6 +1,7 @@
-import { Box, Card, CircularProgress, Link, Stack, Typography } from "@mui/material";
-import type { ReactNode } from "react";
+import { Alert, Box, Card, CircularProgress, Link, Stack, Typography } from "@mui/material";
+import { type ReactNode, useState } from "react";
 import { useAuth } from "../../data/AuthContext";
+import LinkNoticeBanner from "../../layout/LinkNoticeBanner";
 import SwitchLogo from "../../layout/SwitchLogo";
 
 /** The canvas the screens before the app sit on, holding its content in the
@@ -59,6 +60,7 @@ export default function AuthLayout({
             {subtitle}
           </Typography>
         </Stack>
+        <LinkNoticeBanner />
         {children}
         {footer !== null && (
           <Box sx={{ mt: 3, textAlign: "center" }}>{footer}</Box>
@@ -72,13 +74,36 @@ export default function AuthLayout({
  * before they are in a workspace. */
 export function SignedInFooter() {
   const { user, logout } = useAuth();
+  // A sign-out that works leaves this screen; one that fails says so.
+  const [signOutError, setSignOutError] = useState<string | null>(null);
+  const signOut = async () => {
+    setSignOutError(null);
+    try {
+      await logout();
+    } catch (err) {
+      setSignOutError(`Couldn't sign out: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
   return (
-    <Typography variant="body2" sx={{ color: "text.secondary", overflowWrap: "anywhere" }}>
-      {user ? `Signed in as ${user.email} · ` : ""}
-      <Link component="button" type="button" onClick={logout} color="inherit" sx={{ verticalAlign: "baseline" }}>
-        Sign out
-      </Link>
-    </Typography>
+    <>
+      <Typography variant="body2" sx={{ color: "text.secondary", overflowWrap: "anywhere" }}>
+        {user ? `Signed in as ${user.email} · ` : ""}
+        <Link
+          component="button"
+          type="button"
+          onClick={() => void signOut()}
+          color="inherit"
+          sx={{ verticalAlign: "baseline" }}
+        >
+          Sign out
+        </Link>
+      </Typography>
+      {signOutError && (
+        <Alert severity="error" sx={{ mt: 2, overflowWrap: "anywhere", textAlign: "left" }}>
+          {signOutError}
+        </Alert>
+      )}
+    </>
   );
 }
 

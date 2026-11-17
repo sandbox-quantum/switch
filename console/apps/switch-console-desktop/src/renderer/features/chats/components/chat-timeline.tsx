@@ -15,7 +15,14 @@ import {
   liveSessionStartingNotices,
   turnEndNotice,
 } from '@shared/core/chats/chats';
-import { foldTurnEndNotices, placeRequests, placeTurns, type TurnActivity } from '../activity-join';
+import { personColour } from '@shared/core/people/person-colour';
+import {
+  foldTurnEndNotices,
+  latestTurnReply,
+  placeRequests,
+  placeTurns,
+  type TurnActivity,
+} from '../activity-join';
 import { messageAnchorId, threadChip } from '../chat-threads';
 import {
   agentTargets,
@@ -108,10 +115,11 @@ function MentionText({
   );
 }
 
-function PersonAvatar({ name }: { name: string }) {
+function PersonAvatar({ name, userId }: { name: string; userId: string | null }) {
   return (
     <span
-      className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full bg-[var(--fill-2)] text-[11px] font-medium text-foreground"
+      className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full text-[11px] font-medium"
+      style={personColour(userId ?? name)}
       title={name}
       aria-hidden
     >
@@ -165,8 +173,8 @@ type Props = {
 
 /**
  * The chat's messages in sequence order, each agent's activity under the
- * room message that started it, then the sends from here the room has not
- * echoed yet.
+ * room message that started it (under its latest reply while running), then
+ * the sends from here the room has not echoed yet.
  */
 export const ChatTimelineView = observer(function ChatTimelineView({
   serverId,
@@ -195,11 +203,15 @@ export const ChatTimelineView = observer(function ChatTimelineView({
       turnsByMessage.set(messageId, list);
     }
     for (const [anchorId, turns] of placeTurns(timeline.messages, activity.agentId, bound)) {
-      blocksByAnchor.set(anchorId, [
-        ...(blocksByAnchor.get(anchorId) ?? []),
-        ...turns.map((turn) => ({ activity, turn })),
-      ]);
-      for (const turn of turns)
+      for (const turn of turns) {
+        const blockAnchor =
+          turn.status === 'running'
+            ? latestTurnReply(timeline.messages, activity.agentId, bound, anchorId)
+            : anchorId;
+        blocksByAnchor.set(blockAnchor, [
+          ...(blocksByAnchor.get(blockAnchor) ?? []),
+          { activity, turn },
+        ]);
         for (const [requestAnchor, requests] of placeRequests(
           timeline.messages,
           activity.agentId,
@@ -207,7 +219,7 @@ export const ChatTimelineView = observer(function ChatTimelineView({
           anchorId,
           turn
         )) {
-          if (requestAnchor === anchorId)
+          if (requestAnchor === blockAnchor)
             blockRequests.set(`${activity.agentId}:${turn.turnId}`, requests);
           else
             requestsByAnchor.set(requestAnchor, [
@@ -215,6 +227,7 @@ export const ChatTimelineView = observer(function ChatTimelineView({
               { activity, requests },
             ]);
         }
+      }
     }
     for (const [noticeId, turnId] of foldTurnEndNotices(timeline.messages, activity.agentId, bound))
       foldedNotices.set(noticeId, `${activity.agentId}:${turnId}`);
@@ -375,7 +388,7 @@ export const ChatTimelineView = observer(function ChatTimelineView({
                 id={messageAnchorId(message.messageId)}
                 className={cn('group/row flex gap-3', spacing())}
               >
-                <PersonAvatar name={message.sender.name} />
+                <PersonAvatar name={message.sender.name} userId={message.sender.userId} />
                 <div className="flex max-w-[85%] min-w-0 flex-col items-start gap-1">
                   <span className="flex items-center gap-1.5 text-xs">
                     <span className="font-medium text-foreground-muted">{message.sender.name}</span>
@@ -539,13 +552,15 @@ const PendingBubble = observer(function PendingBubble({
         </span>
       ) : (
         <div role="alert" className="flex max-w-[85%] flex-col items-start gap-1 text-xs">
-          <span className="text-foreground-destructive">
-            {send.state === 'conflict'
-              ? 'This request id was already used for a different message, so it was not sent. Discard it and send again.'
-              : send.uncertain
-                ? `Not confirmed: ${send.error ?? 'Switch did not answer.'} Retrying sends the same message, never a second copy.`
-                : send.error}
-          </span>
+          {(send.state === 'conflict' || send.uncertain || send.error) && (
+            <span className="text-foreground-destructive">
+              {send.state === 'conflict'
+                ? 'This request id was already used for a different message, so it was not sent. Discard it and send again.'
+                : send.uncertain
+                  ? `Not confirmed: ${send.error ?? 'Switch did not answer.'} Retrying sends the same message, never a second copy.`
+                  : send.error}
+            </span>
+          )}
           <span className="flex gap-1">
             {send.state === 'failed' && (
               <Button size="sm" variant="ghost" onClick={() => timeline.retry(send.requestId)}>

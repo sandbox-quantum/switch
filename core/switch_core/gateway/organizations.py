@@ -17,13 +17,14 @@ read back by its `org_admin`s. See `docs/design/organizations-v1.md`.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Awaitable, Callable
 from datetime import datetime
 from typing import Annotated, NamedTuple
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.authz import ORGANIZATION_ADMIN_ROLE
@@ -45,21 +46,26 @@ from switch_core.db.audit import (
     record_organization_audit_event,
 )
 from switch_core.db.models import (
+    TENANT_ZERO_ID,
     Organization,
     OrganizationMember,
     Tenant,
+    TenantMember,
     User,
     require_tenant_id,
 )
+from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.organization_store import OrganizationStore
+from switch_core.db.stores.room_store import RoomStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.auth import (
     AuthenticatedCaller,
     get_authenticated_caller,
     get_authenticated_user_id,
     get_current_user,
+    membership_in_organization,
     organization_candidates,
     organization_workspaces_bindable_by,
     organizations_bindable_by,
@@ -76,6 +82,7 @@ from switch_core.gateway.dependencies import (
     get_organization_directory,
     get_organization_store,
     get_protocol,
+    get_room_store,
     get_session,
     get_session_factory,
     get_system_session,
@@ -88,8 +95,13 @@ from switch_core.gateway.schemas import (
     OrganizationCreateResponse,
     OrganizationIssueDetail,
     OrganizationMemberDetail,
+    OrganizationMemberListEntry,
     OrganizationMemberUpdateRequest,
+    OrganizationMemberWorkspace,
+    OrganizationRenameRequest,
+    OrganizationRenameResponse,
     OrganizationSummary,
+    OrganizationWorkspaceResponse,
     TenantMembershipResponse,
     WorkspaceCreateRequest,
 )
@@ -104,6 +116,7 @@ from switch_core.gateway.workspace_creation import (
     create_workspace,
     directory_failed,
     lock_workspace_allowance,
+    refuse_a_workspace_name_taken,
 )
 from switch_core.organization_access import (
     AccessRevocation,
@@ -125,13 +138,15 @@ from switch_core.workos_sign_in import OrganizationToken
 
 router = APIRouter()
 
+logger = logging.getLogger(__name__)
+
 
 def _member_detail(
     user: User,
     member: OrganizationMember,
     warning: str | None,
     *,
-    access: _OrganizationAccess | None,
+    access: OrganizationAccess | None,
     accepts_promotion: bool,
 ) -> OrganizationMemberDetail:
     """`member`, with what the caller, who passes the role-change gate as
@@ -145,6 +160,7 @@ def _member_detail(
         role=member.role,
         created_at=str(member.created_at),
         warning=warning,
+        service_account=is_bootstrap_owner(user),
         can_change_role=change,
         # Never the registration service account (`SERVICE_ACCOUNT_ADMIN_REFUSAL`).
         can_grant_org_admin=change
@@ -178,7 +194,7 @@ async def _current_organization_id(session: AsyncSession) -> str:
     return tenant.organization_id
 
 
-class _OrganizationAccess(NamedTuple):
+class OrganizationAccess(NamedTuple):
     organization_id: str
     # Let through on the operator flag alone, to restore an `org_admin`,
     # rather than as one: what the organization's audit log marks as
@@ -193,7 +209,7 @@ async def organization_access(
     user: User,
     *,
     operator_restores: bool,
-) -> _OrganizationAccess | None:
+) -> OrganizationAccess | None:
     """How `user` gets into the bound workspace's organization as its admin,
     or None when they don't; 404 when the workspace belongs to no
     organization.
@@ -208,13 +224,13 @@ async def organization_access(
         await user_store.organization_role(session, require_tenant_id(), user.id)
         == ORGANIZATION_ADMIN_ROLE
     ):
-        return _OrganizationAccess(organization_id, platform_access=False)
+        return OrganizationAccess(organization_id, platform_access=False)
     if (
         operator_restores
         and user.role == "admin"
         and await organization_store.count_admins(session, organization_id) == 0
     ):
-        return _OrganizationAccess(organization_id, platform_access=True)
+        return OrganizationAccess(organization_id, platform_access=True)
     return None
 
 
@@ -225,7 +241,7 @@ async def require_organization_admin(
     user: User,
     *,
     operator_restores: bool,
-) -> _OrganizationAccess:
+) -> OrganizationAccess:
     """`organization_access`, refused with 403 when there is none."""
     access = await organization_access(
         session,
@@ -334,6 +350,50 @@ async def current_organization(
     )
 
 
+@router.patch("/organizations/current")
+async def rename_current_organization(
+    req: OrganizationRenameRequest,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+    organization_store: Annotated[OrganizationStore, Depends(get_organization_store)],
+    user: Annotated[User, Depends(get_current_user)],
+) -> OrganizationRenameResponse:
+    """Rename the organization. Its `org_admin`s only: the operator who may
+    restore one is let in to change roles, not this. The slug stays as it
+    is, being an identifier. One whose members come from a directory such
+    as WorkOS keeps its own name here: Switch writes nothing about the
+    organization there, and reads no name back. The name it already has
+    changes and records nothing; a rename is recorded in its audit log."""
+    access = await require_organization_admin(
+        session, user_store, organization_store, user, operator_restores=False
+    )
+    # Locked, so renames made at the same moment each record the name they
+    # replaced.
+    organization = await session.get(
+        Organization, access.organization_id, with_for_update={"key_share": True}
+    )
+    if organization is None:
+        raise RuntimeError(f"Organization {access.organization_id} is not visible here")
+    if req.name != organization.name:
+        await record_organization_audit_event(
+            session,
+            organization_id=organization.id,
+            actor_user_id=user.id,
+            action=OrganizationAuditAction.ORGANIZATION_RENAMED,
+            target_type="organization",
+            target_id=organization.id,
+            details={
+                "name": req.name,
+                "previous_name": organization.name,
+                **made_from(access),
+            },
+        )
+        organization.name = req.name
+        await session.commit()
+        logger.info("User %s renamed organization %s", user.id, organization.id)
+    return OrganizationRenameResponse(id=access.organization_id, name=req.name)
+
+
 @router.get("/organizations/current/workspaces")
 async def list_organization_workspaces(
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -341,22 +401,85 @@ async def list_organization_workspaces(
         async_sessionmaker[AsyncSession], Depends(get_session_factory)
     ],
     user_store: Annotated[UserStore, Depends(get_user_store)],
+    agent_store: Annotated[AgentStore, Depends(get_agent_store)],
+    room_store: Annotated[RoomStore, Depends(get_room_store)],
+    organization_store: Annotated[OrganizationStore, Depends(get_organization_store)],
     user: Annotated[User, Depends(get_current_user)],
-) -> list[TenantMembershipResponse]:
+) -> list[OrganizationWorkspaceResponse]:
     """The organization's workspaces the caller may enter, and their role in
     each: every one for an `org_admin`, their own for a member, and every one
-    for the platform operator, who may enter any."""
+    for the platform operator, who may enter any. Each with what the
+    Workspaces page shows of it: when it was made, its counts, and its admins
+    by membership."""
     organization_id = await _current_organization_id(session)
-    # Let go of the request's connection while each workspace is read on a
-    # session of its own.
-    await session.commit()
-    return await organization_workspaces_bindable_by(
-        session_factory,
-        user_store,
-        user.id,
-        organization_id,
-        is_operator=user.role == "admin",
+    current_id = require_tenant_id()
+    administers = (
+        await organization_access(
+            session, user_store, organization_store, user, operator_restores=False
+        )
+        is not None
     )
+    is_operator = user.role == "admin"
+    # Let go of the request's connection while each workspace is read on a
+    # session of its own: everything shown of it, on the one session.
+    await session.commit()
+    described: list[OrganizationWorkspaceResponse] = []
+    for tenant_id in await organization_candidates(
+        session_factory, user.id, organization_id, is_operator=is_operator
+    ):
+        async with tenant_session(session_factory, tenant_id) as bound:
+            workspace = await membership_in_organization(
+                bound,
+                user_store,
+                tenant_id,
+                user.id,
+                organization_id,
+                is_operator=is_operator,
+            )
+            if workspace is None:
+                continue
+            tenant = await bound.get(Tenant, tenant_id)
+            assert tenant is not None  # `membership_in_organization` read it.
+            blocked = (
+                _ARCHIVE_ADMINS_ONLY
+                if not administers
+                else archive_blocked_reason(tenant.id, current_id)
+            )
+            described.append(
+                OrganizationWorkspaceResponse(
+                    **workspace.model_dump(),
+                    created_at=str(tenant.created_at),
+                    users=await user_store.count_people(bound, tenant),
+                    agents=await agent_store.count(bound),
+                    rooms=await room_store.count(bound),
+                    admins=await user_store.admin_names(bound, tenant),
+                    can_archive=tenant.archived_at is None and blocked is None,
+                    archive_blocked_reason=(
+                        blocked if tenant.archived_at is None else None
+                    ),
+                    can_restore=tenant.archived_at is not None and administers,
+                )
+            )
+    return described
+
+
+# Why a workspace can't be archived, as the Workspaces page shows it.
+_ARCHIVE_ADMINS_ONLY = "Only an organization admin can archive a workspace."
+_ARCHIVE_CURRENT = "You're working in this workspace. Switch to another one first."
+_ARCHIVE_DEFAULT = (
+    "Everyone who signs up joins this workspace, so it can't be archived."
+)
+
+
+def archive_blocked_reason(workspace_id: str, current_id: str) -> str | None:
+    """Why an organization admin may not archive `workspace_id` from
+    `current_id`, the workspace their request is bound to, or None when they
+    may."""
+    if workspace_id == current_id:
+        return _ARCHIVE_CURRENT
+    if workspace_id == TENANT_ZERO_ID:
+        return _ARCHIVE_DEFAULT
+    return None
 
 
 @router.post("/organizations/current/workspaces", status_code=201)
@@ -385,6 +508,9 @@ async def create_organization_workspace(
         session, user_store, organization_store, user, operator_restores=False
     )
     organization_id = access.organization_id
+    await refuse_a_workspace_name_taken(
+        session, session_factory, organization_id, req.name, renaming=None
+    )
     allowance = (
         None
         if user.role == "admin"
@@ -413,10 +539,11 @@ async def create_organization_workspace(
         role="admin",
         organization_role=ORGANIZATION_ADMIN_ROLE,
         organization_id=organization_id,
+        archived_at=None,
     )
 
 
-def _made_from(access: _OrganizationAccess) -> dict[str, object]:
+def made_from(access: OrganizationAccess) -> dict[str, object]:
     """Where an organization change was made: the workspace the request was
     bound to, and whether the platform operator made it on the operator flag
     alone."""
@@ -524,15 +651,19 @@ async def list_organization_issues(
 @router.get("/organizations/current/members")
 async def list_organization_members(
     session: Annotated[AsyncSession, Depends(get_session)],
+    session_factory: Annotated[
+        async_sessionmaker[AsyncSession], Depends(get_session_factory)
+    ],
     user_store: Annotated[UserStore, Depends(get_user_store)],
     organization_store: Annotated[OrganizationStore, Depends(get_organization_store)],
     organization_directory: Annotated[
         OrganizationDirectory, Depends(get_organization_directory)
     ],
     user: Annotated[User, Depends(get_current_user)],
-) -> list[OrganizationMemberDetail]:
-    """Every member of the organization and their role in it. `org_admin` only:
-    the list spans every workspace of the organization, not only this one."""
+) -> list[OrganizationMemberListEntry]:
+    """Every member of the organization, their role in it and the workspaces
+    of it they hold a membership in. `org_admin` only: the list spans every
+    workspace of the organization, not only this one."""
     access = await require_organization_admin(
         session, user_store, organization_store, user, operator_restores=True
     )
@@ -541,7 +672,7 @@ async def list_organization_members(
         organization_directory, await _organization(session, organization_id)
     )
     members = await organization_store.list_members(session, organization_id)
-    return [
+    details = [
         _member_detail(
             member_user,
             member,
@@ -551,6 +682,56 @@ async def list_organization_members(
         )
         for member_user, member in members
     ]
+    # Let go of the request's connection while each workspace is read on a
+    # session of its own.
+    await session.commit()
+    held = await _memberships_in_organization(
+        session_factory, user_store, user, organization_id
+    )
+    return [
+        OrganizationMemberListEntry(
+            **detail.model_dump(), workspaces=held.get(detail.user_id, [])
+        )
+        for detail in details
+    ]
+
+
+async def _memberships_in_organization(
+    session_factory: async_sessionmaker[AsyncSession],
+    user_store: UserStore,
+    user: User,
+    organization_id: str,
+) -> dict[str, list[OrganizationMemberWorkspace]]:
+    """Each person's memberships in the organization's workspaces, by user id,
+    the workspaces in name order: every workspace of it the caller reaches,
+    which for its `org_admin` and the operator is every one."""
+    held: dict[str, list[OrganizationMemberWorkspace]] = {}
+    workspaces = await organization_workspaces_bindable_by(
+        session_factory,
+        user_store,
+        user.id,
+        organization_id,
+        is_operator=user.role == "admin",
+    )
+    for workspace in sorted(workspaces, key=lambda w: (w.name.casefold(), w.id)):
+        async with tenant_session(session_factory, workspace.id) as bound:
+            rows = (
+                await bound.execute(
+                    select(TenantMember.user_id, TenantMember.role).where(
+                        TenantMember.tenant_id == workspace.id
+                    )
+                )
+            ).all()
+        for user_id, role in rows:
+            held.setdefault(user_id, []).append(
+                OrganizationMemberWorkspace(
+                    id=workspace.id,
+                    name=workspace.name,
+                    role=role,
+                    archived=workspace.archived_at is not None,
+                )
+            )
+    return held
 
 
 # Why a change the directory did not make still took something away.
@@ -615,7 +796,7 @@ async def _member_change(
     user_store: UserStore,
     organization_directory: OrganizationDirectory,
     token: OrganizationToken | None,
-    access: _OrganizationAccess,
+    access: OrganizationAccess,
     organization: Organization,
     user_id: str,
     role: str | None,
@@ -854,7 +1035,7 @@ async def update_organization_member_role(
             details={
                 "from": member.role,
                 "to": req.role,
-                **_made_from(access),
+                **made_from(access),
             },
         )
     member.role = req.role
@@ -1001,7 +1182,7 @@ async def remove_organization_member(
         action=OrganizationAuditAction.MEMBER_REMOVED,
         target_type="user",
         target_id=user_id,
-        details={"role": role, **_made_from(access)},
+        details={"role": role, **made_from(access)},
     )
     await session.commit()
     if user_id == user.id:

@@ -94,8 +94,8 @@ export default function CreateKeyDialog({ open, onClose, onCreated }: Props) {
         <Stack spacing={2} sx={{ mt: 1 }}>
           {result ? (
             <>
-              <Alert severity="warning">
-                Copy the key now. It will not be shown again.
+              <Alert severity="info">
+                Copy the key now. Only you can copy it again later, from the API keys page.
               </Alert>
               <TextField
                 label="API key"

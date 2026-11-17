@@ -32,6 +32,7 @@ from switch_core.db.models import (
     User,
     require_tenant_id,
 )
+from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.hosted_machine_store import (
     CloudMachineStore,
     bump_revision,
@@ -526,6 +527,8 @@ class TestControllerMachines:
     async def test_a_revoked_controller_is_replaced_by_enrolling_again(
         self, harness: Harness
     ) -> None:
+        """Revoked as deleting its owner's account does: nobody removes a
+        cloud device through the routes (`service.refuse_cloud`)."""
         owner = await add_member(harness.session_factory, "ada")
         machine = await _claim(harness.session_factory, owner)
         async with _hosted_app(harness.session_factory, owner) as hosted:
@@ -540,11 +543,18 @@ class TestControllerMachines:
                 )
                 assert created.status_code == 201, created.text
                 before = (await _machine(harness.session_factory, machine.id)).revision
-                revoked = await client.delete(
+                refused = await client.delete(
                     f"/gateway/management/controllers/{first['controller_id']}",
                     cookies=cookies_for(owner),
                 )
-                assert revoked.status_code == 200, revoked.text
+                assert refused.status_code == 409, refused.text
+                assert refused.json()["error"]["code"] == "cloud_managed"
+                async with tenant_session(
+                    harness.session_factory, TENANT_ZERO_ID
+                ) as session:
+                    await harness.management.service.revoke_controller(
+                        session, TENANT_ZERO_ID, owner.id, first["controller_id"]
+                    )
                 assert (
                     await _machine(harness.session_factory, machine.id)
                 ).revision == before + 1

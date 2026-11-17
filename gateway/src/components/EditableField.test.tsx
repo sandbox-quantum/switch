@@ -10,6 +10,7 @@ const field = (props: Partial<Parameters<typeof EditableField>[0]>) => (
     readOnlyHelper="An org admin or a workspace admin can change this."
     editLabel="Rename workspace"
     maxLength={255}
+    width={420}
     onSave={async () => {}}
     {...props}
   />

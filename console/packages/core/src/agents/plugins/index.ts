@@ -43,6 +43,12 @@ const metadataSchema = z.object({
    */
   cliLabel: z.string().optional(),
   /**
+   * The bare product name, where `name` carries the vendor ("Codex" for
+   * "OpenAI Codex"). Prefixes the agent names Console suggests, which people
+   * type to address an agent. Defaults to `name`.
+   */
+  shortName: z.string().optional(),
+  /**
    * The Switch gateway's known-agent type for this provider, sent when an agent
    * registers. Must be a key the gateway's known-agent list accepts. Defaults to
    * `id`.

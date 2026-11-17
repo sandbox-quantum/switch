@@ -172,6 +172,7 @@ ROUTES: dict[str, Case] = {
     ),
     # ── API keys ─────────────────────────────────────────────────────────
     "GET /gateway/api-keys": get(f"{G}/api-keys", SELF),
+    "GET /gateway/api-keys/workspace": get(f"{G}/api-keys/workspace", admins()),
     "POST /gateway/api-keys": post(f"{G}/api-keys", SELF, json={"label": "mine"}),
     "GET /gateway/api-keys/{key_id}/reveal": get(
         f"{G}/api-keys/{{registration_key}}/reveal",
@@ -179,7 +180,9 @@ ROUTES: dict[str, Case] = {
         why="A key is a credential: not even an admin may read another's.",
     ),
     "DELETE /gateway/api-keys/{key_id}": delete(
-        f"{G}/api-keys/{{registration_key}}", owner(refused=403)
+        f"{G}/api-keys/{{registration_key}}",
+        owner_or_admins(),
+        why="A key for adding agents: its owner's, and the workspace's admins'.",
     ),
     # ── Your account ─────────────────────────────────────────────────────
     "GET /gateway/version": get(f"{G}/version", SELF),
@@ -198,6 +201,7 @@ ROUTES: dict[str, Case] = {
         json={"current_password": "wrong-password", "new_password": "a-new-password-1"},
         why="Your own: refused, the current password being wrong.",
     ),
+    "GET /gateway/auth/me/deletion": get(f"{G}/auth/me/deletion", SELF),
     "DELETE /gateway/auth/me": Case(
         Ask("DELETE", f"{G}/auth/me"),
         anyone(ok=422),
@@ -370,6 +374,61 @@ ROUTES: dict[str, Case] = {
     "POST /gateway/organizations/current/workspaces": post(
         f"{G}/organizations/current/workspaces", org_admin(), json={"name": "{tag}-ws"}
     ),
+    "PATCH /gateway/organizations/current": patch(
+        f"{G}/organizations/current", org_admin(), json={"name": "{tag}-org"}
+    ),
+    "PATCH /gateway/organizations/current/workspaces/{workspace_id}": patch(
+        f"{G}/organizations/current/workspaces/{{tenant}}",
+        org_admin(),
+        json={"name": "{tag}-renamed"},
+    ),
+    "PUT /gateway/organizations/current/workspaces/{workspace_id}/admins": put(
+        f"{G}/organizations/current/workspaces/{{tenant}}/admins",
+        org_admin(ok=400),
+        json={"user_ids": ["nobody-in-the-workspace"]},
+        why="The organization's admin; let through, then told nobody is choosable.",
+    ),
+    "PATCH /gateway/organizations/current/workspaces/{workspace_id}/members/{user_id}": patch(
+        f"{G}/organizations/current/workspaces/{{tenant}}/members/nobody",
+        org_admin(ok=404),
+        json={"role": "member"},
+        why="The organization's admin; let through, then told there is no such member.",
+    ),
+    "GET /gateway/organizations/current/workspaces/{workspace_id}/members/{user_id}/removal": get(
+        f"{G}/organizations/current/workspaces/{{tenant}}/members/nobody/removal",
+        org_admin(ok=404),
+        why="The organization's admin; let through, then told there is no such member.",
+    ),
+    "DELETE /gateway/organizations/current/workspaces/{workspace_id}/members/{user_id}": delete(
+        f"{G}/organizations/current/workspaces/{{tenant}}/members/nobody",
+        org_admin(ok=404),
+        why="The organization's admin; let through, then told there is no such member.",
+    ),
+    "POST /gateway/organizations/current/workspaces/{workspace_id}/invitations": post(
+        f"{G}/organizations/current/workspaces/{{tenant}}/invitations",
+        org_admin(),
+        json={"role": "member"},
+    ),
+    "POST /gateway/organizations/current/workspaces/{workspace_id}/archive": post(
+        f"{G}/organizations/current/workspaces/{{tenant}}/archive",
+        org_admin(ok=409),
+        why=(
+            "The organization's admin; let through, then refused, since the "
+            "workspace asked is the one the request is bound to."
+        ),
+    ),
+    "POST /gateway/organizations/current/workspaces/{workspace_id}/members": post(
+        f"{G}/organizations/current/workspaces/{{tenant}}/members",
+        org_admin(ok=404),
+        json={"user_id": "nobody-in-the-organization", "role": "member"},
+        why=(
+            "The organization's admin; let through, then told the person is "
+            "not in the organization."
+        ),
+    ),
+    "POST /gateway/organizations/current/workspaces/{workspace_id}/restore": post(
+        f"{G}/organizations/current/workspaces/{{tenant}}/restore", org_admin()
+    ),
     "GET /gateway/organizations/current/audit-events": get(
         f"{G}/organizations/current/audit-events", org_admin()
     ),
@@ -397,6 +456,17 @@ ROUTES: dict[str, Case] = {
     ),
     "DELETE /gateway/organizations/current/services/{service}": delete(
         f"{G}/organizations/current/services/{{organization_service}}", org_admin()
+    ),
+    "GET /gateway/organizations/current/guardrails": get(
+        f"{G}/organizations/current/guardrails", org_admin()
+    ),
+    "PUT /gateway/organizations/current/guardrails": put(
+        f"{G}/organizations/current/guardrails",
+        org_admin(),
+        json={"policy_id": "pol_example", "api_key": "example-key"},
+    ),
+    "DELETE /gateway/organizations/current/guardrails": delete(
+        f"{G}/organizations/current/guardrails", org_admin()
     ),
     "GET /gateway/organizations/current/connector-apps": get(
         f"{G}/organizations/current/connector-apps", org_admin()
@@ -450,13 +520,23 @@ ROUTES: dict[str, Case] = {
         SELF,
         why="Signing yourself out of every device.",
     ),
-    "GET /gateway/trust-settings": get(f"{G}/trust-settings", operator()),
+    "GET /gateway/trust-settings": get(
+        f"{G}/trust-settings",
+        operator(ok=410),
+        why="Gone: guardrails are set per organization; still the operator's.",
+    ),
     "PUT /gateway/trust-settings": put(
         f"{G}/trust-settings",
-        operator(),
+        operator(ok=410),
         json={"endpoint": "https://trust.example.invalid", "policy_id": None},
+        why="Gone: guardrails are set per organization; still the operator's.",
     ),
-    "DELETE /gateway/trust-settings": delete(f"{G}/trust-settings", operator()),
+    "DELETE /gateway/trust-settings": delete(
+        f"{G}/trust-settings",
+        operator(ok=410),
+        why="Gone: guardrails are set per organization; still the operator's.",
+    ),
+    "GET /gateway/workspace/guardrails": get(f"{G}/workspace/guardrails", SELF),
     "GET /gateway/connector-apps": get(f"{G}/connector-apps", operator()),
     "PUT /gateway/connector-apps/{service}": put(
         f"{G}/connector-apps/github",
@@ -1000,6 +1080,11 @@ ROUTES: dict[str, Case] = {
         },
     ),
     "GET /gateway/management/controllers": get(f"{G}/management/controllers", SELF),
+    "GET /gateway/management/workspace": get(
+        f"{G}/management/workspace",
+        SELF,
+        why="Everyone's devices to an admin, your own to anyone else.",
+    ),
     "PATCH /gateway/management/controllers/{controller_id}": patch(
         f"{G}/management/controllers/{{controller}}",
         owner(),
@@ -1007,7 +1092,9 @@ ROUTES: dict[str, Case] = {
         why="Every machine is its owner's alone; anyone else is told it isn't there.",
     ),
     "DELETE /gateway/management/controllers/{controller_id}": delete(
-        f"{G}/management/controllers/{{controller}}", owner()
+        f"{G}/management/controllers/{{controller}}",
+        owner_or_admins(refused=404),
+        why="Removing a device: its owner's, and the workspace's admins'.",
     ),
     "GET /gateway/management/controllers/{controller_id}/provider-logins": get(
         f"{G}/management/controllers/{{controller}}/provider-logins", owner()
@@ -1053,7 +1140,22 @@ ROUTES: dict[str, Case] = {
         json={"desired_state": "stopped"},
     ),
     "DELETE /gateway/management/agents/{agent_id}": delete(
-        f"{G}/management/agents/{{managed_agent}}", owner()
+        f"{G}/management/agents/{{managed_agent}}",
+        owner_or_admins(refused=404),
+        why="Stopping managing an agent: its owner's, and the workspace's admins'.",
+    ),
+    "GET /gateway/organizations/current/devices": get(
+        f"{G}/organizations/current/devices", org_admin()
+    ),
+    "DELETE /gateway/organizations/current/workspaces/{workspace_id}/devices/{controller_id}": delete(
+        f"{G}/organizations/current/workspaces/{{tenant}}/devices/nobody",
+        org_admin(ok=404),
+        why="The organization's admin; let through, then told there is no such device.",
+    ),
+    "DELETE /gateway/organizations/current/workspaces/{workspace_id}/managed-agents/{agent_id}": delete(
+        f"{G}/organizations/current/workspaces/{{tenant}}/managed-agents/nobody",
+        org_admin(ok=404),
+        why="The organization's admin; let through, then told there is no such agent.",
     ),
     "POST /gateway/management/operations": post(
         f"{G}/management/operations",
@@ -1127,6 +1229,11 @@ ROUTES: dict[str, Case] = {
         json=FLOW,
         why="Your own sign-in; this server has no Atlassian app to sign in through.",
     ),
+    "POST /gateway/service-connections/{service}/flows/web": post(
+        f"{G}/service-connections/atlassian/flows/web",
+        anyone(ok=503),
+        why="Your own sign-in, from the dashboard; this server has no Atlassian app to sign in through.",
+    ),
     "GET /gateway/service-connections/{service}/flows/{flow_id}": get(
         f"{G}/service-connections/atlassian/flows/{{service_flow}}",
         owner(refused=410),
@@ -1160,6 +1267,9 @@ ROUTES: dict[str, Case] = {
     ),
     "POST /gateway/provider-connections/github/flows": post(
         f"{G}/provider-connections/github/flows", SELF, json=FLOW
+    ),
+    "POST /gateway/provider-connections/github/flows/web": post(
+        f"{G}/provider-connections/github/flows/web", SELF
     ),
     "GET /gateway/provider-connections/github/flows/{flow_id}": get(
         f"{G}/provider-connections/github/flows/{{github_flow}}", owner()
