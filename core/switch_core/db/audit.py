@@ -8,6 +8,9 @@ change to the server as a whole, which no tenant owns, goes to
 Functions rather than an injected store because there is nothing to hold: each
 call takes the session of the change it records, so the event commits or rolls
 back with that change.
+
+Each event is also written to the security event stream once its transaction
+commits (`security_events.py`), which is how it reaches a log pipeline.
 """
 
 from __future__ import annotations
@@ -23,6 +26,12 @@ from switch_core.db.models import (
     AuditEvent,
     OrganizationAuditEvent,
     ServerAuditEvent,
+)
+from switch_core.security_events import (
+    SecurityEvent,
+    SecurityScope,
+    emit_after_commit,
+    subject_ids,
 )
 
 # Set, to true, in the details of every audit event a platform operator's
@@ -214,6 +223,13 @@ async def record_audit_event(
     )
     session.add(event)
     await session.flush()
+    _mirror(
+        session,
+        event,
+        SecurityScope.TENANT,
+        tenant_id=tenant_id,
+        organization_id=None,
+    )
     return event
 
 
@@ -242,6 +258,13 @@ async def record_organization_audit_event(
     )
     session.add(event)
     await session.flush()
+    _mirror(
+        session,
+        event,
+        SecurityScope.ORGANIZATION,
+        tenant_id=None,
+        organization_id=organization_id,
+    )
     return event
 
 
@@ -264,7 +287,35 @@ async def record_server_audit_event(
     )
     session.add(event)
     await session.flush()
+    _mirror(session, event, SecurityScope.SERVER, tenant_id=None, organization_id=None)
     return event
+
+
+def _mirror(
+    session: AsyncSession,
+    event: AuditEvent | OrganizationAuditEvent | ServerAuditEvent,
+    scope: SecurityScope,
+    *,
+    tenant_id: str | None,
+    organization_id: str | None,
+) -> None:
+    agent_id, room_id = subject_ids(event.target_type, event.target_id, event.details)
+    emit_after_commit(
+        session,
+        SecurityEvent(
+            action=event.action,
+            scope=scope,
+            tenant_id=tenant_id,
+            organization_id=organization_id,
+            actor_user_id=event.actor_user_id,
+            target_type=event.target_type,
+            target_id=event.target_id,
+            agent_id=agent_id,
+            room_id=room_id,
+            details=None if event.details is None else dict(event.details),
+            audit_event_id=event.id,
+        ),
+    )
 
 
 async def list_audit_events(

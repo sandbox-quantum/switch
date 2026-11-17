@@ -982,7 +982,7 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
 - name: SWITCH_LOG_LEVEL
   value: {{ .Values.switchCore.logLevel | default "INFO" | quote }}
 - name: LOG_FORMAT
-  value: {{ .Values.switchCore.logging.format | quote }}
+  value: {{ .Values.switchCore.logging.format | default "json" | quote }}
 - name: LOG_LEVEL
   value: {{ .Values.switchCore.logging.rootLevel | quote }}
 - name: TENANT_ID
