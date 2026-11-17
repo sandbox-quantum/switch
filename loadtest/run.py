@@ -40,6 +40,7 @@ import httpx
 sys.path.insert(0, str(Path(__file__).parent))
 
 from agents import Agent, Stats, play  # noqa: E402
+from consoles import MODES, Console, tracked_agents  # noqa: E402
 from controllers import FakeController, ManagedAgent  # noqa: E402
 from kube import Kube, PortForward, Refused, Sampler, guard_target  # noqa: E402
 from report import phase_summary, render  # noqa: E402
@@ -208,6 +209,30 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "operations on the controller's socket",
     )
     w.add_argument("--seed", type=int, default=1)
+    c = ap.add_argument_group("Switch Console windows (consoles.py)")
+    c.add_argument(
+        "--consoles",
+        type=int,
+        default=0,
+        help="Console windows open on the run's agents for the whole run, each "
+        "re-reading its sidebar every --console-interval seconds",
+    )
+    c.add_argument(
+        "--console-agents", type=int, default=60, help="agents each window tracks"
+    )
+    c.add_argument(
+        "--console-interval",
+        type=float,
+        default=20.0,
+        help="seconds between a window's re-reads; the Console's own is 20",
+    )
+    c.add_argument(
+        "--console-mode",
+        choices=MODES,
+        default="per-agent",
+        help="per-agent: one GET /gateway/agents/{id} per agent, as Consoles from "
+        "before GET /gateway/agents/rooms; batch: that route, 100 agents a request",
+    )
     o = ap.add_argument_group("run")
     o.add_argument("--run-id", help="default: UTC time, e.g. 20261026t153000")
     o.add_argument("--sample-interval", type=float, default=1.0)
@@ -287,6 +312,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ap.error("--seed-only needs --keep, and makes agents rather than reusing them")
     if a.concurrency < 1:
         ap.error("--concurrency must be at least 1")
+    if a.consoles < 0 or a.console_agents < 1 or a.console_interval <= 0:
+        ap.error(
+            "--consoles takes 0 or more, --console-agents 1 or more, and "
+            "--console-interval more than 0"
+        )
     for flag, value in (("--run-id", a.run_id), ("--reuse", a.reuse)):
         if value is not None and not RUN_ID.fullmatch(value):
             ap.error(f"{flag} takes letters, digits, - and _ only")
@@ -387,6 +417,22 @@ def broken(summary: dict) -> str | None:
     if summary["errors"] > 20:
         return f"{summary['errors']} errors"
     return None
+
+
+def pool_ceiling(kube: Kube) -> int | None:
+    """The most connections a switch-core pod's pool hands out: its size and
+    overflow (DB_POOL_SIZE, DB_MAX_OVERFLOW), with switch-core's own defaults
+    for either the release leaves unset. None if the release cannot be read."""
+    try:
+        env = kube.core_env()
+    except Exception:  # noqa: BLE001 - the report says it is unknown
+        return None
+
+    def setting(name: str, default: int) -> int:
+        value = env.get(name, {}).get("value")
+        return int(value) if value not in (None, "") else default
+
+    return setting("DB_POOL_SIZE", 30) + setting("DB_MAX_OVERFLOW", 10)
 
 
 def admin_login(kube: Kube) -> tuple[str, str]:
@@ -565,6 +611,9 @@ async def run(a: argparse.Namespace, kube: Kube) -> int:
     }
     agents: list[Agent] = []
     controllers: list[FakeController] = []
+    consoles: list[Console] = []
+    console_tasks: list[asyncio.Task] = []
+    consoles_stop = asyncio.Event()
     phases: list[dict] = []
     connected_log: dict[str, list[int]] = {}
     td: dict | None = None
@@ -778,6 +827,34 @@ async def run(a: argparse.Namespace, kube: Kube) -> int:
                 raise RuntimeError("not every controller came online")
 
         opened = 0
+        if a.consoles and not a.seed_only:
+            if admin.cookie is None:
+                raise RuntimeError("the Console windows need the admin's session")
+            tracked = tracked_agents(
+                [s.id for s in seeded], a.consoles, a.console_agents
+            )
+            consoles = [
+                Console(
+                    i,
+                    a.gateway_url,
+                    admin.cookie,
+                    tracked[i],
+                    a.console_mode,
+                    a.console_interval,
+                    ids,
+                    stats,
+                    a.seed,
+                )
+                for i in range(a.consoles)
+            ]
+            console_tasks = [
+                asyncio.create_task(c.run(consoles_stop)) for c in consoles
+            ]
+            print(
+                f"consoles: {a.consoles} windows of {len(tracked[0])} agents, "
+                f"re-reading every {a.console_interval:g}s, {a.console_mode}",
+                flush=True,
+            )
         for step in [] if a.seed_only else a.steps:
             if stop.is_set():
                 break
@@ -834,6 +911,9 @@ async def run(a: argparse.Namespace, kube: Kube) -> int:
     finally:
         stats.phase = sampler.phase = "teardown"
         counter.cancel()
+        consoles_stop.set()
+        await asyncio.gather(*console_tasks, return_exceptions=True)
+        await asyncio.gather(*(c.stop() for c in consoles), return_exceptions=True)
         await asyncio.gather(*(x.stop() for x in agents), return_exceptions=True)
         await asyncio.gather(*(c.stop() for c in controllers), return_exceptions=True)
         try:
@@ -881,6 +961,9 @@ async def run(a: argparse.Namespace, kube: Kube) -> int:
             pf.close()
 
     meta["pods"] = sorted(sampler.pods_seen)
+    meta["pool_ceiling"] = await asyncio.to_thread(pool_ceiling, kube)
+    for p in phases:
+        p["pool_ceiling"] = meta["pool_ceiling"]
     meta["pod_info"] = sampler.pods_seen
     meta["ended"] = datetime.now(UTC).isoformat(timespec="seconds")
     for p in phases:
