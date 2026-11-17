@@ -2803,7 +2803,8 @@ async def get_room_detail(room_id: str) -> dict[str, Any]:
     Returns:
         {id, name, description, channel_type, admin_mode, instructions,
         matrix_room_id, created_at, bridge_id, bridge_display_name,
-        external_channel_id, group_id, group_name, group_path (the group's
+        external_channel_id, channel_url (an https link that opens the room's
+        channel on its app, or null), group_id, group_name, group_path (the group's
         root-first ancestry, e.g. "Parent / Child"; null when standalone),
         agent_names, agent_statuses (keyed by agent name), connected_user_names,
         aliases (per-room agent aliases, keyed by agent name → alias),

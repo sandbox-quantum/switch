@@ -156,6 +156,8 @@ interface State {
   nativeId: string;
   client: PiRpcClient;
   dir: string;
+  /** The one removal of `dir`; on Windows a second one running beside it fails with EPERM. */
+  removal: Promise<void> | null;
   /** The Switch extension's path, as Pi names the extension in its errors. */
   extension: string;
   cwd: string;
@@ -304,6 +306,7 @@ export class PiAdapter implements ProviderAdapter {
       nativeId: '',
       client,
       dir,
+      removal: null,
       extension,
       cwd,
       runtimeMode: input.runtimeMode,
@@ -351,7 +354,7 @@ export class PiAdapter implements ProviderAdapter {
     } catch (cause) {
       this.sessions.delete(state.id);
       await client.dispose();
-      await rm(dir, { recursive: true, force: true });
+      await this.removeDir(state);
       if (cause instanceof ProviderSessionError) throw cause;
       throw new ProviderSessionError(
         PROVIDER,
@@ -464,7 +467,7 @@ export class PiAdapter implements ProviderAdapter {
       await state.client.dispose();
     } finally {
       this.exited(id, 'Session stopped');
-      await rm(state.dir, { recursive: true, force: true });
+      await this.removeDir(state);
     }
   }
 
@@ -1063,9 +1066,14 @@ export class PiAdapter implements ProviderAdapter {
     this.emit(state, { type: 'session.state.changed', status: 'stopped' });
     this.emit(state, { type: 'session.exited', reason: why });
     if (!stopping)
-      rm(state.dir, { recursive: true, force: true }).catch((error: unknown) =>
+      this.removeDir(state).catch((error: unknown) =>
         this.logger.error('Could not remove a Pi session directory', { error: messageOf(error) })
       );
+  }
+
+  private removeDir(state: State): Promise<void> {
+    state.removal ??= rm(state.dir, { recursive: true, force: true });
+    return state.removal;
   }
 
   private command<T>(

@@ -69,6 +69,7 @@ import {
 import {
   clusterExists,
   initCluster,
+  runningPostmasterBinary,
   startCluster,
   stopCluster,
   stopClusterByPid,
@@ -427,7 +428,7 @@ export async function startNativeStack(opts: NativeStartOptions): Promise<Native
       // Read once the process is gone: a crash's last words reach the log as
       // it exits, after the exit is first noticed. A core that was still
       // running was stopped here, so how it exited says nothing.
-      const reason = alive ? null : await coreFailureLine(layout);
+      const reason = alive ? null : await coreFailureLine(layout, record.pid);
       // One line, reason first: the server page headlines a failure's first
       // line alone.
       const head = alive
@@ -482,7 +483,9 @@ export async function startNativeStack(opts: NativeStartOptions): Promise<Native
 
     if (checkoutRoot === null) {
       if (bundle !== null) {
-        await pruneBundleCopies(layout.toolchain, bundle.root).catch((error: unknown) => {
+        const running = await runningPostmasterBinary(layout);
+        const inUse = [postgres.binDir, ...(running === null ? [] : [running])];
+        await pruneBundleCopies(layout.toolchain, bundle.root, inUse).catch((error: unknown) => {
           log.warn('local-switch-server: could not remove old bundle copies', {
             error: String(error),
           });
@@ -580,7 +583,7 @@ export async function nativeStackRunning(layout: NativeLayout): Promise<boolean>
 /** Why switch-core stopped — how it exited, and the exception it died of — or
  * null. For a server that stopped on its own, after it had started. */
 export function nativeCoreFailureLine(layout: NativeLayout): Promise<string | null> {
-  return coreFailureLine(layout);
+  return coreFailureLine(layout, null);
 }
 
 export async function nativeStartedAt(layout: NativeLayout): Promise<string | null> {

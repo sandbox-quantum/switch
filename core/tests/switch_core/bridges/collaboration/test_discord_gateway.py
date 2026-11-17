@@ -35,6 +35,7 @@ def _gateway(
         members=members,
         install_service=install_service,
         on_connected=on_connected,
+        feature_flags={},
     )
 
 

@@ -34,6 +34,7 @@ from switch_core.bridges.agent.protocol.statuses import agent_statuses_by_room
 from switch_core.db.models import (
     Agent,
     AgentSession,
+    AgentSessionActivityItem,
     Client,
     ExternalUser,
     Room,
@@ -44,6 +45,7 @@ from switch_core.db.stores.agent_session_store import AgentSessionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
+from switch_core.db.stores.session_activity_store import TURN_ITEM_ID
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.known_agents import known_agent
 from switch_core.gateway.schemas import (
@@ -239,6 +241,19 @@ async def assemble_agent_detail(
     room_roles = await room_role_store.agent_room_roles(
         session, agent.id, room_ids, live_connection_ids
     )
+    answered_in = set(
+        (
+            await session.execute(
+                select(AgentSessionActivityItem.room_id)
+                .where(
+                    AgentSessionActivityItem.agent_id == agent.id,
+                    AgentSessionActivityItem.item_id == TURN_ITEM_ID,
+                    AgentSessionActivityItem.room_id.in_(room_ids),
+                )
+                .distinct()
+            )
+        ).scalars()
+    )
     memberships = [
         AgentRoomMembership(
             room_id=room.id,
@@ -246,6 +261,7 @@ async def assemble_agent_detail(
             archived=room.archived_at is not None,
             status=statuses[room.id][agent.id].value,
             room_role=room_roles.get(room.id),
+            answered_here=room.id in answered_in,
         )
         for room in rooms
     ]

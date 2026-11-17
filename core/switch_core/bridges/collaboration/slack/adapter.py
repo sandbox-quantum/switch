@@ -245,6 +245,23 @@ _REACTION: dict[ActivityMark, str] = {
 }
 
 
+def _granted_scopes(headers: Any) -> frozenset[str] | None:
+    """A token's scopes from the `x-oauth-scopes` header Slack sends with a
+    Web API answer, or None when it sent none."""
+    if not headers:
+        return None
+    for key, value in dict(headers).items():
+        if str(key).lower() == "x-oauth-scopes":
+            raw = value[0] if isinstance(value, list) and value else value
+            return frozenset(s.strip() for s in str(raw).split(",") if s.strip())
+    return None
+
+
+def _spaceless(text: str) -> str:
+    """`text` for matching a name: case folded, with every space dropped."""
+    return "".join(text.casefold().split())
+
+
 def _retry_after_seconds(error: SlackApiError) -> int:
     """Seconds Slack asked us to wait, falling back to a safe default."""
     headers = getattr(error.response, "headers", None) or {}
@@ -680,6 +697,9 @@ class SlackAdapter(PlatformAdapter):
         self._bot_user_id: str = ""
         self._bot_id: str = ""
         self._team_id: str = ""
+        # The bot token's scopes as Slack listed them when the adapter
+        # started, or None when Slack did not say.
+        self._granted_scopes: frozenset[str] | None = None
         self._tenant_id: str | None = None
         self._user_cache: dict[str, SlackUser] = {}
         # Whether each Slack user seen in a channel's member list is a bot (an
@@ -793,6 +813,7 @@ class SlackAdapter(PlatformAdapter):
         # workspace id on an Enterprise Grid org. Agent group lookup uses
         # the authenticated team identity rather than the configured org.
         self._team_id = str(auth.get("team_id", ""))
+        self._granted_scopes = _granted_scopes(auth.headers)
         logger.info(
             "Slack adapter authenticated as %s (workspace %s)",
             auth.get("user", ""),
@@ -2186,6 +2207,14 @@ class SlackAdapter(PlatformAdapter):
             )
 
     @classmethod
+    def typed_command(
+        cls, name: str, argument: str, connection_config: Mapping[str, object]
+    ) -> str:
+        # Slack runs a slash command typed or pasted as the whole message, and
+        # passes its tail through as free text.
+        return f"/{name} {argument}"
+
+    @classmethod
     def link_code_instructions(
         cls, code: str, connection_config: Mapping[str, object]
     ) -> str:
@@ -2210,6 +2239,15 @@ class SlackAdapter(PlatformAdapter):
                 "is a second Switch server using the same app token."
             )
         return instructions
+
+    @classmethod
+    def unlink_account_instructions(
+        cls, name: str, connection_config: Mapping[str, object]
+    ) -> str:
+        return (
+            f"type `/unlink-account {name}` anywhere in Slack (a message to "
+            "yourself works)"
+        )
 
     def adapt_icon_url(self, icon_url: str) -> str:
         # Overridden for Slack alone: it flattens a transparent avatar onto
@@ -4596,19 +4634,29 @@ class SlackAdapter(PlatformAdapter):
 
         return "\n".join(p.strip() for p in parts if str(p).strip())
 
+    def account_search_hint(self) -> str:
+        """Email matches only when the app may read addresses, which an app
+        made from Switch's manifest may not."""
+        if self._granted_scopes is not None and "users:read.email" in (
+            self._granted_scopes
+        ):
+            return "Your name, handle or email"
+        return "Your name or handle"
+
     async def search_directory_users(self, query: str) -> list[DirectoryUser]:
         """Find workspace members by handle, real name or email.
 
         Slack has no server-side user search, so this pages `users.list` and
-        filters locally. Deactivated accounts and bots are dropped — a bot is
-        not a person who can own an agent. `email` is only present when the
-        app holds the `users:read.email` scope; without it the field is simply
-        absent rather than the search failing.
+        filters locally, with spaces ignored on both sides so "M M" finds
+        "MM" and the other way round. Deactivated accounts and bots are
+        dropped — a bot is not a person who can own an agent. `email` is only
+        present when the app holds the `users:read.email` scope; without it
+        the field is simply absent rather than the search failing.
         """
         if not self._web_client:
             raise RuntimeError("Slack adapter is not started")
 
-        needle = query.strip().lower()
+        needle = _spaceless(query)
         if not needle:
             return []
 
@@ -4633,12 +4681,11 @@ class SlackAdapter(PlatformAdapter):
                 real_name = profile.get("real_name", "") or member.get("real_name", "")
                 display_name = profile.get("display_name", "") or real_name or handle
                 email = profile.get("email") or None
-                haystack = " ".join(
-                    part.lower()
+                if not any(
+                    needle in _spaceless(part)
                     for part in (handle, real_name, display_name, email or "")
                     if part
-                )
-                if needle not in haystack:
+                ):
                     continue
                 matches.append(
                     DirectoryUser(

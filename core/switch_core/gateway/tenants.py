@@ -107,7 +107,7 @@ from switch_core.gateway.auth import (
     rebind_if_left,
     record_operator_entry,
     require_tenant_admin,
-    session_auth_time,
+    session_signed_in,
     set_session_cookie,
     tenant_of_invitation_token,
     tenants_bindable_by,
@@ -512,7 +512,7 @@ async def create_tenant(
         config,
         name=req.name,
         workspace_name=req.name,
-        auth_time=session_auth_time(request),
+        signed_in=session_signed_in(request),
     )
     return created.workspace
 
@@ -678,7 +678,7 @@ async def delete_tenant(
         config.keyring,
         config.gateway_cookie_secure,
         await initial_tenant_claim(session_factory, user_store, user),
-        session_auth_time(request),
+        session_signed_in(request),
     )
     return {"ok": True}
 
@@ -731,7 +731,7 @@ async def switch_tenant(
         config.keyring,
         config.gateway_cookie_secure,
         tenant_id,
-        session_auth_time(request),
+        session_signed_in(request),
     )
     return _session_response(user)
 
@@ -1640,7 +1640,7 @@ async def accept_invitation(
         config.keyring,
         config.gateway_cookie_secure,
         tenant_id,
-        session_auth_time(request),
+        session_signed_in(request),
     )
     return membership
 
@@ -1878,7 +1878,7 @@ async def accept_my_invitation(
         config.keyring,
         config.gateway_cookie_secure,
         req.tenant_id,
-        session_auth_time(request),
+        session_signed_in(request),
     )
     return membership
 
@@ -2086,7 +2086,7 @@ async def join_tenant_by_domain(
         config.keyring,
         config.gateway_cookie_secure,
         tenant_id,
-        session_auth_time(request),
+        session_signed_in(request),
     )
     return membership
 

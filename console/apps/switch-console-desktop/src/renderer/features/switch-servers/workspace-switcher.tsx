@@ -46,7 +46,6 @@ import { cn } from '@renderer/utils/utils';
 import { runsOnThisComputer, type SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import type { JoinableWorkspace, PendingInvitation } from '@shared/core/workspaces/invitations';
 import {
-  administersWorkspace,
   type Workspace,
   type WorkspaceUnavailability,
   workspaceUnavailability,
@@ -68,6 +67,7 @@ import {
 } from './server-presentation';
 import { switchServersStore } from './switch-servers-store';
 import { type SwitchCloudAvailability, useSwitchCloud } from './use-switch-cloud';
+import { administersWorkspaceById } from './workspace-admin';
 
 /**
  * A server this Console does not run, said only when something is wrong with
@@ -886,7 +886,7 @@ const WorkspaceMenuItem = observer(function WorkspaceMenuItem({
   const canInvite =
     !dormant &&
     unavailable === null &&
-    administersWorkspace(workspace) &&
+    administersWorkspaceById(workspace.id) &&
     !runsOnThisComputer(server);
 
   return (

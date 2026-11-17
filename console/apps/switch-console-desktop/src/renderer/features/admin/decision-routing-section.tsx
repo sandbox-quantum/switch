@@ -38,11 +38,11 @@ function resultText(result: { kind: string; message?: string }): string {
     case 'unauthenticated':
       return 'Your session has expired. Sign in again.';
     case 'forbidden':
-      return 'Only an admin of this workspace can view or change its message routing.';
+      return 'Only an admin of this workspace can view or change its decision routing.';
     case 'unsupported':
-      return 'This Switch server doesn’t offer message routing settings. Update it to set them up here.';
+      return 'Message routing isn’t available on this Switch server.';
     default:
-      return result.message ?? 'Could not reach the message routing settings.';
+      return result.message ?? 'Could not reach the decision routing settings.';
   }
 }
 
@@ -96,7 +96,7 @@ export function DecisionRoutingSection({ workspaceId }: { workspaceId: string })
         }
       },
       (error: unknown) => {
-        if (!cancelled) setLoadError(failureText(error, 'Could not load message routing.'));
+        if (!cancelled) setLoadError(failureText(error, 'Could not load decision routing.'));
       }
     );
     return () => {
@@ -150,7 +150,7 @@ export function DecisionRoutingSection({ workspaceId }: { workspaceId: string })
     try {
       apply(await rpc.switchServers.updateDecisionSettings({ workspaceId, ...input }));
     } catch (cause) {
-      setActionError(failureText(cause, 'Could not save message routing.'));
+      setActionError(failureText(cause, 'Could not save decision routing.'));
     } finally {
       setBusy(null);
     }

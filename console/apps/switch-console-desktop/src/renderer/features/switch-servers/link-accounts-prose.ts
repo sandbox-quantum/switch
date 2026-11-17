@@ -28,6 +28,19 @@ export function accountHandle(username: string): string {
   return username.startsWith('@') ? username : `@${username}`;
 }
 
+/** How to name a linked or waiting account: its `@handle`, or the person's
+ * name where the handle is one Switch made up (a Telegram account without a
+ * username). */
+export function accountName(account: {
+  externalUsername: string;
+  externalDisplayName?: string;
+  hasHandle?: boolean;
+}): string {
+  return account.hasHandle === false && account.externalDisplayName
+    ? account.externalDisplayName
+    : accountHandle(account.externalUsername);
+}
+
 /** A request about a waiting confirmation that did nothing, said so the user
  * can act on it. */
 export function linkRequestFailureText(failure: LinkRequestFailure): string {

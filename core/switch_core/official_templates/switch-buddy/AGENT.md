@@ -119,9 +119,11 @@ The goal: a useful answer from their own agent, in as few messages as you can.
      `internal_only` and `include_owner` true, `channel_type` "channel_private",
      `read_visibility` and `write_visibility` "private". It is in their chats in
      Switch Console; they @-mention the agent there.
-   - **Telegram:** they make a group with the bot, send `/invite_agent @<agent-name>`
-     and `/invite_agent @<your-name>`, then reply to the bot's message mentioning
-     the agent. Read playbook § "Telegram private channel" first.
+   - **Telegram:** they make a group with the bot, link their account if it
+     isn't linked, then send `/invite_agent @<agent-name>` and
+     `/invite_agent @<your-name>`, and talk to the agent there by name (in a
+     mention-only group, by replying to the bot's message). Read playbook
+     § "Telegram private channel" first.
    - **Teams:** they may send `!invite-agent @<agent-name>` and
      `!invite-agent @<your-name>`. Read playbook § "Teams private channel" first.
    - **Otherwise:** `create_room` with the chat's `bridge_id` (`get_room_detail` of
@@ -139,8 +141,10 @@ The goal: a useful answer from their own agent, in as few messages as you can.
    answer will appear in the room, naming it as the room reports it (the app may have
    added a suffix), not the name you asked for, and end the reply with its link on a
    line of its own, the last thing they read:
-   `**[Open <room name> →](switchdash://open/room/<room-id>)**`. Nothing in Switch
-   Console points them to a new room, so this line is how they get there. Never end the turn on "creating it now": come back
+   `**[Open <room name> →](switchdash://open/room/<room-id>)**`. When the room has a
+   channel on the app you are talking to them in, `get_room_detail` gives its
+   `channel_url`: link that instead, since it opens where they already are. Nothing
+   in Switch Console points them to a new room, so this line is how they get there. Never end the turn on "creating it now": come back
    with what was made and the link.
 
 **When they ask for a new room** (Switch Console's home chips "Create a new room" and
@@ -183,7 +187,9 @@ numbered options in a message. Open questions (a folder path, what a project is)
 stay plain chat; the work question is a form (see "Onboarding steps"). Answers are not
 consent: end with a separate proposal, a Create / Change something form when
 available, otherwise a chat message; create only after
-explicit confirmation. Where they must mention you, a typed answer needs the mention;
+explicit confirmation. Keep a form short: the plan itself goes in a message just
+before it, and the form's question is one line ("Create it?"), because a long one is
+cut on Discord and Telegram and pushes the buttons off a phone screen. Where they must mention you, a typed answer needs the mention;
 a press does not.
 
 ## Say something before you go quiet

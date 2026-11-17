@@ -31,7 +31,7 @@ from switch_core.bridges.collaboration.models import (
 from switch_core.bridges.collaboration.session.renderers import (
     parse_answer_position,
 )
-from switch_core.chat_account_links import record_confirmed_link
+from switch_core.chat_account_links import UnlinkInstructions, record_confirmed_link
 from switch_core.db.audit import AuditAction, record_audit_event
 from switch_core.db.models import (
     ExternalUser,
@@ -102,14 +102,17 @@ def compose_prompt(
     """The message an account is sent to confirm a link.
 
     Names who started it, by name and address, because that is what tells a
-    person who did not start it that they should tap `Not me`. Both are the
-    requester's own to set, so they go through the platform's `escape` for
-    untrusted text: the bot's own message must not carry a link or a mention
-    someone wrote into their name.
+    person who did not start it that they should tap `Not me`. An address a
+    local server made up (`admin@switch.local`) is left out: it is nobody's,
+    and tells the person nothing. Both are the requester's own to set, so
+    they go through the platform's `escape` for untrusted text: the bot's own
+    message must not carry a link or a mention someone wrote into their name.
     """
+    who = f"**{escape(requester_name)}**"
+    if shown_email(requester_email) is not None:
+        who += f" ({escape(requester_email)})"
     text = (
-        f"**{escape(requester_name)}** ({escape(requester_email)}) is linking "
-        f"this {platform} "
+        f"{who} is linking this {platform} "
         "account to their Switch account.\n\n"
         "Tap the number Switch is showing you to finish. If you didn't "
         f"start this, tap **{NOT_ME_LABEL}** and nothing is linked."
@@ -119,6 +122,15 @@ def compose_prompt(
         token=token,
         labels=(*(str(choice) for choice in choices), NOT_ME_LABEL),
     )
+
+
+def shown_email(email: str) -> str | None:
+    """`email`, or None for one not worth showing a person: empty, or on a
+    `.local` domain, which a local server makes up for its first user."""
+    domain = email.rpartition("@")[2].strip().casefold().rstrip(".")
+    if not email.strip() or domain == "local" or domain.endswith(".local"):
+        return None
+    return email
 
 
 @dataclass(frozen=True)
@@ -292,6 +304,10 @@ async def answer_prompt(
                     request=request,
                     account=account,
                     live=live,
+                    unlink_instructions=adapter.unlink_account_instructions,
+                    account_name=adapter.known_user_label(
+                        account.external_user_id, account.external_username
+                    ).display_name,
                     pressed=(
                         None if position == len(choices) + 1 else choices[position - 1]
                     ),
@@ -312,6 +328,8 @@ async def _decide(
     request: ExternalUserLinkRequest,
     account: ExternalUser,
     live: bool,
+    unlink_instructions: UnlinkInstructions,
+    account_name: str,
     pressed: int | None,
     external_user_store: ExternalUserStore,
     user_store: UserStore,
@@ -345,9 +363,10 @@ async def _decide(
         session,
         user_store=user_store,
         account=account,
+        account_name=account_name,
         user_id=user_id,
         by="prompt",
-        ran_command=False,
+        unlink_instructions=unlink_instructions,
     )
 
 

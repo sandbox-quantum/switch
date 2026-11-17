@@ -9,10 +9,14 @@ import {
   servesWebGateway,
   webGatewayNeedsRestart,
 } from '@renderer/features/switch-servers/server-gateway';
+import {
+  administersWorkspaceInScope,
+  operatesServer,
+} from '@renderer/features/switch-servers/workspace-admin';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { PageHeader } from '@renderer/lib/components/page-header';
 import { PageContent, PageLayout, PageSidebarSections } from '@renderer/lib/components/page-layout';
-import { useAnyServerFeatureFlag } from '@renderer/lib/hooks/useFeatureFlags';
+import { useAnyServerFeatureFlag, useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { rpc } from '@renderer/lib/ipc';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { openExternalUrl } from '@renderer/lib/open-external';
@@ -23,6 +27,12 @@ import { administersOrganization } from '@shared/core/workspaces/workspaces';
 import { SWITCH_CONSOLE_DOCS_URL } from '@shared/urls';
 import { AgentsSettingsPage } from '../agents-page/AgentsSettingsPage';
 import { AccountSettingsPage } from '../pages/account-page';
+import {
+  ConnectorAppsSettingsPage,
+  ConnectorsSettingsPage,
+  DecisionRoutingSettingsPage,
+  GuardrailsSettingsPage,
+} from '../pages/admin-pages';
 import { ApiKeysSettingsPage } from '../pages/api-keys-page';
 import { MessagingAppsSettingsPage } from '../pages/messaging-apps-page';
 import { settingsServer } from '../pages/settings-server';
@@ -112,6 +122,10 @@ const TAB_CONTENT: Record<SettingsPageTab, () => React.ReactNode> = {
   preferences: () => <PreferencesSettingsPage />,
   'messaging-apps': () => <MessagingAppsSettingsPage />,
   'clis-models': () => <AgentsSettingsPage />,
+  connectors: () => <ConnectorsSettingsPage />,
+  'decision-routing': () => <DecisionRoutingSettingsPage />,
+  guardrails: () => <GuardrailsSettingsPage />,
+  'connector-apps': () => <ConnectorAppsSettingsPage />,
   'api-keys': () => <ApiKeysSettingsPage />,
   'remote-hosts': () => <RemoteHostsSettingsPage />,
   devices: () => <DevicesSettingsPage />,
@@ -142,11 +156,20 @@ export const SettingsPage = observer(function SettingsPage({
   const workspace = server !== null ? workspacesStore.onServerInScope(server.id) : null;
   const organizationSettings =
     workspaceSettings && workspace !== null && administersOrganization(workspace);
+  const serverFlags = useFeatureFlags(server?.id ?? null);
+  const serviceConnections = serverFlags.service_connections;
+  // What you administer is what the server says of you once signed in.
+  const operator = server !== null && user !== null && operatesServer(server.id);
   const sections = settingsSections({
     hasServer: server !== null,
     agentManagement,
     workspaceSettings,
     organizationSettings,
+    workspaceAdmin: server !== null && user !== null && administersWorkspaceInScope(server.id),
+    operatesGatewaylessServer: operator && server !== null && !servesWebGateway(server),
+    serviceConnections,
+    // Auto-route does not exist on a server with it off, so neither does its page.
+    decisionRouting: serverFlags.decision_routing,
   });
   const shownTab = shownSettingsTab(activeTab, sections);
 

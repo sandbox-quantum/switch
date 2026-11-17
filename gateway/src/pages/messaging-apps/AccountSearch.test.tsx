@@ -20,6 +20,7 @@ const person = (overrides: Partial<DirectoryPerson> = {}): DirectoryPerson => ({
   username: "ada",
   display_name: "Ada Lovelace",
   email: "ada@example.com",
+  has_handle: true,
   known_external_user_id: null,
   claimed_by: [],
   ...overrides,
@@ -151,6 +152,52 @@ describe("AccountSearch", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Finish linking @ada" }));
     expect(onConfirm).toHaveBeenCalledWith({ identityId: "acct-1", username: "ada", kind: "pending" }, null);
     expect(api.claimBridgeIdentity).not.toHaveBeenCalled();
+  });
+
+  it("offers only what the search can match, as the connection says", () => {
+    search({ app: { ...app, directory_search_hint: "Your name or handle" } });
+
+    expect(screen.getByLabelText("Search Acme Slack").getAttribute("placeholder")).toBe("Your name or handle");
+  });
+
+  it("names someone without a handle by their name, with no made-up @handle", async () => {
+    vi.mocked(api.searchBridgeDirectory).mockResolvedValue({
+      source: "known",
+      note: "Telegram has no user directory.",
+      users: [person({ external_user_id: "42", username: "MM_42", display_name: "M M", email: null, has_handle: false })],
+    });
+    search({ app: { ...app, directory_search_supported: false } });
+    type("M M");
+
+    expect(await screen.findByRole("button", { name: "This is me: M M" })).toBeTruthy();
+    expect(screen.getByText("M M")).toBeTruthy();
+    expect(screen.queryByText(/@MM_42/)).toBeNull();
+  });
+
+  it("hands the confirmation their name, so it doesn't show the made-up handle either", async () => {
+    vi.mocked(api.searchBridgeDirectory).mockResolvedValue({
+      source: "known",
+      note: null,
+      users: [person({ external_user_id: "42", username: "MM_42", display_name: "M M", email: null, has_handle: false })],
+    });
+    vi.mocked(api.claimBridgeIdentity).mockResolvedValue({
+      id: "acct-42",
+      bridge_id: "b1",
+      external_user_id: "42",
+      external_username: "MM_42",
+      claimed_by: [],
+      link_request: { user_id: "u-ada", code },
+    });
+    const { onConfirm } = search({ app: { ...app, directory_search_supported: false } });
+    type("M M");
+    fireEvent.click(await screen.findByRole("button", { name: "This is me: M M" }));
+
+    await waitFor(() =>
+      expect(onConfirm).toHaveBeenCalledWith(
+        { identityId: "acct-42", username: "MM_42", displayName: "M M", kind: "pending" },
+        code,
+      ),
+    );
   });
 
   it("captions a list drawn from the accounts Switch has seen", async () => {

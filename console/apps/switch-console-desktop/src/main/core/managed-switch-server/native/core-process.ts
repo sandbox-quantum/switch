@@ -244,9 +244,18 @@ export function describeExit(exit: Pick<CoreExit, 'code' | 'signal'>): string {
  * log ends in one. An error further up the log is not a reason — a bridge
  * that keeps failing logs one every minute while the server runs on — and a
  * server ended by a signal or exiting cleanly died of nothing it wrote.
+ *
+ * `pid` is the process to explain, when the caller knows it (the one it has
+ * just started); otherwise the one in the PID file. An exit recorded for any
+ * other process is not this one's. With no exit recorded for it there is no
+ * evidence it crashed, so nothing is said: the log's tail could be an old
+ * error the server ran on past before something else ended it.
  */
-export async function coreFailureLine(layout: NativeLayout): Promise<string | null> {
-  const record = await readCoreRecord(layout);
+export async function coreFailureLine(
+  layout: NativeLayout,
+  pid: number | null
+): Promise<string | null> {
+  const expected = pid ?? (await readCoreRecord(layout))?.pid ?? null;
   // A process that has just died may still be handing its last output to the
   // file, and its exit to the handler that records it; a few short retries
   // let both land before they are read.
@@ -255,15 +264,16 @@ export async function coreFailureLine(layout: NativeLayout): Promise<string | nu
   for (let attempt = 0; attempt < 4; attempt++) {
     if (attempt > 0) await sleep(500);
     const recorded = await readCoreExit(layout);
-    exit = recorded !== null && (record === null || recorded.pid === record.pid) ? recorded : null;
+    exit = recorded !== null && (expected === null || recorded.pid === expected) ? recorded : null;
     try {
-      line = failureLine(await readFile(path.join(layout.logs, 'switch-core.log'), 'utf8'));
+      const log = await readFile(path.join(layout.logs, 'switch-core.log'), 'utf8');
+      line = failureLine(log) ?? lastErrorRecord(log);
     } catch {
       line = null;
     }
     if (exit !== null && (line !== null || exit.signal !== null || exit.code === 0)) break;
   }
-  if (exit === null) return line;
+  if (exit === null) return null;
   const how = describeExit(exit);
   const diedOfIt = exit.signal === null && exit.code !== 0;
   return diedOfIt && line !== null ? `${how}: ${line}` : how;
@@ -272,6 +282,29 @@ export async function coreFailureLine(layout: NativeLayout): Promise<string | nu
 /** A line switch-core's logging wrote (timestamped text, or JSON), as opposed
  * to one the interpreter printed as it died. */
 const LOG_RECORD = /^(\d{4}-\d\d-\d\d[T ]\d\d:\d\d|\{|(DEBUG|INFO|WARNING|ERROR|CRITICAL)\b)/;
+
+/**
+ * The message of an ERROR or CRITICAL record among the last few the log ends
+ * with, for a server that exited with an error and printed no traceback: a
+ * taken port, which uvicorn logs as `ERROR: [Errno 48] error while attempting
+ * to bind…` before its shutdown lines. Only the last few, so an error the
+ * server logged and ran on past is not taken for why it stopped.
+ */
+export function lastErrorRecord(log: string): string | null {
+  const records = log
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => LOG_RECORD.test(line))
+    .slice(-5);
+  const record = records.reverse().find((line) => /\b(ERROR|CRITICAL)\b/.test(line));
+  if (!record) return null;
+  // `LEVEL: message` (uvicorn) or `LEVEL [logger] message` (switch-core).
+  const message = record
+    .replace(/^.*?\b(ERROR|CRITICAL)\b(?::\s*|\s+\[[^\]]*\]\s*|\s+)/, '')
+    .trim();
+  const reason = message || record;
+  return reason.length > 400 ? `${reason.slice(0, 399)}…` : reason;
+}
 
 /**
  * The exception switch-core died of: the last error named in what its log

@@ -85,6 +85,9 @@ describe('a program the install command needed but could not find', () => {
 
   it('names nothing for an ordinary failure', () => {
     expect(missingCommandIn('npm ERR! code E404\nnpm ERR! 404 Not Found')).toBeNull();
+    expect(missingCommandIn('Error: Not Found')).toBeNull();
+    expect(missingCommandIn('curl: error: Not Found')).toBeNull();
+    expect(missingCommandIn('curl: error: not found')).toBeNull();
   });
 
   it('is reported as the missing program, not a generic failure', () => {
@@ -94,5 +97,23 @@ describe('a program the install command needed but could not find', () => {
         output: "npm : The term 'npm' is not recognized as the name of a cmdlet, function",
       })
     ).toMatchObject({ type: 'command-failed', missingCommand: 'npm' });
+  });
+});
+
+describe('missingCommandIn, about where in the output', () => {
+  it('passes over a program a step inside the install could not find', () => {
+    const output = [
+      '> some-native-dep@1.0.0 install',
+      'sh: node-gyp: not found',
+      ...Array.from({ length: 10 }, (_, i) => `npm ERR! line ${i}`),
+      'npm ERR! A complete log of this run can be found in: …',
+    ].join('\n');
+    expect(missingCommandIn(output)).toBeNull();
+  });
+
+  it('takes the last missing program when that is how the output ends', () => {
+    expect(missingCommandIn('bash: unzip: command not found\nbash: npm: command not found')).toBe(
+      'npm'
+    );
   });
 });

@@ -121,6 +121,9 @@ class _FakeLifecycle:
     def rooms_changed(self, bridge_id: str) -> None:
         self.rooms_changed_for.append(bridge_id)
 
+    def typed_commands(self, bridge_type, connection_config):
+        return {}
+
     def channel_creation_blocker(
         self, bridge_type: str, connection_config: object
     ) -> str | None:

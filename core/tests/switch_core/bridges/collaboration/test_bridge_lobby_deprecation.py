@@ -3,7 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
-from switch_core.bridges.collaboration.models import InboundMessage
+from switch_core.bridges.collaboration.models import InboundCommand, InboundMessage
 
 
 async def _no_text_answer(_msg: object) -> None:
@@ -27,7 +27,7 @@ def _msg(channel_type: str) -> InboundMessage:
     )
 
 
-def _adapter_fake() -> SimpleNamespace:
+def _adapter_fake(directory: bool = True) -> SimpleNamespace:
     notices: list[tuple[str, str, str | None]] = []
 
     async def admin_message(
@@ -40,7 +40,11 @@ def _adapter_fake() -> SimpleNamespace:
         notices.append((channel_id, content, thread_root_id))
         return "D123:999.9"
 
-    return SimpleNamespace(admin_message=admin_message, notices=notices)
+    return SimpleNamespace(
+        admin_message=admin_message,
+        notices=notices,
+        supports_directory_search=directory,
+    )
 
 
 async def test_lobby_message_posts_deprecation_notice() -> None:
@@ -61,6 +65,15 @@ async def test_lobby_message_posts_deprecation_notice() -> None:
     assert "atlassian.net" not in content
 
 
+async def test_a_hello_where_there_is_no_directory_is_answered_as_one() -> None:
+    """On Telegram a direct message is how Switch comes to know someone."""
+    adapter = _adapter_fake(directory=False)
+    await CollaborationCore._handle_lobby_message(
+        SimpleNamespace(_adapter=adapter), _msg("lobby")
+    )
+    assert "Switch has seen your account" in adapter.notices[0][1]
+
+
 async def test_inbound_lobby_message_short_circuits_routing() -> None:
     handled: list[InboundMessage] = []
     ensure_calls: list[dict[str, str]] = []
@@ -75,9 +88,13 @@ async def test_inbound_lobby_message_short_circuits_routing() -> None:
         ensure_calls.append(kwargs)
         return None
 
+    async def _remember_lobby_sender(sender_id: str, sender_name: str) -> None:
+        return None
+
     bridge = SimpleNamespace(
         _is_registered_agent=_is_registered_agent,
         _handle_lobby_message=_handle_lobby_message,
+        _remember_lobby_sender=_remember_lobby_sender,
         _ensure_human_in_room=_ensure_human_in_room,
         _handle_text_answer=_no_text_answer,
         _channel_to_room={},
@@ -118,3 +135,80 @@ async def test_inbound_non_lobby_message_is_not_short_circuited() -> None:
 
     # A normal channel message does not hit the lobby deprecation handler.
     assert handled == []
+
+
+async def _remembering(*, directory: bool) -> list[dict[str, str]]:
+    recorded: list[dict[str, str]] = []
+
+    async def ensure_external_user(**kwargs: str) -> None:
+        recorded.append(kwargs)
+
+    bridge = SimpleNamespace(
+        _adapter=SimpleNamespace(supports_directory_search=directory),
+        ensure_external_user=ensure_external_user,
+    )
+    await CollaborationCore._remember_lobby_sender(bridge, "U1", "alice")
+    return recorded
+
+
+async def test_a_direct_message_makes_its_sender_known_where_there_is_no_directory() -> (
+    None
+):
+    """Pressing Start on Telegram is how a new person first reaches the bot, and
+    without a directory Switch can offer to link only people it has seen."""
+    assert await _remembering(directory=False) == [
+        {"external_user_id": "U1", "external_username": "alice"}
+    ]
+
+
+async def test_a_platform_with_a_directory_does_not_record_direct_messages() -> None:
+    assert await _remembering(directory=True) == []
+
+
+async def _lobby_command(
+    command: str,
+) -> tuple[list[tuple[str, str, str | None]], list]:
+    adapter = _adapter_fake()
+    created: list[object] = []
+
+    async def _create_room_for_channel(**kwargs: object) -> None:
+        created.append(kwargs)
+
+    async def _remember_lobby_sender(sender_id: str, sender_name: str) -> None:
+        return None
+
+    bridge = SimpleNamespace(
+        _adapter=adapter,
+        _remember_lobby_sender=_remember_lobby_sender,
+        _create_room_for_channel=_create_room_for_channel,
+        _channel_to_room={},
+        _channel_locks={},
+    )
+    await CollaborationCore._handle_inbound_command(
+        bridge,
+        InboundCommand(
+            channel_id="D123",
+            channel_type="lobby",
+            sender_id="U1",
+            sender_name="alice",
+            command=command,
+            args="",
+            message_ref="D123:7",
+        ),
+    )
+    return adapter.notices, created
+
+
+async def test_start_in_a_direct_chat_says_hello_and_makes_no_room() -> None:
+    """A room for the app's direct chat would hold every agent, and each would
+    greet the person there."""
+    notices, created = await _lobby_command("start")
+    assert created == []
+    assert len(notices) == 1
+    assert "Switch has seen your account" in notices[0][1]
+
+
+async def test_another_command_in_a_direct_chat_makes_no_room_either() -> None:
+    notices, created = await _lobby_command("invite-agent")
+    assert created == []
+    assert "isn't where you talk to agents" in notices[0][1]

@@ -167,6 +167,28 @@ describe('the state a connector card shows', () => {
     );
     // The server's reason wins over the workspace's switch.
     expect(connectorCardState(everything, MEMBER).kind).toBe('unavailable');
+    // An app to set up: workspace off wins, turn it on first.
+    expect(
+      connectorCardState(
+        entry({
+          unavailable_code: 'app_not_set_up',
+          unavailable_reason: 'Not set up.',
+          workspace_enabled: false,
+        }),
+        MEMBER
+      ).kind
+    ).toBe('workspace_off');
+    // Other server reasons still win over workspace off.
+    expect(
+      connectorCardState(
+        entry({
+          unavailable_code: 'needs_https',
+          unavailable_reason: 'Needs https.',
+          workspace_enabled: false,
+        }),
+        MEMBER
+      ).kind
+    ).toBe('unavailable');
     // Off in the workspace wins over a sign-in that needs renewing.
     expect(connectorCardState({ ...everything, unavailable_reason: null }, MEMBER).kind).toBe(
       'workspace_off'
@@ -331,8 +353,8 @@ describe('what each person is told about a connector that cannot be used', () =>
     expect(quick(github, OPERATOR)).toBeNull();
     expect(quick(entry({ workspace_enabled: false }), ADMIN)).toBe('turn_on');
     expect(quick(entry({ workspace_enabled: false }), MEMBER)).toBeNull();
-    // A server's reason still wins over the workspace's switch, fix and all.
-    expect(quick({ ...notSetUp, workspace_enabled: false }, OPERATOR)).toBe('set_up');
+    // An app to set up waits on the workspace's switch. Other server reasons win.
+    expect(quick({ ...notSetUp, workspace_enabled: false }, OPERATOR)).toBe('turn_on');
     expect(quick({ ...github, workspace_enabled: false }, ADMIN)).toBeNull();
   });
 
@@ -1253,31 +1275,21 @@ describe('with the service_connections flag off', () => {
     error: null,
   });
 
-  it('leaves Connectors out of the nav, and shows Admin when it has something for you', () => {
-    expect(workspaceNavViews({ serviceConnections: false, admin: false })).toEqual([
+  it('leaves Connectors out of the nav with the flag off, and never shows Admin', () => {
+    expect(workspaceNavViews({ serviceConnections: false })).toEqual([
       'server',
       'serverAgents',
       'serverRooms',
       'library',
       'templates',
     ]);
-    // Admin's messaging apps and Switch Trust do not need service connections.
-    expect(workspaceNavViews({ serviceConnections: false, admin: true })).toEqual([
-      'server',
-      'serverAgents',
-      'serverRooms',
-      'library',
-      'templates',
-      'admin',
-    ]);
-    expect(workspaceNavViews({ serviceConnections: true, admin: true })).toEqual([
+    expect(workspaceNavViews({ serviceConnections: true })).toEqual([
       'server',
       'serverAgents',
       'serverRooms',
       'library',
       'templates',
       'connectors',
-      'admin',
     ]);
   });
 

@@ -56,7 +56,7 @@ import { RoomConfigurationPanel } from '@renderer/features/switch-rooms/room-con
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 
 const NO_BACKEND =
-  'Auto-route needs a decision service. A workspace admin can set one up in Switch Console → Admin → Message routing.';
+  'Auto-route needs a decision service. A workspace admin can set one up in Switch Console → Settings → Message routing.';
 
 const OFF: RoomAutoRoute = {
   on: false,

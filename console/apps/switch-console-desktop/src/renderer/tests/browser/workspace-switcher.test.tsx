@@ -83,6 +83,7 @@ vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
       return state.servers;
     },
     serverById: (id: string) => state.servers.find((s) => s.id === id) ?? null,
+    statusFor: () => null,
   },
 }));
 
@@ -99,6 +100,11 @@ vi.mock('@renderer/features/workspaces/workspaces-store', () => ({
     get active() {
       return state.workspaces.find((w) => w.id === state.activeId) ?? null;
     },
+    get workspaces() {
+      return state.workspaces;
+    },
+    serverIdFor: (workspaceId: string) =>
+      state.workspaces.find((w) => w.id === workspaceId)?.serverId ?? null,
     onServer: (serverId: string) => state.workspaces.filter((w) => w.serverId === serverId),
     hasNoMembership: (serverId: string) => state.noMembership.has(serverId),
     setActive: state.setActive,
