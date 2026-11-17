@@ -241,6 +241,15 @@ describe('New room dialog', () => {
   });
 
   it('starts the channel choice again on another app, dropping a typed id', async () => {
+    rpcMock.workspaces.listMyIdentities.mockResolvedValue([
+      {
+        id: 'x1',
+        bridgeId: 'b2',
+        externalUserId: 'ext-ada',
+        externalUsername: 'ada',
+        verified: true,
+      },
+    ]);
     const host = await render();
     await typeInto(host.querySelector<HTMLInputElement>('#new-room-name')!, 'design-review');
     await chooseApp(host, 'b1');
@@ -249,11 +258,76 @@ describe('New room dialog', () => {
 
     await chooseApp(host, 'b2');
     expect(channelIdInput(host)).toBeNull();
-    expect(card(host, 'New public channel').getAttribute('aria-checked')).toBe('true');
+    expect(card(host, 'New private channel').getAttribute('aria-checked')).toBe('true');
 
     await act(async () => createButton(host).click());
     expect(rpcMock.workspaces.createRoom).toHaveBeenCalledWith(
-      expect.objectContaining({ bridgeId: 'b2', channel: { kind: 'new', private: false } })
+      expect.objectContaining({ bridgeId: 'b2', channel: { kind: 'new', private: true } })
+    );
+  });
+
+  it('makes a new private channel by default, and a public one only when chosen', async () => {
+    rpcMock.workspaces.listMyIdentities.mockResolvedValue([
+      {
+        id: 'x1',
+        bridgeId: 'b1',
+        externalUserId: 'ext-ada',
+        externalUsername: 'ada',
+        verified: true,
+      },
+    ]);
+    const host = await render();
+    await typeInto(host.querySelector<HTMLInputElement>('#new-room-name')!, 'design-review');
+    await chooseApp(host, 'b1');
+    expect(card(host, 'New private channel').getAttribute('aria-checked')).toBe('true');
+
+    await act(async () => card(host, 'New public channel').click());
+    await act(async () => createButton(host).click());
+    expect(rpcMock.workspaces.createRoom).toHaveBeenCalledWith(
+      expect.objectContaining({ bridgeId: 'b1', channel: { kind: 'new', private: false } })
+    );
+  });
+
+  it('offers a new public channel to someone not linked there, saying how to make it private', async () => {
+    const host = await render();
+    await typeInto(host.querySelector<HTMLInputElement>('#new-room-name')!, 'design-review');
+    await chooseApp(host, 'b1');
+
+    expect(card(host, 'New public channel').getAttribute('aria-checked')).toBe('true');
+    expect(host.textContent).toContain(
+      'Link your account to make it private, in Settings → Messaging apps.'
+    );
+    await act(async () => createButton(host).click());
+    expect(rpcMock.workspaces.createRoom).toHaveBeenCalledWith(
+      expect.objectContaining({ bridgeId: 'b1', channel: { kind: 'new', private: false } })
+    );
+  });
+
+  it('still sends a private channel when someone not linked picks it', async () => {
+    const host = await render();
+    await typeInto(host.querySelector<HTMLInputElement>('#new-room-name')!, 'design-review');
+    await chooseApp(host, 'b1');
+    await act(async () => card(host, 'New private channel').click());
+
+    expect(host.textContent).not.toContain('Link your account to make it private');
+    await act(async () => createButton(host).click());
+    expect(rpcMock.workspaces.createRoom).toHaveBeenCalledWith(
+      expect.objectContaining({ bridgeId: 'b1', channel: { kind: 'new', private: true } })
+    );
+  });
+
+  it('falls back to a new public channel on an app with no private channels', async () => {
+    rpcMock.workspaces.listBridges.mockResolvedValue([
+      { ...bridge('b1', 'teams', 'Acme Teams'), privateChannels: false },
+    ]);
+    const host = await render();
+    await typeInto(host.querySelector<HTMLInputElement>('#new-room-name')!, 'design-review');
+    await chooseApp(host, 'b1');
+
+    expect(card(host, 'New public channel').getAttribute('aria-checked')).toBe('true');
+    await act(async () => createButton(host).click());
+    expect(rpcMock.workspaces.createRoom).toHaveBeenCalledWith(
+      expect.objectContaining({ bridgeId: 'b1', channel: { kind: 'new', private: false } })
     );
   });
 
@@ -328,9 +402,9 @@ describe('New room dialog', () => {
     ]);
     const host = await render();
     await chooseApp(host, 'b1');
-    expect(host.textContent).not.toContain('@ada');
 
-    await act(async () => card(host, 'New private channel').click());
+    // A new private channel is the default, so the creator is shown at once.
+    expect(card(host, 'New private channel').getAttribute('aria-checked')).toBe('true');
     expect(host.textContent).toContain('You@ada');
     // Shown, so not offered as well.
     await act(async () => participants(host).focus());
@@ -362,6 +436,7 @@ describe('New room dialog', () => {
     rpcMock.workspaces.listBridgePeople.mockResolvedValue([person('ada', ['u1'], 'Ada')]);
     const host = await render();
     await chooseApp(host, 'b1');
+    await act(async () => card(host, 'New public channel').click());
 
     expect(host.textContent).toContain('You@ada');
     await act(async () => participants(host).focus());
@@ -374,6 +449,7 @@ describe('New room dialog', () => {
     ]);
     const host = await render();
     await chooseApp(host, 'b1');
+    await act(async () => card(host, 'New public channel').click());
 
     expect(host.textContent).not.toContain('You');
     expect(host.textContent).not.toContain('No linked');
@@ -391,6 +467,7 @@ describe('New room dialog', () => {
     ]);
     const host = await render();
     await chooseApp(host, 'b1');
+    await act(async () => card(host, 'New public channel').click());
 
     expect(host.textContent).not.toContain('You@ada');
   });

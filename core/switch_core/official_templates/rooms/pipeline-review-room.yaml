@@ -104,6 +104,7 @@ resources:
     name: "{team} - Pipeline Review ({quarter})"
     description: "Pipeline review and forecasting for {team} in {quarter}. Weekly reviews, deal coaching, and commit calls."
     bridge: "{bridge}"
+    channel_type: channel_private
     agents: [pipeline_analyst, deal_coach]
     users:
       - {if: "{bridge}", value: ["{$creator}"]}

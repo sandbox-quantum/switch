@@ -6,8 +6,8 @@ import type { ReactNode } from 'react';
  */
 export function buddyIntroLines(firstName: string | null): string[] {
   return [
-    `Hey${firstName ? ` ${firstName}` : ''}! I’ll be your assistant for everything Switch.`,
-    'In Switch, your team and AI agents work together in rooms: shared spaces in Slack, Teams, Discord, Telegram, or right here in Console.',
+    `Hey${firstName ? ` ${firstName}` : ''}! I’ll be your assistant for everything Switch Rooms.`,
+    'In Switch Rooms, your team and AI agents work together in rooms: shared spaces in Slack, Teams, Discord, Telegram, or right here in Console.',
     'Like a code-review room where an agent reviews every pull request, or a support room where agents triage incoming questions.',
   ];
 }

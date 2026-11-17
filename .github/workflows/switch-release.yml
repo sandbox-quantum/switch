@@ -1,6 +1,6 @@
 name: switch release
 
-# Builds and publishes the Switch core stack — the switch-core, gateway, setup,
+# Builds and publishes the Switch core stack — the switch-core, gateway,
 # switch-decision, switch-decision-strands and switch-hosted-controller
 # container images, the switch and
 # switch-hosted-controller Helm charts, and the standalone Docker Compose file

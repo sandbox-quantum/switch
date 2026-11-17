@@ -7,10 +7,11 @@ own bot, and the distributed app's client for the one bot every tenant shares.
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 
 from telegram import BotCommand
 
-from switch_core.bridges.agent.commands import COMMANDS
+from switch_core.bridges.agent.commands import commands_for
 
 # Telegram will only register a command spelled in these characters, and caps a
 # description at 256. A name it rejects is left out of the menu rather than
@@ -19,7 +20,7 @@ _TELEGRAM_COMMAND_RE = re.compile(r"[a-z0-9_-]{1,32}")
 _MAX_COMMAND_DESCRIPTION = 256
 
 
-def command_menu() -> list[BotCommand]:
+def command_menu(flags: Mapping[str, bool]) -> list[BotCommand]:
     """Every visible command that has a handler, hyphens spelled as underscores.
 
     Telegram only accepts `[a-z0-9_]` in a registered command, so the
@@ -31,7 +32,7 @@ def command_menu() -> list[BotCommand]:
             command=command.name.replace("-", "_"),
             description=command.description[:_MAX_COMMAND_DESCRIPTION],
         )
-        for command in COMMANDS
+        for command in commands_for(flags)
         if not command.hidden
         and command.handler is not None
         and _TELEGRAM_COMMAND_RE.fullmatch(command.name)

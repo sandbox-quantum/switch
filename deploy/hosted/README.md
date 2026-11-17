@@ -52,10 +52,7 @@ to its controller's own key: Core relays only ciphertext.
 ## Enable cloud machines
 
 Switch Console offers cloud machines on a server whose `hosted_agents` feature
-flag is on. The server runs them only once it is set up as below, which needs
-agent management too: `FEATURE_FLAGS_ENABLED=hosted_agents,agent_management`,
-with `CONTROLLER_TOKEN_SECRET` set. Core refuses to start with
-`HOSTED_LAUNCH_CAPACITY` above 0 without agent management. A server with the
+flag is on. The server runs them only once it is set up as below. A server with the
 flag on and nothing set up answers a claim with "This server does not support
 cloud agents."
 
@@ -365,8 +362,9 @@ Before upgrading an installation that has cloud machines:
 ## GitHub connections
 
 GitHub connections are not part of cloud machines. To let users link their
-GitHub account and grant agents repositories, set up the GitHub App under
-Connectors in the Switch dashboard, or in the chart with
+GitHub account and grant agents repositories, set up the GitHub App with
+`switch-connector-apps` (see "Accounts, organizations and connector apps"),
+or in the chart with
 `switchCore.githubConnectionsSecret` and `switchCore.githubAppPrivateKeyPath`
 ([GitHub App setup](../../docs/old/github-app-setup.md)). Register
 `<GATEWAY_PUBLIC_URL>/gateway/provider-connections/github/callback` as the
@@ -410,3 +408,83 @@ before they're applied. They're for the hosted controller's account
 
 Nothing is written, there's no cluster-wide pod read, and there's no `list`
 on Deployments.
+
+## Accounts, organizations and connector apps
+
+The dashboard has no pages for the platform operator. What spans the whole
+deployment, rather than one organization, is done with commands in a Switch
+Core pod, as `switch-cloud-machine` is, with the same configuration. Each
+change goes in the server's audit log as made by a platform operator
+command, with no account named. Below, `core` stands for
+`kubectl exec -it <core-pod> --`; use `-i` without `-t` to pipe something
+in.
+
+- `switch-orgs list` prints every organization: its id, slug and name, its
+  organization admins' e-mails, and its workspaces with their ids and how
+  many people each has. It changes nothing.
+
+  ```sh
+  core switch-orgs list
+  ```
+
+- `switch-accounts` lists, creates and deletes accounts, signs one out
+  everywhere, and makes one a platform operator or a regular account again.
+  `create` puts the account in no workspace: it signs in to an empty start
+  page until an invitation or a domain join places it. The password is read
+  from standard input, or from `--password-file`, never from the command
+  line; on a terminal it is asked for twice.
+
+  ```sh
+  core switch-accounts list --operators
+  printf '%s' "$PASSWORD" | kubectl exec -i <core-pod> -- switch-accounts create <email> --name "<name>"
+  core switch-accounts sign-out <email>
+  core switch-accounts grant-operator <email>
+  core switch-accounts revoke-operator <email>
+  ```
+
+  `delete` is a dry run unless given `--execute`: it shows the workspaces
+  the account leaves, the organizations it stops being an admin of, and in
+  each workspace its agents, devices, open chats, API keys and service
+  connections, and what passes to another admin. It refuses while the
+  account owns agents, devices or open chats, which only a running server
+  can remove: an admin of the workspace, or the person, removes them
+  first. With `--execute` you type the account's e-mail to confirm, on a
+  terminal; `--yes` skips that. Either way it looks again just before
+  deleting, and deletes nothing if the account has changed since it was
+  shown.
+
+  ```sh
+  core switch-accounts delete <email>
+  core switch-accounts delete <email> --execute
+  ```
+
+- `switch-connector-apps` sets up the apps connectors sign in through, for
+  every workspace. On a deployment with one organization its admins can do
+  this in the dashboard too; with several, this is the way. `set` checks the
+  app with the vendor and saves it only if the vendor accepts it. Its JSON
+  file, `app.json` below, holds `client_id`, the secrets the app has
+  (`client_secret`, and for GitHub `private_key`) and `replace`, true to
+  switch to a different app. Pipe it in rather than copying it into the
+  pod. Nothing the command prints is a secret.
+
+  ```sh
+  core switch-connector-apps list
+  kubectl exec -i <core-pod> -- switch-connector-apps set github --file /dev/stdin < app.json
+  core switch-connector-apps remove <service>
+  ```
+
+  `set` and `remove` take effect in every Core pod at once; there is no dry
+  run.
+
+- `switch-promote-org-admin` is break-glass: it makes someone an admin of an
+  organization whose admins can't, for example when none is left who can
+  sign in. They must already be in one of its workspaces. It is a dry run
+  unless given `--execute`, and needs `--reason`, which the organization's
+  admins read in its audit log, where the change is recorded as platform
+  access. They, and the person promoted, are e-mailed. An organization whose
+  admins are kept in WorkOS is refused: make them an admin there.
+
+  ```sh
+  core switch-promote-org-admin <organization-id-or-slug> <email> --reason "<why>"
+  core switch-promote-org-admin <organization-id-or-slug> <email> --reason "<why>" --execute
+  ```

@@ -198,7 +198,7 @@ export function MeetBuddyIntro({
             opacity: { duration: 0.28, delay: BEAT.subtitle },
           }}
         >
-          Your first AI assistant in Switch
+          Your first AI assistant in Switch Rooms
         </motion.p>
       </motion.div>
       {talking && (

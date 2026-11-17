@@ -1,7 +1,9 @@
 // Room filtering shared by the rooms list and the rooms graph, so both views
 // offer the same filters and apply them identically. The list puts them in
-// its table's column headers; the graph, which has no table, renders them as
-// `<RoomFilters>`. Both read a room's values through the functions here.
+// its table's dropdowns and column headers; the graph, which has no table,
+// renders them as `<RoomFilters>`. Both read a room's values through the
+// functions here, and offer only values the rooms given hold, so no option
+// returns nothing.
 
 import { MenuItem, Stack, TextField } from "@mui/material";
 import { useMemo, useState } from "react";
@@ -53,23 +55,25 @@ export function roomSearchText(room: RoomSummary, byId: GroupIndex): string {
   ].join("\n");
 }
 
-/** The groups on offer: every group in the tree, as its path, top groups
- * first; or, while the tree is unavailable, the groups the rooms name. */
+/** The groups these rooms are in, as paths in the tree's order, top groups
+ * first. A group whose rooms all sit in its sub-groups is offered too, since
+ * picking it picks theirs. While the tree is unavailable, the groups the
+ * rooms name. "No group" leads when a room has none. */
 export function groupOptions(
   groups: RoomGroupDetail[],
   byId: GroupIndex,
   rooms: readonly RoomSummary[],
 ): FilterOption[] {
+  const held = new Set(rooms.flatMap((r) => roomGroupValues(r, byId)));
   const named =
     groups.length > 0
-      ? flattenTree(groups).map(({ group }) => ({
-          value: group.id,
-          label: groupPathName(group.id, byId),
-        }))
+      ? flattenTree(groups)
+          .filter(({ group }) => held.has(group.id))
+          .map(({ group }) => ({ value: group.id, label: groupPathName(group.id, byId) }))
       : distinct(
           rooms.flatMap((r) => (r.group_id ? [{ value: r.group_id, label: r.group_name ?? r.group_id }] : [])),
         );
-  return [{ value: NO_GROUP, label: "No group" }, ...named];
+  return [...(held.has(NO_GROUP) ? [{ value: NO_GROUP, label: "No group" }] : []), ...named];
 }
 
 /** The owners of these rooms, keyed by id so two people of the same name
@@ -88,7 +92,8 @@ export function bridgeOptions(rooms: readonly RoomSummary[]): FilterOption[] {
       r.bridge_display_name ? [{ value: r.bridge_display_name, label: r.bridge_display_name }] : [],
     ),
   );
-  return [{ value: NOT_BRIDGED, label: "Not bridged" }, ...bridges];
+  const unbridged = rooms.some((r) => !r.bridge_display_name) ? [{ value: NOT_BRIDGED, label: "Not bridged" }] : [];
+  return [...unbridged, ...bridges];
 }
 
 export function connectedUserOptions(rooms: readonly RoomSummary[]): FilterOption[] {
@@ -159,18 +164,21 @@ export function filterRooms(
 
 function FilterSelect({
   label,
+  allLabel,
   value,
   onChange,
   options,
 }: {
   label: string;
+  /** What it reads with nothing picked, as the list's dropdowns do. */
+  allLabel: string;
   value: string;
   onChange: (value: string) => void;
   options: FilterOption[];
 }) {
   return (
     <TextField select label={label} value={value} onChange={(e) => onChange(e.target.value)} sx={{ width: 200 }}>
-      <MenuItem value="">All</MenuItem>
+      <MenuItem value="">{allLabel}</MenuItem>
       {options.map((option) => (
         <MenuItem key={option.value} value={option.value}>
           {option.label}
@@ -219,11 +227,35 @@ export function RoomFilters({
         <MenuItem value="active">Active</MenuItem>
         <MenuItem value="archived">Archived</MenuItem>
       </TextField>
-      <FilterSelect label="Group" value={state.group} onChange={state.setGroup} options={options.group} />
-      <FilterSelect label="Owner" value={state.owner} onChange={state.setOwner} options={options.owner} />
-      <FilterSelect label="Bridge" value={state.bridge} onChange={state.setBridge} options={options.bridge} />
+      <FilterSelect
+        label="Group"
+        allLabel="All groups"
+        value={state.group}
+        onChange={state.setGroup}
+        options={options.group}
+      />
+      <FilterSelect
+        label="Owner"
+        allLabel="All owners"
+        value={state.owner}
+        onChange={state.setOwner}
+        options={options.owner}
+      />
+      <FilterSelect
+        label="Bridge"
+        allLabel="All bridges"
+        value={state.bridge}
+        onChange={state.setBridge}
+        options={options.bridge}
+      />
       {options.user.length > 0 && (
-        <FilterSelect label="Connected user" value={state.user} onChange={state.setUser} options={options.user} />
+        <FilterSelect
+          label="Connected users"
+          allLabel="Anyone"
+          value={state.user}
+          onChange={state.setUser}
+          options={options.user}
+        />
       )}
     </Stack>
   );

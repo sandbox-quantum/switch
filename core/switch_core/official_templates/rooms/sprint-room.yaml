@@ -123,6 +123,7 @@ resources:
     name: "{team} - Sprint Room"
     description: "Daily engineering coordination for {team}. Standups, blockers, PRs, and sprint tracking."
     bridge: "{bridge}"
+    channel_type: channel_private
     agents: [sprint_tracker, code_assistant, qa_assistant]
     users:
       - {if: "{bridge}", value: ["{$creator}"]}

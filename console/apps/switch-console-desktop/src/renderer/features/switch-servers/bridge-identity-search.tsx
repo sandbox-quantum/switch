@@ -47,6 +47,7 @@ export const BridgeIdentitySearch = observer(function BridgeIdentitySearch({
   bridgeDisplayName,
   platform,
   directorySearchSupported,
+  directorySearchHint,
   autoFocus,
   onClaimed,
   onConfirmationNeeded,
@@ -59,6 +60,8 @@ export const BridgeIdentitySearch = observer(function BridgeIdentitySearch({
   /** The platform as a person names it, for prose about what is searchable. */
   platform: string;
   directorySearchSupported: boolean;
+  /** What the search can find a person by, from the connection. */
+  directorySearchHint: string;
   autoFocus: boolean;
   onClaimed: (identity: LinkedIdentity) => void;
   /** A link that waits on a code posted from the account: one just made, one
@@ -107,6 +110,7 @@ export const BridgeIdentitySearch = observer(function BridgeIdentitySearch({
           {
             identityId: result.pending.id,
             externalUsername: result.pending.externalUsername,
+            ...namedWithoutHandle(person),
             kind: result.alreadyLinked ? 'unverified' : 'pending',
           },
           result.code
@@ -160,7 +164,7 @@ export const BridgeIdentitySearch = observer(function BridgeIdentitySearch({
         <FieldLabel>Search {bridgeDisplayName}</FieldLabel>
         <Input
           autoFocus={autoFocus}
-          placeholder="Your name, handle or email"
+          placeholder={directorySearchHint}
           value={search}
           spellCheck={false}
           onChange={(e) => {
@@ -326,10 +330,13 @@ function DirectoryResults({
             >
               <div className="flex min-w-0 flex-col">
                 <span className="truncate text-sm text-foreground">{person.displayName}</span>
-                <span className="truncate text-xs text-foreground-muted">
-                  @{person.username}
-                  {person.email ? ` · ${person.email}` : ''}
-                </span>
+                {(person.hasHandle || person.email) && (
+                  <span className="truncate text-xs text-foreground-muted">
+                    {[person.hasHandle ? `@${person.username}` : null, person.email]
+                      .filter(Boolean)
+                      .join(' · ')}
+                  </span>
+                )}
                 {others.length > 0 && (
                   <span className="truncate text-xs text-foreground-muted">
                     Also linked to {others.map((c) => c.userName).join(', ')}
@@ -350,6 +357,7 @@ function DirectoryResults({
                           {
                             identityId: rowId,
                             externalUsername: person.username,
+                            ...namedWithoutHandle(person),
                             kind: 'unverified',
                           },
                           null
@@ -379,6 +387,7 @@ function DirectoryResults({
                         {
                           identityId: waiting.id,
                           externalUsername: waiting.externalUsername,
+                          ...namedWithoutHandle(person),
                           kind: 'pending',
                         },
                         null
@@ -402,7 +411,7 @@ function DirectoryResults({
 }
 
 /** Turn a failed claim into something the user can act on. */
-function claimFailureText(
+export function claimFailureText(
   result: Exclude<ClaimIdentityResult, { kind: 'claimed' | 'pending' }>
 ): string {
   switch (result.kind) {
@@ -413,4 +422,10 @@ function claimFailureText(
     case 'error':
       return result.message;
   }
+}
+
+/** The name to show for a person whose username is a handle Switch made up,
+ * so the confirmation names them as the search did; nothing for a real handle. */
+function namedWithoutHandle(person: BridgeDirectoryUser): { displayName?: string } {
+  return person.hasHandle ? {} : { displayName: person.displayName };
 }

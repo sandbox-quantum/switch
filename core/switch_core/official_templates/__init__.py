@@ -3,10 +3,9 @@
 They are not rows: the server lists them beside the stored templates and
 serves them by an ``official:`` id, so every workspace sees the version this
 release ships and nobody can change one. A template a deployment
-can only use where agents are managed comes in two documents, and the
-server's ``agent_management`` feature flag picks which it serves.
-switch-buddy only makes sense as a managed agent, and is served only with both
-``agent_management`` and ``switch_buddy`` on. The Switch expert is served only
+can only use where agents are managed comes in two documents: the server
+serves the managed one, and Switch Console uses the other with older servers
+that do not manage agents. switch-buddy is served only with ``switch_buddy`` on. The Switch expert is served only
 where switch-buddy is not: buddy covers what it does, and offering both would
 give a new user two built-in assistants to choose between.
 
@@ -27,11 +26,11 @@ template is served under its last revision.
 
 The room templates are simpler: one document each in ``rooms/``, named by
 its slug, and never revised, so nothing they made is ever updated. Each
-creates a room and the agents that work in it, on the deployer's machines,
-so they are served only with ``agent_management`` on. A workspace admin may
-remove one from their workspace (``hidden_official_templates``). A version 2
-document has no place for a name or description, so ``rooms/catalogue.yaml``
-holds them, by slug.
+creates a room and the agents that work in it, on the deployer's machines.
+A workspace admin may remove one from their workspace
+(``hidden_official_templates``). A version 2 document has no place for a name,
+a description or what it is for (its use case, from ``template_use_cases``),
+so ``rooms/catalogue.yaml`` holds them, by slug.
 """
 
 from __future__ import annotations
@@ -43,6 +42,8 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
+
+from switch_core.template_use_cases import USE_CASES, UseCase, is_use_case
 
 OFFICIAL_PREFIX = "official:"
 
@@ -65,6 +66,7 @@ class OfficialTemplate:
     description: str
     kind: str
     content: str
+    use_case: UseCase
     # Why a person should not run it by hand, for a client to give beside a
     # greyed Run. Advice, not a refusal: Switch Console still runs it.
     run_blocked_reason: str | None
@@ -83,8 +85,9 @@ class _Shipped:
     name: str
     description: str
     kind: str
+    use_case: UseCase
     # Where the server serves it, relative to switch-buddy: "buddy" only with
-    # agent management and the switch_buddy flag on (it has no Console-run
+    # the switch_buddy flag on (it has no Console-run
     # document, and Console asks for it only where offered); "without_buddy"
     # only where switch-buddy is not served.
     served: Literal["buddy", "without_buddy"]
@@ -100,6 +103,7 @@ _SHIPPED = (
             "up or why something is off."
         ),
         kind="agent",
+        use_case="support",
         served="without_buddy",
         run_blocked_reason=None,
     ),
@@ -111,6 +115,7 @@ _SHIPPED = (
             "answers anything about Switch and helps with any task."
         ),
         kind="agent",
+        use_case="personal",
         served="buddy",
         # Switch Console makes each person's switch-buddy itself, the first
         # time they use a workspace; running it again makes a second one.
@@ -150,8 +155,8 @@ def _with_instructions(document: str, instructions: str) -> str:
 
 
 @cache
-def _document(slug: str, agent_management: bool) -> str:
-    return document_in(_HERE / slug, agent_management)
+def _document(slug: str) -> str:
+    return document_in(_HERE / slug, agent_management=True)
 
 
 def document_in(folder: Path, agent_management: bool) -> str:
@@ -192,6 +197,12 @@ def _room_templates() -> tuple[OfficialTemplate, ...]:
             raise RuntimeError(
                 f"{_CATALOGUE} gives '{path.stem}' no name or no description"
             )
+        use_case = entry.get("use_case")
+        if not is_use_case(use_case):
+            raise RuntimeError(
+                f"{_CATALOGUE} gives '{path.stem}' the use case {use_case!r}; "
+                f"it takes one of {', '.join(USE_CASES)}"
+            )
         templates.append(
             OfficialTemplate(
                 id=f"{OFFICIAL_PREFIX}{path.stem}",
@@ -199,6 +210,7 @@ def _room_templates() -> tuple[OfficialTemplate, ...]:
                 description=entry["description"],
                 kind="room",
                 content=path.read_text(encoding="utf-8"),
+                use_case=use_case,
                 run_blocked_reason=None,
                 removable=True,
             )
@@ -206,9 +218,7 @@ def _room_templates() -> tuple[OfficialTemplate, ...]:
     return tuple(templates)
 
 
-def official_templates(
-    agent_management: bool, switch_buddy: bool
-) -> list[OfficialTemplate]:
+def official_templates(switch_buddy: bool) -> list[OfficialTemplate]:
     """Every template that comes with Switch, as this server serves them."""
     return [
         OfficialTemplate(
@@ -216,13 +226,14 @@ def official_templates(
             name=shipped.name,
             description=shipped.description,
             kind=shipped.kind,
-            content=_document(shipped.slug, agent_management),
+            content=_document(shipped.slug),
+            use_case=shipped.use_case,
             run_blocked_reason=shipped.run_blocked_reason,
             version=current_revision(shipped.slug),
         )
         for shipped in _SHIPPED
-        if (shipped.served == "buddy") == (agent_management and switch_buddy)
-    ] + (list(_room_templates()) if agent_management else [])
+        if (shipped.served == "buddy") == switch_buddy
+    ] + list(_room_templates())
 
 
 @cache
@@ -264,16 +275,9 @@ def is_official(template_id: str) -> bool:
     return template_id.startswith(OFFICIAL_PREFIX)
 
 
-def official_template(
-    template_id: str, agent_management: bool, switch_buddy: bool
-) -> OfficialTemplate | None:
+def official_template(template_id: str, switch_buddy: bool) -> OfficialTemplate | None:
     return next(
-        (
-            t
-            for t in official_templates(agent_management, switch_buddy)
-            if t.id == template_id
-        ),
-        None,
+        (t for t in official_templates(switch_buddy) if t.id == template_id), None
     )
 
 

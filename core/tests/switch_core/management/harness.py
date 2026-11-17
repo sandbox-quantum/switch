@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import secrets
 import uuid
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
@@ -44,7 +45,7 @@ from switch_core.bridges.agent.protocol.controller_presence import (
     ControllerConnectionError,
 )
 from switch_core.bridges.agent.protocol.controller_stream import IDLE
-from switch_core.config import ControllerRelease
+from switch_core.config import ControllerRelease, DeploymentKind
 from switch_core.connections.broker import ServiceBroker
 from switch_core.db.models import (
     TENANT_ZERO_ID,
@@ -226,6 +227,7 @@ def build_harness(
     additional_agent_providers: bool = True,
     controller_release: ControllerRelease | None = None,
     signal_engine: Callable[[], Any] = _no_listening_engine,
+    deployment_kind: DeploymentKind = "self_hosted",
 ) -> Harness:
     """The controller-token cache is on, as it is by default in production,
     so every management test runs through it."""
@@ -308,6 +310,7 @@ def build_harness(
         keyring=TEST_KEYRING,
         gateway_tenant_choice_enabled=False,
         third_party_avatars_enabled=third_party_avatars,
+        deployment_kind=deployment_kind,
         feature_flags={
             "agent_management": True,
             "switch_buddy": True,
@@ -382,6 +385,7 @@ def cookies_for(user: User, tenant_id: str = TENANT_ZERO_ID) -> dict[str, str]:
             tenant_id,
             session_version=0,
             auth_time=datetime.now(UTC),
+            session_id=secrets.token_urlsafe(16),
         )
     }
 

@@ -599,22 +599,17 @@ jobs:
       lane: fast
       agent_type: claude-code
 
-  # The gateway as each role, in both layouts: the role matrix
+  # The gateway as each role: the role matrix
   # (gateway/src/routes/roleMatrix.ts) checked against what a real account in
   # each role is shown. Not a required check yet.
   e2e-browser:
-    name: E2E browser lane (${{ matrix.gateway_layout }} layout)
+    name: E2E browser lane
     needs: changes
     if: ${{ needs.changes.outputs.e2e_browser == 'true' || github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
-    strategy:
-      fail-fast: false
-      matrix:
-        gateway_layout: [current, v2]
     uses: ./.github/workflows/e2e.yml
     with:
       lane: browser
       agent_type: claude-code
-      gateway_layout: ${{ matrix.gateway_layout }}
 
   migration-heads-on-merge:
     name: Migration heads on merge

@@ -63,7 +63,7 @@ export const BuddyIntroDialog = observer(function BuddyIntroDialog() {
             <h2 id="buddy-intro-heading" className="mt-2 text-2xl font-semibold">
               Meet switch-buddy
             </h2>
-            <p className="text-sm text-foreground-muted">Your first AI assistant in Switch</p>
+            <p className="text-sm text-foreground-muted">Your first AI assistant in Switch Rooms</p>
           </div>
           <BuddyIntroLines firstName={firstNameOf(person.name)} />
         </div>

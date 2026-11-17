@@ -1,8 +1,10 @@
+import ArrowBack from "@mui/icons-material/ArrowBack";
 import {
   Alert,
   Box,
   CircularProgress,
   FormControlLabel,
+  IconButton,
   Stack,
   Switch,
   Typography,
@@ -13,6 +15,7 @@ import { useNavigate } from "react-router";
 import type { EcosystemNodeKind } from "../../data/api";
 import { useEcosystemGraph } from "../../data/hooks";
 import { useGraphCanvasTheme } from "../graphCanvasTheme";
+import { graphTooltip } from "../graphTooltip";
 
 interface GraphNode {
   id: string;
@@ -47,19 +50,25 @@ const RADII: Record<GraphNode["kind"], number> = {
   owner: 8,
 };
 
+function counted(n: number, noun: string): string {
+  return `${n} ${noun}${n === 1 ? "" : "s"}`;
+}
+
 // Make raw connector_type keys (e.g. "claude_code") presentable.
 function prettyType(key: string): string {
   return key.replace(/[_-]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
 export default function EcosystemGraphPage() {
+  // A member is sent only their own agents, as Home counts them and the
+  // Agents list shows them; an admin, every agent in the workspace.
   const { data, loading, error } = useEcosystemGraph();
   const navigate = useNavigate();
 
   // "Show owners" inserts an owner node between each agent-type and its agents
   // (type -> owner -> agent). Owner names come from the ecosystem payload,
-  // which only carries them when the server `ecosystem.show_owners` flag is ON —
-  // so with the flag off this toggle reveals nothing.
+  // which only carries them when the server `ecosystem.show_owners` flag is ON,
+  // so the toggle is offered only then.
   const [showOwners, setShowOwners] = useState(false);
 
   const containerRef = useRef<HTMLDivElement>(null);
@@ -215,30 +224,39 @@ export default function EcosystemGraphPage() {
   return (
     <Box sx={{ display: "flex", flexDirection: "column", height: "100%" }}>
       <Stack direction="row" alignItems="center" spacing={1} mb={2}>
+        <IconButton onClick={() => navigate("/overview")} size="small" aria-label="Back to Home">
+          <ArrowBack />
+        </IconButton>
         <Typography variant="h5" sx={{ flexGrow: 1 }}>
           Ecosystem
         </Typography>
-        <FormControlLabel
-          control={
-            <Switch
-              size="small"
-              checked={showOwners}
-              onChange={(e) => setShowOwners(e.target.checked)}
-            />
-          }
-          label="Show owners"
-          sx={{ mr: 1 }}
-        />
+        {data?.show_owners && (
+          <FormControlLabel
+            control={
+              <Switch
+                size="small"
+                checked={showOwners}
+                onChange={(e) => setShowOwners(e.target.checked)}
+              />
+            }
+            label="Show owners"
+            sx={{ mr: 1 }}
+          />
+        )}
         <Typography variant="caption" color="text.secondary">
           {data
-            ? `${counts.agents} agents · ${counts.types} types · ${counts.bridges} apps`
+            ? [
+                counted(counts.agents, "agent"),
+                counted(counts.types, "type"),
+                counted(counts.bridges, "messaging app"),
+              ].join(" · ")
             : null}
         </Typography>
       </Stack>
 
       {error && (
         <Alert severity="error" sx={{ mb: 2 }}>
-          {error}
+          Couldn't load the ecosystem: {error}
         </Alert>
       )}
 
@@ -269,7 +287,7 @@ export default function EcosystemGraphPage() {
             <CircularProgress />
           </Box>
         )}
-        {!loading && isEmpty && (
+        {!loading && error === null && isEmpty && (
           <Box
             sx={{
               position: "absolute",
@@ -281,7 +299,7 @@ export default function EcosystemGraphPage() {
             }}
           >
             <Typography variant="body2" color="text.secondary">
-              No agents or collaboration apps yet.
+              No agents or messaging apps yet.
             </Typography>
           </Box>
         )}
@@ -306,9 +324,7 @@ export default function EcosystemGraphPage() {
           onNodeClick={(n) => handleNodeClick(n as GraphNode)}
           nodeLabel={(n) => {
             const node = n as GraphNode;
-            return node.sublabel
-              ? `${node.label}\n${node.sublabel}`
-              : node.label;
+            return graphTooltip(node.label, node.sublabel);
           }}
           cooldownTicks={120}
           enableZoomInteraction

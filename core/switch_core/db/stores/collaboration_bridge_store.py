@@ -6,6 +6,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from switch_core.db.models import CollaborationBridge, require_tenant_id
 
 
+def is_retired_bundled_mattermost(bridge: CollaborationBridge) -> bool:
+    """The Mattermost connector Switch once bundled, retired on upgrade
+    (migration `e5b2c8d4f1a7`): nobody chose it and its server is gone, so it
+    is not listed as one of the workspace's messaging apps."""
+    return (
+        bridge.type == "mattermost"
+        and bridge.preconfigured
+        and bridge.status in ("retiring", "inactive")
+    )
+
+
 class CollaborationBridgeStore:
     async def create(
         self, session: AsyncSession, bridge: CollaborationBridge
@@ -46,6 +57,15 @@ class CollaborationBridgeStore:
             )
         )
         return list(result.scalars().all())
+
+    async def get_listed(self, session: AsyncSession) -> list[CollaborationBridge]:
+        """The bound tenant's bridges as people and agents are shown them:
+        `get_all` without the retired bundled Mattermost."""
+        return [
+            bridge
+            for bridge in await self.get_all(session)
+            if not is_retired_bundled_mattermost(bridge)
+        ]
 
     async def get_active(self, session: AsyncSession) -> list[CollaborationBridge]:
         """The bound tenant's active bridges; scoped as `get_all` is."""

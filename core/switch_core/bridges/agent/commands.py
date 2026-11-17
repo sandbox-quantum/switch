@@ -3,9 +3,10 @@ from __future__ import annotations
 import logging
 import random
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, cast
+from urllib.parse import urlencode
 
 from sqlalchemy import select
 
@@ -71,6 +72,7 @@ from switch_core.delivery.addressing import (
     SenderPrincipal,
 )
 from switch_core.events import CommandEvent
+from switch_core.feature_flags import DECISION_ROUTING
 from switch_core.platform_access import administers_on_record
 from switch_core.room_invites import not_addressable_refusal
 from switch_core.room_policy import RoomAction, RoomCaller, RoomDecision
@@ -86,6 +88,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
+#: Content key on an agent's join greeting, so a bridge can say how to reach
+#: the agent where the usual "tag @agent" would not work (a Telegram group the
+#: bot sees only replies and commands in).
+AGENT_GREETING_KEY = "com.switch.agent_greeting"
 
 AGENT_GREETINGS = [
     "Hey there! Tag @{name} if you need me.",
@@ -281,6 +288,10 @@ class Command:
     # stores what is queued with it, so the agent gets the command before
     # anything written after it; `handler` runs it outside the router.
     decide: CommandDecider | None = None
+    # The feature flag a server must have on for the command to exist there
+    # (`commands_for`). Off, it is missing from `!help` and every native
+    # command list, and using it gets "Unknown command".
+    flag: str | None = None
 
 
 # ── Handlers ──────────────────────────────────────────────────────────────────
@@ -460,7 +471,7 @@ async def _cmd_help(
     client: AgentRecipient, room: RoomRef, event: CommandEvent, _is_direct: bool
 ) -> None:
     lines = ["**Available commands:**"]
-    for cmd in COMMANDS:
+    for cmd in commands_for(cast("CommandConsumer", client).feature_flags):
         if cmd.hidden:
             continue
         lines.append(f"- `!{cmd.name}` — {cmd.description}")
@@ -2052,6 +2063,7 @@ async def _cmd_link_account(
                 external_user_store=host._external_user_store,
                 user_store=host._user_store,
                 account=account,
+                account_name=account.external_username,
                 code=code,
                 only_here=True,
             )
@@ -2424,6 +2436,13 @@ def _via(package_names: list[str]) -> str:
     return "via " + ", ".join(package_names)
 
 
+def _dashboard_url(frontend_base_url: str, tenant_id: str, path: str) -> str:
+    """A link to `path` on the dashboard that names the room's workspace, so
+    it opens there rather than in whichever workspace the reader's browser
+    used last, where the room or resource is not found."""
+    return f"{frontend_base_url}{path}?{urlencode({'workspace': tenant_id})}"
+
+
 async def _cmd_list_documents(
     client: AgentRecipient,
     room: RoomRef,
@@ -2469,9 +2488,17 @@ async def _cmd_list_documents(
                 name_md = f"**{d.name}**"
             else:
                 if d.room_id is not None:
-                    url = f"{client._frontend_base_url}/rooms/{d.room_id}/documents/{d.id}"
+                    url = _dashboard_url(
+                        client._frontend_base_url,
+                        client.tenant_id,
+                        f"/rooms/{d.room_id}/documents/{d.id}",
+                    )
                 else:
-                    url = f"{client._frontend_base_url}/resources/documents/{d.id}"
+                    url = _dashboard_url(
+                        client._frontend_base_url,
+                        client.tenant_id,
+                        f"/resources/documents/{d.id}",
+                    )
                 name_md = f"[{d.name}]({url})"
             lines.append(f"- {name_md}{scope}{via}{desc}{creator}")
 
@@ -2517,7 +2544,11 @@ async def _cmd_list_references(
         if client._frontend_base_url is None:
             name_md = f"**{ref.name}**"
         else:
-            url = f"{client._frontend_base_url}/resources/references/{ref.id}"
+            url = _dashboard_url(
+                client._frontend_base_url,
+                client.tenant_id,
+                f"/resources/references/{ref.id}",
+            )
             name_md = f"[{ref.name}]({url})"
         kind = (
             ref.type if ref.id in direct_ids else f"{ref.type}, {_via(sources[ref.id])}"
@@ -2550,7 +2581,9 @@ async def _cmd_room_url(
         )
         return
 
-    url = f"{client._frontend_base_url}/rooms/{meta.room_id}"
+    url = _dashboard_url(
+        client._frontend_base_url, client.tenant_id, f"/rooms/{meta.room_id}"
+    )
     await _reply(client, room, event, f"Room URL: {url}")
 
 
@@ -2749,6 +2782,7 @@ COMMANDS: list[Command] = [
             CommandArg("state", "on, off, or fallback @agent|off", required=False),
         ),
         admin_owned=True,
+        flag=DECISION_ROUTING,
     ),
     Command(
         "assign-agent",
@@ -2933,6 +2967,21 @@ COMMANDS: list[Command] = [
 COMMANDS_BY_NAME: dict[str, Command] = {cmd.name: cmd for cmd in COMMANDS}
 
 
+def commands_for(flags: Mapping[str, bool]) -> list[Command]:
+    """The commands a server with these feature flags has, in `COMMANDS`
+    order: every one that needs no flag, and each one whose flag is on."""
+    return [cmd for cmd in COMMANDS if cmd.flag is None or flags.get(cmd.flag, False)]
+
+
+def command_for(name: str, flags: Mapping[str, bool]) -> Command | None:
+    """The command `name` on a server with these feature flags, or None when
+    there is no such command or its flag is off there."""
+    cmd = COMMANDS_BY_NAME.get(name)
+    if cmd is None or (cmd.flag is not None and not flags.get(cmd.flag, False)):
+        return None
+    return cmd
+
+
 async def dispatch_command(
     client: AgentRecipient, room: RoomRef, event: CommandEvent, is_direct: bool
 ) -> bool:
@@ -2967,8 +3016,9 @@ async def dispatch_admin_command(
     commands, so it runs them unconditionally (no role/availability gating) and
     renders the result as an admin/system message. Commands that exist but are
     agent-owned are left to the agents; a name that matches no command gets an
-    "unknown command" notice (the admin is the room's command front-door)."""
-    cmd = COMMANDS_BY_NAME.get(event.command)
+    "unknown command" notice (the admin is the room's command front-door).
+    A command whose feature flag is off here is unknown too."""
+    cmd = command_for(event.command, host.feature_flags)
     if cmd is None:
         await _reply(host, room, event, f"Unknown command: `{event.command}`")
         return
