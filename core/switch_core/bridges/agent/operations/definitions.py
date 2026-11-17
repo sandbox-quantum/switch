@@ -838,6 +838,10 @@ async def post_message(
         message is not delivered at all, and the call fails instead.
         `trust.card` is "dropped" when Switch Trust redacted the text of your
         `ui` card: the card was not sent, only `body` (as `delivered`).
+
+        In a frozen or archived room the call fails and nothing is posted:
+        the room is read-only. Do not retry (see the skill's "Frozen and
+        archived rooms").
     """
     agent_id = get_agent_id()
     room_id = await require_connected_room()

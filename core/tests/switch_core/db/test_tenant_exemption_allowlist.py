@@ -135,6 +135,11 @@ _ALLOWED_MODULES = {
     # holds no membership. Everything it then reads or deletes in a workspace
     # is bound to that workspace.
     "switch_core.accounts.organization_purge",
+    # The operator taking an account out of every room of a workspace names
+    # the workspace by id, holding no membership of it: whether that id is a
+    # workspace is asked with nothing bound, and everything after is bound to
+    # it.
+    "switch_core.room_moderation_admin",
     # Enumerating tenants at boot, and starting one bridge by id from a
     # context bound to somebody else's tenant.
     "switch_core.clients.client_lifecycle_service",

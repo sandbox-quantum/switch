@@ -59,6 +59,7 @@ from switch_core.gateway.invite_mail import InviteMailer
 from switch_core.gateway.messaging_installs import (
     router as messaging_installs_router,
 )
+from switch_core.gateway.moderation import router as moderation_router
 from switch_core.gateway.oidc_routes import register_oidc_client
 from switch_core.gateway.oidc_routes import router as oidc_router
 from switch_core.gateway.organization_connector_apps import (
@@ -263,6 +264,7 @@ def create_gateway_app(
     app.include_router(rooms_router, prefix="/rooms", tags=["rooms"])
     if config.decision_routing_enabled:
         app.include_router(room_auto_route_router, prefix="/rooms", tags=["rooms"])
+    app.include_router(moderation_router, tags=["moderation"])
     app.include_router(changes_router, tags=["changes"])
     app.include_router(chats_router, prefix="/chats", tags=["chats"])
     app.include_router(room_groups_router, prefix="/room-groups", tags=["room-groups"])

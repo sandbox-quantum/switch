@@ -103,6 +103,13 @@ class AuditAction(StrEnum):
     # Switch Console signed a browser in to the workspace with a one-time
     # link, opening a dashboard page (`details.next`).
     BROWSER_HANDOFF = "auth.browser_handoff"
+    # Incident control by a workspace admin or the server's operator
+    # (`room_moderation.py`): an agent or a person taken out of every room
+    # they were in, the rooms named in `details.rooms`; and a room made
+    # read-only, or writable again.
+    MEMBER_REMOVED_FROM_ALL_ROOMS = "member.removed_from_all_rooms"
+    ROOM_FROZEN = "room.frozen"
+    ROOM_UNFROZEN = "room.unfrozen"
 
 
 class OrganizationAuditAction(StrEnum):

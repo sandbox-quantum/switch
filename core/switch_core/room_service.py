@@ -258,6 +258,49 @@ def require_membership_changeable_from_outside(room: Room) -> None:
         )
 
 
+async def take_agents_out_of_room(
+    *,
+    session_factory: async_sessionmaker[AsyncSession],
+    provisioning: Provisioning,
+    room_store: RoomStore,
+    room: Room,
+    agent_ids: list[str],
+    transport_user_ids: list[str],
+    removed_by: str | None,
+) -> int:
+    """Take agents out of one room: their memberships, the departure each
+    one announces, and the wake-up that stops a live client reading the
+    room. How many `room_agents` rows went. The caller tells the room's
+    listeners (`RoomService.room_agents_changed`, `room_changed`).
+
+    Both records of the membership go before the wake-up. `kick_user` takes
+    `client_rooms`; `room_agents` is the one `get_rooms_for_agent` reads, so
+    a client reacting to the kick by re-reading its rooms must not still
+    find this one. The departure each removal announces goes in the same
+    transaction, written by whichever call removed the `client_rooms` row.
+    """
+    with tenant_scope(room.tenant_id):
+        departed: list[Callable[[], None]] = []
+        async with session_factory() as session:
+            for transport_user_id in transport_user_ids:
+                departed.append(
+                    await provisioning.record_leave(
+                        session,
+                        room.transport_room_id,
+                        transport_user_id,
+                        removed_by=removed_by,
+                    )
+                )
+            removed = await room_store.remove_agents(session, room.id, agent_ids)
+            await session.commit()
+        for announce in departed:
+            announce()
+
+        for transport_user_id in transport_user_ids:
+            await provisioning.kick_user(room.transport_room_id, transport_user_id)
+    return removed
+
+
 class RoomService:
     # Class-level defaults so a caller that builds this without `__init__` —
     # several tests assemble a minimal instance directly — still has the
@@ -298,6 +341,16 @@ class RoomService:
         self._telemetry = telemetry
         # The shared delivery read; told when a room goes.
         self._room_cache = room_cache
+
+    @property
+    def provisioning(self) -> Provisioning:
+        """How memberships are written: for a removal made outside this
+        service through the same single-room steps (`room_moderation.py`)."""
+        return self._provisioning
+
+    @property
+    def room_store(self) -> RoomStore:
+        return self._room_store
 
     def on_room_changed(self, listener: Callable[[str, str, list[str]], None]) -> None:
         """Call `listener(tenant_id, room_id, [])` once a room is created,
@@ -1641,36 +1694,15 @@ class RoomService:
                 raise ValueError(f"Room not found: {room_id}")
 
         agent_clients = self._resolve_agent_clients(agent_ids)
-
-        with tenant_scope(room.tenant_id):
-            # Both records of the membership before the wake-up. `kick_user`
-            # takes `client_rooms`; `room_agents` is the one
-            # `get_rooms_for_agent` reads, so a client reacting to the kick by
-            # re-reading its rooms must not still find this one. The departure
-            # each removal announces goes in the same transaction, written by
-            # whichever call removed the `client_rooms` row.
-            departed: list[Callable[[], None]] = []
-            async with self._session_factory() as session:
-                for transport_user_id in agent_clients.values():
-                    departed.append(
-                        await self._provisioning.record_leave(
-                            session,
-                            room.transport_room_id,
-                            transport_user_id,
-                            removed_by=removed_by,
-                        )
-                    )
-                removed = await self._room_store.remove_agents(
-                    session, room_id, agent_ids
-                )
-                await session.commit()
-            for announce in departed:
-                announce()
-
-            for transport_user_id in agent_clients.values():
-                await self._provisioning.kick_user(
-                    room.transport_room_id, transport_user_id
-                )
+        removed = await take_agents_out_of_room(
+            session_factory=self._session_factory,
+            provisioning=self._provisioning,
+            room_store=self._room_store,
+            room=room,
+            agent_ids=agent_ids,
+            transport_user_ids=list(agent_clients.values()),
+            removed_by=removed_by,
+        )
 
         logger.info("Removed %d agents from room %s", len(agent_ids), room_id)
         await self.room_agents_changed(room.tenant_id, room.id)

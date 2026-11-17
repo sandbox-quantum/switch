@@ -87,6 +87,7 @@ from switch_core.observability.catalogue import (
 from switch_core.observability.metrics import metrics
 from switch_core.process_lease import LEASE_TTL, RENEW_EVERY_SECONDS
 from switch_core.provisioning import Provisioning
+from switch_core.room_read_only import RoomReadOnly
 from switch_core.room_service import RoomCreateConfig
 from switch_core.room_wide_mention import is_room_wide_mention
 from switch_core.session_activity.bridge_answers import ApprovalAnswers
@@ -309,6 +310,21 @@ def _post_source(bridge_id: str, channel_id: str, message_ref: str) -> str:
     webhook platform retries a delivery it saw fail. The second delivery finds
     the rows written and writes nothing new."""
     return f"{bridge_id}\x1f{channel_id}\x1f{message_ref}"
+
+
+def _read_only_notice(refused: RoomReadOnly) -> str:
+    """What a person is told when their room took no post from them."""
+    if refused.state == "frozen":
+        return (
+            "🧊 Your message was not delivered: a workspace admin has frozen "
+            "this room in Switch, so nothing new can be posted in it until "
+            "they unfreeze it. Agents can't see your message."
+        )
+    return (
+        "Your message was not delivered: this room is archived in Switch, so "
+        "nothing new can be posted in it. Its owner or a workspace admin can "
+        "unarchive it. Agents can't see your message."
+    )
 
 
 class CollaborationCore:
@@ -1470,7 +1486,13 @@ class CollaborationCore:
 
     async def _handle_inbound_message(self, msg: InboundMessage) -> str | None:
         """Write a platform message into its room as its sender, and return
-        the event it became, or None when it was not relayed."""
+        the event it became, or None when it was not relayed.
+
+        A room that is frozen or archived takes no posts
+        (`room_read_only.py`): the router refuses the row, and the sender is
+        told their message did not reach the room (`_tell_read_only`), as
+        they are told of a Switch Trust block.
+        """
         logger.debug(
             "[BRIDGE-IN] channel=%s sender=%s content=%s",
             msg.channel_id,
@@ -1603,7 +1625,7 @@ class CollaborationCore:
                     check.policy_id,
                     transport_room_id,
                 )
-                await self._post_trust_notice(
+                await self._post_sender_notice(
                     msg,
                     "🚫 Your message was blocked by Switch Trust and was not "
                     "delivered to the room. You can still see it, but agents "
@@ -1617,18 +1639,22 @@ class CollaborationCore:
             if annotation is not None:
                 content = f"{content}\n\n{annotation}"
             _mark_sending()
-            with writes_derived_from(
-                human_actor.client_id,
-                _post_source(self._bridge_id, msg.channel_id, msg.message_ref),
-            ):
-                event_id = await human_actor.send_message(
-                    transport_room_id,
-                    content,
-                    format="markdown",
-                    thread_root_id=thread_root_id,
-                    metered=True,
-                    extra_content=_inbound_extra_content(msg, check),
-                )
+            try:
+                with writes_derived_from(
+                    human_actor.client_id,
+                    _post_source(self._bridge_id, msg.channel_id, msg.message_ref),
+                ):
+                    event_id = await human_actor.send_message(
+                        transport_room_id,
+                        content,
+                        format="markdown",
+                        thread_root_id=thread_root_id,
+                        metered=True,
+                        extra_content=_inbound_extra_content(msg, check),
+                    )
+            except RoomReadOnly as refused:
+                await self._tell_read_only(msg, refused)
+                return None
             if event_id is None:
                 logger.error(
                     "[BRIDGE-IN] failed to relay message from %s into room %s — "
@@ -1644,7 +1670,7 @@ class CollaborationCore:
             if check.redacted_content is not None:
                 redaction_notice = trust_redaction_notice(check)
                 if redaction_notice is not None:
-                    await self._post_trust_notice(
+                    await self._post_sender_notice(
                         msg, redaction_notice, AdminMessageType.TRUST_REDACTED
                     )
             if annotation is not None:
@@ -1657,7 +1683,7 @@ class CollaborationCore:
                     if check.outcome == "alerted"
                     else AdminMessageType.TRUST_ERRORED
                 )
-                await self._post_trust_notice(msg, annotation, notice_type)
+                await self._post_sender_notice(msg, annotation, notice_type)
             # Record the correlation so a later reply (either direction) threads.
             await self._record_message_map(
                 external_channel_id=msg.channel_id,
@@ -1723,7 +1749,7 @@ class CollaborationCore:
                     "delivered to the room. You can still see it, but agents "
                     "can't access it."
                 )
-            await self._post_trust_notice(msg, notice, AdminMessageType.TRUST_BLOCKED)
+            await self._post_sender_notice(msg, notice, AdminMessageType.TRUST_BLOCKED)
             return None
         if caption_check is not None and caption_check.redacted_content is not None:
             content = caption_check.redacted_content
@@ -1763,24 +1789,28 @@ class CollaborationCore:
             )
             # Numbered from the post and the file's place in it, as the text
             # above is, so a second delivery of the post writes no file twice.
-            with writes_derived_from(human_actor.client_id, f"{source}\x1f{index}"):
-                event_id = await human_actor.send_media(
-                    transport_room_id,
-                    media_uri,
-                    attachment.filename,
-                    attachment.mimetype,
-                    len(attachment.data),
-                    msgtype=msgtype,
-                    caption=caption if index == 0 else None,
-                    thread_root_id=thread_root_id,
-                    group=(
-                        {"id": group_id, "index": index, "total": total}
-                        if group_id is not None
-                        else None
-                    ),
-                    metered=True,
-                    extra_content=_inbound_extra_content(msg, caption_check),
-                )
+            try:
+                with writes_derived_from(human_actor.client_id, f"{source}\x1f{index}"):
+                    event_id = await human_actor.send_media(
+                        transport_room_id,
+                        media_uri,
+                        attachment.filename,
+                        attachment.mimetype,
+                        len(attachment.data),
+                        msgtype=msgtype,
+                        caption=caption if index == 0 else None,
+                        thread_root_id=thread_root_id,
+                        group=(
+                            {"id": group_id, "index": index, "total": total}
+                            if group_id is not None
+                            else None
+                        ),
+                        metered=True,
+                        extra_content=_inbound_extra_content(msg, caption_check),
+                    )
+            except RoomReadOnly as refused:
+                await self._tell_read_only(msg, refused)
+                return None
             if event_id is None:
                 logger.error(
                     "[BRIDGE-IN] failed to relay attachment %s from %s into room %s",
@@ -1797,14 +1827,14 @@ class CollaborationCore:
             if caption_check is not None and caption_check.redacted_content is not None:
                 redaction_notice = trust_redaction_notice(caption_check)
                 if redaction_notice is not None:
-                    await self._post_trust_notice(
+                    await self._post_sender_notice(
                         msg, redaction_notice, AdminMessageType.TRUST_REDACTED
                     )
             if trust_notes:
                 flagged = files_check.flagged or (
                     caption_check is not None and caption_check.outcome == "alerted"
                 )
-                await self._post_trust_notice(
+                await self._post_sender_notice(
                     msg,
                     "\n".join(trust_notes),
                     AdminMessageType.TRUST_ALERTED
@@ -1818,11 +1848,23 @@ class CollaborationCore:
             )
         return first_event_id
 
-    async def _post_trust_notice(
+    async def _tell_read_only(self, msg: InboundMessage, refused: RoomReadOnly) -> None:
+        logger.warning(
+            "[BRIDGE-IN] message from %s in channel %s not relayed: the room is %s",
+            msg.sender_name,
+            msg.channel_id,
+            refused.state,
+        )
+        await self._post_sender_notice(
+            msg, _read_only_notice(refused), AdminMessageType.ROOM_READ_ONLY
+        )
+
+    async def _post_sender_notice(
         self, msg: InboundMessage, body: str, message_type: AdminMessageType
     ) -> None:
-        """Tell the sender, and only the sender, what Switch Trust did with
-        their message: blocked, redacted, flagged, or not fully checked.
+        """Tell the sender, and only the sender, what happened to their
+        message: what Switch Trust did with it (blocked, redacted, flagged, or
+        not fully checked), or that its room takes no posts.
 
         Each of these is about what one person wrote, so it goes to them the
         way the platform allows (`private_notice_delivery`). Where it has no
@@ -1843,7 +1885,7 @@ class CollaborationCore:
         if msg.channel_type != "direct":
             if no_one_to_reach:
                 logger.info(
-                    "The Switch Trust %s notice for %s goes in channel %s: an "
+                    "The %s notice for %s goes in channel %s: an "
                     "app or a shared account has no one person to tell",
                     message_type.value,
                     msg.sender_name,
@@ -1852,7 +1894,7 @@ class CollaborationCore:
             elif delivery == "in_channel":
                 logger.warning(
                     "%s has no way to reach one person privately: posting the "
-                    "Switch Trust %s notice for %s in channel %s, where "
+                    "%s notice for %s in channel %s, where "
                     "everyone in it sees it",
                     self._adapter.platform_name,
                     message_type.value,
@@ -1875,7 +1917,7 @@ class CollaborationCore:
                 except PrivateNoticeRefused as refused:
                     logger.warning(
                         "%s would not let the bot reach %s privately (%s): "
-                        "posting the Switch Trust %s notice in channel %s "
+                        "posting the %s notice in channel %s "
                         "instead, where everyone in it sees it",
                         self._adapter.platform_name,
                         msg.sender_name,
@@ -1885,7 +1927,7 @@ class CollaborationCore:
                     )
                 except Exception:
                     logger.warning(
-                        "Could not send the Switch Trust %s notice to %s by %s: "
+                        "Could not send the %s notice to %s by %s: "
                         "posting it in channel %s instead, where everyone in it "
                         "sees it",
                         message_type.value,
@@ -1903,7 +1945,7 @@ class CollaborationCore:
             )
         except Exception:
             logger.warning(
-                "Could not post a Switch Trust notice to channel %s",
+                "Could not post a sender notice to channel %s",
                 msg.channel_id,
                 exc_info=True,
             )
@@ -2067,6 +2109,16 @@ class CollaborationCore:
                 event_id = await human_actor.send_event(
                     transport_room_id, "com.switch.command", content
                 )
+        except RoomReadOnly as refused:
+            logger.warning(
+                "Command %s from %s in channel %s not run: the room is %s",
+                cmd.command,
+                cmd.sender_name,
+                cmd.channel_id,
+                refused.state,
+            )
+            await self._adapter.answer_command(cmd, _read_only_notice(refused))
+            return
         except TransportError as exc:
             logger.error(
                 "Failed to bridge command %s into %s: %s",

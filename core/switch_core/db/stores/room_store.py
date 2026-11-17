@@ -1244,6 +1244,26 @@ class RoomStore:
             room.archived_at = None
         await session.flush()
 
+    async def set_frozen(
+        self,
+        session: AsyncSession,
+        room: Room,
+        *,
+        frozen_by: str | None,
+        reason: str | None,
+    ) -> None:
+        """Freeze `room`, stamping when, by whom and why."""
+        room.frozen_at = datetime.now(UTC)
+        room.frozen_by = frozen_by
+        room.frozen_reason = reason
+        await session.flush()
+
+    async def clear_frozen(self, session: AsyncSession, room: Room) -> None:
+        room.frozen_at = None
+        room.frozen_by = None
+        room.frozen_reason = None
+        await session.flush()
+
     async def update_fields(
         self,
         session: AsyncSession,

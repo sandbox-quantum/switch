@@ -97,6 +97,8 @@ class RoomDescriptor(BaseModel):
     # moved. Same value in both; nothing dereferences either.
     matrix_room_id: str
     archived: bool = False
+    # Frozen by a workspace admin: read-only until they unfreeze it.
+    frozen: bool = False
     # The room's collaboration bridge, or None for an internal-only room.
     # Carried so a caller that already resolved the room does not have to read
     # it again to decide whether an outbound signal has anywhere to go.

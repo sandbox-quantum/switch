@@ -1285,12 +1285,25 @@ class Room(TenantScoped, Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     # When set, the room is archived: hidden from the default active room lists
-    # (gateway + agent MCP tools) but otherwise fully intact and retrievable —
-    # members, room, and bridge channel are untouched. NULL = active.
-    # Archiving is metadata-only and reversible (unarchive clears this).
+    # (gateway + agent MCP tools) and read-only (`room_read_only.py`), but
+    # otherwise intact and retrievable — members, history and bridge channel
+    # are untouched. NULL = active. Reversible (unarchive clears this).
     archived_at: Mapped[str | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # When set, the room is frozen: read-only while a workspace admin or the
+    # server's operator contains it, until they unfreeze it
+    # (`room_read_only.py`). `frozen_by` is who froze it and `frozen_reason`
+    # what they gave as the reason, shown to admins only.
+    frozen_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    frozen_by: Mapped[str | None] = mapped_column(
+        Text,
+        ForeignKey("users.id", ondelete="SET NULL", name="fk_rooms_frozen_by"),
+        nullable=True,
+    )
+    frozen_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     # The highest live `seq` retention has deleted from this room. Numbering
     # continues above it, so a room emptied by retention never hands out a
     # position a cursor has already passed. See `MessageStore._next_seq`.

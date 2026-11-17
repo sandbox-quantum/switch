@@ -128,8 +128,8 @@ def _bridge(
     )
     # The real implementation, not a re-fake of it: exercises its try/except
     # around a failing platform notify, same as production.
-    bridge._post_trust_notice = lambda msg, body, message_type: (
-        CollaborationCore._post_trust_notice(bridge, msg, body, message_type)
+    bridge._post_sender_notice = lambda msg, body, message_type: (
+        CollaborationCore._post_sender_notice(bridge, msg, body, message_type)
     )
     bridge.relayed = relayed
     return bridge
