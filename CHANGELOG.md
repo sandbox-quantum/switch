@@ -673,6 +673,14 @@ version of their own to them without also giving them a release of their own.
   of as well as the rooms.
 
 #### Fixed
+- **A room Discord refuses to make a channel for says why.** When Discord
+  turned down the new channel, for example because the Switch bot's role
+  lacks Manage Channels, creating the room failed with a bare 500 and
+  switch-buddy could only say the server had an internal error. It now fails
+  with Discord's reason and what to change (the permission to turn on, a bot
+  missing from the server, the server's 500-channel limit), so buddy and the
+  Console can pass it on. A room name with no letters or digits Discord
+  accepts is refused before Discord is asked.
 - **A sign-out that fails in the dashboard says so.** Signing out, or out of
   every device, from the account menu or the screens before a workspace said
   nothing when Switch didn't answer, and a failed sign-out of this browser
