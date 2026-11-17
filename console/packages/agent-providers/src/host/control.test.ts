@@ -8,7 +8,13 @@ import { PassThrough } from 'node:stream';
 import { afterEach, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { AttachmentTransfers } from './attachment-transfers';
-import { CONTROL_FILE, ControlClient, ensureSessions, serveControl } from './control';
+import {
+  CONTROL_FILE,
+  ControlClient,
+  controlMessageSchema,
+  ensureSessions,
+  serveControl,
+} from './control';
 import type { Supervision } from './launch';
 import { SessionHostFailedError, SessionLinks } from './session-channel';
 import { WatcherControl } from './watcher-tools';
@@ -594,4 +600,37 @@ it('reads as a health ask to a sidecar that predates reasoning, so its connectio
   expect(await console.reasoning('session', null)).toEqual({ state: 'connected' });
   expect(console.isClosed).toBe(false);
   expect(toSidecar).toHaveLength(2);
+});
+
+it('validates attachmentCancel transferId and rejects path traversal', async () => {
+  expect(controlMessageSchema.safeParse({ attachmentCancel: 't1' }).success).toBe(true);
+  expect(controlMessageSchema.safeParse({ attachmentCancel: '../../../tmp/target' }).success).toBe(false);
+  expect(controlMessageSchema.safeParse({ attachmentCancel: '' }).success).toBe(false);
+  expect(controlMessageSchema.safeParse({ attachmentCancel: 'bad/slash' }).success).toBe(false);
+
+  const { base, stop, serving, control } = await started();
+  const socket = connect(control.port, '127.0.0.1');
+  const replies: unknown[] = [];
+  let buffered = '';
+  socket.on('data', (chunk: Buffer) => {
+    buffered += chunk.toString();
+    let end: number;
+    while ((end = buffered.indexOf('\n')) >= 0) {
+      replies.push(JSON.parse(buffered.slice(0, end)));
+      buffered = buffered.slice(end + 1);
+    }
+  });
+  socket.write(`${JSON.stringify({ token: control.token })}\n`);
+
+  socket.write(`${JSON.stringify({ id: 1, attachmentCancel: 't1' })}\n`);
+  await vi.waitFor(() =>
+    expect(replies).toContainEqual({ id: 1, ok: true, value: null })
+  );
+
+  const closed = new Promise<void>((resolve) => socket.once('close', () => resolve()));
+  socket.write(`${JSON.stringify({ id: 2, attachmentCancel: '../../../tmp/target' })}\n`);
+  await closed;
+
+  stop.abort();
+  await serving;
 });
