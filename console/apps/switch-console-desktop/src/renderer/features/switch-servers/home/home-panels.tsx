@@ -257,7 +257,7 @@ export function AskBuddyPanel({
         {/* Peeks out from behind the box, tilted. */}
         <HomeBuddy className="absolute -top-[57px] -left-[54px] -rotate-[8deg]" />
         <form
-          className="relative flex w-full items-end gap-2 rounded-2xl border border-border bg-background px-5 py-3 shadow-sm focus-within:border-foreground-muted"
+          className="relative flex w-full items-end gap-2 rounded-2xl border border-border bg-background px-5 py-3 shadow-[0_1px_1px_rgb(0_0_0/0.04),0_2px_4px_rgb(0_0_0/0.04),0_4px_10px_-2px_rgb(0_0_0/0.06)] focus-within:border-foreground-muted"
           onSubmit={(event) => {
             event.preventDefault();
             void ask(draft, null);
