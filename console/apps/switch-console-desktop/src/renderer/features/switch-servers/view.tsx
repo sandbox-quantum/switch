@@ -212,6 +212,18 @@ const UNREACHABLE_RETRY_MS = 10_000;
  * gateway error stays in the console: naming our own IPC method at the user
  * gives them nothing to act on (CHOO-2042).
  */
+/**
+ * The reason a server could not be reached, without the "Can't reach <host>:"
+ * it starts with when the card's title already says that.
+ */
+function withoutAddress(reason: string | null, host: string): string | null {
+  if (!reason) return null;
+  const prefix = `Can't reach ${host}: `;
+  if (!reason.startsWith(prefix)) return reason;
+  const rest = reason.slice(prefix.length);
+  return rest.charAt(0).toUpperCase() + rest.slice(1);
+}
+
 const ServerUnreachableCard = observer(function ServerUnreachableCard({
   server,
 }: {
@@ -226,7 +238,8 @@ const ServerUnreachableCard = observer(function ServerUnreachableCard({
   // modelled separately. Console watches its process, and the status page says
   // what that found.
   const managed = server.managed;
-  const reason = store.unreachableReason(serverId);
+  const host = urlHost(server.url);
+  const reason = withoutAddress(store.unreachableReason(serverId), host);
 
   // Keep probing while this is on screen. Waiting for the user to press
   // something would leave a server that recovered looking down. This only
@@ -247,14 +260,16 @@ const ServerUnreachableCard = observer(function ServerUnreachableCard({
         <div className="flex items-center gap-2">
           <PlugZap className="size-4 shrink-0 text-amber-500" />
           <span className="text-foreground">
-            {managed ? `${server.name} isn't answering` : `Can't reach ${urlHost(server.url)}`}
+            {managed ? `${server.name} isn't answering` : `Can't reach ${host}`}
           </span>
           <span className="text-foreground-muted">
             {retrying
               ? 'Reconnecting…'
               : managed
                 ? 'Server status shows what it is doing.'
-                : 'Check the address and your connection.'}
+                : reason
+                  ? null
+                  : 'Check the address and your connection.'}
           </span>
         </div>
         {!managed && reason && <p className="pl-6 text-xs text-foreground-muted">{reason}</p>}
