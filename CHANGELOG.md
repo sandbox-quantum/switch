@@ -520,8 +520,9 @@ version of their own to them without also giving them a release of their own.
     Organization settings › Workspaces, `/platform/users` to Organization
     settings › Users, and `/platform/connectors` to Organization settings ›
     Connector apps;
-  - in the default layout, `/users`, `/operator/workspaces` and the
-    `/platform` pages go to the Organization page.
+  - in the default layout, `/users`, `/operator/workspaces`, `/platform`,
+    `/platform/workspaces` and `/platform/users` go to the Organization page,
+    and `/platform/connectors` to Connectors.
 
   The deployment's connector apps are now in Organization settings ›
   Connector apps, and on the default layout's Connectors page, for whoever
