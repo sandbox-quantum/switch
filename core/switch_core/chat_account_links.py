@@ -66,6 +66,7 @@ async def confirm_with_code(
     external_user_store: ExternalUserStore,
     user_store: UserStore,
     account: ExternalUser,
+    account_name: str,
     code: str,
     only_here: bool,
 ) -> str | None:
@@ -85,6 +86,9 @@ async def confirm_with_code(
     from any other account matches nothing, which is why posting it in a busy
     channel gives nothing away.
 
+    `account_name` is how the confirmation names the account: its handle,
+    or the person's name where the platform gave them none.
+
     The caller replies after closing `session`: a rejected code may have
     locked the request it was checked against, and nobody should wait on that
     while a reply is written.
@@ -101,6 +105,7 @@ async def confirm_with_code(
         session,
         user_store=user_store,
         account=account,
+        account_name=account_name,
         user_id=request.user_id,
         by="code",
         unlink_instructions=unlink_the_way_you_ran_this,
@@ -112,6 +117,7 @@ async def record_confirmed_link(
     *,
     user_store: UserStore,
     account: ExternalUser,
+    account_name: str,
     user_id: str,
     by: str,
     unlink_instructions: UnlinkInstructions,
@@ -133,7 +139,6 @@ async def record_confirmed_link(
             f"{account.bridge_id}, but could not read either back"
         )
     name, platform = linked.name, bridge.display_name
-    username = account.external_username
     await record_audit_event(
         session,
         tenant_id=account.tenant_id,
@@ -146,7 +151,7 @@ async def record_confirmed_link(
     await session.commit()
     return linked_notice(
         platform,
-        username,
+        account_name,
         name,
         unlink=unlink_instructions(name, bridge.connection_config or {}),
     )

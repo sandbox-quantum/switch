@@ -22,6 +22,7 @@ from switch_core.bridges.collaboration.models import (
     DirectMessageUnavailable,
     DirectPrompt,
     InboundInteraction,
+    KnownUserLabel,
 )
 from switch_core.bridges.collaboration.session.renderers import position_action
 from switch_core.db.audit import AuditAction
@@ -79,6 +80,11 @@ class _Adapter:
 
     def direct_prompt_link(self, message_ref: str) -> str | None:
         return f"https://chat.example/{message_ref}"
+
+    def known_user_label(
+        self, _external_user_id: str, external_username: str
+    ) -> KnownUserLabel:
+        return KnownUserLabel(display_name=external_username, has_handle=True)
 
     def unlink_account_instructions(self, name: str, _config: object) -> str:
         return f"type `/unlink-account {name}` anywhere in Acme Slack"

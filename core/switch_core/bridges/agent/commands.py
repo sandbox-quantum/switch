@@ -2057,6 +2057,7 @@ async def _cmd_link_account(
                 external_user_store=host._external_user_store,
                 user_store=host._user_store,
                 account=account,
+                account_name=account.external_username,
                 code=code,
                 only_here=True,
             )

@@ -21,7 +21,9 @@ from switch_core.bridges.collaboration.telegram.adapter import (
 # client's invite into the room.
 
 
-def _fake_bridge(*, agent_ids: list[str], slash_hint: str | None = None):  # noqa: ANN202
+def _fake_bridge(  # noqa: ANN202
+    *, agent_ids: list[str], slash_hint: str | None = None, mention_only: bool = False
+):
     notices: list[tuple[str, str, str | None]] = []
     room = SimpleNamespace(
         id="room-uuid", tenant_id="tenant-1", transport_room_id="!m:switch.local"
@@ -30,6 +32,9 @@ def _fake_bridge(*, agent_ids: list[str], slash_hint: str | None = None):  # noq
     class _Adapter:
         def slash_invite_hint(self) -> str | None:
             return slash_hint
+
+        async def sees_only_replies_and_commands(self, channel_id: str) -> bool:
+            return mention_only
 
         async def admin_message(
             self,
@@ -125,6 +130,28 @@ async def test_notice_carries_this_bridge_s_own_slash_syntax() -> None:
     assert "• `/invite-agent agent:agent-name` — the Discord slash command." in content
     # The typed form is still offered alongside it.
     assert "• `!invite-agent @agent-name` — type it here in the channel, or" in content
+
+
+async def test_a_mention_only_chat_is_offered_only_what_reaches_the_bot() -> None:
+    """A Telegram group with Group Privacy on hands the bot replies and
+    commands, nothing else: a typed `!invite-agent` or an @-mention of an
+    agent never arrives, so neither is offered."""
+    hint = "`/invite_agent @agent-name` — the Telegram slash command"
+    bridge = _fake_bridge(agent_ids=[], slash_hint=hint, mention_only=True)
+
+    await CollaborationCore._create_room_for_channel(
+        bridge,
+        channel_id="-100",
+        channel_type="channel_private",
+        channel_name="team",
+    )
+
+    content = bridge.notices[0][1]
+    assert f"• {hint}." in content
+    assert "from the menu" in content
+    assert "!invite-agent" not in content
+    assert "@-mention" not in content
+    assert "reply to its messages" in content
 
 
 async def test_notice_omits_the_slash_form_where_there_is_none() -> None:

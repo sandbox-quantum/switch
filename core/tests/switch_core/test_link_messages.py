@@ -99,3 +99,25 @@ class TestTheConfirmationSaysHowToUnlink:
         assert text.endswith(
             f"If that isn't you, run `unlink-account {NAME}` the way you ran this command."
         )
+
+
+class TestTheConfirmationNamesTheAccount:
+    """A Telegram account without a username is stored under a handle Switch
+    made up ("MM_42"); the confirmation names the person instead."""
+
+    def test_by_the_name_the_adapter_gives_it(self) -> None:
+        adapter = TelegramAdapter.__new__(TelegramAdapter)
+        adapter._full_names = {42: "M M"}
+        label = adapter.known_user_label("42", "MM_42")
+
+        text = linked_notice(
+            "Telegram",
+            label.display_name,
+            NAME,
+            unlink=unlink_the_way_you_ran_this(NAME, {}),
+        )
+
+        assert text.startswith(
+            f"✅ Linked this Telegram account (M M) to Switch user **{NAME}**."
+        )
+        assert "MM_42" not in text
