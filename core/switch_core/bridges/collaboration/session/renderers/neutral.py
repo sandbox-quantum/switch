@@ -629,7 +629,9 @@ def render_request(
         body,
         footer,
         limit=limit,
-        if_cut=_TOO_BIG if invites_answer else footer,
+        if_cut=_too_big(request, reference, escape=escape, limit=limit, markup=markup)
+        if invites_answer
+        else footer,
     )
     return Drawn(text=text, answerable=invites_answer and not cut)
 
@@ -829,7 +831,10 @@ def _questions_form(
                 body.append(_option_line(index, option, fit=fit, limit=limit))
     invites_answer = request.state == "open" and unanswerable(content.questions) is None
     if invites_answer and not fit.whole:
-        return (head, _prompts_dropped(body), _TOO_BIG, False)
+        too_big = _too_big(
+            request, reference, escape=escape, limit=limit, markup=markup
+        )
+        return (head, _prompts_dropped(body), too_big, False)
     footer = _questions_footer(
         request,
         content,
@@ -839,7 +844,8 @@ def _questions_form(
         markup=markup,
         responder=responder,
     )
-    reserved = max(len(footer), len(_TOO_BIG) if invites_answer else 0)
+    too_big = _too_big(request, reference, escape=escape, limit=limit, markup=markup)
+    reserved = max(len(footer), len(too_big) if invites_answer else 0)
     return (
         head,
         _with_prompts(
@@ -852,6 +858,51 @@ def _questions_form(
         footer,
         invites_answer,
     )
+
+
+# How much of each option's label a typed-answer list prints, and the most
+# options it lists: past either, the list is no shorter than the card it
+# stands in for.
+_LISTED_LABEL = 40
+_LISTED_OPTIONS = 6
+
+
+def _too_big(
+    request: SnapshotRequest,
+    reference: RequestReference,
+    *,
+    escape: Callable[[str], str],
+    limit: int,
+    markup: Markup,
+) -> str:
+    """What a form that does not fit says instead of asking for a number.
+
+    For one single-choice question, the typed answers themselves, each with
+    the start of its label: a short confirm card whose explanation ran long
+    can still be answered right here, by someone who can see which number is
+    which. Anything else (several questions, a long list, labels that look
+    alike once shortened) names Console instead.
+    """
+    content = request.content
+    if not isinstance(content, QuestionsContent) or len(content.questions) != 1:
+        return _TOO_BIG
+    question = content.questions[0]
+    options = question.options
+    if question.multi_select or not options or len(options) > _LISTED_OPTIONS:
+        return _TOO_BIG
+    labels = [_fit(option.label, _LISTED_LABEL, escape=escape) for option in options]
+    if len(set(labels)) != len(labels):
+        return _TOO_BIG
+    handle = markup.literal(escape)(reference.handle)
+    answers = " · ".join(
+        f"{markup.code(f'{handle} {index}')} {label}"
+        for index, label in enumerate(labels, start=1)
+    )
+    listed = (
+        f"Too long to show in full here. Reply with one of: {answers}. "
+        f"Or {_CONSOLE[0].lower()}{_CONSOLE[1:]} to read it all."
+    )
+    return listed if len(listed) <= limit // 2 else _TOO_BIG
 
 
 def _spent(lines: list[str] | list[str | int]) -> int:

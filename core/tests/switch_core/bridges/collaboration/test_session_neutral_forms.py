@@ -220,9 +220,20 @@ def test_a_question_whose_options_were_cut_short_is_not_answerable_here():
     assert "Switch Console" in text
 
 
-def test_a_question_whose_title_did_not_fit_is_not_answerable_here():
-    """The number answers a question the reader can only see part of."""
+def test_a_single_question_that_does_not_fit_lists_its_typed_answers():
+    """A card too big for the chat still says which number is which, so a short
+    choice can be answered here; the rest of it is in Console."""
     text = _render(_questions(_question("z" * 4000, "main", "release")))
+
+    assert "Reply with `R42` and your answer" not in text
+    assert "Reply with one of: `R42 1` main · `R42 2` release." in text
+    assert "Switch Console" in text
+
+
+def test_several_questions_that_do_not_fit_send_the_reader_to_console():
+    first = _question("z" * 4000, "main", "release")
+    second = _question("Region?", "eu", "us").model_copy(update={"question_id": "q-2"})
+    text = _render(_questions(first, second))
 
     assert "Reply with" not in text
     assert "Switch Console" in text
