@@ -213,13 +213,14 @@ const UNREACHABLE_RETRY_MS = 10_000;
  * gives them nothing to act on (CHOO-2042).
  */
 /**
- * The reason a server could not be reached, without the "Can't reach <host>:"
- * it starts with when the card's title already says that.
+ * The reason a server could not be reached, without the address the card's
+ * title already names: "Can't reach <host>: …" from a network failure, or
+ * "<host> …" from a redirect.
  */
 function withoutAddress(reason: string | null, host: string): string | null {
   if (!reason) return null;
-  const prefix = `Can't reach ${host}: `;
-  if (!reason.startsWith(prefix)) return reason;
+  const prefix = [`Can't reach ${host}: `, `${host} `].find((p) => reason.startsWith(p));
+  if (!prefix) return reason;
   const rest = reason.slice(prefix.length);
   return rest.charAt(0).toUpperCase() + rest.slice(1);
 }
