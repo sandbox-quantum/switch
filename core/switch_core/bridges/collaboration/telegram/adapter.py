@@ -11,6 +11,7 @@ from collections.abc import Awaitable, Callable, Collection, Coroutine, Mapping
 from contextvars import ContextVar
 from dataclasses import replace
 from typing import Any, ClassVar, Literal, NamedTuple
+from urllib.parse import urlsplit
 
 from pydantic import ConfigDict, model_validator
 from pydantic.json_schema import SkipJsonSchema
@@ -359,6 +360,24 @@ _WORKING_REACTION = "\U0001f440"
 # is exactly that case, so it is rendered as copyable text instead of an anchor
 # that may quietly vanish along with the message around it.
 _LINKABLE_SCHEMES = ("http://", "https://", "tg://", "mailto:")
+
+
+def _telegram_links(href: str) -> bool:
+    """Whether Telegram makes `href` a link rather than dropping it silently.
+
+    Besides the scheme, a web address needs a host Telegram counts as one:
+    it keeps the label of a link to `localhost` (a local server's own
+    address) and throws the address away, leaving words that look like a
+    link and go nowhere.
+    """
+    lowered = href.lower()
+    if not lowered.startswith(_LINKABLE_SCHEMES):
+        return False
+    if not lowered.startswith(("http://", "https://")):
+        return True
+    host = urlsplit(href).hostname or ""
+    return "." in host
+
 
 # The palette agent marks are drawn from. Solid colour circles, because they
 # stay legible at the size Telegram renders an emoji inline and carry no meaning
@@ -2749,7 +2768,7 @@ class TelegramAdapter(PlatformAdapter):
             label, href = match.group(1), match.group(2)
             # Already HTML-escaped by the pass above, so only the quote needs
             # handling here — escaping again would double up the entities.
-            if not href.lower().startswith(_LINKABLE_SCHEMES):
+            if not _telegram_links(href):
                 # Disclosed degradation: the address stays in the message as a
                 # code span, which Telegram makes tap-to-copy, rather than
                 # being swallowed with the anchor.

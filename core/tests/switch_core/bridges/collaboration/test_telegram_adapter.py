@@ -1464,6 +1464,19 @@ def test_a_deeplink_telegram_cannot_render_becomes_copyable_text() -> None:
     )
 
 
+def test_a_link_to_localhost_stays_visible_as_its_address() -> None:
+    """Telegram keeps a localhost link's label and drops its address, so a local
+    server's "Open … →" read as a link and went nowhere."""
+    adapter = _adapter()
+
+    rendered = adapter.translate_outbound(
+        "[Open Sprint Room →](http://localhost:8000/deeplink/room?id=r)"
+    )
+
+    assert "<a href" not in rendered
+    assert "<code>http://localhost:8000/deeplink/room?id=r</code>" in rendered
+
+
 def test_an_https_deeplink_is_still_a_real_link() -> None:
     # With GATEWAY_PUBLIC_URL set, the deeplink is rewritten to the https
     # redirect before it reaches the adapter — and that one must stay clickable.

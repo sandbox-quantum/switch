@@ -313,7 +313,7 @@ def test_a_long_explanation_on_discord_keeps_the_buttons():
 
     assert drawn.answerable
     assert question.prompt in drawn.text
-    assert "Reply with `R42`" in drawn.text
+    assert "Tap an answer, or reply `R42 1`." in drawn.text
     assert len(drawn.text) <= 2000
 
 

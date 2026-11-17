@@ -62,6 +62,7 @@ from . import (
     RequestReference,
     example_value,
     is_steered,
+    offered_controls,
     surface_label,
     turn_state,
     unanswerable,
@@ -619,6 +620,7 @@ def render_request(
             limit=limit,
             markup=markup,
             responder=responder,
+            buttons=control_label_limit is not None and bool(offered_controls(request)),
         )
     if unavailable_reason and request.state in {"open", "submitting"}:
         body = []
@@ -806,6 +808,7 @@ def _questions_form(
     limit: int,
     markup: Markup,
     responder: str | None,
+    buttons: bool,
 ) -> tuple[list[str], list[str], str, bool]:
     fit = _Faithful(escape)
     handle = markup.literal(escape)(reference.handle)
@@ -843,6 +846,7 @@ def _questions_form(
         limit=limit,
         markup=markup,
         responder=responder,
+        buttons=buttons,
     )
     too_big = _too_big(request, reference, escape=escape, limit=limit, markup=markup)
     reserved = max(len(footer), len(too_big) if invites_answer else 0)
@@ -978,12 +982,17 @@ def _questions_footer(
     limit: int,
     markup: Markup,
     responder: str | None,
+    buttons: bool,
 ) -> str:
     if request.state == "open":
         stuck = unanswerable(content.questions)
         if stuck is not None:
             return stuck
         example = markup.code(_example(handle, content.questions))
+        if buttons:
+            # The buttons are the answer; the typed form is for a client that
+            # does not draw them, so it is said once and briefly.
+            return f"Tap an answer, or reply {example}."
         start = f"Reply with {markup.code(handle)}"
         if len(content.questions) > 1:
             return (
