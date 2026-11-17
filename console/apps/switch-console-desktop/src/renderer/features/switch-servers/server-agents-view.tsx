@@ -29,6 +29,7 @@ import { rpc } from '@renderer/lib/ipc';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { useAgentIconUrl } from '@renderer/lib/stores/use-workspace-agents';
+import { Badge } from '@renderer/lib/ui/badge';
 import { Button } from '@renderer/lib/ui/button';
 import {
   DropdownMenu,
@@ -152,18 +153,24 @@ const ServerAgentsPanel = observer(function ServerAgentsPanel() {
 function PendingBuddyCard({ serverId, name }: { serverId: string; name: string }) {
   const { navigate } = useNavigate();
   return (
-    <button
-      type="button"
-      aria-label={`Set up ${name}`}
-      onClick={() => navigate('switchBuddy', { serverId })}
-      className="focus-visible:ring-ring flex min-h-[184px] cursor-pointer flex-col rounded-[11px] bg-[var(--surface-2)] p-[14px] text-left transition-colors hover:bg-[var(--fill)] focus-visible:ring-2 focus-visible:outline-none"
-    >
-      <div className="flex flex-1 items-center justify-center py-3">
+    <div className="flex min-h-[184px] flex-col rounded-[11px] bg-[var(--surface-2)] p-[14px]">
+      <div className="flex flex-1 items-center justify-center py-1 opacity-60 grayscale">
         <AgentAvatar name={name} iconUrl={BUDDY_ICON_URL} serverId={serverId} size={66} />
       </div>
-      <div className="w-full truncate text-sm font-medium text-foreground">{name}</div>
+      <div className="flex min-w-0 items-center gap-1.5">
+        <span className="truncate text-sm font-medium text-foreground">{name}</span>
+        <Badge variant="secondary">Not set up</Badge>
+      </div>
       <div className="text-xs text-foreground-muted">Connect an AI provider</div>
-    </button>
+      <Button
+        size="sm"
+        className="mt-2 w-full"
+        aria-label={`Set up ${name}`}
+        onClick={() => navigate('switchBuddy', { serverId })}
+      >
+        Set up
+      </Button>
+    </div>
   );
 }
 

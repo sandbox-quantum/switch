@@ -1,10 +1,16 @@
+// @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { createElement } from 'react';
+import { act, createElement } from 'react';
+import { createRoot } from 'react-dom/client';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 import { serverAgentsView } from '@renderer/features/switch-servers/server-agents-view';
 
-const state = vi.hoisted(() => ({ offered: true, agents: [] as unknown[] | null | undefined }));
+const state = vi.hoisted(() => ({
+  offered: true,
+  agents: [] as unknown[] | null | undefined,
+  navigate: vi.fn(),
+}));
 vi.mock('@renderer/lib/ipc', () => ({ events: { on: () => () => {} }, rpc: {} }));
 vi.mock('@renderer/lib/hooks/useFeatureFlags', () => ({
   useFeatureFlags: () => ({ switch_buddy: state.offered, agent_management: true }),
@@ -27,19 +33,21 @@ vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
   switchServersStore: { servers: [], statusFor: () => ({ user: { name: 'Viewer' } }) },
 }));
 vi.mock('@renderer/lib/layout/navigation-provider', () => ({
-  useNavigate: () => ({ navigate: vi.fn() }),
+  useNavigate: () => ({ navigate: state.navigate }),
   useParams: () => ({ params: { serverId: 's' } }),
 }));
 vi.mock('@renderer/lib/modal/modal-provider', () => ({ useShowModal: () => vi.fn() }));
 
-function render() {
-  return renderToStaticMarkup(
-    createElement(
-      QueryClientProvider,
-      { client: new QueryClient() },
-      createElement(serverAgentsView.MainPanel)
-    )
+function view() {
+  return createElement(
+    QueryClientProvider,
+    { client: new QueryClient() },
+    createElement(serverAgentsView.MainPanel)
   );
+}
+
+function render() {
+  return renderToStaticMarkup(view());
 }
 
 describe('buddy setup on Your Agents', () => {
@@ -48,8 +56,28 @@ describe('buddy setup on Your Agents', () => {
     state.agents = [];
     const html = render();
     expect(html).toContain('Set up switch-buddy-viewer');
+    expect(html).toContain('Not set up');
     expect(html).toContain('Connect an AI provider');
     expect(html).not.toContain('Running');
+  });
+
+  it('opens buddy setup from the Set up button', async () => {
+    state.offered = true;
+    state.agents = [];
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    const container = document.createElement('div');
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(view()));
+      const button = container.querySelector('button[aria-label="Set up switch-buddy-viewer"]');
+      expect(button?.parentElement?.closest('button')).toBeNull();
+      await act(async () => {
+        button!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      });
+      expect(state.navigate).toHaveBeenCalledWith('switchBuddy', { serverId: 's' });
+    } finally {
+      act(() => root.unmount());
+    }
   });
 
   it('replaces setup with the real buddy after it is created', () => {
