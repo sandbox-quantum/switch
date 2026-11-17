@@ -2,6 +2,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { windowsRegistryPath, withWindowsPathEntries } from '@switch-console/agent-providers';
 import { getWindowsEnvValue } from '@switch-console/core/exec';
 import {
   withWindowsAgyBinDir,
@@ -151,6 +152,45 @@ export function ensureWindowsGitBashInPath(
   if (after === before) return null;
   env[pathKey] = after;
   return after.split(path.win32.delimiter).at(-1)!;
+}
+
+/**
+ * Brings this process's PATH up to date with what was installed since it
+ * started: the PATH the registry now gives a new process (the machine's, then
+ * the user's), the user's `.local\\bin`, and the provider folders above. An
+ * installer adds its folder to the registry and to nothing already running, so
+ * without this a CLI installed from Console reads as not installed until
+ * Console restarts. Keeps the current PATH when the registry cannot be read,
+ * and says so.
+ */
+export async function refreshWindowsPath(env: NodeJS.ProcessEnv = process.env): Promise<void> {
+  const pathKey = getWindowsPathEnvKey(env);
+  const registry = await windowsRegistryPath(env);
+  if (registry === null) {
+    log.warn(
+      'Could not read the PATH from the registry; a CLI installed since Switch Console started may not be found until it restarts'
+    );
+  } else {
+    env[pathKey] = withWindowsPathEntries(env[pathKey] ?? '', registry);
+  }
+  const userProfile = getWindowsEnvValue(env, 'USERPROFILE');
+  if (userProfile) {
+    const localBin = path.win32.join(userProfile, '.local', 'bin');
+    if (pathEntryExists(localBin))
+      env[pathKey] = withWindowsPathEntries(env[pathKey] ?? '', localBin);
+  }
+  ensureWindowsNpmGlobalBinInPath(env);
+  ensureWindowsUserBinDirsInPath(env);
+  ensureWindowsGitBashInPath(env, fs.existsSync);
+}
+
+/**
+ * Refreshes PATH for a CLI that may have been installed since start: the
+ * registry's on Windows, the user's own bin folders elsewhere.
+ */
+export async function refreshInstalledCliPath(): Promise<void> {
+  if (process.platform === 'win32') await refreshWindowsPath();
+  else ensureUserBinDirsInPath();
 }
 
 /**

@@ -10,6 +10,8 @@ import {
   isStopMessage,
   PROVIDER_RECHECKED_KIND,
   type ProviderRecheckReply,
+  windowsRegistryPath,
+  withWindowsPathEntries,
 } from '@switch-console/agent-providers';
 import {
   withWindowsAgyBinDir,
@@ -51,12 +53,7 @@ import {
   resolveSharedHostBundle,
 } from './handover';
 import { createLogger, errorMessage, type Logger } from './log';
-import {
-  loginShellPath,
-  windowsRegistryPath,
-  withUserBinDirs,
-  withWindowsPathEntries,
-} from './login-path';
+import { loginShellPath, withUserBinDirs } from './login-path';
 import { dataLayout, ensureDataDir, resolveDataDir, serverWorkspacesDir } from './paths';
 import { ProviderRechecks } from './provider-rechecks';
 import { readProviderSeed, writeProviderSeed } from './provider-seed';

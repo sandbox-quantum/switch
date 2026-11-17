@@ -230,9 +230,11 @@ describe('missingVcRuntimeDlls', () => {
       const systemRoot = path.join(root, 'Windows');
       expect(await missingVcRuntimeDlls(binDir, systemRoot)).toEqual([
         'vcruntime140.dll',
+        'vcruntime140_1.dll',
         'msvcp140.dll',
       ]);
       await writeFile(path.join(system32, 'vcruntime140.dll'), '');
+      await writeFile(path.join(system32, 'vcruntime140_1.dll'), '');
       await writeFile(path.join(binDir, 'msvcp140.dll'), '');
       expect(await missingVcRuntimeDlls(binDir, systemRoot)).toEqual([]);
     } finally {

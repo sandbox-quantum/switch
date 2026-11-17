@@ -4,6 +4,7 @@ import {
   homebrewOption,
   passthroughMcpAdapter,
 } from '@switch-console/core/agents/plugins/helpers';
+import { addToUserPath } from '../windows-user-path';
 import { icon } from './icon';
 import { CLAUDE_SUBAGENTS, claudeRepoAgentsBehavior } from './subagents';
 
@@ -12,9 +13,11 @@ import { CLAUDE_SUBAGENTS, claudeRepoAgentsBehavior } from './subagents';
  * runs whichever shell the install runner resolved: cmd.exe, Windows
  * PowerShell 5.1 (where `&&` does not parse and `curl` is an alias) or Git
  * Bash. Kept free of `$` and `%` so neither shell expands anything first.
+ *
+ * The installer puts `claude.exe` in `~\.local\bin` and leaves PATH alone, so
+ * the command adds that folder, for the terminal the sign-in step points to.
  */
-const CLAUDE_WINDOWS_INSTALL_SCRIPT =
-  'powershell -ExecutionPolicy ByPass -c "irm https://claude.ai/install.ps1 | iex"';
+export const CLAUDE_WINDOWS_INSTALL_SCRIPT = `powershell -ExecutionPolicy ByPass -c "irm https://claude.ai/install.ps1 | iex; ${addToUserPath('.local', 'bin')}"`;
 
 export const plugin = definePlugin(
   {

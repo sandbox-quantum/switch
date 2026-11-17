@@ -1,12 +1,14 @@
 import { CircleAlert, ExternalLink } from 'lucide-react';
+import { useState } from 'react';
 import { LogTail } from '@renderer/features/switch-servers/log-tail';
 import { AgentIcon } from '@renderer/lib/components/agent-icon';
 import { openExternalUrl } from '@renderer/lib/open-external';
 import { Button } from '@renderer/lib/ui/button';
+import { Input } from '@renderer/lib/ui/input';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import { cn } from '@renderer/utils/utils';
 import { requireProvider } from '@shared/core/providers/agent-provider-registry';
-import { linksIn } from '@shared/core/providers/provider-login';
+import { asksForCode, linksIn } from '@shared/core/providers/provider-login';
 import type { BuddyProvider } from './buddy-providers';
 import type { Login, SetupBusy } from './use-provider-setup';
 import type { ThisComputer } from './use-this-computer';
@@ -102,6 +104,7 @@ export function SelectedPanel({
   onStart,
   onSignIn,
   onCancelSignIn,
+  onSignInCode,
   onInstall,
   installFailed = false,
   onCheckAgain,
@@ -115,6 +118,8 @@ export function SelectedPanel({
   onStart: () => void;
   onSignIn: () => void;
   onCancelSignIn: () => void;
+  /** Sends the code a sign-in page showed to the running sign-in command. */
+  onSignInCode: (code: string) => void;
   onInstall: () => void;
   /** The last install of this provider failed: offer installing it by hand. */
   installFailed?: boolean;
@@ -242,6 +247,9 @@ export function SelectedPanel({
               ))}
             </div>
           )}
+          {login && running && asksForCode(login.lines) && (
+            <SignInCodeForm onSubmit={onSignInCode} />
+          )}
           {login?.ended && !login.ended.ok && (
             <p className="text-xs text-destructive">
               {login.ended.error ?? `${loginCommand} ended without signing in.`}
@@ -278,4 +286,34 @@ export function SelectedPanel({
         </p>
       );
   }
+}
+
+/** Where to paste the code a sign-in page showed, for the command waiting on it. */
+function SignInCodeForm({ onSubmit }: { onSubmit: (code: string) => void }) {
+  const [code, setCode] = useState('');
+  return (
+    <form
+      className="flex flex-wrap items-center gap-2"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (!code.trim()) return;
+        onSubmit(code);
+        setCode('');
+      }}
+    >
+      <p className="w-full text-xs text-foreground-muted">
+        Only if the sign-in page shows you a code instead of saying you’re signed in:
+      </p>
+      <Input
+        value={code}
+        onChange={(event) => setCode(event.target.value)}
+        placeholder="Paste the code here"
+        aria-label="Sign-in code"
+        className="h-8 flex-1"
+      />
+      <Button type="submit" size="sm" disabled={!code.trim()}>
+        Send code
+      </Button>
+    </form>
+  );
 }

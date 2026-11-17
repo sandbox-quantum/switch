@@ -24,3 +24,20 @@ export function linksIn(lines: readonly string[]): string[] {
   for (const line of lines) for (const match of line.matchAll(URL_PATTERN)) seen.add(match[0]);
   return [...seen];
 }
+
+const ASKS_FOR_CODE = /paste (the )?(authentication |auth )?code/i;
+/** An authorize link for the flow that ends on a page showing a code to paste. */
+const CODE_FLOW_LINK = /[?&]code=true(&|$)/;
+
+/**
+ * Whether the command may wait for a code typed in. Claude Code's sign-in
+ * page can end by showing one to paste, when its callback to this computer did
+ * not happen; it asks with a prompt that ends no line (so it arrives only once
+ * the code is sent), after printing the link for that flow.
+ */
+export function asksForCode(lines: readonly string[]): boolean {
+  return (
+    lines.some((line) => ASKS_FOR_CODE.test(line)) ||
+    linksIn(lines).some((link) => CODE_FLOW_LINK.test(link))
+  );
+}
