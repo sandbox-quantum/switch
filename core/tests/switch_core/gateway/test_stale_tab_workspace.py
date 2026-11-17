@@ -11,6 +11,7 @@ always was, and a read goes ahead whatever the header says.
 
 from __future__ import annotations
 
+import secrets
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Annotated
@@ -88,6 +89,7 @@ async def _session_in_second(
         SECOND,
         session_version=0,
         auth_time=datetime.now(UTC),
+        session_id=secrets.token_urlsafe(16),
     )
 
 

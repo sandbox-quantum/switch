@@ -3677,6 +3677,7 @@ class TestRetentionRoutes:
             TENANT_A,
             session_version=0,
             auth_time=datetime.now(UTC),
+            session_id=secrets.token_urlsafe(16),
         )
         async with _client(_app(session_factory), admin) as client:
             set_by_admin = await client.put(
