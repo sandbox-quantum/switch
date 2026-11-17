@@ -183,7 +183,9 @@ async def _link_account(
         return result("the WorkOS user has no id Switch can read")
     if workos_user.get("email_verified") is not True:
         return result(f"WorkOS user {subject} has not verified this address")
-    holder = await user_store.get_by_oidc_identity(session, iss=issuer, sub=subject)
+    holder = await user_store.get_by_oidc_identity(
+        session, iss=issuer, sub=subject, match_legacy=False
+    )
     if holder is not None:
         return result(f"WorkOS user {subject} is linked to account {holder.id}")
     if not apply:

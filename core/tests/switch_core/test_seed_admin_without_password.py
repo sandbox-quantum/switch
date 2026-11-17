@@ -108,6 +108,7 @@ class TestSeeding:
                 join_tenant=True,
                 link_by_email=True,
                 create_allowed=True,
+                match_legacy=True,
             )
             await session.commit()
 
