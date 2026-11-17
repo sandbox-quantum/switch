@@ -10,6 +10,7 @@ from switch_core.bridges.collaboration.discord.adapter import (
     DiscordAdapter,
     DiscordConnectionConfig,
 )
+from switch_core.bridges.collaboration.models import BridgeOperationError
 
 GUILD_ID = 900
 
@@ -153,6 +154,64 @@ def test_create_private_channel_denies_everyone_and_allows_bot() -> None:
     overwrites = guild.created[0]["overwrites"]
     assert overwrites[guild.default_role].view_channel is False
     assert overwrites[guild.me].view_channel is True
+
+
+class _FakeForbiddenResponse:
+    status = 403
+    reason = "Forbidden"
+
+
+class _RefusingGuild(_FakeGuild):
+    """A server whose bot role lacks Manage Channels: Discord answers a channel
+    creation with 403, code 50013, as it did on 2026-11-17 in a bug-bash repro."""
+
+    async def create_text_channel(self, **kwargs: Any) -> _FakeCreatedChannel:
+        raise discord.Forbidden(
+            _FakeForbiddenResponse(), {"code": 50013, "message": "Missing Permissions"}
+        )
+
+
+def test_create_channel_refused_for_missing_permission_names_the_fix() -> None:
+    adapter = _adapter()
+    _wire(adapter, _RefusingGuild())
+
+    with pytest.raises(BridgeOperationError) as raised:
+        _run(adapter.create_channel("Code Review", "t", channel_type="channel_private"))
+
+    message = str(raised.value)
+    assert "#code-review" in message
+    assert "code 50013: Missing Permissions" in message
+    assert "Manage Channels" in message
+
+
+class _NoGuildClient(_FakeClient):
+    """A bot that isn't in the server the connection names."""
+
+    def get_guild(self, guild_id: int) -> None:
+        return None
+
+    async def fetch_guild(self, guild_id: int) -> Any:
+        raise discord.NotFound(
+            _FakeResponse(), {"code": 10004, "message": "Unknown Guild"}
+        )
+
+
+def test_create_channel_without_the_bot_in_the_server_says_so() -> None:
+    adapter = _adapter()
+    adapter._connection._client = _NoGuildClient(_FakeGuild())  # type: ignore[assignment]
+
+    with pytest.raises(BridgeOperationError, match="isn't in the Discord server"):
+        _run(adapter.create_channel("Code Review", "t"))
+
+
+def test_create_channel_with_no_usable_characters_is_refused_before_discord() -> None:
+    adapter = _adapter()
+    guild = _FakeGuild()
+    _wire(adapter, guild)
+
+    with pytest.raises(ValueError, match="can't name a channel"):
+        _run(adapter.create_channel("日本語 ✨", "t"))
+    assert guild.created == []
 
 
 def test_create_group_or_direct_channel_rejected() -> None:

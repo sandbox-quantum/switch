@@ -946,6 +946,14 @@ version of their own to them without also giving them a release of their own.
   `{supported, reason}`, saying whether another device could enroll and, if
   not, why. The code is still issued. Against a server from before it, the
   dialog shows the commands as it always did.
+- **A room Discord refuses to make a channel for says why.** When Discord
+  turned down the new channel, for example because the Switch bot's role
+  lacks Manage Channels, creating the room failed with a bare 500 and
+  switch-buddy could only say the server had an internal error. It now fails
+  with Discord's reason and what to change (the permission to turn on, a bot
+  missing from the server, the server's 500-channel limit), so buddy and the
+  Console can pass it on. A room name with no letters or digits Discord
+  accepts is refused before Discord is asked.
 - **A stopped agent's unfinished turn is ended.** The sweep that ends
   abandoned turns now treats a session whose connection closed as gone, so a
   turn left open when its agent stopped is ended after the quiet window.
@@ -4538,6 +4546,12 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **Home's chat bar takes several lines, and switch-buddy comes alive
+  beside it.** The box grows with what you type, up to ten lines, then
+  scrolls; Enter sends and Shift+Enter starts a new line. Each time Home
+  opens, switch-buddy slides up into its tile and then blinks and smiles now
+  and then, as it does when it is first introduced (still, with reduced
+  motion). The bar's shadow is softer.
 - **A new Home for each workspace.** One row at the top names the server and
   workspace, shows the connection, and holds Refresh and the server's actions.
   Signed out, the page is the sign-in card. Signed in, it offers to connect an
