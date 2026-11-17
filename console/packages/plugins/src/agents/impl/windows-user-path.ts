@@ -8,6 +8,13 @@
  * person, whose new terminals then find the CLI too, as the sign-in and
  * manual steps tell them to run it there.
  *
+ * The PATH is read and written in the registry as it is stored, unexpanded and
+ * as `REG_EXPAND_SZ`: `[Environment]::GetEnvironmentVariable` expands entries
+ * such as `%USERPROFILE%\…` and `SetEnvironmentVariable` writes them back as
+ * plain text, which would pin them to the profile's current location. Setting
+ * and clearing a placeholder variable afterwards is what announces the change,
+ * so terminals opened from Explorer see it.
+ *
  * Written without `$`, `%` or double quotes, so the install runner's shell,
  * cmd.exe or PowerShell, passes it through untouched.
  */
@@ -15,9 +22,12 @@ export function addToUserPath(...segments: string[]): string {
   const folder = `[IO.Path]::Combine([Environment]::GetFolderPath('UserProfile'), ${segments
     .map((segment) => `'${segment}'`)
     .join(', ')})`;
-  const userPath = `([string][Environment]::GetEnvironmentVariable('Path', 'User'))`;
+  const userPath = `([string][Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment').GetValue('Path', '', 'DoNotExpandEnvironmentNames'))`;
+  const entries = `[Environment]::ExpandEnvironmentVariables(${userPath}).ToLower().Split(';').TrimEnd('\\')`;
   return (
-    `if (-not (${userPath}.ToLower().Split(';') -contains ${folder}.ToLower())) { ` +
-    `[Environment]::SetEnvironmentVariable('Path', (${userPath}.TrimEnd(';') + ';' + ${folder}).TrimStart(';'), 'User') }`
+    `if (-not (${entries} -contains ${folder}.ToLower())) { ` +
+    `[Microsoft.Win32.Registry]::SetValue('HKEY_CURRENT_USER\\Environment', 'Path', (${userPath}.TrimEnd(';') + ';' + ${folder}).TrimStart(';'), 'ExpandString'); ` +
+    `[Environment]::SetEnvironmentVariable('SwitchConsolePathChanged', '1', 'User'); ` +
+    `[Environment]::SetEnvironmentVariable('SwitchConsolePathChanged', '', 'User') }`
   );
 }
