@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
@@ -15,9 +16,10 @@ import httpx
 import jwt
 import pytest
 from fastapi import FastAPI
-from sqlalchemy import select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.accounts.workspace_deletion import delete_workspace
 from switch_core.db.audit import AuditAction
 from switch_core.db.models import (
     TENANT_ZERO_ID,
@@ -37,6 +39,8 @@ from switch_core.gateway.auth import (
     JWT_ALGORITHM,
     REVOKED_SESSIONS,
     SESSION_MAX_AGE,
+    TENANT_ARCHIVED,
+    TENANT_SELECTION_INVALID,
     create_jwt,
     decode_jwt,
 )
@@ -384,6 +388,73 @@ async def test_a_sign_in_older_than_a_session_may_live_is_refused(
     redeemed = await _redeem(app, code)
     assert redeemed.status_code == 401
     assert "switch_auth" not in redeemed.cookies
+
+
+async def _leave_acme(factory: async_sessionmaker[AsyncSession], ada: User) -> None:
+    async with tenant_session(factory, _ACME) as session:
+        removed = await session.scalars(
+            delete(TenantMember)
+            .where(TenantMember.tenant_id == _ACME, TenantMember.user_id == ada.id)
+            .returning(TenantMember.user_id)
+        )
+        assert list(removed) == [ada.id]
+        await session.commit()
+
+
+async def _archive_acme(factory: async_sessionmaker[AsyncSession], ada: User) -> None:
+    async with tenant_session(factory, _ACME) as session:
+        archived = await session.scalars(
+            update(Tenant)
+            .where(Tenant.id == _ACME)
+            .values(archived_at=func.now())
+            .returning(Tenant.id)
+        )
+        assert list(archived) == [_ACME]
+        await session.commit()
+
+
+async def _delete_acme(factory: async_sessionmaker[AsyncSession], ada: User) -> None:
+    async with tenant_session(factory, _ACME) as session:
+        await delete_workspace(session, _ACME, ada.id, ada.id)
+        await session.commit()
+
+
+@pytest.mark.parametrize(
+    ("change", "refusal"),
+    [
+        (_leave_acme, TENANT_SELECTION_INVALID),
+        (_archive_acme, TENANT_ARCHIVED),
+        (_delete_acme, TENANT_SELECTION_INVALID),
+    ],
+    ids=["membership-removed", "workspace-archived", "workspace-deleted"],
+)
+async def test_a_link_to_a_workspace_left_since_signs_in_to_a_stale_selection(
+    app: FastAPI,
+    people: SimpleNamespace,
+    session_factory: async_sessionmaker[AsyncSession],
+    change: Callable[[async_sessionmaker[AsyncSession], User], Awaitable[None]],
+    refusal: str,
+) -> None:
+    """The workspace a link names can go between mint and redeem. Redeeming
+    still signs the browser in, selecting it, and the browser's first
+    workspace-bound request is answered as any session selecting a
+    workspace it may no longer enter is: the claim only selects."""
+    console = _cookie(people.ada)
+    code = await _mint(app, console)
+    await change(session_factory, people.ada)
+
+    redeemed = await _redeem(app, code)
+
+    assert redeemed.status_code == 200, redeemed.text
+    browser = redeemed.cookies["switch_auth"]
+    assert decode_jwt(browser, _KEYRING)["tenant_id"] == _ACME
+    async with _client(app, browser) as client:
+        first = await client.get("/auth/me")
+    async with _client(app, console) as client:
+        consoles = await client.get("/auth/me")
+    assert first.status_code == 403, first.text
+    assert first.json()["detail"]["error"] == refusal
+    assert (consoles.status_code, consoles.json()) == (first.status_code, first.json())
 
 
 async def test_redeeming_is_recorded_in_the_workspace_it_signs_in_to(
