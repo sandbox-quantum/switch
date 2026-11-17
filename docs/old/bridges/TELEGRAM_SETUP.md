@@ -70,6 +70,7 @@ Fields (`TelegramConnectionConfig`):
 | --- | --- | --- |
 | `bot_token` | yes | Bot token from BotFather, shaped `<bot id>:<hmac>`. |
 | `bot_username` | yes | The bot's username, with or without the leading `@`. Used to build `t.me` links and to spot when the bot itself is tagged. |
+| `show_tool_calls` | no | Default on. Lists the tools an agent called, folded under each finished turn. Turn it off for chats where people only need the agents' messages, such as a family group. The turn's status line and approval cards still appear. |
 
 On success the bridge starts polling.
 

@@ -139,6 +139,44 @@ async def test_a_request_card_is_offered_its_options_rather_than_a_fold() -> Non
     assert _fold(_sent(adapter)) == []
 
 
+# ── A connection that hides tool calls ───────────────────────────────────────
+
+
+def _hiding_tool_calls() -> Any:
+    adapter = _adapter()
+    adapter._config = adapter._config.model_copy(update={"show_tool_calls": False})
+    return adapter
+
+
+async def test_a_connection_that_hides_tool_calls_posts_the_status_alone() -> None:
+    """A family chat wants the agents' messages, not `mcp__switch__read_context`."""
+    adapter = _hiding_tool_calls()
+
+    await adapter.post_rich(
+        CHANNEL, "my-agent", _ended("Read a file", "Ran a test"), None
+    )
+
+    sent = _sent(adapter)
+    assert _fold(sent) == []
+    assert "Read a file" not in sent
+    assert sent.strip()
+
+
+async def test_hiding_tool_calls_keeps_the_approval_card_and_its_buttons() -> None:
+    """The card is how a person approves what an agent asked to do, so it is
+    never part of what the setting hides."""
+    adapter = _hiding_tool_calls()
+
+    await adapter.post_rich(CHANNEL, "my-agent", await _card(), None)
+
+    assert _bot(adapter).messages[0]["reply_markup"] is not None
+
+
+def test_existing_connections_keep_showing_tool_calls() -> None:
+    """A connection saved before the setting existed has no value for it."""
+    assert _adapter()._config.show_tool_calls is True
+
+
 # ── What is inside it ────────────────────────────────────────────────────────
 
 

@@ -12,7 +12,7 @@ from contextvars import ContextVar
 from dataclasses import replace
 from typing import Any, ClassVar, Literal, NamedTuple
 
-from pydantic import ConfigDict, model_validator
+from pydantic import ConfigDict, Field, model_validator
 from pydantic.json_schema import SkipJsonSchema
 from telegram import (
     Bot,
@@ -529,6 +529,17 @@ class TelegramConnectionConfig(BridgeConnectionConfig):
     #: self-registered case; the shared value is written by the install flow.
     event_delivery: SkipJsonSchema[Literal["own_connection", "shared"]] = (
         "own_connection"
+    )
+    #: The registration form builds itself from this schema, so the title and
+    #: description are the only explanation an operator gets beside the box.
+    show_tool_calls: bool = Field(
+        default=True,
+        title="Show tool calls",
+        description=(
+            "List the tools an agent called, folded under each finished turn. "
+            "Turn off for chats where people only need the agents' messages. "
+            "Approval requests still appear."
+        ),
     )
 
     @model_validator(mode="after")
@@ -1863,7 +1874,8 @@ class TelegramAdapter(PlatformAdapter):
         makes it worth having at all — opening it is one reader's business and
         costs the chat neither a message nor an edit.
 
-        Nothing is offered where there is nothing behind it. A turn that neither
+        Nothing is offered on a connection set not to show tool calls, or where
+        there is nothing behind it. A turn that neither
         called anything nor said anything would open onto "No activity." beneath
         a status line already saying as much, and the separate message a
         failure gets here is drawn with no items at all — so one check keeps the
@@ -1875,7 +1887,7 @@ class TelegramAdapter(PlatformAdapter):
         would drop calls there was room to print. What does not fit is reported
         by the log itself.
         """
-        if content.turn.status not in TURN_ENDED:
+        if not self._config.show_tool_calls or content.turn.status not in TURN_ENDED:
             return ""
         if not any(in_activity_log(item) for item in content.items):
             return ""
