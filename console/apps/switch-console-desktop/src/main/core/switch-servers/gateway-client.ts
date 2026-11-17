@@ -1881,6 +1881,8 @@ type BridgeJson = {
   // Absent on a server predating per-connection webhooks, where none had one.
   receives_webhooks?: boolean;
   webhook_url?: string | null;
+  // Absent on a server predating it; Console then spells commands itself.
+  commands?: Record<string, string>;
 };
 
 function mapBridge(b: BridgeJson): RemoteBridge {
@@ -1905,6 +1907,7 @@ function mapBridge(b: BridgeJson): RemoteBridge {
     publicChannelAddsCreator: b.public_channel_adds_creator ?? false,
     receivesWebhooks: b.receives_webhooks ?? false,
     webhookUrl: b.webhook_url ?? null,
+    commands: b.commands ?? {},
   };
 }
 
@@ -2538,6 +2541,7 @@ type ExternalUserSummaryJson = {
   bridge_id: string;
   external_user_id: string;
   external_username: string;
+  first_seen_at?: string;
   claimed_by?: IdentityClaimantJson[];
   link_request?: { user_id: string; code: LinkCodeJson | null } | null;
 };
@@ -4001,6 +4005,7 @@ export async function fetchBridgePeople(
         externalUserId: user.external_user_id,
         linkedUserIds: linked.map((claim) => claim.user_id),
         linkedName: linked[0]?.user_name ?? null,
+        firstSeenAt: user.first_seen_at ?? null,
       };
     })
     .sort((a, b) => a.username.localeCompare(b.username));

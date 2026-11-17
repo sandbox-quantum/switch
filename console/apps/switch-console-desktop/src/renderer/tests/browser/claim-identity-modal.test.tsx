@@ -86,6 +86,7 @@ const SLACK: RemoteBridge = {
   publicChannelAddsCreator: false,
   receivesWebhooks: false,
   webhookUrl: null,
+  commands: {},
 };
 
 const PERSON = {

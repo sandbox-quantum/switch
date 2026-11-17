@@ -6,6 +6,7 @@ import { chatsStore } from '@renderer/features/chats/stores/chats';
 import { followConsoleLink } from '@renderer/features/deeplinks/console-link-handler';
 import { useMyIdentities } from '@renderer/features/switch-servers/use-my-identities';
 import { BridgeIcon } from '@renderer/lib/components/bridge-icon';
+import { CopyCommand } from '@renderer/lib/components/copy-command';
 import { TermInfo } from '@renderer/lib/components/term-info';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
@@ -19,6 +20,7 @@ import { Spinner } from '@renderer/lib/ui/spinner';
 import { cn } from '@renderer/utils/utils';
 import { consoleLink } from '@shared/core/deeplinks/console-links';
 import type { RemoteBridge } from '@shared/core/switch-servers/switch-servers';
+import { typedCommand } from '@shared/core/switch-servers/typed-command';
 import {
   type BuddyPlatform,
   type BuddyRefusal,
@@ -30,6 +32,7 @@ import {
   buddyResumeBridges,
   buddySetupStep,
 } from './buddy-setup-step';
+import { ChatAppChecklist } from './chat-app-checklist';
 import {
   BUDDY_CHAT_NAME,
   buddyHandoffRequestId,
@@ -354,13 +357,7 @@ const Cards = observer(function Cards({
           <PlatformCard
             platform={step.bridge.type}
             title={`Link your ${label} account`}
-            description={
-              // The bot can find only people who have written where it can hear them, and
-              // privacy mode lets it hear only slash commands.
-              step.bridge.type === 'telegram'
-                ? `I answer only accounts I recognise. Make a Telegram group with just you and the ${step.bridge.displayName} bot, and send this in it. Then link your account here: Switch shows a code to send in that group. Once it's linked, I'll answer when you reply to the bot's message there.`
-                : `So I recognise you in ${step.bridge.displayName}.`
-            }
+            description={`So I recognise you in ${step.bridge.displayName}.`}
             footer={
               <div className="flex flex-col items-start gap-3">
                 <BridgeChoice
@@ -371,9 +368,6 @@ const Cards = observer(function Cards({
                   onChoose={setChosenBridgeId}
                 />
                 <div className="flex flex-wrap items-center gap-3">
-                  {step.bridge.type === 'telegram' && (
-                    <InviteCommand platform="telegram" agentName={agentName} />
-                  )}
                   <Button
                     onClick={() => showClaimIdentity({ workspaceId, bridgeId: step.bridge.id })}
                   >
@@ -384,6 +378,29 @@ const Cards = observer(function Cards({
             }
           />
         </>
+      )}
+
+      {step.kind === 'checklist' && (
+        <div className="flex flex-col gap-3">
+          {connectedBridges.length > 1 && (
+            <BridgeChoice
+              platform={step.bridge.type}
+              bridges={connectedBridges}
+              chosenId={step.bridge.id}
+              disabled={false}
+              onChoose={setChosenBridgeId}
+            />
+          )}
+          <ChatAppChecklist
+            serverId={serverId}
+            workspaceId={workspaceId}
+            bridge={step.bridge}
+            label={label}
+            agentName={agentName}
+            identities={ids.identities ?? []}
+            onIdentitiesChanged={ids.refresh}
+          />
+        </div>
       )}
 
       {step.kind === 'create' && (
@@ -448,11 +465,7 @@ const Cards = observer(function Cards({
           <PlatformCard
             platform={step.bridge.type}
             title={`Continue in ${label}`}
-            description={
-              step.bridge.type === 'telegram'
-                ? `In a Telegram group with you and the ${step.bridge.displayName} bot, send this if you haven't yet. Then reply to the bot's message, mention ${agentName} in that reply, and say what you work on.`
-                : `Add the Switch app to a Teams chat or channel and send this there. Then mention ${agentName} with a short note on what you work on.`
-            }
+            description={`Add the Switch app to a ${label} chat or channel and send this there. Then mention ${agentName} with a short note on what you work on.`}
             footer={
               <div className="flex flex-col items-start gap-3">
                 <BridgeChoice
@@ -462,7 +475,9 @@ const Cards = observer(function Cards({
                   disabled={false}
                   onChoose={setChosenBridgeId}
                 />
-                <InviteCommand platform={step.bridge.type} agentName={agentName} />
+                <CopyCommand
+                  command={typedCommand(step.bridge, 'invite-agent', { agent: agentName })}
+                />
               </div>
             }
           />
@@ -673,15 +688,6 @@ function TileText({ name, subtitle }: { name: string; subtitle: string }) {
       <div className="font-semibold">{name}</div>
       <div className="text-sm text-foreground-muted">{subtitle}</div>
     </div>
-  );
-}
-
-/** Telegram's bot sees only slash commands in a group where it is not an admin. */
-function InviteCommand({ platform, agentName }: { platform: string; agentName: string }) {
-  return (
-    <code className="rounded bg-background px-2 py-1 font-mono text-sm select-all">
-      {platform === 'telegram' ? '/invite_agent' : '!invite-agent'} @{agentName}
-    </code>
   );
 }
 

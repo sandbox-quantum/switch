@@ -98,6 +98,7 @@ describe('updateBridgeOnServer', () => {
         publicChannelAddsCreator: false,
         receivesWebhooks: false,
         webhookUrl: null,
+        commands: {},
       },
     });
   });

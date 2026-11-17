@@ -402,7 +402,7 @@ function DirectoryResults({
 }
 
 /** Turn a failed claim into something the user can act on. */
-function claimFailureText(
+export function claimFailureText(
   result: Exclude<ClaimIdentityResult, { kind: 'claimed' | 'pending' }>
 ): string {
   switch (result.kind) {

@@ -29,6 +29,7 @@ function bridge(overrides: Partial<RemoteBridge>): RemoteBridge {
     publicChannelAddsCreator: false,
     receivesWebhooks: false,
     webhookUrl: null,
+    commands: {},
     ...overrides,
   };
 }

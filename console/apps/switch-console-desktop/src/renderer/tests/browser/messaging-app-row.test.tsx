@@ -86,6 +86,7 @@ function bridge(patch: Partial<RemoteBridge> = {}): RemoteBridge {
     publicChannelAddsCreator: false,
     receivesWebhooks: false,
     webhookUrl: null,
+    commands: {},
     ...patch,
   };
 }

@@ -746,6 +746,13 @@ export type RemoteBridge = {
   /** That address, or null where the connection takes none or the server has
    * no public origin configured (`MESSAGING_PUBLIC_URL`) to build it from. */
   webhookUrl: string | null;
+  /**
+   * The commands a person is told to type here, by command name
+   * (`invite-agent`, `link-account`), spelled as this platform takes them,
+   * with `{agent}` and `{code}` to fill in. Read through `typedCommand`.
+   * Empty on a server predating the field.
+   */
+  commands: Record<string, string>;
 };
 
 /**
@@ -1543,6 +1550,8 @@ export type BridgePerson = {
   linkedUserIds: string[];
   /** The first of those users' names, to show beside the username; null when nobody has. */
   linkedName: string | null;
+  /** When Switch first saw the account; null on a server predating the field. */
+  firstSeenAt: string | null;
 };
 
 /** A bridged room's channel, as the New room dialog asks for it. */

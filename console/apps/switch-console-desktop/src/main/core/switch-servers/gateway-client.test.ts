@@ -585,6 +585,7 @@ describe('room creation', () => {
         publicChannelAddsCreator: false,
         receivesWebhooks: false,
         webhookUrl: null,
+        commands: {},
       },
       {
         id: 'b2',
@@ -609,6 +610,7 @@ describe('room creation', () => {
         publicChannelAddsCreator: false,
         receivesWebhooks: false,
         webhookUrl: null,
+        commands: {},
       },
     ]);
   });

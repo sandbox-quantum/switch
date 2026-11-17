@@ -125,11 +125,11 @@ describe('buddySetupStep', () => {
     ).toEqual({ kind: 'guide', bridge: teams });
   });
 
-  it('guides Telegram only once linked, since the buddy ignores anyone it cannot recognise', () => {
+  it('walks Telegram through one checklist, linked or not, since it has no directory', () => {
     const telegramBase = { ...base, platform: 'telegram' as const };
     expect(buddySetupStep(telegramBase)).toEqual({ kind: 'connect', platform: 'telegram' });
     expect(buddySetupStep({ ...telegramBase, bridges: [telegram] })).toEqual({
-      kind: 'link',
+      kind: 'checklist',
       bridge: telegram,
     });
     expect(
@@ -138,7 +138,7 @@ describe('buddySetupStep', () => {
         bridges: [telegram],
         identities: [{ bridgeId: 'b-4' } as LinkedIdentity],
       })
-    ).toEqual({ kind: 'guide', bridge: telegram });
+    ).toEqual({ kind: 'checklist', bridge: telegram });
   });
   it('walks Discord to the same private channel hand-off as Slack, on its own connections only', () => {
     const discordBase = { ...base, platform: 'discord' as const };

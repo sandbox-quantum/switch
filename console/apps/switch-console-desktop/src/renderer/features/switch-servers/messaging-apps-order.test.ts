@@ -22,6 +22,7 @@ function bridge(id: string, displayName: string): RemoteBridge {
     publicChannelAddsCreator: false,
     receivesWebhooks: false,
     webhookUrl: null,
+    commands: {},
   };
 }
 

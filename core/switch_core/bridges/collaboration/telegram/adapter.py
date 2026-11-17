@@ -1554,7 +1554,10 @@ class TelegramAdapter(PlatformAdapter):
         cls, code: str, connection_config: Mapping[str, object]
     ) -> str:
         command = cls.typed_command("link-account", code, connection_config)
-        return f"Send `{command}` from that account in a group the Switch bot is in."
+        return (
+            f"Send `{command}` from that account to the Switch bot, in your "
+            "private chat with it or in a group it is in."
+        )
 
     @classmethod
     def unlinkable_account_reason(cls, external_user_id: str) -> str | None:

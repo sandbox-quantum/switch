@@ -21,8 +21,14 @@ const listRooms = vi.hoisted(() => vi.fn());
 const followConsoleLink = vi.hoisted(() => vi.fn());
 const createChat = vi.hoisted(() => vi.fn());
 const openRoomChannel = vi.hoisted(() => vi.fn());
+const listBridgePeople = vi.hoisted(() => vi.fn());
+const claimBridgeIdentity = vi.hoisted(() => vi.fn());
 const shown = vi.hoisted(
-  () => [] as { id: string; args: { onClosed?: () => void; bridgeId?: string } }[]
+  () =>
+    [] as {
+      id: string;
+      args: { onClosed?: () => void; bridgeId?: string; confirm?: { identityId: string } };
+    }[]
 );
 const listBridgeTypes = vi.hoisted(() => vi.fn());
 const listMessagingApps = vi.hoisted(() => vi.fn());
@@ -52,6 +58,8 @@ vi.mock('@renderer/lib/ipc', () => ({
       listRooms,
       listBridgeTypes,
       listMessagingApps,
+      listBridgePeople,
+      claimBridgeIdentity,
     },
     chats: { create: createChat },
     switchRooms: { openRoomChannel },
@@ -110,7 +118,12 @@ function bridge(id: string, type: string, displayName: string): RemoteBridge {
 const acme = bridge('b-1', 'slack', 'Acme Slack');
 const globex = bridge('b-2', 'slack', 'Globex Slack');
 const teams = bridge('b-3', 'teams', 'Acme Teams');
-const telegram = bridge('b-4', 'telegram', 'example_bot');
+const telegram = {
+  ...bridge('b-4', 'telegram', 'example_bot'),
+  homeUrl: 'https://t.me/example_bot',
+  directorySearchSupported: false,
+  commands: { 'invite-agent': '/invite_agent @{agent}', 'link-account': '/link_account {code}' },
+} as RemoteBridge;
 const discord = bridge('b-5', 'discord', 'Acme Discord');
 const linked = (bridgeId: string) => ({ bridgeId }) as LinkedIdentity;
 
@@ -155,6 +168,8 @@ beforeEach(async () => {
   made = new Set();
   listBridges.mockReset().mockResolvedValue([]);
   listMyIdentities.mockReset().mockResolvedValue([]);
+  listBridgePeople.mockReset().mockResolvedValue([]);
+  claimBridgeIdentity.mockReset();
   getRoomDetail.mockReset().mockResolvedValue({
     linkedChannelName: '#buddy-ada',
     externalChannelUrl: 'https://slack.example/archives/C123',
@@ -645,17 +660,81 @@ describe('switch-buddy setup cards', () => {
     await shot(el, 'x-teams-guide');
   });
 
-  it('(n) Telegram linked: guides inviting the buddy in the group', async () => {
+  it('(n) Telegram connected: one checklist, waiting for a hello to the bot', async () => {
     listBridges.mockResolvedValue([telegram]);
-    listMyIdentities.mockResolvedValue([linked('b-4')]);
     const el = await render();
 
-    expect(el.textContent).toContain('Continue in Telegram');
-    expect(el.textContent).toContain('/invite_agent @switch-buddy');
-    expect(el.textContent).toContain("reply to the bot's message");
-    expect(el.textContent).toContain('mention switch-buddy in that reply');
-    expect(el.textContent).not.toContain('I’ll answer');
-    await shot(el, 'x-telegram-guide');
+    const list = el.querySelector('[data-testid="chat-app-checklist"]');
+    expect(list?.textContent).toContain('Say hello to the example_bot bot');
+    expect(list?.textContent).toContain('press Start');
+    expect(list?.textContent).toContain('Waiting for your hello');
+    expect(list?.textContent).toContain('/invite_agent @switch-buddy');
+    await click(el, 'Open in Telegram');
+    expect(openRoomChannel).toHaveBeenCalledWith(
+      expect.objectContaining({ channelUrl: 'https://t.me/example_bot' })
+    );
+    await shot(el, 'n-telegram-checklist-hello');
+  });
+
+  it('(n) Telegram: once the bot has seen them, asks "is this you?" and links', async () => {
+    listBridges.mockResolvedValue([telegram]);
+    listBridgePeople.mockResolvedValue([
+      {
+        username: 'old',
+        externalUserId: '1',
+        linkedUserIds: [],
+        linkedName: null,
+        firstSeenAt: '2026-11-01T00:00:00Z',
+      },
+      {
+        username: 'ada',
+        externalUserId: '2',
+        linkedUserIds: [],
+        linkedName: null,
+        firstSeenAt: '2026-11-17T10:00:00Z',
+      },
+    ]);
+    claimBridgeIdentity.mockResolvedValue({
+      kind: 'pending',
+      pending: { id: 'ext-2', externalUsername: 'ada' },
+      alreadyLinked: false,
+      code: null,
+    });
+    const el = await render();
+
+    await vi.waitFor(() => expect(el.textContent).toContain('Seen you as @ada.'));
+    expect(el.textContent).toContain('Is this you?');
+    await shot(el, 'n-telegram-checklist-is-this-you');
+    const first = [...el.querySelectorAll('button')].find((b) => b.textContent === 'That’s me');
+    await act(async () => first?.click());
+
+    expect(claimBridgeIdentity).toHaveBeenCalledWith(
+      expect.objectContaining({ bridgeId: 'b-4', externalUserId: '2' })
+    );
+    expect(shown.at(-1)).toMatchObject({
+      id: 'claimIdentityModal',
+      args: { bridgeId: 'b-4', confirm: { identityId: 'ext-2' } },
+    });
+  });
+
+  it('(n) Telegram linked: hello and link are ticked, the invite is next with a copy button', async () => {
+    listBridges.mockResolvedValue([telegram]);
+    listMyIdentities.mockResolvedValue([
+      { bridgeId: 'b-4', externalUsername: 'ada', verified: true } as LinkedIdentity,
+    ]);
+    const el = await render();
+
+    await vi.waitFor(() => expect(el.textContent).toContain('Linked as @ada.'));
+    const done = el.querySelectorAll('[data-done="true"]');
+    expect(done).toHaveLength(2);
+    expect(el.querySelector('[aria-current="step"]')?.textContent).toContain(
+      'Make a group with switch-buddy'
+    );
+    expect(
+      el.querySelector('button[aria-label="Copy /invite_agent @switch-buddy"]')
+    ).not.toBeNull();
+    expect(el.textContent).toContain('mention switch-buddy, and say what you work on');
+    await shot(el, 'n-telegram-checklist-linked');
   });
 
   it('(o) Discord linked: continues in a private Discord channel, then opens it', async () => {
