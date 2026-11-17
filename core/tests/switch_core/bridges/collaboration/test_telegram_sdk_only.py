@@ -215,6 +215,23 @@ async def test_the_asker_is_mentioned_by_id_so_a_private_account_is_reached() ->
     assert f'<a href="tg://user?id={ASKER_ID}">@alice</a>' in text
 
 
+async def test_an_asker_without_a_username_is_named_as_telegram_shows_them() -> None:
+    """Switch addresses a person with no Telegram username by a handle it
+    made up ("MM_60606"), which is nobody's. The card's mention carries the
+    name Telegram shows instead, as a text mention, so they are notified."""
+    adapter = _adapter()
+    adapter._user_names[ASKER_ID] = f"MM_{ASKER_ID}"
+    adapter._full_names[ASKER_ID] = "M M"
+
+    await adapter.post_rich(
+        CHANNEL, "my-agent", await _card(notify_external_id=ASKER), None
+    )
+
+    text = _posted(adapter)["text"]
+    assert f'<a href="tg://user?id={ASKER_ID}">M M</a>' in text
+    assert f"MM_{ASKER_ID}" not in text
+
+
 async def test_an_account_this_bridge_has_never_seen_is_not_given_a_made_up_name() -> (
     None
 ):

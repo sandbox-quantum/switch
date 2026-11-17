@@ -12,8 +12,8 @@ import type {
  * be confirmed, and its owner is asked to confirm it. `pending` counts for
  * nothing until a code is posted from the account. */
 export type AccountLine =
-  | { kind: "linked" | "unverified"; id: string; username: string; linkedAt: string }
-  | { kind: "pending"; id: string; username: string; requestedBy: string | null };
+  | { kind: "linked" | "unverified"; id: string; username: string; name: string; linkedAt: string }
+  | { kind: "pending"; id: string; username: string; name: string; requestedBy: string | null };
 
 export interface AppAccounts {
   app: BridgeDetail;
@@ -40,6 +40,7 @@ export function accountsByApp(
               kind: i.verified ? "linked" : "unverified",
               id: i.id,
               username: i.external_username,
+              name: accountName(i),
               linkedAt: i.linked_at,
             }),
           ),
@@ -50,6 +51,7 @@ export function accountsByApp(
               kind: "pending",
               id: p.id,
               username: p.external_username,
+              name: accountName(p),
               requestedBy: p.requested_by_name,
             }),
           ),
@@ -61,6 +63,18 @@ export function accountsByApp(
  * already on, so one is added only when it is missing. */
 export function accountHandle(username: string): string {
   return username.startsWith("@") ? username : `@${username}`;
+}
+
+/** How to name one of your accounts: its handle, or your name where the
+ * handle is one Switch made up (a Telegram account without a username). */
+export function accountName(account: {
+  external_username: string;
+  external_display_name?: string;
+  has_handle?: boolean;
+}): string {
+  return account.has_handle === false && account.external_display_name
+    ? account.external_display_name
+    : accountHandle(account.external_username);
 }
 
 /** The link a code confirms. A `pending` link is dropped by cancelling; an
