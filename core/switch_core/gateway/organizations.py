@@ -14,7 +14,7 @@ Changes to the organization itself are recorded in its own audit log
 (`organization_audit_events`), whichever workspace they were made from, and
 read back by its `org_admin`s. Someone who stops being `org_admin` here, made
 a member or removed, is e-mailed about to every `org_admin` and to themselves
-once the change commits (`organization_admin_notices.py`). See
+after the response, holding no connection (`organization_admin_notices.py`). See
 `docs/design/organizations-v1.md`.
 """
 
@@ -25,7 +25,15 @@ from collections.abc import Awaitable, Callable
 from datetime import datetime
 from typing import Annotated, NamedTuple
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+)
 from fastapi.responses import JSONResponse
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -924,6 +932,7 @@ async def _end_access_through_organization(
 async def update_organization_member_role(
     request: Request,
     response: Response,
+    background: BackgroundTasks,
     user_id: str,
     req: OrganizationMemberUpdateRequest,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -958,8 +967,8 @@ async def update_organization_member_role(
     they were in only as `org_admin` (`_end_access_through_organization`).
     The directory is asked last, once every check has passed
     (`_ask_directory`). Recorded in the organization's audit log; a demotion
-    is e-mailed to the organization's admins and the person demoted once it
-    commits.
+    is e-mailed to the organization's admins and the person demoted after
+    the response, with nothing here holding a connection.
     """
     access = await require_organization_admin(
         session, user_store, organization_store, user, operator_restores=True
@@ -1054,12 +1063,14 @@ async def update_organization_member_role(
             },
         )
     member.role = req.role
+    target = await user_store.get(session, user_id)
+    if target is None:
+        raise RuntimeError(f"Organization member {user_id} has no user")
     await session.commit()
 
-    target = await user_store.get(session, user_id)
-    assert target is not None
     if demoting:
-        await notices.send(
+        background.add_task(
+            notices.send,
             AdminChange(
                 organization_id=organization_id,
                 kind=(
@@ -1070,13 +1081,13 @@ async def update_organization_member_role(
                 target=Person(target.id, target.name, target.email),
                 actor=Person(user.id, user.name, user.email),
                 reason=None,
-            )
+            ),
         )
     if user_id == user.id:
         await rebind_if_left(
             request, response, session_factory, user_store, user, config
         )
-    return _member_detail(
+    detail = _member_detail(
         target,
         member,
         warning,
@@ -1087,12 +1098,17 @@ async def update_organization_member_role(
         ),
         accepts_promotion=_accepts_promotion(organization_directory, organization),
     )
+    # The e-mail goes out after the response, before this session closes:
+    # end the read above so it holds no connection meanwhile.
+    await session.commit()
+    return detail
 
 
 @router.delete("/organizations/current/members/{user_id}", response_model=None)
 async def remove_organization_member(
     request: Request,
     response: Response,
+    background: BackgroundTasks,
     user_id: str,
     session: Annotated[AsyncSession, Depends(get_session)],
     session_factory: Annotated[
@@ -1129,7 +1145,7 @@ async def remove_organization_member(
     The directory is asked last, once every check has passed
     (`_ask_directory`). Recorded in the organization's audit log; removing an
     `org_admin` is e-mailed to the organization's admins and the person
-    removed once it commits.
+    removed after the response, with nothing here holding a connection.
     """
     access = await require_organization_admin(
         session, user_store, organization_store, user, operator_restores=False
@@ -1203,6 +1219,9 @@ async def remove_organization_member(
         access_ended=was_admin,
     )
     role = member.role
+    removed = await user_store.get(session, user_id)
+    if removed is None:
+        raise RuntimeError(f"Organization member {user_id} has no user")
     await session.execute(
         delete(OrganizationMember).where(
             OrganizationMember.organization_id == organization_id,
@@ -1220,10 +1239,8 @@ async def remove_organization_member(
     )
     await session.commit()
     if was_admin:
-        removed = await user_store.get(session, user_id)
-        if removed is None:
-            raise RuntimeError(f"Organization member {user_id} has no user")
-        await notices.send(
+        background.add_task(
+            notices.send,
             AdminChange(
                 organization_id=organization_id,
                 kind=(
@@ -1234,7 +1251,7 @@ async def remove_organization_member(
                 target=Person(removed.id, removed.name, removed.email),
                 actor=Person(user.id, user.name, user.email),
                 reason=None,
-            )
+            ),
         )
     if user_id == user.id:
         await rebind_if_left(

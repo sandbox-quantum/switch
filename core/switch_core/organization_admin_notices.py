@@ -6,6 +6,10 @@ e-mailed, and so is the person it was made to: who made it (or that they
 made it themselves), whom it was made to, the organization, when, and a link
 to the organization's audit log, which records each of these changes.
 
+A request sends them after its response (FastAPI's background tasks), and
+a server command once its session is closed: talking to the relay can take a
+while, and nothing should hold a database connection meanwhile.
+
 Sent through the relay invitations go through (`gateway/invite_mail.py`,
 `GATEWAY_SMTP_*`). A deployment without one sends nothing and logs a warning
 for each change. Anything that goes wrong sending, from reading who the

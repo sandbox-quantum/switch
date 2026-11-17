@@ -241,6 +241,53 @@ class TestRemoving:
         assert mailer.sent == []
 
 
+class TestAfterTheResponse:
+    """The e-mails go out once the response has been sent, and while they
+    do the request holds no connection: a slow relay holds up nobody's
+    pool."""
+
+    async def test_a_demotion(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        pool_checkouts: PoolCheckouts,
+    ) -> None:
+        tenant_id, ada, bob, cy = await _three_admins(session_factory)
+        response = SentAfter()
+        mailer = WatchedMailer(response, pool_checkouts)
+        app = pool_checkouts.wrap(response.wrap(_app(session_factory, mailer=mailer)))
+
+        async with _client(app, ada, tenant_id) as c:
+            demoted = await c.patch(
+                f"/organizations/current/members/{bob}", json={"role": "member"}
+            )
+
+        assert demoted.status_code == 200, demoted.text
+        assert sorted(mailer.seen) == sorted(
+            (_email(name), True, 0) for name in (ada, bob, cy)
+        )
+
+    async def test_a_removal(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        pool_checkouts: PoolCheckouts,
+    ) -> None:
+        tenant_id, ada, bob, cy = await _three_admins(session_factory)
+        async with tenant_session(session_factory, tenant_id) as session:
+            await session.delete(await session.get(TenantMember, (tenant_id, bob)))
+            await session.commit()
+        response = SentAfter()
+        mailer = WatchedMailer(response, pool_checkouts)
+        app = pool_checkouts.wrap(response.wrap(_app(session_factory, mailer=mailer)))
+
+        async with _client(app, ada, tenant_id) as c:
+            removed = await c.delete(f"/organizations/current/members/{bob}")
+
+        assert removed.status_code == 200, removed.text
+        assert sorted(mailer.seen) == sorted(
+            (_email(name), True, 0) for name in (ada, bob, cy)
+        )
+
+
 class TestWithoutEmail:
     async def test_no_relay_sends_nothing_and_warns_once(
         self,
