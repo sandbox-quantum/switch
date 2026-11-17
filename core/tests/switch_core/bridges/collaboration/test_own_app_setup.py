@@ -108,7 +108,7 @@ class TestSlackManifest:
         characters and opens its app list instead of the prefilled dialog.
         6,000 leaves room for the next few commands and events; four more
         bot events stand in for the next additions."""
-        manifest = slack_manifest()
+        manifest = slack_manifest(ALL_ON)
         assert len(slack_create_url(manifest)) <= 6000
 
         manifest["settings"]["event_subscriptions"]["bot_events"] += [
@@ -120,7 +120,7 @@ class TestSlackManifest:
         assert len(slack_create_url(manifest)) <= 6000
 
     def test_every_command_has_a_short_phrase(self) -> None:
-        for command in slack_manifest()["features"]["slash_commands"]:
+        for command in slack_manifest(ALL_ON)["features"]["slash_commands"]:
             assert command["command"].removeprefix("/") in (
                 own_app_setup._SLACK_DESCRIPTIONS
             ), command
@@ -128,7 +128,7 @@ class TestSlackManifest:
 
     def test_only_commands_with_arguments_escape_mentions(self) -> None:
         by_name = {command.name: command for command in COMMANDS}
-        for entry in slack_manifest()["features"]["slash_commands"]:
+        for entry in slack_manifest(ALL_ON)["features"]["slash_commands"]:
             takes_arguments = bool(by_name[entry["command"][1:]].args_spec)
             assert entry.get("should_escape", False) is takes_arguments, entry
             assert ("usage_hint" in entry) is takes_arguments, entry
