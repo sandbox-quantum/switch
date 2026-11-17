@@ -131,6 +131,7 @@ Handling = Literal[
 USER_REFERENCES: dict[tuple[str, str], Handling] = {
     ("tenant_members", "user_id"): "deleted",
     ("oidc_identities", "user_id"): "deleted",
+    ("identity_sessions", "user_id"): "database cascades",
     ("api_keys", "user_id"): "deleted",
     ("cloud_machines", "owner_id"): "refused",
     ("machine_workspaces", "owner_id"): "deleted",

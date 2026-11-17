@@ -132,7 +132,9 @@ ORGANIZATION_POLICY_NAME = "organization_isolation"
 # so widening it fails the suite until someone changes the test too.
 #
 # A person is not a tenant member (`users`), nor is the record of how they
-# prove who they are (`oidc_identities`). Alembic's `alembic_version` needs no
+# prove who they are (`oidc_identities`), nor their session at the identity
+# provider (`identity_sessions`), which one sign-in makes for every workspace
+# they are in. Alembic's `alembic_version` needs no
 # entry: Alembic owns that table and never registers it on this metadata.
 #
 # The three telemetry tables are global because each records a fact about the
@@ -190,6 +192,7 @@ GLOBAL_TABLES = frozenset(
         "cloud_machines",
         "users",
         "oidc_identities",
+        "identity_sessions",
         "deployment_identity",
         "telemetry_milestones",
         "telemetry_snapshot_watermark",
