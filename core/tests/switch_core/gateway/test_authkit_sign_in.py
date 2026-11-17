@@ -519,27 +519,19 @@ class TestHandingTheSignInBackToConsole:
 
 
 class TestTheAddressASignInCameFrom:
-    def _request(self, client: str, forwarded: str | None) -> SimpleNamespace:
-        headers = {} if forwarded is None else {"x-forwarded-for": forwarded}
-        return SimpleNamespace(client=SimpleNamespace(host=client), headers=headers)
+    """The client's own address, as uvicorn resolved it behind the proxies it
+    trusts (`FORWARDED_ALLOW_IPS`), never a proxy's."""
 
-    def test_without_trusted_proxies_none_is_sent(self) -> None:
-        assert (
-            oidc_routes._client_ip(self._request("10.0.0.5", "198.51.100.7"), _config())  # type: ignore[arg-type]
-            is None
-        )
+    def _request(self, client: str) -> SimpleNamespace:
+        return SimpleNamespace(client=SimpleNamespace(host=client), headers={})
 
-    def test_the_nearest_untrusted_hop_is_the_client(self) -> None:
-        config = _config(gateway_trusted_proxies=["10.0.0.0/8"])
-        request = self._request("10.0.0.5", "203.0.113.9, 198.51.100.7, 10.0.0.9")
-        assert oidc_routes._client_ip(request, config) == "198.51.100.7"  # type: ignore[arg-type]
+    def test_a_clients_own_address_is_sent(self) -> None:
+        assert oidc_routes._client_ip(self._request("198.51.100.7")) == "198.51.100.7"  # type: ignore[arg-type]
 
-    def test_a_direct_connection_is_its_own_address(self) -> None:
-        config = _config(gateway_trusted_proxies=["10.0.0.0/8"])
-        request = self._request("198.51.100.7", "203.0.113.9")
-        assert oidc_routes._client_ip(request, config) == "198.51.100.7"  # type: ignore[arg-type]
+    def test_an_ipv4_address_carried_in_ipv6_is_sent_as_ipv4(self) -> None:
+        request = self._request("::ffff:198.51.100.7")
+        assert oidc_routes._client_ip(request) == "198.51.100.7"  # type: ignore[arg-type]
 
-    def test_a_garbled_hop_gives_no_address(self) -> None:
-        config = _config(gateway_trusted_proxies=["10.0.0.0/8"])
-        request = self._request("10.0.0.5", "not-an-address")
-        assert oidc_routes._client_ip(request, config) is None  # type: ignore[arg-type]
+    @pytest.mark.parametrize("proxy", ["10.0.0.5", "127.0.0.1", "fd00::1", ""])
+    def test_a_proxys_address_or_none_is_not_sent(self, proxy: str) -> None:
+        assert oidc_routes._client_ip(self._request(proxy)) is None  # type: ignore[arg-type]

@@ -437,6 +437,7 @@ class TestAnArchivedWorkspace:
                 UserStore(),
                 user_id,
                 0,
+                "stream-session",
                 None,
                 org.second,
             )

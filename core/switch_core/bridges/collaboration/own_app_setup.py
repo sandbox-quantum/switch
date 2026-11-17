@@ -14,13 +14,14 @@ Discord has nothing like a manifest, so its setup stays the guide.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlencode
 
 import httpx
 
-from switch_core.bridges.agent.commands import COMMANDS
+from switch_core.bridges.agent.commands import commands_for
 from switch_core.bridges.collaboration.slack.install import BOT_SCOPES
 
 SLACK_API = "https://slack.com/api"
@@ -47,10 +48,11 @@ def _short(description: str) -> str:
     return sentence[: _SLACK_DESCRIPTION_MAX - 1].rstrip() + "…"
 
 
-def slack_manifest() -> dict[str, Any]:
-    """The manifest of a Slack app that does everything this server uses."""
+def slack_manifest(flags: Mapping[str, bool]) -> dict[str, Any]:
+    """The manifest of a Slack app that does everything this server, with
+    these feature flags, uses."""
     commands = []
-    for command in COMMANDS:
+    for command in commands_for(flags):
         # Only a command that does something is registered with Slack, and a
         # hidden one or one with no description is kept out of the listing.
         if command.handler is None or command.hidden or not command.description.strip():

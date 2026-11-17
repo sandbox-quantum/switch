@@ -8,6 +8,7 @@ Real HTTP against real Postgres; WorkOS is a stand-in.
 from __future__ import annotations
 
 import asyncio
+import secrets
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Annotated
@@ -129,6 +130,7 @@ def _cookie(user_id: str, email: str, identity_session: str | None) -> str:
         None,
         session_version=0,
         auth_time=datetime.now(UTC),
+        session_id=secrets.token_urlsafe(16),
         identity_session=identity_session,
     )
 
@@ -330,6 +332,7 @@ async def test_an_open_socket_asks_again_and_closes_once_the_sign_in_ended(
             _USERS,
             ada,
             0,
+            "socket-session",
             row_id,
         )
 

@@ -9,6 +9,7 @@ audit log. The old server-wide routes say where the setting went.
 
 from __future__ import annotations
 
+import secrets
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -116,6 +117,7 @@ class _World:
                     TENANT_ZERO_ID,
                     session_version=0,
                     auth_time=datetime.now(UTC),
+                    session_id=secrets.token_urlsafe(16),
                     identity_session=None,
                 )
             },

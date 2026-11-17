@@ -403,6 +403,13 @@ is the kind of machine (`vm` for every machine this server makes today).
   `ended` (the Switch session ended with it) or `failed` (WorkOS could not be
   asked, and the session was kept). A dashboard panel only; a run of `failed`
   means WorkOS is unreachable or refusing the API key.
+- `switch.auth.sign_in_lockouts` counts password sign-in lock-outs by `limit`
+  (`email` or `client_address`), never the email or the address. Anyone who
+  knows a person's email can lock their password sign-in by failing with it,
+  and keep it locked by repeating that: email lock-outs arriving steadily
+  with no `client_address` ones beside them look like that. A dashboard panel
+  only, no alert. The operator lifts a lock with
+  `DELETE /gateway/users/{user_id}/sign-in-lock`.
 - `switch.runtime.unhandled_exceptions` counts exceptions nothing in Core
   handled, by `component` (`http`, `websocket` or a background `task`) and
   `type` (the nearest exception class from a fixed list, else `other`). Each

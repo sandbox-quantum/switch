@@ -1042,12 +1042,16 @@ export class HostedSession {
         // to a steering failure.
         // Into the turn running now, once the provider has it: a message
         // asked to steer while nothing runs, or before the running turn has
-        // reached the provider, waits as a turn of its own.
+        // reached the provider, waits as a turn of its own. So does one sent
+        // while the turn waits on a question or an approval: the provider is
+        // blocked on that answer, and a message pushed into it is either read
+        // as the answer or left unread until the turn gives up.
         const running = this.activeTurn;
         const taken =
           body.delivery === 'steer' &&
           running !== null &&
           this.dispatched.has(running) &&
+          !this.awaitingAnswer() &&
           (await this.steerMessage(command, running));
         if (!taken) await this.queueMessage(command);
       } else if (body.type === 'session.compact') {
@@ -1281,6 +1285,12 @@ export class HostedSession {
    * failure leaves the outcome unknown: the message is shown, recorded as
    * dispatched and never resent.
    */
+  private awaitingAnswer(): boolean {
+    return this.snapshot().requests.some(
+      (request) => request.state === 'open' || request.state === 'submitting'
+    );
+  }
+
   private async steerMessage(command: Command, expectedTurnId: string): Promise<boolean> {
     if (command.body.type !== 'message.send') return false;
     const body = command.body;

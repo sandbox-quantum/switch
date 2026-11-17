@@ -70,6 +70,23 @@ describe("LinkConfirmation", () => {
     expect(api.issueLinkCode).toHaveBeenCalledWith("b1", "acct-1");
   });
 
+  it("names a person without a handle by their name, even when the bot could not message them", async () => {
+    show({
+      target: { identityId: "acct-1", username: "MM_42", displayName: "M M", kind: "pending" },
+      initialCode: code({
+        prompt: {
+          number: 7,
+          sent: false,
+          unavailable_reason: "Telegram only lets the bot message people who have started a chat with it.",
+          link: null,
+        },
+      } as Partial<LinkCode>),
+    });
+
+    expect(await screen.findByText(/Couldn't message M M directly/, SHOWN)).toBeTruthy();
+    expect(screen.queryByText(/@MM_42/, SHOWN)).toBeNull();
+  });
+
   it("shows the code a claim came back with, without asking for another", async () => {
     show({ initialCode: code({ code: "WXYZ-2345" }) });
 

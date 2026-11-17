@@ -139,7 +139,10 @@
     {
       "route": "DELETE /gateway/decision-settings",
       "auth": "session",
-      "flags": []
+      "flags": [
+        "decision_routing",
+        "follow_the_conversation"
+      ]
     },
     {
       "route": "DELETE /gateway/documents/{document_id}",
@@ -369,6 +372,11 @@
       "flags": []
     },
     {
+      "route": "DELETE /gateway/users/{user_id}/sign-in-lock",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "DELETE /gateway/workspace/services/{service}",
       "auth": "session",
       "flags": [
@@ -589,7 +597,10 @@
     {
       "route": "GET /gateway/decision-settings",
       "auth": "session",
-      "flags": []
+      "flags": [
+        "decision_routing",
+        "follow_the_conversation"
+      ]
     },
     {
       "route": "GET /gateway/docs",
@@ -1253,6 +1264,21 @@
       "flags": []
     },
     {
+      "route": "POST /gateway/auth/handoff",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/auth/handoff/peek",
+      "auth": "none",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/auth/handoff/redeem",
+      "auth": "none",
+      "flags": []
+    },
+    {
       "route": "POST /gateway/auth/login",
       "auth": "none",
       "flags": []
@@ -1389,7 +1415,10 @@
     {
       "route": "POST /gateway/decision-settings/test",
       "auth": "session",
-      "flags": []
+      "flags": [
+        "decision_routing",
+        "follow_the_conversation"
+      ]
     },
     {
       "route": "POST /gateway/documents",
@@ -1817,7 +1846,10 @@
     {
       "route": "PUT /gateway/decision-settings",
       "auth": "session",
-      "flags": []
+      "flags": [
+        "decision_routing",
+        "follow_the_conversation"
+      ]
     },
     {
       "route": "PUT /gateway/management/agents/{agent_id}",
@@ -1872,7 +1904,10 @@
     {
       "route": "PUT /gateway/rooms/{room_id}/auto-route",
       "auth": "session",
-      "flags": []
+      "flags": [
+        "decision_routing",
+        "follow_the_conversation"
+      ]
     },
     {
       "route": "PUT /gateway/rooms/{room_id}/group",

@@ -34,7 +34,7 @@ from fastapi import (
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.bridges.agent.commands import COMMANDS, COMMANDS_BY_NAME
+from switch_core.bridges.agent.commands import COMMANDS_BY_NAME, commands_for
 from switch_core.chats.service import (
     ChatError,
     ChatService,
@@ -50,6 +50,7 @@ from switch_core.chats.views import (
     chat_messages,
     chat_summaries,
 )
+from switch_core.config import SwitchConfig
 from switch_core.content_disposition import untrusted_file_headers
 from switch_core.db.models import (
     AgentSessionActivityItem,
@@ -62,10 +63,11 @@ from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.agent_sessions import ApprovalRequestView
 from switch_core.gateway.auth import (
     get_current_user,
+    session_id_of,
     session_identity,
     session_still_enters,
 )
-from switch_core.gateway.dependencies import get_user_store
+from switch_core.gateway.dependencies import get_config, get_user_store
 from switch_core.session_activity.listener import Change, RoomSubscription
 
 logger = logging.getLogger(__name__)
@@ -366,17 +368,18 @@ async def create_chat(
 
 
 def _session_check(
-    request: Request,
     service: ChatService,
     user_store: UserStore,
     user: User,
+    request: Request,
     tenant_id: str,
 ) -> Callable[[], Awaitable[bool]]:
     """What a stream asks at each re-read: whether the session it was opened
     with still stands, and may still enter its workspace, or the account's
-    sessions, or its identity-provider session, have been ended or the
-    workspace left or archived since."""
+    sessions have been ended, this one signed out of, its identity-provider
+    session ended, or the workspace left or archived since."""
     session_version = user.session_version
+    session_id = session_id_of(request)
     identity_session = session_identity(request)
 
     async def still_current() -> bool:
@@ -386,6 +389,7 @@ def _session_check(
             user_store,
             user.id,
             session_version,
+            session_id,
             identity_session,
             tenant_id,
         )
@@ -411,7 +415,7 @@ async def chat_events_stream(
             ping_seconds=PING_SECONDS,
             recheck_seconds=RECHECK_SECONDS,
             session_current=_session_check(
-                request, service, user_store, user, tenant_id
+                service, user_store, user, request, tenant_id
             ),
         ),
         media_type="text/event-stream",
@@ -458,7 +462,7 @@ async def chat_activity_stream(
             recheck_seconds=RECHECK_SECONDS,
             queue_max=ACTIVITY_QUEUE_MAX,
             session_current=_session_check(
-                request, service, user_store, user, tenant_id
+                service, user_store, user, request, tenant_id
             ),
         ),
         media_type="text/event-stream",
@@ -647,10 +651,14 @@ async def list_members(room_id: str, user: CurrentUser, service: Service) -> Mem
 
 @router.get("/{room_id}/commands", response_model=ChatCommands)
 async def list_commands(
-    room_id: str, user: CurrentUser, service: Service
+    room_id: str,
+    user: CurrentUser,
+    service: Service,
+    config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> ChatCommands:
     """The room commands a member can type here (`!name`), as the platforms'
-    command lists show them: those that do something and are not hidden."""
+    command lists show them: those this server has (`commands_for`) that do
+    something and are not hidden."""
     tenant_id = require_tenant_id()
     async with tenant_session(service.session_factory, tenant_id) as session:
         await service.require_member(session, tenant_id, user, room_id)
@@ -666,7 +674,7 @@ async def list_commands(
                     ]
                 ),
             )
-            for command in COMMANDS
+            for command in commands_for(config.feature_flags)
             if command.handler is not None
             and not command.hidden
             and command.description.strip()

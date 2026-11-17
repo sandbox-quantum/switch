@@ -78,7 +78,10 @@ vi.mock('@renderer/features/workspaces/workspaces-store', () => ({
     }),
   },
 }));
-vi.mock('@renderer/lib/hooks/useFeatureFlags', () => ({ useAnyServerFeatureFlag: () => false }));
+vi.mock('@renderer/lib/hooks/useFeatureFlags', () => ({
+  useAnyServerFeatureFlag: () => false,
+  useFeatureFlags: () => ({ service_connections: false }),
+}));
 vi.mock('@renderer/utils/logger', () => ({ log: { warn: state.warn } }));
 vi.mock('@renderer/lib/ipc', () => ({
   rpc: {

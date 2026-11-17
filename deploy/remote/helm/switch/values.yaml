@@ -427,11 +427,6 @@ switchCore:
     # client id, not a secret. Member changes use the same application, so
     # organizationDirectory.workosClientId, if set too, must match.
     workosClientId: ""
-    # The proxies in front of switch-core whose X-Forwarded-For is believed,
-    # as addresses or CIDR ranges (the ingress controller's pod network, say).
-    # Only used to tell WorkOS where a sign-in came from, which its bot
-    # protection may need. Empty sends no address rather than the proxy's.
-    trustedProxies: []
   # Where someone signing in through the IdP for the first time lands. Who may
   # sign in at all is the IdP's decision; this decides what they get.
   #   default_tenant — joined to the deployment's one pre-existing workspace

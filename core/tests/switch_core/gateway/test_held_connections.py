@@ -63,6 +63,7 @@ from switch_core.gateway.hosted_machines import hosted_settings
 from switch_core.gateway.rooms import router as rooms_router
 from switch_core.keys import Keyring
 from switch_core.room_service import RoomService
+from tests.switch_core.gateway.login_limit_defaults import LOGIN_LIMIT_DEFAULTS
 from tests.switch_core.pool_checkouts import PoolCheckouts
 
 # Made for each run, so nothing secret-looking is committed.
@@ -144,6 +145,7 @@ class _Adapter:
                 username=query,
                 display_name=query,
                 email=None,
+                has_handle=True,
             )
         ]
 
@@ -191,6 +193,9 @@ class _CollabLifecycle:
     def supports_private_channels(self, bridge_type: str) -> bool:
         return True
 
+    def typed_commands(self, bridge_type, connection_config):
+        return {}
+
     def channel_creation_blocker(
         self, bridge_type: str, connection_config: object
     ) -> str | None:
@@ -201,6 +206,9 @@ class _CollabLifecycle:
 
     def supports_directory_search(self, bridge_type: str) -> bool:
         return True
+
+    def directory_search_hint(self, bridge_id: str, bridge_type: str) -> str:
+        return "Your name or handle"
 
     def unlinkable_account_reason(
         self, bridge_type: str, external_user_id: str
@@ -281,6 +289,7 @@ def _config() -> SimpleNamespace:
         decision_endpoint_url=None,
         decision_api_key=None,
         decision_bedrock_enabled=False,
+        **LOGIN_LIMIT_DEFAULTS,
     )
 
 
@@ -333,6 +342,7 @@ def _client(app: Any, user: User) -> httpx.AsyncClient:
         TENANT_ZERO_ID,
         session_version=0,
         auth_time=datetime.now(UTC),
+        session_id=secrets.token_urlsafe(16),
         identity_session=None,
     )
     return httpx.AsyncClient(

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import secrets
 import uuid
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -272,6 +273,7 @@ def _token(user_id: str, email: str, tenant_id: str | None) -> str:
         tenant_id,
         session_version=0,
         auth_time=datetime.now(UTC),
+        session_id=secrets.token_urlsafe(16),
         identity_session=None,
     )
 
@@ -490,6 +492,7 @@ class TestCreateTenant:
             None,
             session_version=0,
             auth_time=datetime.now(UTC),
+            session_id=secrets.token_urlsafe(16),
             identity_session=None,
         )
 
@@ -516,6 +519,7 @@ class TestCreateTenant:
             None,
             session_version=0,
             auth_time=datetime.now(UTC),
+            session_id=secrets.token_urlsafe(16),
             identity_session=None,
         )
         lifecycle = ClientLifecycleService(
@@ -816,6 +820,7 @@ class TestWorkspaceCreationLimit:
             TENANT_A,
             session_version=0,
             auth_time=datetime.now(UTC),
+            session_id=secrets.token_urlsafe(16),
             identity_session=None,
         )
 
@@ -1902,7 +1907,7 @@ class TestCurrentTenantRoute:
         assert response.status_code == 200, response.text
         statements = statement_counts.scopes[-1].statements
         assert sum("organization_members" in s for s in statements) == 1
-        assert len(statements) <= 7, statements
+        assert len(statements) <= 8, statements
 
     async def test_a_member_is_told_the_workspace_they_are_bound_to(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -2077,6 +2082,7 @@ class TestOrganizationAdmins:
             None,
             session_version=0,
             auth_time=datetime.now(UTC),
+            session_id=secrets.token_urlsafe(16),
             identity_session=None,
         )
         claims = decode_jwt(token, _KEYRING)
@@ -3598,6 +3604,7 @@ class TestRetentionRoutes:
             TENANT_A,
             session_version=0,
             auth_time=datetime.now(UTC),
+            session_id=secrets.token_urlsafe(16),
             identity_session=None,
         )
 
@@ -4053,6 +4060,7 @@ class TestErasureRoutes:
             TENANT_A,
             session_version=0,
             auth_time=datetime.now(UTC),
+            session_id=secrets.token_urlsafe(16),
             identity_session=None,
         )
         person_id = await self._person(session_factory, "ana")

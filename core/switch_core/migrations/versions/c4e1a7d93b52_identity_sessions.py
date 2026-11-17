@@ -6,11 +6,16 @@ person's session at WorkOS, so the gateway can follow it and end it
 `oidc_identities`: no tenant column and no row-level security policy
 (`db/rls_ddl.py`'s `GLOBAL_TABLES`). Its rows go with the account.
 
+`browser_handoffs.identity_session` carries the identity session of the
+Switch Console session that minted a sign-in link to the browser session it
+is redeemed for, so that session ends with it too. Like `console_sid`, it has
+no foreign key: it is read once, at redemption.
+
 Expand only: a release from before this revision neither reads nor writes
-the table.
+the table or the column.
 
 Revision ID: c4e1a7d93b52
-Revises: e2c7a94f1b38
+Revises: 368b45a3d82d
 Create Date: 2026-11-17 12:00:00.000000
 
 """
@@ -21,7 +26,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "c4e1a7d93b52"
-down_revision: str | None = "e2c7a94f1b38"
+down_revision: str | None = "368b45a3d82d"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 expand_only: bool = True
@@ -62,9 +67,13 @@ def upgrade() -> None:
         unique=True,
         postgresql_where=sa.text("ended_at IS NULL"),
     )
+    op.add_column(
+        "browser_handoffs", sa.Column("identity_session", sa.Text(), nullable=True)
+    )
 
 
 def downgrade() -> None:
+    op.drop_column("browser_handoffs", "identity_session")
     op.drop_index("uq_identity_sessions_live_session", table_name="identity_sessions")
     op.drop_index("ix_identity_sessions_user_id", table_name="identity_sessions")
     op.drop_table("identity_sessions")

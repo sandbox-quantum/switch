@@ -19,13 +19,17 @@ from switch_core.accounts.deletion import (
     is_server_administrator,
 )
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
+from switch_core.bridges.collaboration.lifecycle_service import (
+    CollaborationBridgeLifecycleService,
+)
+from switch_core.bridges.collaboration.models import KnownUserLabel
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.chats.member_names import rename_member_clients
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.config import SwitchConfig
 from switch_core.connections.broker import ServiceBroker, get_service_broker
 from switch_core.db.audit import ServerAuditAction, record_server_audit_event
-from switch_core.db.models import TENANT_ZERO_ID, User
+from switch_core.db.models import TENANT_ZERO_ID, ExternalUser, User
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
@@ -53,11 +57,14 @@ from switch_core.gateway.auth import (
     list_held_memberships,
     list_tenant_memberships,
     operator_entered_workspace,
+    password_matches_off_loop,
     require_admin,
-    session_auth_time,
     session_identity,
+    session_signed_in,
     set_session_cookie,
+    sign_out_session,
     signed_claims,
+    signed_in_now,
     signup_refused_by_edge,
     tenants_held_by,
     verify_password_off_loop,
@@ -68,6 +75,7 @@ from switch_core.gateway.dependencies import (
     get_api_key_store,
     get_bridge_store,
     get_client_lifecycle,
+    get_collab_lifecycle,
     get_config,
     get_external_user_store,
     get_identity_sessions,
@@ -87,6 +95,13 @@ from switch_core.gateway.hosted_machines import (
     hosted_settings,
 )
 from switch_core.gateway.identity_sessions import IdentitySessions
+from switch_core.gateway.login_limits import (
+    admit_login,
+    clear_login_failures,
+    count_signup,
+    counted_address,
+    refuse_signup_from,
+)
 from switch_core.gateway.schemas import (
     AccountDeletionCheck,
     AuthConfigResponse,
@@ -130,9 +145,9 @@ def _session_response(user: User) -> SessionUserResponse:
     """An authenticated session, carrying what the server is (CHOO-1865).
 
     Every response that establishes or confirms a session says so, which means
-    a client learns the server's ranges on the call it already makes. The
-    authentication surface is frozen and excluded from `gateway-api`, so this
-    is the one path that cannot itself be the thing that broke.
+    a client learns the server's ranges on the call it already makes. Signing
+    in, refreshing and signing out are frozen and excluded from `gateway-api`,
+    so this is the one path that cannot itself be the thing that broke.
     """
     return SessionUserResponse(
         id=user.id,
@@ -164,6 +179,7 @@ async def get_version(
 @router.post("/auth/login")
 async def login(
     req: LoginRequest,
+    request: Request,
     response: Response,
     session: Annotated[AsyncSession, Depends(get_system_session)],
     session_factory: Annotated[
@@ -174,21 +190,24 @@ async def login(
 ) -> SessionUserResponse:
     # `get_system_session`, not `get_session`: there is no caller to take a
     # tenant from until this route decides there is one. It only ever reads
-    # `users`, which is global (a person is one account across tenants), so
-    # there is nothing here a tenant would scope. Which workspace the new
-    # session selects comes from the membership lookup, on a session of its own.
+    # `users`, which is global (a person is one account across tenants), and
+    # counts the attempt in `auth_attempts`, global too, so there is nothing
+    # here a tenant would scope. Which workspace the new session selects comes
+    # from the membership lookup, on a session of its own.
     if not config.gateway_password_login_enabled:
         raise HTTPException(status_code=403, detail="Password login is disabled")
 
+    attempt = await admit_login(session, config, req.email, request)
     user = await user_store.get_by_email(session, req.email)
     # One connection at a time, and none held across bcrypt.
     await session.commit()
-    if user is None or not await verify_password_off_loop(
-        req.password, user.password_hash
-    ):
+    if not await password_matches_off_loop(user, req.password):
         # Counted for the alert on password guessing; nothing about who.
         metrics().increment(AUTH_SIGN_IN_FAILURES, {})
+        attempt.failed()
         raise HTTPException(status_code=401, detail="Invalid email or password")
+    assert user is not None
+    await attempt.succeeded(session)
 
     set_session_cookie(
         response,
@@ -196,8 +215,7 @@ async def login(
         config.keyring,
         config.gateway_cookie_secure,
         await initial_tenant_claim(session_factory, user_store, user),
-        datetime.now(UTC),
-        None,
+        signed_in_now(None),
     )
     return _session_response(user)
 
@@ -283,9 +301,11 @@ async def signup(
         emit_safely(current_telemetry(), "signup_refused", {"reason": "country"})
         raise HTTPException(status_code=403, detail=SIGNUP_REFUSED_DETAIL)
 
+    address = counted_address(request)
     with tenant_scope(TENANT_ZERO_ID):
         # Checked before the hash so a refusal stays cheap, and again under the
         # lock after it; neither the lock nor a connection is held across bcrypt.
+        await refuse_signup_from(session, address)
         await _refuse_signup(session, user_store, req.email, config)
         await session.rollback()
         password_hash = await hash_password_off_loop(req.password)
@@ -294,6 +314,7 @@ async def signup(
             text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
             {"key": "gateway-signup"},
         )
+        await refuse_signup_from(session, address)
         await _refuse_signup(session, user_store, req.email, config)
         user = User(
             name=req.display_name or req.email.split("@")[0],
@@ -314,6 +335,7 @@ async def signup(
             raise HTTPException(
                 status_code=409, detail="Email already registered"
             ) from None
+        await count_signup(session, config, address)
         await session.commit()
         logger.info("Signed up user %s", user.id)
         emit_safely(current_telemetry(), "account_created", {"method": "signup"})
@@ -324,8 +346,7 @@ async def signup(
             config.keyring,
             config.gateway_cookie_secure,
             TENANT_ZERO_ID,
-            datetime.now(UTC),
-            None,
+            signed_in_now(None),
         )
         signed_in = _session_response(user)
         machine = await _prewarm(session, session_factory, user.id, config, settings)
@@ -355,8 +376,7 @@ async def refresh(
         config.keyring,
         config.gateway_cookie_secure,
         request.state.tenant_id,
-        session_auth_time(request),
-        session_identity(request),
+        session_signed_in(request),
     )
     return _session_response(user)
 
@@ -394,15 +414,25 @@ def _not_all_ended(failed: int, end_session_url: str | None) -> JSONResponse:
 async def logout(
     request: Request,
     response: Response,
+    session: Annotated[AsyncSession, Depends(get_system_session)],
     config: Annotated[SwitchConfig, Depends(get_config)],
     identity_sessions: Annotated[IdentitySessions, Depends(get_identity_sessions)],
 ) -> SignOutResponse:
-    """Sign this browser out. A session that stood on a WorkOS AuthKit
-    session ends it too: it is marked ended here, so no copy of the cookie
-    stands, and the answer's `end_session_url` sends the browser to WorkOS
-    to end it there, as signing out of any application sharing it does.
-    Read with the cookie's signature checked and its expiry not, so an
-    expired cookie still ends what it stood on."""
+    """Sign out of this session: clear this browser's cookie, and refuse
+    every copy of it from now on, wherever it was copied to. The account's
+    other sessions are left alone; `/auth/sessions/revoke` ends them all.
+
+    Takes no session, so a client holding an expired or broken cookie can
+    always clear it, and `get_system_session` because a session belongs to no
+    workspace: the revocation is one global row (`revoked_sessions`).
+
+    A session that stood on a WorkOS AuthKit session ends that too: it is
+    marked ended here, and the answer's `end_session_url` sends the browser
+    to WorkOS to end it there, as signing out of any application sharing it
+    does. Read with the cookie's signature checked and its expiry not, so an
+    expired cookie still ends what it stood on.
+    """
+    await sign_out_session(session, request, config)
     end_session_url: str | None = None
     payload = signed_claims(request, config.keyring)
     identity_session = None if payload is None else identity_session_of(payload)
@@ -547,12 +577,28 @@ async def me(
     return _session_response(user)
 
 
+def _account_label(
+    collab_lifecycle: CollaborationBridgeLifecycleService, identity: ExternalUser
+) -> KnownUserLabel:
+    """How a linked account is named: as its running bridge names it, or by
+    its stored name, a handle, while the bridge is stopped."""
+    adapter = collab_lifecycle.get_adapter(identity.bridge_id)
+    if adapter is None:
+        return KnownUserLabel(display_name=identity.external_username, has_handle=True)
+    return adapter.known_user_label(
+        identity.external_user_id, identity.external_username
+    )
+
+
 @router.get("/auth/me/identities")
 async def my_identities(
     session: Annotated[AsyncSession, Depends(get_session)],
     external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
     bridge_store: Annotated[CollaborationBridgeStore, Depends(get_bridge_store)],
     user: Annotated[User, Depends(get_current_user)],
+    collab_lifecycle: Annotated[
+        CollaborationBridgeLifecycleService, Depends(get_collab_lifecycle)
+    ],
 ) -> list[LinkedIdentity]:
     """The messaging-app accounts this user has claimed (CHOO-2137).
 
@@ -567,6 +613,7 @@ async def my_identities(
         bridge = await bridge_store.get(session, identity.bridge_id)
         if bridge is None:
             continue
+        label = _account_label(collab_lifecycle, identity)
         linked.append(
             LinkedIdentity(
                 id=identity.id,
@@ -575,6 +622,8 @@ async def my_identities(
                 bridge_type=bridge.type,
                 external_user_id=identity.external_user_id,
                 external_username=identity.external_username,
+                external_display_name=label.display_name,
+                has_handle=label.has_handle,
                 verified=claim.verified_at is not None,
                 linked_at=claim.created_at,
                 awaiting_confirmation=await external_user_store.get_link_request(
@@ -593,6 +642,9 @@ async def my_pending_identities(
     bridge_store: Annotated[CollaborationBridgeStore, Depends(get_bridge_store)],
     user_store: Annotated[UserStore, Depends(get_user_store)],
     user: Annotated[User, Depends(get_current_user)],
+    collab_lifecycle: Annotated[
+        CollaborationBridgeLifecycleService, Depends(get_collab_lifecycle)
+    ],
 ) -> list[PendingIdentity]:
     """The messaging-app accounts waiting to confirm a link to this user
     (CHOO-3881), which count for nothing until they do."""
@@ -609,6 +661,7 @@ async def my_pending_identities(
             if requested_by is not None and requested_by != user.id
             else None
         )
+        label = _account_label(collab_lifecycle, identity)
         pending.append(
             PendingIdentity(
                 id=identity.id,
@@ -617,6 +670,8 @@ async def my_pending_identities(
                 bridge_type=bridge.type,
                 external_user_id=identity.external_user_id,
                 external_username=identity.external_username,
+                external_display_name=label.display_name,
+                has_handle=label.has_handle,
                 requested_by_name=requester.name if requester is not None else None,
                 code_expires_at=request.code_expires_at,
             )
@@ -946,8 +1001,7 @@ async def change_password(
         config.keyring,
         config.gateway_cookie_secure,
         request.state.tenant_id,
-        session_auth_time(request),
-        session_identity(request),
+        session_signed_in(request),
     )
     return {"ok": True}
 
@@ -1176,6 +1230,34 @@ async def end_user_sessions(
         return answer
     if user_id == admin.id:
         response.delete_cookie("switch_auth", path="/")
+    return {"ok": True}
+
+
+@router.delete("/users/{user_id}/sign-in-lock")
+async def clear_sign_in_lock(
+    user_id: str,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    admin: Annotated[User, Depends(require_admin)],
+    user_store: Annotated[UserStore, Depends(get_user_store)],
+) -> dict[str, bool]:
+    """The deployment operator lets someone locked out by failed password
+    sign-ins try again at once, rather than wait the lock out
+    (`gateway/login_limits.py`). Clears the count on the account's email
+    address only: a lock on the client address they sign in from stays until
+    it runs out. Recorded in the server's audit log."""
+    target = await user_store.get(session, user_id)
+    if target is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    await clear_login_failures(session, target.email)
+    await record_server_audit_event(
+        session,
+        actor_user_id=admin.id,
+        action=ServerAuditAction.USER_SIGN_IN_LOCK_CLEARED,
+        target_type="user",
+        target_id=user_id,
+        details=None,
+    )
+    await session.commit()
     return {"ok": True}
 
 

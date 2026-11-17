@@ -997,10 +997,6 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
   value: "false"
 {{- end }}
 {{- end }}
-{{- with .Values.switchCore.signIn.trustedProxies }}
-- name: GATEWAY_TRUSTED_PROXIES
-  value: {{ toJson . | quote }}
-{{- end }}
 - name: GATEWAY_SIGNUP_ENABLED
   value: {{ .Values.switchCore.signupEnabled | quote }}
 - name: GATEWAY_SIGNUP_MAX_PER_HOUR

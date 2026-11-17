@@ -8,6 +8,7 @@ never comes back, and the Test button asks a stub decision service.
 from __future__ import annotations
 
 import json
+import secrets
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -144,6 +145,7 @@ def _as(app: FastAPI, user: User, tenant_id: str = TENANT_ZERO_ID) -> httpx.Asyn
                 tenant_id,
                 session_version=0,
                 auth_time=datetime.now(UTC),
+                session_id=secrets.token_urlsafe(16),
                 identity_session=None,
             )
         },

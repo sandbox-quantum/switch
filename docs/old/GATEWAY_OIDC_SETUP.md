@@ -245,7 +245,8 @@ the WorkOS environment shares. So:
   comes back to Switch's sign-in page;
 - a session ended at WorkOS (signed out of elsewhere, revoked, a password
   reset, or the environment's session policy) ends the Switch session on it
-  within about five minutes. Switch asks WorkOS about each session at most
+  within about five minutes, and the browser sessions Switch Console opened
+  from it. Switch asks WorkOS about each session at most
   every five minutes, while it is in use. When WorkOS cannot be reached, the
   session is kept and asked about again later, never ended on a guess.
 - An impersonated sign-in (WorkOS's support impersonation) is refused: Switch
@@ -267,7 +268,6 @@ unaffected.
 | `GATEWAY_OIDC_PROVIDER_LABEL` | no | The button's label, where the sign-in page shows one (with password login also on). |
 | `GATEWAY_OIDC_REQUIRE_EMAIL_VERIFIED` | no | As above. AuthKit verifies addresses itself, so leave it on. |
 | `GATEWAY_PASSWORD_LOGIN_ENABLED` | no | Set `false` and the sign-in page hands straight to AuthKit. |
-| `GATEWAY_TRUSTED_PROXIES` | no | The proxies in front of Switch whose `X-Forwarded-For` is believed, as a JSON list of addresses or CIDR ranges. Switch tells WorkOS the address a sign-in came from only when it can know it, which WorkOS's bot protection may need. Without it, no address is sent rather than the proxy's. |
 | `WORKOS_API_URL` | no | Defaults to `https://api.workos.com`. |
 
 `GATEWAY_OIDC_ISSUER_URL`, `GATEWAY_OIDC_CLIENT_ID`,
@@ -279,9 +279,14 @@ single sign-on).
 
 In the Helm chart: `switchCore.oidc.enabled: true`,
 `switchCore.signIn.provider: workos`, `switchCore.signIn.workosClientId`,
-`switchCore.oidc.redirectUrl`, `secrets.workosApiKey`, and
-`switchCore.signIn.trustedProxies`. The render fails on the combinations the
-server refuses.
+`switchCore.oidc.redirectUrl` and `secrets.workosApiKey`. The render fails on
+the combinations the server refuses.
+
+Switch tells WorkOS the address each sign-in came from, which WorkOS's bot
+protection may need. That is the client's address as uvicorn resolved it:
+behind a proxy, set `FORWARDED_ALLOW_IPS` to the proxy's address and have the
+proxy send `X-Forwarded-For`, as the password sign-in limits already need.
+Until then Switch sends no address, rather than the proxy's.
 
 ### Setting up the AuthKit application
 

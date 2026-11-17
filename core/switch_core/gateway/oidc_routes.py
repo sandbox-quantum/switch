@@ -3,7 +3,6 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
-import ipaddress
 import json
 import logging
 import re
@@ -38,6 +37,7 @@ from switch_core.db.stores.user_store import (
 from switch_core.gateway.auth import (
     initial_tenant_claim,
     set_session_cookie,
+    signed_in_now,
     signup_refused_by_edge,
 )
 from switch_core.gateway.dependencies import (
@@ -48,6 +48,7 @@ from switch_core.gateway.dependencies import (
     get_system_session,
     get_user_store,
 )
+from switch_core.gateway.login_limits import client_address
 from switch_core.organization_directory import (
     DirectoryUnavailable,
     OrganizationDirectory,
@@ -469,39 +470,13 @@ def _authkit_login(
     )
 
 
-def _client_ip(request: Request, config: SwitchConfig) -> str | None:
-    """The address a sign-in came from, as WorkOS's bot protection wants it:
-    the nearest `X-Forwarded-For` hop that is not one of the trusted proxies,
-    when the request came through one; None when the proxies are not named,
-    rather than the load balancer's address."""
-    if not config.gateway_trusted_proxies or request.client is None:
-        return None
-    trusted = [
-        ipaddress.ip_network(entry, strict=False)
-        for entry in config.gateway_trusted_proxies
-    ]
-
-    def is_trusted(address: str) -> bool:
-        try:
-            ip = ipaddress.ip_address(address.strip())
-        except ValueError:
-            return False
-        return any(ip in network for network in trusted)
-
-    if not is_trusted(request.client.host):
-        return request.client.host
-    hops = [
-        hop.strip()
-        for hop in request.headers.get("x-forwarded-for", "").split(",")
-        if hop.strip()
-    ]
-    for hop in reversed(hops):
-        if not is_trusted(hop):
-            try:
-                return str(ipaddress.ip_address(hop))
-            except ValueError:
-                return None
-    return None
+def _client_ip(request: Request) -> str | None:
+    """The address a sign-in came from, for WorkOS's bot protection: the
+    client's own, as uvicorn resolved it behind the proxies it trusts
+    (`FORWARDED_ALLOW_IPS`), or None rather than a proxy's
+    (`login_limits.client_address`)."""
+    address = client_address(request)
+    return None if address is None else str(address)
 
 
 async def _first_organization(organizations: list[AuthKitOrganization]) -> str | None:
@@ -549,7 +524,7 @@ async def _authkit_identity(
         signed_in = await _authkit_of(request).authenticate(
             code=code,
             verifier=str(kept["verifier"]),
-            ip_address=_client_ip(request, config),
+            ip_address=_client_ip(request),
             user_agent=request.headers.get("user-agent"),
             choose_organization=_first_organization,
         )
@@ -856,8 +831,7 @@ async def oidc_callback(
         config.keyring,
         config.gateway_cookie_secure,
         await initial_tenant_claim(session_factory, user_store, user),
-        datetime.now(UTC),
-        identity_session,
+        signed_in_now(identity_session),
     )
     return response
 
@@ -903,7 +877,6 @@ async def oidc_exchange(
         config.keyring,
         config.gateway_cookie_secure,
         await initial_tenant_claim(session_factory, user_store, user),
-        datetime.now(UTC),
-        identity_session if isinstance(identity_session, str) else None,
+        signed_in_now(identity_session if isinstance(identity_session, str) else None),
     )
     return response

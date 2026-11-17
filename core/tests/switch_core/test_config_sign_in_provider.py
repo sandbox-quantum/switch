@@ -72,19 +72,3 @@ def test_authkit_sign_in_refuses_login_options() -> None:
 def test_password_sign_up_stays_off_under_authkit() -> None:
     config = _config(**AUTHKIT, gateway_signup_enabled=True)
     assert not config.gateway_signup_open
-
-
-def test_trusted_proxies_take_addresses_and_ranges() -> None:
-    config = _config(
-        gateway_trusted_proxies=["10.0.0.0/8", "192.0.2.7", "2001:db8::/32"]
-    )
-    assert config.gateway_trusted_proxies == [
-        "10.0.0.0/8",
-        "192.0.2.7",
-        "2001:db8::/32",
-    ]
-
-
-def test_a_trusted_proxy_that_is_not_an_address_is_refused() -> None:
-    with pytest.raises(ValidationError, match="GATEWAY_TRUSTED_PROXIES"):
-        _config(gateway_trusted_proxies=["ingress.example.test"])

@@ -6,6 +6,7 @@ Against a real database, with the fakes `test_account_deletion.py` and
 
 from __future__ import annotations
 
+import secrets
 import uuid
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -114,6 +115,7 @@ def _client(
         tenant_id,
         session_version=0,
         auth_time=datetime.now(UTC),
+        session_id=secrets.token_urlsafe(16),
         identity_session=None,
     )
     return httpx.AsyncClient(
@@ -307,6 +309,7 @@ async def test_its_sign_ins_at_workos_end_with_it(
         solo,
         session_version=0,
         auth_time=datetime.now(UTC),
+        session_id=secrets.token_urlsafe(16),
         identity_session=here,
     )
     async with httpx.AsyncClient(

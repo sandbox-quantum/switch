@@ -638,6 +638,11 @@ export type RemoteAgentRoom = {
   status: string;
   /** The room-scoped role the agent currently holds, or null. */
   roomRole: string | null;
+  /**
+   * Whether the agent has had a turn in this room: someone addressed it there
+   * and it took the message up. False from a server that does not say.
+   */
+  answeredHere?: boolean;
 };
 
 /** A room group on a server (mirrors the gateway `RoomGroupDetail`). Used to
@@ -701,6 +706,14 @@ export type RemoteBridge = {
    */
   directorySearchSupported: boolean;
   /**
+   * What the account search can find a person by on this connection, as its
+   * placeholder ("Your name or handle"): only what really matches, so Slack
+   * offers email only when the app may read addresses. A server predating
+   * the field gets `DEFAULT_DIRECTORY_SEARCH_HINT`, which every platform
+   * matches.
+   */
+  directorySearchHint: string;
+  /**
    * Plain-text description of something only the platform's side can fix —
    * the organisation's admin withdrew approval, or blocked the app outright.
    * Shown as a visible warning on the connection regardless of its type. Null
@@ -748,6 +761,13 @@ export type RemoteBridge = {
   /** That address, or null where the connection takes none or the server has
    * no public origin configured (`MESSAGING_PUBLIC_URL`) to build it from. */
   webhookUrl: string | null;
+  /**
+   * The commands a person is told to type here, by command name
+   * (`invite-agent`, `link-account`), spelled as this platform takes them,
+   * with `{agent}` and `{code}` to fill in. Read through `typedCommand`.
+   * Empty on a server predating the field.
+   */
+  commands: Record<string, string>;
 };
 
 /**
@@ -985,6 +1005,26 @@ export type TrustSettings = {
 /** Outcome of loading Switch Trust's settings (`GET /trust-settings`).
  * Admin-only (a deployment operator, not a workspace admin), so a signed-in
  * non-operator gets `forbidden` rather than an empty form. */
+/** The Switch Trust policy that checks a workspace's messages, as anyone in
+ * it may read it (`GET /workspace/guardrails`). Its organization's admins
+ * connect it; nobody else changes it. */
+export type WorkspaceGuardrails = {
+  /** Something checks the workspace's messages. */
+  checking: boolean;
+  policyId: string | null;
+  /** Switch Trust's name for the policy, when it gave one. */
+  policyName: string | null;
+  /** Where the policy is shown on Switch Trust, when Switch can link there. */
+  policyUrl: string | null;
+};
+
+export type FetchWorkspaceGuardrailsResult =
+  | { kind: 'loaded'; guardrails: WorkspaceGuardrails }
+  /** The server predates per-organization guardrails. */
+  | { kind: 'unsupported' }
+  | { kind: 'unauthenticated' }
+  | { kind: 'error'; message: string };
+
 export type FetchTrustSettingsResult =
   | { kind: 'loaded'; settings: TrustSettings }
   /** A server that has each organization set its own policy, which no longer
@@ -1167,6 +1207,10 @@ export type IdentityClaimant = {
   verified: boolean;
 };
 
+/** The account-search placeholder for a server that does not say its own:
+ * what every platform's search matches. */
+export const DEFAULT_DIRECTORY_SEARCH_HINT = 'Your name or handle';
+
 /**
  * Someone found in a messaging platform's own user directory (mirrors the
  * gateway `DirectoryUserSummary`).
@@ -1181,6 +1225,10 @@ export type BridgeDirectoryUser = {
   username: string;
   displayName: string;
   email: string | null;
+  /** False when `username` is a handle Switch made up for someone the
+   * platform gave none (a Telegram account without a username), so it is not
+   * shown as theirs. True for a server predating the field. */
+  hasHandle: boolean;
   /** The `ExternalUser` row id when Switch has already seen this person, else
    * null. Present rows are reused on claim rather than duplicated. */
   knownExternalUserId: string | null;
@@ -1260,6 +1308,12 @@ export type LinkedIdentity = {
   bridgeType: string;
   externalUserId: string;
   externalUsername: string;
+  /** How to name the account when `externalUsername` is a handle Switch made
+   * up for someone the platform gave none (a Telegram account without a
+   * username): their name as the platform shows it, with `hasHandle` false.
+   * Both absent from a server predating them, which means a real handle. */
+  externalDisplayName?: string;
+  hasHandle?: boolean;
   /** False for a link made before links had to be confirmed: it works, and its
    * owner is asked to confirm it with a code. */
   verified: boolean;
@@ -1278,6 +1332,12 @@ export type PendingIdentity = {
   bridgeType: string;
   externalUserId: string;
   externalUsername: string;
+  /** How to name the account when `externalUsername` is a handle Switch made
+   * up for someone the platform gave none (a Telegram account without a
+   * username): their name as the platform shows it, with `hasHandle` false.
+   * Both absent from a server predating them, which means a real handle. */
+  externalDisplayName?: string;
+  hasHandle?: boolean;
   /** Who started the link, when it was someone else (an admin). */
   requestedByName: string | null;
   /** When the last code issued stops working; null when none has been. */
@@ -1545,6 +1605,8 @@ export type BridgePerson = {
   linkedUserIds: string[];
   /** The first of those users' names, to show beside the username; null when nobody has. */
   linkedName: string | null;
+  /** When Switch first saw the account; null on a server predating the field. */
+  firstSeenAt: string | null;
 };
 
 /** A bridged room's channel, as the New room dialog asks for it. */

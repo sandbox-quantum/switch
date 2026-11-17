@@ -53,6 +53,25 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **Switch Console can open a dashboard page in a browser that is already
+  signed in.** `POST /gateway/auth/handoff` gives a signed-in session a
+  one-time sign-in link to a dashboard page, good once for 60 seconds, with
+  its code in the link's fragment so it reaches no server log; a person can
+  make 20 a minute, and the 429 for one more says in `Retry-After` when the
+  next will be let through. The dashboard's new `/auth/handoff` page reads it,
+  asks `POST /gateway/auth/handoff/peek` whose link it is, and redeems it with
+  `POST /gateway/auth/handoff/redeem` for a session of the browser's own: the
+  same account and workspace, and the minting session's sign-in time, so it
+  never outlives that session. Only a browser already signed in as the same
+  person goes straight through: any other asks first, one with no session
+  included, so a link someone made for their own account can't sign you into
+  it unasked. A link that was used or has expired, or whose session was signed
+  out or ended everywhere since, is refused with 410. Signing out of the
+  session that made a link signs out the browser sessions it opened; signing
+  out in the browser leaves the other session alone. Each redeemed link is
+  recorded in the workspace's audit log as `auth.browser_handoff`. The page a
+  link opens must be one of the dashboard's own. The new request bodies raise
+  the `gateway-api` revision to 5.
 - **A room's page in the web dashboard says who owns it and where you
   stand.** Room info names the owner, or says the room has none, and a "Your
   access" line says whether you own the room, administer the workspace or
@@ -463,16 +482,12 @@ version of their own to them without also giving them a release of their own.
   application in the environment signs in to Switch without signing in again.
   Signing out of Switch, or out of every device, ends that session at WorkOS
   too. A session ended at WorkOS ends the Switch session on it within about
-  five minutes. Signing out elsewhere, a revoke, a password reset and the
+  five minutes, and the browser sessions Switch Console opened from it. Signing out elsewhere, a revoke, a password reset and the
   environment's session policy all count. An impersonated sign-in is refused.
   The routes are unchanged, so Switch Console signs in as before. In the Helm
   chart, `switchCore.signIn.provider: workos` with `switchCore.oidc.enabled`.
   The AuthKit application's setup, its session policy and moving from a WorkOS
   Connect application are in `docs/old/GATEWAY_OIDC_SETUP.md`.
-- **`GATEWAY_TRUSTED_PROXIES`.** The proxies whose `X-Forwarded-For` the
-  server believes, so it can tell WorkOS where a sign-in came from
-  (`switchCore.signIn.trustedProxies` in the Helm chart). Without it, no
-  address is sent rather than the proxy's.
 - **`switch-link-workos` can move a server between sign-ins and
   environments.** `accounts --from-issuer <issuer>` links each account that
   signs in under the earlier sign-in to the same WorkOS user, copying the
@@ -481,6 +496,17 @@ version of their own to them without also giving them a release of their own.
   organization, for a move to another WorkOS environment.
 
 #### Changed
+- **The Discord connect form asks for the Server ID.** Discord's own app
+  calls the guild id a Server ID, and that is what you copy from the server
+  icon; the setting's key stays `guild_id`.
+- **The dashboard's budget page is called Usage & budget,** and its Add
+  budget button no longer squeezes until its label wraps out of it on a
+  narrower window. Back to workspace, in Organization settings and Platform,
+  returns to the page you came from rather than always to home.
+- **Auto-route's messages send workspace admins to Settings, not Admin.**
+  Where a room says auto-route needs a decision service, or that the
+  workspace turned it off, it points at Switch Console → Settings → Decision
+  routing, where the page now lives.
 - **Switch Trust guardrails are set per organization instead of once for
   the whole server.** Each organization's admins connect its own policy, with
   a policy ID and an API key, under Organization settings › Guardrails. Switch
@@ -1130,6 +1156,70 @@ version of their own to them without also giving them a release of their own.
   it, and an organization whose members come from a WorkOS directory keeps it a
   member however the directory lists it, recording the conflict in its audit
   log.
+- **Password sign-in locks out after repeated failures.** Ten failed password
+  sign-ins with one email address within 15 minutes lock that address out for
+  15 minutes; after the first three failures each further one makes the next
+  attempt wait (1, 2, 4 seconds and so on). A locked-out sign-in is answered
+  429 with `Retry-After` and a message saying when to try again, without its
+  password being checked, and a successful sign-in clears the count. An email
+  address with no account locks out exactly as one with an account does, so
+  the lock says nothing about which addresses are registered. One client
+  address may fail 50 times in the window before it is locked out too, as many
+  people can share one. The numbers are `GATEWAY_LOGIN_MAX_FAILURES`,
+  `GATEWAY_LOGIN_MAX_FAILURES_PER_ADDRESS`,
+  `GATEWAY_LOGIN_FAILURE_WINDOW_MINUTES` and `GATEWAY_LOGIN_LOCK_MINUTES`. The
+  counts are kept in Postgres (a new `auth_attempts` table, holding digests
+  rather than emails or addresses; the same migration adds
+  `revoked_sessions`), so they hold across replicas. The operator can lift an
+  account's lock at once with `DELETE /gateway/users/{user_id}/sign-in-lock`,
+  recorded in the server's audit log. Since failures from anywhere count,
+  anyone who knows a person's email can pause that person's password sign-in
+  for `GATEWAY_LOGIN_LOCK_MINUTES` by failing `GATEWAY_LOGIN_MAX_FAILURES`
+  times with it, and keep it paused by repeating that. This is the price of
+  stopping guessing spread across many addresses, and it is deliberate: the
+  lock never ends a session already signed in, never stops that session
+  refreshing, and never refuses single sign-on. To make such a lock cheaper to
+  sit out and costlier to keep up, raise `GATEWAY_LOGIN_MAX_FAILURES` or
+  shorten `GATEWAY_LOGIN_LOCK_MINUTES`; that also allows more guesses at a
+  password. A lock-out's 429 now says that password sign-in for this email
+  address (or from this network) is paused, when to try again, that single
+  sign-on still works where the server offers it, and, for an email, that an
+  administrator can lift the pause sooner. It reads the same for an email with
+  an account as for one without.
+- **Sign-in lock-outs are counted.** `switch.auth.sign_in_lockouts` counts
+  each password sign-in lock-out by `limit` (`email` or `client_address`),
+  never the email or the address, once the attempt that reached the limit has
+  failed. The main dashboard has a panel for it. Email lock-outs that keep
+  arriving with no `client_address` lock-outs beside them look like someone
+  keeping one person out on purpose.
+- **Behind a proxy, the per-address limits need the proxy trusted.** The
+  client address is the one uvicorn resolves: its peer, or the address a
+  proxy listed in `FORWARDED_ALLOW_IPS` forwarded for in `X-Forwarded-For`.
+  A private, loopback or link-local address is taken to be a proxy's and is
+  not counted, with a warning in the log saying so, since it stands for every
+  client behind it; only the per-account lock and the deployment-wide sign-up
+  cap then apply. The gateway's bundled nginx sends `X-Real-IP`, which
+  uvicorn does not read, so set `FORWARDED_ALLOW_IPS` and have your proxy send
+  `X-Forwarded-For` to count each client's address.
+- **A sign-in takes as long for an email with no account as for one with an
+  account.** Password sign-in now always checks one password hash, against a
+  stand-in where there is no account or the account has no password, so its
+  timing no longer says whether an email is registered.
+- **One client can no longer use up everyone's sign-ups.** Self sign-up is
+  limited per client address too, to 5 accounts an hour
+  (`GATEWAY_SIGNUP_MAX_PER_HOUR_PER_ADDRESS`), in front of the
+  deployment-wide `GATEWAY_SIGNUP_MAX_PER_HOUR`, which stays as a backstop. A
+  client over its limit is answered 429 with `Retry-After`, reported as
+  `signup_refused` with reason `rate_limited`.
+- **Signing out ends that session everywhere its cookie was copied.**
+  Signing out only cleared the browser's cookie, so a copy of it stayed
+  valid for up to a day. Each session now has an id that every refresh of it
+  keeps, and signing out (`POST /gateway/auth/logout`) refuses every copy of
+  that session from then on, while the person's other sessions stay signed
+  in. "Sign out of all devices" still ends them all. A session signed in
+  before this release can't be signed out of on its own until it is next
+  refreshed, which gives it an id; until then signing out clears the cookie
+  as before.
 
 #### Added
 - **The dashboard's new layout, behind the `gateway_v2` flag.** Overview,
@@ -4311,6 +4401,26 @@ version of their own to them without also giving them a release of their own.
   A machine cannot be given a Mistral Vibe login from Console yet.
 
 #### Changed
+- **Dashboard pages open in your default browser, already signed in.**
+  Opening a room, an agent or a settings page in the dashboard used to open a
+  Switch Console window for the server Console runs, and your browser, signed
+  out, for any other. Every page now opens in your default browser, signed in
+  as the account Console is signed in with, in the same workspace. Console's
+  own session never leaves Console: it asks the server for a one-time sign-in
+  link, good for a minute, which the browser trades for a session of its own.
+  Signing out of Console signs those browsers out too. Where Console isn't
+  signed in, or the server is older than the sign-in link, the page opens
+  signed out as before. The sessions the old Console windows kept, those of
+  servers you have since removed included, are cleared once, at the next start.
+- **The Admin pages are in Settings.** The Admin item is gone from the
+  sidebar. Workspace admins find Connectors and Decision routing in Settings,
+  after Agent providers, and every workspace admin sees Guardrails there:
+  which Switch Trust policy checks the workspace, or that none does, with the
+  way to the workspace's Guardrails page in the dashboard, or for an
+  organization admin to Organization settings. Each page says under its title
+  what your role lets you do there. Messaging apps is one page for everyone,
+  with Connect and each app's settings for admins and without the tooltips
+  and second heading. Links that opened Admin open the matching Settings page.
 - **Admin › Switch Trust points to the organization's guardrails on a server
   that sets them per organization.** Such a server no longer has a
   server-wide policy to edit, so the form gives way to its note and a button
@@ -4383,6 +4493,15 @@ version of their own to them without also giving them a release of their own.
   agent"; it was the only place Console showed that name.
 
 #### Fixed
+- **Switch Console no longer locks out a local server's admin by signing in
+  again and again.** When the session with a server it runs had ended, every
+  part of the app that needed it signed in with the stored password at once,
+  and a refused password was retried on every call, so the server paused
+  password sign-in for its only admin within a minute. One sign-in now
+  answers every call waiting on it, and once the server refuses the password
+  or pauses sign-in, Console waits five minutes before trying it again. A
+  server that didn't answer is tried again at once. A paused sign-in shows
+  the server's own sentence rather than calling it a problem on the server.
 - **Connectors: turn a service on before you set it up.** A connector whose
   app is not set up, and which is off in the workspace, now shows "Turn on" in
   Discover. "Set up" shows after it is on. In Admin → Connectors, the switch of

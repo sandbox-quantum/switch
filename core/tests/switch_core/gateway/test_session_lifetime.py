@@ -8,6 +8,7 @@ end. Real HTTP against real Postgres, like `test_session_version.py`.
 
 from __future__ import annotations
 
+import secrets
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
@@ -30,6 +31,7 @@ from switch_core.gateway.auth import (
 )
 from switch_core.gateway.auth_routes import router
 from switch_core.keys import Keyring, Purpose
+from tests.switch_core.gateway.login_limit_defaults import LOGIN_LIMIT_DEFAULTS
 
 _SECRET = "unit-test-jwt-key-unit-test-jwt-key-unit-test"  # gitleaks:allow
 _KEYRING = Keyring.parse("test:" + _SECRET, legacy_secret=None)
@@ -54,6 +56,7 @@ def _app(session_factory: async_sessionmaker[AsyncSession]) -> FastAPI:
         gateway_cookie_secure=False,
         gateway_password_login_enabled=True,
         gateway_tenant_choice_enabled=False,
+        **LOGIN_LIMIT_DEFAULTS,
     )
     return app
 
@@ -88,6 +91,7 @@ def _session_signed_in(
             None,
             session_version=0,
             auth_time=datetime.now(UTC),
+            session_id=secrets.token_urlsafe(16),
             identity_session=None,
         ),
         _KEYRING,

@@ -979,6 +979,7 @@ def _session_of(chats: _Harness, user: User) -> Callable[[], Awaitable[bool]]:
             UserStore(),
             user.id,
             session_version,
+            "stream-session",
             None,
         )
 

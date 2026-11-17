@@ -1,4 +1,3 @@
-import ipaddress
 import os
 import re
 import ssl
@@ -359,11 +358,6 @@ class SwitchConfig(BaseSettings):
     # (`gateway/workos_authkit.py`). The routes, the redirect URL setting, the
     # button label and the email-verified rule are the same for both.
     gateway_sign_in_provider: Literal["oidc", "workos"] = "oidc"
-    # The proxies in front of the server whose `X-Forwarded-For` is believed,
-    # as a JSON list of addresses or CIDR ranges. Only used to tell WorkOS the
-    # address a sign-in came from, which its bot protection may need. Without
-    # it the gateway sends none rather than its load balancer's.
-    gateway_trusted_proxies: list[str] = []
     # Lets the password login path be disabled (OIDC-only) without code changes.
     gateway_password_login_enabled: bool = True
     # Open self sign-up with email and password: anyone who can reach the
@@ -375,6 +369,33 @@ class SwitchConfig(BaseSettings):
     # OIDC first sign-in alike), read from the users table so it holds across
     # replicas. Sign-up is refused once the count reaches this.
     gateway_signup_max_per_hour: int = Field(default=20, ge=1)
+    # Sign-ups from one client address in an hour, in front of the cap above,
+    # so that one client cannot spend everyone's (`gateway/login_limits.py`).
+    gateway_signup_max_per_hour_per_address: int = Field(default=5, ge=1)
+    # Password sign-in guessing (`gateway/login_limits.py`). Failures with one
+    # email address, whether or not an account has it, lock it out for
+    # `gateway_login_lock_minutes` once there are this many within the window,
+    # and the few before that make each next attempt wait a little longer. A
+    # client address may fail more often, as many people can share one. A
+    # success clears the email's count; the operator can clear it too
+    # (`DELETE /users/{id}/sign-in-lock`). Kept in the `auth_attempts` table,
+    # so the counts hold across replicas. Behind a proxy, client addresses are
+    # counted only once uvicorn trusts the proxy (`FORWARDED_ALLOW_IPS`).
+    #
+    # The per-email lock is a trade-off, made on purpose: since failures from
+    # anywhere count, anyone who knows a person's email can pause that
+    # person's password sign-in for `gateway_login_lock_minutes` by failing
+    # `gateway_login_max_failures` times with it, and keep it paused by
+    # repeating that. It never touches their sessions or single sign-on.
+    # Raising `gateway_login_max_failures` or shortening
+    # `gateway_login_lock_minutes` makes such a lock cheaper to sit out and
+    # costlier to keep up, at the price of more guesses at a password;
+    # lowering them does the reverse. `switch.auth.sign_in_lockouts` counts
+    # the lock-outs, so a run of them aimed at one person shows.
+    gateway_login_max_failures: int = Field(default=10, ge=1)
+    gateway_login_max_failures_per_address: int = Field(default=50, ge=1)
+    gateway_login_failure_window_minutes: int = Field(default=15, ge=1)
+    gateway_login_lock_minutes: int = Field(default=15, ge=1)
     # The name of a request header that a trusted edge in front of the server
     # (prod's WAF) adds to requests from countries where new accounts are not
     # offered. A request carrying it, with any value (empty included), may not
@@ -1816,18 +1837,6 @@ class SwitchConfig(BaseSettings):
                 "handles (email verification, multi-factor sign-in, an "
                 "organization's own single sign-on)."
             )
-        return self
-
-    @model_validator(mode="after")
-    def _validate_gateway_trusted_proxies(self) -> "SwitchConfig":
-        for entry in self.gateway_trusted_proxies:
-            try:
-                ipaddress.ip_network(entry, strict=False)
-            except ValueError as error:
-                raise ValueError(
-                    "GATEWAY_TRUSTED_PROXIES takes addresses or CIDR ranges, "
-                    f"got {entry!r}: {error}"
-                ) from error
         return self
 
     @model_validator(mode="after")

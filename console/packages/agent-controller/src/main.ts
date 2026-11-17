@@ -639,6 +639,9 @@ async function runCommand(args: string[]): Promise<number> {
             now: Date.now,
           })
         : null;
+    // Switch Console starts its controllers again when they end on their own.
+    const supervised =
+      updatedBy === 'console' || isSupervised(separateUsers, values.launchd === true, process.env);
     if (controllerId !== undefined && values.server !== undefined) {
       const previousServer = store.identity()?.server;
       const adopted = adoptIdentity(
@@ -703,6 +706,7 @@ async function runCommand(args: string[]): Promise<number> {
         version: VERSION,
         updatedBy,
         selfUpdate,
+        supervised,
         now: Date.now,
         random: Math.random,
         timing: DEFAULT_TIMING,
