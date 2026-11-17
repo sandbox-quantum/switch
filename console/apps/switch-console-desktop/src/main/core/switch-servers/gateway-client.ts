@@ -2625,6 +2625,8 @@ type ExternalUserSummaryJson = {
   external_user_id: string;
   external_username: string;
   first_seen_at?: string;
+  display_name?: string | null;
+  has_handle?: boolean;
   claimed_by?: IdentityClaimantJson[];
   link_request?: { user_id: string; code: LinkCodeJson | null } | null;
 };
@@ -4102,6 +4104,8 @@ export async function fetchBridgePeople(
         linkedUserIds: linked.map((claim) => claim.user_id),
         linkedName: linked[0]?.user_name ?? null,
         firstSeenAt: user.first_seen_at ?? null,
+        ...(user.display_name ? { displayName: user.display_name } : {}),
+        ...(user.has_handle === false ? { hasHandle: false } : {}),
       };
     })
     .sort((a, b) => a.username.localeCompare(b.username));

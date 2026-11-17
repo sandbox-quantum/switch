@@ -1064,6 +1064,13 @@ class ExternalUserSummary(BaseModel):
     # When Switch first saw this account, so a client waiting for someone to
     # say hello to the bot can tell a new arrival from the people it knew.
     first_seen_at: str
+    # How to name the person, as the platform's adapter names them, and
+    # whether `external_username` is a handle of theirs. False where Switch
+    # made the handle up (a Telegram account with no username): show
+    # `display_name` alone, never `@external_username`. Left at the username
+    # where the bridge is not running to ask.
+    display_name: str | None = None
+    has_handle: bool = True
     # Everyone who has claimed this platform account. A list, not one user:
     # claiming is not exclusive, so an account shared by several Switch users
     # satisfies an owner rule for any of them.

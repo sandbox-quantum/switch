@@ -884,6 +884,38 @@ describe('switch-buddy setup cards', () => {
     await vi.waitFor(() => expect(el.textContent).toContain('Microsoft Teams is set up.'));
   });
 
+  it('(n) Telegram: someone with no username is named by their name, not a made-up handle', async () => {
+    listBridges.mockResolvedValue([telegram]);
+    listBridgePeople.mockResolvedValue([
+      {
+        username: 'MM_8270654669',
+        externalUserId: '8270654669',
+        linkedUserIds: [],
+        linkedName: null,
+        firstSeenAt: '2026-11-17T10:00:00Z',
+        displayName: 'M M',
+        hasHandle: false,
+      },
+    ]);
+    const el = await render();
+
+    await vi.waitFor(() => expect(el.textContent).toContain('Seen you as M M.'));
+    expect(el.textContent).not.toContain('MM_8270654669');
+  });
+
+  it('(n) Telegram: the one-tap add says to make the group first, since the picker cannot', async () => {
+    listBridges.mockResolvedValue([telegram]);
+    listMyIdentities.mockResolvedValue([
+      { bridgeId: 'b-4', externalUsername: 'ada', verified: true } as LinkedIdentity,
+    ]);
+    const el = await render();
+
+    await vi.waitFor(() =>
+      expect(el.textContent).toContain('First make a Telegram group with just you in it')
+    );
+    expect(findButton(el, 'Add the bot to a group')).toBeDefined();
+  });
+
   it('(o) Discord linked: continues in a private Discord channel, then opens it', async () => {
     listBridges.mockResolvedValue([discord]);
     listMyIdentities.mockResolvedValue([linked('b-5')]);

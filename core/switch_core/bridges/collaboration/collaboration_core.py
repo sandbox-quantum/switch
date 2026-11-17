@@ -222,6 +222,11 @@ _LOBBY_DEPRECATION_NOTICE = (
 )
 
 
+# How long a channel the app was just added to waits before saying it has no
+# agents: long enough for an invite sent with the add to arrive.
+NO_AGENTS_NOTICE_GRACE_SECONDS = 10.0
+
+
 def _no_agents_notice(
     slash_hint: str | None, *, replies_and_commands_only: bool
 ) -> str:
@@ -2194,6 +2199,7 @@ class CollaborationCore:
                 channel_type=join.channel_type,
                 channel_name=join.channel_name,
                 added_by_external_user_id=join.added_by_external_user_id,
+                app_joined=True,
             )
 
     async def _handle_channel_migrated(self, old_id: str, new_id: str) -> None:
@@ -2293,6 +2299,7 @@ class CollaborationCore:
         channel_name: str | None = None,
         added_by_external_user_id: str | None = None,
         inviting_an_agent: bool = False,
+        app_joined: bool = False,
     ) -> tuple[str, str] | None:
         # Callers hold the per-channel lock. Guard against provisioning a
         # duplicate room for a channel that is already (or is being) bridged:
@@ -2392,21 +2399,55 @@ class CollaborationCore:
             logger.warning(
                 "Auto-created room %s for channel %s has no agents", room.id, channel_id
             )
-            await self._adapter.admin_message(
-                channel_id,
-                _no_agents_notice(
-                    self._adapter.slash_invite_hint(),
-                    replies_and_commands_only=await self._adapter.sees_only_replies_and_commands(
-                        channel_id
-                    ),
-                ),
-                message_type=AdminMessageType.NO_AGENTS,
-            )
+            if app_joined:
+                # The app is often added by a link that invites an agent in the
+                # same breath (Telegram's startgroup), and the join arrives
+                # first: wait, and say nothing if the agent has come.
+                self._no_agents_notice_soon(room.id, channel_id)
+            else:
+                await self._post_no_agents_notice(channel_id)
 
         # Whoever is already in the channel is in the room from the start,
         # not only once they speak.
         self._sync_members_soon([channel_id])
         return (room.id, room.transport_room_id)
+
+    async def _post_no_agents_notice(self, channel_id: str) -> None:
+        await self._adapter.admin_message(
+            channel_id,
+            _no_agents_notice(
+                self._adapter.slash_invite_hint(),
+                replies_and_commands_only=await self._adapter.sees_only_replies_and_commands(
+                    channel_id
+                ),
+            ),
+            message_type=AdminMessageType.NO_AGENTS,
+        )
+
+    def _no_agents_notice_soon(self, room_id: str, channel_id: str) -> None:
+        """Post the no-agents notice after a grace, unless an agent came.
+
+        Kept with the member syncs so `stop` cancels it the same way."""
+        task = asyncio.create_task(self._run_no_agents_notice(room_id, channel_id))
+        self._member_sync_tasks.add(task)
+        task.add_done_callback(self._member_sync_tasks.discard)
+
+    async def _run_no_agents_notice(self, room_id: str, channel_id: str) -> None:
+        with no_tenant():
+            try:
+                await asyncio.sleep(NO_AGENTS_NOTICE_GRACE_SECONDS)
+                async with tenant_session(
+                    self._session_factory, self._bridge_tenant_id
+                ) as session:
+                    if await self._room_store.get_agent_ids(session, room_id):
+                        return
+                await self._post_no_agents_notice(channel_id)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception(
+                    "Could not post the no-agents notice in channel %s", channel_id
+                )
 
     async def _resolve_agents_for_channel(
         self, channel_id: str, channel_type: ChannelType
