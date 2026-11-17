@@ -6,7 +6,6 @@
 #   just e2e-fast                 the fast lane (no provider, no Console)
 #   just e2e-provider             the provider lane, on a headless agent controller
 #   just e2e-browser              the browser lane: the gateway UI in headless Chromium
-#   just e2e-browser-v2           the browser lane with the dashboard's new layout (gateway_v2)
 #   just e2e-agentic              the agentic lane: scenario files, a driver and a judge model
 #   just e2e-explore              the explore lane: Bombadil drives the gateway UI at random
 #   just e2e-fast --keep          leave the stack running afterwards
@@ -26,8 +25,7 @@
 # serve it with `vite preview` on :4173, whose proxy sends its /gateway requests
 # to :8000 as nginx does in a deployment, and install Playwright's Chromium.
 # SWITCH_E2E_EXPLORE_TIME_LIMIT sets how long the explore lane explores (5m).
-# The browser lane's server has every flag the role matrix's pages need, and
-# SWITCH_E2E_GATEWAY_LAYOUT=v2 adds gateway_v2, the dashboard's new layout.
+# The browser lane's server has every flag the role matrix's pages need.
 #
 # Ports 4173, 5432, 8000, 8065 and 8081 must be free: stop a local stack first.
 # Logs and the JUnit report go to build/e2e/ephemeral/ (or $E2E_OUT); the env
@@ -47,13 +45,6 @@ LANE="${SWITCH_E2E_LANE:-fast}"
 NEEDS_CONTROLLER=0
 FOLLOW_WINDOW_SECONDS=20
 case "$LANE" in provider|agentic) NEEDS_CONTROLLER=1 ;; esac
-GATEWAY_LAYOUT="${SWITCH_E2E_GATEWAY_LAYOUT:-current}"
-case "$GATEWAY_LAYOUT" in
-  current) ;;
-  v2) [ "$LANE" = browser ] \
-        || { echo "SWITCH_E2E_GATEWAY_LAYOUT=v2 is for the browser lane, not '$LANE'." >&2; exit 2; } ;;
-  *) echo "SWITCH_E2E_GATEWAY_LAYOUT is current or v2, not '$GATEWAY_LAYOUT'." >&2; exit 2 ;;
-esac
 KEEP=0
 VITEST_ARGS=()
 while [ $# -gt 0 ]; do
@@ -85,6 +76,7 @@ SECRETS="$WORK/secrets"
 
 cd "$REPO"
 COMPOSE=(docker compose -p switch-e2e-ephemeral -f deploy/local/docker-compose.yml
+         -f deploy/local/docker-compose.e2e-mattermost.yml
          --env-file "$ENV_FILE" --project-directory .)
 SERVER_PID=""
 CONTROLLER_PID=""
@@ -117,23 +109,15 @@ trap cleanup EXIT
 
 cp "$REPO/.env.example" "$ENV_FILE"
 "$REPO/deploy/local/generate-env-secrets.sh" "$ENV_FILE" e2e
-if [ "$NEEDS_CONTROLLER" = 1 ]; then
-  # Agent management, and the key controllers' access tokens are signed with.
-  sed -i.bak -e "s|^FEATURE_FLAGS_ENABLED=.*|FEATURE_FLAGS_ENABLED=agent_management|" \
-             -e "s|^CONTROLLER_TOKEN_SECRET=.*|CONTROLLER_TOKEN_SECRET=$(openssl rand -hex 32)|" "$ENV_FILE"
-  rm -f "$ENV_FILE.bak"
-elif [ "$LANE" = browser ]; then
+if [ "$LANE" = browser ]; then
   # Every flag a page of the role matrix (gateway/src/routes/roleMatrix.ts)
-  # needs, so every page is there to open: agent management (and the key it
-  # requires), connectors, the organization's connector apps, and the new
-  # layout when it is the one under test. Not follow-ups, nor their short
-  # window: only the fast lane's follow-ups scenario uses them.
-  FLAGS=agent_management,service_connections,organization_connector_apps
-  [ "$GATEWAY_LAYOUT" = v2 ] && FLAGS="$FLAGS,gateway_v2"
-  sed -i.bak -e "s|^FEATURE_FLAGS_ENABLED=.*|FEATURE_FLAGS_ENABLED=$FLAGS|" \
-             -e "s|^CONTROLLER_TOKEN_SECRET=.*|CONTROLLER_TOKEN_SECRET=$(openssl rand -hex 32)|" "$ENV_FILE"
+  # needs, so every page is there to open: connectors and the organization's
+  # connector apps (agent management is always on). Not follow-ups, nor their
+  # short window: only the fast lane's follow-ups scenario uses them.
+  FLAGS=service_connections,organization_connector_apps
+  sed -i.bak -e "s|^FEATURE_FLAGS_ENABLED=.*|FEATURE_FLAGS_ENABLED=$FLAGS|" "$ENV_FILE"
   rm -f "$ENV_FILE.bak"
-else
+elif [ "$NEEDS_CONTROLLER" = 0 ]; then
   # Follow-ups, with a window short enough for a scenario to wait out. Not on
   # the controller lanes: there an untagged answer to a request card, or an
   # agentic scenario's unaddressed setup message, would become a follow-up.
@@ -141,6 +125,11 @@ else
   rm -f "$ENV_FILE.bak"
   printf 'FOLLOW_THE_CONVERSATION_WINDOW_SECONDS=%s\n' "$FOLLOW_WINDOW_SECONDS" >>"$ENV_FILE"
 fi
+# The harness makes its own accounts by signing up, as people do: sign-up on,
+# landing in the default workspace (GATEWAY_SIGNUP_MODE's default), with an
+# hourly cap well above the accounts a run makes, since the cap counts every
+# account created and a --keep stack may be run against again.
+printf 'GATEWAY_SIGNUP_ENABLED=true\nGATEWAY_SIGNUP_MAX_PER_HOUR=1000\n' >>"$ENV_FILE"
 chmod 600 "$ENV_FILE"
 set -a; source "$ENV_FILE"; set +a
 
@@ -227,7 +216,7 @@ if [ "$NEEDS_CONTROLLER" = 1 ]; then
              '{name: "e2e-controller", kind: "console", version: "e2e",
                platform: {os: $os, arch: $arch, os_version: $osv}}')" \
     http://localhost:8000/gateway/management/controllers)" \
-    || { echo "could not create an agent controller (is agent_management on?)" >&2; exit 1; }
+    || { echo "could not create an agent controller" >&2; exit 1; }
   rm -f "$JAR"
   CONTROLLER_ID="$(jq -r .controller_id <<<"$CONTROLLER")"
   remember_secrets "$(jq -r .credential <<<"$CONTROLLER")"

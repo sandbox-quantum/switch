@@ -4,7 +4,7 @@ export type HomeChipId = Exclude<RendererTelemetryEvents['home_action']['chip'],
 
 /** Each suggestion, as it reads on its chip and as the message sent to switch-buddy. */
 export const HOME_CHIP_TEXT: Record<HomeChipId, string> = {
-  connect_chat_app: "Connect your team's chat app",
+  connect_chat_app: "Connect your team's messaging app",
   first_agent: 'Create my first agent',
   team_room: 'Create a room for my team',
   new_room: 'Create a new room',

@@ -60,6 +60,7 @@ resources:
     name: "{team} - On-Call Handoff"
     description: "On-call shift handoffs for {team}. Passing context on active issues and known risks."
     bridge: "{bridge}"
+    channel_type: channel_private
     agents: [handoff_summarizer]
     users:
       - {if: "{bridge}", value: ["{$creator}"]}

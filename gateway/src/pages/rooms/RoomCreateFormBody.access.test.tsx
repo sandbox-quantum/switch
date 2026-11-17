@@ -14,6 +14,7 @@ vi.mock("../../data/hooks", () => ({
   useAgents: vi.fn(),
   useBridges: vi.fn(),
   useBridgeUsers: vi.fn(),
+  useMyIdentities: vi.fn(),
   useRoomAgentCandidates: vi.fn(),
   useRoomGroups: vi.fn(),
 }));
@@ -45,6 +46,8 @@ beforeEach(() => {
   vi.mocked(hooks.useAgents).mockReturnValue(data([]));
   vi.mocked(hooks.useBridges).mockReturnValue(data([bridge]));
   vi.mocked(hooks.useBridgeUsers).mockReturnValue(data([]));
+  // Linked on the app, so a private channel can be made; the unlinked case is below.
+  vi.mocked(hooks.useMyIdentities).mockReturnValue(data([{ bridge_id: "b1", verified: true }]));
   vi.mocked(hooks.useRoomAgentCandidates).mockReturnValue(data({ agent_ids: [] }));
   vi.mocked(hooks.useRoomGroups).mockReturnValue(data([]));
   vi.mocked(api.createRoom).mockResolvedValue({ id: "r1" } as never);
@@ -87,6 +90,36 @@ describe("RoomCreateFormBody access", () => {
 
     expect(screen.queryByRole("combobox", { name: /Access/ })).toBeNull();
     expect(await submit()).not.toHaveProperty("read_visibility");
+  });
+
+  it("makes a room with no channel Private unless Public is chosen", () => {
+    expect(select(/Access/).textContent).toBe("Private");
+    expect(
+      screen.getByText(/Private rooms can only be seen by the people and agents in them/),
+    ).toBeTruthy();
+  });
+
+  it("offers a private channel first for a room on an app", async () => {
+    await choose(/Bridge/, "Slack (slack)");
+    expect(select(/Channel type/).textContent).toBe("Private channel");
+    expect(await submit()).toMatchObject({ channel_type: "channel_private" });
+  });
+
+  it("offers a public channel, saying how to make it private, to someone not linked", async () => {
+    vi.mocked(hooks.useMyIdentities).mockReturnValue(data([]));
+    await choose(/Bridge/, "Slack (slack)");
+
+    expect(select(/Channel type/).textContent).toBe("Public channel");
+    expect(screen.getByText("Link your account to make it private, in Messaging apps.")).toBeTruthy();
+    expect(await submit()).toMatchObject({ channel_type: "channel_public" });
+  });
+
+  it("still sends private when someone not linked picks it", async () => {
+    vi.mocked(hooks.useMyIdentities).mockReturnValue(data([]));
+    await choose(/Bridge/, "Slack (slack)");
+    await choose(/Channel type/, "Private channel");
+
+    expect(await submit()).toMatchObject({ channel_type: "channel_private" });
   });
 
   it("drops a choice made before an app was picked", async () => {

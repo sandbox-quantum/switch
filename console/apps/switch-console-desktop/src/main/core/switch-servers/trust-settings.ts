@@ -1,12 +1,14 @@
 import {
   clearTrustSettings,
   fetchTrustSettings,
+  fetchWorkspaceGuardrails,
   GatewayError,
   updateTrustSettings,
 } from '@main/core/switch-servers/gateway-client';
 import type {
   ClearTrustSettingsResult,
   FetchTrustSettingsResult,
+  FetchWorkspaceGuardrailsResult,
   SwitchServer,
   UpdateTrustSettingsParams,
   UpdateTrustSettingsResult,
@@ -30,6 +32,30 @@ export async function fetchTrustSettingsFromServer(
     }
     const result = recoverableResult(cause);
     if (result) return result;
+    throw cause;
+  }
+}
+
+/**
+ * Load the policy that checks the selected workspace's messages, which
+ * anyone in it may read. A server from before each organization set its own
+ * has no such route, which is `unsupported`.
+ */
+export async function fetchWorkspaceGuardrailsFromServer(
+  server: SwitchServer
+): Promise<FetchWorkspaceGuardrailsResult> {
+  try {
+    return { kind: 'loaded', guardrails: await fetchWorkspaceGuardrails(server) };
+  } catch (cause) {
+    if (cause instanceof GatewayError && cause.kind === 'http' && cause.status === 404) {
+      return { kind: 'unsupported' };
+    }
+    if (cause instanceof GatewayError && cause.kind === 'unauthorized') {
+      return { kind: 'unauthenticated' };
+    }
+    if (cause instanceof GatewayError && cause.kind === 'network') {
+      return { kind: 'error', message: cause.message };
+    }
     throw cause;
   }
 }

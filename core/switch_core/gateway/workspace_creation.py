@@ -13,7 +13,6 @@ import logging
 import re
 import secrets
 import uuid
-from datetime import datetime
 
 from fastapi import HTTPException, Response
 from sqlalchemy import select
@@ -42,6 +41,7 @@ from switch_core.db.stores.tenant_store import TenantSlugTaken
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.auth import (
     AuthenticatedCaller,
+    SignedIn,
     every_workspace_of,
     set_session_cookie,
     workspace_creation_refusal,
@@ -233,7 +233,7 @@ async def create_organization_for(
     *,
     name: str,
     workspace_name: str,
-    auth_time: datetime,
+    signed_in: SignedIn,
 ) -> OrganizationCreateResponse:
     """Create an organization and its first workspace for `caller`, count it
     against their allowance, and switch their session into the workspace.
@@ -282,7 +282,7 @@ async def create_organization_for(
         config.keyring,
         config.gateway_cookie_secure,
         tenant.id,
-        auth_time,
+        signed_in,
     )
     return OrganizationCreateResponse(
         organization=OrganizationSummary(

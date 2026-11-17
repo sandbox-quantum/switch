@@ -29,7 +29,7 @@ interface Props {
 }
 
 export default function RoomLinkedRoomsSection({ roomId, canWrite }: Props) {
-  const { data: linked, loading, refetch } = useLinkedRooms(roomId);
+  const { data: linked, loading, error: loadError, refetch } = useLinkedRooms(roomId);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -58,10 +58,11 @@ export default function RoomLinkedRoomsSection({ roomId, canWrite }: Props) {
       <Typography variant="body2" sx={{ fontWeight: 500 }}>
         Linked rooms
       </Typography>
+      {loadError && <Alert severity="error">Couldn't load the linked rooms: {loadError}</Alert>}
       {error && <Alert severity="error">{error}</Alert>}
       {loading ? (
         <CircularProgress size={20} />
-      ) : (linked ?? []).length === 0 ? (
+      ) : loadError ? null : (linked ?? []).length === 0 ? (
         <Typography variant="body2" color="text.secondary">
           No linked rooms.
         </Typography>
@@ -150,7 +151,7 @@ function AddLinkedRoomDialog({
   onClose: () => void;
   onCreated: () => void;
 }) {
-  const { data: rooms, loading } = useRooms();
+  const { data: rooms, loading, error: roomsError } = useRooms();
   const [search, setSearch] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [label, setLabel] = useState("");
@@ -202,6 +203,10 @@ function AddLinkedRoomDialog({
               <Box sx={{ p: 2, display: "flex", justifyContent: "center" }}>
                 <CircularProgress size={20} />
               </Box>
+            ) : roomsError ? (
+              <Alert severity="error" sx={{ m: 1 }}>
+                Couldn't load the rooms: {roomsError}
+              </Alert>
             ) : options.length === 0 ? (
               <Typography variant="body2" color="text.secondary" sx={{ p: 2 }}>
                 No matching rooms.

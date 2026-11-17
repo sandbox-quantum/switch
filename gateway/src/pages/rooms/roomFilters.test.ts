@@ -18,7 +18,7 @@ import {
 const group = (id: string, name: string, parent: string | null) =>
   ({ id, name, parent_group_id: parent, color: null }) as unknown as RoomGroupDetail;
 
-const GROUPS = [group("eng", "Engineering", null), group("be", "Backend", "eng")];
+const GROUPS = [group("eng", "Engineering", null), group("be", "Backend", "eng"), group("ops", "Operations", null)];
 const byId = buildGroupIndex(GROUPS);
 
 const room = (id: string, overrides: Partial<RoomSummary>) =>
@@ -70,12 +70,19 @@ describe("room filter values", () => {
 });
 
 describe("room filter options", () => {
-  it("offers every group as its path, after No group", () => {
-    expect(groupOptions(GROUPS, byId, [])).toEqual([
+  it("offers the groups the rooms are in as paths, a parent of one with them, after No group", () => {
+    expect(groupOptions(GROUPS, byId, [room("api", { group_id: "be" }), room("lobby", {})])).toEqual([
       { value: NO_GROUP, label: "No group" },
       { value: "eng", label: "Engineering" },
       { value: "be", label: "Engineering / Backend" },
     ]);
+  });
+
+  it("offers no group without rooms in it, and No group only when a room has none", () => {
+    expect(groupOptions(GROUPS, byId, [room("standup", { group_id: "ops" })])).toEqual([
+      { value: "ops", label: "Operations" },
+    ]);
+    expect(groupOptions(GROUPS, byId, [])).toEqual([]);
   });
 
   it("keys owners by id, and offers No owner only when a room has none", () => {
@@ -87,9 +94,10 @@ describe("room filter options", () => {
     expect(ownerOptions([...rooms, room("c", {})])[0]).toEqual({ value: NO_OWNER, label: "No owner" });
   });
 
-  it("offers Not bridged first, then each bridge once", () => {
+  it("offers each bridge once, after Not bridged when a room has none", () => {
     const rooms = [room("a", { bridge_display_name: "Slack" }), room("b", { bridge_display_name: "Slack" })];
-    expect(bridgeOptions(rooms)).toEqual([
+    expect(bridgeOptions(rooms)).toEqual([{ value: "Slack", label: "Slack" }]);
+    expect(bridgeOptions([...rooms, room("c", {})])).toEqual([
       { value: NOT_BRIDGED, label: "Not bridged" },
       { value: "Slack", label: "Slack" },
     ]);

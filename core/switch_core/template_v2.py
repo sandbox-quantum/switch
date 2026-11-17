@@ -192,6 +192,12 @@ def _resources(data: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return out
 
 
+def resource_types(data: dict[str, Any]) -> list[str]:
+    """Each resource's type, in the order the document writes them,
+    conditional ones included; raises for resources a run would refuse."""
+    return [spec["type"] for spec in _resources(data).values()]
+
+
 def compile_v2(text: str, inputs: dict[str, Any], builtins: dict[str, str]) -> Compiled:
     data = yaml.safe_load(text)
     if not isinstance(data, dict):

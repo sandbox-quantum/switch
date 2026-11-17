@@ -8,6 +8,7 @@ import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { openExternalUrl } from '@renderer/lib/open-external';
 import { Button } from '@renderer/lib/ui/button';
+import { ExpandableImage } from '@renderer/lib/ui/expandable-image';
 import { Field, FieldLabel } from '@renderer/lib/ui/field';
 import { Input } from '@renderer/lib/ui/input';
 import { Spinner } from '@renderer/lib/ui/spinner';
@@ -96,15 +97,19 @@ function Step({
   );
 }
 
-/** A step's instructions beside a picture of the Slack page they describe. */
+/**
+ * A step's instructions and the field they lead to, above a picture of the
+ * Slack page they describe, wide enough to read and expandable to full size.
+ */
 function WithShot({ src, alt, children }: { src: string; alt: string; children: ReactNode }) {
   return (
-    <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,0.9fr)]">
-      <div className="min-w-0">{children}</div>
-      <img
+    <div className="space-y-3">
+      <div className="min-w-0 space-y-3">{children}</div>
+      <ExpandableImage
         src={src}
         alt={alt}
-        className="w-full self-start rounded-lg border border-border bg-white shadow-sm"
+        containerClassName="block"
+        className="w-full rounded-lg"
       />
     </div>
   );
@@ -313,8 +318,8 @@ function SlackGuide({ workspaceId, config, fields, setField, setInput }: Props) 
                 Copy the <b>Bot User OAuth Token</b> (xoxb-…) and paste it below.
               </li>
             </ol>
+            <TokenField fieldKey="bot_token" fallbackLabel="Bot token" {...tokenProps} />
           </WithShot>
-          <TokenField fieldKey="bot_token" fallbackLabel="Bot token" {...tokenProps} />
         </Step>
         <Step n={3} title="Generate the app-level token" done={works}>
           <WithShot
@@ -334,8 +339,8 @@ function SlackGuide({ workspaceId, config, fields, setField, setInput }: Props) 
               </li>
               <li>Copy the token (xapp-…) and paste it below.</li>
             </ol>
+            <TokenField fieldKey="app_token" fallbackLabel="App-level token" {...tokenProps} />
           </WithShot>
-          <TokenField fieldKey="app_token" fallbackLabel="App-level token" {...tokenProps} />
         </Step>
       </ol>
       {ready && check.isFetching && (

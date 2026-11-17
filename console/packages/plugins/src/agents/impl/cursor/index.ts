@@ -5,6 +5,15 @@ import {
 } from '@switch-console/core/agents/plugins/helpers';
 import { icon } from './icon';
 
+const CURSOR_INSTALL_UNIX = 'curl https://cursor.com/install -fsS | bash';
+/**
+ * Cursor's documented Windows install, `irm 'https://cursor.com/install?win32=true' | iex`
+ * (https://cursor.com/docs/cli/installation), run through `powershell -c` so it works from
+ * cmd.exe as well as PowerShell. Written without `$` or `%` for the same reason.
+ */
+export const CURSOR_INSTALL_WINDOWS =
+  'powershell -ExecutionPolicy ByPass -c "irm \'https://cursor.com/install?win32=true\' | iex"';
+
 export const plugin = definePlugin(
   {
     id: 'cursor',
@@ -28,13 +37,19 @@ export const plugin = definePlugin(
         macos: [
           {
             method: 'curl',
-            command: 'curl https://cursor.com/install -fsS | bash',
+            command: CURSOR_INSTALL_UNIX,
           },
         ],
         linux: [
           {
             method: 'curl',
-            command: 'curl https://cursor.com/install -fsS | bash',
+            command: CURSOR_INSTALL_UNIX,
+          },
+        ],
+        windows: [
+          {
+            method: 'powershell',
+            command: CURSOR_INSTALL_WINDOWS,
           },
         ],
       },

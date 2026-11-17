@@ -722,7 +722,11 @@ def test_admin_message_renders_markdown_as_mrkdwn() -> None:
     fake = _FakeWebClient()
     adapter._web_client = fake  # type: ignore[assignment]
 
-    _run(adapter.admin_message("C123", _no_agents_notice(None)))
+    _run(
+        adapter.admin_message(
+            "C123", _no_agents_notice(None, replies_and_commands_only=False)
+        )
+    )
 
     text = fake.calls[0]["text"]
     assert "**" not in text

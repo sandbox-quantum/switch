@@ -37,6 +37,7 @@ import {
 } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
 import { useRoomGroups } from "../../data/hooks";
+import { listScopeOf, roomsInScope } from "../../data/listScope";
 import { useLoad } from "../workspace/useLoad";
 import {
   ancestorChain,
@@ -187,6 +188,7 @@ function GroupFormDialog({
 function GroupTree({
   groups,
   byId,
+  roomCounts,
   standaloneCount,
   selectedId,
   canManage,
@@ -196,6 +198,7 @@ function GroupTree({
 }: {
   groups: RoomGroupDetail[];
   byId: Map<string, RoomGroupDetail>;
+  roomCounts: ReadonlyMap<string, number>;
   standaloneCount: number;
   selectedId: string | null;
   canManage: boolean;
@@ -231,7 +234,7 @@ function GroupTree({
               {group.name}
             </Typography>
             <Typography variant="caption" color="text.secondary">
-              {group.room_count}
+              {roomCounts.get(group.id) ?? 0}
             </Typography>
             {canManage && (
             <Stack
@@ -470,7 +473,7 @@ export default function GroupsPage() {
   // Groups are shared by the workspace, so only an admin creates, edits or
   // deletes them, or puts rooms in one; anyone who can write to a room may
   // take it out.
-  const { canAdminTenant: canManageGroups } = useAuth();
+  const { canAdminTenant: canManageGroups, capabilities } = useAuth();
   const { data: groups, loading, error: groupsError, refetch } = useRoomGroups();
   const { data: rooms, error: roomsError, refetch: refetchRooms } = useLoad(loadRooms);
 
@@ -482,8 +485,18 @@ export default function GroupsPage() {
   const [deleteOpen, setDeleteOpen] = useState(false);
 
   const groupList = useMemo(() => groups ?? [], [groups]);
-  const roomList = useMemo(() => rooms ?? [], [rooms]);
+  // A member's rooms, as the Rooms list narrows them, so each group counts
+  // the rooms that list shows in it.
+  const scope = listScopeOf(capabilities);
+  const roomList = useMemo(() => [...roomsInScope(rooms ?? [], scope)], [rooms, scope]);
   const byId = useMemo(() => buildGroupIndex(groupList), [groupList]);
+  const roomCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const room of roomList) {
+      if (room.group_id !== null) counts.set(room.group_id, (counts.get(room.group_id) ?? 0) + 1);
+    }
+    return counts;
+  }, [roomList]);
   const standaloneCount = useMemo(
     () => roomList.filter((r) => r.group_id === null).length,
     [roomList],
@@ -559,6 +572,7 @@ export default function GroupsPage() {
               <GroupTree
                 groups={groupList}
                 byId={byId}
+                roomCounts={roomCounts}
                 standaloneCount={standaloneCount}
                 selectedId={selectedId}
                 canManage={canManageGroups}

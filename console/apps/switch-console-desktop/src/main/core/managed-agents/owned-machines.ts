@@ -6,6 +6,7 @@ import {
   type MachineLocal,
   type MachineProvider,
   type OwnedMachine,
+  PROVIDER_NOT_INSTALLED,
   type ThisComputerReport,
 } from '@shared/core/managed-agents/managed-agents';
 
@@ -18,7 +19,7 @@ export type LocalControllers = {
 /** A provider report as the New agent form offers it: ready, or why not. */
 export function machineProvider(report: ControllerProviderReport): MachineProvider {
   const problem = !report.installed
-    ? 'not installed'
+    ? PROVIDER_NOT_INSTALLED
     : report.auth === 'ok'
       ? null
       : report.auth === 'missing'

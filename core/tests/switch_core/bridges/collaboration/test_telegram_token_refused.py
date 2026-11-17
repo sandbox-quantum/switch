@@ -68,6 +68,7 @@ async def test_the_shared_app_start_failure_does_not_carry_the_token() -> None:
         webhook_url="https://switch.example/messaging/telegram/events",
         webhook_secret="placeholder-webhook-secret",
         on_connected=_nothing,
+        feature_flags={},
     )
 
     with pytest.raises(InvalidToken) as caught:

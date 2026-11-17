@@ -1,13 +1,16 @@
 """A room's auto-route in its detail and its toggle (`PUT /rooms/{id}/auto-route`),
 through the real routes on Postgres.
 
-The detail says whether auto-route is on, whether it can act (the server's
-flag, and the workspace's decision backend) and why not, and the room's
-triage agent; the toggle writes the same settings `!auto-route` does.
+The detail says whether auto-route is on, whether it can act (the
+workspace's decision backend) and why not, and the room's triage agent; the
+toggle writes the same settings `!auto-route` does. On a server with the
+`decision_routing` flag off there is neither: the detail has no auto-route
+and the toggle's route is not mounted, as `gateway/app.py` mounts it.
 """
 
 from __future__ import annotations
 
+import secrets
 import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
@@ -40,14 +43,14 @@ from switch_core.db.stores.room_store import (
 )
 from switch_core.db.stores.user_store import UserStore
 from switch_core.decision.settings import (
-    FLAG_OFF_REASON,
     NO_BACKEND_REASON,
+    WORKSPACE_OFF_REASON,
     DecisionAvailability,
     ServerDefault,
 )
 from switch_core.gateway import dependencies as gw_deps
 from switch_core.gateway.auth import create_jwt
-from switch_core.gateway.rooms import get_decision_availability
+from switch_core.gateway.rooms import auto_route_router, get_decision_availability
 from switch_core.gateway.rooms import router as rooms_router
 from switch_core.keys import Keyring
 
@@ -78,6 +81,8 @@ def _app(
 
     app = FastAPI()
     app.include_router(rooms_router, prefix="/rooms")
+    if enabled:
+        app.include_router(auto_route_router, prefix="/rooms")
     protocol = _Protocol()
     app.dependency_overrides.update(
         {
@@ -185,6 +190,7 @@ def _as(app: FastAPI, user: User) -> httpx.AsyncClient:
                 TENANT_ZERO_ID,
                 session_version=0,
                 auth_time=datetime.now(UTC),
+                session_id=secrets.token_urlsafe(16),
             )
         },
     )
@@ -216,16 +222,37 @@ class TestTheRoomDetail:
             "fallback_agent_name": None,
         }
 
-    async def test_unavailable_with_the_flag_off(
+    async def test_absent_with_the_flag_off(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
+        """A server without auto-route shows rooms with no auto-route at all,
+        so Console and the dashboard leave the section out."""
         owner = await _user(session_factory, "owner", "member")
         room, _, _ = await _room(session_factory, owner)
         async with _as(_app(session_factory, enabled=False), owner) as client:
-            detail = (await client.get(f"/rooms/{room.id}")).json()
+            response = await client.get(f"/rooms/{room.id}")
 
-        assert detail["auto_route"]["available"] is False
-        assert detail["auto_route"]["reason"] == FLAG_OFF_REASON
+        assert response.status_code == 200, response.text
+        assert response.json()["auto_route"] is None
+
+    async def test_settings_kept_while_the_flag_is_off_come_back_with_it(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        owner = await _user(session_factory, "owner", "member")
+        room, triage, _ = await _room(session_factory, owner)
+        async with _as(_app(session_factory), owner) as client:
+            await client.put(
+                f"/rooms/{room.id}/auto-route",
+                json={"on": True, "fallback_agent": triage.id},
+            )
+        async with _as(_app(session_factory, enabled=False), owner) as client:
+            off = (await client.get(f"/rooms/{room.id}")).json()
+        async with _as(_app(session_factory), owner) as client:
+            back = (await client.get(f"/rooms/{room.id}")).json()
+
+        assert off["auto_route"] is None
+        assert back["auto_route"]["on"] is True
+        assert back["auto_route"]["fallback_agent"] == triage.id
 
     async def test_unavailable_with_no_backend(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -237,7 +264,7 @@ class TestTheRoomDetail:
 
         assert detail["auto_route"]["available"] is False
         assert detail["auto_route"]["reason"] == NO_BACKEND_REASON
-        assert "Switch Console → Admin → Decision routing" in NO_BACKEND_REASON
+        assert "Switch Console → Settings → Message routing" in NO_BACKEND_REASON
 
     async def test_unavailable_when_the_workspace_chose_none(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -258,7 +285,8 @@ class TestTheRoomDetail:
             detail = (await client.get(f"/rooms/{room.id}")).json()
 
         assert detail["auto_route"]["available"] is False
-        assert "turned auto-route off" in detail["auto_route"]["reason"]
+        assert detail["auto_route"]["reason"] == WORKSPACE_OFF_REASON
+        assert "Switch Console → Settings → Message routing" in WORKSPACE_OFF_REASON
 
 
 class TestTheToggle:
@@ -307,6 +335,21 @@ class TestTheToggle:
         assert off.json()["fallback_agent"] == triage.id
         assert cleared.json()["fallback_agent"] is None
         assert cleared.json()["on"] is False
+
+    async def test_there_is_no_toggle_with_the_flag_off(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        owner = await _user(session_factory, "owner", "member")
+        room, triage, _ = await _room(session_factory, owner)
+        async with _as(_app(session_factory, enabled=False), owner) as client:
+            put = await client.put(
+                f"/rooms/{room.id}/auto-route", json={"fallback_agent": triage.id}
+            )
+
+        assert put.status_code == 404, put.text
+        metadata = await _metadata(session_factory, room.id)
+        assert AUTO_ROUTE_FALLBACK_KEY not in metadata
+        assert AUTO_ROUTE_ON_KEY not in metadata
 
     async def test_on_is_refused_where_it_cannot_act(
         self, session_factory: async_sessionmaker[AsyncSession]

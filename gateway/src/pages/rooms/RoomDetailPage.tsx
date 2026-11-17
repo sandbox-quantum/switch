@@ -51,6 +51,7 @@ import {
 } from "../../data/api";
 import { useAgents, useBridgeUsers, useRoom, useRoomAgentCandidates } from "../../data/hooks";
 import { useAuth } from "../../data/AuthContext";
+import { mayBeInAnotherWorkspace } from "../../data/workspaceLink";
 import { AccessSelect } from "../../components/AccessControls";
 import type { AccessLevel } from "../../data/visibility";
 import {
@@ -97,7 +98,7 @@ export default function RoomDetailPage() {
   // Who is looking, to offer taking out their own agent and unlinking their
   // own resources: the server allows those by ownership alone.
   const viewerId = session?.user.id ?? null;
-  const { data: room, loading, error, refetch } = useRoom(roomId);
+  const { data: room, loading, error, errorStatus, refetch } = useRoom(roomId);
   const [exportOpen, setExportOpen] = useState(false);
 
   if (loading) {
@@ -116,6 +117,11 @@ export default function RoomDetailPage() {
         </Button>
         <Alert severity="error" sx={{ mt: 2 }}>
           {error ?? "Room not found"}
+          {mayBeInAnotherWorkspace(errorStatus) !== null && (
+            <Box component="span" sx={{ display: "block", mt: 0.5 }}>
+              {mayBeInAnotherWorkspace(errorStatus)}
+            </Box>
+          )}
         </Alert>
       </Box>
     );
@@ -127,10 +133,10 @@ export default function RoomDetailPage() {
   return (
     <Box>
       <Stack direction="row" alignItems="center" spacing={1} mb={2}>
-        <IconButton onClick={() => navigate("/rooms")} size="small" aria-label="Back">
+        <IconButton onClick={() => navigate("/rooms")} size="small" aria-label="Back to rooms">
           <ArrowBack />
         </IconButton>
-        <Typography variant="h5" sx={{ flexGrow: 1 }}>
+        <Typography variant="h5" sx={{ flexGrow: 1, minWidth: 0, overflowWrap: "anywhere" }}>
           {room.name}
         </Typography>
         {room.archived && (
@@ -142,7 +148,12 @@ export default function RoomDetailPage() {
         {room.bridge_display_name && (
           <Chip label={room.bridge_display_name} size="small" />
         )}
-        <Button variant="outlined" size="small" onClick={() => setExportOpen(true)}>
+        <Button
+          variant="outlined"
+          size="small"
+          onClick={() => setExportOpen(true)}
+          sx={{ flexShrink: 0 }}
+        >
           Export to YAML
         </Button>
       </Stack>
@@ -800,9 +811,13 @@ function ParticipantsSection({
   viewerId: string | null;
   onChanged: () => void;
 }) {
-  const { data: allAgents, loading: agentsLoading } = useAgents();
+  const { data: allAgents, loading: agentsLoading, error: agentsError } = useAgents();
   // Only the agents the server's invite rule lets the viewer bring in.
-  const { data: candidates, loading: candidatesLoading } = useRoomAgentCandidates(room.id);
+  const {
+    data: candidates,
+    loading: candidatesLoading,
+    error: candidatesError,
+  } = useRoomAgentCandidates(room.id);
   const [addUserOpen, setAddUserOpen] = useState(false);
   const [addAgentOpen, setAddAgentOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -932,6 +947,11 @@ function ParticipantsSection({
         Participants
       </Typography>
       {error && <Alert severity="error">{error}</Alert>}
+      {agentsError && (
+        <Alert severity="error">
+          Couldn't load the agents, so those in the room show by id: {agentsError}
+        </Alert>
+      )}
 
       <Box>
         <Typography variant="body2" gutterBottom>
@@ -980,6 +1000,7 @@ function ParticipantsSection({
               submitLabel="Add"
               options={addableAgentOptions}
               loading={agentsLoading || candidatesLoading}
+              loadError={agentsError ?? candidatesError}
               subToggleCount={(id) => childCountByParent.get(id) ?? 0}
               subToggleLabel={(n) => `Also add ${n} subagent(s)`}
               onClose={() => setAddAgentOpen(false)}
@@ -1070,7 +1091,7 @@ function BridgeUserPicker({
   onClose: () => void;
   onSubmit: (names: string[]) => Promise<void>;
 }) {
-  const { data: bridgeUsers, loading } = useBridgeUsers(bridgeId);
+  const { data: bridgeUsers, loading, error } = useBridgeUsers(bridgeId);
   const options = useMemo<PickerOption[]>(
     () =>
       (bridgeUsers ?? [])
@@ -1091,6 +1112,7 @@ function BridgeUserPicker({
       submitLabel="Add"
       options={options}
       loading={loading}
+      loadError={error}
       onClose={onClose}
       onSubmit={onSubmit}
     />
