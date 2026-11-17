@@ -21,6 +21,10 @@ from switch_core.bridges.collaboration.google_chat.adapter import (
     GoogleChatAdapter,
     GoogleChatConnectionConfig,
 )
+from switch_core.bridges.collaboration.google_chat.auth import (
+    GoogleAuthManager,
+    validate_token_uri,
+)
 from switch_core.bridges.collaboration.google_chat.formatting import (
     markdown_to_google_chat,
     split_message_chunks,
@@ -102,6 +106,86 @@ class TestGoogleChatConfigurationAndCredentials:
         with pytest.raises(ValueError, match="missing required 'private_key'"):
             bad_sa = json.dumps({"type": "service_account", "client_email": "a@b.com"})
             _make_config(service_account_json=bad_sa)
+
+    def test_invalid_service_account_token_uri_rejected(self) -> None:
+        for bad_uri in [
+            "http://169.254.169.254/latest/meta-data/",
+            "http://localhost:8080/token",
+            "https://127.0.0.1/token",
+            "https://evil.com/token",
+            "https://oauth2.googleapis.com.evil.com/token",
+            "https://user:pass@oauth2.googleapis.com/token",
+            "https://oauth2.googleapis.com:8080/token",
+            "https://oauth2.googleapis.com/token?query=1",
+            "not-a-url",
+            "",
+        ]:
+            bad_sa = json.dumps({
+                "type": "service_account",
+                "client_email": TEST_CLIENT_EMAIL,
+                "private_key": _TEST_PEM_KEY,
+                "token_uri": bad_uri,
+            })
+            with pytest.raises(
+                ValueError, match="service_account_json 'token_uri' is invalid"
+            ):
+                _make_config(service_account_json=bad_sa)
+
+    def test_auth_manager_validates_token_uri(self) -> None:
+        for bad_uri in [
+            "http://169.254.169.254/latest/meta-data/",
+            "http://localhost/token",
+            "https://evil.com/token",
+            "https://oauth2.googleapis.com:8080/token",
+        ]:
+            sa_info = {
+                "client_email": TEST_CLIENT_EMAIL,
+                "private_key": _TEST_PEM_KEY,
+                "token_uri": bad_uri,
+            }
+            auth = GoogleAuthManager(sa_info)
+            with pytest.raises(BridgeCredentialError, match="token_uri"):
+                auth.validate_service_account_structure()
+
+    @pytest.mark.asyncio
+    async def test_get_service_account_token_blocks_ssrf(self) -> None:
+        client = AsyncMock(spec=httpx.AsyncClient)
+        sa_info = {
+            "client_email": TEST_CLIENT_EMAIL,
+            "private_key": _TEST_PEM_KEY,
+            "token_uri": "http://169.254.169.254/latest/meta-data/",
+        }
+        auth = GoogleAuthManager(sa_info, http_client=client)
+        with pytest.raises(BridgeCredentialError, match="token_uri"):
+            await auth.get_service_account_token()
+        client.post.assert_not_called()
+
+    def test_validate_token_uri_accepts_valid_google_endpoints(self) -> None:
+        validate_token_uri("https://oauth2.googleapis.com/token")
+        validate_token_uri("https://accounts.google.com/o/oauth2/token")
+        validate_token_uri("https://oauth2.googleapis.com:443/token")
+
+    @pytest.mark.asyncio
+    async def test_oauth_error_truncated_in_exception(self) -> None:
+        mock_resp = MagicMock(spec=httpx.Response)
+        mock_resp.status_code = 400
+        mock_resp.json.side_effect = Exception("not json")
+        mock_resp.text = "A" * 1000
+
+        client = AsyncMock(spec=httpx.AsyncClient)
+        client.post.return_value = mock_resp
+
+        sa_info = {
+            "client_email": TEST_CLIENT_EMAIL,
+            "private_key": _TEST_PEM_KEY,
+            "token_uri": "https://oauth2.googleapis.com/token",
+        }
+        auth = GoogleAuthManager(sa_info, http_client=client)
+        with pytest.raises(BridgeCredentialError) as exc_info:
+            await auth.get_service_account_token()
+        assert len(str(exc_info.value)) < 400
+        assert "A" * 300 in str(exc_info.value)
+        assert "A" * 301 not in str(exc_info.value)
 
     @pytest.mark.asyncio
     async def test_verify_credentials_success(self) -> None:
