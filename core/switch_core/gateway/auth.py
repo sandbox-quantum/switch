@@ -1098,6 +1098,7 @@ def describe_session_state(
     operator_entered: TenantMembershipResponse | None,
     tenants_isolated: bool,
     can_manage_connector_apps: bool,
+    connector_apps_in_dashboard: bool,
 ) -> SessionStateResponse:
     """What `_resolve_tenant_id` would make of this session, as data.
 
@@ -1150,6 +1151,7 @@ def describe_session_state(
         and refusal(False) is None,
         invite_email_enabled=config.invite_email_enabled,
         can_manage_connector_apps=can_manage_connector_apps,
+        connector_apps_in_dashboard=connector_apps_in_dashboard,
     )
 
 
@@ -1472,6 +1474,16 @@ async def deployment_manager(
     if member is None or member.role != ORGANIZATION_ADMIN_ROLE:
         return None
     return DeploymentManager(user, organization_id)
+
+
+async def connector_apps_in_dashboard(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> bool:
+    """Whether the deployment's connector apps are set up in the dashboard,
+    by the `org_admin`s of its organization: while it has exactly one, as
+    `deployment_manager` allows. With several, the platform operator sets
+    them up with `switch-connector-apps`."""
+    return await only_organization_id(session_factory) is not None
 
 
 async def require_deployment_manager(

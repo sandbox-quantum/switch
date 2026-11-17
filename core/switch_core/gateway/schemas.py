@@ -1544,6 +1544,12 @@ class SessionStateResponse(BaseModel):
     # (`gateway/connector_apps.py`): the platform operator, or an `org_admin`
     # of the deployment's only organization (`auth.deployment_manager`).
     can_manage_connector_apps: bool
+    # Whether those apps are set up in the dashboard by the admins of the
+    # deployment's organization, which has exactly one; with several, only
+    # the platform operator sets them up, with `switch-connector-apps`
+    # (`auth.connector_apps_in_dashboard`). Says, to someone who may not,
+    # whom to ask.
+    connector_apps_in_dashboard: bool
 
 
 MAX_INVITATION_USES = 100

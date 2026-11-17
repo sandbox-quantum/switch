@@ -1,7 +1,9 @@
 """Who may manage the deployment's connector apps (`auth.deployment_manager`):
 the platform operator, and the `org_admin`s of its only organization while it
 has exactly one, asked again every time. `GET /auth/session` says so as
-`can_manage_connector_apps`.
+`can_manage_connector_apps`, and says as `connector_apps_in_dashboard`
+whether they are set up in the dashboard at all, for whom to send someone
+who may not.
 
 The test database starts with one organization, the default workspace's
 (`tests/conftest.py`)."""
@@ -124,7 +126,9 @@ async def test_an_admin_demoted_loses_it_at_once(
 
 
 async def _session_flag(
-    session_factory: async_sessionmaker[AsyncSession], user: User
+    session_factory: async_sessionmaker[AsyncSession],
+    user: User,
+    flag: str = "can_manage_connector_apps",
 ) -> bool:
     token = create_jwt(
         user.id,
@@ -138,9 +142,9 @@ async def _session_flag(
     async with _client(_session_app(session_factory, signup_mode="open"), token) as c:
         response = await c.get("/auth/session")
     assert response.status_code == 200, response.text
-    flag = response.json()["can_manage_connector_apps"]
-    assert isinstance(flag, bool)
-    return flag
+    value = response.json()[flag]
+    assert isinstance(value, bool)
+    return value
 
 
 async def test_the_session_says_so_and_stops_once_a_second_organization_exists(
@@ -155,3 +159,23 @@ async def test_the_session_says_so_and_stops_once_a_second_organization_exists(
     await _second_organization(session_factory)
 
     assert await _session_flag(session_factory, admin) is False
+
+
+async def test_the_session_says_where_they_are_set_up_to_everyone(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """In the dashboard, by its organization's admins, while there is one
+    organization; with the command once there are two. Members are told
+    too: it is whom they ask."""
+    flag = "connector_apps_in_dashboard"
+    member = await _person(session_factory, organization_role="member")
+    operator = await _person(session_factory, organization_role=None, role="admin")
+
+    assert await _session_flag(session_factory, member, flag) is True
+    assert await _session_flag(session_factory, operator, flag) is True
+
+    await _second_organization(session_factory)
+
+    assert await _session_flag(session_factory, member, flag) is False
+    assert await _session_flag(session_factory, operator, flag) is False
+    assert await _session_flag(session_factory, operator) is True
