@@ -1,7 +1,8 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { runInAction } from 'mobx';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { chatMembersQueryKey } from '@renderer/features/chats/chat-people';
 import {
   addAllToChat,
@@ -12,6 +13,8 @@ import {
 } from '@renderer/features/switch-rooms/room-add-participants';
 import { RoomConfigurationPanel } from '@renderer/features/switch-rooms/room-configuration-panel';
 import { RoomSidePanel } from '@renderer/features/switch-rooms/room-side-panel';
+import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
+import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import type { ChatSummary } from '@shared/core/chats/chats';
 import { RpcError } from '@shared/lib/ipc/rpc-error';
 
@@ -164,19 +167,80 @@ describe('group chat people', () => {
     expect(html).not.toMatch(/Bob<\/span><span[^>]*>/);
     expect(html).not.toContain('>person<');
   });
+});
 
-  it('offers the invite to someone who may invite, and says who to ask otherwise', () => {
-    const can = renderToStaticMarkup(
-      createElement(InviteHint, { workspaceId: 'w', canInvite: true })
-    );
-    expect(can).toContain('Invite them to the workspace');
-    expect(can).toContain('<button');
-    const cannot = renderToStaticMarkup(
-      createElement(InviteHint, { workspaceId: 'w', canInvite: false })
-    );
-    expect(cannot).toContain('Ask a workspace admin to invite them.');
-    expect(cannot).not.toContain('<button');
-  });
+describe('workspace invitations from a chat', () => {
+  afterEach(() =>
+    runInAction(() => {
+      workspacesStore.workspaces = [];
+      switchServersStore.servers = [];
+      switchServersStore.statuses.clear();
+    })
+  );
+
+  it.each([
+    ['admin', 'user', false, true],
+    ['member', 'admin', false, true],
+    ['member', 'user', false, false],
+    ['admin', 'user', true, false],
+    ['member', 'admin', true, false],
+  ] as const)(
+    'handles workspace role %s, account role %s, local %s',
+    (role, accountRole, local, allowed) => {
+      runInAction(() => {
+        workspacesStore.workspaces = [
+          {
+            id: 'w',
+            serverId: 's',
+            name: 'Workspace',
+            tenantId: 'tenant',
+            slug: 'workspace',
+            role,
+            organizationId: null,
+            organizationName: null,
+            organizationRole: null,
+            createdAt: '',
+            updatedAt: '',
+          },
+        ];
+        switchServersStore.servers = [
+          {
+            id: 's',
+            name: 'Server',
+            url: 'https://switch.example.com',
+            dashboardUrl: null,
+            managed: local,
+            managementKind: local ? 'local' : null,
+            sshHost: null,
+            createdAt: '',
+            updatedAt: '',
+          },
+        ];
+        switchServersStore.statuses.set('s', {
+          serverId: 's',
+          connected: true,
+          user: {
+            id: 'u',
+            name: 'Viewer',
+            email: 'viewer@example.com',
+            role: accountRole,
+            server: null,
+          },
+        });
+      });
+      const html = renderToStaticMarkup(
+        createElement(InviteHint, { serverId: 's', workspaceId: 'w' })
+      );
+      expect(html.includes('Invite them to the workspace')).toBe(allowed);
+      expect(html.includes('<button')).toBe(allowed);
+      if (local) {
+        expect(html).toContain('This server runs on your computer.');
+        expect(html).not.toContain('Ask a workspace admin');
+      } else if (!allowed) {
+        expect(html).toContain('Ask a workspace admin to invite them.');
+      }
+    }
+  );
 });
 
 describe('addToChat', () => {

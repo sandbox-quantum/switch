@@ -282,20 +282,7 @@ export class HostedSession {
       }
       const recovered = events.records.length > 0;
       if (recovered) {
-        const snapshot = host.replica.snapshot();
-        for (const request of snapshot.requests)
-          if (request.state === 'open' || request.state === 'submitting')
-            await host.publish({
-              type: 'request.settled',
-              requestId: request.requestId,
-              revision: request.revision + 1,
-              outcome: 'interrupted',
-              commandId: null,
-              result: null,
-            });
-        for (const turn of snapshot.turns)
-          if (turn.status === 'running' || turn.status === 'queued')
-            await host.publish({ ...turn, status: 'interrupted' });
+        await host.interruptOpenWork();
         for (const command of host.commands.values()) {
           const status = host
             .snapshot()
@@ -1502,19 +1489,7 @@ export class HostedSession {
     )
       return;
     if (event.type === 'session.exited') {
-      for (const request of this.snapshot().requests)
-        if (request.state === 'open' || request.state === 'submitting')
-          await this.publish({
-            type: 'request.settled',
-            requestId: request.requestId,
-            revision: request.revision + 1,
-            outcome: 'interrupted',
-            commandId: null,
-            result: null,
-          });
-      for (const turn of this.snapshot().turns)
-        if (turn.status === 'running' || turn.status === 'queued')
-          await this.publish({ ...turn, status: 'interrupted' });
+      await this.interruptOpenWork();
       this.queue.length = 0;
       this.activeTurn = null;
       this.questions.clear();
@@ -1749,8 +1724,31 @@ export class HostedSession {
       await this.adapter.stopSession(this.config.session.sessionId);
     await this.serial;
     await this.eventSerial;
-    await this.publishing;
-    this.unsubscribe();
+    // The provider's exit is not published while stopping, so its open turn is ended here.
+    try {
+      await this.interruptOpenWork();
+    } finally {
+      await this.publishing;
+      this.unsubscribe();
+    }
+  }
+
+  /** Ends what the provider can no longer finish: open requests and unfinished turns. */
+  private async interruptOpenWork(): Promise<void> {
+    const snapshot = this.snapshot();
+    for (const request of snapshot.requests)
+      if (request.state === 'open' || request.state === 'submitting')
+        await this.publish({
+          type: 'request.settled',
+          requestId: request.requestId,
+          revision: request.revision + 1,
+          outcome: 'interrupted',
+          commandId: null,
+          result: null,
+        });
+    for (const turn of snapshot.turns)
+      if (turn.status === 'running' || turn.status === 'queued')
+        await this.publish({ ...turn, status: 'interrupted' });
   }
 }
 

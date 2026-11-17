@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { adminGroups, shownAdminSection } from '@renderer/features/admin/admin-sections';
-import { switchStanding, switchTiles } from '@renderer/features/admin/workspace-switches';
+import {
+  cannotWorkOnThisServer,
+  switchStanding,
+  switchTiles,
+} from '@renderer/features/admin/workspace-switches';
 import type {
   ConnectionCatalogEntry,
   WorkspaceService,
@@ -165,5 +169,16 @@ describe('the workspace switches as tiles', () => {
 
   it('says nothing of who a switch reaches when the server keeps it to admins', () => {
     expect(switchStanding(service({ connected_members: null, granted_agents: null }))).toBeNull();
+  });
+
+  it('marks a service the server can never serve, excluding operator-fixable codes', () => {
+    expect(cannotWorkOnThisServer('switched_off')).toBe(true);
+    expect(cannotWorkOnThisServer('needs_https')).toBe(true);
+    expect(cannotWorkOnThisServer('key_never_expires')).toBe(true);
+    expect(cannotWorkOnThisServer('coming_soon')).toBe(true);
+    expect(cannotWorkOnThisServer('app_not_set_up')).toBe(false);
+    expect(cannotWorkOnThisServer('needs_public_url')).toBe(false);
+    expect(cannotWorkOnThisServer('not_set_up')).toBe(false);
+    expect(cannotWorkOnThisServer(null)).toBe(false);
   });
 });

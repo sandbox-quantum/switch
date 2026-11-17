@@ -246,7 +246,9 @@ export default function ConnectorsPage() {
                         <Reason label="Off here" why={off.text} icon={<BlockOutlined />} />
                       ) : (
                         !connection.connectable && (
-                          <Reason label="Unavailable" why={connection.unavailable_reason ?? "It can't be connected here."} />
+                          <Reason
+                            label={connection.unavailable_code === "app_not_set_up" ? "Needs setup" : "Unavailable"}
+                            why={connection.unavailable_reason ?? "It can't be connected here."} />
                         )
                       )
                     }
