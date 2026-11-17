@@ -47,8 +47,8 @@ Declaring the app an Agent blocks workspace guests from using it and turns every
     "features": {
         "app_home": {
             "home_tab_enabled": true,
-            "messages_tab_enabled": false,
-            "messages_tab_read_only_enabled": false
+            "messages_tab_enabled": true,
+            "messages_tab_read_only_enabled": true
         },
         "bot_user": {
             "display_name": "Agent Switch",
@@ -58,26 +58,183 @@ Declaring the app an Agent blocks workspace guests from using it and turns every
             "agent_description": "Switch agents. Mention one by name in a channel and it answers there; its progress appears on the message while it works."
         },
         "slash_commands": [
-            { "command": "/help", "description": "Show the list of available in-room commands", "should_escape": false },
-            { "command": "/reset", "description": "Reset a targeted agent's session (clears context, then reconnects)", "usage_hint": "@agent-name | @role (required)", "should_escape": true },
-            { "command": "/reset-all-agents", "description": "Reset EVERY agent's session in this room", "should_escape": false },
-            { "command": "/compact", "description": "Compact a targeted agent's session context", "usage_hint": "@agent-name | @role (required)", "should_escape": true },
-            { "command": "/compact-all-agents", "description": "Compact EVERY agent's session context in this room", "should_escape": false },
-            { "command": "/interrupt", "description": "Interrupt a targeted agent's current turn", "usage_hint": "@agent-name | @role (required)", "should_escape": true },
-            { "command": "/interrupt-all-agents", "description": "Interrupt EVERY agent's current turn in this room", "should_escape": false },
-            { "command": "/agents-status", "description": "Show each agent's presence and capabilities in this room", "should_escape": false },
-            { "command": "/roles", "description": "List this room's roles and who currently holds each", "should_escape": false },
-            { "command": "/list-agents", "description": "List the agents available in this room", "should_escape": false },
-            { "command": "/list-switch-agents", "description": "List all agents registered on the Switch", "should_escape": false },
-            { "command": "/list-documents", "description": "List the room's internal documents", "should_escape": false },
-            { "command": "/list-references", "description": "List the room's references", "should_escape": false },
-            { "command": "/list-aliases", "description": "List per-room agent aliases (@alias to agent)", "should_escape": false },
-            { "command": "/set-alias", "description": "Give an agent a room alias", "usage_hint": "@agent-name @alias", "should_escape": true },
-            { "command": "/remove-alias", "description": "Remove a room alias", "usage_hint": "@alias (or @agent-name)", "should_escape": true },
-            { "command": "/invite-agent", "description": "Add an existing agent to this room", "usage_hint": "@agent-name", "should_escape": true },
-            { "command": "/run-cmd", "description": "Show the terminal command to start a session for an agent", "usage_hint": "@agent-name [@role]", "should_escape": true },
-            { "command": "/agents-greet", "description": "Have agents in the room introduce themselves", "should_escape": false },
-            { "command": "/room-url", "description": "Show the frontend URL for this room", "should_escape": false }
+            {
+                "command": "/help",
+                "description": "Show this list of commands",
+                "should_escape": false
+            },
+            {
+                "command": "/reset",
+                "description": "Reset a targeted agent's session (clears context, then reconnects)",
+                "should_escape": true,
+                "usage_hint": "<target>"
+            },
+            {
+                "command": "/reset-all-agents",
+                "description": "Reset EVERY agent's session in this room (clears context, then reconnects each)",
+                "should_escape": false
+            },
+            {
+                "command": "/compact",
+                "description": "Compact a targeted agent's session context",
+                "should_escape": true,
+                "usage_hint": "<target>"
+            },
+            {
+                "command": "/compact-all-agents",
+                "description": "Compact EVERY agent's session context in this room",
+                "should_escape": false
+            },
+            {
+                "command": "/interrupt",
+                "description": "Interrupt a targeted agent's current turn",
+                "should_escape": true,
+                "usage_hint": "<target>"
+            },
+            {
+                "command": "/interrupt-all-agents",
+                "description": "Interrupt EVERY agent's current turn in this room",
+                "should_escape": false
+            },
+            {
+                "command": "/list-agents",
+                "description": "List agents in this room",
+                "should_escape": false
+            },
+            {
+                "command": "/agents-status",
+                "description": "Show each agent's presence status and capabilities in this room",
+                "should_escape": false
+            },
+            {
+                "command": "/roles",
+                "description": "List this room's roles and who currently holds each",
+                "should_escape": false
+            },
+            {
+                "command": "/list-documents",
+                "description": "List the room's internal documents",
+                "should_escape": false
+            },
+            {
+                "command": "/list-references",
+                "description": "List the room's references",
+                "should_escape": false
+            },
+            {
+                "command": "/list-aliases",
+                "description": "List per-room agent aliases (`@alias` → agent)",
+                "should_escape": false
+            },
+            {
+                "command": "/follow-ups",
+                "description": "Turn follow-ups on or off for this room: whether a reply in an agent's thread, or the next message…",
+                "should_escape": true,
+                "usage_hint": "<state>"
+            },
+            {
+                "command": "/auto-route",
+                "description": "Let Switch pick the agent to answer messages that tag nobody, using a decision service",
+                "should_escape": true,
+                "usage_hint": "<state>"
+            },
+            {
+                "command": "/assign-agent",
+                "description": "Send every message in this room to one agent, unless it mentions someone else",
+                "should_escape": true,
+                "usage_hint": "<agent>"
+            },
+            {
+                "command": "/unassign-agent",
+                "description": "Stop sending every message in this room to the assigned agent",
+                "should_escape": false
+            },
+            {
+                "command": "/add-room-admin",
+                "description": "Make someone in this room a room admin, who can change it as its owner does: the room's owner or a…",
+                "should_escape": true,
+                "usage_hint": "<person>"
+            },
+            {
+                "command": "/remove-room-admin",
+                "description": "Take someone off this room's room admins: the room's owner or a workspace admin, or a room admin st…",
+                "should_escape": true,
+                "usage_hint": "<person>"
+            },
+            {
+                "command": "/list-room-admins",
+                "description": "Show who owns this room and who its room admins are",
+                "should_escape": false
+            },
+            {
+                "command": "/set-alias",
+                "description": "Give an agent a room alias: the room's owner or an admin, or the agent's own owner",
+                "should_escape": true,
+                "usage_hint": "<agent> <alias>"
+            },
+            {
+                "command": "/remove-alias",
+                "description": "Remove a room alias: the room's owner or an admin, or the agent's own owner",
+                "should_escape": true,
+                "usage_hint": "<alias>"
+            },
+            {
+                "command": "/invite-agent",
+                "description": "Add an existing agent to this room",
+                "should_escape": true,
+                "usage_hint": "<agent>"
+            },
+            {
+                "command": "/remove-agent",
+                "description": "Remove an agent from this room: the room's owner or an admin, or the agent's own owner",
+                "should_escape": true,
+                "usage_hint": "<agent>"
+            },
+            {
+                "command": "/remove-user",
+                "description": "Remove a person from this room and its channel: the room's owner or an admin",
+                "should_escape": true,
+                "usage_hint": "<person>"
+            },
+            {
+                "command": "/link-account",
+                "description": "Confirm a link between this chat account and your Switch user, with the code Switch showed you",
+                "should_escape": true,
+                "usage_hint": "<code>"
+            },
+            {
+                "command": "/unlink-account",
+                "description": "Show which Switch users this chat account is linked to, or remove one",
+                "should_escape": true,
+                "usage_hint": "<user>"
+            },
+            {
+                "command": "/rename-agent",
+                "description": "Rename an agent, and its display name with it",
+                "should_escape": true,
+                "usage_hint": "<agent> <new_name> <display_name>"
+            },
+            {
+                "command": "/delete-agent",
+                "description": "Delete an agent everywhere, after a confirmation",
+                "should_escape": true,
+                "usage_hint": "<agent> <confirm>"
+            },
+            {
+                "command": "/room-url",
+                "description": "Show the frontend URL for this room",
+                "should_escape": false
+            },
+            {
+                "command": "/list-switch-agents",
+                "description": "List all agents registered on the Switch",
+                "should_escape": false
+            },
+            {
+                "command": "/agents-greet",
+                "description": "Have agents in the room introduce themselves",
+                "should_escape": false
+            }
         ]
     },
     "oauth_config": {
@@ -105,13 +262,11 @@ Declaring the app an Agent blocks workspace guests from using it and turns every
                 "usergroups:read",
                 "usergroups:write"
             ]
-        },
-        "pkce_enabled": false
+        }
     },
     "settings": {
         "event_subscriptions": {
             "bot_events": [
-                "app_home_opened",
                 "message.channels",
                 "message.groups",
                 "message.im",
@@ -123,15 +278,14 @@ Declaring the app an Agent blocks workspace guests from using it and turns every
         },
         "org_deploy_enabled": false,
         "socket_mode_enabled": true,
-        "token_rotation_enabled": false,
-        "is_mcp_enabled": false
+        "token_rotation_enabled": false
     }
 }
 ```
 
 **Note**
 
-Slack reads slash commands from the manifest only when you create the app, so commands Switch adds later don't appear in your app. If a documented command is missing from your workspace, compare your app with the [current manifest](https://github.com/sandbox-quantum/switch/blob/main/docs/old/bridges/SLACK_SETUP.md) and add what's missing.
+Slack reads slash commands from the manifest only when you create the app, so commands Switch adds later don't appear in your app. If a documented command is missing from your workspace, compare your app with the [manifest above](#agent-switch-app-manifest) and add what's missing.
 
 To build the app by hand instead, see [Configure the app by hand](#configure-the-app-by-hand).
 
@@ -287,7 +441,11 @@ You don't need `app_mention`. Switch finds messages that tag the app in the `mes
 
 ### Socket Mode, interactivity and commands
 
-Enable **Socket Mode** and **Interactivity**, and add the Switch slash commands listed in the manifest. Socket Mode removes the need for a public address, and interactivity makes the commands work.
+Enable **Socket Mode** and **Interactivity**, and add the Switch slash commands listed in the manifest. Socket Mode removes the need for a public address. Linking a person's Slack account needs two of these: **Interactivity**, without which tapping the number in Switch's message does nothing, and the `/link-account` and `/unlink-account` commands.
+
+### App Home
+
+Under **App Home**, turn on the **Messages Tab** and tick the option that stops people sending messages from it. That's where Switch sends the message with numbers that confirms a linked account.
 
 ### The Agents feature
 
@@ -303,7 +461,7 @@ Turning on **Agents** blocks workspace guests from using the app and turns every
 
 **Slack reads slash commands from the manifest only when you create the app**, so commands Switch adds later don't appear in your app.
 
-To fix it, compare your app with the [current manifest](https://github.com/sandbox-quantum/switch/blob/main/docs/old/bridges/SLACK_SETUP.md) and add what's missing.
+To fix it, compare your app with the [manifest above](#agent-switch-app-manifest) and add what's missing.
 
 ### Agent names don't complete when you type @
 

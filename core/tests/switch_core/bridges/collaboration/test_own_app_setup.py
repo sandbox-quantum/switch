@@ -5,6 +5,7 @@ transport."""
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
@@ -161,7 +162,7 @@ class TestWhatLinkingAnAccountNeeds:
         commands = {c["command"] for c in manifest["features"]["slash_commands"]}
         assert {"/link-account", "/unlink-account"} <= commands
         scopes = set(manifest["oauth_config"]["scopes"]["bot"])
-        assert {"commands", "im:history", "im:write", "users:read"} <= scopes
+        assert {"commands", "im:write", "users:read"} <= scopes
         assert set(own_app_setup.REQUIRED_SLACK_SCOPES) <= scopes
 
     async def test_an_app_without_the_command_scope_is_told_before_connecting(
@@ -183,3 +184,27 @@ class TestWhatLinkingAnAccountNeeds:
                 await check_slack(http, bot_token="xoxb-1", app_token="xapp-1")
         assert "missing the commands, im:write scopes" in str(refused.value)
         assert "Interactivity" in str(refused.value)
+
+
+#: The Slack page of the published docs, whose manifest people paste by hand.
+SLACK_DOC = (
+    Path(__file__).parents[5]
+    / "docs"
+    / "official"
+    / "deploy"
+    / "messaging-apps"
+    / "slack.md"
+)
+
+
+def test_the_documented_manifest_is_the_one_this_server_builds() -> None:
+    """An app made from the docs must be able to do what one made from Switch
+    Console's link can, linking accounts included: the docs' manifest is
+    `slack_manifest()` exactly. Regenerate the block with
+    `json.dumps(slack_manifest(), indent=4)` when this fails."""
+    text = SLACK_DOC.read_text()
+    head = "### Agent Switch app manifest\n\n```json\n"
+    start = text.index(head) + len(head)
+    documented = json.loads(text[start : text.index("\n```\n", start)])
+
+    assert documented == slack_manifest()

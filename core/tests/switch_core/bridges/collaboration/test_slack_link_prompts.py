@@ -436,7 +436,8 @@ class TestCodeInstructions:
         text = SlackAdapter.link_code_instructions("7KQ2-M9XD", {})
 
         assert text.startswith("Type `/link-account 7KQ2-M9XD`")
-        assert "Interactivity is off" in text
+        assert "one possible cause is the Slack app's Interactivity being off" in text
+        assert "a second Switch server using the same app token" in text
 
     def test_switchs_own_app_does_not(self) -> None:
         text = SlackAdapter.link_code_instructions(

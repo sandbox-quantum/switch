@@ -2198,15 +2198,16 @@ class SlackAdapter(PlatformAdapter):
             f"doesn't know the command, post `!link-account {code}` in a "
             "channel Switch is in."
         )
-        # An app the workspace made itself is only as complete as it was made:
-        # one built by hand rather than from the manifest has no Interactivity,
-        # and a tap on its message reaches nobody.
+        # An app the workspace made itself is only as complete as it was made,
+        # and only one server should hold its token. Either can leave a tap
+        # reaching nobody here, so both are named as possibilities.
         if connection_config.get("event_delivery", "socket_mode") != "webhook":
             instructions += (
-                " If tapping a number in Switch's message does nothing, the Slack "
-                "app's Interactivity is off: whoever set up the app can turn it "
-                "on by pasting this connection's manifest on the app's App "
-                "Manifest page."
+                " If tapping a number in Switch's message does nothing, one "
+                "possible cause is the Slack app's Interactivity being off: "
+                "whoever set up the app can turn it on by pasting this "
+                "connection's manifest on the app's App Manifest page. Another "
+                "is a second Switch server using the same app token."
             )
         return instructions
 

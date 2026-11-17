@@ -106,10 +106,10 @@ def slack_create_url(manifest: dict[str, Any]) -> str:
 
 #: Bot scopes Switch cannot do without: reading and posting in channels;
 #: `users:read`, without which linking a person's Slack account fails; and what
-#: confirming that link uses: `im:write` to message the person, `commands` for
-#: `/link-account`, and `im:history` for the app's direct messages. An app made
-#: from the manifest has them all; one built by hand, or from an older
-#: manifest, may not, and is told which to add before it is connected.
+#: confirming that link uses: `im:write` to message the person and `commands`
+#: for `/link-account`. An app made from the manifest has them all; one built by
+#: hand, or from an older manifest, may not, and is told which to add before it
+#: is connected.
 REQUIRED_SLACK_SCOPES: tuple[str, ...] = (
     "channels:history",
     "channels:read",
@@ -117,7 +117,6 @@ REQUIRED_SLACK_SCOPES: tuple[str, ...] = (
     "commands",
     "groups:history",
     "groups:read",
-    "im:history",
     "im:write",
     "users:read",
 )
