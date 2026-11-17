@@ -4550,6 +4550,11 @@ version of their own to them without also giving them a release of their own.
   stops says why, as Connectors does, even when it is turned on.
 
 #### Removed
+- **The "Onboarding checklist" setting.** Turning it on or off under Settings ›
+  Preferences changed nothing: the sidebar's "Setting up Switch" checklist it
+  controlled is no longer shown, since the first run now sets things up with
+  you through switch-buddy. The setting and the checklist behind it are gone,
+  and a value an older version saved is ignored.
 - **The welcome page.** The Switch mark in the sidebar, and deleting the agent
   or server on screen, now go to the active workspace's Home, or to an "Add a
   server" page when no server is left. "About Switch" in the workspace menu is
