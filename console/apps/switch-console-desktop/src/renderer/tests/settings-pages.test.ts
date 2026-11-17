@@ -21,7 +21,6 @@ const everyone: SettingsAudience = {
   workspaceSettings: true,
   organizationSettings: false,
   workspaceAdmin: false,
-  operator: false,
   operatesGatewaylessServer: false,
   serviceConnections: true,
 };
@@ -32,7 +31,6 @@ const nobody: SettingsAudience = {
   workspaceSettings: false,
   organizationSettings: false,
   workspaceAdmin: false,
-  operator: false,
   operatesGatewaylessServer: false,
   serviceConnections: false,
 };
@@ -66,13 +64,14 @@ describe('Settings sections', () => {
     ]);
   });
 
-  it('gives workspace admins its connectors and decision routing, after agent providers', () => {
+  it('gives workspace admins its connectors, decision routing and guardrails, after agent providers', () => {
     expect(ids({ ...everyone, workspaceAdmin: true })[0]).toEqual([
       'preferences',
       'messaging-apps',
       'clis-models',
       'connectors',
       'decision-routing',
+      'guardrails',
       'api-keys',
       'devices',
       'remote-hosts',
@@ -87,11 +86,10 @@ describe('Settings sections', () => {
     expect(main).toContain('decision-routing');
   });
 
-  it('gives the server’s operator its guardrails, and connector apps only on a Switch with no gateway', () => {
-    const operator = { ...everyone, workspaceAdmin: true, operator: true };
-    expect(ids(operator)[0]).toContain('guardrails');
-    expect(ids(operator)[0]).not.toContain('connector-apps');
-    expect(ids({ ...operator, operatesGatewaylessServer: true })[0].slice(3, 7)).toEqual([
+  it('gives connector apps only to whoever runs a Switch with no gateway', () => {
+    const admin = { ...everyone, workspaceAdmin: true };
+    expect(ids(admin)[0]).not.toContain('connector-apps');
+    expect(ids({ ...admin, operatesGatewaylessServer: true })[0].slice(3, 7)).toEqual([
       'connectors',
       'decision-routing',
       'guardrails',

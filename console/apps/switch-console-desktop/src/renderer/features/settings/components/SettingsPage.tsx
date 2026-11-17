@@ -165,7 +165,6 @@ export const SettingsPage = observer(function SettingsPage({
     workspaceSettings,
     organizationSettings,
     workspaceAdmin: server !== null && user !== null && administersWorkspaceInScope(server.id),
-    operator,
     operatesGatewaylessServer: operator && server !== null && !servesWebGateway(server),
     serviceConnections,
   });

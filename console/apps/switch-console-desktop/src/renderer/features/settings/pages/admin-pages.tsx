@@ -1,4 +1,5 @@
-import { Info } from 'lucide-react';
+import { useQuery } from '@tanstack/react-query';
+import { ExternalLink, Info } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { type ReactNode, useState } from 'react';
 import { ConnectorAppProfile } from '@renderer/features/admin/connector-app-profile';
@@ -13,13 +14,20 @@ import {
 } from '@renderer/features/connectors/connectors-queries';
 import { FlagsUnreadable } from '@renderer/features/connectors/flags-unreadable';
 import { GuardrailsSection } from '@renderer/features/switch-servers/GuardrailsSection';
+import { openServerPage } from '@renderer/features/switch-servers/open-server-page';
+import { operatesServer } from '@renderer/features/switch-servers/workspace-admin';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { PageHeader } from '@renderer/lib/components/page-header';
+import { failureText } from '@renderer/lib/errors/describe-failure';
+import { rpc } from '@renderer/lib/ipc';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { openExternalUrl } from '@renderer/lib/open-external';
 import { Alert, AlertTitle } from '@renderer/lib/ui/alert';
+import { Button } from '@renderer/lib/ui/button';
 import { SearchInput } from '@renderer/lib/ui/search-input';
 import { Spinner } from '@renderer/lib/ui/spinner';
+import { dashboardPageUrl, type SwitchServer } from '@shared/core/switch-servers/switch-servers';
+import { administersOrganization, type Workspace } from '@shared/core/workspaces/workspaces';
 import { SWITCH_TRUST_ABOUT_URL } from '@shared/urls';
 import { OnSignedInServer } from './settings-server';
 
@@ -39,7 +47,7 @@ const InWorkspace = observer(function InWorkspace({
   children,
 }: {
   serverId: string;
-  children: (workspace: { id: string; name: string }) => ReactNode;
+  children: (workspace: Workspace) => ReactNode;
 }) {
   const workspace = workspacesStore.onServerInScope(serverId);
   if (workspace === null) return <Spinner />;
@@ -141,41 +149,133 @@ export function DecisionRoutingSettingsPage() {
   );
 }
 
-/** The server's own guardrails, for whoever runs it. */
+/**
+ * The guardrails that check a workspace's messages, for its admins to see.
+ * Its organization's admins connect them, in the dashboard; everyone else
+ * here reads them. A server from before each organization set its own keeps
+ * its one form for the whole server, for whoever runs it.
+ */
 export function GuardrailsSettingsPage() {
   return (
     <OnSignedInServer>
       {({ server }) => (
-        <div className="space-y-6 pb-10">
-          <PageHeader
-            sticky
-            title="Guardrails"
-            description={
-              <>
-                Guardrails that check what is sent on {server.name} before it goes out, once they
-                are set up. Powered by{' '}
-                <button
-                  type="button"
-                  className="text-foreground underline underline-offset-3 hover:text-foreground-muted"
-                  onClick={() =>
-                    void openExternalUrl(SWITCH_TRUST_ABOUT_URL, 'Could not open Switch Trust')
-                  }
-                >
-                  Switch Trust
-                </button>
-                .
-              </>
-            }
-          >
-            <AdminNotice>
-              As the person who runs {server.name}, you are able to manage the guardrails that check
-              what is sent on it.
-            </AdminNotice>
-          </PageHeader>
-          <GuardrailsSection serverId={server.id} initiallyOpen />
-        </div>
+        <InWorkspace serverId={server.id}>
+          {(workspace) => (
+            <div className="space-y-6 pb-10">
+              <PageHeader
+                sticky
+                title="Guardrails"
+                description={
+                  <>
+                    Checks that run on what is sent in {workspace.name} before it goes out. Powered
+                    by{' '}
+                    <button
+                      type="button"
+                      className="text-foreground underline underline-offset-3 hover:text-foreground-muted"
+                      onClick={() =>
+                        void openExternalUrl(SWITCH_TRUST_ABOUT_URL, 'Could not open Switch Trust')
+                      }
+                    >
+                      Switch Trust
+                    </button>
+                    .
+                  </>
+                }
+              >
+                <AdminNotice>
+                  {administersOrganization(workspace)
+                    ? 'As an organization admin, you are able to change the guardrails for every workspace in your organization.'
+                    : `As a workspace admin, you are able to see which guardrails check ${workspace.name}. Only organization admins can change them.`}
+                </AdminNotice>
+              </PageHeader>
+              <WorkspaceGuardrailsView key={workspace.id} server={server} workspace={workspace} />
+            </div>
+          )}
+        </InWorkspace>
       )}
     </OnSignedInServer>
+  );
+}
+
+function WorkspaceGuardrailsView({
+  server,
+  workspace,
+}: {
+  server: SwitchServer;
+  workspace: Workspace;
+}) {
+  const guardrails = useQuery({
+    queryKey: ['workspace-guardrails', workspace.id],
+    queryFn: () => rpc.switchServers.getWorkspaceGuardrails(workspace.id),
+    retry: false,
+  });
+  if (guardrails.isPending) return <Spinner />;
+  if (guardrails.isError)
+    return (
+      <p className="text-sm text-destructive">
+        {failureText(guardrails.error, 'Could not read which guardrails check this workspace.')}
+      </p>
+    );
+  const result = guardrails.data;
+  if (result.kind === 'unsupported')
+    return operatesServer(server.id) ? (
+      <GuardrailsSection serverId={server.id} initiallyOpen />
+    ) : (
+      <p className="text-sm text-foreground-muted">
+        {server.name} sets one set of guardrails for the whole server. Whoever runs it can change
+        them.
+      </p>
+    );
+  if (result.kind === 'unauthenticated')
+    return <p className="text-sm text-destructive">Your session has expired. Sign in again.</p>;
+  if (result.kind === 'error')
+    return (
+      <p className="text-sm text-destructive">
+        Could not read which guardrails check this workspace: {result.message}
+      </p>
+    );
+
+  const { policyId, policyName, policyUrl, checking } = result.guardrails;
+  return (
+    <div className="flex flex-col items-start gap-3">
+      <p className="text-sm">
+        {checking ? (
+          <>
+            Messages in {workspace.name} are checked by the Switch Trust policy{' '}
+            <span className="font-medium">{policyName ?? policyId}</span>.
+          </>
+        ) : (
+          `No guardrails check messages in ${workspace.name} yet.`
+        )}
+      </p>
+      <div className="flex gap-2">
+        {checking && policyUrl !== null && (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => void openExternalUrl(policyUrl, 'Could not open the policy')}
+          >
+            View policy
+            <ExternalLink className="size-3.5" />
+          </Button>
+        )}
+        {administersOrganization(workspace) && (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() =>
+              void openServerPage(
+                server.id,
+                dashboardPageUrl(server, 'settings/org/guardrails', workspace.tenantId)
+              )
+            }
+          >
+            Change in Organization settings
+            <ExternalLink className="size-3.5" />
+          </Button>
+        )}
+      </div>
+    </div>
   );
 }
 

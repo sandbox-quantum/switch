@@ -6,8 +6,8 @@
  * keys and account live on one), what needs agent management, whether the
  * server serves the web gateway that its workspace and organization settings
  * live in, and what the person administers: a workspace's admins also look
- * after its connectors and decision routing here, and whoever runs the server
- * its guardrails and connector apps.
+ * after its connectors and decision routing here and see its guardrails, and
+ * whoever runs a server with no web gateway its connector apps.
  */
 
 export type SettingsPageTab =
@@ -75,9 +75,7 @@ export type SettingsAudience = {
   organizationSettings: boolean;
   /** You administer the active workspace, or run its server. */
   workspaceAdmin: boolean;
-  /** You run the active server, whose own settings cover every workspace on it. */
-  operator: boolean;
-  /** As `operator`, on a server that serves no web gateway. */
+  /** You run the active server, and it serves no web gateway. */
   operatesGatewaylessServer: boolean;
   /** The server has service connections on. */
   serviceConnections: boolean;
@@ -100,7 +98,7 @@ export function settingsSections(audience: SettingsAudience): SettingsItem[][] {
     ...(audience.workspaceAdmin
       ? [{ id: 'decision-routing' as const, label: 'Decision routing' }]
       : []),
-    ...(audience.operator ? [{ id: 'guardrails' as const, label: 'Guardrails' }] : []),
+    ...(audience.workspaceAdmin ? [{ id: 'guardrails' as const, label: 'Guardrails' }] : []),
     ...(audience.operatesGatewaylessServer && audience.serviceConnections
       ? [{ id: 'connector-apps' as const, label: 'Connector apps' }]
       : []),

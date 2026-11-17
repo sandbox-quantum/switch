@@ -37,8 +37,14 @@ const switchServers = vi.hoisted(() => ({
   saveConnectorApp: vi.fn(),
   getConnectorAppImpact: vi.fn(),
   getTrustSettings: vi.fn(),
+  getWorkspaceGuardrails: vi.fn(),
 }));
-const admin = vi.hoisted(() => ({ administers: true, operator: false, servesGateway: false }));
+const admin = vi.hoisted(() => ({
+  administers: true,
+  operator: false,
+  servesGateway: false,
+  organizationAdmin: false,
+}));
 /** The dialogs asked for, by id; each is answered by the test. */
 const modals = vi.hoisted(
   () =>
@@ -64,13 +70,25 @@ vi.mock('@renderer/lib/ipc', () => ({
 }));
 
 vi.mock('@renderer/features/workspaces/workspaces-store', () => ({
-  workspacesStore: { onServerInScope: () => ({ id: 'workspace', name: 'Acme' }) },
+  workspacesStore: {
+    onServerInScope: () => ({
+      id: 'workspace',
+      name: 'Acme',
+      tenantId: 'tenant-1',
+      organizationRole: admin.organizationAdmin ? 'org_admin' : null,
+    }),
+  },
 }));
 
 vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
   switchServersStore: {
     servers: [{ id: 'server', name: 'Dev Server' }],
-    activeServer: { id: 'server', name: 'Dev Server' },
+    activeServer: {
+      id: 'server',
+      name: 'Dev Server',
+      url: 'https://switch.example.com',
+      dashboardUrl: null,
+    },
     serverById: () => ({ id: 'server', name: 'Dev Server' }),
     statusFor: () => ({
       connected: true,
@@ -125,6 +143,8 @@ vi.mock('@renderer/lib/layout/navigation-provider', async () => {
 
 const openExternalUrl = vi.hoisted(() => vi.fn(async () => true));
 vi.mock('@renderer/lib/open-external', () => ({ openExternalUrl }));
+const openServerPage = vi.hoisted(() => vi.fn(async () => {}));
+vi.mock('@renderer/features/switch-servers/open-server-page', () => ({ openServerPage }));
 
 vi.mock('@renderer/lib/modal/modal-provider', () => ({
   useShowModal: (id: string) => (args: Omit<(typeof modals)[number], 'id'>) =>
@@ -171,6 +191,9 @@ beforeEach(() => {
   admin.administers = true;
   admin.operator = false;
   admin.servesGateway = false;
+  admin.organizationAdmin = false;
+  openExternalUrl.mockClear();
+  openServerPage.mockClear();
   modals.length = 0;
   for (const mock of Object.values(workspaces)) mock.mockReset();
   for (const mock of Object.values(switchServers)) mock.mockReset();
@@ -394,17 +417,37 @@ it('says so when it cannot read the decision routing, rather than drawing a gues
   );
 });
 
-it('says the guardrails are powered by Switch Trust, with a link to what it is', async () => {
-  admin.operator = true;
-  switchServers.getTrustSettings.mockResolvedValue({
-    kind: 'moved',
-    message: 'Guardrails are set for each organization now.',
-  });
+const CHECKED = {
+  kind: 'loaded',
+  guardrails: {
+    checking: true,
+    policyId: 'pol_123',
+    policyName: 'Default policy',
+    policyUrl: 'https://app.switchagents.ai/policies/pol_123',
+  },
+};
+
+it('shows a workspace admin which policy checks the workspace, read-only, powered by Switch Trust', async () => {
+  switchServers.getWorkspaceGuardrails.mockResolvedValue(CHECKED);
   navigation.navigate('settings', { tab: 'guardrails' });
   const page = await render();
 
   await vi.waitFor(() =>
-    expect(page.textContent).toContain('Guardrails are set for each organization now.')
+    expect(page.textContent).toContain(
+      'Messages in Acme are checked by the Switch Trust policy Default policy.'
+    )
+  );
+  expect(switchServers.getWorkspaceGuardrails).toHaveBeenCalledWith('workspace');
+  expect(page.querySelector('[role="note"]')!.textContent).toBe(
+    'As a workspace admin, you are able to see which guardrails check Acme. Only organization admins can change them.'
+  );
+  expect(button(/Change in Organization settings/, page)).toBeUndefined();
+  expect(switchServers.getTrustSettings).not.toHaveBeenCalled();
+
+  await act(async () => button(/^View policy/, page)!.click());
+  expect(openExternalUrl).toHaveBeenCalledWith(
+    'https://app.switchagents.ai/policies/pol_123',
+    'Could not open the policy'
   );
   expect(page.textContent).toContain('Powered by Switch Trust.');
   await act(async () => button(/^Switch Trust$/, page)!.click());
@@ -412,6 +455,69 @@ it('says the guardrails are powered by Switch Trust, with a link to what it is',
     'https://www.switchagents.ai/trust',
     'Could not open Switch Trust'
   );
+});
+
+it('says when nothing checks the workspace', async () => {
+  switchServers.getWorkspaceGuardrails.mockResolvedValue({
+    kind: 'loaded',
+    guardrails: { checking: false, policyId: null, policyName: null, policyUrl: null },
+  });
+  navigation.navigate('settings', { tab: 'guardrails' });
+  const page = await render();
+
+  await vi.waitFor(() =>
+    expect(page.textContent).toContain('No guardrails check messages in Acme yet.')
+  );
+  expect(button(/^View policy/, page)).toBeUndefined();
+});
+
+it('sends an organization admin to Organization settings to change them', async () => {
+  admin.organizationAdmin = true;
+  switchServers.getWorkspaceGuardrails.mockResolvedValue(CHECKED);
+  navigation.navigate('settings', { tab: 'guardrails' });
+  const page = await render();
+
+  await vi.waitFor(() => expect(button(/Change in Organization settings/, page)).toBeDefined());
+  expect(page.querySelector('[role="note"]')!.textContent).toBe(
+    'As an organization admin, you are able to change the guardrails for every workspace in your organization.'
+  );
+  await act(async () => button(/Change in Organization settings/, page)!.click());
+  expect(openServerPage).toHaveBeenCalledWith(
+    'server',
+    expect.stringMatching(/\/settings\/org\/guardrails\?.*tenant-1/)
+  );
+});
+
+it('keeps the whole-server form for whoever runs a server from before organizations set their own', async () => {
+  admin.operator = true;
+  switchServers.getWorkspaceGuardrails.mockResolvedValue({ kind: 'unsupported' });
+  switchServers.getTrustSettings.mockResolvedValue({
+    kind: 'loaded',
+    settings: {
+      endpoint: 'https://trust.example',
+      policyId: 'pol_1',
+      hasApiKey: true,
+      apiKeyLast4: 'ab12',
+      enabled: true,
+    },
+  });
+  navigation.navigate('settings', { tab: 'guardrails' });
+  const page = await render();
+
+  await vi.waitFor(() => expect(page.textContent).toContain('Switch Trust Integration'));
+});
+
+it('tells a workspace admin on such a server who can change them', async () => {
+  switchServers.getWorkspaceGuardrails.mockResolvedValue({ kind: 'unsupported' });
+  navigation.navigate('settings', { tab: 'guardrails' });
+  const page = await render();
+
+  await vi.waitFor(() =>
+    expect(page.textContent).toContain(
+      'Dev Server sets one set of guardrails for the whole server. Whoever runs it can change them.'
+    )
+  );
+  expect(switchServers.getTrustSettings).not.toHaveBeenCalled();
 });
 
 function connectorApp(overrides: Partial<ConnectorApp>): ConnectorApp {
