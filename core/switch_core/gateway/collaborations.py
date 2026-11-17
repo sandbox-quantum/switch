@@ -292,6 +292,9 @@ async def _detail(
         team_placement_supported=_places_app_in_teams(bridge.id, collab_lifecycle),
         receives_webhooks=collab_lifecycle.receives_webhooks(bridge.type),
         webhook_url=collab_lifecycle.webhook_url(bridge.id, bridge.type),
+        commands=collab_lifecycle.typed_commands(
+            bridge.type, bridge.connection_config or {}
+        ),
         can_manage=administers,
         can_delete=administers,
     )

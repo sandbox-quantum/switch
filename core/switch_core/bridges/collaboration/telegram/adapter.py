@@ -1540,12 +1540,21 @@ class TelegramAdapter(PlatformAdapter):
         )
 
     @classmethod
+    def typed_command(
+        cls, name: str, argument: str, connection_config: Mapping[str, object]
+    ) -> str:
+        # A registered Telegram command may not contain a hyphen, so the
+        # underscore form is the one the menu offers and the client renders as
+        # tappable. Commands also reach the bot in a group where it is not an
+        # admin, which plain `!` messages do not.
+        return f"/{name.replace('-', '_')} {argument}"
+
+    @classmethod
     def link_code_instructions(
         cls, code: str, connection_config: Mapping[str, object]
     ) -> str:
-        # Commands reach the bot even in a group where it is not an admin,
-        # which is where plain messages do not.
-        return f"Send `/link_account {code}` from that account in a group the Switch bot is in."
+        command = cls.typed_command("link-account", code, connection_config)
+        return f"Send `{command}` from that account in a group the Switch bot is in."
 
     @classmethod
     def unlinkable_account_reason(cls, external_user_id: str) -> str | None:

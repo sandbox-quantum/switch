@@ -242,6 +242,9 @@ class _Bridges:
     def supports_private_channels(self, bridge_type: str) -> bool:
         return True
 
+    def typed_commands(self, bridge_type, connection_config):
+        return {}
+
     def channel_creation_blocker(
         self, bridge_type: str, connection_config: object
     ) -> str | None:

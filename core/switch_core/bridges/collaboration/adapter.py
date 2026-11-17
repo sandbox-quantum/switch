@@ -1016,6 +1016,20 @@ class PlatformAdapter(ABC):
         return None
 
     @classmethod
+    def typed_command(
+        cls, name: str, argument: str, connection_config: Mapping[str, object]
+    ) -> str:
+        """The text a person pastes into a message to run command `name` here.
+
+        The one place a platform's command syntax is spelled, so Console, the
+        link-code instructions and the bridge's own notices cannot drift
+        apart. Only a form that works pasted whole as a message counts: a
+        slash command a platform only runs when picked from its own menu is
+        not one.
+        """
+        return f"!{name} {argument}"
+
+    @classmethod
     def link_code_instructions(
         cls, code: str, connection_config: Mapping[str, object]
     ) -> str:

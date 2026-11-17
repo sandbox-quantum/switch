@@ -2160,6 +2160,14 @@ class SlackAdapter(PlatformAdapter):
             )
 
     @classmethod
+    def typed_command(
+        cls, name: str, argument: str, connection_config: Mapping[str, object]
+    ) -> str:
+        # Slack runs a slash command typed or pasted as the whole message, and
+        # passes its tail through as free text.
+        return f"/{name} {argument}"
+
+    @classmethod
     def link_code_instructions(
         cls, code: str, connection_config: Mapping[str, object]
     ) -> str:

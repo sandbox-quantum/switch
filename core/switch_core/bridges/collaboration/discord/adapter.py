@@ -1767,6 +1767,17 @@ class DiscordAdapter(PlatformAdapter):
         return None
 
     @classmethod
+    def typed_command(
+        cls, name: str, argument: str, connection_config: Mapping[str, object]
+    ) -> str:
+        if connection_config.get("event_delivery") != "shared":
+            return f"!{name} {argument}"
+        # The shared connection is not given message text, so only the slash
+        # command reaches Switch. Discord names each argument as its own field.
+        option = COMMANDS_BY_NAME[name].args_spec[0].name
+        return f"/{name} {option}:{argument.removeprefix('@')}"
+
+    @classmethod
     def link_code_instructions(
         cls, code: str, connection_config: Mapping[str, object]
     ) -> str:

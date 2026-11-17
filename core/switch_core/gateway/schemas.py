@@ -901,6 +901,11 @@ class BridgeDetail(BaseModel):
     # which is then what stands between this connection and its events.
     receives_webhooks: bool = False
     webhook_url: str | None = None
+    # The commands a person is told to type here, keyed by command name, as
+    # this platform spells them, with `{agent}` (an agent's name) and `{code}`
+    # (a link code) left for the client to fill in. Clients show these rather
+    # than keeping a per-platform list of their own.
+    commands: dict[str, str]
     # What the caller may do with it: change its settings, Teams placement
     # and confirmation rules, or delete it — a workspace admin. That chats
     # still connected through it must be disconnected first is answered when
