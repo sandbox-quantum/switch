@@ -33,6 +33,7 @@ import {
   useAgents,
   useBridges,
   useBridgeUsers,
+  useMyIdentities,
   useRoomAgentCandidates,
   useRoomGroups,
 } from "../../data/hooks";
@@ -66,6 +67,9 @@ export default function RoomCreateFormBody() {
   const [newChannelType, setNewChannelType] = useState<
     "channel_public" | "channel_private"
   >("channel_private");
+  // Whether the person picked the channel type on this connection themselves.
+  const [channelTypeChosen, setChannelTypeChosen] = useState(false);
+  const { data: myIdentities } = useMyIdentities();
   const [agentIds, setAgentIds] = useState<string[]>([]);
   // Per-agent opt-in: ids of selected agents whose subagents to also add.
   const [includeSubagentsFor, setIncludeSubagentsFor] = useState<string[]>([]);
@@ -118,9 +122,22 @@ export default function RoomCreateFormBody() {
     selectedBridge?.private_channel_needs_linked_account ?? false;
   const publicChannelAddsCreator =
     selectedBridge?.public_channel_adds_creator ?? false;
+  // Whether the person has a confirmed account linked on this connection;
+  // null while unknown.
+  const linkedHere =
+    !selectedBridge || myIdentities == null
+      ? null
+      : myIdentities.some((i) => i.bridge_id === bridgeId && i.verified);
+  // A new channel is private, but a private channel needs its creator's linked
+  // account: without one, and with no type picked, it is offered as public.
+  const pickedChannelType = channelTypeChosen
+    ? newChannelType
+    : linkedHere === false
+      ? "channel_public"
+      : "channel_private";
   // A private choice the chosen connection cannot make is sent as public.
   const effectiveChannelType = privateChannelsSupported
-    ? newChannelType
+    ? pickedChannelType
     : "channel_public";
 
   const channelCreationBlockedReason = useMemo(() => {
@@ -422,6 +439,7 @@ export default function RoomCreateFormBody() {
         value={bridgeId}
         onChange={(e) => {
           setBridgeId(e.target.value);
+          setChannelTypeChosen(false);
           if (!e.target.value) {
             setChannelSource("new");
             setExternalChannelId("");
@@ -482,11 +500,12 @@ export default function RoomCreateFormBody() {
               select
               label="Channel type"
               value={effectiveChannelType}
-              onChange={(e) =>
+              onChange={(e) => {
                 setNewChannelType(
                   e.target.value as "channel_public" | "channel_private",
-                )
-              }
+                );
+                setChannelTypeChosen(true);
+              }}
               fullWidth
               helperText={
                 effectiveChannelType === "channel_private" &&
@@ -495,6 +514,10 @@ export default function RoomCreateFormBody() {
                     ? `You become the channel's owner through your linked ${selectedBridge?.display_name ?? ""} account, so link one first.`
                     : `Switch adds you to the channel through your linked ${selectedBridge?.display_name ?? ""} account, so link one first.`
                   : effectiveChannelType === "channel_public" &&
+                      privateChannelsSupported &&
+                      linkedHere === false
+                    ? "Link your account to make it private, in Messaging apps."
+                    : effectiveChannelType === "channel_public" &&
                       publicChannelAddsCreator
                     ? `Switch adds you to the channel through your linked ${selectedBridge?.display_name ?? ""} account, if you have one.`
                     : undefined
