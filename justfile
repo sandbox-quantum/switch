@@ -116,22 +116,15 @@ local-cloud:
 local-cloud-console:
     cd console && SWITCH_CLOUD_URL=http://localhost:8000 SWITCH_CONSOLE_USER_DATA_DIR=switchdash-local-cloud pnpm dev
 
-# Made by the gateway admin from .env, so it joins the admin's workspace, as
-# every admin-made account does. Use the admin's domain (switch.local by
-# default) for an account that should be able to join by domain.
-#   just local-cloud-user ada@switch.local "Ada Lovelace" <password>
+# Made with `switch-accounts create`, in no workspace: invite it from one (the
+# e-mail lands in Mailpit), or give it an address at a domain a workspace is
+# open to. The password is asked for twice on a terminal, or read from a
+# pipe; it is never taken from the command line.
+#   just local-cloud-user ada@switch.local "Ada Lovelace"
+#   printf '%s' "$PASSWORD" | just local-cloud-user ada@switch.local "Ada Lovelace"
 # Create an account on `just local-cloud` to sign in with
-local-cloud-user email name password:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    jar="$(mktemp)"
-    trap 'rm -f "$jar"' EXIT
-    curl -fsS -c "$jar" -H 'Content-Type: application/json' \
-      -d "$(jq -n --arg e "$GATEWAY_ADMIN_EMAIL" --arg p "$GATEWAY_ADMIN_PASSWORD" '{email: $e, password: $p}')" \
-      http://localhost:8000/gateway/auth/login >/dev/null
-    curl -fsS -b "$jar" -H 'Content-Type: application/json' \
-      -d "$(jq -n --arg e '{{ email }}' --arg n '{{ name }}' --arg p '{{ password }}' '{email: $e, name: $n, password: $p}')" \
-      http://localhost:8000/gateway/users | jq .
+local-cloud-user email name:
+    uv run --project core switch-accounts create {{ quote(email) }} --name {{ quote(name) }}
 
 # ── Format code with ruff ──────────────────────────────────────────────────────
 # Run from the repo root so ruff's hierarchical config discovery applies the
