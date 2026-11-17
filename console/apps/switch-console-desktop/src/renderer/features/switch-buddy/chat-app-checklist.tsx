@@ -121,7 +121,7 @@ export function ChatAppChecklist({
   const linkedOk = linked !== null && linked.verified;
   const open = (url: string) =>
     void reportOpenAttempt(
-      rpc.switchRooms.openRoomChannel({ serverId, channelUrl: url }),
+      rpc.switchRooms.openRoomChannel({ channelUrl: url }),
       `Could not open ${label}`,
       url
     );
