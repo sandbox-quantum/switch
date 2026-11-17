@@ -168,6 +168,15 @@ export async function passwordLogin(
   if (response.status === 401) {
     return err({ kind: 'invalid_credentials', message: 'Invalid email or password.' });
   }
+  if (response.status === 429) {
+    // Password sign-in is paused for this email or network: the server's
+    // own sentence says for how long and what still works.
+    const refusal = signupRefusal(await response.text().catch(() => ''));
+    return err({
+      kind: 'failed',
+      message: refusal ?? 'Too many sign-in attempts. Wait a few minutes, then try again.',
+    });
+  }
   if (!response.ok) {
     const detail = await response.text().catch(() => '');
     return err({
@@ -345,8 +354,34 @@ export async function refreshSession(
  * Reads the stored credentials and never makes them: minted ones would match no
  * running stack, and would then be kept as though they were the stack's.
  */
-export async function reauthenticateManagedServer(server: SwitchServer): Promise<string | null> {
-  if (!server.managed) return null;
+export function reauthenticateManagedServer(server: SwitchServer): Promise<string | null> {
+  if (!server.managed) return Promise.resolve(null);
+  const held = silentLoginHeldUntil.get(server.id);
+  if (held !== undefined && Date.now() < held) return Promise.resolve(null);
+  // Every call that finds the session gone asks at once; one sign-in answers them all.
+  let running = silentLogins.get(server.id);
+  if (!running) {
+    running = signInWithStoredPassword(server).finally(() => silentLogins.delete(server.id));
+    silentLogins.set(server.id, running);
+  }
+  return running;
+}
+
+/**
+ * How long a managed server's silent re-login waits after one is refused. Each
+ * refusal is a failed password sign-in, and the server pauses an email's
+ * password sign-in after a handful of them: retrying on every call that finds
+ * the session gone would lock the account within a minute, the server's only
+ * admin included. A stored password that is wrong stays wrong, and a pause
+ * lasts minutes, so the next try waits this long and the person can still sign
+ * in by hand meanwhile.
+ */
+export const SILENT_LOGIN_HOLD_MS = 5 * 60_000;
+
+const silentLogins = new Map<string, Promise<string | null>>();
+const silentLoginHeldUntil = new Map<string, number>();
+
+async function signInWithStoredPassword(server: SwitchServer): Promise<string | null> {
   const secrets = await readSecrets({ secretsKey: managedServerSecretsKey(server) });
   if (secrets === null) {
     log.warn('Managed Switch server has no stored credentials to sign in with', {
@@ -360,12 +395,15 @@ export async function reauthenticateManagedServer(server: SwitchServer): Promise
     secrets.gatewayAdminPassword
   );
   if (!result.success) {
-    log.warn('Managed Switch server silent re-login failed; falling back to sign-in', {
+    silentLoginHeldUntil.set(server.id, Date.now() + SILENT_LOGIN_HOLD_MS);
+    log.warn('Managed Switch server silent re-login failed; not trying again for a while', {
       server: server.id,
       error: result.error,
+      retryInMs: SILENT_LOGIN_HOLD_MS,
     });
     return null;
   }
+  silentLoginHeldUntil.delete(server.id);
   return getSessionCookie(server.id);
 }
 

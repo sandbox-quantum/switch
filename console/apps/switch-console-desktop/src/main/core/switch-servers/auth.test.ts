@@ -35,6 +35,7 @@ const {
   passwordLogin,
   reauthenticateManagedServer,
   refreshSession,
+  SILENT_LOGIN_HOLD_MS,
   signup,
 } = await import('./auth');
 const electron = await import('electron');
@@ -123,6 +124,51 @@ describe('reauthenticateManagedServer', () => {
     expect(await reauthenticateManagedServer(REMOTE)).toBeNull();
     expect(setSessionCookie).not.toHaveBeenCalled();
   });
+
+  it('answers every call that finds the session gone with one sign-in', async () => {
+    const server = { ...(REMOTE as object), id: 'srv-burst' } as never;
+    readSecrets.mockResolvedValue({ gatewayAdminPassword: 'stored-pw' });
+    fetchMock.mockResolvedValue({
+      status: 200,
+      ok: true,
+      headers: { get: () => null, getSetCookie: () => ['switch_auth=fresh-jwt; Path=/; HttpOnly'] },
+      json: async () => ({ id: 'u1' }),
+    });
+    getSessionCookie.mockResolvedValue('fresh-jwt');
+
+    const minted = await Promise.all(
+      [1, 2, 3, 4, 5].map(() => reauthenticateManagedServer(server))
+    );
+
+    expect(minted).toEqual(Array(5).fill('fresh-jwt'));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  // Each refused try is a failed password sign-in: retrying on every call
+  // would get the server to pause the account's password sign-in.
+  it('waits before trying the stored password again once it is refused', async () => {
+    const server = { ...(REMOTE as object), id: 'srv-refused' } as never;
+    readSecrets.mockResolvedValue({ gatewayAdminPassword: 'stale-pw' });
+    fetchMock.mockResolvedValue({
+      status: 429,
+      ok: false,
+      headers: { get: () => null, getSetCookie: () => [] },
+      text: async () =>
+        JSON.stringify({ detail: 'Password sign-in for this email address is paused.' }),
+    });
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1_000_000);
+    try {
+      expect(await reauthenticateManagedServer(server)).toBeNull();
+      expect(await reauthenticateManagedServer(server)).toBeNull();
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+
+      now.mockReturnValue(1_000_000 + SILENT_LOGIN_HOLD_MS);
+      expect(await reauthenticateManagedServer(server)).toBeNull();
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    } finally {
+      now.mockRestore();
+    }
+  });
 });
 
 describe('refreshSession', () => {
@@ -177,6 +223,30 @@ function response(status: number, body: unknown, cookies: string[] = []): Respon
 }
 
 describe('passwordLogin', () => {
+  it("says a paused sign-in in the server's words, not as a server problem", async () => {
+    fetchMock.mockResolvedValueOnce({
+      status: 429,
+      ok: false,
+      headers: { get: () => null, getSetCookie: () => [] },
+      text: async () =>
+        JSON.stringify({
+          detail:
+            'Password sign-in for this email address is paused after too many failed attempts. Try again in 15 minutes.',
+        }),
+    });
+
+    const result = await passwordLogin(SIGNUP_SERVER, 'ada@example.com', 'wrong');
+
+    expect(result).toEqual({
+      success: false,
+      error: {
+        kind: 'failed',
+        message:
+          'Password sign-in for this email address is paused after too many failed attempts. Try again in 15 minutes.',
+      },
+    });
+  });
+
   it('surfaces secure-storage failures after the server accepts the credentials', async () => {
     fetchMock.mockResolvedValueOnce(response(200, USER, ['switch_auth=SESSION']));
     setSessionCookie.mockRejectedValueOnce(new Error('Secure secret storage is unavailable.'));
