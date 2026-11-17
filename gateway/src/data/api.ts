@@ -343,8 +343,9 @@ export interface RoomDetail extends RoomSummary {
   // What deleting the room can do to its platform channel, as that platform's
   // bridge declares it; null when the room has no channel.
   channel_on_delete: ChannelRetirement | null;
-  /** Absent on servers that predate decision routing. */
-  auto_route?: RoomAutoRoute;
+  /** Absent on servers that predate decision routing, and null on a server
+   * with it switched off. */
+  auto_route?: RoomAutoRoute | null;
   /** The room's room admins, longest-standing first. Absent on servers that
    * predate room admins. */
   room_admins?: RoomAdminEntry[];

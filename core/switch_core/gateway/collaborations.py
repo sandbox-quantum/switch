@@ -41,6 +41,7 @@ from switch_core.bridges.collaboration.own_app_setup import (
     slack_create_url,
     slack_manifest,
 )
+from switch_core.config import SwitchConfig
 from switch_core.db.audit import AuditAction, record_audit_event
 from switch_core.db.models import (
     CollaborationBridge,
@@ -64,6 +65,7 @@ from switch_core.gateway.auth import (
 from switch_core.gateway.dependencies import (
     get_bridge_store,
     get_collab_lifecycle,
+    get_config,
     get_external_user_store,
     get_install_store,
     get_room_service,
@@ -328,10 +330,11 @@ async def list_bridge_types(
 @router.get("/setup/slack")
 async def slack_own_app_setup(
     _user: Annotated[User, Depends(require_tenant_admin)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> SlackOwnAppSetup:
     """The Slack app this server needs, and Slack's create-app page filled in
     with it, for someone connecting a Slack app of their own."""
-    manifest = slack_manifest()
+    manifest = slack_manifest(config.feature_flags)
     return SlackOwnAppSetup(manifest=manifest, create_url=slack_create_url(manifest))
 
 

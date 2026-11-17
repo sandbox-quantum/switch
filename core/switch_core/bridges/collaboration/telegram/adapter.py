@@ -859,7 +859,7 @@ class TelegramAdapter(PlatformAdapter):
         bridge is fully usable without the menu, and losing it is a far better
         outcome than refusing to start.
         """
-        menu = command_menu()
+        menu = command_menu(self.feature_flags)
         try:
             await self._require_bot().set_my_commands(menu)
         except Exception:

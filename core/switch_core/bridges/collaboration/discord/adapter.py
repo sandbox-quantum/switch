@@ -891,7 +891,7 @@ class DiscordAdapter(PlatformAdapter):
         conn.set_member_change_handler(self._member_changes.add)
         conn.set_permission_change_handler(self._permission_changes.add)
         await conn.connect(
-            commands=build_app_commands(self._handle_slash_command),
+            commands=build_app_commands(self._handle_slash_command, self.feature_flags),
         )
         logger.info(
             "Discord adapter connected as %s (guild %s)",

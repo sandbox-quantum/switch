@@ -2139,6 +2139,22 @@ class PlatformAdapter(ABC):
         only Teams saves types it could not verify."""
         return None
 
+    def set_feature_flags(self, flags: Mapping[str, bool]) -> None:
+        """Install the deployment's feature flags, which decide the in-room
+        commands a platform's own command list offers
+        (`commands.commands_for`). Set by the lifecycle before the adapter
+        starts."""
+        self._feature_flags = flags
+
+    @property
+    def feature_flags(self) -> Mapping[str, bool]:
+        flags: Mapping[str, bool] | None = getattr(self, "_feature_flags", None)
+        if flags is None:
+            raise RuntimeError(
+                f"{type(self).__name__} read the feature flags before they were set"
+            )
+        return flags
+
     def set_outbound_policy(self, policy: OutboundPolicy) -> None:
         """Install the policy for anything this adapter fetches from a URL a
         tenant or agent chose. Set by the lifecycle before the adapter starts."""

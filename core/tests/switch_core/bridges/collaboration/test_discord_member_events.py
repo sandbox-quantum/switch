@@ -694,6 +694,7 @@ async def test_the_shared_client_resolves_a_guild_once_per_burst() -> None:
         members=True,
         install_service=service,  # type: ignore[arg-type]
         on_connected=on_connected,
+        feature_flags={},
     )
     gateway.connection._client = _Client(guild)  # type: ignore[assignment]
 
