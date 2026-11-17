@@ -298,6 +298,34 @@ describe.skipIf(process.platform === 'win32')('SystemdRuntime', () => {
     expect(readFileSync(join(stale, '.switch-agent-id'), 'utf8').trim()).toBe('agent-1');
   });
 
+  it('refuses an agent id with directory traversal or unsafe characters', async () => {
+    for (const bad of ['../../escape', '../02', '..', '.', '.hidden', 'a/b']) {
+      expect(() => runtime.credentialsPath(bad)).toThrow(/cannot be used as a directory name/);
+      await expect(runtime.writeCredentials(bad, RELAY)).rejects.toThrow(
+        /cannot be used as a directory name/
+      );
+      await expect(runtime.workingDirectory(bad, 'scout', null)).rejects.toThrow(
+        /cannot be used as a directory name/
+      );
+      await expect(runtime.launch(bad, {} as any, LAUNCH)).rejects.toThrow(
+        /cannot be used as a directory name/
+      );
+      await expect(runtime.deleteCredentials(bad)).rejects.toThrow(
+        /cannot be used as a directory name/
+      );
+    }
+  });
+
+  it('safely handles an unsafe agent id in a stale directory marker', async () => {
+    const stale = join(config.agentsDir, '01');
+    mkdirSync(join(stale, 'workspace'), { recursive: true });
+    writeFileSync(join(stale, '.switch-agent-id'), '../../malicious\n');
+    await start('agent-1');
+    expect(existsSync(join(config.agentsDir, 'released', 'unknown-1000', 'workspace'))).toBe(true);
+    expect(existsSync(join(config.agentsDir, 'malicious'))).toBe(false);
+    expect(readFileSync(join(stale, '.switch-agent-id'), 'utf8').trim()).toBe('agent-1');
+  });
+
   it('stops through the watch flags and the unit', async () => {
     await start('agent-1');
     systemctl.calls.length = 0;

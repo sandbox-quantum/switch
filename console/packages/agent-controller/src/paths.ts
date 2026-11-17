@@ -144,7 +144,7 @@ export function isSafeSegment(value: string): boolean {
   return SAFE_SEGMENT.test(value) && !value.includes('..');
 }
 
-function safeSegment(value: string, what: string): string {
+export function safeSegment(value: string, what: string): string {
   if (!isSafeSegment(value))
     throw new Error(`The ${what} '${value}' cannot be used as a directory name.`);
   return value;

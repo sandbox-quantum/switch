@@ -19,6 +19,7 @@ import {
 import { warmOverControlPort } from './control-port';
 import { ReasonedError } from './errors';
 import type { Logger } from './log';
+import { isSafeSegment, safeSegment } from './paths';
 import {
   type AgentObservation,
   type AgentRuntime,
@@ -126,6 +127,7 @@ export class SystemdRuntime implements AgentRuntime {
 
   /** The agent user the agent runs as, claimed now when it holds none. */
   private claim(agentId: string): number {
+    safeSegment(agentId, 'agent id');
     const { config, store } = this.deps;
     const slot = store.claimAgentUser(
       agentId,
@@ -163,6 +165,7 @@ export class SystemdRuntime implements AgentRuntime {
    * to this controller again), and its agent user freed.
    */
   async deleteCredentials(agentId: string): Promise<void> {
+    safeSegment(agentId, 'agent id');
     const slot = this.deps.store.agentUser(agentId);
     if (slot === null) return;
     const unit = this.names.agentUnit(slot);
@@ -350,14 +353,19 @@ export class SystemdRuntime implements AgentRuntime {
    * held one, and the directories the agent host and the agent write in.
    */
   private async prepare(agentId: string): Promise<string> {
+    safeSegment(agentId, 'agent id');
     const slot = this.claim(agentId);
     const root = agentRoot(this.deps.config, slot);
     if (await isDirectory(root)) {
       const holder = (await readOptional(join(root, AGENT_MARKER)))?.trim() ?? '';
-      if (holder !== agentId) await this.setAside(root, holder || `unknown-${this.deps.now()}`);
+      if (holder !== agentId)
+        await this.setAside(root, isSafeSegment(holder) ? holder : `unknown-${this.deps.now()}`);
     }
     if (!(await isDirectory(root))) {
-      const released = join(this.deps.config.agentsDir, RELEASED, agentId);
+      const releasedDir = join(this.deps.config.agentsDir, RELEASED);
+      const released = join(releasedDir, safeSegment(agentId, 'agent id'));
+      if (!isInside(releasedDir, released))
+        throw new Error(`The agent id '${agentId}' cannot be used as a directory name.`);
       if (await isDirectory(released)) {
         await rename(released, root);
         this.deps.log.info('Gave an agent back the directory it had here before', {
@@ -376,9 +384,11 @@ export class SystemdRuntime implements AgentRuntime {
 
   /** Moves an agent's directory to `released/<agentId>`, moving aside one already there. */
   private async setAside(root: string, agentId: string): Promise<void> {
-    const released = join(this.deps.config.agentsDir, RELEASED);
-    await mkdir(released, { recursive: true, mode: 0o700 });
-    const target = join(released, agentId);
+    const releasedDir = join(this.deps.config.agentsDir, RELEASED);
+    await mkdir(releasedDir, { recursive: true, mode: 0o700 });
+    const target = join(releasedDir, safeSegment(agentId, 'agent id'));
+    if (!isInside(releasedDir, target))
+      throw new Error(`The agent id '${agentId}' cannot be used as a directory name.`);
     if (await isDirectory(target)) await rename(target, `${target}.${this.deps.now()}`);
     await rename(root, target);
     this.deps.log.info('Set an agent’s directory aside', { agentId, directory: target });
