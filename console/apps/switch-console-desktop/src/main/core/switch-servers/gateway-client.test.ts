@@ -343,7 +343,7 @@ describe('gatewayFetch console attribution', () => {
   it('asks for the host to be read again when a managed server does not answer', async () => {
     fetchMock.mockRejectedValueOnce(new TypeError('fetch failed'));
 
-    await expect(fetchMe(MANAGED)).rejects.toThrow(/Could not reach/);
+    await expect(fetchMe(MANAGED)).rejects.toThrow(/Can.t reach/);
 
     expect(noteManagedServerUnanswered).toHaveBeenCalledExactlyOnceWith(MANAGED);
   });

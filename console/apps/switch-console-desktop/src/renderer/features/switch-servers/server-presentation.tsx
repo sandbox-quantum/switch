@@ -4,7 +4,7 @@ import { hostReachabilityStore } from '@renderer/features/remote-hosts/host-reac
 import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
 import { cn } from '@renderer/utils/utils';
 import type { SwitchVersionDrift } from '@shared/core/managed-switch-server/managed-switch-server';
-import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
+import { type SwitchServer, urlHost } from '@shared/core/switch-servers/switch-servers';
 import { localServerStore } from './local-server-store';
 import { ToneDot } from './managed-server-dot';
 import { managedServerState } from './managed-server-state';
@@ -55,7 +55,10 @@ const STATE_LABEL: Record<ServerState, string> = {
 
 /** The state as a listed server reads it, next to its placement badge. */
 export function serverStatusLabel(server: SwitchServer): string {
-  return STATE_LABEL[serverState(server)];
+  const state = serverState(server);
+  // Naming the address is what tells a typo apart from a sign-in problem.
+  if (state === 'unreachable') return `Can't reach ${urlHost(server.url)}`;
+  return STATE_LABEL[state];
 }
 
 /** Where a server runs. Null for one reached by URL: this app does not know. */

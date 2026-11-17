@@ -26,6 +26,18 @@ export function urlOrigin(url: string): string | null {
 }
 
 /**
+ * A server's address as a person reads it: its host and port, without the
+ * scheme or a path. The URL as given when it does not parse.
+ */
+export function urlHost(url: string): string {
+  try {
+    return new URL(url.trim()).host || url;
+  } catch {
+    return url;
+  }
+}
+
+/**
  * Whether two Switch API endpoints name the same server. This is how an agent's
  * on-disk `SWITCH_API_ENDPOINT` is matched to a registered server, so the main
  * process and the renderer must agree on it: the renderer decides which discovered
