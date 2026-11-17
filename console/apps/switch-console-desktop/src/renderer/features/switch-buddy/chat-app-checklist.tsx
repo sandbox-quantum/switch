@@ -299,7 +299,9 @@ export function ChatAppChecklist({
           detail={
             talking
               ? `You’re talking to ${agentName} there.`
-              : `In that group, mention ${agentName} and say what you work on.`
+              : // With the bot's Group Privacy on (the default), which Console can't
+                // see, a message that only mentions the agent never arrives.
+                `In that group, reply to ${agentName}'s message and say what you work on. Reply to its messages to talk to it: with the bot's Group Privacy on, a message that only mentions it never arrives.`
           }
         />
       </ol>
