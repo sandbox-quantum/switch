@@ -53,6 +53,54 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **`switch-promote-org-admin`, a break-glass command.** When an
+  organization's admins can't make someone an admin themselves, the platform
+  operator can run `switch-promote-org-admin <organization id or slug>
+  <email> --reason "<text>" --execute` where switch-core runs. The person
+  must already be in one of the organization's workspaces. The change is
+  recorded in the organization's audit log as made by a platform operator,
+  with the reason, and its organization admins are e-mailed. Without
+  `--execute` it only shows what it would do. An organization whose admins
+  come from WorkOS is refused.
+- **Server commands for the platform operator.** Three commands run where
+  switch-core runs, with its configuration:
+  - `switch-orgs list` shows every organization with its admins and
+    workspaces.
+  - `switch-accounts` lists, creates, deletes and signs out accounts, and
+    grants or revokes platform operator.
+  - `switch-connector-apps` lists, sets and removes the deployment's
+    connector apps.
+
+  `switch-accounts create` reads the password from a file or standard input,
+  never the command line. `switch-accounts delete` uses the same account
+  deletion and refusals as the dashboard and only shows what it would do
+  until given `--execute`. It also refuses while the account owns agents,
+  devices or open chats, which only a running server can remove.
+  `switch-connector-apps set` checks the app with the vendor first, as the
+  dashboard does, and never prints a secret. The account at
+  `GATEWAY_ADMIN_EMAIL` stays an operator, and the server keeps at least
+  one. Every change is recorded in the audit log as made by a platform
+  operator command.
+- **On a deployment with one organization, its admins manage the
+  deployment's connector apps.** The connector apps every workspace signs in
+  through were the platform operator's alone. When the deployment has
+  exactly one organization, that organization's admins may now set them up
+  too. This is checked again on every request, so they lose it as soon as a
+  second organization exists. `GET /auth/session` reports
+  `can_manage_connector_apps`, and the server audit log notes when a change
+  came from an organization admin rather than the operator.
+- **An organization's admins are e-mailed when one of them stops being an
+  admin.** When an organization admin is made a member by another admin,
+  steps down, is removed from the organization, leaves it, or has their
+  account deleted, every organization admin and the person themselves get an
+  e-mail. It says who made the change (or that they made it themselves), whom
+  it was made to, the organization and when, and links to the organization's
+  audit log. It goes through the relay invitation e-mails use
+  (`GATEWAY_SMTP_*`). Without one, nothing is sent and the server logs a
+  warning for each change. A send that fails is logged as an error and
+  doesn't undo the change. Deleting an organization admin's account is now
+  recorded in the organization's audit log too. Changes brought in from
+  WorkOS are not e-mailed.
 - **A room's page in the web dashboard says who owns it and where you
   stand.** Room info names the owner, or says the room has none, and a "Your
   access" line says whether you own the room, administer the workspace or
@@ -457,6 +505,23 @@ version of their own to them without also giving them a release of their own.
   already refused both, so the current Workspace page no longer offers them.
 
 #### Changed
+- **The dashboard no longer has a Platform area, on any deployment.** The
+  platform operator's own pages are gone from both layouts: All workspaces,
+  Users and Platform › Connectors. On the default layout, operators lose the
+  Users and All workspaces pages too. Old addresses still lead somewhere:
+  - in the new layout, `/platform` and `/platform/workspaces` go to
+    Organization settings › Workspaces, `/platform/users` to Organization
+    settings › Users, and `/platform/connectors` to Organization settings ›
+    Connector apps;
+  - in the default layout, `/users`, `/operator/workspaces` and the
+    `/platform` pages go to the Organization page.
+
+  The deployment's connector apps are now in Organization settings ›
+  Connector apps, and on the default layout's Connectors page, for whoever
+  may manage them: the operator, or the admins of a deployment's only
+  organization. On a deployment with several organizations, deployment-wide
+  work (accounts, organizations, connector apps) is done with the
+  `switch-accounts`, `switch-orgs` and `switch-connector-apps` commands.
 - **Switch Trust guardrails are set per organization instead of once for
   the whole server.** Each organization's admins connect its own policy, with
   a policy ID and an API key, under Organization settings › Guardrails. Switch
@@ -671,6 +736,17 @@ version of their own to them without also giving them a release of their own.
   confirm in a dialog, which keeps the server's reason if it is refused.
   Deleting a resource names, before you confirm, the packages it is taken out
   of as well as the rooms.
+
+#### Removed
+- **The operator's account and workspace-list API routes are gone, which
+  breaks any script that calls them.** `GET /gateway/users`,
+  `POST /gateway/users`, `DELETE /gateway/users/{user_id}`,
+  `POST /gateway/users/{user_id}/sessions/revoke` and
+  `GET /gateway/operator/workspaces` now answer 404. Run the commands that
+  replace them where switch-core runs: `switch-accounts list`, `create`,
+  `delete` and `sign-out`, and `switch-orgs list`. People still delete their
+  own account (`DELETE /gateway/auth/me`) and sign out of every device
+  (`POST /gateway/auth/sessions/revoke`) as before.
 
 #### Fixed
 - **Add a device no longer shows commands that can't work.** On a Switch
@@ -4250,6 +4326,12 @@ version of their own to them without also giving them a release of their own.
   A machine cannot be given a Mistral Vibe login from Console yet.
 
 #### Changed
+- **Set up for a connector's app opens Organization settings.** On a
+  server whose dashboard uses the new layout, Set up now opens
+  Organization settings › Connector apps. Organization admins get it too
+  where the server allows. Anyone the server doesn't allow is told the app is
+  set up with the `switch-connector-apps` command where Switch runs. Older
+  servers keep today's link.
 - **Admin › Switch Trust points to the organization's guardrails on a server
   that sets them per organization.** Such a server no longer has a
   server-wide policy to edit, so the form gives way to its note and a button

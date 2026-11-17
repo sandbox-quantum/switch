@@ -90,6 +90,7 @@ function signedIn() {
       can_create_workspace: true,
       can_add_workspace: true,
       invite_email_enabled: false,
+      can_manage_connector_apps: false,
     },
     refresh: vi.fn(async () => {}),
   } as unknown as ReturnType<typeof useAuth>);

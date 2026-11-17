@@ -392,38 +392,132 @@ describe("ServiceAccessSection", () => {
   const NOT_SET_UP =
     "Example is not set up here. Whoever runs Switch can set it up in Switch Console, under Admin → Connector apps.";
 
-  it("offers the operator Set up for a service waiting on its app, and nobody else", async () => {
-    const services = [
-      onOff("not_connected", { unavailable_reason: NOT_SET_UP, server_setup_needed: true }),
-    ];
-    mockServer(NONE, services);
-    render(<ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />);
-    expect(await screen.findByText(NOT_SET_UP)).toBeTruthy();
-    expect(screen.queryByRole("link", { name: "Set up" })).toBeNull();
-    cleanup();
-
-    for (const [newLayout, where] of [
-      [false, "/connectors"],
-      [true, "/platform/connectors"],
-    ] as const) {
-      vi.mocked(useAuth).mockReturnValue({
-        isOperator: true,
-        capabilities: { features: { gateway_v2: newLayout } },
-      } as ReturnType<typeof useAuth>);
-      mockServer(NONE, services);
-      render(
-        <MemoryRouter>
-          <ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />
-        </MemoryRouter>,
-      );
-      const setUp = await screen.findByRole("link", { name: "Set up" });
-      expect(setUp.getAttribute("href")).toBe(where);
-      cleanup();
-    }
+  /** Signed in as someone who may or may not set up connector apps, in
+   * `layout`; put back to the default (a member, today's layout) after. */
+  function viewer({
+    newLayout,
+    isOperator = false,
+    canManageConnectorApps = isOperator,
+  }: {
+    newLayout: boolean;
+    isOperator?: boolean;
+    canManageConnectorApps?: boolean;
+  }) {
     vi.mocked(useAuth).mockReturnValue({
-      isOperator: false,
-      capabilities: { features: { gateway_v2: false } },
+      isOperator,
+      capabilities: { isOperator, canManageConnectorApps, features: { gateway_v2: newLayout } },
     } as ReturnType<typeof useAuth>);
+  }
+
+  function renderInRouter() {
+    render(
+      <MemoryRouter>
+        <ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />
+      </MemoryRouter>,
+    );
+  }
+
+  const WHO_SETS_UP = "It's set up with the switch-connector-apps command, where Switch runs.";
+  const WAITING = [onOff("not_connected", { unavailable_reason: NOT_SET_UP, server_setup_needed: true })];
+
+  it("in the new layout, offers Set up for a service waiting on its app to whoever may set up connector apps", async () => {
+    try {
+      for (const who of [{ isOperator: true }, { canManageConnectorApps: true }]) {
+        viewer({ newLayout: true, ...who });
+        mockServer(NONE, WAITING);
+        renderInRouter();
+        const setUp = await screen.findByRole("link", { name: "Set up" });
+        expect(setUp.getAttribute("href")).toBe("/settings/org/connector-apps");
+        expect(screen.queryByText(WHO_SETS_UP)).toBeNull();
+        cleanup();
+      }
+    } finally {
+      viewer({ newLayout: false });
+    }
+  });
+
+  it("in the new layout, tells anyone else how the app is set up, with no link", async () => {
+    try {
+      viewer({ newLayout: true });
+      mockServer(NONE, WAITING);
+      renderInRouter();
+      expect(await screen.findByText(NOT_SET_UP)).toBeTruthy();
+      expect(screen.getByText(WHO_SETS_UP)).toBeTruthy();
+      expect(screen.queryByRole("link", { name: "Set up" })).toBeNull();
+    } finally {
+      viewer({ newLayout: false });
+    }
+  });
+
+  it("in the new layout, says nothing of setting up a service that is not waiting on its app", async () => {
+    try {
+      viewer({ newLayout: true });
+      mockServer(NONE, [onOff("active", { unavailable_reason: "Coming here soon." })]);
+      renderInRouter();
+      expect(await screen.findByText("Coming here soon.")).toBeTruthy();
+      expect(screen.queryByText(WHO_SETS_UP)).toBeNull();
+    } finally {
+      viewer({ newLayout: false });
+    }
+  });
+
+  it("in today's layout, offers Set up on Connectors to whoever may set up connector apps, and nobody else anything", async () => {
+    try {
+      viewer({ newLayout: false });
+      mockServer(NONE, WAITING);
+      renderInRouter();
+      expect(await screen.findByText(NOT_SET_UP)).toBeTruthy();
+      expect(screen.queryByRole("link", { name: "Set up" })).toBeNull();
+      expect(screen.queryByText(WHO_SETS_UP)).toBeNull();
+      cleanup();
+
+      for (const who of [{ isOperator: true }, { canManageConnectorApps: true }]) {
+        viewer({ newLayout: false, ...who });
+        mockServer(NONE, WAITING);
+        renderInRouter();
+        const setUp = await screen.findByRole("link", { name: "Set up" });
+        expect(setUp.getAttribute("href")).toBe("/connectors");
+        cleanup();
+      }
+    } finally {
+      viewer({ newLayout: false });
+    }
+  });
+
+  it("tells someone who may not set it up how GitHub's app is set up, where GitHub's form would be", async () => {
+    try {
+      viewer({ newLayout: true });
+      const reason = "GitHub's connector app isn't set up yet. Whoever runs Switch can set it up.";
+      mockServer(NONE, [
+        onOff("not_connected", {
+          slug: "github",
+          name: "GitHub",
+          pass_through: false,
+          unavailable_reason: reason,
+          server_setup_needed: true,
+        }),
+      ]);
+      renderInRouter();
+      expect(await screen.findByText(reason)).toBeTruthy();
+      expect(screen.getByText(WHO_SETS_UP)).toBeTruthy();
+      cleanup();
+
+      viewer({ newLayout: true, canManageConnectorApps: true });
+      mockServer(NONE, [
+        onOff("not_connected", {
+          slug: "github",
+          name: "GitHub",
+          pass_through: false,
+          unavailable_reason: reason,
+          server_setup_needed: true,
+        }),
+      ]);
+      renderInRouter();
+      const setUp = await screen.findByRole("link", { name: "Set up" });
+      expect(setUp.getAttribute("href")).toBe("/settings/org/connector-apps");
+    } finally {
+      viewer({ newLayout: false });
+    }
   });
 
   it("keeps what an agent was granted removable where it may be granted nothing more", async () => {

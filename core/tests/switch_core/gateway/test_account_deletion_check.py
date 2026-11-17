@@ -1,21 +1,106 @@
 """Asking whether your own account can be deleted (GET /auth/me/deletion).
 
-Against a real database, with the app `test_admin_delete_user.py` builds: the
-check runs the refusals `DELETE /auth/me` runs, and must answer with the same
-sentence the deletion would refuse with, and change nothing.
+Against a real database, with the services `test_account_deletion.py` fakes:
+the check runs the refusals `DELETE /auth/me` runs, and must answer with the
+same sentence the deletion would refuse with, and change nothing.
 """
 
 from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
+import httpx
+from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.connections.broker import get_service_broker
 from switch_core.db.models import TENANT_ZERO_ID, CloudMachine, OrganizationMember, User
-from tests.switch_core.accounts.test_account_deletion import ADMIN_EMAIL
-from tests.switch_core.gateway.test_admin_delete_user import _app, _client, _people
+from switch_core.db.stores.agent_store import AgentStore
+from switch_core.db.stores.api_key_store import ApiKeyStore
+from switch_core.db.stores.organization_store import OrganizationStore
+from switch_core.db.stores.template_store import TemplateStore
+from switch_core.db.stores.user_store import UserStore
+from switch_core.gateway import dependencies as gw_deps
+from switch_core.gateway.auth import create_jwt
+from switch_core.gateway.auth_routes import router
+from tests.conftest import TEST_KEYRING
+from tests.switch_core.accounts.test_account_deletion import (
+    ADMIN_EMAIL,
+    _deletion,
+    _SignInFlows,
+)
 from tests.switch_core.gateway.test_tenant_api_routes import _make_member
+
+
+def _app(session_factory: async_sessionmaker[AsyncSession]) -> FastAPI:
+    deletion, _, _ = _deletion(session_factory)
+
+    async def _session_dep():
+        async with session_factory() as session:
+            yield session
+
+    app = FastAPI()
+    app.include_router(router)
+    app.state.sign_in_flows = _SignInFlows()
+    overrides = app.dependency_overrides
+    overrides[gw_deps.get_session] = _session_dep
+    overrides[gw_deps.get_system_session] = _session_dep
+    overrides[gw_deps.get_session_factory] = lambda: session_factory
+    overrides[gw_deps.get_user_store] = lambda: UserStore()
+    overrides[gw_deps.get_organization_store] = lambda: OrganizationStore()
+    overrides[gw_deps.get_agent_store] = lambda: AgentStore()
+    overrides[gw_deps.get_api_key_store] = lambda: ApiKeyStore()
+    overrides[gw_deps.get_template_store] = lambda: TemplateStore()
+    overrides[gw_deps.get_protocol] = lambda: deletion.protocol
+    overrides[gw_deps.get_resource_service] = lambda: deletion.resources
+    overrides[gw_deps.get_room_service] = lambda: deletion.rooms
+    overrides[get_service_broker] = lambda: deletion.broker
+    overrides[gw_deps.get_client_lifecycle] = lambda: deletion.clients
+    overrides[gw_deps.get_organization_admin_notices] = lambda: deletion.admin_notices
+    overrides[gw_deps.get_config] = lambda: SimpleNamespace(
+        keyring=TEST_KEYRING,
+        gateway_cookie_secure=False,
+        gateway_admin_email=ADMIN_EMAIL,
+        gateway_tenant_choice_enabled=False,
+    )
+    return app
+
+
+def _client(app: FastAPI, user_id: str, email: str) -> httpx.AsyncClient:
+    token = create_jwt(
+        user_id,
+        email,
+        "user",
+        TEST_KEYRING,
+        TENANT_ZERO_ID,
+        session_version=0,
+        auth_time=datetime.now(UTC),
+    )
+    return httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+        cookies={"switch_auth": token},
+    )
+
+
+async def _people(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> tuple[str, str]:
+    """The server's administrator account, and a member beside it."""
+    operator = await _make_member(
+        session_factory,
+        name="operator",
+        tenant_id=TENANT_ZERO_ID,
+        role="admin",
+        email=ADMIN_EMAIL,
+        user_role="admin",
+    )
+    member = await _make_member(
+        session_factory, name="leaving", tenant_id=TENANT_ZERO_ID, role="member"
+    )
+    return operator, member
 
 
 async def test_a_member_beside_another_admin_may_delete_and_nothing_changes(

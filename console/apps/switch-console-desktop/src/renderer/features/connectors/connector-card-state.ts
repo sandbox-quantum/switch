@@ -1,4 +1,5 @@
 import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
+import type { ConnectorAppsPage } from '@shared/core/switch-servers/dashboard-pages';
 
 export type ConnectorCardKind =
   | 'coming_soon'
@@ -10,16 +11,55 @@ export type ConnectorCardKind =
   | 'connect';
 
 /**
- * What the person looking may fix: the server's operator sets up the apps
- * connectors sign in through; a workspace admin, or the operator, turns a
- * service on for the workspace.
+ * What the person looking may fix: whoever {@link connectorAppSetUp} names
+ * sets up the apps connectors sign in through; a workspace admin, or the
+ * operator, turns a service on for the workspace.
  */
 export type ConnectorViewer = {
   operator: boolean;
   administers: boolean;
   /** The server runs on this computer, so its own GitHub sign-in is at hand. */
   onThisComputer: boolean;
+  appSetUp: ConnectorAppSetUp;
 };
+
+/**
+ * Who sets up a connector's app. `viewer`: the person looking, in Console's
+ * Admin › Apps or on a dashboard page. `operator`: whoever runs the server.
+ * `command`: whoever runs the server, with its command, because the server
+ * said the person looking may not.
+ */
+export type ConnectorAppSetUp =
+  | { by: 'viewer'; at: 'admin' | ConnectorAppsPage }
+  | { by: 'operator' }
+  | { by: 'command' };
+
+/**
+ * {@link ConnectorAppSetUp} for the person looking. A server whose dashboard
+ * is in the new layout says who may (`canManage`): its operator, or the admin
+ * of its one organization. Where it does not say, or the question does not
+ * arise (no dashboard, which leaves Admin › Apps, or the old layout), only
+ * the operator may.
+ */
+export function connectorAppSetUp({
+  operator,
+  servesDashboard,
+  gatewayV2,
+  canManage,
+}: {
+  operator: boolean;
+  servesDashboard: boolean;
+  gatewayV2: boolean;
+  /** The server's `can_manage_connector_apps`; null where it does not say. */
+  canManage: boolean | null;
+}): ConnectorAppSetUp {
+  const operatorOnly = (at: 'admin' | ConnectorAppsPage): ConnectorAppSetUp =>
+    operator ? { by: 'viewer', at } : { by: 'operator' };
+  if (!servesDashboard) return operatorOnly('admin');
+  if (!gatewayV2) return operatorOnly('old-layout');
+  if (canManage === null) return operatorOnly('platform');
+  return canManage ? { by: 'viewer', at: 'organization-settings' } : { by: 'command' };
+}
 
 /** The one fix a card or profile offers: set the app up, or turn it on for the workspace. */
 export type ConnectorFix = 'set_up' | 'turn_on';
@@ -40,6 +80,40 @@ export const FIX_LABEL = {
   turn_on: 'Turn on',
 } as const satisfies Record<ConnectorFix, string>;
 
+/** A service whose app is not set up, as {@link ConnectorAppSetUp} says who sets it up. */
+function appNotSetUpState(
+  entry: ConnectionCatalogEntry,
+  setUp: ConnectorAppSetUp
+): ConnectorCardState {
+  switch (setUp.by) {
+    case 'viewer':
+      return {
+        kind: 'needs_setup',
+        label: 'Needs setup',
+        detail: `Set up its app once, and everyone on this server can connect ${entry.name}.`,
+        tone: 'muted',
+        fix: 'set_up',
+      };
+    case 'command':
+      return {
+        kind: 'unavailable',
+        label: 'Unavailable',
+        detail:
+          'Whoever runs your Switch server sets up its app with the switch-connector-apps command, where Switch runs.',
+        tone: 'muted',
+        fix: null,
+      };
+    case 'operator':
+      return {
+        kind: 'unavailable',
+        label: 'Unavailable',
+        detail: 'Ask whoever runs your Switch server to set it up.',
+        tone: 'muted',
+        fix: null,
+      };
+  }
+}
+
 /**
  * Why a service can't be used here, as the person looking acts on it. The
  * server's code decides it, never its wording: a server that sends no code
@@ -53,19 +127,7 @@ function unavailableState(
   const unavailable = { kind: 'unavailable', label: 'Unavailable', tone: 'muted' } as const;
   switch (entry.unavailable_code) {
     case 'app_not_set_up':
-      return viewer.operator
-        ? {
-            kind: 'needs_setup',
-            label: 'Needs setup',
-            detail: `Set up its app once, and everyone on this server can connect ${entry.name}.`,
-            tone: 'muted',
-            fix: 'set_up',
-          }
-        : {
-            ...unavailable,
-            detail: 'Ask whoever runs your Switch server to set it up.',
-            fix: null,
-          };
+      return appNotSetUpState(entry, viewer.appSetUp);
     case 'needs_https':
       return {
         ...unavailable,

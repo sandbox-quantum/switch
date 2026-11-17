@@ -146,7 +146,10 @@ stack and `just run` are up. It creates a test account per level on your
 local server (an org admin, a workspace admin and a member, with a random
 password) plus a second workspace that only the org admin can open, and saves
 their logins, with the gateway admin's from `.env` as the operator, to
-`gateway/.dev-role-accounts.json` (gitignored). It is safe to run again.
+`gateway/.dev-role-accounts.json` (gitignored). The accounts are made on the
+database directly, as `switch-accounts create` makes them, so it needs the
+same `.env` as `just run`; the roles are given through the running server. It
+is safe to run again.
 
 With the new layout turned on (`FEATURE_FLAGS_ENABLED=gateway_v2`),
 `just gateway-dev` then shows a **Role:** control at the right end of the top

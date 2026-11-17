@@ -18,6 +18,7 @@ import {
 } from '@renderer/features/connectors/connect-flow';
 import {
   type ConnectorViewer,
+  connectorAppSetUp,
   connectorCardState,
 } from '@renderer/features/connectors/connector-card-state';
 import {
@@ -72,6 +73,7 @@ import type {
   ConnectionCatalogEntry,
   ServicePasteMethod,
 } from '@shared/core/switch-servers/connection-catalog';
+import { connectorAppsPagePath } from '@shared/core/switch-servers/dashboard-pages';
 import { RpcError, serializeRpcError } from '@shared/lib/ipc/rpc-error';
 
 function entry(overrides: Partial<ConnectionCatalogEntry> = {}): ConnectionCatalogEntry {
@@ -107,7 +109,12 @@ function entry(overrides: Partial<ConnectionCatalogEntry> = {}): ConnectionCatal
   };
 }
 
-const MEMBER: ConnectorViewer = { operator: false, administers: false, onThisComputer: false };
+const MEMBER: ConnectorViewer = {
+  operator: false,
+  administers: false,
+  onThisComputer: false,
+  appSetUp: { by: 'operator' },
+};
 
 describe('the state a connector card shows', () => {
   it('shows each state on its own', () => {
@@ -179,8 +186,18 @@ describe('the state a connector card shows', () => {
 });
 
 describe('what each person is told about a connector that cannot be used', () => {
-  const OPERATOR: ConnectorViewer = { operator: true, administers: true, onThisComputer: false };
-  const ADMIN: ConnectorViewer = { operator: false, administers: true, onThisComputer: false };
+  const OPERATOR: ConnectorViewer = {
+    operator: true,
+    administers: true,
+    onThisComputer: false,
+    appSetUp: { by: 'viewer', at: 'admin' },
+  };
+  const ADMIN: ConnectorViewer = {
+    operator: false,
+    administers: true,
+    onThisComputer: false,
+    appSetUp: { by: 'operator' },
+  };
   const viewers = { operator: OPERATOR, admin: ADMIN, member: MEMBER };
   const notSetUp = entry({
     connectable: false,
@@ -233,6 +250,29 @@ describe('what each person is told about a connector that cannot be used', () =>
         kind: 'unavailable',
         label: 'Unavailable',
         detail: 'Ask whoever runs your Switch server to set it up.',
+        tone: 'muted',
+        fix: null,
+      });
+  });
+
+  it('offers Set up to whoever the server says may, operator or not', () => {
+    const orgAdmin: ConnectorViewer = {
+      ...ADMIN,
+      appSetUp: { by: 'viewer', at: 'organization-settings' },
+    };
+    expect(connectorCardState(notSetUp, orgAdmin)).toMatchObject({
+      kind: 'needs_setup',
+      fix: 'set_up',
+    });
+  });
+
+  it('names the command to anyone the server says may not set it up on the web', () => {
+    for (const viewer of [ADMIN, MEMBER])
+      expect(connectorCardState(notSetUp, { ...viewer, appSetUp: { by: 'command' } })).toEqual({
+        kind: 'unavailable',
+        label: 'Unavailable',
+        detail:
+          'Whoever runs your Switch server sets up its app with the switch-connector-apps command, where Switch runs.',
         tone: 'muted',
         fix: null,
       });
@@ -356,6 +396,47 @@ describe('what each person is told about a connector that cannot be used', () =>
     });
     expect(profileConnectAction(key)).toBeNull();
     expect(profileConnectAction({ ...key, status: 'connected' })).toBeNull();
+  });
+});
+
+describe('who sets up a connector app, and where', () => {
+  const setUp = (
+    operator: boolean,
+    servesDashboard: boolean,
+    gatewayV2: boolean,
+    canManage: boolean | null
+  ) => connectorAppSetUp({ operator, servesDashboard, gatewayV2, canManage });
+
+  it("lets the server's answer decide in the dashboard's new layout", () => {
+    for (const operator of [true, false]) {
+      expect(setUp(operator, true, true, true)).toEqual({
+        by: 'viewer',
+        at: 'organization-settings',
+      });
+      expect(setUp(operator, true, true, false)).toEqual({ by: 'command' });
+    }
+  });
+
+  it('leaves it to the operator, under Platform, on a server that does not say', () => {
+    expect(setUp(true, true, true, null)).toEqual({ by: 'viewer', at: 'platform' });
+    expect(setUp(false, true, true, null)).toEqual({ by: 'operator' });
+  });
+
+  it("leaves it to the operator in the dashboard's old layout, and in Admin without a dashboard", () => {
+    for (const canManage of [true, false, null]) {
+      expect(setUp(true, true, false, canManage)).toEqual({ by: 'viewer', at: 'old-layout' });
+      expect(setUp(false, true, false, canManage)).toEqual({ by: 'operator' });
+      for (const gatewayV2 of [true, false]) {
+        expect(setUp(true, false, gatewayV2, canManage)).toEqual({ by: 'viewer', at: 'admin' });
+        expect(setUp(false, false, gatewayV2, canManage)).toEqual({ by: 'operator' });
+      }
+    }
+  });
+
+  it('opens each at the path the dashboard keeps it on', () => {
+    expect(connectorAppsPagePath('organization-settings')).toBe('settings/org/connector-apps');
+    expect(connectorAppsPagePath('platform')).toBe('platform/connectors');
+    expect(connectorAppsPagePath('old-layout')).toBe('connectors');
   });
 });
 

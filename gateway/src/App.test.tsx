@@ -36,6 +36,7 @@ function session(overrides: Partial<Session>): Session {
     can_create_workspace: true,
     can_add_workspace: false,
     invite_email_enabled: false,
+    can_manage_connector_apps: false,
     ...overrides,
   };
 }
@@ -66,11 +67,15 @@ function signedInAs(
     inOrganization = true,
     tenants = [],
     canDelete = false,
+    canManageConnectorApps = role === "operator",
   }: {
     flags?: FeatureFlagKey[];
     inOrganization?: boolean;
     tenants?: TenantMembership[];
     canDelete?: boolean;
+    // The operator may set up the deployment's connector apps, and the admins
+    // of its only organization while it has no other.
+    canManageConnectorApps?: boolean;
   } = {},
 ): Routes {
   const tenant: TenantMembership = {
@@ -88,6 +93,7 @@ function signedInAs(
         tenant,
         tenants: [tenant, ...tenants],
         user: { id: "u1", name: "Ada", email: "ada@example.com", is_operator: role === "operator" },
+        can_manage_connector_apps: canManageConnectorApps,
       }),
     ],
     "/feature-flags": [200, { flags: flags.map((key) => ({ key, enabled: true })) }],
@@ -223,15 +229,18 @@ describe("AppRoutes", () => {
     expect(screen.queryByRole("link", { name: /Connectors/ })).toBeNull();
   });
 
-  it("gives the server's operator Connectors beside Users", async () => {
-    mockFetch({
-      ...signedInAs("operator", { flags: ["service_connections"] }),
-      "/connector-apps": [200, { public_url: "https://switch.example.test", apps: [] }],
-    });
-    renderAt("/connectors");
-    expect(await screen.findByRole("heading", { name: "Connectors" })).toBeTruthy();
-    expect(screen.getByRole("link", { name: /Users/ })).toBeTruthy();
-    expect(screen.getByRole("link", { name: /Connectors/ })).toBeTruthy();
+  it("gives whoever may set up connector apps Connectors on the rail", async () => {
+    for (const role of ["operator", "org_admin"] as const) {
+      mockFetch({
+        ...signedInAs(role, { flags: ["service_connections"], canManageConnectorApps: true }),
+        "/connector-apps": [200, { public_url: "https://switch.example.test", apps: [] }],
+      });
+      renderAt("/connectors");
+      expect(await screen.findByRole("heading", { name: "Connectors" })).toBeTruthy();
+      expect(screen.getByRole("link", { name: /Connectors/ })).toBeTruthy();
+      expect(screen.queryByRole("link", { name: /Users/ })).toBeNull();
+      cleanup();
+    }
   });
 
   it("puts a pending invite before everything else", async () => {
@@ -336,10 +345,13 @@ describe("today's layout", () => {
     expect(labels).not.toContain("All workspaces");
   });
 
-  it("gives the operator the platform's pages", async () => {
+  it("gives the operator Connectors, and no page of its own beyond that", async () => {
     mockFetch(signedInAs("operator"));
     renderAt("/rooms");
-    expect((await railLabels()).slice(-4)).toEqual(["Usage", "All workspaces", "Users", "Connectors"]);
+    const labels = await railLabels();
+    expect(labels.slice(-2)).toEqual(["Usage", "Connectors"]);
+    expect(labels).not.toContain("All workspaces");
+    expect(labels).not.toContain("Users");
   });
 
   it("refuses a page by its URL to someone who may not open it, and says why", async () => {
@@ -349,11 +361,29 @@ describe("today's layout", () => {
     expect(screen.getByText("Only this workspace's admins can open this page.")).toBeTruthy();
   });
 
-  it("keeps the operator's pages from everyone else", async () => {
-    for (const path of ["/users", "/connectors", "/operator/workspaces"]) {
-      mockFetch(signedInAs("org_admin"));
-      renderAt(path);
-      expect(await screen.findByText("Only the platform operator can open this page.")).toBeTruthy();
+  it("keeps the deployment's connector apps from anyone who may not set them up", async () => {
+    mockFetch(signedInAs("org_admin"));
+    renderAt("/connectors");
+    expect(
+      await screen.findByText(
+        "Only whoever runs Switch, or an admin of its only organization, can open this page.",
+      ),
+    ).toBeTruthy();
+  });
+
+  it("sends the operator's old pages to Organization, and Platform's Connectors to Connectors", async () => {
+    for (const [from, to] of [
+      ["/users", "/organization"],
+      ["/operator/workspaces", "/organization"],
+      ["/platform", "/organization"],
+      ["/platform/workspaces", "/organization"],
+      ["/platform/users", "/organization"],
+      ["/platform/connectors", "/connectors"],
+      ["/settings/org/connector-apps", "/connectors"],
+    ]) {
+      mockFetch(signedInAs("operator"));
+      renderAt(from);
+      await landsOn(to);
       cleanup();
     }
   });
@@ -469,12 +499,13 @@ describe("the new layout (gateway_v2)", () => {
     ]);
   });
 
-  it("puts Connectors on the rail where connectors run, and Platform for the operator", async () => {
+  it("puts Connectors on the rail where connectors run, and nothing more for the operator", async () => {
     mockFetch(signedInAs("operator", { flags: [...V2, "service_connections"] }));
     renderAt("/overview");
     const labels = await railLabels();
     expect(labels).toContain("Connectors");
-    expect(labels.at(-1)).toBe("Platform");
+    expect(labels.at(-1)).toBe("Settings");
+    expect(labels).not.toContain("Platform");
   });
 
   it("moves today's pages, keeping the query and fragment", async () => {
@@ -493,10 +524,14 @@ describe("the new layout (gateway_v2)", () => {
     }
   });
 
-  it("moves the operator's pages to Platform", async () => {
+  it("sends the operator's old pages, and Platform's, to Organization settings", async () => {
     for (const [from, to] of [
-      ["/operator/workspaces", "/platform/workspaces"],
-      ["/users", "/platform/users"],
+      ["/operator/workspaces", "/settings/org/workspaces"],
+      ["/users", "/settings/org/users"],
+      ["/platform", "/settings/org/workspaces"],
+      ["/platform/workspaces", "/settings/org/workspaces"],
+      ["/platform/users", "/settings/org/users"],
+      ["/platform/connectors", "/settings/org/connector-apps"],
     ]) {
       mockFetch(signedInAs("operator", { flags: V2 }));
       renderAt(from);
@@ -666,13 +701,14 @@ describe("the new layout (gateway_v2)", () => {
       expect(await menuLabels("Organization settings")).toContain("Connectors and apps");
     });
 
-    it("lets the operator in, to restore an organization's admin, and no further", async () => {
+    it("lets the operator in, to restore an organization's admin and set up connector apps, and no further", async () => {
       mockFetch(signedInAs("operator", { flags: V2 }));
       renderAt("/settings/org/users");
       expect(await menuLabels("Organization settings")).toEqual([
         "General",
         "Workspaces",
         "Users",
+        "Connector apps",
         "‹ Workspace settings",
       ]);
       cleanup();
@@ -701,18 +737,34 @@ describe("the new layout (gateway_v2)", () => {
     });
   });
 
-  describe("platform", () => {
-    it("gives the operator their pages", async () => {
-      mockFetch(signedInAs("operator", { flags: V2 }));
-      renderAt("/platform");
-      await landsOn("/platform/workspaces");
-      expect(await menuLabels("Platform")).toEqual(["All workspaces", "Users", "Connectors"]);
+  describe("connector apps", () => {
+    it("lists Connector apps, after Connectors and apps, for an admin who may set them up", async () => {
+      mockFetch({
+        ...signedInAs("org_admin", {
+          flags: [...V2, "service_connections", "organization_connector_apps"],
+          canManageConnectorApps: true,
+        }),
+        "/connector-apps": [200, { public_url: "https://switch.example.test", apps: [] }],
+      });
+      renderAt("/settings/org/connector-apps");
+      const labels = await menuLabels("Organization settings");
+      expect(labels.indexOf("Connector apps")).toBe(labels.indexOf("Connectors and apps") + 1);
+      expect(await screen.findByRole("heading", { name: "Connectors" })).toBeTruthy();
     });
 
-    it("keeps everyone else out", async () => {
-      mockFetch(signedInAs("org_admin", { flags: V2 }));
-      renderAt("/platform/users");
-      expect(await screen.findByText("Only the platform operator can open this page.")).toBeTruthy();
+    it("neither lists nor opens it for an admin who may not", async () => {
+      mockFetch(signedInAs("org_admin", { flags: [...V2, "service_connections"] }));
+      renderAt("/settings/org/connector-apps");
+      expect(
+        await screen.findByText(
+          "Only whoever runs Switch, or an admin of its only organization, can open this page.",
+        ),
+      ).toBeTruthy();
+      cleanup();
+
+      mockFetch(signedInAs("org_admin", { flags: [...V2, "service_connections"] }));
+      renderAt("/settings/org/general");
+      expect(await menuLabels("Organization settings")).not.toContain("Connector apps");
     });
   });
 
@@ -900,17 +952,6 @@ describe("the new layout (gateway_v2)", () => {
     });
   });
 
-  describe("in the Platform area", () => {
-    it("hides the rail and leads back to the workspace, as it spans every one", async () => {
-      mockFetch({ ...signedInAs("operator", { flags: V2 }), "/users": [200, []] });
-      renderAt("/platform/users");
-      const back = await screen.findByRole("link", { name: "Back to workspace" });
-      expect(back.getAttribute("href")).toBe("/");
-      expect(await menuLabels("Platform")).toEqual(["All workspaces", "Users", "Connectors"]);
-      expect(screen.queryByRole("navigation", { name: "Main" })).toBeNull();
-      expect(screen.queryByRole("button", { name: /Acme Group/ })).toBeNull();
-    });
-  });
 });
 
 describe("renaming the workspace (gateway_v2)", () => {

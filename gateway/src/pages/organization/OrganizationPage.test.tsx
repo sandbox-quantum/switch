@@ -33,6 +33,7 @@ function session(
     can_create_workspace: true,
     can_add_workspace: canAdd,
     invite_email_enabled: false,
+    can_manage_connector_apps: false,
   };
 }
 

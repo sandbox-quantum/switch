@@ -15,7 +15,8 @@
  *
  * Plain data with no imports, because the harness reads it too. Every page
  * assumes the server has `agent_management`, `service_connections` and
- * `organization_connector_apps` on, as the harness's stack does. */
+ * `organization_connector_apps` on, as the harness's stack does, and more
+ * than one organization: the server's default one and the harness's own. */
 
 /** The roles, each a real account in the harness:
  *
@@ -82,6 +83,8 @@ export const PAGES: Record<MatrixLayout, readonly MatrixPage[]> = {
     built("/resources/templates/:id", EVERYONE),
     built("/agents", EVERYONE),
     built("/agents/:agentId", EVERYONE),
+    // The deployment's connector apps. An organization's admin may set them
+    // up only on a deployment with no other organization, which this is not.
     built("/connectors", OPERATOR),
     built("/machines", EVERYONE),
     built("/collaborations", EVERYONE),
@@ -92,8 +95,6 @@ export const PAGES: Record<MatrixLayout, readonly MatrixPage[]> = {
     // anyone in one; what it lets them do is the page's own business.
     built("/organization", EVERYONE),
     built("/usage", ADMINS),
-    built("/users", OPERATOR),
-    built("/operator/workspaces", OPERATOR),
   ],
   v2: [
     built("/overview", EVERYONE),
@@ -130,13 +131,11 @@ export const PAGES: Record<MatrixLayout, readonly MatrixPage[]> = {
     built("/settings/org/workspaces", ORGANIZATION_ADMIN_OR_OPERATOR),
     built("/settings/org/users", ORGANIZATION_ADMIN_OR_OPERATOR),
     built("/settings/org/connectors", ORGANIZATION_ADMIN),
+    // As `/connectors` in today's layout.
+    built("/settings/org/connector-apps", OPERATOR),
     built("/settings/org/guardrails", ORGANIZATION_ADMIN),
     built("/settings/org/devices", ORGANIZATION_ADMIN),
     built("/settings/org/audit-log", ORGANIZATION_ADMIN),
-
-    built("/platform/workspaces", OPERATOR),
-    built("/platform/users", OPERATOR),
-    built("/platform/connectors", OPERATOR),
   ],
 };
 
@@ -145,7 +144,6 @@ export const AREAS: Record<MatrixLayout, readonly MatrixArea[]> = {
   v2: [
     { path: "/settings", open: EVERYONE, first: "/settings/general" },
     { path: "/settings/org", open: ORGANIZATION_ADMIN_OR_OPERATOR, first: "/settings/org/general" },
-    { path: "/platform", open: OPERATOR, first: "/platform/workspaces" },
   ],
 };
 
@@ -168,12 +166,15 @@ export const REDIRECTS: Record<MatrixLayout, readonly MatrixRedirect[]> = {
     { from: "/settings/org/workspaces", to: "/organization" },
     { from: "/settings/org/users", to: "/organization" },
     { from: "/settings/org/connectors", to: "/organization" },
+    { from: "/settings/org/connector-apps", to: "/connectors" },
     { from: "/settings/org/guardrails", to: "/organization" },
     { from: "/settings/org/devices", to: "/organization" },
     { from: "/settings/org/audit-log", to: "/organization" },
-    { from: "/platform", to: "/operator/workspaces" },
-    { from: "/platform/workspaces", to: "/operator/workspaces" },
-    { from: "/platform/users", to: "/users" },
+    { from: "/users", to: "/organization" },
+    { from: "/operator/workspaces", to: "/organization" },
+    { from: "/platform", to: "/organization" },
+    { from: "/platform/workspaces", to: "/organization" },
+    { from: "/platform/users", to: "/organization" },
     { from: "/platform/connectors", to: "/connectors" },
   ],
   v2: [
@@ -184,8 +185,12 @@ export const REDIRECTS: Record<MatrixLayout, readonly MatrixRedirect[]> = {
     { from: "/registration-keys", to: "/settings/api-keys" },
     { from: "/workspace", to: "/settings/users" },
     { from: "/organization", to: "/settings/org" },
-    { from: "/users", to: "/platform/users" },
-    { from: "/operator/workspaces", to: "/platform/workspaces" },
+    { from: "/users", to: "/settings/org/users" },
+    { from: "/operator/workspaces", to: "/settings/org/workspaces" },
+    { from: "/platform", to: "/settings/org/workspaces" },
+    { from: "/platform/workspaces", to: "/settings/org/workspaces" },
+    { from: "/platform/users", to: "/settings/org/users" },
+    { from: "/platform/connectors", to: "/settings/org/connector-apps" },
   ],
 };
 
@@ -209,17 +214,17 @@ export const RAIL: Record<MatrixLayout, Record<Persona, readonly string[]>> = {
     orgAdmin: [...CURRENT_RAIL_MEMBER, "Usage"],
     workspaceAdmin: [...CURRENT_RAIL_MEMBER, "Usage"],
     member: CURRENT_RAIL_MEMBER,
-    operator: [...CURRENT_RAIL_MEMBER, "Usage", "All workspaces", "Users", "Connectors"],
+    operator: [...CURRENT_RAIL_MEMBER, "Usage", "Connectors"],
   },
   v2: {
     orgAdmin: V2_RAIL,
     workspaceAdmin: V2_RAIL,
     member: V2_RAIL,
-    operator: [...V2_RAIL, "Platform"],
+    operator: V2_RAIL,
   },
 };
 
-export type MatrixSettingsArea = "workspace" | "organization" | "platform";
+export type MatrixSettingsArea = "workspace" | "organization";
 
 const WORKSPACE_MENU_MEMBER = [
   "General",
@@ -255,12 +260,6 @@ export const SETTINGS_MENUS: Record<MatrixSettingsArea, Record<Persona, readonly
       ],
       workspaceAdmin: null,
       member: null,
-      operator: ["General", "Workspaces", "Users"],
-    },
-    platform: {
-      orgAdmin: null,
-      workspaceAdmin: null,
-      member: null,
-      operator: ["All workspaces", "Users", "Connectors"],
+      operator: ["General", "Workspaces", "Users", "Connector apps"],
     },
   };

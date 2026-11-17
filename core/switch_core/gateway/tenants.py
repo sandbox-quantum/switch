@@ -94,7 +94,6 @@ from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.auth import (
     AuthenticatedCaller,
     AuthenticatedSession,
-    all_workspaces,
     get_authenticated_caller,
     get_authenticated_session,
     get_authenticated_user_id,
@@ -171,7 +170,6 @@ from switch_core.gateway.schemas import (
     MakeRoomsPrivateResponse,
     MemberDetail,
     MemberUpdateRequest,
-    OperatorWorkspaceResponse,
     PersonDetail,
     PrivateChannelRoom,
     PrivateChannelRoomsCount,
@@ -734,32 +732,6 @@ async def switch_tenant(
         session_auth_time(request),
     )
     return _session_response(user)
-
-
-@router.get("/operator/workspaces")
-async def list_every_workspace(
-    caller: Annotated[AuthenticatedCaller, Depends(get_authenticated_caller)],
-    session_factory: Annotated[
-        async_sessionmaker[AsyncSession], Depends(get_session_factory)
-    ],
-) -> list[OperatorWorkspaceResponse]:
-    """Every workspace on the server, archived ones included and saying so,
-    for the platform operator to enter one with `POST /tenants/{id}/switch`. Kept apart from `GET /tenants`, which
-    stays the caller's own, so the ordinary picker never lists customers'
-    workspaces. Listing records nothing; entering does."""
-    if not caller.is_operator:
-        raise HTTPException(status_code=403, detail="Admin access required")
-    return [
-        OperatorWorkspaceResponse(
-            id=tenant.id,
-            slug=tenant.slug,
-            name=tenant.name,
-            organization_id=tenant.organization_id,
-            organization_name=organization.name if organization is not None else None,
-            archived_at=archived_since(tenant),
-        )
-        for tenant, organization in await all_workspaces(session_factory)
-    ]
 
 
 # ── Invitations ───────────────────────────────────────────────────────────────

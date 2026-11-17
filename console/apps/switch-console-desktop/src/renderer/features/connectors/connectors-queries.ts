@@ -56,6 +56,20 @@ export function useWorkspaceServices(workspaceId: string) {
 }
 
 /**
+ * Whether the signed-in account may set up the server's connector apps, as
+ * the server answers it for the workspace; null data where the server does
+ * not say. Asked only where the answer decides anything.
+ */
+export function useCanManageConnectorApps(workspaceId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: ['can-manage-connector-apps', workspaceId],
+    queryFn: () => rpc.switchServers.canManageConnectorApps(workspaceId),
+    enabled,
+    retry: false,
+  });
+}
+
+/**
  * Re-read everything a connection, grant or switch change can move: the
  * catalog, who uses each service, the admin's switches, and the agent pages
  * that read the same connections and grants.

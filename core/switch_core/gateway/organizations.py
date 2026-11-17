@@ -12,7 +12,10 @@ left: the platform operator may list its members and make one of them
 
 Changes to the organization itself are recorded in its own audit log
 (`organization_audit_events`), whichever workspace they were made from, and
-read back by its `org_admin`s. See `docs/design/organizations-v1.md`.
+read back by its `org_admin`s. Someone who stops being `org_admin` here, made
+a member or removed, is e-mailed about to every `org_admin` and to themselves
+once the change commits (`organization_admin_notices.py`). See
+`docs/design/organizations-v1.md`.
 """
 
 from __future__ import annotations
@@ -79,6 +82,7 @@ from switch_core.gateway.dependencies import (
     get_api_key_store,
     get_client_lifecycle,
     get_config,
+    get_organization_admin_notices,
     get_organization_directory,
     get_organization_store,
     get_protocol,
@@ -122,6 +126,12 @@ from switch_core.organization_access import (
     AccessRevocation,
     end_access_through_organization,
     workspaces_where_they_own_agents,
+)
+from switch_core.organization_admin_notices import (
+    AdminChange,
+    AdminChangeKind,
+    OrganizationAdminNotices,
+    Person,
 )
 from switch_core.organization_directory import (
     NO_DIRECTORY_CHANGE,
@@ -932,6 +942,9 @@ async def update_organization_member_role(
     directory_token: Annotated[
         OrganizationToken | None, Depends(directory_access_token)
     ],
+    notices: Annotated[
+        OrganizationAdminNotices, Depends(get_organization_admin_notices)
+    ],
     user: Annotated[User, Depends(get_current_user)],
     config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> OrganizationMemberDetail | JSONResponse:
@@ -944,7 +957,9 @@ async def update_organization_member_role(
     again. Demoting someone first takes away what they hold in the workspaces
     they were in only as `org_admin` (`_end_access_through_organization`).
     The directory is asked last, once every check has passed
-    (`_ask_directory`). Recorded in the organization's audit log.
+    (`_ask_directory`). Recorded in the organization's audit log; a demotion
+    is e-mailed to the organization's admins and the person demoted once it
+    commits.
     """
     access = await require_organization_admin(
         session, user_store, organization_store, user, operator_restores=True
@@ -1043,6 +1058,20 @@ async def update_organization_member_role(
 
     target = await user_store.get(session, user_id)
     assert target is not None
+    if demoting:
+        await notices.send(
+            AdminChange(
+                organization_id=organization_id,
+                kind=(
+                    AdminChangeKind.STEPPED_DOWN
+                    if user_id == user.id
+                    else AdminChangeKind.DEMOTED
+                ),
+                target=Person(target.id, target.name, target.email),
+                actor=Person(user.id, user.name, user.email),
+                reason=None,
+            )
+        )
     if user_id == user.id:
         await rebind_if_left(
             request, response, session_factory, user_store, user, config
@@ -1081,6 +1110,9 @@ async def remove_organization_member(
     directory_token: Annotated[
         OrganizationToken | None, Depends(directory_access_token)
     ],
+    notices: Annotated[
+        OrganizationAdminNotices, Depends(get_organization_admin_notices)
+    ],
     user: Annotated[User, Depends(get_current_user)],
     config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> dict | JSONResponse:
@@ -1095,7 +1127,9 @@ async def remove_organization_member(
     hold no membership row in, and what they hold there is taken away first
     (`_end_access_through_organization`). Refuses the last `org_admin` too.
     The directory is asked last, once every check has passed
-    (`_ask_directory`). Recorded in the organization's audit log.
+    (`_ask_directory`). Recorded in the organization's audit log; removing an
+    `org_admin` is e-mailed to the organization's admins and the person
+    removed once it commits.
     """
     access = await require_organization_admin(
         session, user_store, organization_store, user, operator_restores=False
@@ -1185,6 +1219,23 @@ async def remove_organization_member(
         details={"role": role, **made_from(access)},
     )
     await session.commit()
+    if was_admin:
+        removed = await user_store.get(session, user_id)
+        if removed is None:
+            raise RuntimeError(f"Organization member {user_id} has no user")
+        await notices.send(
+            AdminChange(
+                organization_id=organization_id,
+                kind=(
+                    AdminChangeKind.LEFT
+                    if user_id == user.id
+                    else AdminChangeKind.REMOVED
+                ),
+                target=Person(removed.id, removed.name, removed.email),
+                actor=Person(user.id, user.name, user.email),
+                reason=None,
+            )
+        )
     if user_id == user.id:
         await rebind_if_left(
             request, response, session_factory, user_store, user, config

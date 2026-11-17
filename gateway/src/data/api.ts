@@ -1603,12 +1603,6 @@ export interface UserInfo {
   created_at: string;
 }
 
-/** A user on the operator's list. */
-export interface ListedUser extends UserInfo {
-  // Deleting the account: never your own, nor another operator's.
-  can_delete: boolean;
-}
-
 export async function login(email: string, password: string): Promise<UserInfo> {
   return jsonRequest<UserInfo>("/auth/login", "POST", { email, password });
 }
@@ -1700,6 +1694,9 @@ export interface Session {
   can_add_workspace: boolean;
   // Whether an invitation naming an e-mail is sent there by this server.
   invite_email_enabled: boolean;
+  // Whether the caller may set up the deployment's connector apps: the
+  // operator, and the admins of its only organization while it has one.
+  can_manage_connector_apps: boolean;
 }
 
 /** The signed-in session, or null when nobody is signed in. Any other
@@ -1935,15 +1932,6 @@ export interface CurrentOrganization {
   // operator while it has none.
   administers: boolean;
   can_manage_members: boolean;
-}
-
-export interface OperatorWorkspace {
-  id: string;
-  slug: string;
-  name: string;
-  organization_id: string | null;
-  organization_name: string | null;
-  archived_at: string | null;
 }
 
 export async function fetchCurrentOrganization(): Promise<CurrentOrganization> {
@@ -2236,11 +2224,6 @@ export async function fetchOrganizationAuditEvents(
     `/organizations/current/audit-events?${query}`,
     "GET",
   );
-}
-
-/** Every workspace on the server; the platform operator only. */
-export async function fetchOperatorWorkspaces(): Promise<OperatorWorkspace[]> {
-  return jsonRequest<OperatorWorkspace[]>("/operator/workspaces", "GET");
 }
 
 export interface Invitation {
@@ -2536,35 +2519,6 @@ export async function changePassword(
     current_password: currentPassword,
     new_password: newPassword,
   });
-}
-
-export async function fetchUsers(): Promise<ListedUser[]> {
-  return jsonRequest<ListedUser[]>("/users", "GET");
-}
-
-// The roles `POST /users` accepts; `admin` makes a deployment operator.
-export type UserRole = "user" | "admin";
-
-export async function createUser(
-  name: string,
-  email: string,
-  password: string,
-  role: UserRole,
-): Promise<UserInfo> {
-  return jsonRequest<UserInfo>("/users", "POST", { name, email, password, role });
-}
-
-// Deployment operator only. Ends every session the account holds, as the
-// person's own "Sign out of all devices" would; recorded in the audit log.
-export async function endUserSessions(userId: string): Promise<void> {
-  await jsonRequest(`/users/${encodeURIComponent(userId)}/sessions/revoke`, "POST");
-}
-
-// Deployment operator only. Deletes the whole account, as the person
-// deleting it themselves would; the server refuses its own administrator
-// account and the caller's own.
-export async function deleteUser(userId: string): Promise<void> {
-  await jsonRequest(`/users/${encodeURIComponent(userId)}`, "DELETE");
 }
 
 // ── Resources (References & Documents) ─────────────────────────────────────

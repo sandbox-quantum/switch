@@ -1,15 +1,12 @@
 import AccountTreeOutlined from "@mui/icons-material/AccountTreeOutlined";
-import AdminPanelSettingsOutlined from "@mui/icons-material/AdminPanelSettingsOutlined";
 import ApartmentOutlined from "@mui/icons-material/ApartmentOutlined";
 import ChatBubbleOutlineOutlined from "@mui/icons-material/ChatBubbleOutlineOutlined";
 import ComputerOutlined from "@mui/icons-material/ComputerOutlined";
 import DashboardOutlined from "@mui/icons-material/DashboardOutlined";
 import DataUsageOutlined from "@mui/icons-material/DataUsageOutlined";
 import DescriptionOutlined from "@mui/icons-material/DescriptionOutlined";
-import DnsOutlined from "@mui/icons-material/DnsOutlined";
 import FolderOutlined from "@mui/icons-material/FolderOutlined";
 import MeetingRoomOutlined from "@mui/icons-material/MeetingRoomOutlined";
-import PeopleOutlined from "@mui/icons-material/PeopleOutlined";
 import PowerOutlined from "@mui/icons-material/PowerOutlined";
 import SettingsOutlined from "@mui/icons-material/SettingsOutlined";
 import SmartToyOutlined from "@mui/icons-material/SmartToyOutlined";
@@ -22,9 +19,9 @@ import {
   type Rule,
   agentManagement,
   allOf,
+  connectorAppManagers,
   everyone,
   inOrganization,
-  operators,
   organizationAdmins,
   organizationAdminsOnly,
   organizationConnectorApps,
@@ -42,7 +39,6 @@ import ConnectorAppsPage from "../pages/connector-apps/ConnectorAppsPage";
 import EcosystemGraphPage from "../pages/ecosystem/EcosystemGraphPage";
 import MachinesPage from "../pages/machines/MachinesPage";
 import MessagingAppsPage from "../pages/messaging-apps/MessagingAppsPage";
-import OperatorWorkspacesPage from "../pages/operator/OperatorWorkspacesPage";
 import ConnectorPage from "../pages/connectors/ConnectorPage";
 import ConnectorsPage from "../pages/connectors/ConnectorsPage";
 import OrganizationPage, {
@@ -71,7 +67,6 @@ import RoomsGraphPage from "../pages/rooms/RoomsGraphPage";
 import RoomsPage from "../pages/rooms/RoomsPage";
 import TemplatesPage from "../pages/templates/TemplatesPage";
 import UsagePage from "../pages/usage/UsagePage";
-import UsersPage from "../pages/users/UsersPage";
 import PrivateChannelRoomsPage from "../pages/workspace/PrivateChannelRoomsPage";
 import WorkspaceConnectorsPage from "../pages/workspace/WorkspaceConnectorsPage";
 import WorkspacePage, { WorkspaceGeneralPage } from "../pages/workspace/WorkspacePage";
@@ -151,12 +146,6 @@ export const AREAS: Record<SettingsArea, AreaDefinition> = {
     first: "/settings/org/general",
     outsideWorkspace: true,
   },
-  platform: {
-    title: "Platform",
-    access: operators,
-    first: "/platform/workspaces",
-    outsideWorkspace: true,
-  },
 };
 
 function page(
@@ -229,10 +218,10 @@ export const ROUTES: readonly AppRoute[] = [
   page("/agents", V2, everyone, <AgentListPage />),
   page("/agents/:agentId", BOTH, everyone, <AgentDetailPage />),
 
-  // Today `/connectors` is the operator's server-wide connector apps. In the
-  // new layout it is everyone's connector catalogue, and the operator's page
-  // moves to the Platform area.
-  page("/connectors", CURRENT, operators, <ConnectorAppsPage />),
+  // Today `/connectors` is the deployment's connector apps. In the new layout
+  // it is everyone's connector catalogue, and the deployment's apps are in
+  // Organization settings, as Connector apps.
+  page("/connectors", CURRENT, connectorAppManagers, <ConnectorAppsPage />),
   page("/connectors", V2, serviceConnections, <ConnectorsPage />),
   page("/connectors/:connectorId", V2, serviceConnections, <ConnectorPage />),
 
@@ -253,10 +242,22 @@ export const ROUTES: readonly AppRoute[] = [
   page("/organization", CURRENT, inOrganization, <OrganizationPage />),
   redirect("/organization", V2, "/settings/org"),
   page("/usage", CURRENT, workspaceAdmins, <UsagePage />),
-  page("/users", CURRENT, operators, <UsersPage />),
-  redirect("/users", V2, "/platform/users"),
-  page("/operator/workspaces", CURRENT, operators, <OperatorWorkspacesPage />),
-  redirect("/operator/workspaces", V2, "/platform/workspaces"),
+
+  // The old URLs of the platform operator's own pages, which the dashboard no
+  // longer has: accounts and organizations are managed with server commands.
+  // Each leads to the nearest page there is.
+  redirect("/users", CURRENT, "/organization"),
+  redirect("/users", V2, "/settings/org/users"),
+  redirect("/operator/workspaces", CURRENT, "/organization"),
+  redirect("/operator/workspaces", V2, "/settings/org/workspaces"),
+  redirect("/platform", CURRENT, "/organization"),
+  redirect("/platform", V2, "/settings/org/workspaces"),
+  redirect("/platform/workspaces", CURRENT, "/organization"),
+  redirect("/platform/workspaces", V2, "/settings/org/workspaces"),
+  redirect("/platform/users", CURRENT, "/organization"),
+  redirect("/platform/users", V2, "/settings/org/users"),
+  redirect("/platform/connectors", CURRENT, "/connectors"),
+  redirect("/platform/connectors", V2, "/settings/org/connector-apps"),
 
   // Workspace settings. `/usage` keeps its URL until Usage & budget is
   // rebuilt, and sits here in the meantime.
@@ -290,7 +291,9 @@ export const ROUTES: readonly AppRoute[] = [
   personalSettingsPage("/settings/account", "Your account", everyone, <AccountPage />),
 
   // Organization settings: the area admits the organization's admins, and
-  // the operator to restore one; its pages beyond that are the admins' alone.
+  // the operator to restore one; its pages beyond that are the admins' alone,
+  // but for Connector apps, which is whoever may set up the deployment's
+  // connector apps, the operator included.
   areaIndex("/settings/org", "organization"),
   redirect("/settings/org", CURRENT, "/organization"),
   settingsPage(
@@ -320,6 +323,14 @@ export const ROUTES: readonly AppRoute[] = [
   ),
   redirect("/settings/org/connectors", CURRENT, "/organization"),
   settingsPage(
+    "/settings/org/connector-apps",
+    "organization",
+    "Connector apps",
+    connectorAppManagers,
+    <ConnectorAppsPage />,
+  ),
+  redirect("/settings/org/connector-apps", CURRENT, "/connectors"),
+  settingsPage(
     "/settings/org/guardrails",
     "organization",
     "Guardrails",
@@ -343,23 +354,6 @@ export const ROUTES: readonly AppRoute[] = [
     <OrganizationAuditLogPage />,
   ),
   redirect("/settings/org/audit-log", CURRENT, "/organization"),
-
-  // The platform operator's pages. Each holds the operator rule itself, not
-  // only through the area, so a page moved out of it stays the operator's.
-  areaIndex("/platform", "platform"),
-  redirect("/platform", CURRENT, "/operator/workspaces"),
-  settingsPage(
-    "/platform/workspaces",
-    "platform",
-    "All workspaces",
-    operators,
-    <OperatorWorkspacesPage />,
-  ),
-  redirect("/platform/workspaces", CURRENT, "/operator/workspaces"),
-  settingsPage("/platform/users", "platform", "Users", operators, <UsersPage />),
-  redirect("/platform/users", CURRENT, "/users"),
-  settingsPage("/platform/connectors", "platform", "Connectors", operators, <ConnectorAppsPage />),
-  redirect("/platform/connectors", CURRENT, "/connectors"),
 ];
 
 export function routesFor(layout: Layout): AppRoute[] {
@@ -443,8 +437,6 @@ export const RAIL: Record<Layout, readonly RailItem[]> = {
     railItem("Organization", "/organization", ApartmentOutlined),
     railItem("Devices", "/machines", ComputerOutlined),
     railItem("Usage", "/usage", DataUsageOutlined),
-    railItem("All workspaces", "/operator/workspaces", DnsOutlined),
-    railItem("Users", "/users", PeopleOutlined),
     railItem("Connectors", "/connectors", PowerOutlined),
   ],
   // The ecosystem graph is opened from Overview, which shows as current there.
@@ -461,7 +453,6 @@ export const RAIL: Record<Layout, readonly RailItem[]> = {
       activeFor: ["/settings", "/usage"],
       bottom: true,
     }),
-    railItem("Platform", "/platform", AdminPanelSettingsOutlined, { bottom: true }),
   ],
 };
 

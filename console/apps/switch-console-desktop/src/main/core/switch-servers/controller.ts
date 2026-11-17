@@ -113,6 +113,7 @@ import {
   GatewayError,
   type RemoteTenant,
   checkConnectorApp,
+  fetchCanManageConnectorApps,
   fetchConnectorAppImpact,
   fetchConnectorApps,
   importConnectorApp,
@@ -634,6 +635,14 @@ export const switchServersController = createRPCController({
    */
   getConnectorApps: async (serverId: string) =>
     fetchConnectorApps(await requireReachableServer(serverId)),
+
+  /**
+   * Whether the signed-in account may set up the server's connector apps, as
+   * the server answers it for the session `workspaceId` selects; null where
+   * the server does not say, and only its operator may.
+   */
+  canManageConnectorApps: (workspaceId: string): Promise<boolean | null> =>
+    withReachableWorkspaceSession(workspaceId, fetchCanManageConnectorApps),
 
   /** Check a connector's app with its vendor, and save it if the vendor accepts it. */
   saveConnectorApp: async (params: {

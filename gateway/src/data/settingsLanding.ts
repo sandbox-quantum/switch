@@ -4,7 +4,7 @@
  * checks the page against what they may open there, and falls back to its
  * first page; see `SettingsIndex`. */
 
-export type SettingsArea = "workspace" | "organization" | "platform";
+export type SettingsArea = "workspace" | "organization";
 
 const AFTER_SWITCH_KEY = "switch.settings.afterSwitch";
 const LAST_PAGE_KEY = "switch.settings.lastPage";

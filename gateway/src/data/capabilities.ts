@@ -29,6 +29,10 @@ export interface Capabilities {
    * retention window and erasing people's data, which take an admin
    * membership of the caller's, as deleting it does. */
   canManageDataProtection: boolean;
+  /** The session's `can_manage_connector_apps`: setting up the deployment's
+   * connector apps, which the operator may, and the admins of its only
+   * organization while it has no other. */
+  canManageConnectorApps: boolean;
   features: FeatureFlags;
 }
 
@@ -44,6 +48,7 @@ export function capabilitiesOf(
     inOrganization: (session?.tenant?.organization_id ?? null) !== null,
     canDeleteWorkspace: tenant?.can_delete ?? false,
     canManageDataProtection: tenant?.can_manage_data_protection ?? false,
+    canManageConnectorApps: session?.can_manage_connector_apps ?? false,
     features,
   };
 }
@@ -69,9 +74,6 @@ export const workspaceAdmins: Rule = (caps) =>
     ? ALLOWED
     : notPermitted("Only this workspace's admins can open this page.");
 
-export const operators: Rule = (caps) =>
-  caps.isOperator ? ALLOWED : notPermitted("Only the platform operator can open this page.");
-
 export const inOrganization: Rule = (caps) =>
   caps.inOrganization ? ALLOWED : notPermitted("This workspace belongs to no organization.");
 
@@ -91,6 +93,12 @@ export const organizationAdminsOnly: Rule = (caps) => {
   if (!caps.inOrganization) return inOrganization(caps);
   return caps.administersOrganization ? ALLOWED : notPermitted(ONLY_ORGANIZATION_ADMINS);
 };
+
+/** Whoever may set up the deployment's connector apps. */
+export const connectorAppManagers: Rule = (caps) =>
+  caps.canManageConnectorApps
+    ? ALLOWED
+    : notPermitted("Only whoever runs Switch, or an admin of its only organization, can open this page.");
 
 function feature(flag: FeatureFlagKey, what: string): Rule {
   return (caps) =>

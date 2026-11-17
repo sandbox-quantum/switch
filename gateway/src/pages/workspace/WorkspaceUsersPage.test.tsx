@@ -24,6 +24,7 @@ vi.mock("../../data/AuthContext", () => ({
         organization_id: "o1",
       },
       invite_email_enabled: false,
+      can_manage_connector_apps: false,
     },
     capabilities: {
       isOperator: false,
@@ -32,6 +33,7 @@ vi.mock("../../data/AuthContext", () => ({
       inOrganization: true,
       canDeleteWorkspace: false,
       canManageDataProtection: false,
+      canManageConnectorApps: false,
       features: {},
     },
     refresh: () => auth.refresh(),

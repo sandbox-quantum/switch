@@ -1378,12 +1378,32 @@ export async function fetchWorkspaceCreation(server: SwitchServer): Promise<Work
   };
 }
 
-function optionalFlag(
+/**
+ * Whether the signed-in account may set up the deployment's connector apps:
+ * its operator, or an `org_admin` of its organization when it has exactly
+ * one.
+ *
+ * Null on a server from before it said (no session route, or no field), where
+ * only the operator may.
+ */
+export async function fetchCanManageConnectorApps(server: SwitchServer): Promise<boolean | null> {
+  let res: Response;
+  try {
+    res = await gatewayFetch(server, '/auth/session', { authenticated: true });
+  } catch (cause) {
+    if (cause instanceof GatewayError && cause.status === 404) return null;
+    throw cause;
+  }
+  const json = (await res.json()) as { can_manage_connector_apps?: unknown };
+  return optionalFlag(server, json, 'can_manage_connector_apps', null);
+}
+
+function optionalFlag<Absent extends boolean | null>(
   server: SwitchServer,
   json: Record<string, unknown>,
   field: string,
-  absent: boolean
-): boolean {
+  absent: Absent
+): boolean | Absent {
   const value = json[field];
   if (value === undefined) return absent;
   if (typeof value !== 'boolean') {

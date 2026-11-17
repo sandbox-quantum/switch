@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Callable
-from typing import Any
+from typing import Annotated, Any
 
+from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
@@ -33,6 +34,7 @@ from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.invite_mail import InviteMailer
+from switch_core.organization_admin_notices import OrganizationAdminNotices
 from switch_core.organization_directory import OrganizationDirectory
 from switch_core.room_service import RoomService
 from switch_core.rooms_yaml import RoomYamlService
@@ -303,6 +305,20 @@ def get_invite_mailer() -> InviteMailer | None:
     """None when no SMTP relay is configured: an addressed invitation is
     still minted, and the response says nothing was sent."""
     return _state["invite_mailer"]  # type: ignore[no-any-return]
+
+
+def get_organization_admin_notices(
+    session_factory: Annotated[Any, Depends(get_session_factory)],
+    mailer: Annotated[InviteMailer | None, Depends(get_invite_mailer)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
+) -> OrganizationAdminNotices:
+    """E-mails to an organization's admins about who administers it, through
+    the relay invitations go through, linking to the dashboard."""
+    return OrganizationAdminNotices(
+        session_factory=session_factory,
+        mailer=mailer,
+        dashboard_base_url=config.dashboard_base_url,
+    )
 
 
 def get_install_service() -> MessagingInstallService | None:

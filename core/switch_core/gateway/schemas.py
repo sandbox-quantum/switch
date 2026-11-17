@@ -1234,24 +1234,6 @@ Email = Annotated[
 ]
 
 
-class OperatorUserResponse(UserResponse):
-    """An account as the deployment operator manages it. `can_delete`: not
-    their own, which they delete from their account settings, and not the
-    server's administrator account (`accounts.deletion.is_server_administrator`).
-    What else stands in the way is answered when it is asked."""
-
-    can_delete: bool
-
-
-class CreateUserRequest(BaseModel):
-    name: str
-    email: Email
-    password: Password
-    # Only the exact string "admin" grants operator rights (`require_admin`),
-    # so anything else would create an account claiming a role it lacks.
-    role: Literal["user", "admin"] = "user"
-
-
 class ChangePasswordRequest(BaseModel):
     current_password: str
     new_password: Password
@@ -1376,17 +1358,6 @@ class WorkspaceCountsResponse(BaseModel):
     id: str
     users: int
     agents: int
-
-
-class OperatorWorkspaceResponse(BaseModel):
-    """One workspace on the server, as the platform operator's list shows it."""
-
-    id: str
-    slug: str
-    name: str
-    organization_id: str | None
-    organization_name: str | None
-    archived_at: str | None
 
 
 class CurrentTenantResponse(TenantMembershipResponse):
@@ -1569,6 +1540,10 @@ class SessionStateResponse(BaseModel):
     # Whether an invitation addressed to an e-mail is sent there, or only
     # minted for the admin to share.
     invite_email_enabled: bool
+    # Whether the caller may set up the deployment's connector apps
+    # (`gateway/connector_apps.py`): the platform operator, or an `org_admin`
+    # of the deployment's only organization (`auth.deployment_manager`).
+    can_manage_connector_apps: bool
 
 
 MAX_INVITATION_USES = 100

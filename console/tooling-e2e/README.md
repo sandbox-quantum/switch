@@ -203,13 +203,14 @@ on the UI.
   workspace admin and a member, each brought into its first workspace by an
   invitation link; and the platform operator, the harness's own gateway admin,
   entered into that workspace with no role in the organization. Each scenario
-  makes its own, and every name goes through the run's naming helper.
+  makes its own, signing every account but the operator's up (see "Throwaway
+  accounts"), and every name goes through the run's naming helper.
 - **The flags.** Every row assumes agent management, connectors and the
   organization's connector apps are on, so every page is there to open. The
   stack script turns them on for the browser lane, and the scenarios refuse to
   run without them.
-- **Only on `ephemeral`.** Accounts and organizations cannot be removed
-  afterwards. What the accounts own is removed; the operator's choice of
+- **Only on `ephemeral`.** Accounts and organizations are left behind.
+  What the accounts own is removed; the operator's choice of
   workspace for its next sign-in is put back, since the other scenarios sign
   in as the same account.
 - **Adding or building a page.** Add or update its row in `roleMatrix.ts` in
@@ -238,6 +239,24 @@ otherwise be refused rather than delivered.
 With `SWITCH_E2E_ENVIRONMENT=prod` the clients refuse every request but reads
 and logging in before it leaves the process, so a wrong base URL fails a test
 rather than writing to production.
+
+### Throwaway accounts
+
+A scenario that needs people besides the harness admin makes them the way
+people make theirs, over HTTP: it signs them up (`POST /gateway/auth/signup`),
+which puts them in the server's default workspace as plain members, and
+brings them into other workspaces with invitation links. Where a scenario
+deletes an account, the account deletes itself (`DELETE /gateway/auth/me`).
+The harness never uses the operator's account commands (`switch-accounts`,
+`switch-orgs`), which run where switch-core runs, so it works against stacks
+it cannot shell into.
+
+The server must allow sign-up: `GATEWAY_SIGNUP_ENABLED=true`, with password
+sign-in on, no gateway OIDC sign-in and `GATEWAY_SIGNUP_MODE=default_tenant`,
+and a `GATEWAY_SIGNUP_MAX_PER_HOUR` above what a run signs up, since the cap
+counts every account created. The ephemeral stack starts its server that way.
+Against a server that refuses sign-up, a scenario that needs an account fails
+saying so. Every such scenario runs only on `ephemeral`.
 
 ## Configuration
 
@@ -570,8 +589,9 @@ on every PR with no server.
     inconclusive. Reads go first, then writes, then deletes, so a write or
     delete that leaked cannot turn the probes after it into 404s. The prober
     is not the harness admin: a deployment admin may cross workspaces by
-    design. The room and the agent are removed afterwards, but workspaces
-    and users cannot be deleted, so this runs only on `ephemeral`.
+    design. The owner of the second workspace and the prober both sign up.
+    The room and the agent are removed afterwards, but the workspace and the
+    two accounts are left behind, so this runs only on `ephemeral`.
 
 ## In CI
 

@@ -26,6 +26,7 @@ from switch_core.accounts.deletion import (
     Workspace,
 )
 from switch_core.bridges.resource.service import ResourceService
+from switch_core.db.audit import OrganizationAuditAction
 from switch_core.db.models import (
     TENANT_ZERO_ID,
     Agent,
@@ -40,6 +41,7 @@ from switch_core.db.models import (
     MessagingInstall,
     OidcIdentity,
     Organization,
+    OrganizationAuditEvent,
     OrganizationMember,
     Reference,
     ReferenceType,
@@ -63,6 +65,8 @@ from switch_core.db.stores.reference_type_store import ReferenceTypeStore
 from switch_core.db.stores.room_link_store import RoomLinkStore
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.user_store import UserStore
+from switch_core.gateway.invite_mail import AdminChangeEmail, InviteEmail
+from switch_core.organization_admin_notices import OrganizationAdminNotices
 from switch_core.tenant_context import current_tenant_id
 
 ADMIN_EMAIL = "admin@switch.local"
@@ -129,8 +133,20 @@ class _SignInFlows:
         pass
 
 
+class _RecordingMailer:
+    def __init__(self) -> None:
+        self.sent: list[AdminChangeEmail] = []
+
+    async def send_invitation(self, invite: InviteEmail) -> None:
+        raise AssertionError("no invitation is sent here")
+
+    async def send_admin_change(self, email: AdminChangeEmail) -> None:
+        self.sent.append(email)
+
+
 def _deletion(
     session_factory: async_sessionmaker[AsyncSession],
+    mailer: _RecordingMailer | None = None,
 ) -> tuple[AccountDeletion, _Protocol, _Rooms]:
     protocol = _Protocol(session_factory)
     rooms = _Rooms()
@@ -156,6 +172,9 @@ def _deletion(
         templates=TemplateStore(),
         clients=_Clients(),
         admin_email=ADMIN_EMAIL,
+        admin_notices=OrganizationAdminNotices(
+            session_factory, mailer, "https://dashboard.example.test"
+        ),
     )
     return deletion, protocol, rooms
 
@@ -373,6 +392,61 @@ async def test_an_org_admin_with_a_member_row_takes_no_admin_away(
             )
         )
         assert list(admins) == [workspace_admin.id]
+
+
+@pytest.mark.parametrize("by_operator", [False, True])
+async def test_an_org_admin_deleted_is_recorded_as_removed_and_their_admins_told(
+    session_factory: async_sessionmaker[AsyncSession], by_operator: bool
+) -> None:
+    """Their `org_admin` row goes in the organization's own audit log, as
+    removing them would, and every remaining admin and the person are
+    e-mailed. The operator asking is there on the operator flag."""
+    mailer = _RecordingMailer()
+    deletion, _, _ = _deletion(session_factory, mailer)
+    async with session_factory() as session:
+        leaving = await _user(session, "leaving-admin")
+        staying = await _user(session, "staying-admin")
+        operator = await _user(session, "operator", role="admin")
+        await _member(session, TENANT_ZERO_ID, leaving, "member")
+        await _member(session, TENANT_ZERO_ID, staying, "admin")
+        await _organization_role(session, leaving, "org_admin")
+        await _organization_role(session, staying, "org_admin")
+        await session.commit()
+        user_id, staying_email = leaving.id, staying.email
+        actor_id = operator.id if by_operator else leaving.id
+
+    workspaces = [Workspace(TENANT_ZERO_ID, "Acme", "admin")]
+    async with session_factory() as session:
+        user = await session.get(User, user_id)
+        assert user is not None
+        await deletion.delete(session, user, workspaces, actor_id=actor_id)
+
+    async with session_factory() as session:
+        [event] = await session.scalars(
+            select(OrganizationAuditEvent).where(
+                OrganizationAuditEvent.organization_id == TENANT_ZERO_ID,
+                OrganizationAuditEvent.target_id == user_id,
+            )
+        )
+    assert event.action == OrganizationAuditAction.MEMBER_REMOVED
+    assert event.actor_user_id == actor_id
+    assert event.details == {
+        "role": "org_admin",
+        "reason": "account_deleted",
+        **({"platform_access": True} if by_operator else {}),
+    }
+    assert sorted(email.to for email in mailer.sent) == sorted(
+        ["leaving-admin@example.test", staying_email]
+    )
+    expected = (
+        "operator (operator@example.test) deleted the Switch account of "
+        "leaving-admin (leaving-admin@example.test)"
+        if by_operator
+        else "leaving-admin (leaving-admin@example.test) deleted their Switch account"
+    )
+    assert {email.summary for email in mailer.sent} == {
+        f"{expected}, so they are no longer an organization admin of Default."
+    }
 
 
 async def _organization_role(session: AsyncSession, user: User, role: str) -> None:

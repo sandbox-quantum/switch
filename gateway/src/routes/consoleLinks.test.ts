@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   WORKSPACE_PARAM,
   agentPagePath,
+  connectorAppsPagePath,
   roomPagePath,
   settingsPagePath,
 } from "../../../console/apps/switch-console-desktop/src/shared/core/switch-servers/dashboard-pages";
@@ -20,6 +21,13 @@ describe("the pages Switch Console opens", () => {
       expect(opensIn("current", settingsPagePath(link, false))).toBe(true);
       expect(opensIn("v2", settingsPagePath(link, true))).toBe(true);
     }
+  });
+
+  // Console's `platform` page is for a server from before Organization
+  // settings had Connector apps; here it only redirects.
+  it("opens the deployment's connector apps where each layout keeps them", () => {
+    expect(opensIn("v2", connectorAppsPagePath("organization-settings"))).toBe(true);
+    expect(opensIn("current", connectorAppsPagePath("old-layout"))).toBe(true);
   });
 
   it("opens a room's page and an agent's page in either layout", () => {

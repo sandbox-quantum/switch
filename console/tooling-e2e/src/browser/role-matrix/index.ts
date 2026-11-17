@@ -107,7 +107,7 @@ async function personaIn(
  * layouts; a route a page stops reading should come off.
  */
 const EVERY_ROLE: readonly string[] = [
-  'POST /gateway/users',
+  'POST /gateway/auth/signup',
   'POST /gateway/organizations',
   'POST /gateway/references',
   'DELETE /gateway/references/{reference_id}',
@@ -183,7 +183,6 @@ const BY_ROLE: Record<Persona, readonly string[]> = {
     'GET /gateway/tenants/{tenant_id}/usage',
     'GET /gateway/tenants/{tenant_id}/invitations',
     'GET /gateway/connector-apps',
-    'GET /gateway/users',
   ],
 };
 
@@ -252,7 +251,7 @@ async function checkView(ui: GatewayUi, asPersona: Persona, where: string): Prom
  */
 const twoWorkspaces: BrowserScenario = {
   header: roleMatrixHeader('role-matrix-two-workspaces', [
-    'POST /gateway/users',
+    'POST /gateway/auth/signup',
     'POST /gateway/organizations',
     'POST /gateway/organizations/current/workspaces',
     'POST /gateway/tenants/{tenant_id}/invitations',
@@ -291,7 +290,7 @@ const twoWorkspaces: BrowserScenario = {
  */
 const twoOrganizations: BrowserScenario = {
   header: roleMatrixHeader('role-matrix-two-organizations', [
-    'POST /gateway/users',
+    'POST /gateway/auth/signup',
     'POST /gateway/organizations',
     'POST /gateway/organizations/current/workspaces',
     'PATCH /gateway/organizations/current/members/{user_id}',
