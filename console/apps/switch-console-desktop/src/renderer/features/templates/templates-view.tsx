@@ -25,6 +25,7 @@ import { rpc } from '@renderer/lib/ipc';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { useAgentTypeAvailability } from '@renderer/lib/stores/use-agent-type-availability';
+import { useThisComputerReport } from '@renderer/lib/stores/use-this-computer-report';
 import { Alert, AlertAction, AlertDescription } from '@renderer/lib/ui/alert';
 import { Button } from '@renderer/lib/ui/button';
 import {
@@ -35,6 +36,7 @@ import {
 } from '@renderer/lib/ui/dropdown-menu';
 import { SearchInput } from '@renderer/lib/ui/search-input';
 import { cn } from '@renderer/utils/utils';
+import { PROVIDER_NOT_INSTALLED } from '@shared/core/managed-agents/managed-agents';
 import { useRecentTemplateIds } from './recent-templates';
 import { KIND_ICON, TemplateCard } from './template-card';
 import {
@@ -247,8 +249,19 @@ const TemplatesPanel = observer(function TemplatesPanel() {
   // this computer is the default run location. Say at the top of the listing
   // when it has none, rather than at the end of the Use page; a host gets
   // its own check there.
+  //
+  // Where this computer runs a controller, its report says: that is what a
+  // template's agents run on, on Windows too. Without one, Console's own check
+  // of the CLIs it could host here answers, unless this platform hosts none of
+  // them itself (Windows), which says nothing about what is installed.
   const { data: availability } = useAgentTypeAvailability();
-  const noProvider = availability !== undefined && !availability.some((a) => a.available);
+  const { data: report } = useThisComputerReport();
+  const noProvider = report
+    ? report.providers.length > 0 &&
+      report.providers.every((provider) => provider.problem === PROVIDER_NOT_INSTALLED)
+    : availability !== undefined &&
+      !availability.some((a) => a.available) &&
+      !availability.every((a) => a.blockedKind === 'unsupported');
 
   useEffect(() => {
     // No workspace is an answer, not a wait: leaving the spinner up would
