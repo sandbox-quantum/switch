@@ -53,6 +53,18 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **An organization's admins are e-mailed when one of them stops being an
+  admin.** When an organization admin is made a member by another admin,
+  steps down, is removed from the organization, leaves it, or has their
+  account deleted, every organization admin and the person themselves get an
+  e-mail. It says who made the change (or that they made it themselves), whom
+  it was made to, the organization and when, and links to the organization's
+  audit log. It goes through the relay invitation e-mails use
+  (`GATEWAY_SMTP_*`). Without one, nothing is sent and the server logs a
+  warning for each change. A send that fails is logged as an error and
+  doesn't undo the change. Deleting an organization admin's account is now
+  recorded in the organization's audit log too. Changes brought in from
+  WorkOS are not e-mailed.
 - **A room's page in the web dashboard says who owns it and where you
   stand.** Room info names the owner, or says the room has none, and a "Your
   access" line says whether you own the room, administer the workspace or

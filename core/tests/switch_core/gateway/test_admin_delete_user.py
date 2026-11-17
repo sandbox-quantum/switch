@@ -72,6 +72,7 @@ def _app(
     overrides[gw_deps.get_room_service] = lambda: deletion.rooms
     overrides[get_service_broker] = lambda: deletion.broker
     overrides[gw_deps.get_client_lifecycle] = lambda: deletion.clients
+    overrides[gw_deps.get_organization_admin_notices] = lambda: deletion.admin_notices
     overrides[gw_deps.get_config] = lambda: SimpleNamespace(
         keyring=TEST_KEYRING,
         gateway_cookie_secure=False,

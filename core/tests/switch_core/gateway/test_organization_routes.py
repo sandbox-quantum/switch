@@ -52,6 +52,7 @@ from switch_core.db.stores.workspace_service_store import WorkspaceServiceStore
 from switch_core.gateway import dependencies as gw_deps
 from switch_core.gateway import organizations, workspace_creation
 from switch_core.gateway.auth import create_jwt, decode_jwt
+from switch_core.gateway.invite_mail import InviteMailer
 from switch_core.gateway.organization_workspaces import (
     router as organization_workspaces_router,
 )
@@ -61,8 +62,12 @@ from switch_core.gateway.workos_sign_in_routes import (
     router as workos_sign_in_router,
 )
 from switch_core.keys import Keyring
+from switch_core.organization_admin_notices import OrganizationAdminNotices
 from switch_core.organization_directory import LocalDirectory
 from tests.telemetry_records import recording_telemetry
+
+# Where the organization admins' e-mails link to.
+DASHBOARD = "https://dashboard.example.invalid"
 
 _KEYRING = Keyring.parse(
     "test:" + "organization-routes-test-secret-" + "0" * 32, legacy_secret=None
@@ -91,6 +96,7 @@ def _app(
     *,
     signup_mode: str = "open",
     max_workspaces_per_user: int = 3,
+    mailer: InviteMailer | None = None,
 ) -> FastAPI:
     async def _session_dep():
         async with session_factory() as session:
@@ -116,6 +122,9 @@ def _app(
     app.dependency_overrides[gw_deps.get_agent_store] = lambda: AgentStore()
     app.dependency_overrides[gw_deps.get_room_store] = lambda: RoomStore()
     app.dependency_overrides[gw_deps.get_api_key_store] = lambda: ApiKeyStore()
+    app.dependency_overrides[gw_deps.get_organization_admin_notices] = lambda: (
+        OrganizationAdminNotices(session_factory, mailer, DASHBOARD)
+    )
     app.dependency_overrides[gw_deps.get_protocol] = lambda: SimpleNamespace(
         api_key_cache=SimpleNamespace(invalidate=lambda key_hash: None)
     )

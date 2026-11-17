@@ -28,6 +28,9 @@ ahead would strand something nobody else could reach:
 - an active messaging app installed in a workspace nobody else is in, which
   would keep receiving messages for no one.
 
+An organization they were `org_admin` of records them as removed in its
+audit log, and its other admins are e-mailed (`organization_admin_notices.py`).
+
 A workspace the person is alone in is deleted once it is empty
 (`workspace_deletion.py`). Rooms they created stay, so a workspace with any
 room left, or anything else that refuses its deletion, is left empty instead,
@@ -61,7 +64,13 @@ from switch_core.accounts.workspace_deletion import refusal as workspace_refusal
 from switch_core.authz import ORGANIZATION_ADMIN_ROLE
 from switch_core.bridges.resource.service import ReferenceTypeInUseError
 from switch_core.connections.broker import ServiceError
-from switch_core.db.audit import AuditAction, record_audit_event
+from switch_core.db.audit import (
+    PLATFORM_OPERATOR_COMMAND,
+    AuditAction,
+    OrganizationAuditAction,
+    record_audit_event,
+    record_organization_audit_event,
+)
 from switch_core.db.base import Base
 from switch_core.db.models import (
     AgentController,
@@ -98,7 +107,13 @@ from switch_core.db.rls_ddl import GLOBAL_TABLES
 from switch_core.db.session_scope import organization_session, tenant_session
 from switch_core.db.stores.erasure_store import FORMER_MEMBER_NAME, ErasureStore
 from switch_core.db.tenant_lookup import all_tenant_ids
-from switch_core.tenant_context import tenant_scope
+from switch_core.organization_admin_notices import (
+    AdminChange,
+    AdminChangeKind,
+    OrganizationAdminNotices,
+    Person,
+)
+from switch_core.tenant_context import no_tenant, tenant_scope
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -347,6 +362,12 @@ class Workspace:
     role: str
 
 
+def _by_command(actor_id: str | None) -> dict[str, bool]:
+    """Marks an audit event of a deletion a platform operator's server
+    command asked for, which names no actor."""
+    return {PLATFORM_OPERATOR_COMMAND: True} if actor_id is None else {}
+
+
 def is_server_administrator(user: User, admin_email: str) -> bool:
     """The server's administrator account: an operator, or the account at the
     configured admin e-mail, which the server recreates every time it starts,
@@ -370,6 +391,7 @@ class AccountDeletion:
     templates: TemplateStore
     clients: TenantClients
     admin_email: str
+    admin_notices: OrganizationAdminNotices
 
     async def with_former_workspaces(
         self, user_id: str, workspaces: list[Workspace]
@@ -498,19 +520,21 @@ class AccountDeletion:
         session: AsyncSession,
         user: User,
         workspaces: list[Workspace],
-        actor_id: str,
+        actor_id: str | None,
     ) -> None:
         """Delete the account. `session` is the caller's, and carries the
         deletion of the rows that belong to no workspace; the caller has
         checked `refusal` first. `actor_id` is who asked: the person
         themselves, or the server's operator; each workspace's audit log names
-        them.
+        them. None is a platform operator's server command
+        (`switch-accounts delete`), which the events say instead
+        (`PLATFORM_OPERATOR_COMMAND`).
 
         Raises `AccountDeletionRefused` before anything is changed if an
         organization's last `org_admin` check no longer holds, and
         `AccountDeletionIncomplete` when it fails partway."""
         user_id = user.id
-        await self._leave_organizations_as_admin(user, workspaces)
+        await self._leave_organizations_as_admin(user, workspaces, actor_id)
         completed: list[Workspace] = []
         try:
             for workspace in workspaces:
@@ -527,7 +551,7 @@ class AccountDeletion:
         )
 
     async def _leave_organizations_as_admin(
-        self, user: User, workspaces: list[Workspace]
+        self, user: User, workspaces: list[Workspace], actor_id: str | None
     ) -> None:
         """Take the person's `org_admin` rows away, each under the lock every
         write that could leave an organization without an `org_admin` takes
@@ -535,7 +559,11 @@ class AccountDeletion:
         admin stepping down at the same moment. Every check runs before any
         row goes. Only Switch's rows go: a membership in a directory kept
         outside Switch (`organization_directory.py`) is the person's beyond
-        Switch, and stays there."""
+        Switch, and stays there.
+
+        Each organization records them as removed in its audit log, in the
+        transaction that removes them, and its admins and the person are
+        e-mailed once it commits."""
         organizations: dict[str, str] = {}
         for workspace in workspaces:
             async with tenant_session(self.session_factory, workspace.id) as session:
@@ -586,10 +614,48 @@ class AccountDeletion:
                         OrganizationMember.user_id == user.id,
                     )
                 )
+                await record_organization_audit_event(
+                    session,
+                    organization_id=organization_id,
+                    actor_user_id=actor_id,
+                    action=OrganizationAuditAction.MEMBER_REMOVED,
+                    target_type="user",
+                    target_id=user.id,
+                    details={
+                        "role": ORGANIZATION_ADMIN_ROLE,
+                        "reason": "account_deleted",
+                        # Anyone but the person is the operator, there on
+                        # the operator flag alone.
+                        **({"platform_access": True} if actor_id != user.id else {}),
+                        **_by_command(actor_id),
+                    },
+                )
                 await session.commit()
+        target = Person(user.id, user.name, user.email)
+        actor = await self._person(actor_id)
+        for organization_id in sorted(organizations):
+            await self.admin_notices.send(
+                AdminChange(
+                    organization_id=organization_id,
+                    kind=AdminChangeKind.ACCOUNT_DELETED,
+                    target=target,
+                    actor=actor,
+                    reason=None,
+                )
+            )
+
+    async def _person(self, user_id: str | None) -> Person | None:
+        if user_id is None:
+            return None
+        with no_tenant():
+            async with self.session_factory() as session:
+                found = await session.get(User, user_id)
+        if found is None:
+            raise RuntimeError(f"User {user_id}, who asked for a deletion, is gone")
+        return Person(found.id, found.name, found.email)
 
     async def _leave_workspace(
-        self, user: User, workspace: Workspace, actor_id: str
+        self, user: User, workspace: Workspace, actor_id: str | None
     ) -> None:
         user_id = user.id
         tenant_id = workspace.id
@@ -681,6 +747,7 @@ class AccountDeletion:
                     "agents_deleted": len(agent_ids),
                     "machines_deleted": len(controller_ids),
                     "handed_to": successor,
+                    **_by_command(actor_id),
                 },
             )
             await session.execute(
@@ -760,7 +827,7 @@ class AccountDeletion:
         await erasures.retire_member_client(session, member.id, FORMER_MEMBER_NAME)
 
     async def _close_if_empty(
-        self, user_id: str, tenant_id: str, actor_id: str
+        self, user_id: str, tenant_id: str, actor_id: str | None
     ) -> None:
         """Delete a workspace the person leaves with nobody in it, once its
         tokens are revoked; leave it, saying why, when anything is left.

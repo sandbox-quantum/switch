@@ -66,6 +66,7 @@ from switch_core.gateway.dependencies import (
     get_client_lifecycle,
     get_config,
     get_external_user_store,
+    get_organization_admin_notices,
     get_organization_store,
     get_protocol,
     get_resource_service,
@@ -102,6 +103,7 @@ from switch_core.gateway.schemas import (
 )
 from switch_core.observability.catalogue import AUTH_SIGN_IN_FAILURES
 from switch_core.observability.metrics import metrics
+from switch_core.organization_admin_notices import OrganizationAdminNotices
 from switch_core.providers.hosted import HostedControllerSettings
 from switch_core.room_service import RoomService
 from switch_core.telemetry import emit_safely
@@ -547,6 +549,9 @@ async def check_my_account_deletion(
     room_service: Annotated[RoomService, Depends(get_room_service)],
     broker: Annotated[ServiceBroker, Depends(get_service_broker)],
     client_lifecycle: Annotated[ClientLifecycleService, Depends(get_client_lifecycle)],
+    notices: Annotated[
+        OrganizationAdminNotices, Depends(get_organization_admin_notices)
+    ],
     config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> AccountDeletionCheck:
     """What `DELETE /auth/me` would refuse with now, for the Gateway to say so
@@ -569,6 +574,7 @@ async def check_my_account_deletion(
         api_key_store,
         template_store,
         client_lifecycle,
+        notices,
         config,
     )
     workspaces = await _workspaces_to_delete(
@@ -599,6 +605,9 @@ async def delete_my_account(
     room_service: Annotated[RoomService, Depends(get_room_service)],
     broker: Annotated[ServiceBroker, Depends(get_service_broker)],
     client_lifecycle: Annotated[ClientLifecycleService, Depends(get_client_lifecycle)],
+    notices: Annotated[
+        OrganizationAdminNotices, Depends(get_organization_admin_notices)
+    ],
     config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> dict[str, bool]:
     """Delete the caller's own account, everywhere on this server.
@@ -624,6 +633,7 @@ async def delete_my_account(
         api_key_store,
         template_store,
         client_lifecycle,
+        notices,
         config,
     )
     workspaces = await _workspaces_to_delete(
@@ -660,6 +670,9 @@ async def reset_test_account(
     room_service: Annotated[RoomService, Depends(get_room_service)],
     broker: Annotated[ServiceBroker, Depends(get_service_broker)],
     client_lifecycle: Annotated[ClientLifecycleService, Depends(get_client_lifecycle)],
+    notices: Annotated[
+        OrganizationAdminNotices, Depends(get_organization_admin_notices)
+    ],
     config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> dict[str, bool]:
     """Wipe the caller's own test account, on a test or canary server that
@@ -687,6 +700,7 @@ async def reset_test_account(
         api_key_store,
         template_store,
         client_lifecycle,
+        notices,
         config,
     )
     reset = AccountReset(
@@ -734,6 +748,7 @@ def _account_deletion(
     api_key_store: ApiKeyStore,
     template_store: TemplateStore,
     client_lifecycle: ClientLifecycleService,
+    notices: OrganizationAdminNotices,
     config: SwitchConfig,
 ) -> AccountDeletion:
     return AccountDeletion(
@@ -752,6 +767,7 @@ def _account_deletion(
         templates=template_store,
         clients=client_lifecycle,
         admin_email=config.gateway_admin_email,
+        admin_notices=notices,
     )
 
 
@@ -919,6 +935,9 @@ async def delete_user(
     room_service: Annotated[RoomService, Depends(get_room_service)],
     broker: Annotated[ServiceBroker, Depends(get_service_broker)],
     client_lifecycle: Annotated[ClientLifecycleService, Depends(get_client_lifecycle)],
+    notices: Annotated[
+        OrganizationAdminNotices, Depends(get_organization_admin_notices)
+    ],
     config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> dict[str, bool]:
     """The deployment operator deletes someone's whole account.
@@ -958,6 +977,7 @@ async def delete_user(
         api_key_store,
         template_store,
         client_lifecycle,
+        notices,
         config,
     )
     workspaces = await _workspaces_to_delete(
