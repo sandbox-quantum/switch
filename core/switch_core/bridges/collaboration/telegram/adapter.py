@@ -1904,6 +1904,9 @@ class TelegramAdapter(PlatformAdapter):
                 mention=mention,
                 error_summary=content.error_summary,
                 tool_detail=False,
+                # The step of the moment is the live part of a running card;
+                # the full log is folded under it once the turn ends.
+                current_step=True,
             )
             fold = self._activity_fold(content, limit - len(tail) - len(body))
             return Drawn(text=f"{prefix}{body}{tail}{fold}", answerable=False)

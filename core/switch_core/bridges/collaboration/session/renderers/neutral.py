@@ -282,6 +282,7 @@ def turn_status(
     mention: str | None = None,
     error_summary: str | None = None,
     tool_detail: bool,
+    current_step: bool = False,
 ) -> str:
     """A turn's progress, compact enough to live in one message that is edited.
 
@@ -312,6 +313,14 @@ def turn_status(
     makes it reach them. It stands in for the state line, which under it would
     only be reporting a turn that is, by definition, not getting anywhere.
 
+    `current_step` adds the "Now: …" line on a platform that declines the rest
+    of the tool detail, for a running turn whose card otherwise only says it is
+    working: the step of the moment is the live part of the card there.
+
+    The time is exact while the turn runs: every platform drawing this redraws
+    a card when the turn changes and never on a timer, so whole minutes would
+    leave it reading the same through every change of the first minute.
+
     `mention` is already in the platform's own syntax and is not escaped: it is
     the adapter's, resolved from an id Switch holds, never host text.
     """
@@ -320,7 +329,11 @@ def turn_status(
         return _mentioned(mention, _truncate(f"⚠️ {error_summary}", budget))
 
     state = turn_state(
-        items, turn, tool_detail=tool_detail, elapsed_seconds=elapsed_seconds
+        items,
+        turn,
+        tool_detail=tool_detail,
+        elapsed_seconds=elapsed_seconds,
+        running_clock="exact",
     )
     head = markup.bold(state)
 
@@ -343,7 +356,12 @@ def turn_status(
         spent += len(line) + 1
     did = [item for item in items if is_tool_call(item)]
     for line in _doing(
-        did, turn, escape=escape, budget=budget, tool_detail=tool_detail
+        did,
+        turn,
+        escape=escape,
+        budget=budget,
+        tool_detail=tool_detail,
+        current_step=current_step,
     ):
         if spent + len(line) + 1 > budget:
             break
@@ -359,6 +377,7 @@ def _doing(
     escape: Callable[[str], str],
     budget: int,
     tool_detail: bool,
+    current_step: bool,
 ) -> list[str]:
     """The optional lines under the state: what is running, and how it is going.
 
@@ -377,7 +396,7 @@ def _doing(
         return []
     lines: list[str] = []
     ended = turn.status in TURN_ENDED
-    if tool_detail and not ended:
+    if (tool_detail or current_step) and not ended:
         current = next(
             (item for item in reversed(did) if item.status == "in-progress"), None
         )

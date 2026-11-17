@@ -14,6 +14,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Literal
 
 from switch_core import messaging_platforms
 from switch_core.sessions.contract import (
@@ -58,6 +59,7 @@ def turn_state(
     *,
     tool_detail: bool,
     elapsed_seconds: float | None = None,
+    running_clock: Literal["minutes", "exact"] = "minutes",
 ) -> str:
     """Where a turn got to, and what it left behind if it stopped.
 
@@ -87,6 +89,12 @@ def turn_state(
     reporting — the duration stays, because that is the turn's own. What a
     turn left unfinished is not covered by it: that is an outcome, and it is
     reported wherever the turn is.
+
+    `running_clock` is "minutes" for a platform that redraws a running card on
+    a timer (Slack), where seconds would sit still between those redraws, and
+    "exact" for one that redraws only when the turn changes: there the time is
+    right at every drawing, and whole minutes would leave "Working…" unchanged
+    through every change of the first minute, reading as a card that stopped.
     """
     state = TURN_STATE[turn.status]
     if turn.status == "queued" and any(
@@ -94,7 +102,9 @@ def turn_state(
     ):
         state = QUEUED_BEHIND
     if turn.status not in TURN_ENDED:
-        if elapsed_seconds is not None and elapsed_seconds >= RUNNING_CLOCK_SECONDS:
+        if elapsed_seconds is not None and running_clock == "exact":
+            state = f"{state} {_format_duration(elapsed_seconds)}"
+        elif elapsed_seconds is not None and elapsed_seconds >= RUNNING_CLOCK_SECONDS:
             state = f"{state} {int(elapsed_seconds // RUNNING_CLOCK_SECONDS)}m"
     else:
         if elapsed_seconds is not None:

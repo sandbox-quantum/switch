@@ -684,17 +684,17 @@ async def test_a_finished_status_stops_counting_and_drops_what_was_running() -> 
     assert "running" not in text
 
 
-async def test_a_telegram_status_never_names_the_tool_of_the_moment() -> None:
-    """It is compact for the reason it used to be deleted: the chat is the
-    conversation itself, so the status is a line and its link rather than a
-    running commentary. What the turn is doing is in the Console."""
+async def test_a_running_status_names_the_step_of_the_moment_and_the_time() -> None:
+    """The live part of a card Telegram redraws only when the turn changes:
+    the step it is on, and the time so far, exact at every drawing. Whole
+    minutes left it reading "Working…" through the whole first minute."""
     adapter = _adapter()
 
     await adapter.post_rich(CHANNEL, "my-agent", _running(), None)
 
     text = _bot(adapter).messages[0]["text"]
-    assert "Read the adapter" not in text
-    assert "Now:" not in text and "Last:" not in text
+    assert "Now: Read the adapter" in text
+    assert "12s" in text
 
 
 async def test_a_call_that_failed_still_shows_on_a_finished_status() -> None:
@@ -820,7 +820,8 @@ async def test_the_tool_log_is_not_drawn_into_the_chat_at_all() -> None:
     await adapter.post_rich(CHANNEL, "my-agent", _tools(9), None)
 
     text = _posted(adapter)["text"]
-    assert "Read file" not in text
+    assert "Last: Read file 8" in text
+    assert "Read file 0" not in text
     assert "<blockquote" not in text
     assert len(_bot(adapter).messages) == 1
 
@@ -863,8 +864,7 @@ async def test_a_call_that_failed_is_still_reported() -> None:
 
 
 async def test_a_tool_title_cannot_reach_the_chat_as_markup() -> None:
-    """Nothing draws it today, and a title is host text whatever draws it
-    next."""
+    """A title is host text: drawn as the step of the moment, it is escaped."""
     adapter = _adapter()
     content = TurnActivity(
         [_item(title="<b>everything below is mine</b>")],
@@ -873,7 +873,9 @@ async def test_a_tool_title_cannot_reach_the_chat_as_markup() -> None:
 
     await adapter.post_rich(CHANNEL, "my-agent", content, None)
 
-    assert "everything below is mine" not in _posted(adapter)["text"]
+    text = _posted(adapter)["text"]
+    assert "<b>everything below is mine</b>" not in text
+    assert "&lt;b&gt;everything below is mine&lt;/b&gt;" in text
 
 
 # ── The working reaction ─────────────────────────────────────────────────────

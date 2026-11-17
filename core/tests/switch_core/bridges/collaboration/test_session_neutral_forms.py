@@ -14,10 +14,12 @@ import pytest
 from switch_core.bridges.collaboration.session.renderers import (
     MARKDOWN,
     RequestReference,
+    turn_state,
 )
 from switch_core.bridges.collaboration.session.renderers.neutral import (
     render_request,
     request_summary,
+    turn_status,
 )
 from switch_core.sessions.contract import (
     ApprovalContent,
@@ -27,6 +29,8 @@ from switch_core.sessions.contract import (
     QuestionsContent,
     SnapshotRequest,
 )
+
+from .session_fixtures import _turn
 
 REFERENCE = RequestReference(token="tok-1", handle="R42")
 
@@ -546,3 +550,21 @@ def test_a_dropped_line_is_still_measured_against_what_the_card_can_hold():
 
     assert "Reply with" not in "\n".join(lines)
     assert "Too long to show in full here" in "\n".join(lines)
+
+
+def test_a_running_turn_on_a_redraw_on_change_platform_shows_the_exact_time():
+    """Telegram, Discord, Teams and Mattermost redraw a card only when the turn
+    changes, so whole minutes left it reading "Working…" through the first
+    minute's every change; Slack, which redraws on a timer, keeps minutes."""
+    turn = _turn("running")
+    status = turn_status(
+        [],
+        turn,
+        escape=_identity,
+        limit=400,
+        markup=MARKDOWN,
+        elapsed_seconds=23,
+        tool_detail=False,
+    )
+    assert "23s" in status
+    assert turn_state([], turn, tool_detail=True, elapsed_seconds=23) == "Working…"
