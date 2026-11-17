@@ -36,7 +36,8 @@ const documentPath = (doc: { id: string }) => `/resources/documents/${doc.id}`;
 
 export default function DocumentsTab({ refreshKey }: Props) {
   const navigate = useNavigate();
-  const { session } = useAuth();
+  const { session, capabilities } = useAuth();
+  const administers = capabilities.administersWorkspace;
   const { data, error, loading, refetch } = useLoad(loadDocuments);
   useRefetchOnRefresh(refreshKey, refetch);
   const rows = useMemo(() => data ?? [], [data]);
@@ -66,10 +67,15 @@ export default function DocumentsTab({ refreshKey }: Props) {
           selectFilters={SELECT_FILTERS}
           initialSort={{ field: "created_at", sort: "desc" }}
           emptyState={
-            <TableEmptyState title="No documents yet">
-              Yours and the public ones in {workspace} show here. Create one to give agents text to read
-              in rooms.
-            </TableEmptyState>
+            // An admin is shown everyone's; anyone else their own and the
+            // public ones.
+            administers ? (
+              <TableEmptyState title={`No documents in ${workspace} yet`}>Create one to give agents text to read in rooms.</TableEmptyState>
+            ) : (
+              <TableEmptyState title="No documents yet">
+                Yours and the public ones in {workspace} show here. Create one to give agents text to read in rooms.
+              </TableEmptyState>
+            )
           }
           onRowClick={(params) => navigate(documentPath(params.row))}
           sx={{ "& .MuiDataGrid-row": { cursor: "pointer" } }}

@@ -240,7 +240,7 @@ export default function ReferenceTypesTab({ refreshKey }: Props) {
           pinnedRight={PINNED}
           emptyState={
             // An admin is shown every type; anyone else their own and the
-            // public ones, unlike references, where admins are no different.
+            // public ones.
             administers ? (
               <TableEmptyState title={`No reference types in ${workspace} yet`}>
                 Create one to describe a new kind of reference.

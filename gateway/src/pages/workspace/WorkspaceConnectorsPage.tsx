@@ -208,7 +208,9 @@ export default function WorkspaceConnectorsPage() {
       </Typography>
       <Stack direction="row" spacing={0.5} useFlexGap sx={{ mb: 3, alignItems: "center", flexWrap: "wrap" }}>
         <Typography variant="body2" color="text.secondary">
-          {administers ? `Choose which connectors ${workspace} can use.` : `Connectors enabled in ${workspace}.`}
+          {administers
+            ? `Choose which connectors ${workspace} can use.`
+            : `Which connectors ${workspace} can use. Only its admins can change this.`}
           {" To give your agents access, go to "}
           <Link component={RouterLink} to="/connectors">
             Connectors

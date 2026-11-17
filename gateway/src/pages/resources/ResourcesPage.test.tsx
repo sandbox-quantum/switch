@@ -254,6 +254,28 @@ describe("ResourcesPage", () => {
     });
   });
 
+  it("words an empty list for what each viewer is shown: everyone's to an admin, theirs and the public ones to a member", async () => {
+    for (const [tab, path, title] of [
+      ["references", "GET /references", "references"],
+      ["documents", "GET /documents", "documents"],
+      ["packages", "GET /packages", "packages"],
+    ] as const) {
+      answer({ [path]: [200, []] });
+      show(tab);
+      expect(await screen.findByText(`No ${title} yet`)).toBeTruthy();
+      expect(screen.getByText(/Yours and the public ones in Acme show here/)).toBeTruthy();
+      cleanup();
+
+      signedInAs("admin");
+      answer({ [path]: [200, []] });
+      show(tab);
+      expect(await screen.findByText(`No ${title} in Acme yet`)).toBeTruthy();
+      expect(screen.queryByText(/Yours and the public ones/)).toBeNull();
+      cleanup();
+      signedInAs("member");
+    }
+  });
+
   describe("Reference types", () => {
     const types = (stored: ReferenceTypeDetail[]) =>
       answer({

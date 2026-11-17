@@ -184,8 +184,7 @@ describe("WorkspaceConnectorsPage", () => {
     renderPage();
     await loaded();
 
-    expect(screen.getByText(/^Connectors enabled in Acme\./)).toBeTruthy();
-    expect(screen.queryByText(/admins can change/)).toBeNull();
+    expect(screen.getByText(/^Which connectors Acme can use\. Only its admins can change this\./)).toBeTruthy();
     expect(screen.queryByRole("switch")).toBeNull();
     expect(screen.getByText("Enabled")).toBeTruthy();
     expect(screen.getByText("Disabled")).toBeTruthy();

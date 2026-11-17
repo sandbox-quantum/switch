@@ -1,6 +1,7 @@
-import { Alert, Box, CircularProgress, Snackbar, Stack, Typography } from "@mui/material";
+import { Box, CircularProgress, Stack, Typography } from "@mui/material";
 import { useState } from "react";
 import EditableField from "../../components/EditableField";
+import SuccessSnackbar from "../../components/SuccessSnackbar";
 import { type TenantMembership, WORKSPACE_NAME_MAX, renameWorkspace } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
 import DeleteWorkspaceSection from "./DeleteWorkspaceSection";
@@ -43,16 +44,12 @@ function DeleteSection({ tenant }: { tenant: TenantMembership }) {
  * name: the breadcrumb, the switcher and the rest. */
 function WorkspaceNameField({ tenant }: { tenant: TenantMembership }) {
   const { capabilities, recheck } = useAuth();
-  // Kept after the message closes, so it still names the workspace while it
-  // fades out.
-  const [renamedTo, setRenamedTo] = useState("");
-  const [noticeOpen, setNoticeOpen] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const rename = async (draft: string) => {
     const { name } = await renameWorkspace(tenant.id, draft);
     await recheck();
-    setRenamedTo(name);
-    setNoticeOpen(true);
+    setNotice(`Workspace renamed to ${name}.`);
   };
 
   return (
@@ -67,16 +64,7 @@ function WorkspaceNameField({ tenant }: { tenant: TenantMembership }) {
         width={420}
         onSave={rename}
       />
-      <Snackbar
-        open={noticeOpen}
-        autoHideDuration={5000}
-        onClose={() => setNoticeOpen(false)}
-        anchorOrigin={{ vertical: "bottom", horizontal: "left" }}
-      >
-        <Alert severity="success" onClose={() => setNoticeOpen(false)}>
-          Workspace renamed to {renamedTo}.
-        </Alert>
-      </Snackbar>
+      <SuccessSnackbar message={notice} onClose={() => setNotice(null)} />
     </>
   );
 }

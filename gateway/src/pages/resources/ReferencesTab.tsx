@@ -46,7 +46,8 @@ export const referencePath = (ref: { id: string }) => `/resources/references/${r
 
 export default function ReferencesTab({ refreshKey }: Props) {
   const navigate = useNavigate();
-  const { session } = useAuth();
+  const { session, capabilities } = useAuth();
+  const administers = capabilities.administersWorkspace;
   const { data, error, loading, refetch } = useLoad(loadReferences);
   useRefetchOnRefresh(refreshKey, refetch);
   const rows = useMemo(() => data ?? [], [data]);
@@ -88,10 +89,15 @@ export default function ReferencesTab({ refreshKey }: Props) {
           selectFilters={SELECT_FILTERS}
           initialSort={{ field: "created_at", sort: "desc" }}
           emptyState={
-            <TableEmptyState title="No references yet">
-              Yours and the public ones in {workspace} show here. Create one to point agents at a page or
-              repository elsewhere.
-            </TableEmptyState>
+            // An admin is shown everyone's; anyone else their own and the
+            // public ones.
+            administers ? (
+              <TableEmptyState title={`No references in ${workspace} yet`}>Create one to point agents at a page or repository elsewhere.</TableEmptyState>
+            ) : (
+              <TableEmptyState title="No references yet">
+                Yours and the public ones in {workspace} show here. Create one to point agents at a page or repository elsewhere.
+              </TableEmptyState>
+            )
           }
           onRowClick={(params) => navigate(referencePath(params.row))}
           sx={{ "& .MuiDataGrid-row": { cursor: "pointer" } }}
