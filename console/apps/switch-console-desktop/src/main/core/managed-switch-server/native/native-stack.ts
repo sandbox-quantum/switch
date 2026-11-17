@@ -425,8 +425,9 @@ export async function startNativeStack(opts: NativeStartOptions): Promise<Native
       const alive = (await runningCore(layout)) !== null;
       await stopAfterFailedStart(layout, postgres);
       // Read once the process is gone: a crash's last words reach the log as
-      // it exits, after the exit is first noticed.
-      const reason = await coreFailureLine(layout);
+      // it exits, after the exit is first noticed. A core that was still
+      // running was stopped here, so how it exited says nothing.
+      const reason = alive ? null : await coreFailureLine(layout);
       // One line, reason first: the server page headlines a failure's first
       // line alone.
       const head = alive
@@ -576,8 +577,8 @@ export async function nativeStackRunning(layout: NativeLayout): Promise<boolean>
   return (await runningCore(layout)) !== null;
 }
 
-/** The line of switch-core's log that says why it stopped, or null. For a
- * server that stopped on its own, after it had started. */
+/** Why switch-core stopped — how it exited, and the exception it died of — or
+ * null. For a server that stopped on its own, after it had started. */
 export function nativeCoreFailureLine(layout: NativeLayout): Promise<string | null> {
   return coreFailureLine(layout);
 }
