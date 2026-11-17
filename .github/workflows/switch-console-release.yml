@@ -120,9 +120,15 @@ jobs:
               fi
               ;;
             *)
-              # workflow_dispatch: a stable test build of the current package.json.
-              channel=stable
-              version="$pkg_version"
+              # TEST BUILD BRANCH ONLY: a manual run builds the canary channel, so it
+              # installs beside stable. Its version ranks above every published
+              # canary of the next minor (`dev` sorts after a number), so the
+              # canary feed never offers to replace it with an older build.
+              channel=canary
+              major="${pkg_version%%.*}"
+              rest="${pkg_version#*.}"
+              minor="${rest%%.*}"
+              version="$major.$((minor + 1)).0-canary.dev.$GITHUB_RUN_NUMBER"
               ;;
           esac
           # A tagged build is a published release; a workflow_dispatch test build
