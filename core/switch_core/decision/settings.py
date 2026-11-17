@@ -43,7 +43,7 @@ FLAG_OFF_REASON = (
 )
 NO_BACKEND_REASON = (
     "Auto-route needs a decision service. A workspace admin can set one up in "
-    "Switch Console → Admin → Decision routing."
+    "Switch Console → Settings → Decision routing."
 )
 WORKSPACE_OFF_REASON = (
     "This workspace's admins turned auto-route off by choosing no decision "

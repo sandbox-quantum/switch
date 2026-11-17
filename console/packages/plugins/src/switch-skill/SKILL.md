@@ -181,7 +181,7 @@ does, and there is no polling tool to call.
   Switch Console or on the gateway's room page.
 
   Which decision service a room uses is its workspace's choice, made by a
-  workspace admin in Switch Console → Admin → Decision routing: the server's
+  workspace admin in Switch Console → Settings → Decision routing: the server's
   own default, the workspace's self-hosted endpoint, Claude Haiku, or none.
   With none (or no server default), `!auto-route on` says auto-route needs a
   decision service and changes nothing, and the room works as it does without

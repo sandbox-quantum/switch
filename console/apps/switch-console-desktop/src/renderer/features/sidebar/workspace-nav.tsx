@@ -7,10 +7,8 @@ import {
   type LucideIcon,
   Plug,
   Settings,
-  ShieldCheck,
 } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import { adminGroupsInScope } from '@renderer/features/admin/admin-frame';
 import { useRoomHealth } from '@renderer/features/switch-rooms/connection-health';
 import { ManagedServerDot } from '@renderer/features/switch-servers/managed-server-dot';
 import { FROZEN, isFrozenServer } from '@renderer/features/switch-servers/managed-server-state';
@@ -42,7 +40,6 @@ export const WorkspaceNav = observer(function WorkspaceNav() {
   const { params: connectorsParams } = useParams('connectors');
   const { params: templatesParams } = useParams('templates');
   const { params: libraryParams } = useParams('library');
-  const { params: adminParams } = useParams('admin');
   const active = switchServersStore.activeServer;
   const health = useRoomHealth(active?.id ?? null);
   const serviceConnections = useFeatureFlags(active?.id ?? null).service_connections;
@@ -61,14 +58,8 @@ export const WorkspaceNav = observer(function WorkspaceNav() {
     library: { icon: Library, label: 'Resources', params: libraryParams },
     templates: { icon: FileText, label: 'Templates', params: templatesParams },
     connectors: { icon: Plug, label: 'Connectors', params: connectorsParams },
-    admin: { icon: ShieldCheck, label: 'Admin', params: adminParams },
   };
-  const shown = active
-    ? workspaceNavViews({
-        serviceConnections,
-        admin: adminGroupsInScope(active.id, serviceConnections).length > 0,
-      })
-    : [];
+  const shown = active ? workspaceNavViews({ serviceConnections }) : [];
   const onSettings =
     isCurrentView(currentView, 'settings') ||
     isCurrentView(currentView, 'remoteHost') ||
