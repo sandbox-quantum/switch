@@ -22,6 +22,7 @@ from sqlalchemy import insert, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core import official_templates as official_rooms
+from switch_core.addressing import owner_only_policy
 from switch_core.agent_runs import AgentOrigin
 from switch_core.authz import Principal
 from switch_core.bridges.resource.service import ResourceService
@@ -57,6 +58,7 @@ from switch_core.db.stores.room_group_store import RoomGroupStore
 from switch_core.db.stores.room_link_store import RoomLinkStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
+from switch_core.room_invites import InviteRefused, not_addressable_refusal
 from switch_core.room_policy import visibility_for_channel
 from switch_core.room_service import RoomCreateConfig, RoomCreateResult
 from switch_core.rooms_yaml import (
@@ -983,6 +985,135 @@ async def test_provision_users_without_bridge_fails(env):
     )
     with pytest.raises(ValueError, match="without a bridge|no bridge"):
         await _svc(env).provision(spec, user_id=env["user_id"], is_admin=False)
+
+
+# ── the invite rule ──────────────────────────────────────────────────────────
+
+
+async def _agent_of(env, name: str, owner_id: str, policy: dict | None) -> Agent:
+    async with env["session_factory"]() as session:
+        agent = await _make_agent(session, name, owner_id)
+        agent.owner_id = owner_id
+        agent.addressing_policy = policy
+        await session.commit()
+        return agent
+
+
+async def _bob(env) -> str:
+    async with env["session_factory"]() as session:
+        bob = User(name="bob", email="bob@example.com", role="member")
+        session.add(bob)
+        await session.commit()
+        return bob.id
+
+
+async def _room_names(env) -> list[str]:
+    async with env["session_factory"]() as session:
+        return list((await session.execute(select(Room.name))).scalars().all())
+
+
+def _room_naming(agent_name: str) -> str:
+    return f"""
+        room:
+          name: "Mine"
+          description: "d"
+          agents: ["claude-code.alice", "{agent_name}"]
+        """
+
+
+async def test_a_room_from_a_template_holds_no_agent_its_maker_may_not_address(env):
+    """The rule `POST /rooms` keeps: the maker owns the new room, and still
+    may not put in somebody else's agent that takes no requests from them."""
+    bob = await _bob(env)
+    private = await _agent_of(
+        env, "bobs-private", bob, owner_only_policy([]).model_dump()
+    )
+    await _agent_of(env, "bobs-open", bob, None)
+    svc = _svc(env)
+
+    spec, _ = svc.parse(_room_naming("bobs-private"))
+    with pytest.raises(InviteRefused) as refused:
+        await svc.provision(spec, user_id=env["user_id"], is_admin=True)
+    assert str(refused.value) == not_addressable_refusal(private)
+    assert await _room_names(env) == []
+
+    spec, _ = svc.parse(_room_naming("bobs-open"))
+    await svc.provision(spec, user_id=env["user_id"], is_admin=False)
+    assert await _room_names(env) == ["Mine"]
+
+
+async def test_an_agent_making_a_room_from_a_template_is_judged_as_for_create_room(
+    env,
+):
+    """As its owner, or as itself where the target trusts it by name."""
+    bob = await _bob(env)
+    runner = await _agent_of(env, "alice-runner", env["user_id"], None)
+    await _agent_of(env, "bobs-private", bob, owner_only_policy([]).model_dump())
+    await _agent_of(
+        env, "bobs-trusting", bob, owner_only_policy([runner.id]).model_dump()
+    )
+    origin = AgentOrigin(
+        agent_id=runner.id,
+        agent_name=runner.name,
+        owner_id=env["user_id"],
+        owner_name="alice",
+        parent_room_id=None,
+        run_id=None,
+    )
+    svc = _svc(env)
+
+    spec, _ = svc.parse(_room_naming("bobs-private"))
+    with pytest.raises(InviteRefused, match="bobs-private"):
+        await svc.provision(spec, user_id=env["user_id"], is_admin=False, origin=origin)
+    spec, _ = svc.parse(_room_naming("bobs-trusting"))
+    await svc.provision(spec, user_id=env["user_id"], is_admin=False, origin=origin)
+    assert await _room_names(env) == ["Mine"]
+
+
+async def test_a_group_naming_an_agent_its_maker_may_not_address_makes_nothing(env):
+    """Refused before the group exists, not reported as one failed room."""
+    bob = await _bob(env)
+    await _agent_of(env, "bobs-private", bob, owner_only_policy([]).model_dump())
+    spec = _group(
+        env,
+        """\
+group:
+  name: "G"
+rooms:
+  - name: "A"
+    description: "d"
+    agents: ["claude-code.alice"]
+  - name: "B"
+    description: "d"
+    agents: ["bobs-private"]
+""",
+    )
+
+    with pytest.raises(InviteRefused, match="bobs-private"):
+        await _svc(env).provision_group(spec, user_id=env["user_id"], is_admin=True)
+    async with env["session_factory"]() as session:
+        assert (await session.execute(select(RoomGroup))).scalars().all() == []
+    assert await _room_names(env) == []
+
+
+async def test_check_invites_leaves_names_no_agent_has_yet_to_provisioning(env):
+    """A run's own new agents do not exist when it is checked, and will be
+    its runner's."""
+    bob = await _bob(env)
+    await _agent_of(env, "bobs-private", bob, owner_only_policy([]).model_dump())
+    svc = _svc(env)
+
+    await svc.check_invites(
+        svc.parse_template(_room_naming("made-by-the-run")),
+        user_id=env["user_id"],
+        agent_id=None,
+    )
+    with pytest.raises(InviteRefused, match="bobs-private"):
+        await svc.check_invites(
+            svc.parse_template(_room_naming("bobs-private")),
+            user_id=env["user_id"],
+            agent_id=None,
+        )
 
 
 # ── export ───────────────────────────────────────────────────────────────────

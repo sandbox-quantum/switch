@@ -8,9 +8,8 @@ name: E2E scheduled
 #   nightly                the provider lane again, then a notification
 #   a release tag          (switch-v*, candidates included) every lane that runs
 #                          on a throwaway stack: fast, provider, agentic, and
-#                          browser in both dashboard layouts (the gateway's
-#                          release gate), on the tagged commit, always
-#                          reported. A candidate may
+#                          browser (the gateway's release gate), on the tagged
+#                          commit, always reported. A candidate may
 #                          be cut from a release branch, whose commits no main
 #                          run has seen, and it is the code about to be
 #                          promoted; the deployed environments test what they
@@ -24,8 +23,7 @@ name: E2E scheduled
 # configuration, not here.
 #
 # The fast lane on a throwaway stack is a PR check in pr-ci.yml, and so is the
-# browser lane, in both layouts, on PRs that touch the gateway, the server or
-# the harness.
+# browser lane, on PRs that touch the gateway, the server or the harness.
 #
 # Notifications go to the incoming webhook in the repository secret
 # E2E_NOTIFY_WEBHOOK_URL (Slack and Mattermost both accept the payload). Without
@@ -71,7 +69,7 @@ jobs:
       lane: fast
       agent_type: claude-code
 
-  # The release gate for the gateway: the role matrix in both layouts.
+  # The release gate for the gateway: the role matrix.
   browser:
     name: Browser lane
     if: ${{ startsWith(github.ref, 'refs/tags/') }}
@@ -79,15 +77,6 @@ jobs:
     with:
       lane: browser
       agent_type: claude-code
-
-  browser-v2:
-    name: Browser lane, new layout
-    if: ${{ startsWith(github.ref, 'refs/tags/') }}
-    uses: ./.github/workflows/e2e.yml
-    with:
-      lane: browser
-      agent_type: claude-code
-      gateway_layout: v2
 
   agentic:
     name: Agentic lane
@@ -102,7 +91,7 @@ jobs:
 
   notify:
     name: Report
-    needs: [provider, fast, agentic, browser, browser-v2]
+    needs: [provider, fast, agentic, browser]
     if: ${{ always() && github.event_name != 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     steps:
@@ -118,8 +107,6 @@ jobs:
           AGENTIC_SUMMARY: ${{ needs.agentic.outputs.summary }}
           BROWSER_RESULT: ${{ needs.browser.result }}
           BROWSER_SUMMARY: ${{ needs.browser.outputs.summary }}
-          BROWSER_V2_RESULT: ${{ needs.browser-v2.result }}
-          BROWSER_V2_SUMMARY: ${{ needs.browser-v2.outputs.summary }}
         run: |
           tagged=false
           [ "$GITHUB_REF_TYPE" = tag ] && tagged=true
@@ -141,12 +128,11 @@ jobs:
           fi
           lines="$(line 'Provider lane (ephemeral)' "$PROVIDER_RESULT" "$PROVIDER_SUMMARY")"
           if [ "$tagged" = true ]; then
-            lines="$(printf '%s\n%s\n%s\n%s\n%s' \
+            lines="$(printf '%s\n%s\n%s\n%s' \
               "$(line 'Fast lane (ephemeral)' "$FAST_RESULT" "$FAST_SUMMARY")" \
               "$lines" \
               "$(line 'Agentic lane (ephemeral)' "$AGENTIC_RESULT" "$AGENTIC_SUMMARY")" \
-              "$(line 'Browser lane (ephemeral)' "$BROWSER_RESULT" "$BROWSER_SUMMARY")" \
-              "$(line 'Browser lane, new layout (ephemeral)' "$BROWSER_V2_RESULT" "$BROWSER_V2_SUMMARY")")"
+              "$(line 'Browser lane (ephemeral)' "$BROWSER_RESULT" "$BROWSER_SUMMARY")")"
           fi
           text="$(printf '%s\n%s\n%s' "$title" "$lines" "$RUN_URL")"
           echo "$text"

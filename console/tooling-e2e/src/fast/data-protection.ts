@@ -36,14 +36,11 @@ async function colleague(
   const password = `e2e-${names.runId}-${crypto.randomUUID()}`;
   const name = names.name(role);
   const email = `${name}@e2e.invalid`;
-  const { id } = await switchClient.createUser({ name, email, password, role: "user" });
+  const { id, client } = await switchClient.createMember({ name, email, password, role: "user" });
   fixtures.defer(`the account ${email}`, async () => {
     const [code, detail] = await status(() => switchClient.deleteUser(id));
     if (code !== 200 && code !== 404) throw new Error(`${code}: ${detail}`);
   });
-  const client = switchClient.as(email, password);
-  // Signing in joins the default workspace.
-  await client.tenantId();
   return { id, name, email, password, client };
 }
 
@@ -81,8 +78,8 @@ export const retentionWindow: FastScenario = {
 
     const makerPassword = `e2e-${names.runId}-${crypto.randomUUID()}`;
     const makerEmail = `${names.name("keeper")}@e2e.invalid`;
-    // A deployment operator, so they can make a workspace. An operator's
-    // account cannot be deleted, so it stays on the throwaway stack.
+    // A deployment operator, so they can make a workspace. Its account stays
+    // on the throwaway stack.
     await switchClient.createUser({
       name: "E2E retention keeper",
       email: makerEmail,

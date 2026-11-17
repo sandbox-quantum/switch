@@ -52,23 +52,20 @@ export const organizations: FastScenario = {
     const password = `e2e-${names.runId}-${crypto.randomUUID()}`;
     const founderEmail = `${names.name('founder')}@e2e.invalid`;
     const memberEmail = `${names.name('member')}@e2e.invalid`;
-    await switchClient.createUser({
+    // Each joins the harness admin's workspace, and so its organization.
+    const { client: founder } = await switchClient.createMember({
       name: 'E2E founder',
       email: founderEmail,
       password,
       role: 'user',
     });
-    await switchClient.createUser({
+    const { client: member } = await switchClient.createMember({
       name: 'E2E member',
       email: memberEmail,
       password,
       role: 'user',
     });
-    const founder = switchClient.as(founderEmail, password);
-    const member = switchClient.as(memberEmail, password);
-    // Signing in joins the default workspace, and so its organization.
     const defaultWorkspace = await founder.tenantId();
-    await member.tenantId();
     // The default workspace's organization is listed too, if it has one.
     const before = await founder.organizations();
 

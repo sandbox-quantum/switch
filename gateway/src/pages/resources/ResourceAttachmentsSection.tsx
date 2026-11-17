@@ -198,7 +198,7 @@ function RoomPicker({
   onClose: () => void;
   onSubmit: (roomIds: string[]) => Promise<void>;
 }) {
-  const { data: rooms, loading } = useRooms();
+  const { data: rooms, loading, error } = useRooms();
   const options = useMemo<PickerOption[]>(
     () =>
       (rooms ?? [])
@@ -219,6 +219,7 @@ function RoomPicker({
       submitLabel="Attach"
       options={options}
       loading={loading}
+      loadError={error}
       onClose={onClose}
       onSubmit={onSubmit}
     />

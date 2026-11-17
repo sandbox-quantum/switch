@@ -1,6 +1,7 @@
-import { Alert, Box, CircularProgress, Snackbar, Tab, Tabs, Typography } from "@mui/material";
+import { Alert, Box, CircularProgress, Tab, Tabs, Typography } from "@mui/material";
 import { useCallback, useState } from "react";
 import { useSearchParams } from "react-router";
+import SuccessSnackbar from "../../../components/SuccessSnackbar";
 import { fetchCurrentOrganization, fetchOrganizationServices } from "../../../data/api";
 import { useConnectorApps } from "../../../data/hooks";
 import { useLoad } from "../../workspace/useLoad";
@@ -15,7 +16,7 @@ const TABS = [
 type OrgConnectorsTab = (typeof TABS)[number]["value"];
 
 /**
- * Organization settings › Connectors and apps: which connectors the
+ * Organization settings › Connectors: which connectors the
  * organization's workspaces may use, and the vendor apps they sign in
  * through. One page with two tabs, because the second is often why the
  * first doesn't work: a connector whose app isn't set up offers the setup
@@ -78,7 +79,7 @@ export default function OrganizationConnectorsSettings() {
 
   return (
     <Box>
-      <Typography variant="h5">Connectors and apps</Typography>
+      <Typography variant="h5">Connectors</Typography>
       <Tabs
         value={tab}
         onChange={(_, value: OrgConnectorsTab) => show({ tab: value })}
@@ -110,12 +111,7 @@ export default function OrganizationConnectorsSettings() {
           onChanged={changed}
         />
       )}
-      <Snackbar
-        open={toast !== null}
-        autoHideDuration={5000}
-        onClose={() => setToast(null)}
-        message={toast}
-      />
+      <SuccessSnackbar message={toast} onClose={() => setToast(null)} />
     </Box>
   );
 }

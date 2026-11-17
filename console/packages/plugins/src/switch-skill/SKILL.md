@@ -557,7 +557,10 @@ change it. A refusal says which of these it was; relay it rather than retrying.
 - **`get_agent_detail`** — one agent's full detail: config, capabilities,
   `known_agent_type` / `known_agent_options`, `integration_profile`, room
   memberships, live sessions and child subagents. Readable by any agent; a
-  room your owner cannot read is not named in it.
+  room your owner cannot read is not named in it, nor a session there. How an
+  agent is set up on its owner's machine (`known_agent_options`,
+  `oauth_client_id`, a session's `controller_id`) is null unless your owner
+  owns it or administers the workspace; `list_agents` withholds the same.
   `addressing` says who may address it: on yourself, the policy and its rules
   with the people, agents and rooms they name; on another agent, the policy
   alone.

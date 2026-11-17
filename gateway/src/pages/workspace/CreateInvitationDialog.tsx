@@ -1,3 +1,4 @@
+import CloseOutlined from "@mui/icons-material/CloseOutlined";
 import ContentCopy from "@mui/icons-material/ContentCopy";
 import {
   Alert,
@@ -118,7 +119,15 @@ export default function CreateInvitationDialog({
     // Held open while the link is being made: closed then, the link would be
     // created with nowhere to show it, and it is shown only once.
     <Dialog open={open} onClose={submitting ? undefined : handleClose} maxWidth="sm" fullWidth>
-      <DialogTitle>Invite users to {workspaceName}</DialogTitle>
+      <DialogTitle sx={{ pr: 8 }}>Invite users to {workspaceName}</DialogTitle>
+      <IconButton
+        aria-label="Close"
+        onClick={handleClose}
+        disabled={submitting}
+        sx={{ position: "absolute", top: 12, right: 16, width: 36, height: 36 }}
+      >
+        <CloseOutlined sx={{ fontSize: 18 }} />
+      </IconButton>
       <DialogContent>
         {link !== null && notice !== null ? (
           <Stack spacing={2} sx={{ pt: 1 }}>

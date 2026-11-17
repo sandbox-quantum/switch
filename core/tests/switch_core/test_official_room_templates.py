@@ -73,6 +73,7 @@ def test_the_34_room_templates_are_served_only_with_agent_management():
 def test_every_room_template_plans_its_room_and_agents():
     for template in _rooms(True, False):
         assert template.name and template.description, template.id
+        assert template.use_case, template.id
         assert template.version == 1
         result = lint_template(template.content)
         assert result.errors == [] and result.warnings == [], template.id
@@ -141,6 +142,18 @@ def test_a_room_template_the_catalogue_does_not_name_fails_loud(tmp_path, monkey
     monkeypatch.setattr(official, "_CATALOGUE", tmp_path / "catalogue.yaml")
     with pytest.raises(RuntimeError, match="no name or no description"):
         official._room_templates.__wrapped__()
+    (tmp_path / "catalogue.yaml").write_text("a: {name: A, description: D}\n")
+    with pytest.raises(RuntimeError, match="'a' the use case None; it takes one of"):
+        official._room_templates.__wrapped__()
+    (tmp_path / "catalogue.yaml").write_text(
+        "a: {name: A, description: D, use_case: finance}\n"
+    )
+    with pytest.raises(RuntimeError, match="'a' the use case 'finance'"):
+        official._room_templates.__wrapped__()
+    (tmp_path / "catalogue.yaml").write_text(
+        "a: {name: A, description: D, use_case: ops}\n"
+    )
+    assert official._room_templates.__wrapped__()[0].use_case == "ops"
     (tmp_path / "b.yaml").write_text("version: 2\n")
     with pytest.raises(RuntimeError, match=r"one side only: \['b'\]"):
         official._room_templates.__wrapped__()

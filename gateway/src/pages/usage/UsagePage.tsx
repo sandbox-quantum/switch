@@ -37,6 +37,7 @@ const WINDOWS = [
 
 type UsageRow = UsageTotal & { id: string };
 
+/** The workspace's usage and budgets. The route admits its admins only. */
 export default function UsagePage() {
   const { data: tenant, loading, error } = useCurrentTenant();
 
@@ -44,20 +45,18 @@ export default function UsagePage() {
   if (error || !tenant) {
     return <Alert severity="error">Could not load the current workspace.</Alert>;
   }
-  if (!tenant.administers) {
-    return (
-      <Alert severity="info">
-        Only admins of {tenant.name} can see its usage and budgets.
-      </Alert>
-    );
-  }
   return <WorkspaceUsage tenant={tenant} />;
 }
 
 function WorkspaceUsage({ tenant }: { tenant: CurrentTenant }) {
   return (
     <Box sx={{ display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0, gap: 3 }}>
-      <Typography variant="h5">Usage &amp; budget</Typography>
+      <Box>
+        <Typography variant="h5">Usage &amp; budget</Typography>
+        <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+          What {tenant.name} uses, and the budgets that limit its agents.
+        </Typography>
+      </Box>
       <BudgetsSection tenantId={tenant.id} />
       <UsageSection tenantId={tenant.id} />
     </Box>
@@ -184,7 +183,8 @@ function BudgetsSection({ tenantId }: { tenantId: string }) {
             Budgets
           </Typography>
           <Typography variant="body2" color="text.secondary">
-            An agent that reaches a budget stops taking work until it resets. People are
+            A budget is a soft limit. An agent that reaches one takes no new work until it
+            resets, but work it already started finishes and can go past the limit. People are
             never stopped. No budget means no limit.
           </Typography>
         </Box>
