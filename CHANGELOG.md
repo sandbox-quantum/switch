@@ -53,6 +53,10 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **Unrecognized WorkOS roles are reported.** Under
+  `ORGANIZATION_DIRECTORY=workos`, a membership whose role is not `org_admin`,
+  `admin`, `editor` or `viewer` is still a Member, as before, but it is now
+  logged at `warning`, so a new role or a wrongly assigned one can be found.
 - **`switch-promote-org-admin`, a break-glass command.** When an
   organization's admins can't make someone an admin themselves, the platform
   operator can run `switch-promote-org-admin <organization id or slug>
