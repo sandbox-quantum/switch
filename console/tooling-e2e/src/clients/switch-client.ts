@@ -973,6 +973,17 @@ export class SwitchClient {
     return this.gateway("PUT", `/rooms/${roomId}/auto-route`, body);
   }
 
+  /** `PATCH /gateway/rooms/{room_id}`: change who can read the room. */
+  async setRoomReadVisibility(
+    roomId: string,
+    readVisibility: "public" | "private",
+  ): Promise<RoomDetail> {
+    const row = await this.gateway<RawRoom>("PATCH", `/rooms/${roomId}`, {
+      read_visibility: readVisibility,
+    });
+    return toRoomDetail(row);
+  }
+
   async deleteRoom(roomId: string): Promise<void> {
     await this.gateway("DELETE", `/rooms/${roomId}`);
   }

@@ -44,12 +44,14 @@ export const privateChannelRooms: FastScenario = {
       agentNames: [],
       userNames: [],
       channelType: "channel_private",
-      readVisibility: "public",
     });
     fixtures.defer(`the room ${room.id}`, async () => {
       const [code, detail] = await status(() => switchClient.deleteRoom(room.id));
       if (code !== 200 && code !== 404) throw new Error(`${code}: ${detail}`);
     });
+    // A new room on a private channel can no longer be made Public, so make
+    // it Private and then open it up, the way older rooms ended up Public.
+    await switchClient.setRoomReadVisibility(room.id, "public");
 
     expect(
       await switchClient.countPrivateChannelRooms(workspace),
