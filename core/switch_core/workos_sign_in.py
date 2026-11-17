@@ -113,6 +113,17 @@ class WorkOSOrganizationSignIn:
         return _token_from(body)
 
 
+def session_id_of(access_token: str) -> str | None:
+    """The AuthKit session an access token was issued in (its `sid`), read
+    with no signature check for the reason `_token_from` gives."""
+    try:
+        claims = jwt.decode(access_token, options={"verify_signature": False})
+    except jwt.PyJWTError:
+        return None
+    session_id = claims.get("sid")
+    return session_id if isinstance(session_id, str) and session_id else None
+
+
 def _token_from(body: Any) -> OrganizationToken:
     unreadable = DirectoryUnavailable(
         "WorkOS answered the sign-in with something Switch can't read."

@@ -328,6 +328,17 @@ class WorkOSDirectory:
         existing accounts."""
         return await self._list("/user_management/users", {"email": email})
 
+    async def user(self, user_id: str) -> dict[str, Any] | None:
+        """The WorkOS user with id `user_id`, or None when this environment has
+        none (or it is not a WorkOS user id at all), for an operator copying
+        identities across issuers. Raises `DirectoryUnavailable` otherwise."""
+        try:
+            return await self._get(f"/user_management/users/{user_id}", {})
+        except WorkOSRefused as refused:
+            if refused.status_code in (400, 404, 422):
+                return None
+            raise
+
     async def prepare_change(
         self,
         organization: Organization,
