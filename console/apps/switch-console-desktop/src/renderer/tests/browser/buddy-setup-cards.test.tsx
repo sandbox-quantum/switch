@@ -738,7 +738,9 @@ describe('switch-buddy setup cards', () => {
     expect(
       el.querySelector('button[aria-label="Copy /invite_agent @switch-buddy"]')
     ).not.toBeNull();
-    expect(el.textContent).toContain('mention switch-buddy and say what you work on');
+    expect(el.textContent).toContain("reply to switch-buddy's message and say what you work on");
+    // A mention alone never reaches the bot in a group with Group Privacy on.
+    expect(el.textContent).not.toContain('mention switch-buddy and say');
     await shot(el, 'n-telegram-checklist-linked');
   });
 
