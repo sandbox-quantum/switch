@@ -4846,6 +4846,15 @@ version of their own to them without also giving them a release of their own.
   agent"; it was the only place Console showed that name.
 
 #### Fixed
+- **A new local server runs on the PostgreSQL Switch Console ships.** A
+  PostgreSQL installed with Homebrew or Postgres.app no longer wins over the
+  bundled one for a new server, so upgrading or removing it can't strand the
+  server. A server already created on an installed PostgreSQL keeps using it.
+- **A busy port is caught and named before the local server starts.** Every
+  port the server listens on is checked first, the callback port included,
+  where only two were before. A taken one is explained ("Another program is
+  using port …") with Use another port, on the server page and now also on
+  the first-run setup page, which showed only the raw bind error.
 - **Add device no longer shows commands that can't work.** On a server
   Switch Console runs on this computer, Settings › Devices no longer offers
   Add device and says why: no other device can reach it. On any other

@@ -1,6 +1,5 @@
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { createServer } from 'node:net';
 import path from 'node:path';
 import { assertManagedServerUrlFree } from '@main/core/switch-servers/servers-store';
 import { log } from '@main/lib/logger';
@@ -23,7 +22,6 @@ import { currentInternalFlag } from '../../telemetry/internal-account';
 import { classifyVersionDrift, type DeployedVersion } from '../deployed-version';
 import { readEnvValue } from '../env-file';
 import { errorText } from '../error-text';
-import type { LocalServerPorts } from '../free-port';
 import type { ServerHost } from '../host/types';
 import {
   finishUpgrade,
@@ -50,6 +48,7 @@ import { checkoutGatewayUi, nativeAdminPages } from './gateway-ui';
 import { removeLegacyMattermost } from './legacy-mattermost';
 import { type DockerExport, importIntoCluster } from './migrate-from-docker';
 import type { NativeLayout } from './native-paths';
+import { assertPortsFree } from './port-check';
 import {
   findPostgresForCluster,
   type PostgresBinaries,
@@ -129,28 +128,6 @@ async function writeDeployedVersion(layout: NativeLayout, version: string): Prom
     path.join(layout.run, DEPLOYED_FILE),
     `${JSON.stringify({ version }, null, 2)}\n`
   );
-}
-
-/** Whether `port` can be bound on loopback right now. */
-function portFree(port: number): Promise<boolean> {
-  return new Promise((resolve) => {
-    const server = createServer();
-    server.once('error', () => resolve(false));
-    server.listen(port, '127.0.0.1', () => server.close(() => resolve(true)));
-  });
-}
-
-/**
- * Refuse a start whose ports something else has taken since they were chosen,
- * in the words a failed bind uses, so the start-failure explainer offers to
- * move the server to another port.
- */
-async function assertPortsFree(ports: LocalServerPorts): Promise<void> {
-  for (const port of [ports.api, ports.postgres]) {
-    if (!(await portFree(port))) {
-      throw new Error(`bind 127.0.0.1:${port}: address already in use`);
-    }
-  }
 }
 
 /**

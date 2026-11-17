@@ -3,12 +3,23 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { LocalServerBundle } from './bundle';
+import type * as InstalledPostgres from './installed-postgres';
 import { type NativeLayout, nativeLayout } from './native-paths';
-import { type PostgresBinaries, resolvePostgres } from './postgres-binaries';
+import type { PostgresBinaries } from './postgres-binaries';
+
+const installed = vi.hoisted(() => vi.fn<() => Promise<PostgresBinaries[]>>());
+const download = vi.hoisted(() => vi.fn());
 
 vi.mock('@main/lib/logger', () => ({
   log: { warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() },
 }));
+vi.mock('./installed-postgres', async (importOriginal) => ({
+  ...(await importOriginal<typeof InstalledPostgres>()),
+  detectInstalledPostgres: installed,
+}));
+vi.mock('./download', () => ({ installPinnedArchive: download }));
+
+const { resolvePostgres } = await import('./postgres-binaries');
 
 /** A directory holding `initdb`, `pg_ctl` and a `postgres` that reports `major`. */
 async function fakeBinDir(binDir: string, major: number): Promise<string> {
@@ -46,13 +57,18 @@ async function existingCluster(layout: NativeLayout, major: number): Promise<voi
   await writeFile(path.join(layout.pgdata, 'PG_VERSION'), `${major}\n`);
 }
 
-describe.skipIf(process.platform === 'win32')('resolvePostgres after an update', () => {
+describe.skipIf(process.platform === 'win32')('resolvePostgres', () => {
   let root: string;
   let layout: NativeLayout;
+  let homebrew: string;
 
   beforeEach(async () => {
     root = await mkdtemp(path.join(os.tmpdir(), 'switch-resolve-pg-'));
     layout = nativeLayout(path.join(root, 'server'));
+    homebrew = await fakeBinDir(path.join(root, 'homebrew', 'postgresql@17', 'bin'), 17);
+    installed.mockReset();
+    installed.mockResolvedValue([{ binDir: homebrew, major: 17, source: 'installed' }]);
+    download.mockReset();
   });
 
   afterEach(async () => {
@@ -70,6 +86,57 @@ describe.skipIf(process.platform === 'win32')('resolvePostgres after an update',
     expect(chosen).toEqual({ binDir: current.postgresBinDir, major: 16, source: 'bundled' });
     expect(await recordedChoice(layout)).toEqual(chosen);
   });
+
+  it('sets a new server up on the bundled PostgreSQL, though Homebrew has a newer one', async () => {
+    const current = await bundleCopy(layout, 'current', 16);
+
+    const chosen = await resolvePostgres(layout, current, () => {});
+
+    expect(chosen).toEqual({ binDir: current.postgresBinDir, major: 16, source: 'bundled' });
+    expect(await recordedChoice(layout)).toEqual(chosen);
+    expect(download).not.toHaveBeenCalled();
+  });
+
+  it('keeps a server created on an installed PostgreSQL 17 on it', async () => {
+    await existingCluster(layout, 17);
+    await writeChoice(layout, { binDir: homebrew, major: 17, source: 'installed' });
+    const current = await bundleCopy(layout, 'current', 16);
+
+    const chosen = await resolvePostgres(layout, current, () => {});
+
+    expect(chosen).toEqual({ binDir: homebrew, major: 17, source: 'installed' });
+  });
+
+  it('finds an installed copy of the cluster’s major when the recorded one is gone', async () => {
+    await existingCluster(layout, 17);
+    await writeChoice(layout, {
+      binDir: path.join(root, 'uninstalled', 'bin'),
+      major: 17,
+      source: 'installed',
+    });
+    const current = await bundleCopy(layout, 'current', 16);
+
+    const chosen = await resolvePostgres(layout, current, () => {});
+
+    expect(chosen).toEqual({ binDir: homebrew, major: 17, source: 'installed' });
+  });
+
+  it.skipIf(!['darwin', 'linux'].includes(process.platform))(
+    'downloads the pinned PostgreSQL for a new server in a build that ships none',
+    async () => {
+      download.mockImplementation(async (_archive, _downloads, destination: string) => {
+        await fakeBinDir(path.join(destination, 'bin'), 16);
+      });
+
+      const chosen = await resolvePostgres(layout, null, () => {});
+
+      expect(download).toHaveBeenCalledOnce();
+      expect(chosen.source).toBe('downloaded');
+      expect(chosen.major).toBe(16);
+      expect(chosen.binDir.startsWith(layout.toolchain)).toBe(true);
+      expect(installed).not.toHaveBeenCalled();
+    }
+  );
 
   it('keeps a server on an older bundle’s copy when this build ships another major', async () => {
     await existingCluster(layout, 16);
@@ -96,17 +163,6 @@ describe.skipIf(process.platform === 'win32')('resolvePostgres after an update',
     await writeChoice(layout, recorded);
 
     expect(await resolvePostgres(layout, current, () => {})).toEqual(recorded);
-  });
-
-  it('keeps a server created on an installed PostgreSQL 17 on it', async () => {
-    const homebrew = await fakeBinDir(path.join(root, 'homebrew', 'postgresql@17', 'bin'), 17);
-    await existingCluster(layout, 17);
-    await writeChoice(layout, { binDir: homebrew, major: 17, source: 'installed' });
-    const current = await bundleCopy(layout, 'current', 17);
-
-    const chosen = await resolvePostgres(layout, current, () => {});
-
-    expect(chosen).toEqual({ binDir: homebrew, major: 17, source: 'installed' });
   });
 
   it('keeps a dev build’s downloaded PostgreSQL, with no bundle to move to', async () => {
