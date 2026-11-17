@@ -20,6 +20,7 @@ const listWorkspacesForServer = vi.hoisted(() => vi.fn());
 const createOrganization = vi.hoisted(() => vi.fn());
 const createOrganizationWorkspace = vi.hoisted(() => vi.fn());
 const fetchWorkspaceCreation = vi.hoisted(() => vi.fn());
+const fetchCanManageConnectorApps = vi.hoisted(() => vi.fn());
 const requireWorkspaceForServer = vi.hoisted(() => vi.fn());
 const sessionScopes = vi.hoisted(() => [] as string[]);
 const acceptInvitation = vi.hoisted(() => vi.fn());
@@ -108,6 +109,7 @@ vi.mock('./gateway-client', () => ({
   createOrganization,
   createOrganizationWorkspace,
   fetchWorkspaceCreation,
+  fetchCanManageConnectorApps,
   acceptInvitation,
   fetchRoomRoles: vi.fn(),
   fetchRooms: vi.fn(),
@@ -611,6 +613,22 @@ describe('workspaceCreation', () => {
       workspaceId: 'ws-2',
     });
     expect(sessionScopes).toEqual(['ws-2']);
+  });
+});
+
+describe('canManageConnectorApps', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    sessionScopes.length = 0;
+  });
+
+  it("answers in the session of the workspace named, and passes on the server's null", async () => {
+    fetchCanManageConnectorApps.mockResolvedValue(true);
+    await expect(switchServersController.canManageConnectorApps('ws-2')).resolves.toBe(true);
+    expect(sessionScopes).toEqual(['ws-2']);
+
+    fetchCanManageConnectorApps.mockResolvedValue(null);
+    await expect(switchServersController.canManageConnectorApps('ws-2')).resolves.toBeNull();
   });
 });
 

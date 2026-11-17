@@ -4284,6 +4284,12 @@ version of their own to them without also giving them a release of their own.
   A machine cannot be given a Mistral Vibe login from Console yet.
 
 #### Changed
+- **Set up for a connector's app opens Organization settings.** On a
+  server whose dashboard uses the new layout, Set up now opens
+  Organization settings › Connector apps. Organization admins get it too
+  where the server allows. Anyone the server doesn't allow is told the app is
+  set up with the `switch-connector-apps` command where Switch runs. Older
+  servers keep today's link.
 - **Admin › Switch Trust points to the organization's guardrails on a server
   that sets them per organization.** Such a server no longer has a
   server-wide policy to edit, so the form gives way to its note and a button
