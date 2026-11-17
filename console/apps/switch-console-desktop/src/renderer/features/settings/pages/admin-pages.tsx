@@ -16,9 +16,11 @@ import { GuardrailsSection } from '@renderer/features/switch-servers/GuardrailsS
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { PageHeader } from '@renderer/lib/components/page-header';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
+import { openExternalUrl } from '@renderer/lib/open-external';
 import { Alert, AlertTitle } from '@renderer/lib/ui/alert';
 import { SearchInput } from '@renderer/lib/ui/search-input';
 import { Spinner } from '@renderer/lib/ui/spinner';
+import { SWITCH_TRUST_ABOUT_URL } from '@shared/urls';
 import { OnSignedInServer } from './settings-server';
 
 /** Under an admin page's title: what this person's role lets them do here. */
@@ -148,7 +150,22 @@ export function GuardrailsSettingsPage() {
           <PageHeader
             sticky
             title="Guardrails"
-            description={`Guardrails that check what is sent on ${server.name} before it goes out, once they are set up.`}
+            description={
+              <>
+                Guardrails that check what is sent on {server.name} before it goes out, once they
+                are set up. Powered by{' '}
+                <button
+                  type="button"
+                  className="text-foreground underline underline-offset-3 hover:text-foreground-muted"
+                  onClick={() =>
+                    void openExternalUrl(SWITCH_TRUST_ABOUT_URL, 'Could not open Switch Trust')
+                  }
+                >
+                  Switch Trust
+                </button>
+                .
+              </>
+            }
           >
             <AdminNotice>
               As the person who runs {server.name}, you are able to manage the guardrails that check

@@ -36,6 +36,7 @@ const switchServers = vi.hoisted(() => ({
   checkConnectorApp: vi.fn(),
   saveConnectorApp: vi.fn(),
   getConnectorAppImpact: vi.fn(),
+  getTrustSettings: vi.fn(),
 }));
 const admin = vi.hoisted(() => ({ administers: true, operator: false, servesGateway: false }));
 /** The dialogs asked for, by id; each is answered by the test. */
@@ -70,7 +71,11 @@ vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
   switchServersStore: {
     servers: [{ id: 'server', name: 'Dev Server' }],
     activeServer: { id: 'server', name: 'Dev Server' },
-    statusFor: () => ({ connected: true, user: { id: 'u', name: 'Ada' } }),
+    serverById: () => ({ id: 'server', name: 'Dev Server' }),
+    statusFor: () => ({
+      connected: true,
+      user: { id: 'u', name: 'Ada', role: admin.operator ? 'admin' : 'member' },
+    }),
   },
 }));
 
@@ -118,6 +123,9 @@ vi.mock('@renderer/lib/layout/navigation-provider', async () => {
   };
 });
 
+const openExternalUrl = vi.hoisted(() => vi.fn(async () => true));
+vi.mock('@renderer/lib/open-external', () => ({ openExternalUrl }));
+
 vi.mock('@renderer/lib/modal/modal-provider', () => ({
   useShowModal: (id: string) => (args: Omit<(typeof modals)[number], 'id'>) =>
     modals.push({ id, ...args }),
@@ -129,6 +137,7 @@ import {
   ConnectorAppsSettingsPage,
   ConnectorsSettingsPage,
   DecisionRoutingSettingsPage,
+  GuardrailsSettingsPage,
 } from '@renderer/features/settings/pages/admin-pages';
 import { Dialog, DialogContent } from '@renderer/lib/ui/dialog';
 
@@ -181,6 +190,7 @@ function Tab() {
   const { tab } = useSyncExternalStore(navigation.subscribe, navigation.params);
   if (tab === 'decision-routing') return <DecisionRoutingSettingsPage />;
   if (tab === 'connector-apps') return <ConnectorAppsSettingsPage />;
+  if (tab === 'guardrails') return <GuardrailsSettingsPage />;
   return <ConnectorsSettingsPage />;
 }
 
@@ -381,6 +391,26 @@ it('says so when it cannot read the decision routing, rather than drawing a gues
     expect(page.textContent).toContain(
       'Only an admin of this workspace can view or change its decision routing.'
     )
+  );
+});
+
+it('says the guardrails are powered by Switch Trust, with a link to what it is', async () => {
+  admin.operator = true;
+  switchServers.getTrustSettings.mockResolvedValue({
+    kind: 'moved',
+    message: 'Guardrails are set for each organization now.',
+  });
+  navigation.navigate('settings', { tab: 'guardrails' });
+  const page = await render();
+
+  await vi.waitFor(() =>
+    expect(page.textContent).toContain('Guardrails are set for each organization now.')
+  );
+  expect(page.textContent).toContain('Powered by Switch Trust.');
+  await act(async () => button(/^Switch Trust$/, page)!.click());
+  expect(openExternalUrl).toHaveBeenCalledWith(
+    'https://www.switchagents.ai/trust',
+    'Could not open Switch Trust'
   );
 });
 
