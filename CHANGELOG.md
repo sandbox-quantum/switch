@@ -4435,6 +4435,12 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **Home's chat bar takes several lines, and switch-buddy comes alive
+  beside it.** The box grows with what you type, up to ten lines, then
+  scrolls; Enter sends and Shift+Enter starts a new line. Each time Home
+  opens, switch-buddy slides up into its tile and then blinks and smiles now
+  and then, as it does when it is first introduced (still, with reduced
+  motion). The bar's shadow is softer.
 - **A new Home for each workspace.** One row at the top names the server and
   workspace, shows the connection, and holds Refresh and the server's actions.
   Signed out, the page is the sign-in card. Signed in, it offers to connect an
