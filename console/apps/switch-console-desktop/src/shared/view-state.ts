@@ -62,13 +62,6 @@ export type SidebarSnapshot = {
   filterBridgeTypes?: string[];
   filterRoomHasLiveSession?: boolean;
   /**
-   * Whether the first-run setup checklist is collapsed to its header row.
-   * Collapsing is a "not now", distinct from dismissing it entirely — that is a
-   * setting (`onboarding.showChecklist`), because it has to be undoable from
-   * somewhere the checklist itself no longer occupies.
-   */
-  onboardingChecklistCollapsed?: boolean;
-  /**
    * Whether a sidebar agent row shows the small mark of the provider it runs
    * on, beside its name. The agent's own icon took over the row's leading slot
    * (CHOO-2171), and this mark is what still answers "what does this actually

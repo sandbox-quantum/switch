@@ -53,6 +53,74 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **`switch-promote-org-admin`, a break-glass command.** When an
+  organization's admins can't make someone an admin themselves, the platform
+  operator can run `switch-promote-org-admin <organization id or slug>
+  <email> --reason "<text>" --execute` where switch-core runs. The person
+  must already be in one of the organization's workspaces. The change is
+  recorded in the organization's audit log as made by a platform operator,
+  with the reason, and its organization admins are e-mailed. Without
+  `--execute` it only shows what it would do. An organization whose admins
+  come from WorkOS is refused.
+- **Server commands for the platform operator.** Three commands run where
+  switch-core runs, with its configuration:
+  - `switch-orgs list` shows every organization with its admins and
+    workspaces.
+  - `switch-accounts` lists, creates, deletes and signs out accounts, and
+    grants or revokes platform operator.
+  - `switch-connector-apps` lists, sets and removes the deployment's
+    connector apps.
+
+  `switch-accounts create` reads the password from a file or standard input,
+  never the command line. `switch-accounts delete` first lists what is
+  connected to the account: its workspaces and role in each, the
+  organizations it is an admin of, and in each workspace its agents,
+  devices, open chats, API keys and service connections, and the rooms and
+  invitations that stay or pass to another admin. It uses the same account
+  deletion and refusals as the dashboard, and also refuses while the account
+  owns agents, devices or open chats, which only a running server can
+  remove; a refusal says what has to happen first and exits non-zero. It
+  only shows what it would do until given `--execute`, and then asks for the
+  account's e-mail to be typed before deleting. `--yes` skips that question
+  for scripts; without it, a run with no terminal to ask on is refused.
+  Either way it looks at every workspace again just before deleting, and
+  deletes nothing if the account has changed since it was shown.
+  `switch-connector-apps set` checks the app with the vendor first, as the
+  dashboard does, and never prints a secret. A password file or app file
+  that is missing or can't be read is refused with a one-line message, as
+  every other problem is. The account at
+  `GATEWAY_ADMIN_EMAIL` stays an operator, and the server keeps at least
+  one. Every change is recorded in the audit log as made by a platform
+  operator command.
+- **On a deployment with one organization, its admins manage the
+  deployment's connector apps.** The connector apps every workspace signs in
+  through were the platform operator's alone. When the deployment has
+  exactly one organization, that organization's admins may now set them up
+  too. This is checked again on every request, so they lose it as soon as a
+  second organization exists. `GET /gateway/auth/session` reports
+  `can_manage_connector_apps`, and `connector_apps_in_dashboard`: whether the
+  deployment has exactly one organization, so its admins set the apps up in
+  the dashboard, where with several the operator does with
+  `switch-connector-apps`. The dashboard and Switch Console use it to tell
+  someone who can't set an app up whom to ask. The server audit log notes
+  when a change came from an organization admin rather than the operator.
+- **An organization's admins are e-mailed when one of them stops being an
+  admin.** When an organization admin is made a member by another admin,
+  steps down, is removed from the organization, leaves it, or has their
+  account deleted, every organization admin and the person themselves get an
+  e-mail. It says who made the change (or that they made it themselves), whom
+  it was made to, the organization and when, and links to the organization's
+  audit log. It goes through the relay invitation e-mails use
+  (`GATEWAY_SMTP_*`), after the change is made: from the dashboard, once the
+  response has been sent, with no database connection held while the relay
+  is talked to. Without a relay, nothing is sent and the server logs a
+  warning for each change. Anything that goes wrong sending is logged as an
+  error and doesn't undo the change. Deleting an organization admin's account
+  is now recorded in the organization's audit log too, and e-mailed, only
+  once the account is gone; a deletion that fails partway is recorded there
+  as one that did not finish, since the person is no longer an admin either
+  way, and nobody is told the account was deleted. Changes brought in from
+  WorkOS are not e-mailed.
 - **Devices say how each device is doing.** Beside a device's state, a
   warning when its controller is behind the release Switch names (or is
   waiting to update, needs a restart or failed to) or a provider it has
@@ -487,15 +555,11 @@ version of their own to them without also giving them a release of their own.
   admin, and for making the registration service account an admin. The last
   admin's `can_change_role` and `can_remove` are now false, as the routes
   already refused both, so the current Workspace page no longer offers them.
-- **Another platform operator can be made a regular account, or deleted.**
-  `POST /gateway/users/{user_id}/demote` makes another operator a regular
-  account, keeping their workspaces and their roles in them and signing them
-  out everywhere; the server always keeps one operator. Deleting another
-  operator goes ahead like anyone's, and an operator may delete their own
-  account while another remains. Only the account at `GATEWAY_ADMIN_EMAIL`,
-  which Switch recreates every time it starts, stays an operator and can't be
-  deleted. Both are recorded in the server's audit log (`user.demoted`).
-  `GET /gateway/users` adds `can_demote` beside `can_delete`.
+- **A platform operator's account can be deleted while another operator
+  remains.** Deleting another operator goes ahead like anyone's, and an
+  operator may delete their own account. Only the account at
+  `GATEWAY_ADMIN_EMAIL`, which Switch recreates every time it starts, stays an
+  operator and can't be deleted.
 - **An invitation says what it's to before you accept it.**
   `POST /gateway/invitations/preview` takes an invitation token from a
   signed-in person and returns the workspace, its organization and the role,
@@ -507,24 +571,17 @@ version of their own to them without also giving them a release of their own.
   the organization's audit log. An org admin, someone still in one of its
   workspaces, and an organization whose members a directory keeps are
   refused.
-- **Make regular account and Delete account for platform operators** in
-  Platform › Users, wherever the server allows them; never for your own
-  account or the server's administrator account.
 - **The invite page says what you're joining:** "Join <workspace> in
   <organization> as <role>", or why the invitation won't work, before
   Accept. Accepting one for a workspace you're already in at that role says
   so.
 - **The onboarding screen and Your account offer to leave an organization
   you're left in with no workspace.**
-- **A platform operator in no workspace can open one from the onboarding
-  screen**, which is how one added from Platform › Users reaches the
-  Platform pages.
 
 #### Changed
 - **The dashboard has one layout: the one built behind `gateway_v2`.**
-  Home, Agents, Rooms, Templates, Connectors and Resources on the rail,
-  Workspace and Organization settings as their own areas, and the
-  operator's pages under Platform, on every server. The earlier layout's
+  Home, Agents, Rooms, Templates, Connectors and Resources on the rail, and
+  Workspace and Organization settings as their own areas, on every server. The earlier layout's
   pages are gone, and each of their URLs redirects to the page that
   replaced it, so links from older Switch Console versions, the docs and
   bookmarks still land. `gateway_v2` is still accepted in
@@ -557,13 +614,29 @@ version of their own to them without also giving them a release of their own.
   template listings and details add `agent_count`, `room_count` and
   `last_run_at`. `use_case` in the create and update bodies raises the
   `gateway-api` revision to 6.
+- **The dashboard no longer has a Platform area, on any deployment.** The
+  platform operator's own pages are gone: All workspaces, Users and
+  Platform › Connectors. Old addresses still lead somewhere: `/platform`,
+  `/platform/workspaces` and `/operator/workspaces` go to Organization
+  settings › Workspaces, `/platform/users` and `/users` to Organization
+  settings › Users, and `/platform/connectors` to Organization settings ›
+  Connector apps.
+
+  The deployment's connector apps are now in Organization settings ›
+  Connector apps, for whoever may manage them: the operator, or the admins of
+  a deployment's only organization. They reach it from a workspace in no
+  organization too, which an older release could make; Organization settings
+  then lists Connector apps alone. On a deployment with several
+  organizations, deployment-wide work (accounts, organizations, connector
+  apps) is done with the `switch-accounts`, `switch-orgs` and
+  `switch-connector-apps` commands.
 - **The Discord connect form asks for the Server ID.** Discord's own app
   calls the guild id a Server ID, and that is what you copy from the server
   icon; the setting's key stays `guild_id`.
 - **The dashboard's budget page is called Usage & budget,** and its Add
   budget button no longer squeezes until its label wraps out of it on a
-  narrower window. Back to workspace, in Organization settings and Platform,
-  returns to the page you came from rather than always to home.
+  narrower window. Back to workspace, in Organization settings, returns to
+  the page you came from rather than always to home.
 - **Auto-route's messages send workspace admins to Settings, not Admin.**
   Where a room says auto-route needs a decision service, or that the
   workspace turned it off, it points at Switch Console → Settings → Decision
@@ -786,12 +859,6 @@ version of their own to them without also giving them a release of their own.
   ways to narrow it.** An admin sees why the rest is held, and can remove
   rules or restrict the agent to its owner; making it Open, adding rules and
   editing them stay with the owner.
-- **An account added from Platform › Users starts in no workspace.**
-  `POST /gateway/users` no longer puts the account in the workspace the
-  operator happens to be in, and a "Platform operator" made there is no
-  workspace's admin and no organization's org admin: the server's role grants
-  neither. A workspace admin gives them a workspace by inviting them. The
-  server's audit log records `user.created`.
 - **Accepting an invitation to a workspace you're already in.** An
   invitation above your role there raises you to it and is spent; one at or
   below it changes nothing, spends nothing, and the answer says so
@@ -806,8 +873,6 @@ version of their own to them without also giving them a release of their own.
   domain.** A workspace open to their domain isn't offered to them, and
   joining is refused, until they're invited again or an organization admin
   adds them. Someone who left on their own can still use the domain.
-- **Add user says the account starts in no workspace**, and that "Platform
-  operator" makes them no workspace's or organization's admin.
 - **The organization's Audit log names every kind of event it records**,
   with a Details column for the workspace and the role change.
 - **An admin's reference, document and package lists hold everyone's.**
@@ -851,7 +916,36 @@ version of their own to them without also giving them a release of their own.
   audio, video, archives and Office files other than Word documents are
   delivered unchecked.
 
+#### Removed
+- **Breaking for HTTP clients: the operator's account and workspace-list
+  routes are removed.** `GET /gateway/users`, `POST /gateway/users`,
+  `DELETE /gateway/users/{user_id}`,
+  `POST /gateway/users/{user_id}/sessions/revoke` and
+  `GET /gateway/operator/workspaces` now answer `404`. Run the commands that
+  replace them where switch-core runs: `switch-accounts list`, `create`,
+  `delete` and `sign-out`, and `switch-orgs list`. `switch-accounts create`,
+  which replaces `POST /gateway/users`, puts the account in no workspace,
+  where the route put it in the caller's: invite it to one, or give it an
+  address at a domain a workspace is open to, or a script moved onto it
+  makes accounts that can't reach anything. People still delete their own
+  account (`DELETE /gateway/auth/me`) and sign out of every device
+  (`POST /gateway/auth/sessions/revoke`) as before.
+
 #### Fixed
+- **Add a device no longer shows commands that can't work.** On a Switch
+  that Switch Console runs, or whose public address (`GATEWAY_PUBLIC_URL`)
+  is a loopback one such as `http://localhost:8000` or the unspecified
+  `0.0.0.0` or `::`, no other device can reach it, so the dashboard's Add a
+  device dialog now says why and what to do instead of printing install and
+  enroll commands that would fail. The address is read as the operating
+  system reads it, so shorthand such as `http://127.1` or `http://0`, a
+  trailing dot, and an IPv4 address written as IPv6
+  (`[::ffff:127.0.0.1]`) count too, and the bridges' warning about a
+  loopback `GATEWAY_PUBLIC_URL` catches them as well.
+  `POST /gateway/management/enrollment-codes` also returns `remote_devices`,
+  `{supported, reason}`, saying whether another device could enroll and, if
+  not, why. The code is still issued. Against a server from before it, the
+  dialog shows the commands as it always did.
 - **A room Discord refuses to make a channel for says why.** When Discord
   turned down the new channel, for example because the Switch bot's role
   lacks Manage Channels, creating the room failed with a bare 500 and
@@ -866,7 +960,8 @@ version of their own to them without also giving them a release of their own.
 - **Connectors in the web dashboard: turn on and set up from the
   connector's page.** A workspace admin turns a connector on from its page,
   in place of a link to the workspace settings. When its app is not set up,
-  the server operator gets a "Set up" button that opens that app's setup. The
+  whoever sets up the deployment's connector apps gets a "Set up" button that
+  opens that app's setup. The
   list shows "Needs setup" for such a connector.
 - **A sign-out that fails in the dashboard says so.** Signing out, or out of
   every device, from the account menu or the screens before a workspace said
@@ -1071,6 +1166,14 @@ version of their own to them without also giving them a release of their own.
   last column has a header menu could be scrolled 23px to the side at any
   width, because the menu button the table hides until the header is hovered
   stuck out past it.
+- **A page or section title's buttons cope with a narrow window.** Add
+  budget, Create API key and the other buttons beside a dashboard heading
+  could wrap onto the title, get clipped, or run past the edge of the page as
+  the window narrowed, instead of moving to their own line. Where there are
+  several, such as Rooms' four with rooms selected, they now wrap among
+  themselves within the page's width, each staying whole. The usage period
+  picker, the resources tabs and the sign-out buttons on Your account had
+  the same problem; all now give way cleanly.
 - **Bulk archive and delete say which rooms they left alone, and why.**
   `POST /rooms/bulk-archive` and `/rooms/bulk-delete` still act on every room
   the caller may change and answer 200, and now add `refused`, each
@@ -1408,8 +1511,8 @@ version of their own to them without also giving them a release of their own.
   `GATEWAY_LOGIN_FAILURE_WINDOW_MINUTES` and `GATEWAY_LOGIN_LOCK_MINUTES`. The
   counts are kept in Postgres (a new `auth_attempts` table, holding digests
   rather than emails or addresses; the same migration adds
-  `revoked_sessions`), so they hold across replicas. The operator can lift an
-  account's lock at once with `DELETE /gateway/users/{user_id}/sign-in-lock`,
+  `revoked_sessions`), so they hold across replicas. Whoever runs Switch can
+  lift an account's lock at once with `switch-accounts unlock EMAIL`,
   recorded in the server's audit log. Since failures from anywhere count,
   anyone who knows a person's email can pause that person's password sign-in
   for `GATEWAY_LOGIN_LOCK_MINUTES` by failing `GATEWAY_LOGIN_MAX_FAILURES`
@@ -4642,6 +4745,15 @@ version of their own to them without also giving them a release of their own.
   A machine cannot be given a Mistral Vibe login from Console yet.
 
 #### Changed
+- **Set up for a connector's app goes to whoever may set it up.** Console
+  asks the server who may set up its connector apps, whichever layout its
+  dashboard uses. Set up opens Organization settings › Connector apps in the
+  new layout and Connectors in the default one, for the operator and, where
+  the server allows, the admins of its only organization. Anyone else is
+  told that an admin of their organization sets it up, on a server with one
+  organization, or that whoever runs the server does with the
+  `switch-connector-apps` command, on one with several. Older servers keep
+  today's link and wording.
 - **Dashboard pages open in your default browser, already signed in.**
   Opening a room, an agent or a settings page in the dashboard used to open a
   Switch Console window for the server Console runs, and your browser, signed
@@ -4734,6 +4846,15 @@ version of their own to them without also giving them a release of their own.
   agent"; it was the only place Console showed that name.
 
 #### Fixed
+- **Add device no longer shows commands that can't work.** On a server
+  Switch Console runs on this computer, Settings › Devices no longer offers
+  Add device and says why: no other device can reach it. On any other
+  server, when the server says no other device can reach it, or the address
+  the commands would use is this computer's own (such as
+  `http://localhost:8000`), the dialog says why and what to change instead of
+  showing install and enroll commands that would fail on another device.
+  Enrolling this computer, and the SSH hosts Switch Console sets up, works as
+  before.
 - **Switch Console no longer locks out a local server's admin by signing in
   again and again.** When the session with a server it runs had ended, every
   part of the app that needed it signed in with the stored password at once,
@@ -5007,6 +5128,11 @@ version of their own to them without also giving them a release of their own.
   guardrails, rather than being sent to a page that refuses them.
 
 #### Removed
+- **The "Onboarding checklist" setting.** Turning it on or off under Settings ›
+  Preferences changed nothing: the sidebar's "Setting up Switch" checklist it
+  controlled is no longer shown, since the first run now sets things up with
+  you through switch-buddy. The setting and the checklist behind it are gone,
+  and a value an older version saved is ignored.
 - **The welcome page.** The Switch mark in the sidebar, and deleting the agent
   or server on screen, now go to the active workspace's Home, or to an "Add a
   server" page when no server is left. "About Switch" in the workspace menu is

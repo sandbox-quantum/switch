@@ -15,6 +15,7 @@ import { rememberBridgePlatforms } from '@main/core/telemetry/bridge-platform';
 import { assertedTenant } from '@main/core/workspaces/asserted-tenant';
 import { type CloudMachine, cloudMachineSchema } from '@shared/core/cloud-agents/cloud-agents';
 import type { RemoteFeatureFlag } from '@shared/core/feature-flags/feature-flags';
+import type { RemoteDevices } from '@shared/core/managed-agents/machine-enrollment';
 import type {
   AdvancedConfigField,
   ManagedAgentTemplate,
@@ -39,6 +40,7 @@ import {
   type ConnectorApp,
   type ConnectorAppCheckResult,
   type ConnectorAppImpact,
+  type ConnectorAppManagement,
   type ConnectorApps,
   type SaveConnectorAppInput,
   type SaveConnectorAppResult,
@@ -1423,12 +1425,42 @@ export async function fetchWorkspaceCreation(server: SwitchServer): Promise<Work
   };
 }
 
-function optionalFlag(
+/**
+ * Who sets up the deployment's connector apps, from the session: whether the
+ * signed-in account may (its operator, or an `org_admin` of its organization
+ * when it has exactly one), and whether they are set up in the dashboard at
+ * all (exactly one organization) or with the server's command.
+ *
+ * Each is null on a server from before it said (no session route, or no
+ * field), where only the operator may.
+ */
+export async function fetchConnectorAppManagement(
+  server: SwitchServer
+): Promise<ConnectorAppManagement> {
+  let res: Response;
+  try {
+    res = await gatewayFetch(server, '/auth/session', { authenticated: true });
+  } catch (cause) {
+    if (cause instanceof GatewayError && cause.status === 404)
+      return { canManage: null, inDashboard: null };
+    throw cause;
+  }
+  const json = (await res.json()) as {
+    can_manage_connector_apps?: unknown;
+    connector_apps_in_dashboard?: unknown;
+  };
+  return {
+    canManage: optionalFlag(server, json, 'can_manage_connector_apps', null),
+    inDashboard: optionalFlag(server, json, 'connector_apps_in_dashboard', null),
+  };
+}
+
+function optionalFlag<Absent extends boolean | null>(
   server: SwitchServer,
   json: Record<string, unknown>,
   field: string,
-  absent: boolean
-): boolean {
+  absent: Absent
+): boolean | Absent {
   const value = json[field];
   if (value === undefined) return absent;
   if (typeof value !== 'boolean') {
@@ -5231,11 +5263,15 @@ export async function enrollConsoleController(
  * A one-time code a headless controller enrolls with
  * (`POST /gateway/management/enrollment-codes`): single use, valid for ten
  * minutes. A secret until it is spent. `serverUrl` is the agent bridge's public
- * origin as the server names it; null when it names none.
+ * origin as the server names it; null when it names none. `remoteDevices` is
+ * whether another device could enroll at all; null from a server too old to say.
  */
-export async function issueMachineEnrollment(
-  server: SwitchServer
-): Promise<{ code: string; expiresAt: string; serverUrl: string | null }> {
+export async function issueMachineEnrollment(server: SwitchServer): Promise<{
+  code: string;
+  expiresAt: string;
+  serverUrl: string | null;
+  remoteDevices: RemoteDevices | null;
+}> {
   const res = await managementFetch(server, '/enrollment-codes', {
     authenticated: true,
     method: 'POST',
@@ -5244,8 +5280,14 @@ export async function issueMachineEnrollment(
     code: string;
     expires_at: string;
     server_url: string | null;
+    remote_devices?: RemoteDevices;
   };
-  return { code: json.code, expiresAt: json.expires_at, serverUrl: json.server_url ?? null };
+  return {
+    code: json.code,
+    expiresAt: json.expires_at,
+    serverUrl: json.server_url ?? null,
+    remoteDevices: json.remote_devices ?? null,
+  };
 }
 
 /** Just the code of a fresh enrollment, for a controller Console enrolls itself. */

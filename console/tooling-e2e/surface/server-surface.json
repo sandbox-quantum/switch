@@ -357,16 +357,6 @@
       "flags": []
     },
     {
-      "route": "DELETE /gateway/users/{user_id}",
-      "auth": "session",
-      "flags": []
-    },
-    {
-      "route": "DELETE /gateway/users/{user_id}/sign-in-lock",
-      "auth": "session",
-      "flags": []
-    },
-    {
       "route": "DELETE /gateway/workspace/services/{service}",
       "auth": "session",
       "flags": [
@@ -710,11 +700,6 @@
     {
       "route": "GET /gateway/openapi.json",
       "auth": "none",
-      "flags": []
-    },
-    {
-      "route": "GET /gateway/operator/workspaces",
-      "auth": "session",
       "flags": []
     },
     {
@@ -1090,11 +1075,6 @@
     },
     {
       "route": "GET /gateway/trust-settings",
-      "auth": "session",
-      "flags": []
-    },
-    {
-      "route": "GET /gateway/users",
       "auth": "session",
       "flags": []
     },
@@ -1745,21 +1725,6 @@
     },
     {
       "route": "POST /gateway/tenants/{tenant_id}/switch",
-      "auth": "session",
-      "flags": []
-    },
-    {
-      "route": "POST /gateway/users",
-      "auth": "session",
-      "flags": []
-    },
-    {
-      "route": "POST /gateway/users/{user_id}/demote",
-      "auth": "session",
-      "flags": []
-    },
-    {
-      "route": "POST /gateway/users/{user_id}/sessions/revoke",
       "auth": "session",
       "flags": []
     },

@@ -1,4 +1,3 @@
-import AdminPanelSettingsOutlined from "@mui/icons-material/AdminPanelSettingsOutlined";
 import HomeOutlined from "@mui/icons-material/HomeOutlined";
 import LocalLibraryOutlined from "@mui/icons-material/LocalLibraryOutlined";
 import MeetingRoomOutlined from "@mui/icons-material/MeetingRoomOutlined";
@@ -13,8 +12,9 @@ import {
   type Rule,
   agentManagement,
   allOf,
+  anyOf,
+  connectorAppManagers,
   everyone,
-  operators,
   organizationAdmins,
   organizationAdminsOnly,
   organizationConnectorApps,
@@ -29,7 +29,6 @@ import AgentListPage from "../pages/agents/AgentListPage";
 import ConnectorAppsPage from "../pages/connector-apps/ConnectorAppsPage";
 import EcosystemGraphPage from "../pages/ecosystem/EcosystemGraphPage";
 import MessagingAppsPage from "../pages/messaging-apps/MessagingAppsPage";
-import OperatorWorkspacesPage from "../pages/operator/OperatorWorkspacesPage";
 import ConnectorPage from "../pages/connectors/ConnectorPage";
 import ConnectorsPage from "../pages/connectors/ConnectorsPage";
 import {
@@ -57,7 +56,6 @@ import RoomsGraphPage from "../pages/rooms/RoomsGraphPage";
 import RoomsPage from "../pages/rooms/RoomsPage";
 import TemplatesPage from "../pages/templates/TemplatesPage";
 import UsagePage from "../pages/usage/UsagePage";
-import UsersPage from "../pages/users/UsersPage";
 import PrivateChannelRoomsPage from "../pages/workspace/PrivateChannelRoomsPage";
 import WorkspaceConnectorsPage from "../pages/workspace/WorkspaceConnectorsPage";
 import WorkspaceGeneralPage from "../pages/workspace/WorkspaceGeneralPage";
@@ -121,14 +119,11 @@ export const AREAS: Record<SettingsArea, AreaDefinition> = {
   },
   organization: {
     title: "Organization settings",
-    access: organizationAdmins,
+    // Whoever may set up the deployment's connector apps comes in for them
+    // even from a workspace in no organization, which an older release
+    // could make; every other page here asks for the organization itself.
+    access: anyOf(organizationAdmins, connectorAppManagers),
     first: "/settings/org/general",
-    outsideWorkspace: true,
-  },
-  platform: {
-    title: "Platform",
-    access: operators,
-    first: "/platform/workspaces",
     outsideWorkspace: true,
   },
 };
@@ -197,8 +192,8 @@ export const ROUTES: readonly AppRoute[] = [
   page("/agents", everyone, <AgentListPage />),
   page("/agents/:agentId", everyone, <AgentDetailPage />),
 
-  // Everyone's connector catalogue. The operator's server-wide connector
-  // apps, which this URL once was, are under Platform.
+  // Everyone's connector catalogue. The deployment's connector apps, which
+  // this URL once was, are in Organization settings, as Connector apps.
   page("/connectors", serviceConnections, <ConnectorsPage />),
   page("/connectors/:connectorId", serviceConnections, <ConnectorPage />),
 
@@ -209,8 +204,16 @@ export const ROUTES: readonly AppRoute[] = [
   redirect("/workspace", "/settings/users"),
   redirect("/workspace/private-channel-rooms", "/settings/general/private-channel-rooms"),
   redirect("/organization", "/settings/org"),
-  redirect("/users", "/platform/users"),
-  redirect("/operator/workspaces", "/platform/workspaces"),
+
+  // The old URLs of the platform operator's own pages, which the dashboard no
+  // longer has: accounts and organizations are managed with server commands.
+  // Each leads to the nearest page there is.
+  redirect("/users", "/settings/org/users"),
+  redirect("/operator/workspaces", "/settings/org/workspaces"),
+  redirect("/platform", "/settings/org/workspaces"),
+  redirect("/platform/workspaces", "/settings/org/workspaces"),
+  redirect("/platform/users", "/settings/org/users"),
+  redirect("/platform/connectors", "/settings/org/connector-apps"),
 
   // Workspace settings. `/usage` keeps its URL until Usage & budget is
   // rebuilt, and sits here in the meantime.
@@ -242,30 +245,47 @@ export const ROUTES: readonly AppRoute[] = [
   settingsPage("/settings/devices", "workspace", "Devices", agentManagement, <DevicesPage />),
   personalSettingsPage("/settings/account", "Your account", everyone, <AccountPage />),
 
-  // Organization settings: the area admits the organization's admins, and
-  // the operator to restore one; its pages beyond that are the admins' alone.
+  // Organization settings: the area admits the organization's admins, the
+  // operator to restore one, and whoever may set up the deployment's
+  // connector apps. Its pages beyond General, Workspaces and Users are the
+  // admins' alone, but for Connector apps, which is whoever may set up the
+  // deployment's connector apps, the operator included, in an organization
+  // or not.
   areaIndex("/settings/org", "organization"),
   settingsPage(
     "/settings/org/general",
     "organization",
     "General",
-    everyone,
+    organizationAdmins,
     <OrganizationGeneralPage />,
   ),
   settingsPage(
     "/settings/org/workspaces",
     "organization",
     "Workspaces",
-    everyone,
+    organizationAdmins,
     <OrganizationWorkspacesPage />,
   ),
-  settingsPage("/settings/org/users", "organization", "Users", everyone, <OrganizationUsersPage />),
+  settingsPage(
+    "/settings/org/users",
+    "organization",
+    "Users",
+    organizationAdmins,
+    <OrganizationUsersPage />,
+  ),
   settingsPage(
     "/settings/org/connectors",
     "organization",
     "Connectors",
     orgConnectors,
     <OrganizationConnectorsPage />,
+  ),
+  settingsPage(
+    "/settings/org/connector-apps",
+    "organization",
+    "Connector apps",
+    connectorAppManagers,
+    <ConnectorAppsPage />,
   ),
   settingsPage(
     "/settings/org/guardrails",
@@ -288,19 +308,6 @@ export const ROUTES: readonly AppRoute[] = [
     organizationAdminsOnly,
     <OrganizationAuditLogPage />,
   ),
-
-  // The platform operator's pages. Each holds the operator rule itself, not
-  // only through the area, so a page moved out of it stays the operator's.
-  areaIndex("/platform", "platform"),
-  settingsPage(
-    "/platform/workspaces",
-    "platform",
-    "All workspaces",
-    operators,
-    <OperatorWorkspacesPage />,
-  ),
-  settingsPage("/platform/users", "platform", "Users", operators, <UsersPage />),
-  settingsPage("/platform/connectors", "platform", "Connectors", operators, <ConnectorAppsPage />),
 ];
 
 /** Whether `path` (a page's own URL, not a pattern) may be opened: its
@@ -409,7 +416,6 @@ export const RAIL: readonly RailItem[] = [
     bottom: true,
     labelled: false,
   }),
-  railItem("Platform", "/platform", AdminPanelSettingsOutlined, { bottom: true }),
 ];
 
 export function railFor(caps: Capabilities): RailItem[] {

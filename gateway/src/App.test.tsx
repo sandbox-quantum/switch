@@ -37,6 +37,7 @@ function session(overrides: Partial<Session>): Session {
     can_create_workspace: true,
     can_add_workspace: false,
     invite_email_enabled: false,
+    can_manage_connector_apps: false,
     ...overrides,
   };
 }
@@ -67,11 +68,15 @@ function signedInAs(
     inOrganization = true,
     tenants = [],
     canDelete = false,
+    canManageConnectorApps = role === "operator",
   }: {
     flags?: FeatureFlagKey[];
     inOrganization?: boolean;
     tenants?: TenantMembership[];
     canDelete?: boolean;
+    // The operator may set up the deployment's connector apps, and the admins
+    // of its only organization while it has no other.
+    canManageConnectorApps?: boolean;
   } = {},
 ): Routes {
   const tenant: TenantMembership = {
@@ -89,6 +94,7 @@ function signedInAs(
         tenant,
         tenants: [tenant, ...tenants],
         user: { id: "u1", name: "Ada", email: "ada@example.com", is_operator: role === "operator" },
+        can_manage_connector_apps: canManageConnectorApps,
       }),
     ],
     "/feature-flags": [200, { flags: flags.map((key) => ({ key, enabled: true })) }],
@@ -363,12 +369,13 @@ describe("the layout", () => {
     expect(within(rail).getByRole("link", { name: "Home" }).textContent).toBe("Home");
   });
 
-  it("puts Connectors on the rail where connectors run, and Platform for the operator", async () => {
+  it("puts Connectors on the rail where connectors run, and nothing more for the operator", async () => {
     mockFetch(signedInAs("operator", { flags: ["service_connections"] }));
     renderAt("/overview");
     const labels = await railLabels();
     expect(labels).toContain("Connectors");
-    expect(labels.at(-1)).toBe("Platform");
+    expect(labels.at(-1)).toBe("Settings");
+    expect(labels).not.toContain("Platform");
   });
 
   it("moves today's pages, keeping the query and fragment", async () => {
@@ -398,10 +405,14 @@ describe("the layout", () => {
     await landsOn("/settings/general");
   });
 
-  it("moves the operator's pages to Platform", async () => {
+  it("sends the operator's old pages, and Platform's, to Organization settings", async () => {
     for (const [from, to] of [
-      ["/operator/workspaces", "/platform/workspaces"],
-      ["/users", "/platform/users"],
+      ["/operator/workspaces", "/settings/org/workspaces"],
+      ["/users", "/settings/org/users"],
+      ["/platform", "/settings/org/workspaces"],
+      ["/platform/workspaces", "/settings/org/workspaces"],
+      ["/platform/users", "/settings/org/users"],
+      ["/platform/connectors", "/settings/org/connector-apps"],
     ]) {
       mockFetch(signedInAs("operator"));
       renderAt(from);
@@ -608,13 +619,14 @@ describe("the layout", () => {
       expect(await menuLabels("Organization settings")).toContain("Connectors");
     });
 
-    it("lets the operator in, to restore an organization's admin, and no further", async () => {
+    it("lets the operator in, to restore an organization's admin and set up connector apps, and no further", async () => {
       mockFetch(signedInAs("operator"));
       renderAt("/settings/org/users");
       expect(await menuLabels("Organization settings")).toEqual([
         "General",
         "Workspaces",
         "Users",
+        "Connector apps",
       ]);
       cleanup();
 
@@ -642,18 +654,63 @@ describe("the layout", () => {
     });
   });
 
-  describe("platform", () => {
-    it("gives the operator their pages", async () => {
-      mockFetch(signedInAs("operator"));
-      renderAt("/platform");
-      await landsOn("/platform/workspaces");
-      expect(await menuLabels("Platform")).toEqual(["All workspaces", "Users", "Connectors"]);
+  describe("connector apps", () => {
+    it("lists Connector apps, after Connectors, for an admin who may set them up", async () => {
+      mockFetch({
+        ...signedInAs("org_admin", {
+          flags: ["service_connections", "organization_connector_apps"],
+          canManageConnectorApps: true,
+        }),
+        "/connector-apps": [200, { public_url: "https://switch.example.test", apps: [] }],
+      });
+      renderAt("/settings/org/connector-apps");
+      const labels = await menuLabels("Organization settings");
+      expect(labels.indexOf("Connector apps")).toBe(labels.indexOf("Connectors") + 1);
+      expect(await screen.findByRole("heading", { name: "Connectors" })).toBeTruthy();
     });
 
-    it("keeps everyone else out", async () => {
-      mockFetch(signedInAs("org_admin"));
-      renderAt("/platform/users");
-      expect(await screen.findByText("Only the platform operator can open this page.")).toBeTruthy();
+    it("opens from a workspace in no organization for whoever may set them up", async () => {
+      const routes = {
+        ...signedInAs("operator", { inOrganization: false }),
+        "/connector-apps": [200, { public_url: "https://switch.example.test", apps: [] }],
+      } satisfies Routes;
+      mockFetch(routes);
+      renderAt("/settings/general");
+      expect(await menuLabels("Settings")).toContain("Organization settings");
+      cleanup();
+
+      mockFetch(routes);
+      renderAt("/settings/org");
+      await landsOn("/settings/org/connector-apps");
+      expect(await menuLabels("Organization settings")).toEqual(["Connector apps"]);
+      expect(await screen.findByRole("heading", { name: "Connectors" })).toBeTruthy();
+      cleanup();
+
+      mockFetch(routes);
+      renderAt("/settings/org/general");
+      expect(await screen.findByText("This workspace belongs to no organization.")).toBeTruthy();
+    });
+
+    it("keeps Organization settings shut, outside an organization, to anyone who may not", async () => {
+      mockFetch(signedInAs("member", { inOrganization: false }));
+      renderAt("/settings/org/connector-apps");
+      expect(await screen.findByText("This workspace belongs to no organization.")).toBeTruthy();
+      expect(screen.queryByRole("navigation", { name: "Organization settings" })).toBeNull();
+    });
+
+    it("neither lists nor opens it for an admin who may not", async () => {
+      mockFetch(signedInAs("org_admin", { flags: ["service_connections"] }));
+      renderAt("/settings/org/connector-apps");
+      expect(
+        await screen.findByText(
+          "Only whoever runs Switch, or an admin of its only organization, can open this page.",
+        ),
+      ).toBeTruthy();
+      cleanup();
+
+      mockFetch(signedInAs("org_admin", { flags: ["service_connections"] }));
+      renderAt("/settings/org/general");
+      expect(await menuLabels("Organization settings")).not.toContain("Connector apps");
     });
   });
 
@@ -891,25 +948,6 @@ describe("the layout", () => {
     });
   });
 
-  describe("in the Platform area", () => {
-    it("shows anyone but the operator its refusal in the workspace's own chrome", async () => {
-      mockFetch(signedInAs("org_admin"));
-      renderAt("/platform/users");
-      expect(await screen.findByText("Only the platform operator can open this page.")).toBeTruthy();
-      expect(screen.getByRole("navigation", { name: "Main" })).toBeTruthy();
-      expect(screen.queryByRole("link", { name: "Back to workspace" })).toBeNull();
-    });
-
-    it("hides the rail and leads back to the workspace, as it spans every one", async () => {
-      mockFetch({ ...signedInAs("operator"), "/users": [200, []] });
-      renderAt("/platform/users");
-      const back = await screen.findByRole("link", { name: "Back to workspace" });
-      expect(back.getAttribute("href")).toBe("/");
-      expect(await menuLabels("Platform")).toEqual(["All workspaces", "Users", "Connectors"]);
-      expect(screen.queryByRole("navigation", { name: "Main" })).toBeNull();
-      expect(screen.queryByRole("button", { name: /Acme Group/ })).toBeNull();
-    });
-  });
 });
 
 describe("renaming the workspace", () => {

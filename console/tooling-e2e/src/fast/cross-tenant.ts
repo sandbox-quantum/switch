@@ -8,9 +8,9 @@ import { isHtml } from './session-required.ts';
  * A check derived from the surface snapshot rather than written per route: a
  * member of one workspace is refused another workspace's resources.
  *
- * A second workspace is made with a room and an agent in it, by a second
- * deployment admin (an operator may create workspaces without a sign-up
- * allowance). Then a plain member of the first workspace calls every session
+ * A second workspace is made with a room and an agent in it, by someone who
+ * signed up and made an organization of their own. Then a plain member of
+ * the first workspace, who signed up too, calls every session
  * route whose path parameters all name something the second workspace has
  * (its id, the room, the agent, the agent's name) with the second workspace's
  * values, and no body.
@@ -26,8 +26,9 @@ import { isHtml } from './session-required.ts';
  *   not failed: a validation error answered before the tenant is checked is
  *   not a leak.
  *
- * Workspaces and users cannot be deleted, so this runs only on a stack that
- * is thrown away after the run. The room and the agent are removed.
+ * The two accounts and the second workspace are left behind, so this runs
+ * only on a stack that is thrown away after the run. The room and the agent
+ * are removed.
  */
 
 export interface CrossTenantProbe {
@@ -60,22 +61,19 @@ export async function otherTenantAndProber(
   fixtures: Fixtures
 ): Promise<{ other: OtherTenant; prober: SwitchClient }> {
   const password = `e2e-${names.runId}-${crypto.randomUUID()}`;
-  const ownerEmail = `${names.name('owner')}@e2e.invalid`;
-  const proberEmail = `${names.name('prober')}@e2e.invalid`;
-  await admin.createUser({
-    name: 'E2E workspace admin',
-    email: ownerEmail,
+  const { client: owner } = await admin.signUp({
+    email: `${names.name('owner')}@e2e.invalid`,
     password,
-    role: 'admin',
+    displayName: 'E2E workspace admin',
   });
-  const { client: prober } = await admin.createMember({
-    name: 'E2E prober',
-    email: proberEmail,
+  const { client: prober } = await admin.signUp({
+    email: `${names.name('prober')}@e2e.invalid`,
     password,
-    role: 'user',
+    displayName: 'E2E prober',
   });
-  const owner = admin.as(ownerEmail, password);
-  const tenantId = await owner.createTenant(names.name('space'));
+  const {
+    workspace: { id: tenantId },
+  } = await owner.createOrganization(names.name('space'));
   const agent = await owner.registerAgentAsUser({
     name: names.name('theirs'),
     description: `Switch end-to-end harness, another workspace's agent (run ${names.runId}).`,

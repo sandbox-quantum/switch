@@ -743,6 +743,24 @@ async def all_organization_ids(
     return await _call(session_factory, TENANT_LOOKUPS_BY_NAME["all_organization_ids"])
 
 
+# `all_organization_ids`, cut to two rows: enough to tell one organization
+# from several without reading every id of a deployment that has many.
+_FIRST_TWO_ORGANIZATIONS = text(
+    "SELECT organization_id FROM all_organization_ids() AS organization_id LIMIT 2"
+)
+
+
+async def only_organization_id(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> str | None:
+    """The deployment's organization when it has exactly one, else None.
+    Discloses no more than `all_organization_ids`, which it reads."""
+    with no_tenant():
+        async with session_factory() as session:
+            found = list((await session.execute(_FIRST_TWO_ORGANIZATIONS)).scalars())
+    return found[0] if len(found) == 1 else None
+
+
 async def tenants_of_user(
     session_factory: async_sessionmaker[AsyncSession], user_id: str
 ) -> list[str]:

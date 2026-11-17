@@ -145,7 +145,10 @@ stack and `just run` are up. It creates a test account per level on your
 local server (an org admin, a workspace admin and a member, with a random
 password) plus a second workspace that only the org admin can open, and saves
 their logins, with the gateway admin's from `.env` as the operator, to
-`gateway/.dev-role-accounts.json` (gitignored). It is safe to run again.
+`gateway/.dev-role-accounts.json` (gitignored). The accounts are made on the
+database directly, as `switch-accounts create` makes them, so it needs the
+same `.env` as `just run`; the roles are given through the running server. It
+is safe to run again.
 
 `just gateway-dev` then shows a **Role:** control at the right end of the top
 bar. Sign in once as anyone, such as the gateway admin from `.env`: the
@@ -221,9 +224,13 @@ just local-cloud-console # the Console, with Switch Cloud at http://localhost:80
 ```
 
 - **Sign-in** is by password. The gateway admin from `.env` works, and
-  `just local-cloud-user <email> "<name>" <password>` adds more accounts.
-  Every account made this way joins the admin's workspace; create another
-  workspace in the Console to invite people into, or to open to a domain.
+  `just local-cloud-user <email> "<name>"` adds more accounts with
+  `switch-accounts create`. It asks for the password twice on a terminal, or
+  reads it from a pipe or a file (`... < password.txt`), never from the
+  command line. An account made this way is in no workspace: invite it from
+  one (the invitation e-mail lands in Mailpit, below), or give it an address
+  at a domain a workspace is open to. Create a workspace in the Console to
+  invite people into, or to open to a domain.
 - **Invitation e-mails** are sent to Mailpit, which keeps them rather than
   delivering them: read them at `http://localhost:8025`. Their links point at
   `http://localhost:8000`, so pasting one into the Console's "Paste your

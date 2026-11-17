@@ -354,11 +354,11 @@ export type TelemetrySessionProvisionTrigger = Exclude<SessionProvisionTrigger, 
 
 /**
  * Which setting was changed. The keys of the app's settings, and nothing else,
- * less the two the app writes as it goes rather than a person setting them:
+ * less the one the app writes as it goes rather than a person setting it:
  * `telemetry`, which the first-run notice records the moment it is shown and
- * whose own answer is `telemetry_consent_changed`, and `onboarding`.
+ * whose own answer is `telemetry_consent_changed`.
  */
-export type TelemetrySettingKey = Exclude<AppSettingsKeyName, 'telemetry' | 'onboarding'>;
+export type TelemetrySettingKey = Exclude<AppSettingsKeyName, 'telemetry'>;
 
 /** How a search ended. The search's own union, reused rather than restated. */
 export type TelemetrySearchStatus = SearchStatus;

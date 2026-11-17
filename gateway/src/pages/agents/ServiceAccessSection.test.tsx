@@ -9,11 +9,14 @@ import {
   type ServiceGrants,
 } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
-import ServiceAccessSection from "./ServiceAccessSection";
+import ServiceAccessSection, { BY_COMMAND, BY_ORGANIZATION_ADMIN } from "./ServiceAccessSection";
 import { serviceConnection } from "../../test/serviceConnection";
 
 vi.mock("../../data/AuthContext", () => ({
-  useAuth: vi.fn(() => ({ isOperator: false })),
+  useAuth: vi.fn(() => ({
+    isOperator: false,
+    capabilities: { isOperator: false, canManageConnectorApps: false, connectorAppsInDashboard: null },
+  })),
 }));
 
 /** The section where it lives, inside the router its links need. */
@@ -408,22 +411,110 @@ describe("ServiceAccessSection", () => {
   const NOT_SET_UP =
     "Example is not set up here. Whoever runs Switch can set it up in Switch Console, under Settings → Connector apps.";
 
-  it("offers the operator Set up for a service waiting on its app, and nobody else", async () => {
-    const services = [
-      onOff("not_connected", { unavailable_reason: NOT_SET_UP, server_setup_needed: true }),
-    ];
-    mockServer(NONE, services);
-    renderSection(<ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />);
-    expect(await screen.findByText(NOT_SET_UP)).toBeTruthy();
-    expect(screen.queryByRole("link", { name: "Set up" })).toBeNull();
-    cleanup();
+  /** Signed in as someone who may or may not set up connector apps; put back
+   * to the default (a member) after. */
+  function viewer({
+    isOperator = false,
+    canManageConnectorApps = isOperator,
+    connectorAppsInDashboard = null,
+  }: {
+    isOperator?: boolean;
+    canManageConnectorApps?: boolean;
+    connectorAppsInDashboard?: boolean | null;
+  } = {}) {
+    vi.mocked(useAuth).mockReturnValue({
+      isOperator,
+      capabilities: { isOperator, canManageConnectorApps, connectorAppsInDashboard },
+    } as ReturnType<typeof useAuth>);
+  }
 
-    vi.mocked(useAuth).mockReturnValue({ isOperator: true } as ReturnType<typeof useAuth>);
-    mockServer(NONE, services);
+  function renderWaiting() {
     renderSection(<ServiceAccessSection agent={agent} canGrant onAgentUpdated={vi.fn()} />);
-    const setUp = await screen.findByRole("link", { name: "Set up" });
-    expect(setUp.getAttribute("href")).toBe("/platform/connectors");
-    vi.mocked(useAuth).mockReturnValue({ isOperator: false } as ReturnType<typeof useAuth>);
+  }
+
+  // What a server that does not say whether the apps are set up in the
+  // dashboard (`connector_apps_in_dashboard`) gets, as before it could.
+  const WHO_SETS_UP = BY_COMMAND;
+  const WAITING = [onOff("not_connected", { unavailable_reason: NOT_SET_UP, server_setup_needed: true })];
+
+  it("offers Set up for a service waiting on its app to whoever may set up connector apps", async () => {
+    try {
+      for (const who of [{ isOperator: true }, { canManageConnectorApps: true }]) {
+        viewer(who);
+        mockServer(NONE, WAITING);
+        renderWaiting();
+        const setUp = await screen.findByRole("link", { name: "Set up" });
+        expect(setUp.getAttribute("href")).toBe("/settings/org/connector-apps");
+        expect(screen.queryByText(WHO_SETS_UP)).toBeNull();
+        cleanup();
+      }
+    } finally {
+      viewer();
+    }
+  });
+
+  it("tells anyone else how the app is set up, with no link", async () => {
+    mockServer(NONE, WAITING);
+    renderWaiting();
+    expect(await screen.findByText(NOT_SET_UP)).toBeTruthy();
+    expect(screen.getByText(WHO_SETS_UP)).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "Set up" })).toBeNull();
+  });
+
+  it("tells anyone else who sets it up: their organization's admin with one organization, the command with several", async () => {
+    try {
+      viewer({ connectorAppsInDashboard: true });
+      mockServer(NONE, WAITING);
+      renderWaiting();
+      expect(await screen.findByText(NOT_SET_UP)).toBeTruthy();
+      expect(screen.getByText(BY_ORGANIZATION_ADMIN)).toBeTruthy();
+      expect(screen.queryByText(BY_COMMAND)).toBeNull();
+      expect(screen.queryByRole("link", { name: "Set up" })).toBeNull();
+      cleanup();
+
+      viewer({ connectorAppsInDashboard: false });
+      mockServer(NONE, WAITING);
+      renderWaiting();
+      expect(await screen.findByText(BY_COMMAND)).toBeTruthy();
+      expect(screen.queryByText(BY_ORGANIZATION_ADMIN)).toBeNull();
+    } finally {
+      viewer();
+    }
+  });
+
+  it("says nothing of setting up a service that is not waiting on its app", async () => {
+    mockServer(NONE, [onOff("active", { unavailable_reason: "Coming here soon." })]);
+    renderWaiting();
+    expect(await screen.findByText("Coming here soon.")).toBeTruthy();
+    expect(screen.queryByText(WHO_SETS_UP)).toBeNull();
+  });
+
+  it("tells someone who may not set it up how GitHub's app is set up, where GitHub's form would be", async () => {
+    const reason = "GitHub's connector app isn't set up yet. Whoever runs Switch can set it up.";
+    const github = [
+      onOff("not_connected", {
+        slug: "github",
+        name: "GitHub",
+        pass_through: false,
+        unavailable_reason: reason,
+        server_setup_needed: true,
+      }),
+    ];
+    try {
+      mockServer(NONE, github);
+      renderWaiting();
+      expect(await screen.findByText(reason)).toBeTruthy();
+      expect(screen.getByText(WHO_SETS_UP)).toBeTruthy();
+      cleanup();
+
+      viewer({ canManageConnectorApps: true });
+      mockServer(NONE, github);
+      renderWaiting();
+      const setUp = await screen.findByRole("link", { name: "Set up" });
+      expect(setUp.getAttribute("href")).toBe("/settings/org/connector-apps");
+    } finally {
+      viewer();
+    }
   });
 
   it("keeps what an agent was granted removable where it may be granted nothing more", async () => {

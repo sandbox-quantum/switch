@@ -92,7 +92,6 @@ export default function ServiceAccessSection({
   const [notice, setNotice] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const [busy, setBusy] = useState(false);
-  const { isOperator } = useAuth();
 
   // Whether the grants could be read: they cannot for someone else's agent,
   // whose grants are its owner's business, and the section then hides.
@@ -258,7 +257,6 @@ export default function ServiceAccessSection({
               agentName={agent.name}
               busy={busy}
               canTurnOn={canGrant}
-              canSetUp={isOperator}
               onTurnOn={() =>
                 void act(() => setServiceGrant(agent.id, service.slug, { access: null, resources: {} }))
               }
@@ -269,7 +267,7 @@ export default function ServiceAccessSection({
         {grants && canGrant && githubBlocked !== null && (
           <Typography variant="body2" color="text.secondary">
             {githubBlocked}
-            {isOperator && githubService?.server_setup_needed && <SetUpLink />}
+            {githubService?.server_setup_needed && <SetUp />}
           </Typography>
         )}
         {grants && canGrant && githubBlocked === null && (editing || !githubGrant) && (
@@ -346,11 +344,33 @@ export function readOnlyReasonFor(
   return services.find((service) => service.slug === slug)?.read_only_reason ?? null;
 }
 
-/** The operator's way from a service that is not set up to where it is set
- * up: their server-wide connector apps, under Platform. */
-function SetUpLink() {
+export const BY_COMMAND = "It's set up with the switch-connector-apps command, where Switch runs.";
+
+/** Whom to ask, on a deployment whose connector apps its organization's
+ * admins set up in the dashboard. */
+export const BY_ORGANIZATION_ADMIN =
+  "An admin of your organization sets it up in Organization settings › Connector apps.";
+
+/** What to do about a service that waits on its connector app: whoever may
+ * set up the deployment's connector apps is led to them, in Organization
+ * settings. Anyone else is told who sets it up, after the server's own
+ * reason: an admin of their organization while it is the deployment's only
+ * one, or else, as on a server that does not say which, whoever runs Switch,
+ * with its command. */
+function SetUp() {
+  const { capabilities } = useAuth();
+  if (capabilities.canManageConnectorApps) return <SetUpLink to="/settings/org/connector-apps" />;
   return (
-    <Button component={RouterLink} to="/platform/connectors" size="small" sx={{ ml: 1 }}>
+    <>
+      {" "}
+      <span>{capabilities.connectorAppsInDashboard ? BY_ORGANIZATION_ADMIN : BY_COMMAND}</span>
+    </>
+  );
+}
+
+function SetUpLink({ to }: { to: string }) {
+  return (
+    <Button component={RouterLink} to={to} size="small" sx={{ ml: 1 }}>
       Set up
     </Button>
   );
@@ -383,7 +403,6 @@ function OnOffGrant({
   agentName,
   busy,
   canTurnOn,
-  canSetUp,
   onTurnOn,
   onTurnOff,
 }: {
@@ -392,7 +411,6 @@ function OnOffGrant({
   agentName: string;
   busy: boolean;
   canTurnOn: boolean;
-  canSetUp: boolean;
   onTurnOn: () => void;
   onTurnOff: () => void;
 }) {
@@ -429,7 +447,7 @@ function OnOffGrant({
       {blocked && (
         <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
           {blocked}
-          {canSetUp && service.server_setup_needed && <SetUpLink />}
+          {service.server_setup_needed && <SetUp />}
         </Typography>
       )}
       {!grant && !connected && !blocked && (

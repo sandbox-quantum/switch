@@ -16,6 +16,7 @@ from switch_core.deeplinks import (
     parse_console_link,
     rewrite_console_links,
     switchdash_to_gateway,
+    url_host_address,
 )
 
 _DEEPLINK = "switchdash://session?server=https%3A%2F%2Fs&agent=a&room=r&session=x"
@@ -100,6 +101,12 @@ class TestGatewayUrlIsLoopback:
             "http://127.0.0.1:54212",
             "http://127.1.2.3",
             "http://[::1]:8000",
+            "http://127.1",
+            "http://127.1.:8000",
+            "http://0x7f.1",
+            "http://2130706433",
+            "http://127.0.0.1.",
+            "http://[::ffff:127.0.0.1]:8000",
         ],
     )
     def test_an_origin_only_this_machine_can_reach_is_loopback(self, url: str) -> None:
@@ -113,10 +120,44 @@ class TestGatewayUrlIsLoopback:
             "http://10.0.0.1:8000",
             "http://0.0.0.0:8000",
             "https://[2001:db8::1]",
+            "http://10.1",
+            "http://0",
+            "http://0.0.0.0.",
+            "http://[::ffff:10.0.0.1]",
+            "https://cafe.example",
+            "https://127.example",
         ],
     )
     def test_an_origin_someone_else_could_reach_is_not(self, url: str) -> None:
         assert gateway_url_is_loopback(url) is False
+
+
+@pytest.mark.parametrize(
+    ("url", "address"),
+    [
+        ("http://127.0.0.1:8000", "127.0.0.1"),
+        ("http://127.1", "127.0.0.1"),
+        ("http://127.1.", "127.0.0.1"),
+        ("http://0", "0.0.0.0"),
+        ("http://0.0.0.0.:8000", "0.0.0.0"),
+        ("http://0x7f.0.0.1", "127.0.0.1"),
+        ("http://017700000001", "127.0.0.1"),
+        ("http://[::1]", "::1"),
+        ("http://[::]:8000", "::"),
+        ("http://[::ffff:127.0.0.1]", "127.0.0.1"),
+        ("http://[::ffff:0.0.0.0]", "0.0.0.0"),
+        ("http://localhost", None),
+        ("https://gw.example", None),
+        ("https://cafe", None),
+        ("https://1.2.3.4.5", None),
+        ("file:///tmp/x", None),
+    ],
+)
+def test_a_url_host_is_read_as_the_operating_system_reads_it(
+    url: str, address: str | None
+) -> None:
+    found = url_host_address(url)
+    assert (None if found is None else str(found)) == address
 
 
 class TestGatewayUrlWarning:

@@ -33,7 +33,6 @@ import {
   type RoomGroupDetail,
   type RoomSummary,
   type TemplateSummary,
-  type ListedUser,
   fetchAgent,
   fetchAgents,
   fetchRoomAgentCandidates,
@@ -72,7 +71,6 @@ import {
   fetchRooms,
   fetchTemplates,
   type TemplateFilter,
-  fetchUsers,
   type LinkedIdentity,
 } from "./api";
 
@@ -249,10 +247,6 @@ export function useConnectorApps(scope: ConnectorAppScope): UseQueryResult<Conne
   }, [scope, tick]);
 
   return { data, loading, error, errorStatus, refetch };
-}
-
-export function useUsers(): UseQueryResult<ListedUser[]> {
-  return useQuery(fetchUsers);
 }
 
 export function useReferences(): UseQueryResult<ReferenceDetail[]> {

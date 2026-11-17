@@ -1,6 +1,7 @@
-"""The operator's connector-app routes, against Postgres and fake vendors.
+"""The deployment's connector-app routes, against Postgres and fake vendors.
 
-Only the server's operator reaches them; a save is checked with the vendor
+Only the server's operator reaches them, and the admins of its only
+organization while it has one; a save is checked with the vendor
 and stored only when the vendor accepts it; it is in use at once; and no
 secret leaves in a response, an audit row or a log line beyond its last four
 characters.
@@ -35,13 +36,16 @@ from switch_core.connections.loader import CATALOG, Connection
 from switch_core.connections.registry import ClientRegistration, build_adapters
 from switch_core.connections.sign_in_flows import SignInFlows
 from switch_core.db.models import (
+    TENANT_ZERO_ID,
+    Organization,
+    OrganizationMember,
     ServerAuditEvent,
     ServiceAppCredential,
     Tenant,
     TenantMember,
     User,
 )
-from switch_core.db.session_scope import tenant_session
+from switch_core.db.session_scope import organization_session, tenant_session
 from switch_core.db.stores.service_app_credential_store import (
     ServiceAppCredentialStore,
 )
@@ -355,6 +359,76 @@ async def local_world(session_factory) -> World:
 @pytest.fixture
 async def operator(session_factory) -> User:
     return await _user(session_factory, "operator", role="admin")
+
+
+async def _org_admin(session_factory: async_sessionmaker[AsyncSession]) -> User:
+    """An `org_admin` of the default workspace's organization, the only one
+    the test database starts with, and a plain member of the workspace."""
+    user = await _user(session_factory, "org-admin")
+    async with organization_session(session_factory, TENANT_ZERO_ID) as session:
+        session.add(
+            OrganizationMember(
+                organization_id=TENANT_ZERO_ID, user_id=user.id, role="org_admin"
+            )
+        )
+        await session.commit()
+    return user
+
+
+class TestTheOnlyOrganizationsAdmins:
+    """On a deployment with one organization, its `org_admin`s manage the
+    deployment's apps, asked again on every request: once a second
+    organization exists, they are refused at once."""
+
+    async def test_they_read_and_save_and_the_audit_log_says_how(
+        self, world: World, session_factory
+    ) -> None:
+        await world.install()
+        admin = await _org_admin(session_factory)
+        async with world.harness.client() as client:
+            cookies = cookies_for(admin)
+            listed = await client.get(APPS, cookies=cookies)
+            saved = await client.put(
+                f"{APPS}/{GOOGLE}", json=_google_body(), cookies=cookies
+            )
+        assert listed.status_code == 200, listed.text
+        assert saved.status_code == 200, saved.text
+        [event] = await _audit(session_factory)
+        assert event.action == "connector_app.saved"
+        assert event.actor_user_id == admin.id
+        assert event.details is not None
+        assert event.details["as_admin_of_only_organization"] == TENANT_ZERO_ID
+
+    async def test_a_second_organization_refuses_them_on_every_route(
+        self, world: World, session_factory
+    ) -> None:
+        await world.install()
+        admin = await _org_admin(session_factory)
+        async with world.harness.client() as client:
+            cookies = cookies_for(admin)
+            before = await client.get(APPS, cookies=cookies)
+            async with organization_session(session_factory, "org-second") as session:
+                session.add(
+                    Organization(id="org-second", slug="org-second", name="Second")
+                )
+                await session.commit()
+            answers = [
+                await client.get(APPS, cookies=cookies),
+                await client.put(
+                    f"{APPS}/{GOOGLE}", json=_google_body(), cookies=cookies
+                ),
+                await client.post(f"{APPS}/{GOOGLE}/import", cookies=cookies),
+                await client.post(f"{APPS}/{GOOGLE}/check", cookies=cookies),
+                await client.get(
+                    f"{APPS}/{GOOGLE}/impact",
+                    params={"client_id": "x"},
+                    cookies=cookies,
+                ),
+                await client.delete(f"{APPS}/{GOOGLE}", cookies=cookies),
+            ]
+        assert before.status_code == 200, before.text
+        assert [answer.status_code for answer in answers] == [403] * 6
+        assert await _rows(session_factory) == []
 
 
 class TestOnlyTheOperator:

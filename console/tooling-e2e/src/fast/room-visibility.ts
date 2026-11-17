@@ -75,20 +75,10 @@ export const privateChannelRooms: FastScenario = {
       stopped: null,
     });
 
-    const password = `e2e-${names.runId}-${crypto.randomUUID()}`;
-    const memberName = names.name("onlooker");
-    const email = `${memberName}@e2e.invalid`;
-    const { id, client: member } = await switchClient.createMember({
-      name: memberName,
-      email,
-      password,
-      role: "user",
-    });
-    fixtures.defer(`the account ${email}`, async () => {
-      const [code, detail] = await status(() => switchClient.deleteUser(id));
-      if (code !== 200 && code !== 404) throw new Error(`${code}: ${detail}`);
-    });
-    const [memberLooks] = await status(() => member.previewPrivateChannelRooms(workspace));
+    const member = await fixtures.account("onlooker");
+    const [memberLooks] = await status(() =>
+      member.client.previewPrivateChannelRooms(workspace),
+    );
     expect(memberLooks, "a plain member opening the review").toBe(403);
 
     const result = await switchClient.makeRoomsPrivate(workspace, [room.id, "no-such-room"]);

@@ -19,6 +19,7 @@ import { useCallback, useMemo, useState } from "react";
 import ConfirmDialog from "../../../components/ConfirmDialog";
 import DataTable, { type TableColumn, TableEmptyState } from "../../../components/DataTable";
 import InfoTip from "../../../components/InfoTip";
+import PageHeader from "../../../components/PageHeader";
 import RowActionsMenu, { type RowAction } from "../../../components/RowActionsMenu";
 import SuccessSnackbar from "../../../components/SuccessSnackbar";
 import { useAuth } from "../../../data/AuthContext";
@@ -350,14 +351,11 @@ export default function OrganizationUsersSettings({
 
   return (
     <Box>
-      <Stack
-        direction="row"
-        spacing={2}
-        sx={{ alignItems: "flex-start", justifyContent: "space-between", mb: 3 }}
-      >
-        <Stack spacing={0.5}>
-          <Typography variant="h5">Users</Typography>
-          <Stack direction="row" spacing={0.5} sx={{ alignItems: "center" }}>
+      <PageHeader
+        sx={{ mb: 3 }}
+        title={<Typography variant="h5">Users</Typography>}
+        description={
+          <Stack direction="row" spacing={0.5} sx={{ alignItems: "center", mt: 0.5 }}>
             <Typography variant="body2" color="text.secondary">
               Everyone in {organization.name}. Someone is removed from each workspace before they can
               be removed from the organization.
@@ -367,23 +365,25 @@ export default function OrganizationUsersSettings({
               workspace through the organization, so each workspace's user count includes them.
             </InfoTip>
           </Stack>
-        </Stack>
-        {organization.administers && (
-          <Tooltip title={noOpenWorkspace ?? ""}>
-            {/* A disabled button fires no events, so the tooltip listens on this. */}
-            <Box component="span" sx={{ flexShrink: 0 }}>
-              <Button
-                variant="contained"
-                startIcon={<Add />}
-                onClick={() => setInviting("pick")}
-                disabled={noOpenWorkspace !== null}
-              >
-                Invite users
-              </Button>
-            </Box>
-          </Tooltip>
-        )}
-      </Stack>
+        }
+        actions={
+          organization.administers && (
+            <Tooltip title={noOpenWorkspace ?? ""}>
+              {/* A disabled button fires no events, so the tooltip listens on this. */}
+              <Box component="span">
+                <Button
+                  variant="contained"
+                  startIcon={<Add />}
+                  onClick={() => setInviting("pick")}
+                  disabled={noOpenWorkspace !== null}
+                >
+                  Invite users
+                </Button>
+              </Box>
+            </Tooltip>
+          )
+        }
+      />
       <Stack spacing={1.5} sx={{ mb: 3 }}>
         <OrganizationUsersNotices
           asOperator={asOperator}
