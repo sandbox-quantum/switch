@@ -17,6 +17,9 @@ import {
   withoutManaged,
 } from '@renderer/features/managed-agents/use-managed-agents';
 import { refreshSidebarRoomState } from '@renderer/features/sidebar/sidebar-tree-data';
+import { expectedBuddyName } from '@renderer/features/switch-buddy/buddy-identity';
+import { useBuddyPending } from '@renderer/features/switch-buddy/buddy-pending';
+import { buddyPerson } from '@renderer/features/switch-buddy/buddy-person';
 import { AgentConnectionIndicator } from '@renderer/features/switch-rooms/connection-health';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { failureText } from '@renderer/lib/errors/describe-failure';
@@ -36,6 +39,7 @@ import {
 } from '@renderer/lib/ui/dropdown-menu';
 import { SearchInput } from '@renderer/lib/ui/search-input';
 import type { Agent } from '@shared/core/agents/agents';
+import { BUDDY_ICON_URL } from '@shared/core/agents/switch-buddy';
 import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
 import { providerDisplayName } from '@shared/core/providers/agent-provider-registry';
 import { homeRedirect } from './home-target';
@@ -68,13 +72,16 @@ const ServerAgentsPanel = observer(function ServerAgentsPanel() {
 
   const machines = useCloudMachines(serverId);
   const managed = useManagedAgents(serverId);
+  const buddyPending = useBuddyPending(serverId);
+  const buddyName = expectedBuddyName(buddyPerson(serverId));
   const [filter, setFilter] = useState('');
   const allAgents = withoutManaged(agentsStore.agentsOnServer(serverId), managed.data);
   const agents = allAgents.filter((agent) => matchesNameFilter([agent.name], filter));
   const managedAgents = (managed.data ?? []).filter((agent) =>
     matchesNameFilter([managedAgentLabel(agent), agent.name], filter)
   );
-  const any = allAgents.length > 0 || (managed.data?.length ?? 0) > 0;
+  const showBuddy = buddyPending && matchesNameFilter([buddyName], filter);
+  const any = buddyPending || allAgents.length > 0 || (managed.data?.length ?? 0) > 0;
 
   return (
     <ServerPage
@@ -110,7 +117,7 @@ const ServerAgentsPanel = observer(function ServerAgentsPanel() {
           aria-label="Filter agents by name"
         />
       )}
-      {any && agents.length === 0 && managedAgents.length === 0 && (
+      {any && !showBuddy && agents.length === 0 && managedAgents.length === 0 && (
         <p className="mb-3 py-2 text-sm text-foreground-muted">
           No agent here matches “{filter.trim()}”.
         </p>
@@ -124,6 +131,7 @@ const ServerAgentsPanel = observer(function ServerAgentsPanel() {
         >
           <Plus className="size-5" />
         </button>
+        {showBuddy && <PendingBuddyCard serverId={serverId} name={buddyName} />}
         {agents.map((agent) => (
           <AgentCard key={agent.id} agent={agent} serverId={serverId} />
         ))}
@@ -139,6 +147,25 @@ const ServerAgentsPanel = observer(function ServerAgentsPanel() {
     </ServerPage>
   );
 });
+
+/** A setup entry for switch-buddy, matching the sidebar before the agent exists. */
+function PendingBuddyCard({ serverId, name }: { serverId: string; name: string }) {
+  const { navigate } = useNavigate();
+  return (
+    <button
+      type="button"
+      aria-label={`Set up ${name}`}
+      onClick={() => navigate('switchBuddy', { serverId })}
+      className="focus-visible:ring-ring flex min-h-[184px] cursor-pointer flex-col rounded-[11px] bg-[var(--surface-2)] p-[14px] text-left transition-colors hover:bg-[var(--fill)] focus-visible:ring-2 focus-visible:outline-none"
+    >
+      <div className="flex flex-1 items-center justify-center py-3">
+        <AgentAvatar name={name} iconUrl={BUDDY_ICON_URL} serverId={serverId} size={66} />
+      </div>
+      <div className="w-full truncate text-sm font-medium text-foreground">{name}</div>
+      <div className="text-xs text-foreground-muted">Connect an AI provider</div>
+    </button>
+  );
+}
 
 /** A managed agent Console has no row for, as its server lists it. */
 function ManagedAgentCard({ agent }: { agent: ManagedAgentView }) {

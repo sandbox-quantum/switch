@@ -119,6 +119,7 @@ const PendingBuddyRow = observer(function PendingBuddyRow({ serverId }: { server
     >
       <BuddyAvatar size={20} shape="round" />
       <span className="min-w-0 flex-1 truncate">{name}</span>
+      <span className="shrink-0 text-xs text-foreground-muted">Set up</span>
     </SidebarMenuRow>
   );
 });
