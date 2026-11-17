@@ -102,7 +102,7 @@ const {
   fetchTenants,
   fetchWorkspaceCreation,
   fetchInviteEmailEnabled,
-  fetchCanManageConnectorApps,
+  fetchConnectorAppManagement,
   createRoom,
   deleteBridge,
   deleteRoom,
@@ -3739,23 +3739,54 @@ describe('workspace invitations', () => {
     await expect(fetchWorkspaceCreation(SERVER)).rejects.toThrow(/can_add_workspace/);
   });
 
-  it('reads whether the account may set up connector apps, and null where the server does not say', async () => {
-    fetchMock.mockResolvedValue(jsonResponse({ can_manage_connector_apps: true }) as never);
-    await expect(fetchCanManageConnectorApps(SERVER)).resolves.toBe(true);
-    fetchMock.mockResolvedValue(jsonResponse({ can_manage_connector_apps: false }) as never);
-    await expect(fetchCanManageConnectorApps(SERVER)).resolves.toBe(false);
+  it('reads who sets up connector apps, and null where the server does not say', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({ can_manage_connector_apps: true, connector_apps_in_dashboard: true }) as never
+    );
+    await expect(fetchConnectorAppManagement(SERVER)).resolves.toEqual({
+      canManage: true,
+      inDashboard: true,
+    });
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        can_manage_connector_apps: false,
+        connector_apps_in_dashboard: false,
+      }) as never
+    );
+    await expect(fetchConnectorAppManagement(SERVER)).resolves.toEqual({
+      canManage: false,
+      inDashboard: false,
+    });
 
+    // A server from before it said whether the apps are set up in the dashboard.
+    fetchMock.mockResolvedValue(jsonResponse({ can_manage_connector_apps: false }) as never);
+    await expect(fetchConnectorAppManagement(SERVER)).resolves.toEqual({
+      canManage: false,
+      inDashboard: null,
+    });
     fetchMock.mockResolvedValue(jsonResponse({ state: 'ready' }) as never);
-    await expect(fetchCanManageConnectorApps(SERVER)).resolves.toBeNull();
+    await expect(fetchConnectorAppManagement(SERVER)).resolves.toEqual({
+      canManage: null,
+      inDashboard: null,
+    });
     fetchMock.mockResolvedValue(errorResponse(404, '{"detail":"Not Found"}') as never);
-    await expect(fetchCanManageConnectorApps(SERVER)).resolves.toBeNull();
+    await expect(fetchConnectorAppManagement(SERVER)).resolves.toEqual({
+      canManage: null,
+      inDashboard: null,
+    });
   });
 
   it('refuses an unreadable answer about setting up connector apps, and a failed read', async () => {
     fetchMock.mockResolvedValue(jsonResponse({ can_manage_connector_apps: 'yes' }) as never);
-    await expect(fetchCanManageConnectorApps(SERVER)).rejects.toThrow(/can_manage_connector_apps/);
+    await expect(fetchConnectorAppManagement(SERVER)).rejects.toThrow(/can_manage_connector_apps/);
+    fetchMock.mockResolvedValue(
+      jsonResponse({ can_manage_connector_apps: false, connector_apps_in_dashboard: 1 }) as never
+    );
+    await expect(fetchConnectorAppManagement(SERVER)).rejects.toThrow(
+      /connector_apps_in_dashboard/
+    );
     fetchMock.mockResolvedValue(errorResponse(500, '{"detail":"boom"}') as never);
-    await expect(fetchCanManageConnectorApps(SERVER)).rejects.toThrow();
+    await expect(fetchConnectorAppManagement(SERVER)).rejects.toThrow();
   });
 
   it('keeps the link when an older server says nothing about the e-mail', async () => {

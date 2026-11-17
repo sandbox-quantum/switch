@@ -42,7 +42,7 @@ import {
   connectorsPageAccess,
 } from './connectors-catalog';
 import {
-  useCanManageConnectorApps,
+  useConnectorAppManagement,
   useConnectorCatalog,
   useReloadConnectors,
   useServerFeatureFlags,
@@ -130,10 +130,10 @@ type Person = Omit<ConnectorViewer, 'appSetUp'>;
  * profile opened because the service was just connected is this page's own
  * business, kept here and dropped as soon as the person moves on.
  *
- * Where the dashboard is in the new layout, the server is asked who may set
- * up its connector apps, and the catalog waits for the answer rather than
- * offering Set up to the wrong people meanwhile. An answer that cannot be
- * read leaves Set up to the operator alone, as on a server that does not
+ * Where the server serves the dashboard, in either layout, it is asked who
+ * sets up its connector apps, and the catalog waits for the answer rather
+ * than offering Set up to the wrong people meanwhile. An answer that cannot
+ * be read leaves Set up to the operator alone, as on a server that does not
  * say, and the page says so wherever an app is waiting to be set up.
  */
 function Connectors({
@@ -151,19 +151,20 @@ function Connectors({
   gatewayV2: boolean;
 }) {
   const catalog = useConnectorCatalog(workspaceId);
-  const canManage = useCanManageConnectorApps(workspaceId, servesDashboard && gatewayV2);
+  const management = useConnectorAppManagement(workspaceId, servesDashboard);
   const viewer: ConnectorViewer = {
     ...person,
     appSetUp: connectorAppSetUp({
       operator: person.operator,
       servesDashboard,
       gatewayV2,
-      canManage: canManage.data ?? null,
+      canManage: management.data?.canManage ?? null,
+      inDashboard: management.data?.inDashboard ?? null,
     }),
   };
-  const entries = canManage.isLoading ? undefined : catalog.data;
-  const setUpUnchecked = canManage.isError ? (
-    <AppSetUpUnchecked error={canManage.error} onRetry={() => void canManage.refetch()} />
+  const entries = management.isLoading ? undefined : catalog.data;
+  const setUpUnchecked = management.isError ? (
+    <AppSetUpUnchecked error={management.error} onRetry={() => void management.refetch()} />
   ) : null;
   const [tab, setTab] = useState<ConnectorsTab>('discover');
   const [query, setQuery] = useState('');

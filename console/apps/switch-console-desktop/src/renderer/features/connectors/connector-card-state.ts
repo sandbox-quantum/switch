@@ -25,41 +25,64 @@ export type ConnectorViewer = {
 
 /**
  * Who sets up a connector's app. `viewer`: the person looking, in Console's
- * Admin › Apps or on a dashboard page. `operator`: whoever runs the server.
- * `command`: whoever runs the server, with its command, because the server
- * said the person looking may not.
+ * Admin › Apps or on a dashboard page. `organization-admin`: an admin of
+ * their organization, on that dashboard page, because the server said the
+ * person looking may not and its one organization's admins set the apps up.
+ * `operator`: whoever runs the server. `command`: whoever runs the server,
+ * with its command, because the server said the person looking may not and
+ * the apps are not set up in its dashboard.
  */
 export type ConnectorAppSetUp =
   | { by: 'viewer'; at: 'admin' | ConnectorAppsPage }
+  | { by: 'organization-admin'; at: AnsweredAppsPage }
   | { by: 'operator' }
   | { by: 'command' };
 
+/** The dashboard pages for connector apps on a server that says who sets them up. */
+type AnsweredAppsPage = Exclude<ConnectorAppsPage, 'platform'>;
+
 /**
- * {@link ConnectorAppSetUp} for the person looking. A server whose dashboard
- * is in the new layout says who may (`canManage`): its operator, or the admin
- * of its one organization. Where it does not say, or the question does not
- * arise (no dashboard, which leaves Admin › Apps, or the old layout), only
- * the operator may.
+ * {@link ConnectorAppSetUp} for the person looking. A server with a
+ * dashboard says who may (`canManage`): its operator, or the admin of its one
+ * organization, in either layout of the dashboard. To anyone else it says
+ * whether its organization's admins set the apps up in the dashboard
+ * (`inDashboard`) or the operator does with the command. Where it does not
+ * say, or there is no dashboard (which leaves Admin › Apps), only the
+ * operator may, and anyone else is told what they were before the server
+ * could say.
  */
 export function connectorAppSetUp({
   operator,
   servesDashboard,
   gatewayV2,
   canManage,
+  inDashboard,
 }: {
   operator: boolean;
   servesDashboard: boolean;
   gatewayV2: boolean;
   /** The server's `can_manage_connector_apps`; null where it does not say. */
   canManage: boolean | null;
+  /** The server's `connector_apps_in_dashboard`; null where it does not say. */
+  inDashboard: boolean | null;
 }): ConnectorAppSetUp {
   const operatorOnly = (at: 'admin' | ConnectorAppsPage): ConnectorAppSetUp =>
     operator ? { by: 'viewer', at } : { by: 'operator' };
   if (!servesDashboard) return operatorOnly('admin');
-  if (!gatewayV2) return operatorOnly('old-layout');
-  if (canManage === null) return operatorOnly('platform');
-  return canManage ? { by: 'viewer', at: 'organization-settings' } : { by: 'command' };
+  if (canManage === null) return operatorOnly(gatewayV2 ? 'platform' : 'old-layout');
+  const at: AnsweredAppsPage = gatewayV2 ? 'organization-settings' : 'old-layout';
+  if (canManage) return { by: 'viewer', at };
+  if (inDashboard === true) return { by: 'organization-admin', at };
+  if (inDashboard === false) return { by: 'command' };
+  return gatewayV2 ? { by: 'command' } : { by: 'operator' };
 }
+
+/** Where an organization's admin sets the apps up, in words for the person sent to them. */
+const ORGANIZATION_ADMIN_SETS_UP = {
+  'organization-settings':
+    'An admin of your organization sets it up in Organization settings › Connector apps.',
+  'old-layout': 'An admin of your organization sets it up in the dashboard, under Connectors.',
+} as const satisfies Record<AnsweredAppsPage, string>;
 
 /** The one fix a card or profile offers: set the app up, or turn it on for the workspace. */
 export type ConnectorFix = 'set_up' | 'turn_on';
@@ -93,6 +116,14 @@ function appNotSetUpState(
         detail: `Set up its app once, and everyone on this server can connect ${entry.name}.`,
         tone: 'muted',
         fix: 'set_up',
+      };
+    case 'organization-admin':
+      return {
+        kind: 'unavailable',
+        label: 'Unavailable',
+        detail: ORGANIZATION_ADMIN_SETS_UP[setUp.at],
+        tone: 'muted',
+        fix: null,
       };
     case 'command':
       return {

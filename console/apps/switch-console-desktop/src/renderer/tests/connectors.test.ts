@@ -266,6 +266,19 @@ describe('what each person is told about a connector that cannot be used', () =>
     });
   });
 
+  it("sends anyone who may not set it up to their organization's admin, where its admins do", () => {
+    const where = {
+      'organization-settings':
+        'An admin of your organization sets it up in Organization settings › Connector apps.',
+      'old-layout': 'An admin of your organization sets it up in the dashboard, under Connectors.',
+    } as const;
+    for (const viewer of [ADMIN, MEMBER])
+      for (const [at, detail] of Object.entries(where) as [keyof typeof where, string][])
+        expect(
+          connectorCardState(notSetUp, { ...viewer, appSetUp: { by: 'organization-admin', at } })
+        ).toEqual({ kind: 'unavailable', label: 'Unavailable', detail, tone: 'muted', fix: null });
+  });
+
   it('names the command to anyone the server says may not set it up on the web', () => {
     for (const viewer of [ADMIN, MEMBER])
       expect(connectorCardState(notSetUp, { ...viewer, appSetUp: { by: 'command' } })).toEqual({
@@ -404,31 +417,66 @@ describe('who sets up a connector app, and where', () => {
     operator: boolean,
     servesDashboard: boolean,
     gatewayV2: boolean,
-    canManage: boolean | null
-  ) => connectorAppSetUp({ operator, servesDashboard, gatewayV2, canManage });
+    canManage: boolean | null,
+    inDashboard: boolean | null = null
+  ) => connectorAppSetUp({ operator, servesDashboard, gatewayV2, canManage, inDashboard });
 
-  it("lets the server's answer decide in the dashboard's new layout", () => {
+  it("lets the server's answer decide, in either layout of the dashboard", () => {
     for (const operator of [true, false]) {
-      expect(setUp(operator, true, true, true)).toEqual({
-        by: 'viewer',
-        at: 'organization-settings',
-      });
-      expect(setUp(operator, true, true, false)).toEqual({ by: 'command' });
+      for (const inDashboard of [true, false, null]) {
+        expect(setUp(operator, true, true, true, inDashboard)).toEqual({
+          by: 'viewer',
+          at: 'organization-settings',
+        });
+        expect(setUp(operator, true, false, true, inDashboard)).toEqual({
+          by: 'viewer',
+          at: 'old-layout',
+        });
+      }
     }
   });
 
-  it('leaves it to the operator, under Platform, on a server that does not say', () => {
-    expect(setUp(true, true, true, null)).toEqual({ by: 'viewer', at: 'platform' });
-    expect(setUp(false, true, true, null)).toEqual({ by: 'operator' });
+  it("sends anyone else to their organization's admin on a one-organization server", () => {
+    expect(setUp(false, true, true, false, true)).toEqual({
+      by: 'organization-admin',
+      at: 'organization-settings',
+    });
+    expect(setUp(false, true, false, false, true)).toEqual({
+      by: 'organization-admin',
+      at: 'old-layout',
+    });
   });
 
-  it("leaves it to the operator in the dashboard's old layout, and in Admin without a dashboard", () => {
+  it('names the command to anyone else on a server with several organizations', () => {
+    for (const gatewayV2 of [true, false]) {
+      expect(setUp(false, true, gatewayV2, false, false)).toEqual({ by: 'command' });
+    }
+  });
+
+  it('says what it said before to anyone else on a server that does not say where', () => {
+    expect(setUp(false, true, true, false, null)).toEqual({ by: 'command' });
+    expect(setUp(false, true, false, false, null)).toEqual({ by: 'operator' });
+  });
+
+  it('leaves it to the operator, under Platform or on the old page, on a server that does not say who may', () => {
+    expect(setUp(true, true, true, null)).toEqual({ by: 'viewer', at: 'platform' });
+    expect(setUp(false, true, true, null)).toEqual({ by: 'operator' });
+    expect(setUp(true, true, false, null)).toEqual({ by: 'viewer', at: 'old-layout' });
+    expect(setUp(false, true, false, null)).toEqual({ by: 'operator' });
+  });
+
+  it('leaves it to the operator in Admin without a dashboard, whatever the server says', () => {
     for (const canManage of [true, false, null]) {
-      expect(setUp(true, true, false, canManage)).toEqual({ by: 'viewer', at: 'old-layout' });
-      expect(setUp(false, true, false, canManage)).toEqual({ by: 'operator' });
-      for (const gatewayV2 of [true, false]) {
-        expect(setUp(true, false, gatewayV2, canManage)).toEqual({ by: 'viewer', at: 'admin' });
-        expect(setUp(false, false, gatewayV2, canManage)).toEqual({ by: 'operator' });
+      for (const inDashboard of [true, false, null]) {
+        for (const gatewayV2 of [true, false]) {
+          expect(setUp(true, false, gatewayV2, canManage, inDashboard)).toEqual({
+            by: 'viewer',
+            at: 'admin',
+          });
+          expect(setUp(false, false, gatewayV2, canManage, inDashboard)).toEqual({
+            by: 'operator',
+          });
+        }
       }
     }
   });

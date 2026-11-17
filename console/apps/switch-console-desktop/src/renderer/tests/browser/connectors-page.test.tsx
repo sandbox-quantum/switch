@@ -29,7 +29,7 @@ const workspaces = vi.hoisted(() => ({
 const switchServers = vi.hoisted(() => ({
   openGitHubInstallation: vi.fn(),
   openGatewayPage: vi.fn(),
-  canManageConnectorApps: vi.fn(),
+  connectorAppManagement: vi.fn(),
 }));
 const modalHost = vi.hoisted(() => ({
   show: (_id: string, _args: unknown): void => {
@@ -272,7 +272,7 @@ beforeEach(() => {
   for (const mock of Object.values(workspaces)) mock.mockReset();
   for (const mock of Object.values(switchServers)) mock.mockReset();
   workspaces.getConnectionAgents.mockResolvedValue([]);
-  switchServers.canManageConnectorApps.mockResolvedValue(null);
+  switchServers.connectorAppManagement.mockResolvedValue({ canManage: null, inDashboard: null });
 });
 
 afterEach(async () => {
@@ -416,7 +416,7 @@ it("opens the gateway's connector apps under Platform on a server that does not 
   server.servesGateway = true;
   gatewayLayout.v2 = true;
   const page = await discover([NOT_SET_UP]);
-  expect(switchServers.canManageConnectorApps).toHaveBeenCalledWith('workspace');
+  expect(switchServers.connectorAppManagement).toHaveBeenCalledWith('workspace');
   const connectorApps = {
     serverId: 'server',
     url: 'https://switch.example.com/platform/connectors',
@@ -441,7 +441,7 @@ it('opens connector apps at the path a gateway in the current layout serves', as
   server.servesGateway = true;
   const page = await discover([NOT_SET_UP]);
   const connectorApps = { serverId: 'server', url: 'https://switch.example.com/connectors' };
-  expect(switchServers.canManageConnectorApps).not.toHaveBeenCalled();
+  expect(switchServers.connectorAppManagement).toHaveBeenCalledWith('workspace');
 
   await act(async () =>
     page.querySelector<HTMLButtonElement>('button[aria-label="Set up Example"]')!.click()
@@ -459,7 +459,7 @@ it('offers Set up to an org admin the server says may, in Organization settings'
   admin.administers = true;
   server.servesGateway = true;
   gatewayLayout.v2 = true;
-  switchServers.canManageConnectorApps.mockResolvedValue(true);
+  switchServers.connectorAppManagement.mockResolvedValue({ canManage: true, inDashboard: true });
   const page = await discover([NOT_SET_UP]);
   const connectorApps = {
     serverId: 'server',
@@ -479,11 +479,42 @@ it('offers Set up to an org admin the server says may, in Organization settings'
   expect(switchServers.openGatewayPage).toHaveBeenLastCalledWith(connectorApps);
 });
 
+it("offers Set up to an org admin the server says may, at the old layout's page", async () => {
+  admin.administers = true;
+  server.servesGateway = true;
+  switchServers.connectorAppManagement.mockResolvedValue({ canManage: true, inDashboard: true });
+  const page = await discover([NOT_SET_UP]);
+  const connectorApps = { serverId: 'server', url: 'https://switch.example.com/connectors' };
+
+  expect(switchServers.connectorAppManagement).toHaveBeenCalledWith('workspace');
+  expect(button(/^Example/, grid(page)!)!.textContent).toMatch(/Needs setup/);
+  await act(async () =>
+    page.querySelector<HTMLButtonElement>('button[aria-label="Set up Example"]')!.click()
+  );
+  expect(switchServers.openGatewayPage).toHaveBeenCalledWith(connectorApps);
+});
+
+it("sends anyone else on a one-organization server to their organization's admin", async () => {
+  server.servesGateway = true;
+  gatewayLayout.v2 = true;
+  switchServers.connectorAppManagement.mockResolvedValue({ canManage: false, inDashboard: true });
+  const page = await discover([NOT_SET_UP]);
+  const organizationAdmin =
+    'An admin of your organization sets it up in Organization settings › Connector apps.';
+
+  const card = button(/^Example/, grid(page)!)!;
+  expect(card.textContent).toMatch(/Unavailable/);
+  expect(card.textContent).toContain(organizationAdmin);
+  expect(card.textContent).not.toContain('switch-connector-apps');
+  expect(page.querySelector('button[aria-label="Set up Example"]')).toBeNull();
+  expect(switchServers.openGatewayPage).not.toHaveBeenCalled();
+});
+
 it('names the command, with no Set up, to anyone the server says may not set apps up', async () => {
   admin.administers = true;
   server.servesGateway = true;
   gatewayLayout.v2 = true;
-  switchServers.canManageConnectorApps.mockResolvedValue(false);
+  switchServers.connectorAppManagement.mockResolvedValue({ canManage: false, inDashboard: false });
   const page = await discover([NOT_SET_UP]);
   const command =
     'Whoever runs your Switch server sets up its app with the switch-connector-apps command, where Switch runs.';
@@ -504,7 +535,7 @@ it('says when it cannot check who may set apps up, and leaves Set up to the oper
   admin.operator = true;
   server.servesGateway = true;
   gatewayLayout.v2 = true;
-  switchServers.canManageConnectorApps.mockRejectedValue(new Error('session read failed'));
+  switchServers.connectorAppManagement.mockRejectedValue(new Error('session read failed'));
   const page = await discover([NOT_SET_UP]);
 
   expect(page.textContent).toContain("Couldn't check who can set up connector apps");
@@ -517,7 +548,7 @@ it('says when it cannot check who may set apps up, and leaves Set up to the oper
     url: 'https://switch.example.com/platform/connectors',
   });
 
-  switchServers.canManageConnectorApps.mockResolvedValue(true);
+  switchServers.connectorAppManagement.mockResolvedValue({ canManage: true, inDashboard: true });
   await act(async () => button(/^Retry$/, page)!.click());
   await vi.waitFor(() =>
     expect(page.textContent).not.toContain("Couldn't check who can set up connector apps")

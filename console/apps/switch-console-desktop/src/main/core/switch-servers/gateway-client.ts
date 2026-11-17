@@ -40,6 +40,7 @@ import {
   type ConnectorApp,
   type ConnectorAppCheckResult,
   type ConnectorAppImpact,
+  type ConnectorAppManagement,
   type ConnectorApps,
   type SaveConnectorAppInput,
   type SaveConnectorAppResult,
@@ -1379,23 +1380,33 @@ export async function fetchWorkspaceCreation(server: SwitchServer): Promise<Work
 }
 
 /**
- * Whether the signed-in account may set up the deployment's connector apps:
- * its operator, or an `org_admin` of its organization when it has exactly
- * one.
+ * Who sets up the deployment's connector apps, from the session: whether the
+ * signed-in account may (its operator, or an `org_admin` of its organization
+ * when it has exactly one), and whether they are set up in the dashboard at
+ * all (exactly one organization) or with the server's command.
  *
- * Null on a server from before it said (no session route, or no field), where
- * only the operator may.
+ * Each is null on a server from before it said (no session route, or no
+ * field), where only the operator may.
  */
-export async function fetchCanManageConnectorApps(server: SwitchServer): Promise<boolean | null> {
+export async function fetchConnectorAppManagement(
+  server: SwitchServer
+): Promise<ConnectorAppManagement> {
   let res: Response;
   try {
     res = await gatewayFetch(server, '/auth/session', { authenticated: true });
   } catch (cause) {
-    if (cause instanceof GatewayError && cause.status === 404) return null;
+    if (cause instanceof GatewayError && cause.status === 404)
+      return { canManage: null, inDashboard: null };
     throw cause;
   }
-  const json = (await res.json()) as { can_manage_connector_apps?: unknown };
-  return optionalFlag(server, json, 'can_manage_connector_apps', null);
+  const json = (await res.json()) as {
+    can_manage_connector_apps?: unknown;
+    connector_apps_in_dashboard?: unknown;
+  };
+  return {
+    canManage: optionalFlag(server, json, 'can_manage_connector_apps', null),
+    inDashboard: optionalFlag(server, json, 'connector_apps_in_dashboard', null),
+  };
 }
 
 function optionalFlag<Absent extends boolean | null>(
