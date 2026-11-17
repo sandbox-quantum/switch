@@ -889,6 +889,9 @@ export class PasswordChangedSessionNotSavedError extends Error {
   }
 }
 
+/** Short, because it stands in front of a status read that would otherwise answer at once. */
+const PROBE_TIMEOUT_MS = 5_000;
+
 /**
  * Whether the server answers at all, asked without a session. Any answer
  * counts, a refusal included; only a request that never got one is raised, as
@@ -896,7 +899,10 @@ export class PasswordChangedSessionNotSavedError extends Error {
  */
 export async function probeGateway(server: SwitchServer): Promise<void> {
   try {
-    const res = await gatewayFetch(server, '/auth/config', { authenticated: false });
+    const res = await gatewayRequest(server, '/auth/config', {
+      authenticated: false,
+      signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+    });
     await res.body?.cancel();
   } catch (cause) {
     if (cause instanceof GatewayError && cause.kind !== 'network') return;
