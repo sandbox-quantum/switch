@@ -9,6 +9,7 @@ import {
   type AttachmentTransfers,
   attachmentChunkSchema,
   ControlError,
+  transferIdSchema,
 } from './attachment-transfers';
 import { readJournalSnapshot } from './journal-snapshot';
 import {
@@ -100,7 +101,7 @@ export const controlMessageSchema = z.union([
   /** A session read from its journal, whether or not its host is running. */
   z.object({ journal: z.string().min(1) }),
   z.object({ attachment: attachmentChunkSchema }),
-  z.object({ attachmentCancel: z.string().min(1) }),
+  z.object({ attachmentCancel: transferIdSchema }),
 ]);
 export type ControlMessage = z.infer<typeof controlMessageSchema>;
 
