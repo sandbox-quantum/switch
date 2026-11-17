@@ -49,7 +49,9 @@ class AdminChangeEmail:
     summary: str
     occurred_at: datetime
     reason: str | None
-    audit_log_link: str
+    # None for the person it was made to, while they are no organization
+    # admin there, who can't open the log.
+    audit_log_link: str | None
 
 
 class InviteMailer(Protocol):
@@ -117,13 +119,18 @@ def build_admin_change_message(email: AdminChangeEmail, sender: str) -> EmailMes
     message["To"] = email.to
     message["Message-ID"] = make_msgid(domain=sender.rpartition("@")[2] or None)
     reason = "" if email.reason is None else f"\nThe reason given: {email.reason}\n"
+    audit_log = (
+        "The organization's audit log records it.\n"
+        if email.audit_log_link is None
+        else f"The organization's audit log records it:\n{email.audit_log_link}\n"
+    )
     message.set_content(
         f"{email.summary}\n"
         f"{reason}"
         "\n"
         f"When: {when}\n"
         "\n"
-        f"The organization's audit log records it:\n{email.audit_log_link}\n"
+        f"{audit_log}"
         "\n"
         "You're receiving this because you are an organization admin there, or "
         "because the change was to you.\n"
@@ -132,13 +139,18 @@ def build_admin_change_message(email: AdminChangeEmail, sender: str) -> EmailMes
     reason_html = (
         "" if email.reason is None else f"<p>The reason given: {e(email.reason)}</p>"
     )
+    audit_log_html = (
+        "<p>The organization's audit log records it.</p>"
+        if email.audit_log_link is None
+        else f'<p><a href="{e(email.audit_log_link)}">Open the organization\'s audit '
+        "log</a></p>"
+    )
     message.add_alternative(
         "<!doctype html><html><body>"
         f"<p>{e(email.summary)}</p>"
         f"{reason_html}"
         f"<p>When: {e(when)}</p>"
-        f'<p><a href="{e(email.audit_log_link)}">Open the organization\'s audit '
-        "log</a></p>"
+        f"{audit_log_html}"
         "<p>You're receiving this because you are an organization admin there, "
         "or because the change was to you.</p>"
         "</body></html>",

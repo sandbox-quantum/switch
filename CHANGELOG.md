@@ -932,6 +932,32 @@ version of their own to them without also giving them a release of their own.
   (`POST /gateway/auth/sessions/revoke`) as before.
 
 #### Fixed
+- **On a deployment with one organization, an agent's service access names
+  one person to set up a connector app.** For a service waiting on its app,
+  it said "Whoever runs Switch can set it up. An admin of your organization
+  sets it up in Organization settings › Connector apps." It now says only
+  the second.
+- **Organization settings › Connector apps is headed Connector apps**, not
+  Connectors, the page above it in the menu.
+- **Your account's Delete account card keeps its description readable on a
+  narrow window.** It was squeezed to a word a line beside the button; the
+  button now drops below it, as a page header's do. A page header's buttons
+  also keep their own height beside a tall title.
+- **A platform operator following a link to a workspace they aren't in is
+  told what to do instead.** The dashboard doesn't take them into it, and
+  now adds that `switch-promote-org-admin`, where Switch runs, makes someone
+  an admin of an organization they aren't in.
+- **An organization's admins hear when deleting one of them fails
+  partway.** The person's organization admin role goes before anything
+  else, and a retry finds no role left to tell anyone about, so the admins
+  and the person were never told. They are now e-mailed when the deletion
+  fails, saying it didn't finish but had already ended that admin access.
+- **The e-mail about a change to who administers an organization links its
+  audit log only for those who can open it**: not for the person demoted,
+  removed or deleted.
+- **A server command's refusal comes after what it printed before it.**
+  Run without a terminal, `switch-accounts delete --execute` could print
+  "Refused" above the plan it refused.
 - **Add a device no longer shows commands that can't work.** On a Switch
   that Switch Console runs, or whose public address (`GATEWAY_PUBLIC_URL`)
   is a loopback one such as `http://localhost:8000` or the unspecified
@@ -4846,6 +4872,10 @@ version of their own to them without also giving them a release of their own.
   agent"; it was the only place Console showed that name.
 
 #### Fixed
+- **Connectors stops trusting an old answer about who sets up connector
+  apps.** When asking the server again failed, the page said it couldn't
+  check but still offered Set up by the last answer; it now goes by none, as
+  it says.
 - **Add device no longer shows commands that can't work.** On a server
   Switch Console runs on this computer, Settings › Devices no longer offers
   Add device and says why: no other device can reach it. On any other

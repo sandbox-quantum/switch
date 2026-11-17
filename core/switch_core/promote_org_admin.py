@@ -18,7 +18,6 @@ organization's WorkOS account instead.
 from __future__ import annotations
 
 import argparse
-import sys
 from dataclasses import dataclass
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -43,6 +42,7 @@ from switch_core.operator_commands import (
     account_by_email,
     admin_notices,
     database,
+    print_refusal,
     run,
 )
 from switch_core.organization_admin_notices import (
@@ -241,7 +241,7 @@ async def _run(config: SwitchConfig, arguments: argparse.Namespace) -> int:
             )
             print(f"{user.email} is now an organization admin.")
     except CommandRefused as refused:
-        print(f"Refused: {refused}", file=sys.stderr)
+        print_refusal(refused)
         return 1
     return 0
 
