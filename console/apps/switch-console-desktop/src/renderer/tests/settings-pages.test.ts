@@ -20,6 +20,19 @@ const everyone: SettingsAudience = {
   agentManagement: true,
   workspaceSettings: true,
   organizationSettings: false,
+  workspaceAdmin: false,
+  operatesGatewaylessServer: false,
+  serviceConnections: true,
+};
+
+const nobody: SettingsAudience = {
+  hasServer: false,
+  agentManagement: false,
+  workspaceSettings: false,
+  organizationSettings: false,
+  workspaceAdmin: false,
+  operatesGatewaylessServer: false,
+  serviceConnections: false,
 };
 
 const ids = (audience: SettingsAudience) =>
@@ -44,14 +57,50 @@ describe('Settings sections', () => {
   });
 
   it('keeps only what stands without a server when there is none', () => {
-    expect(
-      ids({
-        hasServer: false,
-        agentManagement: false,
-        workspaceSettings: false,
-        organizationSettings: false,
-      })
-    ).toEqual([['preferences', 'clis-models', 'remote-hosts', 'status'], [], ['docs']]);
+    expect(ids(nobody)).toEqual([
+      ['preferences', 'clis-models', 'remote-hosts', 'status'],
+      [],
+      ['docs'],
+    ]);
+  });
+
+  it('gives workspace admins its connectors, decision routing and guardrails, after agent providers', () => {
+    expect(ids({ ...everyone, workspaceAdmin: true })[0]).toEqual([
+      'preferences',
+      'messaging-apps',
+      'clis-models',
+      'connectors',
+      'decision-routing',
+      'guardrails',
+      'api-keys',
+      'devices',
+      'remote-hosts',
+      'managed-agents',
+      'status',
+    ]);
+  });
+
+  it('keeps Connectors behind service connections, but not decision routing', () => {
+    const main = ids({ ...everyone, workspaceAdmin: true, serviceConnections: false })[0];
+    expect(main).not.toContain('connectors');
+    expect(main).toContain('decision-routing');
+  });
+
+  it('gives connector apps only to whoever runs a Switch with no gateway', () => {
+    const admin = { ...everyone, workspaceAdmin: true };
+    expect(ids(admin)[0]).not.toContain('connector-apps');
+    expect(ids({ ...admin, operatesGatewaylessServer: true })[0].slice(3, 7)).toEqual([
+      'connectors',
+      'decision-routing',
+      'guardrails',
+      'connector-apps',
+    ]);
+  });
+
+  it('shows a member none of the admin pages, and sends them to Preferences if they ask', () => {
+    const member = settingsSections(everyone);
+    for (const tab of ['connectors', 'decision-routing', 'guardrails', 'connector-apps'] as const)
+      expect(shownSettingsTab(tab, member)).toBe('preferences');
   });
 
   it('offers workspace settings only where a gateway serves them', () => {
@@ -82,12 +131,7 @@ describe('Settings sections', () => {
   });
 
   it('falls back to Preferences for a tab the sidebar does not offer', () => {
-    const noServer = settingsSections({
-      hasServer: false,
-      agentManagement: false,
-      workspaceSettings: false,
-      organizationSettings: false,
-    });
+    const noServer = settingsSections(nobody);
     expect(shownSettingsTab('account', noServer)).toBe('preferences');
     expect(shownSettingsTab('remote-hosts', noServer)).toBe('remote-hosts');
     expect(shownSettingsTab('devices', noServer)).toBe('preferences');
