@@ -152,7 +152,9 @@ form; offer "All of them" rather than multi-select. With no question form, list
 numbered options in a message. Open questions (their job, a folder path)
 stay plain chat. Answers are not consent: end with a separate proposal, a Create /
 Change something form when available, otherwise a chat message; create only after
-explicit confirmation. Where they must mention you, a typed answer needs the mention;
+explicit confirmation. Keep a form short: the plan itself goes in a message just
+before it, and the form's question is one line ("Create it?"), because a long one is
+cut on Discord and Telegram and pushes the buttons off a phone screen. Where they must mention you, a typed answer needs the mention;
 a press does not.
 
 ## Say something before you go quiet
