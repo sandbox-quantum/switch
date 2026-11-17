@@ -44,6 +44,7 @@ from switch_core.bridges.collaboration.models import (
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.chats import is_console_chat
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
+from switch_core.db.audit import AuditAction, record_audit_event, request_actor
 from switch_core.db.models import (
     Client,
     ClientRoom,
@@ -1196,6 +1197,21 @@ class RoomService:
                     )
                 if config.aliases:
                     await self._seed_aliases(session, room.id, agent_ids, config)
+                await record_audit_event(
+                    session,
+                    tenant_id=room.tenant_id,
+                    actor_user_id=config.created_by,
+                    action=AuditAction.ROOM_CREATED,
+                    target_type="room",
+                    target_id=room.id,
+                    details={
+                        "name": room.name,
+                        "created_by_kind": config.created_by_kind,
+                        "created_by_agent_id": config.created_by_agent_id,
+                        "bridge_id": room.bridge_id,
+                        "agent_ids": list(agent_ids),
+                    },
+                )
                 try:
                     await session.commit()
                 except IntegrityError as error:
@@ -1453,6 +1469,12 @@ class RoomService:
 
             async with self._session_factory() as session:
                 await self._room_store.delete(session, room_id)
+                await self._record_room_change(
+                    session,
+                    room,
+                    AuditAction.ROOM_DELETED,
+                    {"bridge_id": bridge_id},
+                )
                 await session.commit()
 
         # Kicking the members above already emptied it if they were all
@@ -1821,6 +1843,31 @@ class RoomService:
             await self._room_store.update_observe_config(session, room_id, config)
             await session.commit()
 
+    @staticmethod
+    async def _record_room_change(
+        session: AsyncSession,
+        room: Room,
+        action: AuditAction,
+        details: dict[str, str | None],
+    ) -> None:
+        """A change to the room as a whole, attributed to whoever the request
+        acts for: these run for people, agents and clean-ups alike, and only
+        the request knows which."""
+        actor_user_id, acting_agent_id = request_actor()
+        await record_audit_event(
+            session,
+            tenant_id=room.tenant_id,
+            actor_user_id=actor_user_id,
+            action=action,
+            target_type="room",
+            target_id=room.id,
+            details={
+                "name": room.name,
+                **details,
+                "acting_agent_id": acting_agent_id,
+            },
+        )
+
     async def set_room_archived(self, room_id: str, archived: bool) -> None:
         """Archive or unarchive a room (metadata-only, reversible).
 
@@ -1831,6 +1878,15 @@ class RoomService:
         was_archived = room.archived_at is not None
         async with tenant_session(self._session_factory, room.tenant_id) as session:
             await self._room_store.set_archived(session, room_id, archived)
+            if archived != was_archived:
+                await self._record_room_change(
+                    session,
+                    room,
+                    AuditAction.ROOM_ARCHIVED
+                    if archived
+                    else AuditAction.ROOM_UNARCHIVED,
+                    {},
+                )
             await session.commit()
         self.room_changed(room.tenant_id, room_id)
 

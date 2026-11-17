@@ -52,6 +52,7 @@ from switch_core.bridges.agent.protocol.controller_presence import (
 )
 from switch_core.bridges.agent.protocol.liveness import HEARTBEAT_LAPSED, TAKEN_OVER
 from switch_core.config import ControllerRelease
+from switch_core.db.audit import AuditAction, record_audit_event, request_actor
 from switch_core.db.models import (
     CONTROLLER_ENROLLMENT_KEY_TYPE,
     CONTROLLER_KEY_TYPE,
@@ -292,6 +293,7 @@ class ManagementService:
             api_key_id=key.id,
             device_hash=same_device,
         )
+        await self._record_enrolled(session, controller, via="console")
         await session.commit()
         self.user_changes.publish(
             controller.tenant_id, owner_id, MACHINE, controller.id
@@ -540,6 +542,7 @@ class ManagementService:
         await self.controllers.complete_enrollment(
             session, tenant_id, consumed.id, controller.id
         )
+        await self._record_enrolled(session, controller, via="enrollment_code")
         await self.api_keys.delete(session, key.id)
         replaced: str | None = None
         moved: list[AgentDefinitionRow] = []
@@ -1239,6 +1242,47 @@ class ManagementService:
             )
         return detached
 
+    async def _record_auto_approve(
+        self,
+        session: AsyncSession,
+        tenant_id: str,
+        owner_id: str,
+        agent_id: str,
+        agent_name: str,
+        change: str,
+    ) -> None:
+        _, acting_agent_id = request_actor()
+        await record_audit_event(
+            session,
+            tenant_id=tenant_id,
+            actor_user_id=owner_id,
+            action=AuditAction.AGENT_AUTO_APPROVE_ENABLED,
+            target_type="agent",
+            target_id=agent_id,
+            details={
+                "agent_name": agent_name,
+                "change": change,
+                "acting_agent_id": acting_agent_id,
+            },
+        )
+
+    async def _record_enrolled(
+        self, session: AsyncSession, controller: AgentController, *, via: str
+    ) -> None:
+        await record_audit_event(
+            session,
+            tenant_id=controller.tenant_id,
+            actor_user_id=controller.owner_id,
+            action=AuditAction.CONTROLLER_ENROLLED,
+            target_type="controller",
+            target_id=controller.id,
+            details={
+                "name": controller.name,
+                "kind": controller.kind,
+                "via": via,
+            },
+        )
+
     async def _revoke(
         self, session: AsyncSession, tenant_id: str, controller_id: str
     ) -> None:
@@ -1247,6 +1291,21 @@ class ManagementService:
         controller = await self.controllers.get(session, tenant_id, controller_id)
         if controller is None or controller.revoked_at is not None:
             return
+        actor_user_id, acting_agent_id = request_actor()
+        await record_audit_event(
+            session,
+            tenant_id=tenant_id,
+            actor_user_id=actor_user_id,
+            action=AuditAction.CONTROLLER_REVOKED,
+            target_type="controller",
+            target_id=controller_id,
+            details={
+                "name": controller.name,
+                "kind": controller.kind,
+                "owner_id": controller.owner_id,
+                "acting_agent_id": acting_agent_id,
+            },
+        )
         key_id = controller.api_key_id
         await self.controllers.mark_revoked(
             session, tenant_id, controller_id, self.now()
@@ -1707,6 +1766,10 @@ class ManagementService:
             desired_state=request.desired_state,
             definition=definition.model_dump(),
         )
+        if definition.auto_approve:
+            await self._record_auto_approve(
+                session, tenant_id, owner_id, result.agent_id, request.name, "created"
+            )
         revisions = await self._bump_and_collect(
             session, tenant_id, {request.controller_id}
         )
@@ -1801,6 +1864,10 @@ class ManagementService:
         while the definition is still at that revision (`DefinitionChanged`
         otherwise), for a change worked out from what it was."""
         definition = DefinitionV1.model_validate(target.definition)
+        # Read now: updating the definition writes over `existing` in place.
+        was_auto_approve = existing is not None and bool(
+            existing.definition.get("auto_approve")
+        )
         if (
             existing is None
             or existing.definition.get("provider") != definition.provider
@@ -1889,6 +1956,15 @@ class ManagementService:
                     controller_id=previous_controller_id,
                     agent_id=agent.id,
                 )
+        if target.definition.get("auto_approve") and not was_auto_approve:
+            await self._record_auto_approve(
+                session,
+                tenant_id,
+                owner_id,
+                agent.id,
+                agent.name,
+                "adopted" if existing is None else "updated",
+            )
         revisions = await self._bump_and_collect(session, tenant_id, affected)
         await session.commit()
         self.user_changes.publish(tenant_id, owner_id, MANAGED_AGENT, agent.id)

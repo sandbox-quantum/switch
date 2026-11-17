@@ -62,6 +62,7 @@ from switch_core.chats.views import (
     ChatMention,
 )
 from switch_core.clients.mentions import mention_regex, strip_emphasis
+from switch_core.db.audit import AuditAction, record_audit_event
 from switch_core.db.models import (
     Agent,
     AgentSessionActivityItem,
@@ -2151,6 +2152,15 @@ class ChatService:
             )
             if unarchive:
                 await self._room_store.set_archived(session, room.id, False)
+                await record_audit_event(
+                    session,
+                    tenant_id=tenant_id,
+                    actor_user_id=user.id,
+                    action=AuditAction.ROOM_UNARCHIVED,
+                    target_type="room",
+                    target_id=room.id,
+                    details={"name": room.name, "via": "message"},
+                )
             await session.commit()
         if unarchive:
             self._room_service.room_changed(tenant_id, room.id)

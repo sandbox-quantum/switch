@@ -27,6 +27,7 @@ from switch_core.db.models import (
     OrganizationAuditEvent,
     ServerAuditEvent,
 )
+from switch_core.logging_context import current_log_context
 from switch_core.security_events import (
     SecurityEvent,
     SecurityScope,
@@ -112,6 +113,25 @@ class AuditAction(StrEnum):
     # Switch Console signed a browser in to the workspace with a one-time
     # link, opening a dashboard page (`details.next`).
     BROWSER_HANDOFF = "auth.browser_handoff"
+    ROOM_CREATED = "room.created"
+    ROOM_ARCHIVED = "room.archived"
+    ROOM_UNARCHIVED = "room.unarchived"
+    ROOM_DELETED = "room.deleted"
+    # A client joined or left a room (`client_rooms`): an agent, a person in
+    # Switch Console, or a person on a bridged platform. Bridges and Switch's
+    # own system clients are not recorded. `details.client_type` says which.
+    ROOM_MEMBER_ADDED = "room.member_added"
+    ROOM_MEMBER_REMOVED = "room.member_removed"
+    AGENT_REGISTERED = "agent.registered"
+    # An existing agent registered again, which issues it a new key.
+    AGENT_REREGISTERED = "agent.reregistered"
+    AGENT_MANAGEMENT_GRANTED = "agent.can_manage_agents_granted"
+    AGENT_MANAGEMENT_REVOKED = "agent.can_manage_agents_revoked"
+    # A managed agent was created with, or changed to, `auto_approve`: its
+    # sessions run tools without asking anyone.
+    AGENT_AUTO_APPROVE_ENABLED = "agent.auto_approve_enabled"
+    CONTROLLER_ENROLLED = "controller.enrolled"
+    CONTROLLER_REVOKED = "controller.revoked"
 
 
 class OrganizationAuditAction(StrEnum):
@@ -151,6 +171,9 @@ class OrganizationAuditAction(StrEnum):
     DIRECTORY_CONFLICT = "organization.directory_conflict"
     # An operator made the organization follow one in the directory.
     LINKED_TO_DIRECTORY = "organization.linked_to_directory"
+    # Someone finished signing in to the organization's directory to act as
+    # one of its admins (`gateway/workos_sign_in_routes.py`).
+    DIRECTORY_SIGN_IN = "organization.directory_sign_in"
 
 
 class OrganizationIssueKind(StrEnum):
@@ -200,6 +223,24 @@ class ServerAuditAction(StrEnum):
     # or released it again (`switch-cloud-machine`).
     CLOUD_MACHINE_ADMIN_STOPPED = "cloud_machine.admin_stopped"
     CLOUD_MACHINE_ADMIN_RELEASED = "cloud_machine.admin_released"
+    # A person signed in to the gateway. A failed sign-in is a log-only
+    # security event (`security_events.SecuritySignal.SIGN_IN_FAILED`): it
+    # names no account it can trust, and a row per attempt would let anyone
+    # grow this table at will.
+    USER_SIGNED_IN = "user.signed_in"
+
+
+def request_actor() -> tuple[str | None, str | None]:
+    """Who the current request acts for, as authentication bound it: the
+    signed-in person, or the owner of the agent or controller calling
+    (`gateway/auth.py`, `bridges/agent/auth.py`), and the calling agent when
+    an agent is calling. `(None, None)` outside a request.
+
+    For a change made deep below the route, in a function many callers share,
+    where threading the actor through every caller would be the alternative.
+    """
+    context = current_log_context()
+    return context.user_id, context.agent_id
 
 
 async def record_audit_event(
