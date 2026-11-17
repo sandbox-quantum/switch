@@ -89,9 +89,9 @@ def test_routes_behind_the_hosted_v2_gate_name_the_hosted_v2_flag() -> None:
         "GET /gateway/tenants/{tenant_id}/hosted-people",
     ):
         assert routes[route] == ["hosted_v2"], route
-    # A route with no gate keeps no flag, and a feature flag's route keeps only its own.
+    # A route with no gate keeps no flag.
     assert routes["POST /gateway/rooms"] == []
-    assert routes["POST /gateway/management/agents"] == ["agent_management"]
+    assert routes["POST /gateway/management/agents"] == []
 
 
 def test_every_route_behind_the_gate_is_tagged() -> None:

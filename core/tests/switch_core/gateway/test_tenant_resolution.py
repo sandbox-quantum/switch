@@ -491,6 +491,7 @@ class TestSessionStateEndpoint:
             TENANT_ZERO_ID,
             session_version=0,
             auth_time=datetime.now(UTC),
+            session_id=secrets.token_urlsafe(16),
         )
         response = await self._get(
             session_factory,
@@ -530,6 +531,7 @@ class TestSessionStateEndpoint:
             None,
             session_version=0,
             auth_time=datetime.now(UTC),
+            session_id=secrets.token_urlsafe(16),
         )
 
         response = await self._get(
@@ -560,6 +562,7 @@ class TestSessionStateEndpoint:
             None,
             session_version=0,
             auth_time=datetime.now(UTC),
+            session_id=secrets.token_urlsafe(16),
         )
 
         listed_other = self._operator_list(tmp_path, ["someone-else"])
@@ -589,6 +592,7 @@ class TestSessionStateEndpoint:
             None,
             session_version=0,
             auth_time=datetime.now(UTC),
+            session_id=secrets.token_urlsafe(16),
         )
         operators = self._operator_list(tmp_path, [user_id])
 
