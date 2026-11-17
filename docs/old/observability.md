@@ -231,7 +231,8 @@ In the JSON format the line carries:
 | `security_details.*` | the audit event's `details`, one level deep: a list or mapping is its JSON text |
 
 `details` holds identifiers, names and field names — never secrets or message
-text — and some actions carry an email address (an invitation's). The usual
+text. A detail whose key names an email address (an invitation's) is left out
+of the line; the audit row still has it. The usual
 context fields (`tenant_id`, `request_id`, `user_id`, ...) ride alongside as on
 any line and describe the request that made the change.
 

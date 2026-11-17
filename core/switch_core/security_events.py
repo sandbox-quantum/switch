@@ -175,6 +175,10 @@ def flat_details(details: Mapping[str, Any] | None) -> dict[str, StructuredValue
     every exporter: a list or mapping becomes its JSON text."""
     flat: dict[str, StructuredValue] = {}
     for key, value in (details or {}).items():
+        if "email" in str(key).lower():
+            # Email addresses stay in the audit row and out of the log
+            # pipeline, which keeps only pseudonymous ids.
+            continue
         if value is None or isinstance(value, str | int | float | bool):
             flat[str(key)] = value
         else:

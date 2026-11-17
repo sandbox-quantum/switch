@@ -23,6 +23,7 @@ from switch_core.logging_context import structured_fields
 from switch_core.security_events import (
     LOGGER_NAME,
     SecuritySignal,
+    flat_details,
     log_security_event,
 )
 
@@ -208,6 +209,16 @@ def test_a_log_only_event_is_written_at_once(
     assert event["event"] == "security.auth.sign_in_failed"
     assert event["scope"] == "log"
     assert event["audit_event_id"] is None
+
+
+def test_email_addresses_in_details_stay_out_of_the_log() -> None:
+    assert flat_details(
+        {
+            "email": "someone@example.com",
+            "invited_email": "x@example.com",
+            "role": "member",
+        }
+    ) == {"role": "member"}
 
 
 def test_the_json_line_carries_the_event_as_fields(
