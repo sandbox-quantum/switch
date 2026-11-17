@@ -270,14 +270,69 @@ def test_a_description_too_long_for_even_that_stops_the_form_asking():
     assert "Switch Console" in text
 
 
-def test_a_prompt_cut_short_is_not_answered_by_number_either():
-    """The prompt is where a question says what it actually means."""
+def test_a_prompt_cut_short_is_still_answered_by_number():
+    """The prompt explains; the title and options are what is chosen on. A long
+    explanation is cut rather than taking the answer away with it."""
     question = _question("Which one?", "main", "release")
     question = question.model_copy(update={"prompt": "Note that " + "p" * 4000})
     text = _render(_questions(question))
 
-    assert "Reply with" not in text
-    assert "Switch Console" in text
+    assert "Note that " in text
+    assert "…" in text
+    assert "Reply with `R42` and your answer, e.g. `R42 1`." in text
+    assert "Switch Console" not in text
+    assert len(text) <= 4000
+
+
+def test_a_long_explanation_on_discord_keeps_the_buttons():
+    """Discord's 2,000 characters once capped a prompt at 500 and a 600-character
+    explanation dropped the buttons and the typed answer from a confirm card."""
+    question = _question("Create the room?", "Yes, create it", "No")
+    question = question.model_copy(update={"prompt": "This will " + "x" * 590})
+    drawn = render_request(
+        _questions(question),
+        REFERENCE,
+        escape=_identity,
+        limit=2000,
+        markup=MARKDOWN,
+        responder=None,
+        unavailable_reason=None,
+        control_label_limit=80,
+    )
+
+    assert drawn.answerable
+    assert question.prompt in drawn.text
+    assert "Reply with `R42`" in drawn.text
+    assert len(drawn.text) <= 2000
+
+
+def test_prompts_share_what_is_left_and_the_form_still_fits():
+    """A short prompt keeps all of itself; the long ones split the rest, and
+    nothing the reader chooses on is cut to make room for them."""
+    short = _question("Which branch?", "main", "release").model_copy(
+        update={"question_id": "q-1", "prompt": "Pick one."}
+    )
+    long = _question("Which region?", "eu", "us").model_copy(
+        update={"question_id": "q-2", "prompt": "Regions differ. " + "r" * 3000}
+    )
+    text = _render(_questions(short, long), limit=600)
+
+    assert "Pick one." in text
+    assert "Regions differ. " in text
+    assert "1. eu" in text and "2. us" in text
+    assert "every question needs an answer" in text
+    assert len(text) <= 600
+
+
+def test_a_prompt_with_no_room_left_is_left_out_rather_than_cut_to_a_word():
+    question = _question("Which one?", "main", "release").model_copy(
+        update={"prompt": "Note that " + "p" * 4000}
+    )
+    text = _render(_questions(question), limit=240)
+
+    assert "Note that" not in text
+    assert "Reply with `R42`" in text
+    assert len(text) <= 240
 
 
 # ── What the buttons already say, where there are buttons ─────────────────────

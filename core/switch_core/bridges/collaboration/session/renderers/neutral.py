@@ -80,6 +80,10 @@ _CUT = "…{left} more not shown."
 # question left out. Answering by number means answering the numbers on the
 # screen, so a form that is not all on the screen stops asking to be answered
 # there and names the place it can be.
+# The least room worth spending on a prompt. Below this a cut prompt is a word
+# and an ellipsis, which says nothing the title did not; it is left out.
+_PROMPT_FLOOR = 40
+
 _TOO_BIG = (
     "Too long to show in full here, so it cannot be answered from this "
     f"message. {_CONSOLE} to read and answer it."
@@ -809,7 +813,9 @@ def _questions_form(
         fit(content.title, _share(limit, 1500, 3)),
     ]
 
-    body: list[str] = []
+    # A prompt is held as its index into `content.questions` until the rest of
+    # the form has been measured, because it is sized from what is left over.
+    body: list[str | int] = []
     if request.state == "open":
         budget = _label_budget(limit)
         for position, question in enumerate(content.questions, start=1):
@@ -818,26 +824,78 @@ def _questions_form(
                 markup.bold(f"{position}. {title}" if title else f"{position}.")
             )
             if question.prompt:
-                body.append(fit(question.prompt, _share(limit, 800, 4)))
+                body.append(position - 1)
             for index, option in enumerate(question.options, start=1):
                 body.append(_option_line(index, option, fit=fit, limit=limit))
     invites_answer = request.state == "open" and unanswerable(content.questions) is None
     if invites_answer and not fit.whole:
-        return (head, body, _TOO_BIG, False)
+        return (head, _prompts_dropped(body), _TOO_BIG, False)
+    footer = _questions_footer(
+        request,
+        content,
+        handle,
+        escape=escape,
+        limit=limit,
+        markup=markup,
+        responder=responder,
+    )
+    reserved = max(len(footer), len(_TOO_BIG) if invites_answer else 0)
     return (
         head,
-        body,
-        _questions_footer(
-            request,
-            content,
-            handle,
-            escape=escape,
+        _with_prompts(
+            body,
+            content.questions,
+            room=limit - min(reserved, limit) - _spent(head) - _spent(body),
             limit=limit,
-            markup=markup,
-            responder=responder,
+            escape=escape,
         ),
+        footer,
         invites_answer,
     )
+
+
+def _spent(lines: list[str] | list[str | int]) -> int:
+    """What the fixed lines of a form cost, each with its newline."""
+    return sum(len(line) + 1 for line in lines if isinstance(line, str))
+
+
+def _prompts_dropped(body: list[str | int]) -> list[str]:
+    return [line for line in body if isinstance(line, str)]
+
+
+def _with_prompts(
+    body: list[str | int],
+    questions: list[Question],
+    *,
+    room: int,
+    limit: int,
+    escape: Callable[[str], str],
+) -> list[str]:
+    """The body with each question's prompt in its place, sized to what is left.
+
+    A prompt is explanation, not a choice: the title says what is asked and
+    the options are what a reader picks between, and those are held whole or
+    the form stops asking for an answer. A prompt is cut to the room left over
+    once everything else is measured instead, the way Slack's card cuts it, so
+    a long explanation costs some of its own words rather than the buttons and
+    the typed answer under it. The room is shared out in order, so a short
+    prompt keeps all of itself and hands what it did not need to the next.
+    """
+    prompts = [line for line in body if isinstance(line, int)]
+    left = len(prompts)
+    shown: list[str] = []
+    for line in body:
+        if isinstance(line, str):
+            shown.append(line)
+            continue
+        share = min(_share(limit, 800, 1), (room - left) // left) if room > left else 0
+        left -= 1
+        if share < _PROMPT_FLOOR:
+            continue
+        prompt = _fit(questions[line].prompt, share, escape=escape)
+        shown.append(prompt)
+        room -= len(prompt) + 1
+    return shown
 
 
 def _option_line(
