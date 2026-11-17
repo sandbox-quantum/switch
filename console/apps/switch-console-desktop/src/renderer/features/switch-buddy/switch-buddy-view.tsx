@@ -124,8 +124,8 @@ const SwitchBuddyPanel = observer(function SwitchBuddyPanel() {
             className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-background px-4 py-3 shadow-sm"
           >
             <p className="min-w-0 flex-1 text-sm text-foreground-muted">
-              {expectedBuddyName(person)} needs an agent provider before it can reply. Connect one and
-              carry on here.
+              {expectedBuddyName(person)} needs an agent provider before it can reply. Connect one
+              and carry on here.
             </p>
             <Button onClick={connect} disabled={workspaceId === null}>
               Connect an agent provider

@@ -59,7 +59,7 @@ Select **Start**. When it says **Local server is running**, select **Continue**.
 
 ### Choose the agent provider switch-buddy runs on
 
-Choose an agent provider you've installed and signed in to. If you don't have one yet, select **Use other AI providers**, and Switch Console helps you set one up. switch-buddy's chat then opens.
+Choose an agent provider you've installed and signed in to. If you don't have one yet, select **use other agent providers**, and Switch Console helps you set one up. switch-buddy's chat then opens.
 
 ## Give switch-buddy its first task
 

@@ -94,17 +94,17 @@ describe("RoomResourcesSection", () => {
     for (const name of UNLINK) screen.getByRole("button", { name });
   });
 
-  it("lets someone in the room unlink what they own, and only that", () => {
+  it("lets someone in the room detach what they own, and only that", () => {
     render(<RoomResourcesSection roomId="r1" viewerId="u-me" canAttach inRoom canUnlink={false} />);
 
-    expect(button("Unlink Runbook")).not.toBeNull();
-    expect(button("Unlink Starter kit")).toBeNull();
+    expect(button("Detach Runbook")).not.toBeNull();
+    expect(button("Detach Starter kit")).toBeNull();
   });
 
-  it("doesn't let someone outside the room unlink what they own", () => {
+  it("doesn't let someone outside the room detach what they own", () => {
     render(<RoomResourcesSection roomId="r1" viewerId="u-me" canAttach={false} inRoom={false} canUnlink={false} />);
 
-    expect(button("Unlink Runbook")).toBeNull();
+    expect(button("Detach Runbook")).toBeNull();
   });
 
   it("lists what is attached, with nothing to change, to a reader", () => {

@@ -32,8 +32,7 @@ QUOTED_UI_LABELS = frozenset(
         "Messaging apps",
         "Set up",
         "Start device",
-        "Switch cloud",
-        "Use your own app instead",
+        "Switch Cloud",
         "Who can talk to your agent",
     }
 )
@@ -41,8 +40,10 @@ QUOTED_UI_LABELS = frozenset(
 # Phrases the extraction below finds that are not a control's label.
 NOT_A_LABEL = {
     "Add a new agent": "describes the page the link opens; its button says Add agent",
+    "Messaging apps in Settings": "describes where the link opens: the Messaging apps tab of Settings",
+    "Open <room name> →": "the link buddy writes itself into a new room, not a control in the apps",
+    "creating it now": "words buddy must not end a turn on; 'turn on' here is not a control verb",
     "my settings": "buddy's own settings page, named as buddy speaks of it",
-    "the server's home": "describes the page the link opens, which has no such title",
     "the server's page": "describes the page the link opens, which has no such title",
     "your agents": "describes the page the link opens, which has no such title",
 }
