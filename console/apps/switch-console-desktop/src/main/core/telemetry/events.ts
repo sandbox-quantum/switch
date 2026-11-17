@@ -143,6 +143,7 @@ export type TelemetryCliFailure =
   | 'permission_denied'
   | 'command_failed'
   | 'process_open_failed'
+  | 'missing_prerequisite'
   | 'not_detected_after_install'
   | 'not_detected_after_update'
   | 'still_present'

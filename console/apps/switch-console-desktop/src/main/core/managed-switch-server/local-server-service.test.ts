@@ -909,10 +909,21 @@ it('notices a native server whose switch-core has exited, and says why', async (
   );
 });
 
-it('gives no reason for a killed server rather than its last ordinary log line', async () => {
+it('says how a killed server exited', async () => {
   const service = await bootRunningNative();
   native.running.mockResolvedValue(false);
-  native.failureLine.mockResolvedValue('INFO [uvicorn.access] "GET /gateway/auth/config" 200');
+  native.failureLine.mockResolvedValue('exited with code 0xC000013A');
+  await service.watch();
+
+  expect(service.getStatus().error).toMatch(
+    /^switch-core stopped unexpectedly: exited with code 0xC000013A \(full log: .*switch-core\.log\)$/
+  );
+});
+
+it('gives no reason when nothing says why the server stopped', async () => {
+  const service = await bootRunningNative();
+  native.running.mockResolvedValue(false);
+  native.failureLine.mockResolvedValue(null);
   await service.watch();
 
   expect(service.getStatus().error).toMatch(

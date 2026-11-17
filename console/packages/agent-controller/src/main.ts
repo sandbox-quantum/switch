@@ -10,10 +10,13 @@ import {
   isStopMessage,
   PROVIDER_RECHECKED_KIND,
   type ProviderRecheckReply,
+  windowsRegistryPath,
+  withWindowsPathEntries,
 } from '@switch-console/agent-providers';
 import {
   withWindowsAgyBinDir,
   withWindowsCodexBinDir,
+  withWindowsInstallerBinDirs,
   withWindowsGitBashDir,
 } from '@switch-console/plugins/agents';
 import packageJson from '../package.json' with { type: 'json' };
@@ -50,12 +53,7 @@ import {
   resolveSharedHostBundle,
 } from './handover';
 import { createLogger, errorMessage, type Logger } from './log';
-import {
-  loginShellPath,
-  windowsRegistryPath,
-  withUserBinDirs,
-  withWindowsPathEntries,
-} from './login-path';
+import { loginShellPath, withUserBinDirs } from './login-path';
 import { dataLayout, ensureDataDir, resolveDataDir, serverWorkspacesDir } from './paths';
 import { ProviderRechecks } from './provider-rechecks';
 import { readProviderSeed, writeProviderSeed } from './provider-seed';
@@ -417,8 +415,11 @@ function pathRefresher(log: Logger): () => Promise<void> {
         homedir()
       );
       process.env.PATH = withWindowsGitBashDir(
-        withWindowsCodexBinDir(
-          withWindowsAgyBinDir(current, process.env.LOCALAPPDATA),
+        withWindowsInstallerBinDirs(
+          withWindowsCodexBinDir(
+            withWindowsAgyBinDir(current, process.env.LOCALAPPDATA),
+            process.env.LOCALAPPDATA
+          ),
           process.env.LOCALAPPDATA
         ),
         {

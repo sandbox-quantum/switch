@@ -34,6 +34,12 @@ export const installOptionSchema = z.object({
   /** Uninstall command for installs made via this method. Required when the descriptor's
    *  `uninstall.kind` is `'package-manager'`. */
   uninstallCommand: z.string().optional(),
+  /** Where this option puts the binary, relative to the home directory and matched without
+   *  regard to case or slash direction: a folder when it ends in a separator
+   *  (`.opencode\\bin\\`), else the binary itself. An installation found there was made by this
+   *  option, so it is updated and uninstalled with this option's commands: an installer that
+   *  writes to a folder of its own leaves nothing a package manager could be asked about. */
+  installedAt: z.array(z.string()).optional(),
 });
 export type InstallOption = z.output<typeof installOptionSchema>;
 

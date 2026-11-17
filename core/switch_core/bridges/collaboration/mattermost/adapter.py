@@ -17,6 +17,7 @@ from datetime import UTC, datetime
 from typing import Any, ClassVar
 from urllib.parse import SplitResult, urlsplit
 
+import httpx
 import requests as sync_requests
 from mattermostdriver import Driver
 from mattermostdriver.exceptions import (
@@ -3662,7 +3663,20 @@ class MattermostAdapter(PlatformAdapter):
             # connection is made (validation at write time cannot see what a
             # name resolves to later), no redirects, and a size ceiling
             # enforced while reading rather than after.
-            image_bytes = await self._fetch_icon(url)
+            try:
+                image_bytes = await self._fetch_icon(url)
+            except httpx.HTTPError as e:
+                # The icon host is usually a third-party avatar service; the bot
+                # works without its image, so an unreachable host is degraded, not broken.
+                logger.warning(
+                    "[BOT-ICON] could not fetch the icon for %s from %s (%s: %s); "
+                    "leaving the bot's current image",
+                    agent_name,
+                    urlsplit(url).hostname,
+                    type(e).__name__,
+                    e,
+                )
+                return
             if image_bytes is None:
                 logger.error(
                     "[BOT-ICON] icon for %s is over the %d byte limit — "

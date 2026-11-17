@@ -812,6 +812,14 @@ version of their own to them without also giving them a release of their own.
   delivered unchecked.
 
 #### Fixed
+- **A stopped agent's unfinished turn is ended.** The sweep that ends
+  abandoned turns now treats a session whose connection closed as gone, so a
+  turn left open when its agent stopped is ended after the quiet window.
+- **Connectors in the web dashboard: turn on and set up from the
+  connector's page.** A workspace admin turns a connector on from its page,
+  in place of a link to the workspace settings. When its app is not set up,
+  the server operator gets a "Set up" button that opens that app's setup. The
+  list shows "Needs setup" for such a connector.
 - **A sign-out that fails in the dashboard says so.** Signing out, or out of
   every device, from the account menu or the screens before a workspace said
   nothing when Switch didn't answer, and a failed sign-out of this browser
@@ -4588,6 +4596,35 @@ version of their own to them without also giving them a release of their own.
   agent"; it was the only place Console showed that name.
 
 #### Fixed
+- **Connectors: turn a service on before you set it up.** A connector whose
+  app is not set up, and which is off in the workspace, now shows "Turn on" in
+  Discover. "Set up" shows after it is on. In Admin → Connectors, the switch of
+  a service that is off and can never work on this server is disabled; it can
+  still be turned off.
+- **Turning an agent off ends its reply in progress.** The reply is marked
+  interrupted and reported to Switch before the agent stops, so the chat no
+  longer shows "Thinking…" and a spinner until the next message.
+- **Cursor, Goose, Kiro and Mistral Vibe can be installed on Windows.** Each
+  offers its vendor's Windows install, which works from PowerShell or Command
+  Prompt, where before it said "Not found" with nothing to install. Cursor and
+  Kiro are found straight after installing, without restarting Switch Console.
+  An agent with no install for your system, such as DeepSeek Harness on
+  Windows, now says it is not available to install there and links its install
+  docs.
+- **DeepSeek Harness installs a version its sessions accept.** The install
+  took npm's latest release, which sessions with approvals refused. It now
+  installs the release they are verified with, with the npm install scripts it
+  needs allowed.
+- **Switch buddy setup finds a CLI installed in a terminal.** The provider
+  card always offers Check again, also before anything was installed from
+  Console, and the step checks again when its window is focused (at most every
+  15 seconds), which is when someone comes back from a terminal. Before, a CLI
+  installed outside Console while the step was open stayed "Not installed".
+- **An install that needs a missing program says so.** When an install command
+  fails because the shell can't find the program it runs (npm, winget, curl),
+  the card says what is missing and how to get it, for example "Installing
+  OpenCode needs Node.js…", instead of PowerShell's "Check the spelling of the
+  name". It is reported as `missing_prerequisite` in `agent_cli_action`.
 - **Workspace settings opens the web dashboard's settings in its new
   layout.** On a server with the new layout on, Settings › Workspace settings
   landed on its Users page. It now opens the settings home, on the page you

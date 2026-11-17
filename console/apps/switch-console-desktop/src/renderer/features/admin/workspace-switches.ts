@@ -46,3 +46,18 @@ export function switchStanding(
   const using = `${agents} ${agents === 1 ? 'agent uses' : 'agents use'} it`;
   return `${connected} · ${using}`;
 }
+
+/**
+ * A service the server says can never work here: switched off on the server,
+ * needs https the server lacks, a key that never expires, or coming soon.
+ * Excludes operator-fixable codes (app_not_set_up, needs_public_url) where
+ * the admin may turn it on before setup.
+ */
+export function cannotWorkOnThisServer(code: string | null): boolean {
+  return (
+    code === 'switched_off' ||
+    code === 'needs_https' ||
+    code === 'key_never_expires' ||
+    code === 'coming_soon'
+  );
+}
