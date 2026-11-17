@@ -593,12 +593,12 @@ def _organization_directory(
     # `_validate_organization_directory` has refused a missing key or
     # sign-in already.
     assert config.workos_api_key is not None
-    assert config.gateway_oidc_issuer_url is not None
+    assert config.identity_issuer is not None
     return WorkOSDirectory(
         http,
         config.workos_api_key,
         config.workos_api_url,
-        config.gateway_oidc_issuer_url,
+        config.identity_issuer,
         MembersService(http, config.members_service_url)
         if config.members_service_url
         else None,
@@ -1605,7 +1605,7 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
     protocol.install_service = install_service
     if isinstance(organization_directory, WorkOSDirectory):
         # Checked present with the directory (`_validate_organization_directory`).
-        assert config.gateway_oidc_issuer_url is not None
+        assert config.identity_issuer is not None
         own_workos_mirror(
             ownership,
             WorkOSMirror(
@@ -1623,7 +1623,7 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
                     user_store=user_store,
                 ),
                 OwnershipLeaseStore(),
-                config.gateway_oidc_issuer_url,
+                config.identity_issuer,
             ),
         )
 

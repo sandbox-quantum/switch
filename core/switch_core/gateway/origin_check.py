@@ -121,7 +121,7 @@ def allowed_origins(config: SwitchConfig) -> frozenset[str]:
         normalise_origin(config.gateway_public_url),
         normalise_origin(config.frontend_base_url),
     ]
-    if config.gateway_oidc_enabled:
+    if config.gateway_sso_enabled:
         found.append(normalise_origin(config.gateway_oidc_redirect_url))
     found.extend(check_extra_origin(e) for e in config.gateway_extra_origins)
     return frozenset(o for o in found if o is not None)

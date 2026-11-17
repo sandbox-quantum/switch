@@ -395,13 +395,13 @@ async def auth_config(
     return AuthConfigResponse(
         password_login_enabled=config.gateway_password_login_enabled,
         signup_enabled=config.gateway_signup_open,
-        oidc_enabled=config.gateway_oidc_enabled,
+        oidc_enabled=config.gateway_sso_enabled,
         oidc_provider_label=config.gateway_oidc_provider_label,
         oidc_login_options=[
             OidcLoginOptionView(id=option.id, label=option.label)
             for option in config.gateway_oidc_login_options
         ],
-        oidc_browser_handoff=config.gateway_oidc_enabled,
+        oidc_browser_handoff=config.gateway_sso_enabled,
         signup_mode=config.gateway_signup_mode,
     )
 

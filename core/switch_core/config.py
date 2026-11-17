@@ -1,3 +1,4 @@
+import ipaddress
 import os
 import re
 import ssl
@@ -126,6 +127,14 @@ _RESERVED_OIDC_PARAMS = frozenset(
         "code_challenge_method",
     }
 )
+
+
+# Where identities that sign in through WorkOS AuthKit are kept
+# (`oidc_identities.iss`). Not the token's `iss`, which names the default
+# application's client and changes when an environment adds a custom auth
+# domain: a WorkOS user id is unique across WorkOS, so one fixed name keys
+# them for good.
+WORKOS_IDENTITY_ISSUER = "https://api.workos.com/user_management"
 
 
 class OidcLoginOption(BaseModel):
@@ -342,6 +351,19 @@ class SwitchConfig(BaseSettings):
     # That is not new here; it is the same subject-only match this login has
     # always done for such a row. See OidcIdentity's docstring in models.py.
     gateway_oidc_require_email_verified: bool = True
+    # Which single sign-on the gateway offers. "oidc": the generic OIDC
+    # client above, against any provider (off unless `GATEWAY_OIDC_*` are
+    # set). "workos": WorkOS AuthKit's own sign-in, with the AuthKit
+    # application in `WORKOS_CLIENT_ID` and its key in `WORKOS_API_KEY`, so the
+    # gateway holds the person's AuthKit session and can end and follow it
+    # (`gateway/workos_authkit.py`). The routes, the redirect URL setting, the
+    # button label and the email-verified rule are the same for both.
+    gateway_sign_in_provider: Literal["oidc", "workos"] = "oidc"
+    # The proxies in front of the server whose `X-Forwarded-For` is believed,
+    # as a JSON list of addresses or CIDR ranges. Only used to tell WorkOS the
+    # address a sign-in came from, which its bot protection may need. Without
+    # it the gateway sends none rather than its load balancer's.
+    gateway_trusted_proxies: list[str] = []
     # Lets the password login path be disabled (OIDC-only) without code changes.
     gateway_password_login_enabled: bool = True
     # Open self sign-up with email and password: anyone who can reach the
@@ -1356,7 +1378,7 @@ class SwitchConfig(BaseSettings):
             return self.frontend_base_url
         if self.gateway_ui_dir is None:
             return None
-        if self.gateway_oidc_enabled and self.gateway_oidc_redirect_url:
+        if self.gateway_sso_enabled and self.gateway_oidc_redirect_url:
             callback = urlsplit(self.gateway_oidc_redirect_url)
             return f"{callback.scheme}://{callback.netloc}"
         if self.gateway_public_url:
@@ -1722,11 +1744,12 @@ class SwitchConfig(BaseSettings):
                 "ORGANIZATION_DIRECTORY=workos needs WORKOS_API_KEY, to read "
                 "who belongs to which organization."
             )
-        if not self.gateway_oidc_issuer_url:
+        if self.identity_issuer is None:
             raise ValueError(
-                "ORGANIZATION_DIRECTORY=workos needs the gateway's OIDC sign-in "
-                "(GATEWAY_OIDC_*) set up against the same WorkOS environment: "
-                "the sign-in is what names the person there."
+                "ORGANIZATION_DIRECTORY=workos needs the gateway's sign-in set up "
+                "against the same WorkOS environment, as "
+                "GATEWAY_SIGN_IN_PROVIDER=workos or GATEWAY_OIDC_*: the sign-in "
+                "is what names the person there."
             )
         if self.gateway_signup_mode != "invite_only":
             raise ValueError(
@@ -1735,18 +1758,76 @@ class SwitchConfig(BaseSettings):
                 "customer's organization is linked by an operator "
                 "(switch-link-workos), not created by whoever signs up."
             )
-        changes = (
-            self.members_service_url,
-            self.workos_client_id,
-            self.workos_redirect_url,
-        )
+        changes = (self.members_service_url, self.workos_redirect_url)
         if 0 < sum(1 for value in changes if value) < len(changes):
             raise ValueError(
-                "MEMBERS_SERVICE_URL, WORKOS_CLIENT_ID and WORKOS_REDIRECT_URL "
-                "are set together: changes to a linked organization's members "
-                "go to the members service with a token from that AuthKit "
-                "application."
+                "MEMBERS_SERVICE_URL and WORKOS_REDIRECT_URL are set together: "
+                "changes to a linked organization's members go to the members "
+                "service with a token from the AuthKit application's sign-in, "
+                "which comes back to WORKOS_REDIRECT_URL."
             )
+        if self.members_service_url and not self.workos_client_id:
+            raise ValueError(
+                "MEMBERS_SERVICE_URL needs WORKOS_CLIENT_ID, the AuthKit "
+                "application admins sign in to for the members service's token."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_gateway_sign_in_provider(self) -> "SwitchConfig":
+        if self.gateway_sign_in_provider != "workos":
+            return self
+        missing = [
+            name
+            for name, value in (
+                ("WORKOS_CLIENT_ID", self.workos_client_id),
+                ("WORKOS_API_KEY", self.workos_api_key),
+                ("GATEWAY_OIDC_REDIRECT_URL", self.gateway_oidc_redirect_url),
+            )
+            if not value
+        ]
+        if missing:
+            raise ValueError(
+                "GATEWAY_SIGN_IN_PROVIDER=workos needs "
+                f"{', '.join(missing)}: the AuthKit application people sign in "
+                "through, its API key, and the callback registered on it "
+                "(.../gateway/auth/oidc/callback)."
+            )
+        generic = [
+            name
+            for name, value in (
+                ("GATEWAY_OIDC_ISSUER_URL", self.gateway_oidc_issuer_url),
+                ("GATEWAY_OIDC_CLIENT_ID", self.gateway_oidc_client_id),
+                ("GATEWAY_OIDC_CLIENT_SECRET", self.gateway_oidc_client_secret),
+                ("GATEWAY_OIDC_SCOPES", self.gateway_oidc_scopes),
+            )
+            if value
+        ]
+        if generic:
+            raise ValueError(
+                "GATEWAY_SIGN_IN_PROVIDER=workos signs in through AuthKit, not "
+                f"the generic OIDC client: unset {', '.join(generic)}."
+            )
+        if self.gateway_oidc_login_options:
+            raise ValueError(
+                "GATEWAY_OIDC_LOGIN_OPTIONS is not used with "
+                "GATEWAY_SIGN_IN_PROVIDER=workos: AuthKit's own sign-in page "
+                "offers the ways to sign in, and going around it skips what it "
+                "handles (email verification, multi-factor sign-in, an "
+                "organization's own single sign-on)."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_gateway_trusted_proxies(self) -> "SwitchConfig":
+        for entry in self.gateway_trusted_proxies:
+            try:
+                ipaddress.ip_network(entry, strict=False)
+            except ValueError as error:
+                raise ValueError(
+                    "GATEWAY_TRUSTED_PROXIES takes addresses or CIDR ranges, "
+                    f"got {entry!r}: {error}"
+                ) from error
         return self
 
     @model_validator(mode="after")
@@ -2028,11 +2109,31 @@ class SwitchConfig(BaseSettings):
 
     @property
     def gateway_oidc_enabled(self) -> bool:
+        """The generic OIDC client is configured."""
         return bool(
             self.gateway_oidc_issuer_url
             and self.gateway_oidc_client_id
             and self.gateway_oidc_client_secret
         )
+
+    @property
+    def gateway_workos_sign_in(self) -> bool:
+        return self.gateway_sign_in_provider == "workos"
+
+    @property
+    def gateway_sso_enabled(self) -> bool:
+        """Some single sign-on is offered: the generic OIDC client, or WorkOS
+        AuthKit. Both are reached through `/auth/oidc/login`."""
+        return self.gateway_workos_sign_in or self.gateway_oidc_enabled
+
+    @property
+    def identity_issuer(self) -> str | None:
+        """The issuer this server's single sign-on identities are kept and
+        looked up under (`oidc_identities.iss`), or None with no single
+        sign-on."""
+        if self.gateway_workos_sign_in:
+            return WORKOS_IDENTITY_ISSUER
+        return self.gateway_oidc_issuer_url if self.gateway_oidc_enabled else None
 
     @property
     def gateway_signup_open(self) -> bool:
@@ -2041,7 +2142,7 @@ class SwitchConfig(BaseSettings):
         return (
             self.gateway_signup_enabled
             and self.gateway_password_login_enabled
-            and not self.gateway_oidc_enabled
+            and not self.gateway_sso_enabled
             and self.gateway_signup_mode == "default_tenant"
         )
 

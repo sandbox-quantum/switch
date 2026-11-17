@@ -213,10 +213,12 @@ def _parser() -> argparse.ArgumentParser:
 
 
 async def _run(config: SwitchConfig, arguments: argparse.Namespace) -> int:
-    if not config.workos_api_key or not config.gateway_oidc_issuer_url:
+    issuer = config.identity_issuer
+    if not config.workos_api_key or issuer is None:
         raise SystemExit(
-            "switch-link-workos needs WORKOS_API_KEY and the gateway's OIDC "
-            "sign-in (GATEWAY_OIDC_*) configured against the WorkOS environment."
+            "switch-link-workos needs WORKOS_API_KEY and the gateway's sign-in "
+            "(GATEWAY_SIGN_IN_PROVIDER=workos, or GATEWAY_OIDC_*) configured "
+            "against the WorkOS environment."
         )
     engine = create_engine_from_config(config)
     try:
@@ -226,7 +228,7 @@ async def _run(config: SwitchConfig, arguments: argparse.Namespace) -> int:
                 http,
                 config.workos_api_key,
                 config.workos_api_url,
-                config.gateway_oidc_issuer_url,
+                issuer,
                 None,
             )
             session_factory = create_session_factory(engine)
@@ -245,7 +247,7 @@ async def _run(config: SwitchConfig, arguments: argparse.Namespace) -> int:
                     session_factory,
                     directory,
                     UserStore(),
-                    config.gateway_oidc_issuer_url,
+                    issuer,
                     apply=arguments.apply,
                 )
             except (LinkingError, DirectoryError) as error:
