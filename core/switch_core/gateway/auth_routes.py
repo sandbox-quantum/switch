@@ -133,9 +133,9 @@ def _session_response(user: User) -> SessionUserResponse:
     """An authenticated session, carrying what the server is (CHOO-1865).
 
     Every response that establishes or confirms a session says so, which means
-    a client learns the server's ranges on the call it already makes. The
-    authentication surface is frozen and excluded from `gateway-api`, so this
-    is the one path that cannot itself be the thing that broke.
+    a client learns the server's ranges on the call it already makes. Signing
+    in, refreshing and signing out are frozen and excluded from `gateway-api`,
+    so this is the one path that cannot itself be the thing that broke.
     """
     return SessionUserResponse(
         id=user.id,
