@@ -126,8 +126,10 @@ The goal: a useful answer from their own agent, in as few messages as you can.
    answer will appear in the room, naming it as the room reports it (the app may have
    added a suffix), not the name you asked for, and end the reply with its link on a
    line of its own, the last thing they read:
-   `**[Open <room name> →](switchdash://open/room/<room-id>)**`. Nothing in Switch
-   Console points them to a new room, so this line is how they get there. Never end the turn on "creating it now": come back
+   `**[Open <room name> →](switchdash://open/room/<room-id>)**`. When the room has a
+   channel on the app you are talking to them in, `get_room_detail` gives its
+   `channel_url`: link that instead, since it opens where they already are. Nothing
+   in Switch Console points them to a new room, so this line is how they get there. Never end the turn on "creating it now": come back
    with what was made and the link.
 
 Call a room private only if you created it with `channel_type` "channel_private",
