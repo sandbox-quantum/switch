@@ -417,3 +417,150 @@ describe('SshFileSystem trailing-slash tolerance', () => {
     }
   });
 });
+
+function makeGlobFs(stdout: string = '') {
+  const execCommands: string[] = [];
+  const proxy = {
+    sftp: vi.fn(),
+    getRemoteShellProfile: vi.fn(async () => ({ shell: '/bin/sh', env: {} })),
+    exec: vi.fn(
+      (command: string, callback: (error: Error | undefined, stream: EventEmitter) => void) => {
+        execCommands.push(command);
+        const stream = new EventEmitter() as EventEmitter & { stderr: EventEmitter };
+        stream.stderr = new EventEmitter();
+        callback(undefined, stream);
+        if (stdout) {
+          setImmediate(() => {
+            stream.emit('data', Buffer.from(stdout));
+            stream.emit('close', 0);
+          });
+        } else {
+          setImmediate(() => stream.emit('close', 0));
+        }
+      }
+    ),
+  };
+
+  return {
+    fs: new SshFileSystem(proxy as never, '/repo'),
+    execCommands,
+    proxy,
+  };
+}
+
+describe('SshFileSystem.glob', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('rejects command injection payloads before reaching SSH', async () => {
+    const maliciousPatterns = [
+      '*.ts; id > /tmp/pwned #',
+      '$(id)',
+      '`id`',
+      '*.ts && rm -rf /',
+      '*.ts | cat',
+      '*.ts\nid',
+      '*.ts > /tmp/pwned',
+      "*.ts'foo",
+      '*.ts"foo',
+      '*.ts\\foo',
+      '*.ts#comment',
+    ];
+
+    for (const pattern of maliciousPatterns) {
+      const { fs, proxy } = makeGlobFs();
+      await expect(fs.glob(pattern)).rejects.toMatchObject({
+        code: FileSystemErrorCodes.INVALID_PATH,
+      });
+      expect(proxy.exec).not.toHaveBeenCalled();
+    }
+  });
+
+  it('rejects empty or whitespace-only patterns', async () => {
+    const { fs, proxy } = makeGlobFs();
+    await expect(fs.glob('')).rejects.toMatchObject({
+      code: FileSystemErrorCodes.INVALID_PATH,
+    });
+    await expect(fs.glob('   ')).rejects.toMatchObject({
+      code: FileSystemErrorCodes.INVALID_PATH,
+    });
+    expect(proxy.exec).not.toHaveBeenCalled();
+  });
+
+  it('rejects path traversal in pattern before reaching SSH', async () => {
+    const traversalPatterns = [
+      '../../etc/*',
+      '/etc/*',
+      'subdir/../../../outside',
+      '*/*/../../../etc/*',
+      '..',
+      '../..',
+    ];
+
+    for (const pattern of traversalPatterns) {
+      const { fs, proxy } = makeGlobFs();
+      await expect(fs.glob(pattern)).rejects.toMatchObject({
+        code: FileSystemErrorCodes.PATH_ESCAPE,
+      });
+      expect(proxy.exec).not.toHaveBeenCalled();
+    }
+  });
+
+  it('rejects path traversal in cwd option before reaching SSH', async () => {
+    const { fs, proxy } = makeGlobFs();
+    await expect(fs.glob('*.ts', { cwd: '../../outside' })).rejects.toMatchObject({
+      code: FileSystemErrorCodes.PATH_ESCAPE,
+    });
+    expect(proxy.exec).not.toHaveBeenCalled();
+  });
+
+  it('executes safe glob patterns and returns matching files', async () => {
+    const { fs, execCommands } = makeGlobFs('file1.ts\nfile2.ts\n');
+    const results = await fs.glob('*.ts');
+
+    expect(results).toEqual(['file1.ts', 'file2.ts']);
+    expect(execCommands).toHaveLength(1);
+    expect(execCommands[0]).toContain('cd --');
+    expect(execCommands[0]).toContain('/repo');
+    expect(execCommands[0]).toContain('printf');
+    expect(execCommands[0]).toContain('*.ts');
+  });
+
+  it('handles options.dot by enabling dotglob', async () => {
+    const { fs, execCommands } = makeGlobFs('.env\n.env.local\n');
+    const results = await fs.glob('.env*', { dot: true });
+
+    expect(results).toEqual(['.env', '.env.local']);
+    expect(execCommands).toHaveLength(1);
+    expect(execCommands[0]).toContain('shopt -s dotglob;');
+    expect(execCommands[0]).toContain('.env*');
+  });
+
+  it('handles options.cwd by resolving and escaping cwd', async () => {
+    const { fs, execCommands } = makeGlobFs('a.ts\n');
+    const results = await fs.glob('*.ts', { cwd: 'src' });
+
+    expect(results).toEqual(['a.ts']);
+    expect(execCommands).toHaveLength(1);
+    expect(execCommands[0]).toContain('cd --');
+    expect(execCommands[0]).toContain('/repo/src');
+    expect(execCommands[0]).toContain('*.ts');
+  });
+
+  it('escapes spaces in glob patterns safely', async () => {
+    const { fs, execCommands } = makeGlobFs('my file.ts\n');
+    const results = await fs.glob('my file*.ts');
+
+    expect(results).toEqual(['my file.ts']);
+    expect(execCommands).toHaveLength(1);
+    expect(execCommands[0]).toContain('my\\ file*.ts');
+  });
+
+  it('filters out results that resolve outside the base directory', async () => {
+    const { fs } = makeGlobFs('valid.ts\n../../etc/passwd\n');
+    const results = await fs.glob('*.ts');
+
+    expect(results).toEqual(['valid.ts']);
+  });
+});

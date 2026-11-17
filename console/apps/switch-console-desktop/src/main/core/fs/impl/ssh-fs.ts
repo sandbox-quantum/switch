@@ -52,6 +52,11 @@ const MAX_READ_SIZE = 100 * 1024 * 1024;
  */
 const DEFAULT_MAX_BYTES = 200 * 1024;
 
+/**
+ * Allowed characters for glob patterns to prevent shell command injection.
+ */
+const SAFE_GLOB_PATTERN = /^[a-zA-Z0-9_./*?[\]{},@+% -]+$/;
+
 const isNotFound = (error: unknown) =>
   error instanceof FileSystemError && error.code === FileSystemErrorCodes.NOT_FOUND;
 
@@ -620,13 +625,58 @@ export class SshFileSystem implements FileSystemProvider {
   }
 
   async glob(pattern: string, options?: { cwd?: string; dot?: boolean }): Promise<string[]> {
+    if (!pattern || typeof pattern !== 'string' || !pattern.trim()) {
+      throw new FileSystemError(
+        'Glob pattern is required',
+        FileSystemErrorCodes.INVALID_PATH,
+        pattern
+      );
+    }
+
+    if (!SAFE_GLOB_PATTERN.test(pattern)) {
+      throw new FileSystemError('Invalid glob pattern', FileSystemErrorCodes.INVALID_PATH, pattern);
+    }
+
     const cwd = options?.cwd ? this.resolveRemotePath(options.cwd) : this.remotePath;
+
+    if (pattern.startsWith('/')) {
+      const normalized = this.normalizePosixPath(pattern);
+      if (!this.isWithinBase(normalized)) {
+        throw new FileSystemError(
+          'Path traversal detected: path escapes base directory',
+          FileSystemErrorCodes.PATH_ESCAPE,
+          pattern
+        );
+      }
+    } else {
+      if (this.hasTraversingParentSegments(pattern)) {
+        throw new FileSystemError(
+          'Path traversal detected: path escapes base directory',
+          FileSystemErrorCodes.PATH_ESCAPE,
+          pattern
+        );
+      }
+      const resolved = pathPosix.resolve(cwd, pattern);
+      if (!this.isWithinBase(resolved)) {
+        throw new FileSystemError(
+          'Path traversal detected: path escapes base directory',
+          FileSystemErrorCodes.PATH_ESCAPE,
+          pattern
+        );
+      }
+    }
+
     const dotSetup = options?.dot ? 'shopt -s dotglob;' : '';
-    const command = `${dotSetup} shopt -s nullglob; cd ${quoteShellArg(cwd)} && printf '%s\\n' ${pattern}`;
+    const escapedPattern = pattern.replace(/ /g, '\\ ');
+    const command = `${dotSetup} shopt -s nullglob; cd -- ${quoteShellArg(cwd)} && printf '%s\\n' ${escapedPattern}`;
     try {
       const result = await this.exec(command);
       if (result.exitCode !== 0) return [];
-      return result.stdout.trim().split('\n').filter(Boolean);
+      const lines = result.stdout.trim().split('\n').filter(Boolean);
+      return lines.filter((entry) => {
+        const resolved = pathPosix.resolve(cwd, entry);
+        return this.isWithinBase(resolved);
+      });
     } catch {
       return [];
     }
@@ -972,6 +1022,22 @@ export class SshFileSystem implements FileSystemProvider {
 
     // Path must start with base path
     return normalizedPath === normalizedBase || normalizedPath.startsWith(`${normalizedBase}/`);
+  }
+
+  /**
+   * Check if a glob pattern contains '..' path segments after any wildcard character.
+   */
+  private hasTraversingParentSegments(pattern: string): boolean {
+    const segments = pattern.split('/');
+    let seenWildcard = false;
+    for (const seg of segments) {
+      if (/[*?[{]/.test(seg)) {
+        seenWildcard = true;
+      } else if (seg === '..' && seenWildcard) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /**
