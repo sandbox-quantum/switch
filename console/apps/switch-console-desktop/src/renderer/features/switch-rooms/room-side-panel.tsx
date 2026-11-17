@@ -612,7 +612,7 @@ const AgentRow = observer(function AgentRow({
     ) : null;
 
   return (
-    <div className="group flex items-center gap-1 rounded-md pr-2 hover:bg-[var(--sel-soft)]">
+    <div className="group flex items-center gap-1 rounded-md pr-1 hover:bg-[var(--sel-soft)]">
       {own && serverId ? (
         <button
           type="button"
@@ -660,7 +660,7 @@ function PersonRow({
 }) {
   const [busy, setBusy] = useState(false);
   return (
-    <div className="group flex items-center gap-2 rounded-md px-2 py-1 hover:bg-[var(--sel-soft)]">
+    <div className="group flex items-center gap-2 rounded-md py-1 pr-1 pl-2 hover:bg-[var(--sel-soft)]">
       <PersonMark name={name} userId={userId} size="sm" />
       <span className="min-w-0 flex-1 truncate text-[13px] text-foreground">
         {name}
