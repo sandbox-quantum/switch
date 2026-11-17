@@ -62,8 +62,10 @@ RETRY_AFTER_S = 1
 _LOG_EVERY_S = 60.0
 
 # Routes that stay open for as long as their client is there, relative to the
-# gateway's mount. They wait for news holding no connection.
-_STREAMS = frozenset({"/chats/events", "/chats/activity/events"})
+# gateway's mount, by the name their metrics carry. They wait for news holding
+# no connection; how many one caller and this process hold is bounded instead
+# (`gateway/stream_caps.py`).
+STREAMS = {"/chats/events": "chat_events", "/chats/activity/events": "chat_activity"}
 _READS = frozenset({"GET", "HEAD"})
 
 
@@ -117,6 +119,22 @@ class _Line:
         return self.running == 0 and not self.waiting
 
 
+def caller_key(scope: Scope, keyring: Keyring) -> str:
+    """Who a request or socket is counted against: the person its session
+    cookie names, once the signature checks out, else its bearer token,
+    hashed, else the address it came from."""
+    token = HTTPConnection(scope).cookies.get("switch_auth")
+    if token:
+        subject = session_subject(token, keyring)
+        if subject is not None:
+            return f"user:{subject}"
+    bearer = bearer_caller(scope)
+    if bearer is not None:
+        return f"token:{bearer}"
+    client = scope.get("client")
+    return f"address:{client[0] if client else 'unknown'}"
+
+
 def route_path(scope: Scope) -> str:
     """The path below the gateway's mount (`/gateway`)."""
     path = scope.get("path") or ""
@@ -145,19 +163,10 @@ class GatewayAdmission:
 
     def caller(self, scope: Scope) -> str:
         """Who a request's turns are counted against."""
-        token = HTTPConnection(scope).cookies.get("switch_auth")
-        if token:
-            subject = session_subject(token, self._keyring)
-            if subject is not None:
-                return f"user:{subject}"
-        bearer = bearer_caller(scope)
-        if bearer is not None:
-            return f"token:{bearer}"
-        client = scope.get("client")
-        return f"address:{client[0] if client else 'unknown'}"
+        return caller_key(scope, self._keyring)
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] != "http" or route_path(scope) in _STREAMS:
+        if scope["type"] != "http" or route_path(scope) in STREAMS:
             await self.app(scope, receive, send)
             return
         caller = self.caller(scope)

@@ -85,6 +85,7 @@ from switch_core.gateway.service_connections import (
     router as service_connections_router,
 )
 from switch_core.gateway.service_flows import router as service_flows_router
+from switch_core.gateway.stream_caps import GatewayStreamCaps
 from switch_core.gateway.teams_placements import router as teams_placements_router
 from switch_core.gateway.template_runs import router as template_runs_router
 from switch_core.gateway.templates import router as templates_router
@@ -233,6 +234,14 @@ def create_gateway_app(
     origins = allowed_origins(config)
     log_origin_setup(config, origins)
     app.add_middleware(OriginCheckMiddleware, allowed=origins)
+    # Outside everything but admission, which lets streams through: a stream
+    # refused here does no other work.
+    app.add_middleware(
+        GatewayStreamCaps,
+        per_caller=config.gateway_streams_per_caller,
+        per_process=config.gateway_streams_per_process,
+        keyring=config.keyring,
+    )
     # Last, so outermost: a request turned away does no other work.
     app.add_middleware(
         GatewayAdmission,
