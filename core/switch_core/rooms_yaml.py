@@ -465,6 +465,9 @@ class RoomSpec(BaseModel):
     channel_type: Literal["channel_public", "channel_private"] | None = None
     # Omitted, the room follows its channel (`room_policy.visibility_for_channel`).
     read_visibility: str | None = None
+    # A private channel even for a creator with no linked account, who is then
+    # refused; without it their room falls back to a public channel.
+    require_private: bool = False
     # Accepted from older templates and ignored: a room has no write
     # visibility of its own.
     write_visibility: str | None = None
@@ -1171,6 +1174,7 @@ class RoomYamlService:
             created_by=user_id,
             created_by_kind="agent" if origin is not None else "user",
             from_template=True,
+            channel_type_is_default=not spec.require_private,
             created_by_agent_id=origin.agent_id if origin else None,
             parent_room_id=origin.parent_room_id if origin else None,
             run_id=origin.run_id if origin else None,

@@ -11,6 +11,7 @@ for real.
 from __future__ import annotations
 
 import uuid
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -20,6 +21,7 @@ from fastapi import HTTPException
 from sqlalchemy import insert, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core import official_templates as official_rooms
 from switch_core.agent_runs import AgentOrigin
 from switch_core.authz import Principal
 from switch_core.bridges.resource.service import ResourceService
@@ -546,6 +548,41 @@ async def test_a_room_that_asks_for_a_public_channel_gets_one(env):
     )
     await _svc(env).provision(spec, user_id=env["user_id"], is_admin=False)
     assert env["rooms"].configs[-1].channel_type == "channel_public"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("extra", "is_default"), [("", True), ("require_private: true", False)]
+)
+async def test_a_templates_private_channel_is_a_default_unless_required(
+    env, extra, is_default
+):
+    """A creator with no linked account gets a public room in place of the
+    template's private channel, unless the template requires it private."""
+    spec, _ = _svc(env).parse(
+        f"""
+        room:
+          name: "Hush"
+          description: "private"
+          channel_type: channel_private
+          {extra}
+        """
+    )
+    await _svc(env).provision(spec, user_id=env["user_id"], is_admin=False)
+    config = env["rooms"].configs[-1]
+    assert config.channel_type == "channel_private"
+    assert config.channel_type_is_default is is_default
+
+
+@pytest.mark.parametrize("slug", ["fundraising-war-room", "hiring-pipeline"])
+def test_the_rooms_that_were_private_before_require_it(slug):
+    path = Path(official_rooms.__file__).parent / "rooms" / f"{slug}.yaml"
+    room = yaml.safe_load(path.read_text())["resources"]
+    assert any(
+        entry.get("require_private") is True
+        for entry in (room.values() if isinstance(room, dict) else room)
+        if isinstance(entry, dict)
+    )
 
 
 @pytest.mark.asyncio
