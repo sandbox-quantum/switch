@@ -176,8 +176,9 @@ class AgentSessionActivityStore:
         on the session rather than the agent:
 
         - its session is live when it is placed (`AgentSessionPlacement`) over
-          a connection whose process holds its lease, or when a heartbeat for
-          the turn's room is fresh. A live session's turn is never ended;
+          an open connection whose process holds its lease (a placement
+          outlives its connection for routing, so a closed one does not count),
+          or when a heartbeat for the turn's room is fresh. A live session's turn is never ended;
         - a turn waiting on an open request is never ended either: it is
           quiet because a person has not answered yet, and the request's own
           expiry is what bounds the wait;
@@ -213,6 +214,7 @@ class AgentSessionActivityStore:
             AgentSessionPlacement.agent_id == turn.agent_id,
             AgentSessionPlacement.session_id == turn.session_id,
             AgentConnectionRecord.id == AgentSessionPlacement.connection_id,
+            AgentConnectionRecord.closed_at.is_(None),
             held(AgentConnectionRecord.process_id),
         )
         beating_here = exists().where(

@@ -457,6 +457,17 @@ version of their own to them without also giving them a release of their own.
   already refused both, so the current Workspace page no longer offers them.
 
 #### Changed
+- **The Discord connect form asks for the Server ID.** Discord's own app
+  calls the guild id a Server ID, and that is what you copy from the server
+  icon; the setting's key stays `guild_id`.
+- **The dashboard's budget page is called Usage & budget,** and its Add
+  budget button no longer squeezes until its label wraps out of it on a
+  narrower window. Back to workspace, in Organization settings and Platform,
+  returns to the page you came from rather than always to home.
+- **Auto-route's messages send workspace admins to Settings, not Admin.**
+  Where a room says auto-route needs a decision service, or that the
+  workspace turned it off, it points at Switch Console → Settings → Decision
+  routing, where the page now lives.
 - **Switch Trust guardrails are set per organization instead of once for
   the whole server.** Each organization's admins connect its own policy, with
   a policy ID and an API key, under Organization settings › Guardrails. Switch
@@ -673,6 +684,14 @@ version of their own to them without also giving them a release of their own.
   of as well as the rooms.
 
 #### Fixed
+- **A stopped agent's unfinished turn is ended.** The sweep that ends
+  abandoned turns now treats a session whose connection closed as gone, so a
+  turn left open when its agent stopped is ended after the quiet window.
+- **Connectors in the web dashboard: turn on and set up from the
+  connector's page.** A workspace admin turns a connector on from its page,
+  in place of a link to the workspace settings. When its app is not set up,
+  the server operator gets a "Set up" button that opens that app's setup. The
+  list shows "Needs setup" for such a connector.
 - **A sign-out that fails in the dashboard says so.** Signing out, or out of
   every device, from the account menu or the screens before a workspace said
   nothing when Switch didn't answer, and a failed sign-out of this browser
@@ -4236,6 +4255,15 @@ version of their own to them without also giving them a release of their own.
   A machine cannot be given a Mistral Vibe login from Console yet.
 
 #### Changed
+- **The Admin pages are in Settings.** The Admin item is gone from the
+  sidebar. Workspace admins find Connectors and Decision routing in Settings,
+  after Agent providers, and every workspace admin sees Guardrails there:
+  which Switch Trust policy checks the workspace, or that none does, with the
+  way to the workspace's Guardrails page in the dashboard, or for an
+  organization admin to Organization settings. Each page says under its title
+  what your role lets you do there. Messaging apps is one page for everyone,
+  with Connect and each app's settings for admins and without the tooltips
+  and second heading. Links that opened Admin open the matching Settings page.
 - **Admin › Switch Trust points to the organization's guardrails on a server
   that sets them per organization.** Such a server no longer has a
   server-wide policy to edit, so the form gives way to its note and a button
@@ -4308,6 +4336,14 @@ version of their own to them without also giving them a release of their own.
   agent"; it was the only place Console showed that name.
 
 #### Fixed
+- **Connectors: turn a service on before you set it up.** A connector whose
+  app is not set up, and which is off in the workspace, now shows "Turn on" in
+  Discover. "Set up" shows after it is on. In Admin → Connectors, the switch of
+  a service that is off and can never work on this server is disabled; it can
+  still be turned off.
+- **Turning an agent off ends its reply in progress.** The reply is marked
+  interrupted and reported to Switch before the agent stops, so the chat no
+  longer shows "Thinking…" and a spinner until the next message.
 - **Cursor, Goose, Kiro and Mistral Vibe can be installed on Windows.** Each
   offers its vendor's Windows install, which works from PowerShell or Command
   Prompt, where before it said "Not found" with nothing to install. Cursor and
@@ -4319,6 +4355,16 @@ version of their own to them without also giving them a release of their own.
   took npm's latest release, which sessions with approvals refused. It now
   installs the release they are verified with, with the npm install scripts it
   needs allowed.
+- **Switch buddy setup finds a CLI installed in a terminal.** The provider
+  card always offers Check again, also before anything was installed from
+  Console, and the step checks again when its window is focused (at most every
+  15 seconds), which is when someone comes back from a terminal. Before, a CLI
+  installed outside Console while the step was open stayed "Not installed".
+- **An install that needs a missing program says so.** When an install command
+  fails because the shell can't find the program it runs (npm, winget, curl),
+  the card says what is missing and how to get it, for example "Installing
+  OpenCode needs Node.js…", instead of PowerShell's "Check the spelling of the
+  name". It is reported as `missing_prerequisite` in `agent_cli_action`.
 - **Workspace settings opens the web dashboard's settings in its new
   layout.** On a server with the new layout on, Settings › Workspace settings
   landed on its Users page. It now opens the settings home, on the page you

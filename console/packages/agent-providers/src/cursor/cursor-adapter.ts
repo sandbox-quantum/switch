@@ -39,10 +39,13 @@ export const CURSOR_NEEDS_GIT_BASH =
   'Cursor runs commands through Git Bash, which isn’t installed on this computer. Install Git for Windows (https://git-scm.com/download/win), then check again.';
 
 /**
- * Whether Git for Windows' Bash is on `path`: a `bash.exe` in a Git `bin` or
- * `usr\\bin` folder. Switch Console and the agent controller put Git's `bin`
- * on PATH when Git is installed anywhere they know, so its absence here means
- * there is no Git Bash to run. The `bash.exe` in System32 is WSL's, not it.
+ * Whether Git for Windows' Bash is on `path`: a `bash.exe` in a `bin` or
+ * `usr\\bin` folder whose root holds `cmd\\git.exe`, whatever that root is
+ * called (PortableGit, Scoop's `git\\current`). Switch Console and the agent
+ * controller put Git's `bin` on PATH when Git is installed anywhere they know
+ * or its `cmd` is on PATH (`withWindowsGitBashDir`, the same rule), so its
+ * absence here means there is no Git Bash to run. The `bash.exe` in System32
+ * is WSL's, not it.
  */
 export function hasWindowsGitBash(
   path: string,
@@ -51,7 +54,14 @@ export function hasWindowsGitBash(
   return path
     .split(';')
     .map((entry) => entry.replace(/[\\/]+$/, ''))
-    .some((dir) => /\\git\\(?:usr\\)?bin$/i.test(dir) && fileExists(win32.join(dir, 'bash.exe')));
+    .some((dir) => {
+      const root = dir.match(/^(.+?)\\(?:usr\\)?bin$/i)?.[1];
+      return (
+        root !== undefined &&
+        fileExists(win32.join(dir, 'bash.exe')) &&
+        fileExists(win32.join(root, 'cmd', 'git.exe'))
+      );
+    });
 }
 
 interface CursorQuestion {

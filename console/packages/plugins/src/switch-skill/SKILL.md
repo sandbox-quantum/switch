@@ -13,10 +13,10 @@ Switch tools are missing entirely, say so rather than guessing.
 
 Hosts show the tools under the server's name rather than bare: Claude Code as
 `mcp__switch__<tool>` (as does DeepSeek Harness), Codex and OpenCode under the
-`switch` server. Antigravity
-reaches an MCP tool through `call_mcp_tool`, naming the `switch` server and the
-tool; Junie shows them as `mcp_switch_<tool>`. The names in this skill are the
-tool names themselves.
+`switch` server. Antigravity and Junie show them as `mcp_switch_<tool>`; call
+them directly. Antigravity is given only the opening summary of each tool's
+description, so this skill is where the rest is. The names in this skill are
+the tool names themselves.
 
 **This skill is session-level context, not a per-call checklist.** You have it
 now; it stays true until the session ends. The later sections are reference —
@@ -181,7 +181,7 @@ does, and there is no polling tool to call.
   Switch Console or on the gateway's room page.
 
   Which decision service a room uses is its workspace's choice, made by a
-  workspace admin in Switch Console → Admin → Decision routing: the server's
+  workspace admin in Switch Console → Settings → Decision routing: the server's
   own default, the workspace's self-hosted endpoint, Claude Haiku, or none.
   With none (or no server default), `!auto-route on` says auto-route needs a
   decision service and changes nothing, and the room works as it does without

@@ -45,8 +45,7 @@ function ToolRows({
 
 /**
  * The turn's earlier tool calls as one line ("12 tool calls"), opening to the
- * calls themselves. A failure is named on the line so it is not hidden by the
- * fold.
+ * calls themselves. A failed call shows only once the group is opened.
  */
 function ToolGroup({
   items,
@@ -58,16 +57,10 @@ function ToolGroup({
   activity: AgentActivity;
 }) {
   const [open, setOpen] = useState(false);
-  const failed = items.filter((item) => toolState(item, turn.status) === 'failed').length;
   return (
     <WorkLogRow
       icon={<ToolKindIcon kind="other" />}
       label={`${items.length} ${items.length === 1 ? 'tool call' : 'tool calls'}`}
-      trailing={
-        failed > 0 ? (
-          <span className="shrink-0 text-xs text-foreground-destructive">· {failed} failed</span>
-        ) : null
-      }
       open={open}
       onToggle={() => setOpen(!open)}
     >

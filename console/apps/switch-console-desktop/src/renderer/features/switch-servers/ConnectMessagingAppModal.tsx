@@ -205,6 +205,11 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
       // would silently submit a credential the user thinks they replaced. The
       // new type's defaults are seeded, so a field left untouched posts what the
       // platform expects rather than nothing.
+      const prevLabel = typeKey ? bridgePlatformLabel(typeKey) : null;
+      const nextLabel = next ? bridgePlatformLabel(next) : '';
+      if (!displayName.trim() || displayName === prevLabel) {
+        setDisplayName(nextLabel);
+      }
       setTypeKey(next);
       const fields = types.find((t) => t.key === next)?.fields ?? [];
       const defaults: Record<string, string | boolean> = {};
@@ -215,7 +220,7 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
       setChannelCreationEnabled(true);
       setError(null);
     },
-    [types]
+    [types, typeKey, displayName]
   );
 
   useEffect(() => {
@@ -501,7 +506,6 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
                     <FieldLabel htmlFor={inputId('display-name')}>Name</FieldLabel>
                     <Input
                       id={inputId('display-name')}
-                      autoFocus
                       placeholder={`e.g. ${bridgePlatformLabel(selectedType.key)}`}
                       value={displayName}
                       onChange={(e) => {
@@ -547,8 +551,8 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
 
                   {visibleFields
                     .filter((field) => field.kind !== 'boolean')
-                    .map((field) => (
-                      <Field key={field.key}>
+                    .map((field, index) => (
+                      <Field key={`${selectedType.key}:${field.key}`}>
                         <FieldLabel htmlFor={inputId(field.key)}>
                           {field.label}
                           {!field.required && (
@@ -559,6 +563,11 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
                         </FieldLabel>
                         <Input
                           id={inputId(field.key)}
+                          // The guided setup asks its own questions first; focus stays with it.
+                          autoFocus={
+                            index === 0 &&
+                            !(isGuidedPlatform(selectedType.key) && workspaceId !== null)
+                          }
                           // Masked for credentials, so a token is not left readable on
                           // screen while the user checks the rest of the form.
                           type={field.secret ? 'password' : 'text'}

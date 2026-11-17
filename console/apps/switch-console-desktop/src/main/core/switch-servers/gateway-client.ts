@@ -123,6 +123,7 @@ import {
   type TeamsTeam,
   type TeamsTeamsResult,
   type TrustSettings,
+  type WorkspaceGuardrails,
   type UnconfirmedLink,
   type UpdateTrustSettingsParams,
   type LinkedRoom,
@@ -502,6 +503,7 @@ export async function fetchAuthConfig(server: SwitchServer): Promise<SwitchAuthC
     oidc_enabled: boolean;
     oidc_provider_label: string | null;
     signup_enabled?: boolean;
+    test_account_reset_enabled?: boolean;
     oidc_login_options?: { id: string; label: string }[];
     oidc_browser_handoff?: boolean;
   };
@@ -510,6 +512,7 @@ export async function fetchAuthConfig(server: SwitchServer): Promise<SwitchAuthC
     oidcEnabled: json.oidc_enabled,
     oidcProviderLabel: json.oidc_provider_label,
     signupEnabled: json.signup_enabled === true,
+    testAccountResetEnabled: json.test_account_reset_enabled === true,
     // Absent on servers predating them: one button, in the app's own window.
     oidcLoginOptions: (json.oidc_login_options ?? []).map(({ id, label }) => ({ id, label })),
     oidcBrowserHandoff: json.oidc_browser_handoff === true,
@@ -539,6 +542,26 @@ function mapTrustSettings(json: TrustSettingsJson): TrustSettings {
 export async function fetchTrustSettings(server: SwitchServer): Promise<TrustSettings> {
   const res = await gatewayFetch(server, '/trust-settings', { authenticated: true });
   return mapTrustSettings((await res.json()) as TrustSettingsJson);
+}
+
+type WorkspaceGuardrailsJson = {
+  checking: boolean;
+  policy_id: string | null;
+  policy_name: string | null;
+  policy_url: string | null;
+};
+
+/** The policy that checks the selected workspace's messages, for anyone in it
+ * (`GET /workspace/guardrails`). */
+export async function fetchWorkspaceGuardrails(server: SwitchServer): Promise<WorkspaceGuardrails> {
+  const res = await gatewayFetch(server, '/workspace/guardrails', { authenticated: true });
+  const json = (await res.json()) as WorkspaceGuardrailsJson;
+  return {
+    checking: json.checking,
+    policyId: json.policy_id,
+    policyName: json.policy_name,
+    policyUrl: json.policy_url,
+  };
 }
 
 /** Save Switch Trust's settings, admin-only (`PUT /trust-settings`).

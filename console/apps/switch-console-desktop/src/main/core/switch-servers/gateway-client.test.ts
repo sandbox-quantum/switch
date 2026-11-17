@@ -2441,6 +2441,7 @@ describe('sign-up support', () => {
       oidcEnabled: false,
       oidcProviderLabel: null,
       signupEnabled: true,
+      testAccountResetEnabled: false,
       oidcLoginOptions: [],
       oidcBrowserHandoff: false,
     });
@@ -2458,6 +2459,13 @@ describe('sign-up support', () => {
     const read = await fetchAuthConfig(SERVER);
     expect(read.oidcLoginOptions).toEqual([{ id: 'google', label: 'Google' }]);
     expect(read.oidcBrowserHandoff).toBe(true);
+  });
+
+  it.each([true, false, undefined])('reads test-account reset support: %s', async (enabled) => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ ...config, test_account_reset_enabled: enabled })
+    );
+    expect((await fetchAuthConfig(SERVER)).testAccountResetEnabled).toBe(enabled === true);
   });
 
   it('treats a server predating sign-up as not offering it', async () => {

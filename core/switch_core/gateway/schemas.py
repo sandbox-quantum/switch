@@ -1852,6 +1852,7 @@ class AuthConfigResponse(BaseModel):
     # authenticated everywhere (CHOO-1865).
     password_login_enabled: bool
     signup_enabled: bool
+    test_account_reset_enabled: bool
     oidc_enabled: bool
     oidc_provider_label: str | None
     # The sign-in buttons for the OIDC provider (`id`, `label`); empty for one
