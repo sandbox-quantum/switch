@@ -27,6 +27,7 @@ from switch_core.account_links import (
     new_link_code,
     normalise_link_code,
 )
+from switch_core.db.id_lists import any_of
 from switch_core.db.models import (
     Client,
     ClientRoom,
@@ -113,14 +114,20 @@ class ExternalUserStore:
         return list(result.scalars().all())
 
     async def get_by_bridges(
-        self, session: AsyncSession, bridge_ids: Collection[str]
+        self,
+        session: AsyncSession,
+        bridge_ids: Collection[str],
+        *,
+        client_ids: Collection[str] | None = None,
     ) -> list[ExternalUser]:
-        """`get_by_bridge` for several bridges in one query."""
-        if not bridge_ids:
+        """`get_by_bridge` for several bridges in one query, or with
+        `client_ids` only the users behind those clients."""
+        if not bridge_ids or client_ids is not None and not client_ids:
             return []
-        result = await session.execute(
-            select(ExternalUser).where(ExternalUser.bridge_id.in_(bridge_ids))
-        )
+        stmt = select(ExternalUser).where(ExternalUser.bridge_id.in_(bridge_ids))
+        if client_ids is not None:
+            stmt = stmt.where(any_of(ExternalUser.client_id, client_ids))
+        result = await session.execute(stmt)
         return list(result.scalars().all())
 
     async def get_by_bridge_and_names(

@@ -57,6 +57,10 @@ version of their own to them without also giving them a release of their own.
   request** (`agent_id`, repeated), each as `GET /gateway/agents/{agent_id}`
   lists them, in the same few statements however many agents are asked
   about. An id with no agent behind it is left out.
+- **`GET /gateway/rooms` reads only the rooms it is asked for** (`room_id`,
+  repeated, up to 100), each as the whole list has it. A room that is gone or
+  that the caller may not read is left out. Switch Console reads this way the
+  rooms the server says changed, instead of the workspace's whole list.
 - **Switch Console can open a dashboard page in a browser that is already
   signed in.** `POST /gateway/auth/handoff` gives a signed-in session a
   one-time sign-in link to a dashboard page, good once for 60 seconds, with
@@ -750,6 +754,9 @@ version of their own to them without also giving them a release of their own.
   expire. The warning stays when the revocation fails, when a grant is
   removed, and for other pass-through services. A catalog entry sets this
   with `revocation_ends_tokens`.
+- **The room list reads only the messaging-app accounts in its rooms**, not
+  every account on each room's app, which in a large Slack workspace is most
+  of what a read of the list cost.
 - **Reading an agent no longer reads every room in the workspace.**
   `GET /gateway/agents/{agent_id}` loaded every room its reader may see, to
   learn which of the agent's rooms to name, and held a database connection
@@ -4501,6 +4508,12 @@ version of their own to them without also giving them a release of their own.
   than one request per agent on every refresh (every 20 seconds while the
   window is open, and whenever it is focused). On a server from before that
   request it still asks for one agent at a time.
+- **The sidebar reads only what its server says changed**, instead of every
+  room and every agent's rooms every 20 seconds and on every focus. A room
+  change reads that room and the workspace's agents' rooms, in two requests.
+  While the server pushes room changes, the sidebar reads everything again
+  every five minutes, and on focus at most once a minute; a server that does
+  not keeps the 20-second refresh.
 - **Usage data recognises Switch Cloud the way the app shows it**, by its
   address's origin, and adding the Cloud by its address reports it as `cloud`
   rather than `external`. A Switch Cloud address that cannot be read is logged,

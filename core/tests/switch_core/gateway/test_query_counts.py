@@ -360,6 +360,14 @@ async def _count(
     return counts.last(f"GET {path}").count, response.json()
 
 
+def _room_ids(room_ids: list[str]) -> list[tuple[str, str]]:
+    return [("room_id", room_id) for room_id in room_ids]
+
+
+def _by_id(rooms: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(rooms, key=lambda room: room["id"])
+
+
 class TestRoomList:
     async def test_the_same_statements_for_one_room_and_many(
         self,
@@ -395,6 +403,77 @@ class TestRoomList:
             if not r["bridge_id"] and not r["is_console_chat"]
         )
         assert all(not r["name"].startswith("Slack: ") for r in bridged)
+
+    async def test_only_the_asked_rooms_each_as_the_whole_list_has_it(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        statement_counts: StatementCounts,
+        pool_checkouts: PoolCheckouts,
+        adapter: _Adapter,
+    ) -> None:
+        seed = _Seed(session_factory)
+        user = await seed.admin()
+        app = _app(session_factory, statement_counts, pool_checkouts)
+        await seed.rooms(6)
+
+        async with _client(app, user) as client:
+            _, every = await _count(client, statement_counts, "/rooms")
+            asked = [every[1]["id"], every[4]["id"]]
+            response = await client.get(
+                "/rooms", params=_room_ids([*asked, "no-such-room", asked[0]])
+            )
+
+        assert response.status_code == 200, response.text
+        assert _by_id(response.json()) == _by_id(
+            [room for room in every if room["id"] in asked]
+        )
+
+    async def test_leaves_out_an_asked_room_the_caller_may_not_read(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        statement_counts: StatementCounts,
+        pool_checkouts: PoolCheckouts,
+        adapter: _Adapter,
+    ) -> None:
+        seed = _Seed(session_factory)
+        await seed.rooms(2)
+        async with session_factory() as session:
+            hidden, shown = (
+                await session.execute(select(Room).order_by(Room.created_at, Room.id))
+            ).scalars()
+            hidden.read_visibility = "private"
+            reader = User(name="reader", email="reader@example.com", role="user")
+            session.add(reader)
+            await session.flush()
+            session.add(
+                TenantMember(tenant_id=TENANT_ZERO_ID, user_id=reader.id, role="member")
+            )
+            await session.commit()
+            asked = [hidden.id, shown.id]
+        app = _app(session_factory, statement_counts, pool_checkouts)
+
+        async with _client(app, reader) as client:
+            response = await client.get("/rooms", params=_room_ids(asked))
+
+        assert response.status_code == 200, response.text
+        assert [room["id"] for room in response.json()] == [shown.id]
+
+    async def test_refuses_more_rooms_than_a_batch(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        statement_counts: StatementCounts,
+        pool_checkouts: PoolCheckouts,
+    ) -> None:
+        seed = _Seed(session_factory)
+        user = await seed.admin()
+        app = _app(session_factory, statement_counts, pool_checkouts)
+
+        async with _client(app, user) as client:
+            response = await client.get(
+                "/rooms", params=_room_ids([f"room-{i}" for i in range(101)])
+            )
+
+        assert response.status_code == 422, response.text
 
     async def test_marks_switch_console_chats_and_no_other_room(
         self,

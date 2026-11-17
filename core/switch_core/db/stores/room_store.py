@@ -447,11 +447,14 @@ class RoomStore:
         *,
         is_admin: bool,
         include_archived: bool = False,
+        room_ids: Collection[str] | None = None,
     ) -> list[Room]:
         """Return rooms the user may read: publicly readable, ones they take
         part in (`involves`), or all if admin. Archived rooms are excluded
-        unless `include_archived`."""
+        unless `include_archived`. With `room_ids`, only those of them."""
         stmt = select(Room).where(readable_by(user_id, is_admin=is_admin))
+        if room_ids is not None:
+            stmt = stmt.where(any_of(Room.id, room_ids))
         if not include_archived:
             stmt = stmt.where(Room.archived_at.is_(None))
         result = await session.execute(stmt)

@@ -440,6 +440,11 @@ async def _list_room_role_details(
     return details
 
 
+# The most rooms `GET /rooms` takes in `room_id` at once, which keeps the
+# request line well inside what proxies accept, as `GET /agents/rooms` does.
+ROOMS_PER_REQUEST = 100
+
+
 def _validate_create(req: RoomCreateRequest) -> None:
     valid_internal = ("channel_public", "channel_private")
     valid_bridge_create = ("channel_public", "channel_private", "direct")
@@ -477,22 +482,23 @@ async def list_rooms(
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
     search: Annotated[str | None, Query()] = None,
     include_archived: Annotated[bool, Query()] = False,
+    room_id: Annotated[list[str] | None, Query(max_length=ROOMS_PER_REQUEST)] = None,
 ) -> list[RoomSummary]:
+    """The rooms the caller may read, or with `room_id` only those of them,
+    each summarised the same way. Switch Console reads the whole list when it
+    opens and then, told that some rooms changed, only those: without
+    `room_id` the list reads every room in the workspace and everyone on
+    their messaging apps, which it did for every refresh. An asked room that
+    is gone, or that the caller may not read, is left out."""
     rooms = await room_store.list_readable(
         session,
         user.id,
         is_admin=is_admin,
         include_archived=include_archived,
+        room_ids=room_id,
     )
 
     group_names = {g.id: g.name for g in await room_group_store.get_all(session)}
-
-    bridge_ids = {r.bridge_id for r in rooms if r.bridge_id}
-    bridges = {b.id: b for b in await bridge_store.get_many(session, bridge_ids)}
-    ext_client_to_name = {
-        eu.client_id: eu.external_username
-        for eu in await external_user_store.get_by_bridges(session, bridge_ids)
-    }
 
     if search:
         term = search.lower()
@@ -500,12 +506,29 @@ async def list_rooms(
             r for r in rooms if term in r.name.lower() or term in r.description.lower()
         ]
 
+    bridge_ids = {r.bridge_id for r in rooms if r.bridge_id}
+    bridges = {b.id: b for b in await bridge_store.get_many(session, bridge_ids)}
     owner_names = await user_store.names_by_id(
         session, {r.owner_id for r in rooms if r.owner_id}
     )
     room_ids = [room.id for room in rooms]
     agent_ids_by_room = await room_store.agent_ids_by_room(session, room_ids)
     client_ids_by_room = await room_store.client_ids_by_room(session, room_ids)
+    # Only the platform accounts in the listed rooms, which is all the names
+    # below are taken from, rather than everyone on their apps.
+    ext_client_to_name = {
+        eu.client_id: eu.external_username
+        for eu in await external_user_store.get_by_bridges(
+            session,
+            bridge_ids,
+            client_ids={
+                client_id
+                for room in rooms
+                if room.bridge_id
+                for client_id in client_ids_by_room.get(room.id, [])
+            },
+        )
+    }
     involved = await room_store.involved_room_ids(session, user.id, room_ids)
     administered = await room_store.admin_room_ids(session, user.id, list(involved))
     chat_members = await room_store.member_users_by_room(
