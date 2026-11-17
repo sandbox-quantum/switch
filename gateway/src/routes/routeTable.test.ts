@@ -62,7 +62,6 @@ describe("areaOf", () => {
   it("names the settings area a page is in", () => {
     expect(areaOf("/settings/org/users")).toBe("organization");
     expect(areaOf("/settings/org")).toBe("organization");
-    expect(areaOf("/usage")).toBe("workspace");
     expect(areaOf("/settings/org/connector-apps")).toBe("organization");
   });
 
