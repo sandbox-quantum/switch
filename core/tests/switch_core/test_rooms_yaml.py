@@ -557,8 +557,8 @@ async def test_a_room_that_asks_for_a_public_channel_gets_one(env):
 async def test_a_templates_private_channel_is_a_default_unless_required(
     env, extra, is_default
 ):
-    """A creator with no linked account gets a public room in place of the
-    template's private channel, unless the template requires it private."""
+    """The flag the room service reads; a template's room never falls back to
+    public whatever it says (`test_room_service_channel_checks`)."""
     spec, _ = _svc(env).parse(
         f"""
         room:

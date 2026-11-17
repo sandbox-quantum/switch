@@ -14,6 +14,7 @@ import { MessagingAppsCard } from '@renderer/features/switch-servers/MessagingAp
 import { ServerPage } from '@renderer/features/switch-servers/server-page';
 import { ServerSectionTitlebar } from '@renderer/features/switch-servers/server-section-titlebar';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
+import { workspaceDisplayName } from '@renderer/features/workspaces/workspace-title';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { PageHeader } from '@renderer/lib/components/page-header';
 import { PageContent } from '@renderer/lib/components/page-layout';
@@ -96,7 +97,7 @@ const AdminPanel = observer(function AdminPanel() {
               title={ADMIN_MENU_LABELS[section]}
               description={
                 section === 'messaging-apps'
-                  ? `The messaging apps available to people in ${workspace.name}. Admins control which messaging apps are enabled and members link their own accounts.`
+                  ? `The messaging apps available to people in ${server ? workspaceDisplayName(workspace, server) : workspace.name}. Admins control which messaging apps are enabled and members link their own accounts.`
                   : `Content guardrails applied to outbound messages on ${server && runsOnThisComputer(server) ? 'the local Switch server' : serverName} prior to delivery.`
               }
             />
@@ -211,7 +212,7 @@ function Admin({
               description={
                 section === 'apps'
                   ? `Some connectors sign people in through an app you register with the vendor. Set each up once, and every workspace on ${serverName} uses it.`
-                  : `Choose which services people in ${workspace.name} can connect and give to their agents.`
+                  : `Choose which services people in ${server ? workspaceDisplayName(workspace, server) : workspace.name} can connect and give to their agents.`
               }
             >
               <div className="space-y-2">

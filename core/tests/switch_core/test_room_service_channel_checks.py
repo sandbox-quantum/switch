@@ -741,14 +741,8 @@ def _unchosen(bridge_id: str, owner_id: str | None) -> RoomCreateConfig:
 @pytest.mark.parametrize("needs_owner", [False, True])
 @pytest.mark.parametrize(
     "config",
-    [
-        _unchosen,
-        # A template's channel type is a default, not the creator's choice.
-        lambda b, o: _private(b, o).model_copy(
-            update={"channel_type_is_default": True, "from_template": True}
-        ),
-    ],
-    ids=["omitted", "template-default"],
+    [_unchosen],
+    ids=["omitted"],
 )
 async def test_no_choice_and_no_linked_account_makes_a_public_room_and_says_why(
     session_factory: async_sessionmaker[AsyncSession],
@@ -781,8 +775,17 @@ async def test_no_choice_and_no_linked_account_makes_a_public_room_and_says_why(
         {"channel_type": None, "read_visibility": "private"},
         # A template that requires a private channel (`require_private`).
         {"channel_type": "channel_private", "from_template": True},
+        # Any template's room: a run shows no choice, so it never falls back.
+        {"channel_type_is_default": True, "from_template": True},
+        {"channel_type": None, "from_template": True},
     ],
-    ids=["private-channel", "private-room", "template-requires-private"],
+    ids=[
+        "private-channel",
+        "private-room",
+        "template-requires-private",
+        "template-default",
+        "template-omitted",
+    ],
 )
 async def test_asking_for_private_without_a_linked_account_is_still_refused(
     session_factory: async_sessionmaker[AsyncSession],

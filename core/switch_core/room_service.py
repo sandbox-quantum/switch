@@ -961,9 +961,12 @@ class RoomService:
             )
         # With no choice made, a private channel its creator cannot be put in
         # would be one nobody can open: it is made public instead, and said so.
+        # Never for a template's room: a template run shows no choice before it
+        # creates the room, so it is refused and the creator links an account.
         fallback: dict[str, Any] | None = None
         if (
             not chose
+            and not config.from_template
             and collaboration_core is not None
             and external_channel_id is None
             and channel_type == "channel_private"

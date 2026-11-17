@@ -465,8 +465,8 @@ class RoomSpec(BaseModel):
     channel_type: Literal["channel_public", "channel_private"] | None = None
     # Omitted, the room follows its channel (`room_policy.visibility_for_channel`).
     read_visibility: str | None = None
-    # A private channel even for a creator with no linked account, who is then
-    # refused; without it their room falls back to a public channel.
+    # Kept for templates that set it. A template's room never falls back to a
+    # public channel for a creator with no linked account: they are refused.
     require_private: bool = False
     # Accepted from older templates and ignored: a room has no write
     # visibility of its own.
