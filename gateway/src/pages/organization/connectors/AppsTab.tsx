@@ -190,6 +190,7 @@ export default function AppsTab({
             <ConnectorAppCard
               app={opened}
               publicUrl={apps.public_url}
+              openSetup={false}
               checkFailure={checkFailures[opened.slug] ?? null}
               onCheckFailure={(message) =>
                 setCheckFailures((current) => {

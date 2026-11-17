@@ -34,6 +34,7 @@ import {
   fetchServiceInWorkspace,
   fetchSignInOutcome,
   revokeServiceConnection,
+  setWorkspaceService,
 } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
 import { formatDate } from "../../theme/format";
@@ -267,6 +268,7 @@ export default function ConnectorPage() {
   const [pasteDialog, setPasteDialog] = useState<"add" | "replace" | null>(null);
   const [disconnecting, setDisconnecting] = useState(false);
   const [revoking, setRevoking] = useState<ConnectedPerson | null>(null);
+  const [turningOn, setTurningOn] = useState(false);
   const { leaving, leave } = useLeaveToSignIn();
   const [signInError, setSignInError] = useState<string | null>(null);
   const [params, setParams] = useSearchParams();
@@ -364,6 +366,22 @@ export default function ConnectorPage() {
     if (message) setToast(message);
     setNotice(warning);
     void load();
+  };
+
+  // The page is read again either way, so a refusal shows against what is true now.
+  const turnOn = async (name: string) => {
+    setTurningOn(true);
+    let failure: string | null = null;
+    try {
+      const { warning } = await setWorkspaceService(connectorId, true);
+      setToast(`${name} is on in ${workspaceName}.`);
+      setNotice(warning);
+    } catch (err) {
+      failure = err instanceof Error ? err.message : String(err);
+    }
+    await load();
+    if (failure) setError(failure);
+    setTurningOn(false);
   };
 
   const backButton = (
@@ -483,8 +501,13 @@ export default function ConnectorPage() {
                 Organization settings
               </Button>
             ) : off.fixedIn === "workspace" && admin ? (
-              <Button component={RouterLink} to="/settings/connectors" size="small">
-                Workspace settings
+              <Button
+                size="small"
+                onClick={() => void turnOn(connection.name)}
+                disabled={turningOn}
+                startIcon={turningOn ? <CircularProgress size={16} color="inherit" /> : undefined}
+              >
+                Turn on
               </Button>
             ) : undefined
           }
@@ -493,7 +516,18 @@ export default function ConnectorPage() {
         </PageBanner>
       )}
       {connection.enabled && connection.workspace_enabled && connection.unavailable_reason && (
-        <PageBanner tone="warning">{connection.unavailable_reason}</PageBanner>
+        <PageBanner
+          tone="warning"
+          action={
+            connection.unavailable_code === "app_not_set_up" && capabilities.isOperator ? (
+              <Button component={RouterLink} to={`/platform/connectors?set_up=${connection.slug}`} size="small">
+                Set up
+              </Button>
+            ) : undefined
+          }
+        >
+          {connection.unavailable_reason}
+        </PageBanner>
       )}
       {error && <Alert severity="error">{error}</Alert>}
       {signInError && (
