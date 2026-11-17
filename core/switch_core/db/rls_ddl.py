@@ -195,6 +195,12 @@ ORGANIZATION_POLICY_NAME = "organization_isolation"
 # `revoked_sessions` names sessions someone signed out of. A session is a
 # person's, across their workspaces, and a row holds only its random id and
 # when it can be forgotten.
+#
+# `browser_handoffs` holds the one-time sign-ins Switch Console hands a browser,
+# as `oidc_identities` holds how a person signs in. A code is redeemed before
+# any workspace is known, by a browser that may hold no session at all, and the
+# workspace a row names is only the claim the new session selects, re-checked
+# against a membership on every request.
 GLOBAL_TABLES = frozenset(
     {
         "cloud_machines",
@@ -213,6 +219,7 @@ GLOBAL_TABLES = frozenset(
         "server_audit_events",
         "auth_attempts",
         "revoked_sessions",
+        "browser_handoffs",
     }
 )
 

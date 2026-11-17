@@ -5333,6 +5333,63 @@ class RevokedSession(Base):
     )
 
 
+class BrowserHandoff(Base):
+    """A one-time sign-in Switch Console hands a browser, so a dashboard page
+    it opens there is already signed in (`gateway/browser_handoff.py`).
+
+    Console's own session never leaves Console. It mints one of these, and
+    the browser redeems the code once, within a minute, for a session of its
+    own. Only the code's SHA-256 is kept.
+
+    The new session takes the minting one's workspace, sign-in time and
+    session version, so it never outlives Console's and ends with "Sign out of
+    all devices". `workspace_claim` is only what that session selects,
+    re-checked against a membership on every request as a session's
+    `tenant_id` claim is: it has no foreign key, and is not called
+    `tenant_id`, since a `tenant_id` keyed to `tenants` would make the table
+    tenant-scoped.
+
+    `console_sid` is the minting session's id, null for a cookie from before
+    sessions had ids, and `browser_sid` the session the code was redeemed for.
+    Signing out of the first signs out the second (`auth.sign_out_session`),
+    so a redeemed row that links them is kept as long as that session could
+    be live, `SESSION_MAX_AGE` after `auth_time`; any other row goes an hour
+    after it expired.
+
+    Not tenant-scoped: it is redeemed before any workspace is known, by a
+    browser that may hold no session at all.
+    """
+
+    __tablename__ = "browser_handoffs"
+    __table_args__ = (
+        UniqueConstraint("code_hash", name="uq_browser_handoffs_code_hash"),
+        Index("ix_browser_handoffs_expires_at", "expires_at"),
+        Index("ix_browser_handoffs_user_id_created_at", "user_id", "created_at"),
+        Index("ix_browser_handoffs_console_sid", "console_sid"),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
+    code_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    user_id: Mapped[str] = mapped_column(
+        Text, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    workspace_claim: Mapped[str | None] = mapped_column(Text, nullable=True)
+    next_path: Mapped[str] = mapped_column(Text, nullable=False)
+    auth_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    session_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    console_sid: Mapped[str | None] = mapped_column(Text, nullable=True)
+    browser_sid: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    used_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
 class WorkspaceServiceSetting(TenantScoped, Base):
     """A workspace admin switched a catalog service on or off for the workspace.
 

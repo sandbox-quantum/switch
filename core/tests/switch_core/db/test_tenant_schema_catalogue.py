@@ -150,6 +150,10 @@ class TestEveryTableIsScopedUnlessItIsNamedGlobal:
             # Sessions signed out of: a session is a person's, across their
             # workspaces, and the row holds only its random id.
             "revoked_sessions",
+            # One-time sign-ins Switch Console hands a browser: redeemed
+            # before any workspace is known, and the workspace a row names is
+            # only the claim its session selects.
+            "browser_handoffs",
         }
 
     async def test_the_history_tables_are_exactly_these(self) -> None:
