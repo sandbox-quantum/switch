@@ -167,7 +167,8 @@ const Cards = observer(function Cards({
 
   // Set up and talking to the buddy there: the cards fold into one line, and
   // open again for connecting another app.
-  const checklistBridge = step.kind === 'checklist' ? step.bridge : null;
+  // Teams is guided the same way, by an invite the person sends, so it folds too.
+  const checklistBridge = step.kind === 'checklist' || step.kind === 'guide' ? step.bridge : null;
   const progress = useGroupProgress({
     workspaceId,
     agentId,

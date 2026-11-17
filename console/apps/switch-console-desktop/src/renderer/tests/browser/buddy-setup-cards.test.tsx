@@ -801,6 +801,52 @@ describe('switch-buddy setup cards', () => {
     await shot(el, 'l-slack-settled');
   });
 
+  it('(n) shared Switch Telegram app: starts from a connected group, since its private chat reaches no one', async () => {
+    const shared = {
+      ...telegram,
+      channelIdsRefused: 'Chats connect with a link or code.',
+    } as RemoteBridge;
+    listBridges.mockResolvedValue([shared]);
+    const el = await render();
+
+    await vi.waitFor(() => expect(el.textContent).toContain('Connect a Telegram group'));
+    expect(el.textContent).not.toContain('Say hello to the');
+    await click(el, 'Connect a group');
+    expect(shown.at(-1)).toMatchObject({ id: 'connectMessagingAppModal' });
+    await shot(el, 'n-telegram-shared-group-first');
+  });
+
+  it('(n) shared Switch Telegram app: with a group connected, linking is next', async () => {
+    const shared = {
+      ...telegram,
+      channelIdsRefused: 'Chats connect with a link or code.',
+    } as RemoteBridge;
+    listBridges.mockResolvedValue([shared]);
+    listRooms.mockResolvedValue([
+      { id: 'r-tg', bridgeType: 'telegram', channelType: 'channel_private', createdAt: '' },
+    ]);
+    const el = await render();
+
+    await vi.waitFor(() =>
+      expect(el.textContent).toContain('A Telegram group is connected to Switch.')
+    );
+    expect(el.querySelector('[aria-current="step"]')?.textContent).toContain('Is this you?');
+  });
+
+  it('(m) Teams: once buddy has answered there, folds into the set-up bar too', async () => {
+    listBridges.mockResolvedValue([teams]);
+    listMyIdentities.mockResolvedValue([linked('b-3')]);
+    listAgentRooms.mockResolvedValue([
+      { roomId: 'r-teams', roomName: 'Ada & buddy', archived: false, answeredHere: true },
+    ]);
+    listRooms.mockResolvedValue([
+      { id: 'r-teams', bridgeType: 'teams', channelType: 'channel_private', createdAt: '' },
+    ]);
+    const el = await render();
+
+    await vi.waitFor(() => expect(el.textContent).toContain('Microsoft Teams is set up.'));
+  });
+
   it('(o) Discord linked: continues in a private Discord channel, then opens it', async () => {
     listBridges.mockResolvedValue([discord]);
     listMyIdentities.mockResolvedValue([linked('b-5')]);

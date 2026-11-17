@@ -53,18 +53,23 @@ export function ChatAppChecklist({
   onIdentitiesChanged: () => void;
 }) {
   const showClaimIdentity = useShowModal('claimIdentityModal');
+  const showConnect = useShowModal('connectMessagingAppModal');
   const linked = identities.find((identity) => identity.bridgeId === bridge.id) ?? null;
+  // The shared Switch app hears nothing from its private chat (no workspace
+  // owns it), so there the steps start from a group connected to Switch, where
+  // it is seen and its link code is heard.
+  const groupFirst = Boolean(bridge.channelIdsRefused);
   const peopleQuery = useQuery({
     queryKey: ['bridge-people', workspaceId, bridge.id],
     queryFn: () => rpc.workspaces.listBridgePeople({ workspaceId, bridgeId: bridge.id }),
     refetchInterval: linked ? false : SEEN_POLL_MS,
   });
   const candidates = newestUnlinked(peopleQuery.data ?? []);
-  const { inGroup, talking } = useGroupProgress({
+  const { inGroup, talking, groupOnApp } = useGroupProgress({
     workspaceId,
     agentId,
     bridge,
-    enabled: linked !== null,
+    enabled: linked !== null || groupFirst,
   });
   const [claiming, setClaiming] = useState<string | null>(null);
   const [claimError, setClaimError] = useState<string | null>(null);
@@ -110,7 +115,10 @@ export function ChatAppChecklist({
   const seen = linked !== null || candidates.length > 0;
   const bot = bridge.displayName;
   const invite = typedCommand(bridge, 'invite-agent', { agent: agentName });
-  const groupUrl = groupInviteUrl(bridge, agentName);
+  // On the shared app a group the bot is added to is connected by a claim
+  // first, so the one-tap invite would land in a chat no workspace owns.
+  const groupUrl = groupFirst ? null : groupInviteUrl(bridge, agentName);
+  const linkedOk = linked !== null && linked.verified;
   const open = (url: string) =>
     void reportOpenAttempt(
       rpc.switchRooms.openRoomChannel({ serverId, channelUrl: url }),
@@ -135,47 +143,74 @@ export function ChatAppChecklist({
         </div>
       </div>
       <ol className="flex flex-col divide-y">
-        <Step
-          n={1}
-          done={seen}
-          current={!seen}
-          title={`Say hello to the ${bot} bot`}
-          detail={
-            seen
-              ? linked
-                ? `Seen you as ${handle(linked.externalUsername)}.`
-                : `Seen you as ${handle(candidates[0].username)}.`
-              : `Open the bot in ${label} and press Start (or send it “hello”), so Switch knows your account.`
-          }
-        >
-          {!seen && (
-            <div className="flex flex-wrap items-center gap-3">
-              {bridge.homeUrl && (
-                <Button size="sm" onClick={() => open(helloUrl(bridge.homeUrl!))}>
-                  Open in {label}
-                </Button>
-              )}
-              <span className="flex items-center gap-2 text-sm text-foreground-muted">
-                <Spinner size="sm" />
-                Waiting for your hello…
-              </span>
-            </div>
-          )}
-        </Step>
+        {groupFirst ? (
+          <Step
+            n={1}
+            done={groupOnApp}
+            current={!groupOnApp}
+            title={`Connect a ${label} group`}
+            detail={
+              groupOnApp
+                ? `A ${label} group is connected to Switch.`
+                : `Make a ${label} group with just you, add the ${bot} bot, and connect it to Switch.`
+            }
+          >
+            {!groupOnApp && (
+              <Button
+                size="sm"
+                onClick={() =>
+                  showConnect({ serverId, platform: bridge.type, onClosed: onIdentitiesChanged })
+                }
+              >
+                Connect a group
+              </Button>
+            )}
+          </Step>
+        ) : (
+          <Step
+            n={1}
+            done={seen}
+            current={!seen}
+            title={`Say hello to the ${bot} bot`}
+            detail={
+              seen
+                ? linked
+                  ? `Seen you as ${handle(linked.externalUsername)}.`
+                  : `Seen you as ${handle(candidates[0].username)}.`
+                : `Open the bot in ${label} and press Start (or send it “hello”), so Switch knows your account.`
+            }
+          >
+            {!seen && (
+              <div className="flex flex-wrap items-center gap-3">
+                {bridge.homeUrl && (
+                  <Button size="sm" onClick={() => open(helloUrl(bridge.homeUrl!))}>
+                    Open in {label}
+                  </Button>
+                )}
+                <span className="flex items-center gap-2 text-sm text-foreground-muted">
+                  <Spinner size="sm" />
+                  Waiting for your hello…
+                </span>
+              </div>
+            )}
+          </Step>
+        )}
         <Step
           n={2}
-          done={linked !== null && linked.verified}
-          current={seen && !(linked !== null && linked.verified)}
+          done={linkedOk}
+          current={(groupFirst ? groupOnApp : seen) && !linkedOk}
           title="Is this you?"
           detail={
             linked
               ? linked.verified
                 ? `Linked as ${handle(linked.externalUsername)}. I’ll answer you there.`
                 : `Linked as ${handle(linked.externalUsername)}. Confirm it with a code to finish.`
-              : 'I answer only accounts I recognise. Pick yours and confirm it.'
+              : groupFirst
+                ? 'I answer only accounts I recognise. Say something in that group, then pick your account and send the code Switch shows there.'
+                : 'I answer only accounts I recognise. Pick yours and confirm it.'
           }
         >
-          {seen && !linked && (
+          {(groupFirst ? groupOnApp : seen) && !linked && (
             <div className="flex flex-col items-start gap-2">
               {candidates.map((person) => (
                 <div key={person.externalUserId} className="flex items-center gap-3 text-sm">
@@ -234,7 +269,9 @@ export function ChatAppChecklist({
           detail={
             inGroup
               ? `${agentName} is in a ${label} group with you.`
-              : `Create a ${label} group with you and the ${bot} bot, then send this in it:`
+              : groupFirst
+                ? `In that group, send this:`
+                : `Create a ${label} group with you and the ${bot} bot, then send this in it:`
           }
         >
           {!inGroup && (
@@ -309,7 +346,7 @@ export function useGroupProgress({
   agentId: string;
   bridge: Pick<RemoteBridge, 'id' | 'type'> | null;
   enabled: boolean;
-}): { inGroup: boolean; talking: boolean } {
+}): { inGroup: boolean; talking: boolean; groupOnApp: boolean } {
   const key = `switch-buddy:talking:${workspaceId}:${agentId}:${bridge?.id ?? ''}`;
   const remembered = bridge !== null && readFlag(key);
   const query = useQuery({
@@ -326,7 +363,11 @@ export function useGroupProgress({
   });
   const talking = remembered || query.data?.talking === true;
   if (talking && !remembered) writeFlag(key);
-  return { inGroup: talking || query.data?.inGroup === true, talking };
+  return {
+    inGroup: talking || query.data?.inGroup === true,
+    talking,
+    groupOnApp: talking || query.data?.groupOnApp === true,
+  };
 }
 
 /**
@@ -384,7 +425,7 @@ export function groupProgress(
   bridgeType: string,
   agentRooms: RemoteAgentRoom[],
   rooms: RemoteRoomSummary[]
-): { inGroup: boolean; talking: boolean } {
+): { inGroup: boolean; talking: boolean; groupOnApp: boolean } {
   const onApp = new Set(
     rooms
       .filter((room) => room.bridgeType === bridgeType && room.channelType !== 'lobby')
@@ -394,6 +435,7 @@ export function groupProgress(
   return {
     inGroup: groups.length > 0,
     talking: groups.some((room) => room.answeredHere === true),
+    groupOnApp: onApp.size > 0,
   };
 }
 
