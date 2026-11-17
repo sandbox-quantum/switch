@@ -213,7 +213,9 @@ def test_switch_buddy_asks_the_work_question_as_a_form_with_skip():
 def test_switch_buddy_offers_skip_on_every_onboarding_step():
     instructions = _buddy_words()
     assert 'Every onboarding step has "Skip for now".' in instructions
-    assert '"No problem, you can do this later from Settings."' in instructions
+    assert '"No problem, you can come back to this any time."' in instructions
+    assert "Skip for now: the skip line, then stop suggesting" in instructions
+    assert "Open questions (their job" not in instructions
     assert '"Want to connect your tools?"' in instructions
     assert "ends with **Something else** and **Skip for now**" in instructions
 
@@ -257,6 +259,17 @@ def test_switch_buddy_offers_templates_for_a_new_room_and_confirms_first():
         in instructions
     )
     assert "`run_template` after a yes." in instructions
+
+
+def test_switch_buddy_knows_both_home_chips_and_template_rooms_are_private():
+    instructions = _buddy_words()
+    assert (
+        '"Create a new room" and "Create a room for my team" send just that'
+        in instructions
+    )
+    assert (
+        "or ran an official room template whose room came back private" in instructions
+    )
 
 
 def test_switch_buddy_never_loops_on_a_refused_room():
