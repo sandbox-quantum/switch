@@ -133,13 +133,14 @@ class BrowserHandoffStore:
     async def peek(self, session: AsyncSession, code: str) -> BrowserHandoff | None:
         """The row `code` names while it can still be redeemed: unexpired and
         unused. Spends nothing."""
-        return await session.scalar(
+        handoff: BrowserHandoff | None = await session.scalar(
             select(BrowserHandoff).where(
                 BrowserHandoff.code_hash == _hash(code),
                 BrowserHandoff.used_at.is_(None),
                 BrowserHandoff.expires_at > func.now(),
             )
         )
+        return handoff
 
     async def redeem(
         self, session: AsyncSession, code: str, *, browser_sid: str
@@ -150,7 +151,7 @@ class BrowserHandoffStore:
         One conditional `UPDATE`, so of two redemptions racing for one code
         exactly one gets the row. Does not commit.
         """
-        return await session.scalar(
+        handoff: BrowserHandoff | None = await session.scalar(
             update(BrowserHandoff)
             .where(
                 BrowserHandoff.code_hash == _hash(code),
@@ -161,6 +162,7 @@ class BrowserHandoffStore:
             .returning(BrowserHandoff)
             .execution_options(populate_existing=True)
         )
+        return handoff
 
     async def lock_sessions_opened_by(
         self, session: AsyncSession, console_sids: Sequence[str]
