@@ -6,7 +6,7 @@ import { kv } from '@main/db/schema';
  * Whether the sessions the old in-app dashboard windows kept have been
  * cleared on this install. Dashboard pages open in the browser now, so no
  * window makes one again and the clearing runs until it has once succeeded
- * for every stored server (`clearDashboardWindowSessions`).
+ * for every partition on disk (`clearDashboardWindowSessions`).
  */
 const MARKER_KEY = 'dashboardWindowSessionsCleared';
 

@@ -4325,8 +4325,8 @@ version of their own to them without also giving them a release of their own.
   link, good for a minute, which the browser trades for a session of its own.
   Signing out of Console signs those browsers out too. Where Console isn't
   signed in, or the server is older than the sign-in link, the page opens
-  signed out as before. The session the old Console windows kept is cleared
-  once, at the next start.
+  signed out as before. The sessions the old Console windows kept, those of
+  servers you have since removed included, are cleared once, at the next start.
 - **Admin › Switch Trust points to the organization's guardrails on a server
   that sets them per organization.** Such a server no longer has a
   server-wide policy to edit, so the form gives way to its note and a button
