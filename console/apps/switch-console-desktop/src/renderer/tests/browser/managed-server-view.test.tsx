@@ -154,6 +154,7 @@ function status(patch: Record<string, unknown>) {
     error: null,
     failedTo: null,
     notice: null,
+    mattermostNotice: null,
     recordWarning: null,
     waitingFor: null,
     sshHost: 'vm-1',
@@ -286,6 +287,20 @@ describe('a running server', () => {
       "Switch Console couldn't tell which version of switch-core last ran this server, so it " +
         'backed up the database before starting it. The backup is in ' +
         '/data/backups/2026-11-16-switch-core-unknown.'
+    );
+  });
+
+  it('says both what the start did and that Mattermost could not be set up', async () => {
+    state.localStatus = status({
+      notice: unknownVersionBackupNotice('/data/backups/2026-11-16-switch-core-unknown'),
+      mattermostNotice:
+        'The server is running, but Mattermost could not be set up: Docker is not available',
+    });
+    await render();
+
+    expect(text()).toContain("Switch Console couldn't tell which version of switch-core");
+    expect(text()).toContain(
+      'The server is running, but Mattermost could not be set up: Docker is not available'
     );
   });
 

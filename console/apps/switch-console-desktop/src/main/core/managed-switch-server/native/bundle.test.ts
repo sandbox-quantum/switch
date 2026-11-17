@@ -1,5 +1,4 @@
-import { type ChildProcess, spawn } from 'node:child_process';
-import { copyFile, mkdir, mkdtemp, readdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -52,48 +51,42 @@ describe('pruneBundleCopies', () => {
     expect((await readdir(layout.toolchain)).sort()).toEqual(['bundle-current', 'bundle-older']);
   });
 
-  describe.skipIf(!['darwin', 'linux'].includes(process.platform))(
-    'with a postmaster running from an older copy',
-    () => {
-      let postmaster: ChildProcess | null = null;
+  it('keeps the copy a running postmaster was started from, though the record has moved on', async () => {
+    const older = await bundleDir('older');
+    await bundleDir('oldest');
+    const current = await bundleDir('current');
 
-      afterEach(() => {
-        postmaster?.kill('SIGKILL');
-        postmaster = null;
-      });
+    // After an update the recorded choice already points at the current copy;
+    // only the running postmaster says the older one is still in use.
+    await pruneBundleCopies(layout.toolchain, current, [
+      path.join(current, 'postgres', 'bin'),
+      path.join(older, 'postgres', 'bin', 'postgres'),
+    ]);
 
-      it('keeps the copy the running postmaster was started from', async () => {
-        const older = await bundleDir('older');
-        await bundleDir('oldest');
-        const current = await bundleDir('current');
-        // A stand-in postmaster: a long sleep, run from the older copy's bin/.
-        // macOS reports the path a process was started by; Linux resolves
-        // links, so it gets a copy instead.
-        const binary = path.join(older, 'postgres', 'bin', 'postgres');
-        if (process.platform === 'darwin') await symlink('/bin/sleep', binary);
-        else await copyFile('/bin/sleep', binary);
-        postmaster = spawn(binary, ['60'], { stdio: 'ignore' });
-        await new Promise((resolve) => setTimeout(resolve, 300));
-        await mkdir(layout.pgdata, { recursive: true });
-        await writeFile(
-          path.join(layout.pgdata, 'postmaster.pid'),
-          `${postmaster.pid}\n${layout.pgdata}\n`
-        );
+    expect((await readdir(layout.toolchain)).sort()).toEqual(['bundle-current', 'bundle-older']);
+  });
+});
 
-        const running = await runningPostmasterBinary(layout);
-        expect(running).toBe(binary);
-        // The recorded choice already points at the current copy, as after an
-        // update: only the running process says the older one is in use.
-        await pruneBundleCopies(layout.toolchain, current, [
-          path.join(current, 'postgres', 'bin'),
-          running!,
-        ]);
+describe.skipIf(process.platform === 'win32')('runningPostmasterBinary', () => {
+  it('names the executable of the process postmaster.pid records', async () => {
+    // This test's own process stands in for the postmaster: its executable is
+    // known on every platform, and nothing has to be started or copied.
+    await mkdir(layout.pgdata, { recursive: true });
+    await writeFile(
+      path.join(layout.pgdata, 'postmaster.pid'),
+      `${process.pid}\n${layout.pgdata}\n`
+    );
 
-        expect((await readdir(layout.toolchain)).sort()).toEqual([
-          'bundle-current',
-          'bundle-older',
-        ]);
-      });
-    }
-  );
+    const running = await runningPostmasterBinary(layout);
+
+    expect(running).not.toBeNull();
+    expect(await realpath(running!)).toBe(await realpath(process.execPath));
+  });
+
+  it('is null when no postmaster runs', async () => {
+    expect(await runningPostmasterBinary(layout)).toBeNull();
+    await mkdir(layout.pgdata, { recursive: true });
+    await writeFile(path.join(layout.pgdata, 'postmaster.pid'), '999999999\n');
+    expect(await runningPostmasterBinary(layout)).toBeNull();
+  });
 });

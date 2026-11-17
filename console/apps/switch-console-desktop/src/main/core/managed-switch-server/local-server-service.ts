@@ -113,6 +113,7 @@ function initialStatus(): LocalServerStatus {
     mattermost: null,
     mattermostState: null,
     notice: null,
+    mattermostNotice: null,
     checked: false,
     upgrade: null,
     serverId: null,
@@ -195,7 +196,7 @@ export class LocalServerService {
       if (!current()) return;
       this.setStatus({
         mattermostState: 'failed',
-        notice: `The server is running, but Mattermost could not be set up: ${
+        mattermostNotice: `The server is running, but Mattermost could not be set up: ${
           error instanceof Error ? error.message : String(error)
         }`,
       });
@@ -220,7 +221,7 @@ export class LocalServerService {
     const layout = nativeLayout(localServerDir());
     this.mattermostRun++;
     if (!enabled) {
-      this.setStatus({ mattermostState: 'off', notice: null });
+      this.setStatus({ mattermostState: 'off', mattermostNotice: null });
       await stopMattermost(layout, false);
       return;
     }
@@ -232,7 +233,7 @@ export class LocalServerService {
         this.checkoutRootForStart(),
         (line) => events.emit(localServerLogChannel, { line })
       );
-      this.setStatus({ mattermostState: 'starting', notice: null });
+      this.setStatus({ mattermostState: 'starting', mattermostNotice: null });
       void this.runMattermost(bringUp);
     } finally {
       host.dispose();
@@ -537,6 +538,7 @@ export class LocalServerService {
       error,
       message: null,
       notice: null,
+      mattermostNotice: null,
       mattermostState: null,
       deployedTelemetry: null,
       adminPages: null,
@@ -624,6 +626,7 @@ export class LocalServerService {
         phase: 'starting',
         error: null,
         notice: null,
+        mattermostNotice: null,
         message: move
           ? 'Moving the server off Docker…'
           : native
@@ -729,6 +732,7 @@ export class LocalServerService {
               ? `Could not move this server off Docker, so it is still running on Docker: ` +
                 `${moveFailure} Its data is safe; Switch Console tries again at the next start.`
               : result.warning,
+          mattermostNotice: null,
           mattermostState: bringUpMattermost ? 'starting' : ranNative ? 'off' : null,
         });
         if (bringUpMattermost) void this.runMattermost(bringUpMattermost);
@@ -884,6 +888,7 @@ export class LocalServerService {
         deployedTelemetry: null,
         adminPages: null,
         notice: null,
+        mattermostNotice: null,
         mattermostState: null,
         upgrade: upgrade && upgradeState(upgrade, false),
       });
@@ -916,6 +921,7 @@ export class LocalServerService {
         deployedTelemetry: null,
         adminPages: null,
         notice: null,
+        mattermostNotice: null,
         mattermostState: null,
         upgrade: upgrade && upgradeState(upgrade, false),
       });
@@ -964,6 +970,7 @@ export class LocalServerService {
         deployedTelemetry: null,
         adminPages: null,
         notice: null,
+        mattermostNotice: null,
         mattermostState: null,
         deployedVersion: null,
         drift: null,

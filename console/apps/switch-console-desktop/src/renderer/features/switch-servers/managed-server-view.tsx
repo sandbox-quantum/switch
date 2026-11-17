@@ -707,12 +707,18 @@ const Messages = observer(function Messages({
   const remote = sshHost ? remoteServerStore.statusFor(sshHost) : null;
   const working = state.tone === 'working';
   const localNotice = sshHost ? null : (localServerStore.status?.notice ?? null);
+  const mattermostNotice = sshHost ? null : (localServerStore.status?.mattermostNotice ?? null);
   return (
     <>
       {box}
       {localNotice && !working && (
         <MessageBox tone="attention">
           <p>{localNotice}</p>
+        </MessageBox>
+      )}
+      {mattermostNotice && !working && (
+        <MessageBox tone="attention">
+          <p>{mattermostNotice}</p>
         </MessageBox>
       )}
       {remote?.notice && !working && (

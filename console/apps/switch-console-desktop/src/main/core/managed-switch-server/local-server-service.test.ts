@@ -726,7 +726,35 @@ it('brings Mattermost up after the start has returned, and says so when it fails
   await vi.waitFor(() => expect(service.getStatus().mattermostState).toBe('failed'));
   expect(service.getStatus()).toMatchObject({
     phase: 'running',
-    notice: 'The server is running, but Mattermost could not be set up: Docker is not available',
+    notice: null,
+    mattermostNotice:
+      'The server is running, but Mattermost could not be set up: Docker is not available',
+  });
+});
+
+it('keeps what the start said when Mattermost then fails, saying both', async () => {
+  runtime.read.mockResolvedValue('native');
+  const notice = unknownVersionBackupNotice('/data/backups/2026-11-16-switch-core-unknown');
+  let fail: (error: Error) => void = () => {};
+  native.start.mockResolvedValue({
+    result: { ...started, warning: notice },
+    bringUpMattermost: () =>
+      new Promise<void>((_resolve, reject) => {
+        fail = reject;
+      }),
+  });
+  const service = new LocalServerService();
+  await boot(service);
+  await service.start();
+
+  fail(new Error('Docker is not available'));
+  await vi.waitFor(() => expect(service.getStatus().mattermostState).toBe('failed'));
+
+  expect(service.getStatus()).toMatchObject({
+    phase: 'running',
+    notice,
+    mattermostNotice:
+      'The server is running, but Mattermost could not be set up: Docker is not available',
   });
 });
 

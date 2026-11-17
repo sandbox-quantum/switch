@@ -216,9 +216,13 @@ export type LocalServerStatus = {
    * Null when the server is not running, or when nothing has been seen of it
    * since Console launched. */
   mattermostState: 'off' | 'starting' | 'running' | 'failed' | null;
-  /** Something the last start could not do that did not stop it (Mattermost
-   * skipped or failed, say), for the server page to say; else null. */
+  /** Something the last start did or could not do that did not stop it (a
+   * backup it took first, say), for the server page to say; else null. */
   notice: string | null;
+  /** Why the Mattermost beside a running native server could not be set up,
+   * for the server page to say beside {@link notice}, never instead of it;
+   * else null. */
+  mattermostNotice: string | null;
   /** Whether the stack's state has been read since launch. Until it has, a
    * `stopped` phase is only the starting value, not something observed. */
   checked: boolean;
