@@ -4,6 +4,8 @@ membership — against real Postgres, through the shared harness."""
 
 from __future__ import annotations
 
+import uuid
+
 import pytest
 from sqlalchemy import select
 
@@ -17,6 +19,8 @@ from switch_core.db.models import (
     Room,
     User,
 )
+from switch_core.db.session_scope import tenant_session
+from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
 from switch_core.room_service import RoomCreateConfig
 from tests.switch_core.gateway.conftest import _Harness
 
@@ -89,7 +93,7 @@ async def _retiring_bridge(
     platform = "mattermost"
     async with chats.factory() as session:
         bot = Client(
-            transport_user_id=f"@{platform}-bot:switch.test",
+            transport_user_id=f"@{platform}-bot-{uuid.uuid4().hex[:8]}:switch.test",
             display_name="bot",
             type="bridge",
         )
@@ -392,3 +396,23 @@ async def test_a_user_connected_mattermost_connector_is_left_alone(
         assert row is not None and stored is not None
         assert row.bridge_id == bridge.id
         assert stored.status == "retiring"
+
+
+async def test_the_retired_connector_is_no_longer_listed_as_a_messaging_app(
+    chats: _Harness,
+) -> None:
+    bundled_room = await _agentless_room(chats, "Mattermost: bundled")
+    theirs_room = await _agentless_room(chats, "Mattermost: theirs too")
+    await _owned_by(chats, bundled_room, chats.alice)
+    bundled = await _retiring_bridge(chats, bundled_room)
+    theirs = await _retiring_bridge(chats, theirs_room, preconfigured=False)
+
+    await chats.room_service.retire_bundled_mattermost_bridges()
+
+    async with tenant_session(chats.factory, bundled_room.tenant_id) as session:
+        store = CollaborationBridgeStore()
+        everything = {bridge.id for bridge in await store.get_all(session)}
+        listed = {bridge.id for bridge in await store.get_listed(session)}
+    assert {bundled.id, theirs.id} <= everything
+    assert theirs.id in listed
+    assert bundled.id not in listed

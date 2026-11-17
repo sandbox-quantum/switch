@@ -3180,7 +3180,7 @@ class AgentCore:
         only the fields an agent needs to make a choice — not the raw
         connection_config."""
         async with self.session_factory() as session:
-            bridges = await self.bridge_store.get_all(session)
+            bridges = await self.bridge_store.get_listed(session)
         return [
             {
                 "id": b.id,
