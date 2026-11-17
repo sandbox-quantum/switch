@@ -4,7 +4,7 @@ import {
   homebrewOption,
   passthroughMcpAdapter,
 } from '@switch-console/core/agents/plugins/helpers';
-import { addToUserPath } from '../windows-user-path';
+import { addToUserPath, removeFromProfile } from '../windows-user-path';
 import { icon } from './icon';
 import { CLAUDE_SUBAGENTS, claudeRepoAgentsBehavior } from './subagents';
 
@@ -24,12 +24,15 @@ import { CLAUDE_SUBAGENTS, claudeRepoAgentsBehavior } from './subagents';
  */
 const CLAUDE_UNIX_UNINSTALL =
   'rm -f "$HOME/.local/bin/claude" && rm -rf "$HOME/.local/share/claude"';
-/** The same on Windows, written without `$`, `%` or inner double quotes like the install. */
-const CLAUDE_WINDOWS_UNINSTALL =
-  'powershell -ExecutionPolicy ByPass -c "' +
-  "Remove-Item -Force -EA SilentlyContinue ([IO.Path]::Combine([Environment]::GetFolderPath('UserProfile'), '.local', 'bin', 'claude.exe')); " +
-  "Remove-Item -Recurse -Force -EA SilentlyContinue ([IO.Path]::Combine([Environment]::GetFolderPath('UserProfile'), '.local', 'share', 'claude'))" +
-  '"';
+/**
+ * The same on Windows, written without `$`, `%` or inner double quotes like the
+ * install. Only what is not there is passed over: a delete that fails (a running
+ * session holding `claude.exe`) stops the command with its own error.
+ */
+const CLAUDE_WINDOWS_UNINSTALL = `powershell -ExecutionPolicy ByPass -c "${[
+  removeFromProfile('.local', 'bin', 'claude.exe'),
+  removeFromProfile('.local', 'share', 'claude'),
+].join('; ')}"`;
 
 export const CLAUDE_WINDOWS_INSTALL_SCRIPT = `powershell -ExecutionPolicy ByPass -c "irm https://claude.ai/install.ps1 | iex; ${addToUserPath('.local', 'bin')}"`;
 
@@ -74,7 +77,7 @@ export const plugin = definePlugin(
             method: 'powershell',
             command: CLAUDE_WINDOWS_INSTALL_SCRIPT,
             uninstallCommand: CLAUDE_WINDOWS_UNINSTALL,
-            installedAt: ['\\.local\\bin\\claude.exe'],
+            installedAt: ['.local\\bin\\claude.exe'],
           },
         ],
       },

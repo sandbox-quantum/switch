@@ -21,3 +21,17 @@ export function addToUserPath(...segments: string[]): string {
     `[Environment]::SetEnvironmentVariable('Path', (${userPath}.TrimEnd(';') + ';' + ${folder}).TrimStart(';'), 'User') }`
   );
 }
+
+/**
+ * PowerShell, for inside a `powershell -c "…"` uninstall command, that deletes
+ * `~\<segments>` when it is there. A delete that fails stops the command with
+ * PowerShell's own error, so Switch Console reports why; only a path already
+ * gone is passed over. Written without `$`, `%` or double quotes, like
+ * `addToUserPath`.
+ */
+export function removeFromProfile(...segments: string[]): string {
+  const target = `([IO.Path]::Combine([Environment]::GetFolderPath('UserProfile'), ${segments
+    .map((segment) => `'${segment}'`)
+    .join(', ')}))`;
+  return `if (Test-Path -LiteralPath ${target}) { Remove-Item -LiteralPath ${target} -Recurse -Force -ErrorAction Stop }`;
+}

@@ -4,7 +4,7 @@ import {
   npmDependency,
   opencodeMcpAdapter,
 } from '@switch-console/core/agents/plugins/helpers';
-import { addToUserPath } from '../windows-user-path';
+import { addToUserPath, removeFromProfile } from '../windows-user-path';
 import { icon } from './icon';
 import { opencodeLaunchProfileModels } from './models';
 import {
@@ -49,8 +49,7 @@ export const OPENCODE_WINDOWS_INSTALL = [
 ].join(' ');
 
 /** Removes what the release install unpacked, and nothing else. */
-export const OPENCODE_WINDOWS_UNINSTALL =
-  "powershell -ExecutionPolicy ByPass -c \"Remove-Item -Recurse -Force ([IO.Path]::Combine([Environment]::GetFolderPath('UserProfile'), '.opencode', 'bin'))\"";
+export const OPENCODE_WINDOWS_UNINSTALL = `powershell -ExecutionPolicy ByPass -c "${removeFromProfile('.opencode', 'bin')}"`;
 
 const OPENCODE_HOST_DEPENDENCY = (() => {
   const base = npmDependency({ id: 'opencode', package: OPENCODE_PACKAGE });
@@ -80,7 +79,7 @@ const OPENCODE_HOST_DEPENDENCY = (() => {
           command: OPENCODE_WINDOWS_INSTALL,
           updateCommand: OPENCODE_WINDOWS_INSTALL,
           uninstallCommand: OPENCODE_WINDOWS_UNINSTALL,
-          installedAt: ['\\.opencode\\bin\\'],
+          installedAt: ['.opencode\\bin\\'],
           recommended: true,
         },
         ...windowsNpm,

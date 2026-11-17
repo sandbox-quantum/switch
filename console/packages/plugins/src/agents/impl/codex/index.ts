@@ -56,7 +56,7 @@ function codexHostDependency(): HostDependencyDescriptor {
     command: CODEX_WINDOWS_INSTALL_SCRIPT,
     updateCommand: CODEX_WINDOWS_INSTALL_SCRIPT,
     uninstallCommand: CODEX_WINDOWS_UNINSTALL_SCRIPT,
-    installedAt: ['\\Programs\\OpenAI\\Codex\\'],
+    installedAt: ['AppData\\Local\\Programs\\OpenAI\\Codex\\'],
     recommended: true,
   };
   const windowsNpm = (descriptor.installCommands.windows ?? []).map(
