@@ -264,10 +264,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // sign-out that fails leaves the person here, with what they had.
   //
   // A session that stood on a WorkOS sign-in leaves for WorkOS to end that
-  // too, and comes back to sign-in, which hands straight to WorkOS again, as
-  // Flint Trust does. Otherwise this tab is marked signed out on purpose, so
-  // sign-in waits to be asked rather than handing off to an identity
-  // provider whose own session would sign the person straight back in.
+  // too, and comes back to sign-in, which hands straight to WorkOS's sign-in
+  // page again, as the other applications sharing that sign-in do: WorkOS no
+  // longer holds a session to sign the person straight back in with.
+  // Otherwise this tab is marked signed out on purpose, so sign-in waits to
+  // be asked rather than handing off to an identity provider whose own
+  // session would sign the person straight back in.
   const finishSignOut = useCallback((signedOut: SignedOut) => {
     clearPendingInvite();
     forgetLinkForSignIn();

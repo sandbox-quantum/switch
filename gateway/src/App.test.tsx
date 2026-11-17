@@ -768,7 +768,7 @@ describe("signing out of a sign-in at WorkOS", () => {
     });
   });
 
-  it("leaves for WorkOS to end it, coming back to a sign-in that hands off as Flint Trust's does", async () => {
+  it("leaves for WorkOS to end it, coming back to a sign-in that hands straight off again", async () => {
     // An invitation to follow, so the screen is the one before a workspace,
     // which the next person to sign in must not inherit.
     storePendingInvite("abc");

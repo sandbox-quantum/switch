@@ -55,6 +55,48 @@ admin is seeded without a password.
 {{- end }}
 
 {{/*
+How single sign-on works, once switchCore.oidc.enabled turns it on: "oidc"
+(the generic OIDC client) or "workos" (WorkOS AuthKit). The checks mirror the
+ones switch-core makes at startup (config.py), so a bad combination fails the
+render instead of a pod.
+*/}}
+{{- define "switch.signInProvider" -}}
+{{- $provider := .Values.switchCore.signIn.provider }}
+{{- if not (has $provider (list "oidc" "workos")) }}
+{{- fail (printf "switchCore.signIn.provider must be oidc or workos. Got %q." $provider) }}
+{{- end }}
+{{- if and (eq $provider "workos") (not .Values.switchCore.oidc.enabled) }}
+{{- fail "switchCore.signIn.provider workos needs switchCore.oidc.enabled, which turns single sign-on on." }}
+{{- end }}
+{{- if and (ne $provider "workos") .Values.switchCore.signIn.workosClientId }}
+{{- fail "switchCore.signIn.workosClientId is for switchCore.signIn.provider workos. For member changes alone, set switchCore.organizationDirectory.workosClientId." }}
+{{- end }}
+{{- $provider }}
+{{- end }}
+
+{{/*
+WORKOS_CLIENT_ID: the AuthKit application people sign in through, which
+member changes use too. Named in signIn.workosClientId or
+organizationDirectory.workosClientId; both may be set only alike.
+*/}}
+{{- define "switch.workosClientId" -}}
+{{- $signIn := .Values.switchCore.signIn.workosClientId }}
+{{- $directory := .Values.switchCore.organizationDirectory.workosClientId }}
+{{- if and $signIn $directory (ne $signIn $directory) }}
+{{- fail "switchCore.signIn.workosClientId and switchCore.organizationDirectory.workosClientId name different AuthKit applications, but sign-in and member changes use one: set it in signIn.workosClientId alone." }}
+{{- end }}
+{{- $signIn | default $directory }}
+{{- end }}
+
+{{/*
+"true" when WORKOS_API_KEY must be set: signing in through AuthKit, or
+keeping organizations in WorkOS.
+*/}}
+{{- define "switch.workosApiKeyRequired" -}}
+{{- if or (eq (include "switch.signInProvider" .) "workos") (eq .Values.switchCore.organizationDirectory.mode "workos") }}true{{ end }}
+{{- end }}
+
+{{/*
 The Secret's data block, so the pre-upgrade copy the migration reads is
 rendered from this one source and cannot drift from the release's own.
 */}}
@@ -93,11 +135,11 @@ GATEWAY_ADMIN_PASSWORD: {{ .Values.secrets.gatewayAdminPassword | b64enc | quote
 MATTERMOST_ADMIN_PASSWORD: {{ .Values.secrets.mattermostAdminPassword | default .Values.secrets.postgresPassword | b64enc | quote }}
 MATTERMOST_USER_PASSWORD: {{ .Values.secrets.mattermostUserPassword | default .Values.secrets.postgresPassword | b64enc | quote }}
 {{- end }}
-{{- if .Values.switchCore.oidc.enabled }}
+{{- if and .Values.switchCore.oidc.enabled (eq (include "switch.signInProvider" .) "oidc") }}
 GATEWAY_OIDC_CLIENT_SECRET: {{ required "secrets.gatewayOidcClientSecret is required when switchCore.oidc.enabled" .Values.secrets.gatewayOidcClientSecret | b64enc | quote }}
 {{- end }}
-{{- if eq .Values.switchCore.organizationDirectory.mode "workos" }}
-WORKOS_API_KEY: {{ required "secrets.workosApiKey is required when switchCore.organizationDirectory.mode is workos" .Values.secrets.workosApiKey | b64enc | quote }}
+{{- if include "switch.workosApiKeyRequired" . }}
+WORKOS_API_KEY: {{ required "secrets.workosApiKey is required when switchCore.signIn.provider or switchCore.organizationDirectory.mode is workos" .Values.secrets.workosApiKey | b64enc | quote }}
 {{- end }}
 {{- if and .Values.switchCore.smtp.enabled (or .Values.switchCore.smtp.username .Values.switchCore.smtp.usernameFromSecret) }}
 GATEWAY_SMTP_PASSWORD: {{ required "secrets.gatewaySmtpPassword is required when an SMTP username is set" .Values.secrets.gatewaySmtpPassword | b64enc | quote }}
@@ -904,6 +946,22 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
       optional: true
       {{- end }}
 {{- if .Values.switchCore.oidc.enabled }}
+{{- if eq (include "switch.signInProvider" .) "workos" }}
+{{- $oidc := .Values.switchCore.oidc }}
+{{- if or $oidc.issuerUrl $oidc.clientId }}
+{{- fail "switchCore.signIn.provider workos signs in through AuthKit, not the generic OIDC client: leave switchCore.oidc.issuerUrl and switchCore.oidc.clientId empty." }}
+{{- end }}
+{{- if $oidc.loginOptions }}
+{{- fail "switchCore.oidc.loginOptions is not used with switchCore.signIn.provider workos: AuthKit's own page offers the ways to sign in, and going around it skips what it handles (email verification, multi-factor sign-in, an organization's own single sign-on)." }}
+{{- end }}
+{{- if not (include "switch.workosClientId" .) }}
+{{- fail "switchCore.signIn.provider workos needs switchCore.signIn.workosClientId, the AuthKit application people sign in through." }}
+{{- end }}
+- name: GATEWAY_SIGN_IN_PROVIDER
+  value: "workos"
+- name: GATEWAY_OIDC_REDIRECT_URL
+  value: {{ required "switchCore.oidc.redirectUrl is required with switchCore.signIn.provider workos: https://<dashboard host>/gateway/auth/oidc/callback, registered on the AuthKit application" $oidc.redirectUrl | quote }}
+{{- else }}
 - name: GATEWAY_OIDC_ISSUER_URL
   value: {{ required "switchCore.oidc.issuerUrl is required when oidc.enabled" .Values.switchCore.oidc.issuerUrl | quote }}
 - name: GATEWAY_OIDC_CLIENT_ID
@@ -919,8 +977,6 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
 {{- end }}
 - name: GATEWAY_OIDC_SCOPES
   value: {{ $oidcScopes | quote }}
-- name: GATEWAY_OIDC_PROVIDER_LABEL
-  value: {{ .Values.switchCore.oidc.providerLabel | quote }}
 {{- with .Values.switchCore.oidc.loginOptions }}
 - name: GATEWAY_OIDC_LOGIN_OPTIONS
   value: {{ toJson . | quote }}
@@ -929,6 +985,9 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
 - name: GATEWAY_OIDC_REDIRECT_URL
   value: {{ .Values.switchCore.oidc.redirectUrl | quote }}
 {{- end }}
+{{- end }}
+- name: GATEWAY_OIDC_PROVIDER_LABEL
+  value: {{ .Values.switchCore.oidc.providerLabel | quote }}
 {{- if not .Values.switchCore.oidc.requireEmailVerified }}
 - name: GATEWAY_OIDC_REQUIRE_EMAIL_VERIFIED
   value: "false"
@@ -937,6 +996,10 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
 - name: GATEWAY_PASSWORD_LOGIN_ENABLED
   value: "false"
 {{- end }}
+{{- end }}
+{{- with .Values.switchCore.signIn.trustedProxies }}
+- name: GATEWAY_TRUSTED_PROXIES
+  value: {{ toJson . | quote }}
 {{- end }}
 - name: GATEWAY_SIGNUP_ENABLED
   value: {{ .Values.switchCore.signupEnabled | quote }}
@@ -1356,7 +1419,7 @@ render instead of a pod.
 */}}
 {{- define "switch.organizationDirectoryEnv" -}}
 {{- $directory := .Values.switchCore.organizationDirectory }}
-{{- $changes := list $directory.membersServiceUrl $directory.workosClientId $directory.workosRedirectUrl | compact }}
+{{- $changes := list $directory.membersServiceUrl $directory.workosRedirectUrl | compact }}
 {{- if not (has $directory.mode (list "local" "workos")) }}
 {{- fail (printf "switchCore.organizationDirectory.mode must be local or workos. Got %q." $directory.mode) }}
 {{- end }}
@@ -1367,25 +1430,40 @@ render instead of a pod.
 {{- if ne .Values.switchCore.signup.mode "invite_only" }}
 {{- fail "switchCore.organizationDirectory.mode workos needs switchCore.signup.mode invite_only: a customer's organization is linked by an operator, not created by whoever signs up." }}
 {{- end }}
-{{- if and $changes (lt (len $changes) 3) }}
-{{- fail "switchCore.organizationDirectory.membersServiceUrl, workosClientId and workosRedirectUrl are set together, or not at all." }}
+{{- if and $changes (lt (len $changes) 2) }}
+{{- fail "switchCore.organizationDirectory.membersServiceUrl and workosRedirectUrl are set together, or not at all." }}
+{{- end }}
+{{- if and $changes (not (include "switch.workosClientId" .)) }}
+{{- fail "switchCore.organizationDirectory.membersServiceUrl needs the AuthKit application admins sign in to for its token: organizationDirectory.workosClientId, or signIn.workosClientId with signIn.provider workos." }}
 {{- end }}
 - name: ORGANIZATION_DIRECTORY
   value: "workos"
+{{- if $changes }}
+- name: MEMBERS_SERVICE_URL
+  value: {{ $directory.membersServiceUrl | quote }}
+- name: WORKOS_REDIRECT_URL
+  value: {{ $directory.workosRedirectUrl | quote }}
+{{- end }}
+{{- else if or $changes $directory.workosClientId }}
+{{- fail "switchCore.organizationDirectory.membersServiceUrl, workosClientId and workosRedirectUrl are for mode workos." }}
+{{- end }}
+{{- include "switch.workosEnv" . }}
+{{- end }}
+
+{{/*
+WORKOS_API_KEY and WORKOS_CLIENT_ID, for sign-in through AuthKit and for
+organizations kept in WorkOS alike.
+*/}}
+{{- define "switch.workosEnv" -}}
+{{- if include "switch.workosApiKeyRequired" . }}
 - name: WORKOS_API_KEY
   valueFrom:
     secretKeyRef:
       name: {{ include "switch.secretName" . }}
       key: WORKOS_API_KEY
-{{- if $changes }}
-- name: MEMBERS_SERVICE_URL
-  value: {{ $directory.membersServiceUrl | quote }}
-- name: WORKOS_CLIENT_ID
-  value: {{ $directory.workosClientId | quote }}
-- name: WORKOS_REDIRECT_URL
-  value: {{ $directory.workosRedirectUrl | quote }}
 {{- end }}
-{{- else if $changes }}
-{{- fail "switchCore.organizationDirectory.membersServiceUrl, workosClientId and workosRedirectUrl are for mode workos." }}
+{{- with include "switch.workosClientId" . }}
+- name: WORKOS_CLIENT_ID
+  value: {{ . | quote }}
 {{- end }}
 {{- end }}

@@ -455,6 +455,30 @@ version of their own to them without also giving them a release of their own.
   admin, and for making the registration service account an admin. The last
   admin's `can_change_role` and `can_remove` are now false, as the routes
   already refused both, so the current Workspace page no longer offers them.
+- **Sign in through WorkOS AuthKit, sharing the sign-in with the WorkOS
+  environment's other applications.** `GATEWAY_SIGN_IN_PROVIDER=workos`, with
+  the AuthKit application in `WORKOS_CLIENT_ID` and its API key in
+  `WORKOS_API_KEY`, sends the dashboard's sign-in to AuthKit's own page and
+  keeps the person's AuthKit session. Someone signed in to another
+  application in the environment signs in to Switch without signing in again.
+  Signing out of Switch, or out of every device, ends that session at WorkOS
+  too. A session ended at WorkOS ends the Switch session on it within about
+  five minutes. Signing out elsewhere, a revoke, a password reset and the
+  environment's session policy all count. An impersonated sign-in is refused.
+  The routes are unchanged, so Switch Console signs in as before. In the Helm
+  chart, `switchCore.signIn.provider: workos` with `switchCore.oidc.enabled`.
+  The AuthKit application's setup, its session policy and moving from a WorkOS
+  Connect application are in `docs/old/GATEWAY_OIDC_SETUP.md`.
+- **`GATEWAY_TRUSTED_PROXIES`.** The proxies whose `X-Forwarded-For` the
+  server believes, so it can tell WorkOS where a sign-in came from
+  (`switchCore.signIn.trustedProxies` in the Helm chart). Without it, no
+  address is sent rather than the proxy's.
+- **`switch-link-workos` can move a server between sign-ins and
+  environments.** `accounts --from-issuer <issuer>` links each account that
+  signs in under the earlier sign-in to the same WorkOS user, copying the
+  identity so the old sign-in keeps working until the move is deployed.
+  `organization --replace` re-links an organization to another WorkOS
+  organization, for a move to another WorkOS environment.
 
 #### Changed
 - **Switch Trust guardrails are set per organization instead of once for
@@ -607,6 +631,28 @@ version of their own to them without also giving them a release of their own.
   provider's session outlives Switch's and would sign them straight back in;
   and if they come back from the provider still signed out, it stops and says
   signing in didn't finish rather than sending them round again.
+- **The dashboard's sign-in says why a sign-in failed.** A sign-in through
+  the identity provider that does not finish comes back to the sign-in page
+  saying why (cancelled, refused, expired, an unverified address, an
+  impersonated sign-in, the provider unreachable, or sign-in set up wrongly)
+  rather than to an error from the server, and the page waits to be asked
+  rather than handing off again.
+- **Signing in comes back to the page you asked for.** Opening a dashboard
+  page while signed out signs you in and lands you on that page, through the
+  identity provider or with a password, instead of on the home page.
+- **A page whose session has ended goes to sign-in.** When Switch refuses a
+  request because the session ended (signed out elsewhere, or its sign-in at
+  the identity provider ended), the dashboard reads the session again and
+  reloads signed out, rather than showing the refusal on each page.
+- **Signing out of every device signs this browser out even when some
+  sign-ins at WorkOS could not be ended.** Every Switch session has ended by
+  then, so the dashboard signs out and says how many WorkOS sign-ins are
+  left, rather than claiming the sign-out failed.
+- **`MEMBERS_SERVICE_URL` and `WORKOS_REDIRECT_URL` go together, with
+  `WORKOS_CLIENT_ID`.** `WORKOS_CLIENT_ID` on its own is now valid, for
+  sign-in through AuthKit. In the Helm chart,
+  `switchCore.organizationDirectory.workosClientId` may be left empty when
+  `switchCore.signIn.workosClientId` names the application.
 - **One message event instead of two.** `room_message_sent` and
   `agent_message_sent` are replaced by `message_sent`, which keeps every
   `sender_kind` and carries the sending agent's `known_agent_type` on an
