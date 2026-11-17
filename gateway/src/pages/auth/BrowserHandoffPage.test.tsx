@@ -114,7 +114,7 @@ afterEach(() => {
 
 describe("the sign-in link page", () => {
   it("drops the code from the address before asking anything", async () => {
-    const requests = answer({ "/auth/handoff/peek": peeked(null), "/auth/handoff/redeem": REDEEMED });
+    const requests = answer({ "/auth/handoff/peek": peeked(ADA, true), "/auth/handoff/redeem": REDEEMED });
 
     openLink();
 
@@ -126,10 +126,21 @@ describe("the sign-in link page", () => {
     for (const request of requests) expect(request.address).not.toContain(CODE);
   });
 
-  it("signs a browser with no session straight in and opens the page, once", async () => {
+  // A link someone made for their own account must not sign you into it unasked.
+  it("asks a browser with no session before signing it in, then opens the page, once", async () => {
     const requests = answer({ "/auth/handoff/peek": peeked(null), "/auth/handoff/redeem": REDEEMED });
 
     openLink();
+
+    expect(
+      await screen.findByText(
+        "Switch Console is signing this browser in as Ada (ada@example.com). Continue?",
+      ),
+    ).toBeTruthy();
+    expect(requests.map((r) => r.url)).toEqual(["/gateway/auth/handoff/peek"]);
+    expect(replace).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Continue as Ada" }));
 
     await waitFor(() => expect(replace).toHaveBeenCalledWith("/rooms/r1?workspace=acme#docs"));
     expect(replace).toHaveBeenCalledOnce();
@@ -174,6 +185,16 @@ describe("the sign-in link page", () => {
     ]);
   });
 
+  it("lets a browser with no session decline, spending nothing", async () => {
+    const requests = answer({ "/auth/handoff/peek": peeked(null) });
+
+    openLink();
+    expect(await screen.findByRole("link", { name: "Sign in another way" })).toBeTruthy();
+
+    expect(replace).not.toHaveBeenCalled();
+    expect(requests.map((r) => r.url)).toEqual(["/gateway/auth/handoff/peek"]);
+  });
+
   it("stays as the person already signed in, spending nothing", async () => {
     const requests = answer({ "/auth/handoff/peek": peeked(BOB) });
 
@@ -201,7 +222,7 @@ describe("the sign-in link page", () => {
 
   it("says why when redeeming is refused", async () => {
     answer({
-      "/auth/handoff/peek": peeked(null),
+      "/auth/handoff/peek": peeked(ADA, true),
       "/auth/handoff/redeem": [
         410,
         { detail: "Switch Console was signed out after it made this sign-in link. Sign in again." },
@@ -286,7 +307,7 @@ describe("the sign-in link page", () => {
 
 describe("the dashboard", () => {
   it("opens the link page outside any session, in either layout", async () => {
-    const requests = answer({ "/auth/handoff/peek": peeked(null), "/auth/handoff/redeem": REDEEMED });
+    const requests = answer({ "/auth/handoff/peek": peeked(ADA, true), "/auth/handoff/redeem": REDEEMED });
     window.history.replaceState(null, "", `/auth/handoff#code=${CODE}`);
 
     render(<App />);

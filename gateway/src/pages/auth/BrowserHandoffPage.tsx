@@ -46,8 +46,12 @@ function refusal(err: unknown): string {
 /** `/auth/handoff#code=…`: sign this browser in with the link Switch Console
  * made, then open the page it was for. The code is read once and dropped
  * from the address straight away, so it stays out of the history and any
- * copied link; it only ever leaves in a request body. A browser signed in as
- * someone else is asked first. */
+ * copied link; it only ever leaves in a request body.
+ *
+ * Only a browser already signed in as the same person goes straight through.
+ * Any other is asked first, one with no session included: otherwise someone
+ * could make a link for their own account, get you to open it within its
+ * minute, and leave you working in their account without a word. */
 export default function BrowserHandoffPage() {
   const [state, setState] = useState<State>({ kind: "working" });
   // Kept across a remount, so a second run of the effect (React's strict
@@ -82,7 +86,7 @@ export default function BrowserHandoffPage() {
         setState({ kind: "refused", message: refusal(err) });
         return;
       }
-      if (link.signed_in_as === null || link.same_person) await redeem(taken);
+      if (link.same_person) await redeem(taken);
       else setState({ kind: "ask", code: taken, link });
     })();
   }, []);
@@ -116,10 +120,12 @@ export default function BrowserHandoffPage() {
             </Button>
           </Stack>
         )}
-        {state.kind === "ask" && state.link.signed_in_as !== null && (
+        {state.kind === "ask" && (
           <Stack spacing={2}>
             <Typography variant="body2">
-              {`You're signed in here as ${person(state.link.signed_in_as)}. Continue as ${person(state.link)}?`}
+              {state.link.signed_in_as === null
+                ? `Switch Console is signing this browser in as ${person(state.link)}. Continue?`
+                : `You're signed in here as ${person(state.link.signed_in_as)}. Continue as ${person(state.link)}?`}
             </Typography>
             {state.link.workspace_name && (
               <Typography variant="body2" sx={{ color: "text.secondary" }}>
@@ -129,9 +135,15 @@ export default function BrowserHandoffPage() {
             <Button variant="contained" onClick={() => void redeem(state.code)}>
               {`Continue as ${state.link.name}`}
             </Button>
-            <Button variant="outlined" onClick={() => window.location.replace("/")}>
-              {`Stay as ${state.link.signed_in_as.name}`}
-            </Button>
+            {state.link.signed_in_as === null ? (
+              <Button variant="outlined" component={RouterLink} to="/login">
+                Sign in another way
+              </Button>
+            ) : (
+              <Button variant="outlined" onClick={() => window.location.replace("/")}>
+                {`Stay as ${state.link.signed_in_as.name}`}
+              </Button>
+            )}
           </Stack>
         )}
       </Card>

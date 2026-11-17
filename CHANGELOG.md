@@ -62,8 +62,10 @@ version of their own to them without also giving them a release of their own.
   asks `POST /gateway/auth/handoff/peek` whose link it is, and redeems it with
   `POST /gateway/auth/handoff/redeem` for a session of the browser's own: the
   same account and workspace, and the minting session's sign-in time, so it
-  never outlives that session. A browser signed in as someone else asks before
-  switching. A link that was used or has expired, or whose session was signed
+  never outlives that session. Only a browser already signed in as the same
+  person goes straight through: any other asks first, one with no session
+  included, so a link someone made for their own account can't sign you into
+  it unasked. A link that was used or has expired, or whose session was signed
   out or ended everywhere since, is refused with 410. Signing out of the
   session that made a link signs out the browser sessions it opened; signing
   out in the browser leaves the other session alone. Each redeemed link is
