@@ -109,7 +109,7 @@ export default function AccountSearch({
     try {
       const next = afterClaim(await claimBridgeIdentity(app.bridge_id, person));
       if (next.kind === "linked") onLinked(person.username);
-      else onConfirm(next.target, next.code);
+      else onConfirm({ ...next.target, ...namedWithoutHandle(person) }, next.code);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not link this account.");
     } finally {
@@ -285,7 +285,12 @@ function Results({
                       aria-label={`Confirm ${personLabel(person)}`}
                       disabled={claiming !== null}
                       onClick={() =>
-                        onConfirm({ identityId: rowId, username: person.username, kind: "unverified" })
+                        onConfirm({
+                          identityId: rowId,
+                          username: person.username,
+                          ...namedWithoutHandle(person),
+                          kind: "unverified",
+                        })
                       }
                     >
                       Confirm
@@ -304,6 +309,7 @@ function Results({
                       onConfirm({
                         identityId: waiting.id,
                         username: waiting.external_username,
+                        ...namedWithoutHandle(person),
                         kind: "pending",
                       })
                     }
@@ -330,6 +336,12 @@ function Results({
       </Box>
     </Stack>
   );
+}
+
+/** The name to show for a person whose username is a handle Switch made up,
+ *  so the confirmation names them as the search did; nothing for a real one. */
+function namedWithoutHandle(person: DirectoryPerson): { displayName?: string } {
+  return person.has_handle ? {} : { displayName: person.display_name };
 }
 
 /** How a person is named in a button's label: their handle, or their name

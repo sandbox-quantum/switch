@@ -1332,6 +1332,14 @@ class PlatformAdapter(ABC):
         """
         return False
 
+    async def agent_greeting(
+        self, channel_id: str, agent_name: str, greeting: str
+    ) -> str:
+        """What an agent's join greeting says in this channel. The room's line
+        ("tag @agent when you need me") by default; a platform where tagging
+        an agent does not reach it in this channel says what does."""
+        return greeting
+
     def take_further_refs(self, message_ref: str) -> list[str]:
         """The platform's other posts for the message just posted as
         `message_ref`, when it had to split it to fit: a reply to any of them

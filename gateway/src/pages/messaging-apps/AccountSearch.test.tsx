@@ -174,6 +174,32 @@ describe("AccountSearch", () => {
     expect(screen.queryByText(/@MM_42/)).toBeNull();
   });
 
+  it("hands the confirmation their name, so it doesn't show the made-up handle either", async () => {
+    vi.mocked(api.searchBridgeDirectory).mockResolvedValue({
+      source: "known",
+      note: null,
+      users: [person({ external_user_id: "42", username: "MM_42", display_name: "M M", email: null, has_handle: false })],
+    });
+    vi.mocked(api.claimBridgeIdentity).mockResolvedValue({
+      id: "acct-42",
+      bridge_id: "b1",
+      external_user_id: "42",
+      external_username: "MM_42",
+      claimed_by: [],
+      link_request: { user_id: "u-ada", code },
+    });
+    const { onConfirm } = search({ app: { ...app, directory_search_supported: false } });
+    type("M M");
+    fireEvent.click(await screen.findByRole("button", { name: "This is me: M M" }));
+
+    await waitFor(() =>
+      expect(onConfirm).toHaveBeenCalledWith(
+        { identityId: "acct-42", username: "MM_42", displayName: "M M", kind: "pending" },
+        code,
+      ),
+    );
+  });
+
   it("captions a list drawn from the accounts Switch has seen", async () => {
     vi.mocked(api.searchBridgeDirectory).mockResolvedValue({
       source: "known",

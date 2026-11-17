@@ -110,6 +110,7 @@ export const BridgeIdentitySearch = observer(function BridgeIdentitySearch({
           {
             identityId: result.pending.id,
             externalUsername: result.pending.externalUsername,
+            ...namedWithoutHandle(person),
             kind: result.alreadyLinked ? 'unverified' : 'pending',
           },
           result.code
@@ -356,6 +357,7 @@ function DirectoryResults({
                           {
                             identityId: rowId,
                             externalUsername: person.username,
+                            ...namedWithoutHandle(person),
                             kind: 'unverified',
                           },
                           null
@@ -385,6 +387,7 @@ function DirectoryResults({
                         {
                           identityId: waiting.id,
                           externalUsername: waiting.externalUsername,
+                          ...namedWithoutHandle(person),
                           kind: 'pending',
                         },
                         null
@@ -419,4 +422,10 @@ function claimFailureText(
     case 'error':
       return result.message;
   }
+}
+
+/** The name to show for a person whose username is a handle Switch made up,
+ * so the confirmation names them as the search did; nothing for a real handle. */
+function namedWithoutHandle(person: BridgeDirectoryUser): { displayName?: string } {
+  return person.hasHandle ? {} : { displayName: person.displayName };
 }

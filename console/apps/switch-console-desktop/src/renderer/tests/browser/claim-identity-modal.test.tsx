@@ -753,6 +753,27 @@ describe('the search says only what it can find', () => {
     await vi.waitFor(() => expect(button(el, 'This is me')).toBeDefined());
     expect(el.textContent).toContain('M M');
     expect(el.textContent).not.toContain('@MM_42');
+
+    // The confirmation names them the same way, including when Telegram
+    // would not let the bot message them.
+    claimReturns({
+      ...PENDING_RESULT,
+      pending: { ...PENDING_RESULT.pending, id: 'eu-42', externalUsername: 'MM_42' },
+      code: {
+        ...CODE,
+        prompt: {
+          number: 7,
+          sent: false,
+          unavailableReason:
+            'Telegram only lets the bot message people who have started a chat with it.',
+          link: null,
+        },
+      },
+    });
+    await click(button(el, 'This is me'));
+    expect(el.textContent).toContain('Couldn’t message M M directly');
+    expect(el.textContent).toContain('To finish linking M M, post this code');
+    expect(el.textContent).not.toContain('@MM_42');
   });
 });
 
