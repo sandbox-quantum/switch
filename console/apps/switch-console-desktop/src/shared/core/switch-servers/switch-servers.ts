@@ -637,11 +637,10 @@ export type RemoteAgentRoom = {
   /** The room-scoped role the agent currently holds, or null. */
   roomRole: string | null;
   /**
-   * Whether one of the agent's sessions has attended this room: it was
-   * addressed there, since a session starts for a message. False where the
-   * server lists no sessions.
+   * Whether the agent has had a turn in this room: someone addressed it there
+   * and it took the message up. False from a server that does not say.
    */
-  sessionAttended?: boolean;
+  answeredHere?: boolean;
 };
 
 /** A room group on a server (mirrors the gateway `RoomGroupDetail`). Used to

@@ -769,7 +769,7 @@ describe('switch-buddy setup cards', () => {
       { bridgeId: 'b-4', externalUsername: 'ada', verified: true } as LinkedIdentity,
     ]);
     listAgentRooms.mockResolvedValue([
-      { roomId: 'r-tg', roomName: 'Ada & bot', archived: false, sessionAttended: true },
+      { roomId: 'r-tg', roomName: 'Ada & bot', archived: false, answeredHere: true },
     ]);
     listRooms.mockResolvedValue([
       { id: 'r-tg', bridgeType: 'telegram', channelType: 'channel_private', createdAt: '' },
@@ -790,7 +790,7 @@ describe('switch-buddy setup cards', () => {
     listMyIdentities.mockResolvedValue([linked('b-1')]);
     made.add('b-1');
     listAgentRooms.mockResolvedValue([
-      { roomId: 'room-b-1', roomName: '#buddy-ada', archived: false, sessionAttended: true },
+      { roomId: 'room-b-1', roomName: '#buddy-ada', archived: false, answeredHere: true },
     ]);
     const el = await render();
 

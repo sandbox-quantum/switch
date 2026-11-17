@@ -435,6 +435,9 @@ class AgentRoomMembership(BaseModel):
     archived: bool
     status: str
     room_role: str | None
+    # Whether the agent has had a turn in this room: someone addressed it there
+    # and one of its sessions took the message up.
+    answered_here: bool
 
 
 class AgentSessionDetail(BaseModel):

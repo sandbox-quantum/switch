@@ -349,7 +349,7 @@ export function useTalkedIn({
     queryKey: ['buddy-talked-in', workspaceId, agentId, roomId],
     queryFn: async () =>
       (await rpc.workspaces.listAgentRooms({ workspaceId, agentId })).some(
-        (room) => room.roomId === roomId && room.sessionAttended === true
+        (room) => room.roomId === roomId && room.answeredHere === true
       ),
     enabled: roomId !== null && !remembered,
     refetchInterval: (q) => (q.state.data ? false : SEEN_POLL_MS),
@@ -393,7 +393,7 @@ export function groupProgress(
   const groups = agentRooms.filter((room) => !room.archived && onApp.has(room.roomId));
   return {
     inGroup: groups.length > 0,
-    talking: groups.some((room) => room.sessionAttended === true),
+    talking: groups.some((room) => room.answeredHere === true),
   };
 }
 
