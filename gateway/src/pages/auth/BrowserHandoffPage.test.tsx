@@ -9,7 +9,8 @@ const CODE = "c0de-c0de-c0de-c0de-c0de-c0de-c0de-c0de-c0d";
 const ADA = { name: "Ada", email: "ada@example.com" };
 const BOB = { name: "Bob", email: "bob@example.com" };
 
-type Answer = [status: number, body: unknown];
+// A body left out is an empty one; "unreachable" is a request that gets no answer.
+type Answer = [status: number, body?: unknown, statusText?: string] | "unreachable";
 
 interface Request {
   url: string;
@@ -36,8 +37,10 @@ function answer(routes: Record<string, Answer>): Request[] {
         body: init?.body ? JSON.parse(String(init.body)) : null,
         address: realLocation.href,
       });
-      const [status, body] = routes[url.replace(/^\/gateway/, "")] ?? [404, { detail: "unmocked" }];
-      return new Response(JSON.stringify(body), { status });
+      const answered = routes[url.replace(/^\/gateway/, "")] ?? [404, { detail: "unmocked" }];
+      if (answered === "unreachable") throw new TypeError("Failed to fetch");
+      const [status, body, statusText] = answered;
+      return new Response(body === undefined ? null : JSON.stringify(body), { status, statusText });
     }),
   );
   return requests;
@@ -210,6 +213,52 @@ describe("the sign-in link page", () => {
     expect(await screen.findByText(/Switch Console was signed out/)).toBeTruthy();
     expect(replace).not.toHaveBeenCalled();
   });
+
+  const FAILURES: [what: string, failure: Answer, shown: string][] = [
+    [
+      "a 401",
+      [401, { detail: "Session too old; sign in again" }],
+      "Session too old; sign in again",
+    ],
+    ["a 429 with no detail", [429, undefined, "Too Many Requests"], "429 Too Many Requests"],
+    ["no answer at all", "unreachable", "Failed to fetch"],
+  ];
+
+  it.each(FAILURES)(
+    "says why when peeking gets %s, and offers the sign-in page",
+    async (_what, failure, shown) => {
+      const requests = answer({ "/auth/handoff/peek": failure });
+
+      openLink();
+
+      expect(await screen.findByText(shown)).toBeTruthy();
+      expect(screen.getByRole("link", { name: "Sign in" }).getAttribute("href")).toBe("/login");
+      expect(requests.map((r) => r.url)).toEqual(["/gateway/auth/handoff/peek"]);
+      expect(replace).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(FAILURES)(
+    "says why when redeeming after the question gets %s, and offers the sign-in page",
+    async (_what, failure, shown) => {
+      const requests = answer({
+        "/auth/handoff/peek": peeked(BOB),
+        "/auth/handoff/redeem": failure,
+      });
+
+      openLink();
+      fireEvent.click(await screen.findByRole("button", { name: "Continue as Ada" }));
+
+      expect(await screen.findByText(shown)).toBeTruthy();
+      expect(screen.getByRole("link", { name: "Sign in" }).getAttribute("href")).toBe("/login");
+      expect(screen.queryByRole("button", { name: "Continue as Ada" })).toBeNull();
+      expect(requests.map((r) => r.url)).toEqual([
+        "/gateway/auth/handoff/peek",
+        "/gateway/auth/handoff/redeem",
+      ]);
+      expect(replace).not.toHaveBeenCalled();
+    },
+  );
 
   it("says the link has expired without asking anything when it carries no code", async () => {
     const requests = answer({});
