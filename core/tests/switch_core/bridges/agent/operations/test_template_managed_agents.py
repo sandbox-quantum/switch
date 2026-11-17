@@ -705,7 +705,9 @@ agent:
     stored = await _stored(managed, template, kind="agent")
     with pytest.raises(AgentsNotCreated) as e:
         await _as(managed["agent_id"], run_template, template_id=stored)
-    assert {p.code for p in e.value.problems} == {"join_fixed_membership"}
+    # Someone else's DM or group is hidden from the agent's owner, so it is
+    # not a room the template can name at all.
+    assert {p.code for p in e.value.problems} == {"join_unknown_room"}
     assert managed["management"].created == []
     assert added == []
 
