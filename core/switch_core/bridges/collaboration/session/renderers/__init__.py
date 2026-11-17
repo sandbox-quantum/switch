@@ -50,6 +50,9 @@ TURN_STATE = {
     "interrupted": "Turn interrupted.",
     "error": "Turn ended with an error.",
 }
+# How much of why a turn ended its state line shows: the state is a status
+# line, and the platform's whole card is not the place for a stack trace.
+MAX_REASON_CHARS = 200
 
 
 def turn_state(
@@ -57,6 +60,7 @@ def turn_state(
     turn: TurnUpsert,
     *,
     tool_detail: bool,
+    escape: Callable[[str], str],
     elapsed_seconds: float | None = None,
 ) -> str:
     """Where a turn got to, and what it left behind if it stopped.
@@ -87,6 +91,10 @@ def turn_state(
     reporting — the duration stays, because that is the turn's own. What a
     turn left unfinished is not covered by it: that is an outcome, and it is
     reported wherever the turn is.
+
+    A turn that did not finish on its own says why when its row says (Switch
+    ending a turn whose session went away does). That is the only text here
+    that is not ours, so it alone goes through the platform's `escape`.
     """
     state = TURN_STATE[turn.status]
     if turn.status == "queued" and any(
@@ -97,6 +105,13 @@ def turn_state(
         if elapsed_seconds is not None and elapsed_seconds >= RUNNING_CLOCK_SECONDS:
             state = f"{state} {int(elapsed_seconds // RUNNING_CLOCK_SECONDS)}m"
     else:
+        reason = " ".join(turn.reason.split())
+        if reason and turn.status != "completed":
+            if len(reason) > MAX_REASON_CHARS:
+                reason = reason[: MAX_REASON_CHARS - 1] + "…"
+            elif not reason.endswith((".", "!", "?")):
+                reason += "."
+            state = f"{state} {escape(reason)}"
         if elapsed_seconds is not None:
             worked = _worked_for(elapsed_seconds, items, tool_detail=tool_detail)
             state = worked if turn.status == "completed" else f"{state} {worked}"

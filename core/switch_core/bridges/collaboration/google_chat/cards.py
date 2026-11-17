@@ -29,6 +29,7 @@ def render_turn_activity_card(
         activity.items,
         activity.turn,
         tool_detail=False,
+        escape=lambda s: s,
         elapsed_seconds=activity.elapsed_seconds,
     )
     summary_text = turn_summary(

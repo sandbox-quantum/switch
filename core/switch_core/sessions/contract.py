@@ -253,6 +253,9 @@ class TurnUpsert(_Model):
     turn_id: Id
     status: Literal["queued", "running", "completed", "interrupted", "error"]
     command_id: Id | None
+    # Why the turn ended, from the text on its own activity row. Filled in by
+    # Switch for its renderers; no host sends it, so it never goes on the wire.
+    reason: str = Field(default="", exclude=True)
 
 
 TURN_ENDED = frozenset({"completed", "interrupted", "error"})

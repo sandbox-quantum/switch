@@ -180,6 +180,9 @@ function sessionHosts() {
     },
     /** The host at `root` exits. */
     exit: (root: string) => children.get(root)?.emit('exit', 0, null),
+    /** The host at `root` dies, as one killed or crashing does. */
+    crash: (root: string, code: number | null, signal: NodeJS.Signals | null) =>
+      children.get(root)?.emit('exit', code, signal),
     /** The host at `root` says whether it is in the middle of a turn. */
     busy: (root: string, busy: boolean) =>
       children.get(root)?.emit('message', {
@@ -1060,6 +1063,78 @@ it('forgets a room another connection took over, and a session that was stopped'
   expect(JSON.parse(await readFile(join(root, 'placements.json'), 'utf8'))).toEqual({
     placements: {},
   });
+});
+
+it('tells the room, in its thread, once, when a session host dies mid-turn, and not when it exits cleanly', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'shared-watch-crashed-'));
+  roots.push(root);
+  paths.root = root;
+  const config = await spawning(root);
+  await stopSpawning(root);
+  const session = await existing(root, config);
+  await assignTo(root, config, 1, 'room', session.sessionId);
+  await writeFile(
+    join(session.sessionRoot, 'inbox.jsonl'),
+    [
+      {
+        type: 'accepted',
+        command: {
+          commandId: 'turn-1',
+          origin: { roomId: 'room', threadId: 'thread-1', messageId: 'message-1' },
+          body: { type: 'message.send' },
+        },
+      },
+      { type: 'dispatched', commandId: 'turn-1' },
+    ]
+      .map((record) => JSON.stringify(record) + '\n')
+      .join('')
+  );
+  const hosts = sessionHosts();
+  const calls = switchOperations({ owner: 'ada' });
+  const busyHost = async () => {
+    await hosts.start(session.sessionRoot);
+    await hosts
+      .ask(
+        session.sessionRoot,
+        { agentId: config.session.agentId, sessionId: session.sessionId },
+        { type: 'tools' }
+      )
+      .catch(() => null);
+    hosts.busy(session.sessionRoot, true);
+  };
+  const abort = new AbortController();
+  const run = runAgentHost(
+    root,
+    config,
+    abort.signal,
+    hosts.supervision,
+    new WatcherControl(),
+    openSwitchStream
+  );
+  try {
+    await eventually(() => streams.length === 1);
+    await busyHost();
+    hosts.exit(session.sessionRoot);
+    await busyHost();
+    hosts.crash(session.sessionRoot, null, 'SIGKILL');
+    await eventually(() => calls.some((call) => call.name === 'post_message'));
+    await busyHost();
+    hosts.crash(session.sessionRoot, 137, null);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  } finally {
+    abort.abort();
+    await run;
+  }
+  expect(calls.filter((call) => call.name === 'post_message')).toEqual([
+    {
+      name: 'post_message',
+      body: {
+        body: 'My session stopped unexpectedly (signal SIGKILL). Mention me again to retry.',
+        thread_id: 'thread-1',
+      },
+      session: session.sessionId,
+    },
+  ]);
 });
 
 it('still owes an event its session never acknowledged', async () => {

@@ -237,11 +237,11 @@ def turn_summary(
     its own line reads as the agent having said it.
 
     The state line is the one thing that always survives whole — it is a
-    handful of words from a fixed vocabulary, never host text — so what gets
-    cut when the budget is tight is what was said, not whether the turn is
-    still going.
+    handful of words from a fixed vocabulary, and at most a short, already
+    escaped reason a turn ended — so what gets cut when the budget is tight
+    is what was said, not whether the turn is still going.
     """
-    state = turn_state(items, turn, tool_detail=True)
+    state = turn_state(items, turn, tool_detail=True, escape=escape)
     children = subagent_lines(
         items, fit=lambda text, size: _fit(text, size, escape=escape)
     )
@@ -315,7 +315,11 @@ def turn_status(
         return _mentioned(mention, _truncate(f"⚠️ {error_summary}", budget))
 
     state = turn_state(
-        items, turn, tool_detail=tool_detail, elapsed_seconds=elapsed_seconds
+        items,
+        turn,
+        tool_detail=tool_detail,
+        escape=escape,
+        elapsed_seconds=elapsed_seconds,
     )
     head = markup.bold(state)
 
@@ -475,7 +479,13 @@ def activity_log(
     head = None
     if heading:
         head = markup.bold(
-            turn_state(items, turn, tool_detail=True, elapsed_seconds=elapsed_seconds)
+            turn_state(
+                items,
+                turn,
+                tool_detail=True,
+                escape=escape,
+                elapsed_seconds=elapsed_seconds,
+            )
         )
 
     shown = [item for item in items if in_activity_log(item)]
@@ -1193,8 +1203,8 @@ def _share(limit: int, most: int, denominator: int) -> int:
 def _truncate(text: str, limit: int) -> str:
     """The start of `text` that fits `limit`, saying so if it had to cut.
 
-    For text that needs no escaping — the state line is ours, never host
-    text, so there is nothing here an escape could expand past `limit`.
+    For text that needs no escaping — the state line is ours, bar a short
+    reason `turn_state` has already capped and escaped.
     """
     if len(text) <= limit:
         return text

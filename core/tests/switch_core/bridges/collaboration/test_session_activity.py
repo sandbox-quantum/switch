@@ -14,6 +14,7 @@ that file is a byte-identical lift and cannot be edited here.
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from typing import Any
 
 from switch_core.bridges.collaboration.adapter import RequestCard, TurnActivity
@@ -36,6 +37,9 @@ from switch_core.bridges.collaboration.slack.adapter import (
     SlackAdapter,
     SlackConnectionConfig,
 )
+from switch_core.db.models import AgentSessionActivityItem
+from switch_core.session_activity.bridge_turns import turn_view
+from switch_core.session_activity.service import ORPHANED_TURN_TEXT
 from switch_core.sessions.contract import (
     ApprovalContent,
     ApprovalOption,
@@ -356,7 +360,13 @@ async def test_a_turn_with_no_items_at_all_shows_its_state_too() -> None:
 
 
 async def test_a_completed_turn_shows_how_long_it_worked_instead_of_saying_so() -> None:
-    state = turn_state([], _turn("completed"), tool_detail=True, elapsed_seconds=80)
+    state = turn_state(
+        [],
+        _turn("completed"),
+        tool_detail=True,
+        escape=lambda text: text,
+        elapsed_seconds=80,
+    )
 
     assert state == "Worked for 1m 20s."
 
@@ -364,14 +374,24 @@ async def test_a_completed_turn_shows_how_long_it_worked_instead_of_saying_so() 
 async def test_the_worked_for_line_counts_its_tool_calls() -> None:
     did = [_item(itemId=f"c{n}") for n in range(20)]
 
-    state = turn_state(did, _turn("completed"), tool_detail=True, elapsed_seconds=80)
+    state = turn_state(
+        did,
+        _turn("completed"),
+        tool_detail=True,
+        escape=lambda text: text,
+        elapsed_seconds=80,
+    )
 
     assert state == "Worked for 1m 20s. 20 tool calls."
 
 
 async def test_a_single_tool_call_is_not_pluralised() -> None:
     state = turn_state(
-        [_item()], _turn("completed"), tool_detail=True, elapsed_seconds=5
+        [_item()],
+        _turn("completed"),
+        tool_detail=True,
+        escape=lambda text: text,
+        elapsed_seconds=5,
     )
 
     assert state == "Worked for 5s. 1 tool call."
@@ -380,7 +400,13 @@ async def test_a_single_tool_call_is_not_pluralised() -> None:
 async def test_an_interrupted_turn_keeps_its_own_phrase_and_says_how_long_too() -> None:
     """Worth knowing on its own, unlike "complete" — so this one is appended
     rather than replaced."""
-    state = turn_state([], _turn("interrupted"), tool_detail=True, elapsed_seconds=45)
+    state = turn_state(
+        [],
+        _turn("interrupted"),
+        tool_detail=True,
+        escape=lambda text: text,
+        elapsed_seconds=45,
+    )
 
     assert state == "Turn interrupted. Worked for 45s."
 
@@ -391,7 +417,11 @@ async def test_a_running_turn_shows_the_whole_minutes_it_has_run() -> None:
 
     def running(elapsed: float) -> str:
         return turn_state(
-            [], _turn("running"), tool_detail=True, elapsed_seconds=elapsed
+            [],
+            _turn("running"),
+            tool_detail=True,
+            escape=lambda text: text,
+            elapsed_seconds=elapsed,
         )
 
     assert running(59) == "Working…"
@@ -402,9 +432,123 @@ async def test_a_running_turn_shows_the_whole_minutes_it_has_run() -> None:
 async def test_with_no_elapsed_seconds_a_completed_turn_says_only_that() -> None:
     """No timing to show is not the same as zero — the plain phrase stays
     rather than claiming a duration nobody measured."""
-    state = turn_state([], _turn("completed"), tool_detail=True, elapsed_seconds=None)
+    state = turn_state(
+        [],
+        _turn("completed"),
+        tool_detail=True,
+        escape=lambda text: text,
+        elapsed_seconds=None,
+    )
 
     assert state == "Turn complete."
+
+
+# ── Why it ended ──────────────────────────────────────────────────────────────
+
+
+def _ended(status: str, reason: str) -> TurnUpsert:
+    return _turn(status).model_copy(update={"reason": reason})
+
+
+async def test_a_turn_switch_ended_says_why_before_how_long() -> None:
+    state = turn_state(
+        [],
+        _ended("interrupted", ORPHANED_TURN_TEXT),
+        tool_detail=True,
+        escape=lambda text: text,
+        elapsed_seconds=45,
+    )
+
+    assert state == f"Turn interrupted. {ORPHANED_TURN_TEXT} Worked for 45s."
+
+
+async def test_an_errored_turn_says_why_as_a_sentence() -> None:
+    state = turn_state(
+        [],
+        _ended("error", "  Claude Code\nstream ended  "),
+        tool_detail=True,
+        escape=lambda text: text,
+    )
+
+    assert state == "Turn ended with an error. Claude Code stream ended."
+
+
+async def test_a_completed_turn_and_a_plain_stop_show_no_reason() -> None:
+    """A finished turn reads as finished, and a stop someone pressed stores
+    no reason, so it reads as just that."""
+    completed = turn_state(
+        [], _ended("completed", "noise"), tool_detail=True, escape=lambda t: t
+    )
+    stopped = turn_state([], _turn("interrupted"), tool_detail=True, escape=lambda t: t)
+
+    assert completed == "Turn complete."
+    assert stopped == "Turn interrupted."
+
+
+async def test_a_long_reason_is_cut_before_it_is_escaped() -> None:
+    state = turn_state(
+        [],
+        _ended("error", "&" * 500),
+        tool_detail=True,
+        escape=lambda text: text.replace("&", "&amp;"),
+    )
+
+    assert state == "Turn ended with an error. " + "&amp;" * 199 + "…"
+
+
+async def test_slack_escapes_the_reason_where_it_parses_markup_only() -> None:
+    """The reason is the one piece of the state that is not Switch's words.
+    The context block and the notification text are mrkdwn and escape it; a
+    plan title parses nothing and shows it as written."""
+    turn = _ended("error", "<!channel> & co")
+
+    bare = render_activity([], turn)
+    with_steps = render_activity_plan([_item()], turn)
+
+    assert bare.blocks[-1]["elements"][0]["text"] == (
+        "_Turn ended with an error. &lt;!channel&gt; &amp; co._"
+    )
+    assert bare.text == "Turn ended with an error. &lt;!channel&gt; &amp; co."
+    assert with_steps.blocks[0]["title"].startswith(
+        "Turn ended with an error. <!channel> & co."
+    )
+
+
+async def test_the_reason_switch_stored_on_the_turn_row_reaches_the_card() -> None:
+    now = datetime(2026, 10, 1, tzinfo=UTC)
+    row = AgentSessionActivityItem(
+        agent_id="agent",
+        session_id="session",
+        turn_id="turn",
+        item_id="turn",
+        kind="turn",
+        revision=4,
+        status="interrupted",
+        title="",
+        text=ORPHANED_TURN_TEXT,
+        command_id=None,
+        room_id=None,
+        thread_id=None,
+        message_id=None,
+        occurred_at=now,
+        created_at=now,
+        updated_at=now,
+    )
+
+    view = turn_view([row])
+
+    assert view is not None
+    assert render_activity(view.items, view.turn).blocks == [
+        {
+            "type": "context",
+            "elements": [
+                {
+                    "type": "mrkdwn",
+                    "text": f"_Turn interrupted. {ORPHANED_TURN_TEXT}_",
+                }
+            ],
+        }
+    ]
 
 
 async def test_the_fallback_stays_inside_what_slack_takes_for_one_string() -> None:
@@ -991,18 +1135,20 @@ async def test_activity_shows_how_messages_were_delivered() -> None:
     steered = _item(kind="user-message", delivery="steered", text="Use file A")
     queued = _item(kind="user-message", delivery="queued", text="Run tests")
     assert "1 message steered into this turn." in turn_state(
-        [steered], _turn("running"), tool_detail=True
+        [steered], _turn("running"), tool_detail=True, escape=lambda text: text
     )
-    assert turn_state([queued], _turn("queued"), tool_detail=True) == (
-        "Queued behind the running turn. Starts when it ends."
-    )
+    assert turn_state(
+        [queued], _turn("queued"), tool_detail=True, escape=lambda text: text
+    ) == ("Queued behind the running turn. Starts when it ends.")
     # Once it starts, the turn is just running.
-    assert "Queued" not in turn_state([queued], _turn("running"), tool_detail=True)
+    assert "Queued" not in turn_state(
+        [queued], _turn("running"), tool_detail=True, escape=lambda text: text
+    )
     # A message that started a turn straight away says nothing of delivery.
     plain = _item(kind="user-message", text="Original prompt")
-    assert turn_state([plain], _turn("queued"), tool_detail=True) == (
-        "Queued. Waiting for the agent to start…"
-    )
+    assert turn_state(
+        [plain], _turn("queued"), tool_detail=True, escape=lambda text: text
+    ) == ("Queued. Waiting for the agent to start…")
     assert "steered into this turn" in render_activity_text([steered], _turn())
 
 

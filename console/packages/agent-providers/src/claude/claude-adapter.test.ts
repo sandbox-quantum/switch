@@ -961,6 +961,15 @@ describe('ClaudeAdapter turn attribution', () => {
     expect(done.outcome).toBe('interrupted');
   });
 
+  it('fails a running turn when the Claude Code stream ends unasked', async () => {
+    const { sdk, adapter, recorder } = await startSession();
+    await adapter.sendTurn({ sessionId: SESSION, turnId: 'turn-1', text: 'go' });
+    sdk.latest().end();
+    const done = await recorder.waitFor('turn.completed', () => true, 1_000);
+    expect(done.outcome).toBe('error');
+    expect(done.message).toBe('Claude Code stream ended.');
+  });
+
   it('rejects sends for an unknown session', async () => {
     const { adapter } = await startSession();
     await expect(adapter.sendTurn({ sessionId: 'nope', turnId: 't', text: 'hi' })).rejects.toThrow(

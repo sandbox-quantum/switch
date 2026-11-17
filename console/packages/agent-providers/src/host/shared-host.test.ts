@@ -143,6 +143,8 @@ type Harness = {
   /** The host's end of the pipe, as its Switch tools use it. */
   channel: ParentChannel;
   stop: () => Promise<unknown>;
+  /** Whether the host has finished, on its own or stopped. */
+  ended: () => boolean;
   snapshotEpoch: () => Promise<string>;
 };
 
@@ -362,10 +364,12 @@ async function start(
     announcing(adapter),
     stop.signal
   );
+  let ended = false;
   const outcome = running.then(
     () => null,
     (error: unknown) => error
   );
+  void outcome.then(() => (ended = true));
   const journal = async () =>
     (await readFile(join(root, 'events.jsonl'), 'utf8').catch(() => ''))
       .split('\n')
@@ -407,6 +411,8 @@ async function start(
       stop.abort();
       return outcome;
     },
+    /** Whether the host has finished, on its own or stopped. */
+    ended: () => ended,
     snapshotEpoch: async () =>
       (await journal()).filter((event) => event.body.type === 'session.upsert').at(-1).body.session
         .epoch,
@@ -1873,6 +1879,59 @@ it('reports the turn a fault ended, and the fault, before it stops', async () =>
   await new Promise((resolve) => setTimeout(resolve, 1000));
   // The host stopped on its own, faulted, once the reports were out.
   expect(String(await host.stop())).toContain('HOST_FAULTED');
+});
+
+it('reports the turn a session exit failed, and settles its room reply, before it stops', async () => {
+  const host = await start({ rooms: true });
+  await host.parent.ask({ type: 'room', handoff: roomMessage(1, 'hi') });
+  await until(() => expect(host.turns).toHaveLength(1));
+  const turnId = host.turns[0]!.turnId;
+  host.switchCore.state.unavailable = true;
+  host.emit({
+    type: 'turn.completed',
+    turnId,
+    outcome: 'error',
+    message: 'Claude Code stream ended.',
+    usage: [],
+  });
+  host.emit({ type: 'session.exited', reason: 'Claude Code stream ended.' });
+  await new Promise((resolve) => setTimeout(resolve, 600));
+  host.switchCore.state.unavailable = false;
+
+  await until(() =>
+    expect(
+      host.switchCore.calls.some((c) => {
+        const row = c.body as { kind: string; status: string; turn_id: string; text: string };
+        return (
+          c.path.endsWith('/activity') &&
+          row.kind === 'turn' &&
+          row.status === 'error' &&
+          row.turn_id === turnId &&
+          row.text === 'Claude Code stream ended.'
+        );
+      })
+    ).toBe(true)
+  );
+  const replies = () =>
+    host.parent.sent.filter(
+      (message): message is typeof message & { id: number; ask: Record<string, unknown> } =>
+        message.kind === 'ask' && message.ask?.type === 'room-reply'
+    );
+  await until(() => expect(replies()).toHaveLength(1));
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  // The host waits for its reply to be answered rather than exiting under it.
+  expect(host.ended()).toBe(false);
+  host.parent.port.emit('message', { kind: 'answer', id: replies()[0]!.id, ok: true, value: null });
+  await vi.waitFor(() => expect(host.ended()).toBe(true), { timeout: 5000 });
+  const codes = (await readFile(join(host.root, 'events.jsonl'), 'utf8'))
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => JSON.parse(line).body)
+    .filter((body) => body.type === 'notice')
+    .map((body) => body.code);
+  expect(codes).toContain('ROOM_REPLY_POSTED');
+  expect(codes).not.toContain('ROOM_REPLY_FAILED');
+  expect(await host.stop()).toBeNull();
 });
 
 it('runs a room message again on a retry asked for there, and says so when it cannot', async () => {

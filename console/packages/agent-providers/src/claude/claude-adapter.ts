@@ -778,12 +778,14 @@ export class ClaudeAdapter implements ProviderAdapter {
 
   async stopSession(sessionId: string): Promise<void> {
     const session = this.requireSession(sessionId);
+    session.stopping = true;
     this.shutdown(session, 'Session stopped.');
     await session.drained;
   }
 
   async stopAll(): Promise<void> {
     for (const session of [...this.sessions.values()]) {
+      session.stopping = true;
       this.shutdown(session, 'Adapter stopped.');
     }
   }
@@ -1401,6 +1403,7 @@ export class ClaudeAdapter implements ProviderAdapter {
     session.compaction?.reject(new Error(reason));
     if (session.exited) return;
     session.exited = true;
+    const stopping = session.stopping;
     session.stopping = true;
     this.sessions.delete(session.sessionId);
 
@@ -1419,7 +1422,7 @@ export class ClaudeAdapter implements ProviderAdapter {
       this.emit(session, {
         type: 'turn.completed',
         turnId: turn.turnId,
-        outcome: 'interrupted',
+        outcome: stopping ? 'interrupted' : 'error',
         message: reason,
         usage: this.takeUsage(session),
       });
