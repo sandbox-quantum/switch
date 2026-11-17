@@ -198,16 +198,51 @@ function button(label: RegExp): HTMLElement {
   return found as HTMLElement;
 }
 
+function menuTrigger(): HTMLElement {
+  return document.querySelector('[aria-label="Server actions"]') as HTMLElement;
+}
+
 async function click(element: HTMLElement): Promise<void> {
   await act(async () => element.click());
 }
 
-describe('the titlebar', () => {
-  it('reads workspace / Home like every other workspace page, with no page actions', async () => {
+describe('the header', () => {
+  it('reads workspace / Home like every workspace page, and keeps the status and actions', async () => {
     await render();
 
-    expect(container!.textContent).toContain('Home');
-    expect(document.querySelector('[aria-label="Server actions"]')).toBeNull();
-    expect(document.querySelector('[aria-label="Refresh"]')).toBeNull();
+    const header = document.querySelector('header')!;
+    expect(header.textContent).toMatch(/\/\s*Home/);
+    expect(menuTrigger()).not.toBeNull();
+    expect(document.querySelector('[aria-label="Refresh"]')).not.toBeNull();
+  });
+});
+
+describe('the server menu', () => {
+  it('offers to disconnect from or delete a remote server, which others may use', async () => {
+    await render();
+    await click(menuTrigger());
+
+    await click(button(/^Disconnect or delete…$/));
+
+    expect(state.showModal).toHaveBeenCalledWith(
+      'deleteServerModal',
+      expect.objectContaining({ serverId: 'srv-1' })
+    );
+  });
+
+  it('offers to delete a server on this computer, which nobody else uses', async () => {
+    state.server = { ...REMOTE, managementKind: 'local', sshHost: null };
+    await render();
+    await click(menuTrigger());
+
+    expect(button(/^Delete server…$/)).toBeDefined();
+  });
+
+  it('offers only to disconnect from a server someone else runs', async () => {
+    state.server = { ...REMOTE, managed: false, managementKind: null, sshHost: null };
+    await render();
+    await click(menuTrigger());
+
+    expect(button(/^Disconnect from server…$/)).toBeDefined();
   });
 });

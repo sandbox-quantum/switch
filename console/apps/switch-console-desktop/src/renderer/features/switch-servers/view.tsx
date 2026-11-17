@@ -1,4 +1,4 @@
-import { House, PlugZap, RefreshCw } from 'lucide-react';
+import { PlugZap, RefreshCw } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 import { useEffect } from 'react';
@@ -6,6 +6,7 @@ import { type GuardResult, type ViewDefinition } from '@renderer/app/view-regist
 import { hostReachabilityStore } from '@renderer/features/remote-hosts/host-reachability-store';
 import { HostUnreachablePanel } from '@renderer/features/remote-hosts/host-unreachable-panel';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
+import { Titlebar } from '@renderer/lib/components/titlebar/Titlebar';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { Alert, AlertDescription, AlertTitle } from '@renderer/lib/ui/alert';
 import { Button } from '@renderer/lib/ui/button';
@@ -13,12 +14,12 @@ import { Spinner } from '@renderer/lib/ui/spinner';
 import { type SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import { homeRedirect } from './home-target';
 import { HomeFooter } from './home/home-footer';
+import { HomeHeader } from './home/home-header';
 import { AskBuddyPanel, ConnectAiPanel, SignedOutPanel, useHomeChips } from './home/home-panels';
 import { type HomeState, homeState } from './home/home-state';
 import { useAiConnected } from './home/use-ai-connected';
 import { localServerStore } from './local-server-store';
 import { remoteServerStore } from './remote-server-store';
-import { ServerSectionTitlebar } from './server-section-titlebar';
 import { switchServersStore } from './switch-servers-store';
 
 /** Whether a managed server's stack is currently running (via the store that
@@ -36,10 +37,25 @@ function useServerId(): string {
   return useParams('server').params.serverId;
 }
 
-/** Home's titlebar is the one every workspace page keeps: workspace / Home. */
-function ServerTitlebar() {
-  return <ServerSectionTitlebar serverId={useServerId()} icon={House} label="Home" />;
-}
+/** Home's header sits where the other workspace pages keep their breadcrumb. */
+const ServerTitlebar = observer(function ServerTitlebar() {
+  const serverId = useServerId();
+  const store = switchServersStore;
+  const server = store.servers.find((s) => s.id === serverId);
+  const detailsVisible = !server?.managed || isManagedRunning(server);
+  return (
+    <Titlebar
+      leftSlot={
+        server && (
+          <HomeHeader
+            server={server}
+            canRefresh={detailsVisible && !store.isHostBlocked(serverId)}
+          />
+        )
+      }
+    />
+  );
+});
 
 const ServerMainPanel = observer(function ServerMainPanel() {
   const serverId = useServerId();
