@@ -206,6 +206,14 @@ class AppService implements IInitializable, IDisposable {
       throw new Error('Invalid arguments');
     }
 
+    if (/[\x00-\x1f\x7f]/.test(target)) {
+      throw new Error('Invalid path: contains control characters');
+    }
+
+    if (process.platform === 'win32' && /[<>"|]/.test(target)) {
+      throw new Error('Invalid path: contains invalid characters');
+    }
+
     const platform = process.platform as PlatformKey;
     const appConfig = getAppById(appId);
     if (!appConfig) throw new Error('Invalid app ID');
@@ -236,9 +244,10 @@ class AppService implements IInitializable, IDisposable {
 
     if (platformConfig?.openUrls) {
       for (const urlTemplate of platformConfig.openUrls) {
-        const url = urlTemplate
-          .replace('{{path_url}}', encodeURIComponent(target))
-          .replace('{{path}}', target);
+        const url = urlTemplate.replace(
+          /\{\{path_url\}\}|\{\{path\}\}/g,
+          (match) => (match === '{{path_url}}' ? encodeURIComponent(target) : encodeURI(target))
+        );
         try {
           await shell.openExternal(url);
           return;
@@ -252,10 +261,19 @@ class AppService implements IInitializable, IDisposable {
     }
 
     const quoted = (p: string) =>
-      process.platform !== 'win32' ? `'${p.replace(/'/g, "'\\''")}'` : `"${p.replace(/"/g, '""')}"`;
+      process.platform !== 'win32' ? `'${p.replace(/'/g, "'\\''")}'` : `"${p.replace(/"/g, '')}"`;
+    // {{path}} is replaced with a self-quoting, escaped value; {{path_raw}} is substituted
+    // literally because every template already wraps it in its own literal quotes. Doing
+    // both replacements in a single pass (not sequential .replace() calls) is required: a
+    // target containing the literal text of one placeholder must not be re-scanned by a
+    // later replacement and re-substituted unescaped.
     const commands: string[] = platformConfig?.openCommands ?? [];
     const command = commands
-      .map((cmd) => cmd.replace('{{path}}', quoted(target)).replace('{{path_raw}}', target))
+      .map((cmd) =>
+        cmd.replace(/\{\{path\}\}|\{\{path_raw\}\}/g, (match) =>
+          match === '{{path}}' ? quoted(target) : target
+        )
+      )
       .join(' || ');
 
     if (!command) throw new Error('Unsupported platform or app');
