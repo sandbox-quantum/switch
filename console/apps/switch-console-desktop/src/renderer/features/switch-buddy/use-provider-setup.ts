@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { events, rpc } from '@renderer/lib/ipc';
+import { log } from '@renderer/utils/logger';
 import { offeredAgentProviders } from '@shared/core/providers/agent-provider-registry';
 import { providerLoginExitChannel, providerLoginLineChannel } from '@shared/events/appEvents';
 import { type BuddyProvider, buddyProviders } from './buddy-providers';
@@ -12,6 +13,9 @@ import type { ThisComputer } from './use-this-computer';
 
 /** How many lines of a sign-in command's output are kept on screen. */
 const KEPT_LINES = 40;
+
+/** The least time between re-checks run because the window was focused. */
+const FOCUS_RECHECK_INTERVAL_MS = 15_000;
 
 export type Login = {
   attemptId: string;
@@ -104,6 +108,24 @@ export function useProviderSetup({
       setWorking(null);
     }
   }, [recheck, setError]);
+
+  // Someone who installed a CLI in a terminal comes back to this window: look
+  // again then, so the card does not keep saying it is missing.
+  // When it last did, kept across re-renders: `recheck` changes identity as
+  // its query refetches, which re-subscribes this effect.
+  const lastFocusRecheck = useRef(0);
+  useEffect(() => {
+    if (working !== null) return;
+    const onFocus = () => {
+      if (Date.now() - lastFocusRecheck.current < FOCUS_RECHECK_INTERVAL_MS) return;
+      lastFocusRecheck.current = Date.now();
+      recheck().catch((cause: unknown) =>
+        log.warn('switch-buddy: re-checking providers on focus failed', { error: String(cause) })
+      );
+    };
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [recheck, working]);
 
   useEffect(() => {
     const offLine = events.on(providerLoginLineChannel, ({ attemptId, line }) =>

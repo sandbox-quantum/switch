@@ -10,6 +10,7 @@ import { readStagedAttachment, stageAttachment, MAX_ATTACHMENT_BYTES } from './a
 import { cliToolsBase, pinnedBinary } from './cli-binaries';
 import { HostWaker } from './handoff';
 import { agentHasOwnUser } from './host-permissions';
+import { describeToolsFor } from './mcp-tool-descriptions';
 import { Redactions } from './redaction';
 import {
   followupCommandId,
@@ -1203,7 +1204,8 @@ export async function hostSessionProcess(input: {
 }): Promise<void> {
   const { config } = input;
   const parent = connectParent(input.port);
-  const mcp = await startSessionMcp(parent);
+  const describeTools = describeToolsFor(config.start.provider);
+  const mcp = await startSessionMcp(parent, describeTools);
   const redactions = new Redactions();
   parent.onRedactions((values) => redactions.addListed(values));
   const serviceNotices = new ServiceNotices();
@@ -1222,6 +1224,7 @@ export async function hostSessionProcess(input: {
       listTimeoutMs: LIST_TIMEOUT_MS,
       callTimeoutMs: CALL_TIMEOUT_MS,
       fetch,
+      describe: describeTools,
     });
     clis = await startVendorClis({
       grants,

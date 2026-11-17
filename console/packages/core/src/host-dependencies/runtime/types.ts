@@ -42,7 +42,17 @@ export type InstallCommandSpec = string | { command: string; args: string[] };
 
 export type InstallCommandError =
   | { type: 'permission-denied'; message: string; output: string; exitCode?: number }
-  | { type: 'command-failed'; message: string; output: string; exitCode?: number }
+  | {
+      type: 'command-failed';
+      message: string;
+      output: string;
+      exitCode?: number;
+      /**
+       * The program the install command needed and the shell could not find
+       * (`npm`, `winget`), when that is why it failed.
+       */
+      missingCommand?: string;
+    }
   | { type: 'process-open-failed'; message: string };
 
 export type DependencyInstallError =

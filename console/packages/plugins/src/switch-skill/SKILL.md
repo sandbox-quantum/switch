@@ -13,10 +13,10 @@ Switch tools are missing entirely, say so rather than guessing.
 
 Hosts show the tools under the server's name rather than bare: Claude Code as
 `mcp__switch__<tool>` (as does DeepSeek Harness), Codex and OpenCode under the
-`switch` server. Antigravity
-reaches an MCP tool through `call_mcp_tool`, naming the `switch` server and the
-tool; Junie shows them as `mcp_switch_<tool>`. The names in this skill are the
-tool names themselves.
+`switch` server. Antigravity and Junie show them as `mcp_switch_<tool>`; call
+them directly. Antigravity is given only the opening summary of each tool's
+description, so this skill is where the rest is. The names in this skill are
+the tool names themselves.
 
 **This skill is session-level context, not a per-call checklist.** You have it
 now; it stays true until the session ends. The later sections are reference —

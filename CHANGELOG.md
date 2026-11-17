@@ -4335,6 +4335,16 @@ version of their own to them without also giving them a release of their own.
   took npm's latest release, which sessions with approvals refused. It now
   installs the release they are verified with, with the npm install scripts it
   needs allowed.
+- **Switch buddy setup finds a CLI installed in a terminal.** The provider
+  card always offers Check again, also before anything was installed from
+  Console, and the step checks again when its window is focused (at most every
+  15 seconds), which is when someone comes back from a terminal. Before, a CLI
+  installed outside Console while the step was open stayed "Not installed".
+- **An install that needs a missing program says so.** When an install command
+  fails because the shell can't find the program it runs (npm, winget, curl),
+  the card says what is missing and how to get it, for example "Installing
+  OpenCode needs Node.js…", instead of PowerShell's "Check the spelling of the
+  name". It is reported as `missing_prerequisite` in `agent_cli_action`.
 - **Workspace settings opens the web dashboard's settings in its new
   layout.** On a server with the new layout on, Settings › Workspace settings
   landed on its Users page. It now opens the settings home, on the page you
