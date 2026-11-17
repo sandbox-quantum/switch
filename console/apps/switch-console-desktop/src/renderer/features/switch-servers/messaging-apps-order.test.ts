@@ -14,6 +14,7 @@ function bridge(id: string, displayName: string): RemoteBridge {
     channelCreationSupported: true,
     canCreateChannels: true,
     directorySearchSupported: true,
+    directorySearchHint: 'Your name or handle',
     attention: null,
     teamPlacementSupported: false,
     channelIdsRefused: null,
@@ -22,6 +23,7 @@ function bridge(id: string, displayName: string): RemoteBridge {
     publicChannelAddsCreator: false,
     receivesWebhooks: false,
     webhookUrl: null,
+    commands: {},
   };
 }
 

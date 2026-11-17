@@ -288,6 +288,9 @@ export interface BridgeDetail {
   // (Telegram), only people who have written in a connected chat can be
   // found.
   directory_search_supported: boolean;
+  // What the account search can find a person by here, as its placeholder
+  // ("Your name or handle"): only what really matches.
+  directory_search_hint: string;
 }
 
 export interface ExternalUserSummary {
@@ -343,8 +346,9 @@ export interface RoomDetail extends RoomSummary {
   // What deleting the room can do to its platform channel, as that platform's
   // bridge declares it; null when the room has no channel.
   channel_on_delete: ChannelRetirement | null;
-  /** Absent on servers that predate decision routing. */
-  auto_route?: RoomAutoRoute;
+  /** Absent on servers that predate decision routing, and null on a server
+   * with it switched off. */
+  auto_route?: RoomAutoRoute | null;
   /** The room's room admins, longest-standing first. Absent on servers that
    * predate room admins. */
   room_admins?: RoomAdminEntry[];
@@ -1234,6 +1238,11 @@ export interface LinkedIdentity {
   bridge_type: string;
   external_user_id: string;
   external_username: string;
+  /** How to name the account: absent (older servers) or `has_handle` true
+   *  means `@external_username`; else the person's name, as the platform
+   *  shows it, because the handle is one Switch made up. */
+  external_display_name?: string;
+  has_handle?: boolean;
   /** False for a link made before links had to be confirmed: it counts, and
    *  its owner is asked to confirm it. */
   verified: boolean;
@@ -1254,6 +1263,11 @@ export interface PendingIdentity {
   bridge_type: string;
   external_user_id: string;
   external_username: string;
+  /** How to name the account: absent (older servers) or `has_handle` true
+   *  means `@external_username`; else the person's name, as the platform
+   *  shows it, because the handle is one Switch made up. */
+  external_display_name?: string;
+  has_handle?: boolean;
   /** Who started it, when that was an admin rather than the person. */
   requested_by_name: string | null;
   /** When the last code stops working; null when none has been issued. */
@@ -1307,6 +1321,9 @@ export interface DirectoryPerson {
   username: string;
   display_name: string;
   email: string | null;
+  /** False when `username` is a handle Switch made up for someone the
+   *  platform gave none (Telegram without a username): show the name alone. */
+  has_handle: boolean;
   /** The account's row id when Switch has seen it, else null. */
   known_external_user_id: string | null;
   claimed_by: IdentityClaimant[];
@@ -1644,6 +1661,29 @@ export async function accountDeletionRefusal(): Promise<string | null> {
 /** Deletes the account everywhere, confirmed by its email typed out. */
 export async function deleteMyAccount(email: string): Promise<void> {
   await jsonRequest("/auth/me", "DELETE", { email });
+}
+
+/** A sign-in link Switch Console handed this browser, as its page asks about
+ * it before spending it. */
+export interface BrowserHandoffPeek {
+  // Whose link it is, and the workspace it opens; null when it names none, or
+  // one deleted since.
+  name: string;
+  email: string;
+  workspace_name: string | null;
+  // Whom this browser is signed in as already, if anyone.
+  signed_in_as: { name: string; email: string } | null;
+  same_person: boolean;
+}
+
+// The code goes in the body, never in an address, so no log or Referer holds it.
+export async function peekBrowserHandoff(code: string): Promise<BrowserHandoffPeek> {
+  return jsonRequest<BrowserHandoffPeek>("/auth/handoff/peek", "POST", { code });
+}
+
+/** Spends the link and signs this browser in; `next` is the page to open. */
+export async function redeemBrowserHandoff(code: string): Promise<{ next: string }> {
+  return jsonRequest<{ next: string }>("/auth/handoff/redeem", "POST", { code });
 }
 
 export type SignupMode = "default_tenant" | "invite_only" | "open";

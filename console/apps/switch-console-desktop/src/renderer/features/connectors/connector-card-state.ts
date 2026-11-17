@@ -33,7 +33,7 @@ export type ConnectorViewer = {
  * the apps are not set up in its dashboard.
  */
 export type ConnectorAppSetUp =
-  | { by: 'viewer'; at: 'admin' | ConnectorAppsPage }
+  | { by: 'viewer'; at: 'settings' | ConnectorAppsPage }
   | { by: 'organization-admin'; at: AnsweredAppsPage }
   | { by: 'operator' }
   | { by: 'command' };
@@ -66,9 +66,9 @@ export function connectorAppSetUp({
   /** The server's `connector_apps_in_dashboard`; null where it does not say. */
   inDashboard: boolean | null;
 }): ConnectorAppSetUp {
-  const operatorOnly = (at: 'admin' | ConnectorAppsPage): ConnectorAppSetUp =>
+  const operatorOnly = (at: 'settings' | ConnectorAppsPage): ConnectorAppSetUp =>
     operator ? { by: 'viewer', at } : { by: 'operator' };
-  if (!servesDashboard) return operatorOnly('admin');
+  if (!servesDashboard) return operatorOnly('settings');
   if (canManage === null) return operatorOnly(gatewayV2 ? 'platform' : 'old-layout');
   const at: AnsweredAppsPage = gatewayV2 ? 'organization-settings' : 'old-layout';
   if (canManage) return { by: 'viewer', at };
@@ -183,7 +183,8 @@ function unavailableState(
 
 /**
  * The one state a connector's card shows. When several apply, the first of
- * these wins: not built yet, not usable on this server, switched off in this
+ * these wins: not built yet, not usable on this server (except an app that is
+ * not set up yet waits on the workspace's switch first), switched off in this
  * workspace, needing a fresh sign-in, connected, and otherwise ready to
  * connect. A server without the workspace switch sends no
  * `workspace_enabled`, which reads as on. Where the person looking can fix
@@ -196,7 +197,9 @@ export function connectorCardState(
 ): ConnectorCardState {
   if (entry.status === 'coming_soon')
     return { kind: 'coming_soon', label: 'Coming soon', detail: null, tone: 'muted', fix: null };
-  if (entry.unavailable_reason !== null)
+  const setUpLater =
+    entry.unavailable_code === 'app_not_set_up' && entry.workspace_enabled === false;
+  if (entry.unavailable_reason !== null && !setUpLater)
     return unavailableState(entry, entry.unavailable_reason, viewer);
   if (entry.workspace_enabled === false)
     return entry.organization_locked

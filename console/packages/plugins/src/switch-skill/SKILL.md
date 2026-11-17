@@ -13,10 +13,10 @@ Switch tools are missing entirely, say so rather than guessing.
 
 Hosts show the tools under the server's name rather than bare: Claude Code as
 `mcp__switch__<tool>` (as does DeepSeek Harness), Codex and OpenCode under the
-`switch` server. Antigravity
-reaches an MCP tool through `call_mcp_tool`, naming the `switch` server and the
-tool; Junie shows them as `mcp_switch_<tool>`. The names in this skill are the
-tool names themselves.
+`switch` server. Antigravity and Junie show them as `mcp_switch_<tool>`; call
+them directly. Antigravity is given only the opening summary of each tool's
+description, so this skill is where the rest is. The names in this skill are
+the tool names themselves.
 
 **This skill is session-level context, not a per-call checklist.** You have it
 now; it stays true until the session ends. The later sections are reference —
@@ -162,6 +162,12 @@ does, and there is no polling tool to call.
   them back on. Each command on its own says what is set now; changing one is
   for the room's owner, a room admin or a workspace admin.
 
+  Automatic routing is a feature only some Switch servers have. On a server
+  without it, `!auto-route` answers "Unknown command" and is missing from
+  `!help`, and Switch Console has no Admin → Decision routing; there, don't
+  suggest either, and offer what the server does have instead: tagging the
+  agent, or `!assign-agent`. Where the server has it:
+
   In a room where people turned on automatic routing (`!auto-route on`), a
   message that tags nobody and that no follow-up or assigned agent caught goes
   to a decision service, which picks the one agent best placed to answer it,
@@ -181,7 +187,7 @@ does, and there is no polling tool to call.
   Switch Console or on the gateway's room page.
 
   Which decision service a room uses is its workspace's choice, made by a
-  workspace admin in Switch Console → Admin → Decision routing: the server's
+  workspace admin in Switch Console → Settings → Decision routing: the server's
   own default, the workspace's self-hosted endpoint, Claude Haiku, or none.
   With none (or no server default), `!auto-route on` says auto-route needs a
   decision service and changes nothing, and the room works as it does without
@@ -535,8 +541,9 @@ change it. A refusal says which of these it was; relay it rather than retrying.
 
 - **`list_all_rooms`** / **`get_room_detail`** — enumerate the rooms on the
   instance you may see (not just the ones you are in: every room your owner
-  can read, plus your own), and fetch a room's members, channel type and
-  admin mode. `list_all_rooms` answers a page at a time,
+  can read, plus your own), and fetch a room's members, channel type,
+  admin mode and `channel_url` (an https link that opens its channel on its
+  app, or null; link that when you send someone to a room there). `list_all_rooms` answers a page at a time,
   `{rooms, next_cursor}`: pass `next_cursor` back as `cursor` for the next page
   (null on the last), `limit` for its size (default 100, at most 500), and
   `name_contains` to match a name in any case. `get_room_detail` also returns the room's assumable

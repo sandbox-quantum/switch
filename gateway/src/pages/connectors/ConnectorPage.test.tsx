@@ -13,7 +13,7 @@ import ConnectorPage from "./ConnectorPage";
 
 vi.mock("../../data/AuthContext", () => ({ useAuth: vi.fn() }));
 
-function signedIn({ admin = false, orgAdmin = false } = {}) {
+function signedIn({ admin = false, orgAdmin = false, operator = false, connectorApps = false } = {}) {
   vi.mocked(useAuth).mockReturnValue({
     session: {
       user: { id: "me", name: "Ada", email: "ada@example.test", is_operator: false },
@@ -22,6 +22,8 @@ function signedIn({ admin = false, orgAdmin = false } = {}) {
     capabilities: {
       administersWorkspace: admin,
       administersOrganization: orgAdmin,
+      isOperator: operator,
+      canManageConnectorApps: connectorApps,
       features: { gateway_v2: true },
     },
     isOperator: false,
@@ -75,7 +77,8 @@ function answer(routes: Record<string, unknown>): Call[] {
       const key = `${method} ${path}`;
       if (!(key in routes))
         return new Response(JSON.stringify({ detail: `unmocked ${key}` }), { status: 404 });
-      const reply = routes[key];
+      const route = routes[key];
+      const reply = typeof route === "function" ? route() : route;
       if (reply instanceof Reply) return new Response(JSON.stringify(reply.body), { status: reply.status });
       return new Response(JSON.stringify(reply), { status: 200 });
     }),
@@ -227,6 +230,61 @@ describe("a connector's page", () => {
       await screen.findByText(/Switched off in Acme by a workspace admin.*A workspace admin can turn it on/),
     ).toBeTruthy();
     expect(screen.queryByRole("link", { name: "Workspace settings" })).toBeNull();
+  });
+
+  it("lets a workspace admin turn it on from here, then reads the page again", async () => {
+    signedIn({ admin: true });
+    let on = false;
+    const calls = answer({
+      "GET /service-connections": () => ({
+        connections: [serviceConnection({ workspace_enabled: on, decided_by: "workspace" })],
+      }),
+      "GET /service-connections/example/agents": [],
+      "GET /service-connections/example/workspace": { people: [], agents: [] },
+      "PUT /workspace/services/example": () => {
+        on = true;
+        return { warning: null };
+      },
+    });
+    renderPage();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Turn on" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Turn on" })).toBeNull());
+    expect(calls).toContainEqual({ method: "PUT", path: "/workspace/services/example", body: { enabled: true } });
+    expect(screen.queryByText(/Switched off in Acme/)).toBeNull();
+  });
+
+  it("shows why turning it on was refused", async () => {
+    signedIn({ admin: true });
+    server(serviceConnection({ workspace_enabled: false, decided_by: "workspace" }), [], { people: [], agents: [] }, {
+      "PUT /workspace/services/example": new Reply(409, { detail: "Your organization locked it off." }),
+    });
+    renderPage();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Turn on" }));
+    expect(await screen.findByText("Your organization locked it off.")).toBeTruthy();
+  });
+
+  it("sends whoever sets up the connector apps to set up one that isn't, and tells everyone else who can", async () => {
+    const unset = serviceConnection({
+      connectable: false,
+      unavailable_code: "app_not_set_up",
+      unavailable_reason: "Switch's Example app isn't set up. Whoever runs Switch can set it up.",
+    });
+    signedIn({ connectorApps: true });
+    server(unset);
+    renderPage();
+
+    const setUp = await screen.findByRole("link", { name: "Set up" });
+    expect(setUp).toHaveProperty("pathname", "/settings/org/connector-apps");
+    expect(setUp).toHaveProperty("search", "?set_up=example");
+    cleanup();
+
+    signedIn();
+    server(unset);
+    renderPage();
+    expect(await screen.findByText(/Whoever runs Switch can set it up/)).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "Set up" })).toBeNull();
   });
 
   it("shows a member their own agents, and adds one", async () => {

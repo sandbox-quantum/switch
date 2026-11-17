@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { ExternalLink } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useState } from 'react';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon';
 import { bridgePlatformLabel, bridgeSetupDocsUrl } from '@renderer/lib/components/bridge-platform';
@@ -32,7 +32,12 @@ import {
 import { cn } from '@renderer/utils/utils';
 import type { CreateBridgeResult } from '@shared/core/switch-servers/switch-servers';
 import { bridgeTypesQueryKey, fetchBridgeTypes } from './bridge-platforms-loader';
-import { connectFormFields, isMissingRequired, missingFieldsMessage } from './connect-form-fields';
+import {
+  connectFormFields,
+  isMissingRequired,
+  missingFieldsMessage,
+  unreachableFromInternet,
+} from './connect-form-fields';
 import { ConnectChatPanel } from './ConnectChatPanel';
 import { InstallMessagingAppPanel } from './InstallMessagingAppPanel';
 import { offerAccountLinkAfterConnect } from './offer-account-link';
@@ -80,6 +85,9 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
 }: Props) {
   useOnUnmount(onClosed);
   const { setCloseGuard } = useModalContext();
+  // Ties each label to its input, so a screen reader names the field.
+  const idPrefix = useId();
+  const inputId = (key: string) => `${idPrefix}-${key}`;
 
   const serverId = overrideServerId ?? switchServersStore.activeServerId ?? '';
   const workspaceId = workspacesStore.idOnServerInScope(serverId || null);
@@ -197,6 +205,11 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
       // would silently submit a credential the user thinks they replaced. The
       // new type's defaults are seeded, so a field left untouched posts what the
       // platform expects rather than nothing.
+      const prevLabel = typeKey ? bridgePlatformLabel(typeKey) : null;
+      const nextLabel = next ? bridgePlatformLabel(next) : '';
+      if (!displayName.trim() || displayName === prevLabel) {
+        setDisplayName(nextLabel);
+      }
       setTypeKey(next);
       const fields = types.find((t) => t.key === next)?.fields ?? [];
       const defaults: Record<string, string | boolean> = {};
@@ -207,7 +220,7 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
       setChannelCreationEnabled(true);
       setError(null);
     },
-    [types]
+    [types, typeKey, displayName]
   );
 
   useEffect(() => {
@@ -406,13 +419,13 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
 
               {showForm && (
                 <Field>
-                  <FieldLabel>Messaging app</FieldLabel>
+                  <FieldLabel htmlFor={inputId('platform')}>Messaging app</FieldLabel>
                   <Select
                     value={typeKey ?? ''}
                     onValueChange={(next) => handleTypeChange(next ?? null)}
                     disabled={typesQuery.isLoading || types.length === 0 || !isAdmin}
                   >
-                    <SelectTrigger>
+                    <SelectTrigger id={inputId('platform')}>
                       <SelectValue
                         placeholder={typesQuery.isLoading ? 'Loading…' : 'Choose a platform'}
                       >
@@ -445,10 +458,54 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
 
               {showForm && selectedType && (
                 <>
+                  {selectedType.key === 'teams' && server && unreachableFromInternet(server) && (
+                    <div
+                      role="note"
+                      className="rounded-md border border-border bg-background-1 px-3 py-2 text-xs text-foreground"
+                    >
+                      Microsoft Teams sends every message to your server’s own address, so it needs
+                      a public HTTPS address that Microsoft can reach. This server runs on your
+                      computer or a private network, so Teams messages would not arrive. Run Switch
+                      somewhere public first; the{' '}
+                      <button
+                        type="button"
+                        className="underline underline-offset-2"
+                        onClick={() =>
+                          void openExternalUrl(
+                            bridgeSetupDocsUrl('teams'),
+                            'Could not open the setup guide'
+                          )
+                        }
+                      >
+                        Teams setup guide
+                      </button>{' '}
+                      explains what it needs.
+                    </div>
+                  )}
+
+                  {selectedType.key === 'telegram' && (
+                    <div
+                      role="note"
+                      className="rounded-md border border-border bg-background-1 px-3 py-2 text-xs text-foreground"
+                    >
+                      <p>
+                        Before you add the bot to a group, turn off its Group Privacy: in BotFather,
+                        send <code>/setprivacy</code>, pick the bot and choose{' '}
+                        <span className="font-medium">Disable</span>. Otherwise it sees only
+                        commands and replies to its own messages. Already in a group? Remove it and
+                        add it back, or make it an admin.
+                      </p>
+                      <p className="mt-1">
+                        Then, in a group with the bot, link your Telegram account first, and bring
+                        agents in with <code>/invite_agent</code> after.
+                      </p>
+                    </div>
+                  )}
+
                   <Field>
-                    <FieldLabel>Name</FieldLabel>
+                    <FieldLabel htmlFor={inputId('display-name')}>Name</FieldLabel>
                     <Input
-                      autoFocus
+                      id={inputId('display-name')}
                       placeholder={`e.g. ${bridgePlatformLabel(selectedType.key)}`}
                       value={displayName}
                       onChange={(e) => {
@@ -494,9 +551,9 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
 
                   {visibleFields
                     .filter((field) => field.kind !== 'boolean')
-                    .map((field) => (
-                      <Field key={field.key}>
-                        <FieldLabel>
+                    .map((field, index) => (
+                      <Field key={`${selectedType.key}:${field.key}`}>
+                        <FieldLabel htmlFor={inputId(field.key)}>
                           {field.label}
                           {!field.required && (
                             <span className="ml-1 font-normal text-foreground-muted">
@@ -505,6 +562,12 @@ export const ConnectMessagingAppModal = observer(function ConnectMessagingAppMod
                           )}
                         </FieldLabel>
                         <Input
+                          id={inputId(field.key)}
+                          // The guided setup asks its own questions first; focus stays with it.
+                          autoFocus={
+                            index === 0 &&
+                            !(isGuidedPlatform(selectedType.key) && workspaceId !== null)
+                          }
                           // Masked for credentials, so a token is not left readable on
                           // screen while the user checks the rest of the form.
                           type={field.secret ? 'password' : 'text'}

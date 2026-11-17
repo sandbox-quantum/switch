@@ -97,6 +97,7 @@ async def _wire_admin_client(harness: Harness, session_env: SessionEnv) -> None:
         connections=AgentConnectionRegistry(),
         frontend_base_url=session_env.config.dashboard_base_url,
         follow_the_conversation_enabled=False,
+        feature_flags={},
         decision_availability=DecisionAvailability(
             enabled=False,
             server=ServerDefault(

@@ -12,7 +12,7 @@ const addServer = vi.hoisted(() => vi.fn());
 const findServerByUrl = vi.hoisted(() => vi.fn());
 const findServerByWebAddress = vi.hoisted(() => vi.fn());
 const assertServerAddress = vi.hoisted(() => vi.fn());
-const assertServesDashboard = vi.hoisted(() => vi.fn());
+const openDashboardPage = vi.hoisted(() => vi.fn());
 const passwordLogin = vi.hoisted(() => vi.fn());
 const signup = vi.hoisted(() => vi.fn());
 const reconcileServerWorkspaces = vi.hoisted(() => vi.fn());
@@ -77,7 +77,7 @@ vi.mock('./backfill-agent-icons', () => ({ backfillAgentIcons: vi.fn() }));
 // Reaches the encrypted secrets store, and through it the database client.
 vi.mock('./bundled-chat-sign-in', () => ({ bundledChatSignInFor: vi.fn() }));
 vi.mock('./managed-claude-credential', () => ({ deleteManagedClaudeCredential: vi.fn() }));
-vi.mock('./gateway-web', () => ({ openAuthenticatedGatewayPage: vi.fn() }));
+vi.mock('./dashboard-page', () => ({ openDashboardPage }));
 vi.mock('@main/core/feature-flags/feature-flags', () => ({
   featureFlagsService: { current: vi.fn(async () => ({ flags: serverFlags })) },
 }));
@@ -118,7 +118,6 @@ vi.mock('./gateway-client', () => ({
 }));
 vi.mock('./server-address', () => ({
   assertServerAddress,
-  assertServesDashboard,
   NotTheServerAddressError,
 }));
 vi.mock('./servers-store', () => ({
@@ -962,28 +961,34 @@ describe('opening a dashboard page', () => {
     managedServerHostBlocked.mockReturnValue(null);
   });
 
-  it('checks an external server serves its dashboard before opening the page', async () => {
-    const { appService } = await import('@main/core/app/service');
-    getServer.mockResolvedValue(server({ managed: false }));
+  it('opens the page in the browser for the server it names', async () => {
+    const remote = server({ managed: false });
+    getServer.mockResolvedValue(remote);
 
     await switchServersController.openGatewayPage({
       serverId: 'srv',
       url: 'http://localhost:3300/rooms/1',
     });
 
-    expect(assertServesDashboard).toHaveBeenCalledOnce();
-    expect(appService.openExternal).toHaveBeenCalledWith('http://localhost:3300/rooms/1');
+    expect(openDashboardPage).toHaveBeenCalledExactlyOnceWith(
+      remote,
+      'http://localhost:3300/rooms/1'
+    );
   });
 
-  it('opens nothing, and says why, where no dashboard is served', async () => {
-    const { appService } = await import('@main/core/app/service');
-    getServer.mockResolvedValue(server({ managed: false }));
-    assertServesDashboard.mockRejectedValueOnce(new Error('S does not serve its dashboard'));
+  it('opens nothing on a managed server whose host cannot be reached', async () => {
+    getServer.mockResolvedValue(server({ managed: true, managementKind: 'remote', sshHost: 'h' }));
+    managedServerHostBlocked.mockReturnValue({
+      sshHost: 'h',
+      status: 'unreachable',
+      lastError: 'no route to host',
+      lastCheckedAt: null,
+    });
 
     await expect(
-      switchServersController.openGatewayPage({ serverId: 'srv', url: 'http://localhost:8000/' })
-    ).rejects.toThrow('does not serve its dashboard');
-    expect(appService.openExternal).not.toHaveBeenCalled();
+      switchServersController.openGatewayPage({ serverId: 'srv', url: 'http://localhost:3300/' })
+    ).rejects.toBeInstanceOf(HostUnreachableError);
+    expect(openDashboardPage).not.toHaveBeenCalled();
   });
 });
 

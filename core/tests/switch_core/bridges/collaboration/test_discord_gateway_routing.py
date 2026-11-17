@@ -63,6 +63,7 @@ def _gateway(install_service: Any) -> DiscordGatewayClient:
         members=False,
         install_service=install_service,
         on_connected=_noop_on_connected,
+        feature_flags={},
     )
 
 

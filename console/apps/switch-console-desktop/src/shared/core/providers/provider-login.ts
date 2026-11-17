@@ -17,11 +17,29 @@ export type ProviderLoginExit = {
 };
 
 const URL_PATTERN = /https?:\/\/[^\s"'<>)\]]+/g;
+/** Punctuation that ends a sentence around a link rather than belonging to it. */
+const TRAILING_PUNCTUATION = /[.,;:!?]+$/;
+/** This computer's own addresses: a CLI's callback server, which is no page to sign in on. */
+const LOOPBACK_HOST = /^(localhost|127\.\d+\.\d+\.\d+|\[::1\])$/i;
 
-/** The links a sign-in command printed, in order and without repeats. */
+/**
+ * The sign-in pages a command printed, in order and without repeats. Codex,
+ * for one, also prints the local server its browser round trip calls back to,
+ * which is left out, as is the full stop a sentence ends a link with.
+ */
 export function linksIn(lines: readonly string[]): string[] {
   const seen = new Set<string>();
-  for (const line of lines) for (const match of line.matchAll(URL_PATTERN)) seen.add(match[0]);
+  for (const line of lines)
+    for (const match of line.matchAll(URL_PATTERN)) {
+      const link = match[0].replace(TRAILING_PUNCTUATION, '');
+      let host: string;
+      try {
+        host = new URL(link).hostname;
+      } catch {
+        continue;
+      }
+      if (!LOOPBACK_HOST.test(host)) seen.add(link);
+    }
   return [...seen];
 }
 

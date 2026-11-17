@@ -1379,7 +1379,10 @@ async def test_renaming_an_agent_in_many_rooms_reads_them_in_one_query(
     monkeypatch.setattr(room_changes_module, "people_concerned", counted)
 
     await chats.service.agent_changed(TENANT, agent.id)
-    assert len(changes._tasks) == 1
+    # With no window the read can finish while `agent_changed` is still
+    # waking chat streams, and a finished task leaves `_tasks`: one task or
+    # none left here, and one read either way.
+    assert len(changes._tasks) <= 1
     await asyncio.gather(*changes._tasks)
     assert reads == [sorted(rooms)]
     expected = {

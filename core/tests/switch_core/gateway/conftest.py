@@ -43,6 +43,7 @@ from switch_core.gateway.chats import (
     chat_error_response,
     router,
 )
+from switch_core.gateway.dependencies import get_config
 from switch_core.process_identity import new_process_id
 from switch_core.process_lease import ProcessLease
 from switch_core.provisioning.postgres import PostgresProvisioning
@@ -382,6 +383,8 @@ async def chats(
             return user
 
     app.dependency_overrides[get_current_user] = user_from_header
+    # No feature flags: the commands every server has.
+    app.dependency_overrides[get_config] = lambda: SimpleNamespace(feature_flags={})
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://switch.test"
     ) as client:

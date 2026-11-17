@@ -45,3 +45,6 @@ export const SWITCH_CONSOLE_ISSUES_NEW_URL = `${SWITCH_CONSOLE_REPO_URL}/issues/
 
 /** Switch Trust, the guardrails service, linked from the top bar for everyone. */
 export const SWITCH_TRUST_URL = 'https://app.switchagents.ai/';
+
+/** What Switch Trust is, for the pages its guardrails power. */
+export const SWITCH_TRUST_ABOUT_URL = 'https://www.switchagents.ai/trust';

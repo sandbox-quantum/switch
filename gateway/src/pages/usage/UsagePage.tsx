@@ -58,7 +58,7 @@ export default function UsagePage() {
 function WorkspaceUsage({ tenant }: { tenant: CurrentTenant }) {
   return (
     <Box sx={{ display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0, gap: 3 }}>
-      <Typography variant="h5">Usage · {tenant.name}</Typography>
+      <Typography variant="h5">Usage &amp; budget</Typography>
       <BudgetsSection tenantId={tenant.id} />
       <UsageSection tenantId={tenant.id} />
     </Box>

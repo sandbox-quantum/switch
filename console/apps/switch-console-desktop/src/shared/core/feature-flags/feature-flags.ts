@@ -21,6 +21,7 @@ export const CONSOLE_FEATURE_FLAGS = [
   'buddy_slack_handoff',
   'gateway_v2',
   'additional_agent_providers',
+  'decision_routing',
 ] as const;
 
 export type FeatureFlagKey = (typeof CONSOLE_FEATURE_FLAGS)[number];

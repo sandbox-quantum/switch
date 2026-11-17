@@ -6,6 +6,7 @@ platform operator's access, which every workspace it enters records."""
 from __future__ import annotations
 
 import asyncio
+import secrets
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
@@ -167,6 +168,7 @@ def _client(app: FastAPI, user_id: str, tenant_id: str | None) -> httpx.AsyncCli
         tenant_id,
         session_version=0,
         auth_time=datetime.now(UTC),
+        session_id=secrets.token_urlsafe(16),
     )
     return httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app),

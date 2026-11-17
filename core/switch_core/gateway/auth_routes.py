@@ -23,13 +23,17 @@ from switch_core.accounts.deletion import (
     Workspace,
 )
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
+from switch_core.bridges.collaboration.lifecycle_service import (
+    CollaborationBridgeLifecycleService,
+)
+from switch_core.bridges.collaboration.models import KnownUserLabel
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.chats.member_names import rename_member_clients
 from switch_core.clients.client_lifecycle_service import ClientLifecycleService
 from switch_core.config import SwitchConfig
 from switch_core.connections.broker import ServiceBroker, get_service_broker
 from switch_core.db.audit import ServerAuditAction, record_server_audit_event
-from switch_core.db.models import TENANT_ZERO_ID, User
+from switch_core.db.models import TENANT_ZERO_ID, ExternalUser, User
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
@@ -58,8 +62,11 @@ from switch_core.gateway.auth import (
     list_held_memberships,
     list_tenant_memberships,
     operator_entered_workspace,
-    session_auth_time,
+    password_matches_off_loop,
+    session_signed_in,
     set_session_cookie,
+    sign_out_session,
+    signed_in_now,
     signup_refused_by_edge,
     tenants_held_by,
     verify_password_off_loop,
@@ -70,6 +77,7 @@ from switch_core.gateway.dependencies import (
     get_api_key_store,
     get_bridge_store,
     get_client_lifecycle,
+    get_collab_lifecycle,
     get_config,
     get_external_user_store,
     get_organization_admin_notices,
@@ -87,6 +95,12 @@ from switch_core.gateway.hosted_machines import (
     MachineUnavailable,
     ensure_machine,
     hosted_settings,
+)
+from switch_core.gateway.login_limits import (
+    admit_login,
+    count_signup,
+    counted_address,
+    refuse_signup_from,
 )
 from switch_core.gateway.schemas import (
     AccountDeletionCheck,
@@ -129,9 +143,9 @@ def _session_response(user: User) -> SessionUserResponse:
     """An authenticated session, carrying what the server is (CHOO-1865).
 
     Every response that establishes or confirms a session says so, which means
-    a client learns the server's ranges on the call it already makes. The
-    authentication surface is frozen and excluded from `gateway-api`, so this
-    is the one path that cannot itself be the thing that broke.
+    a client learns the server's ranges on the call it already makes. Signing
+    in, refreshing and signing out are frozen and excluded from `gateway-api`,
+    so this is the one path that cannot itself be the thing that broke.
     """
     return SessionUserResponse(
         id=user.id,
@@ -163,6 +177,7 @@ async def get_version(
 @router.post("/auth/login")
 async def login(
     req: LoginRequest,
+    request: Request,
     response: Response,
     session: Annotated[AsyncSession, Depends(get_system_session)],
     session_factory: Annotated[
@@ -173,21 +188,24 @@ async def login(
 ) -> SessionUserResponse:
     # `get_system_session`, not `get_session`: there is no caller to take a
     # tenant from until this route decides there is one. It only ever reads
-    # `users`, which is global (a person is one account across tenants), so
-    # there is nothing here a tenant would scope. Which workspace the new
-    # session selects comes from the membership lookup, on a session of its own.
+    # `users`, which is global (a person is one account across tenants), and
+    # counts the attempt in `auth_attempts`, global too, so there is nothing
+    # here a tenant would scope. Which workspace the new session selects comes
+    # from the membership lookup, on a session of its own.
     if not config.gateway_password_login_enabled:
         raise HTTPException(status_code=403, detail="Password login is disabled")
 
+    attempt = await admit_login(session, config, req.email, request)
     user = await user_store.get_by_email(session, req.email)
     # One connection at a time, and none held across bcrypt.
     await session.commit()
-    if user is None or not await verify_password_off_loop(
-        req.password, user.password_hash
-    ):
+    if not await password_matches_off_loop(user, req.password):
         # Counted for the alert on password guessing; nothing about who.
         metrics().increment(AUTH_SIGN_IN_FAILURES, {})
+        attempt.failed()
         raise HTTPException(status_code=401, detail="Invalid email or password")
+    assert user is not None
+    await attempt.succeeded(session)
 
     set_session_cookie(
         response,
@@ -195,7 +213,7 @@ async def login(
         config.keyring,
         config.gateway_cookie_secure,
         await initial_tenant_claim(session_factory, user_store, user),
-        datetime.now(UTC),
+        signed_in_now(),
     )
     return _session_response(user)
 
@@ -281,9 +299,11 @@ async def signup(
         emit_safely(current_telemetry(), "signup_refused", {"reason": "country"})
         raise HTTPException(status_code=403, detail=SIGNUP_REFUSED_DETAIL)
 
+    address = counted_address(request)
     with tenant_scope(TENANT_ZERO_ID):
         # Checked before the hash so a refusal stays cheap, and again under the
         # lock after it; neither the lock nor a connection is held across bcrypt.
+        await refuse_signup_from(session, address)
         await _refuse_signup(session, user_store, req.email, config)
         await session.rollback()
         password_hash = await hash_password_off_loop(req.password)
@@ -292,6 +312,7 @@ async def signup(
             text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
             {"key": "gateway-signup"},
         )
+        await refuse_signup_from(session, address)
         await _refuse_signup(session, user_store, req.email, config)
         user = User(
             name=req.display_name or req.email.split("@")[0],
@@ -312,6 +333,7 @@ async def signup(
             raise HTTPException(
                 status_code=409, detail="Email already registered"
             ) from None
+        await count_signup(session, config, address)
         await session.commit()
         logger.info("Signed up user %s", user.id)
         emit_safely(current_telemetry(), "account_created", {"method": "signup"})
@@ -322,7 +344,7 @@ async def signup(
             config.keyring,
             config.gateway_cookie_secure,
             TENANT_ZERO_ID,
-            datetime.now(UTC),
+            signed_in_now(),
         )
         signed_in = _session_response(user)
         machine = await _prewarm(session, session_factory, user.id, config, settings)
@@ -352,13 +374,27 @@ async def refresh(
         config.keyring,
         config.gateway_cookie_secure,
         request.state.tenant_id,
-        session_auth_time(request),
+        session_signed_in(request),
     )
     return _session_response(user)
 
 
 @router.post("/auth/logout")
-async def logout(response: Response) -> dict[str, bool]:
+async def logout(
+    request: Request,
+    response: Response,
+    session: Annotated[AsyncSession, Depends(get_system_session)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
+) -> dict[str, bool]:
+    """Sign out of this session: clear this browser's cookie, and refuse
+    every copy of it from now on, wherever it was copied to. The account's
+    other sessions are left alone; `/auth/sessions/revoke` ends them all.
+
+    Takes no session, so a client holding an expired or broken cookie can
+    always clear it, and `get_system_session` because a session belongs to no
+    workspace: the revocation is one global row (`revoked_sessions`).
+    """
+    await sign_out_session(session, request, config)
     response.delete_cookie("switch_auth", path="/")
     return {"ok": True}
 
@@ -401,6 +437,7 @@ async def auth_config(
     return AuthConfigResponse(
         password_login_enabled=config.gateway_password_login_enabled,
         signup_enabled=config.gateway_signup_open,
+        test_account_reset_enabled=config.gateway_allow_test_account_reset,
         oidc_enabled=config.gateway_oidc_enabled,
         oidc_provider_label=config.gateway_oidc_provider_label,
         oidc_login_options=[
@@ -461,12 +498,28 @@ async def me(
     return _session_response(user)
 
 
+def _account_label(
+    collab_lifecycle: CollaborationBridgeLifecycleService, identity: ExternalUser
+) -> KnownUserLabel:
+    """How a linked account is named: as its running bridge names it, or by
+    its stored name, a handle, while the bridge is stopped."""
+    adapter = collab_lifecycle.get_adapter(identity.bridge_id)
+    if adapter is None:
+        return KnownUserLabel(display_name=identity.external_username, has_handle=True)
+    return adapter.known_user_label(
+        identity.external_user_id, identity.external_username
+    )
+
+
 @router.get("/auth/me/identities")
 async def my_identities(
     session: Annotated[AsyncSession, Depends(get_session)],
     external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
     bridge_store: Annotated[CollaborationBridgeStore, Depends(get_bridge_store)],
     user: Annotated[User, Depends(get_current_user)],
+    collab_lifecycle: Annotated[
+        CollaborationBridgeLifecycleService, Depends(get_collab_lifecycle)
+    ],
 ) -> list[LinkedIdentity]:
     """The messaging-app accounts this user has claimed (CHOO-2137).
 
@@ -481,6 +534,7 @@ async def my_identities(
         bridge = await bridge_store.get(session, identity.bridge_id)
         if bridge is None:
             continue
+        label = _account_label(collab_lifecycle, identity)
         linked.append(
             LinkedIdentity(
                 id=identity.id,
@@ -489,6 +543,8 @@ async def my_identities(
                 bridge_type=bridge.type,
                 external_user_id=identity.external_user_id,
                 external_username=identity.external_username,
+                external_display_name=label.display_name,
+                has_handle=label.has_handle,
                 verified=claim.verified_at is not None,
                 linked_at=claim.created_at,
                 awaiting_confirmation=await external_user_store.get_link_request(
@@ -507,6 +563,9 @@ async def my_pending_identities(
     bridge_store: Annotated[CollaborationBridgeStore, Depends(get_bridge_store)],
     user_store: Annotated[UserStore, Depends(get_user_store)],
     user: Annotated[User, Depends(get_current_user)],
+    collab_lifecycle: Annotated[
+        CollaborationBridgeLifecycleService, Depends(get_collab_lifecycle)
+    ],
 ) -> list[PendingIdentity]:
     """The messaging-app accounts waiting to confirm a link to this user
     (CHOO-3881), which count for nothing until they do."""
@@ -523,6 +582,7 @@ async def my_pending_identities(
             if requested_by is not None and requested_by != user.id
             else None
         )
+        label = _account_label(collab_lifecycle, identity)
         pending.append(
             PendingIdentity(
                 id=identity.id,
@@ -531,6 +591,8 @@ async def my_pending_identities(
                 bridge_type=bridge.type,
                 external_user_id=identity.external_user_id,
                 external_username=identity.external_username,
+                external_display_name=label.display_name,
+                has_handle=label.has_handle,
                 requested_by_name=requester.name if requester is not None else None,
                 code_expires_at=request.code_expires_at,
             )
@@ -855,6 +917,6 @@ async def change_password(
         config.keyring,
         config.gateway_cookie_secure,
         request.state.tenant_id,
-        session_auth_time(request),
+        session_signed_in(request),
     )
     return {"ok": True}

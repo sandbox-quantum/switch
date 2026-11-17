@@ -744,7 +744,7 @@ class TestGitHub:
 READ_ONLY = (
     "Switch's GitHub App lets agents read only, so GitHub can't be granted "
     "for writing. Whoever runs Switch can change that in Switch Console, under "
-    "Admin → Connector apps."
+    "Settings → Connector apps."
 )
 
 

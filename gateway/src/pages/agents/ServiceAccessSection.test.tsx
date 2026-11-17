@@ -390,7 +390,7 @@ describe("ServiceAccessSection", () => {
   });
 
   const NOT_SET_UP =
-    "Example is not set up here. Whoever runs Switch can set it up in Switch Console, under Admin → Connector apps.";
+    "Example is not set up here. Whoever runs Switch can set it up in Switch Console, under Settings → Connector apps.";
 
   /** Signed in as someone who may or may not set up connector apps, in
    * `layout`; put back to the default (a member, today's layout) after. */
@@ -569,7 +569,7 @@ describe("ServiceAccessSection", () => {
 
   it("says GitHub is not set up, rather than an error, when its App is not, and asks for no connection", async () => {
     const reason =
-      "GitHub is not set up here. Whoever runs Switch can set it up in Switch Console, under Admin → Connector apps.";
+      "GitHub is not set up here. Whoever runs Switch can set it up in Switch Console, under Settings → Connector apps.";
     const calls = mockServer(NONE, [
       onOff("not_connected", {
         slug: "github",
@@ -630,7 +630,7 @@ describe("ServiceAccessSection", () => {
   });
 
   const READ_ONLY =
-    "Switch's GitHub App lets agents read only, so GitHub can't be granted for writing. Whoever runs Switch can change that in Switch Console, under Admin → Connector apps.";
+    "Switch's GitHub App lets agents read only, so GitHub can't be granted for writing. Whoever runs Switch can change that in Switch Console, under Settings → Connector apps.";
   const readOnlyGitHub = onOff("active", {
     slug: "github",
     name: "GitHub",

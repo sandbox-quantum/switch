@@ -8,12 +8,12 @@ import type { ConnectorAppSetUp } from './connector-card-state';
 
 /**
  * Go to where the person looking sets up a service's app, as
- * `connectorAppSetUp` placed it: Admin's Apps, open on the service, on a
- * server without the web dashboard, and otherwise the dashboard's connector
- * apps. Organization settings, where the new layout keeps them, opens in the
- * workspace in scope, the one the server answered who may set them up for. A
- * server Console no longer lists has no dashboard address, so that goes to
- * Admin's Apps too.
+ * `connectorAppSetUp` placed it: Settings › Connector apps, open on the
+ * service, on a server without the web dashboard, and otherwise the
+ * dashboard's connector apps. Organization settings, where the new layout
+ * keeps them, opens in the workspace in scope, the one the server answered
+ * who may set them up for. A server Console no longer lists has no dashboard
+ * address, so that goes to Settings › Connector apps too.
  */
 export function openConnectorAppSetUp(
   serverId: string,
@@ -25,8 +25,8 @@ export function openConnectorAppSetUp(
     throw new Error(`Set up was offered for ${slug}, whose app is not this person's to set up.`);
   const { at } = setUp;
   const server = switchServersStore.servers.find((s) => s.id === serverId);
-  if (at === 'admin' || !server) {
-    navigate('admin', { serverId, section: 'apps', app: slug });
+  if (at === 'settings' || !server) {
+    navigate('settings', { tab: 'connector-apps', app: slug });
     return;
   }
   const tenantId =

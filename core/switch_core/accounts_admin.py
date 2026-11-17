@@ -15,6 +15,9 @@
   `--yes` is given. Either way it looks again just before deleting, and
   deletes nothing if the account has changed since it was shown.
 - `sign-out EMAIL` ends every session the account holds.
+- `unlock EMAIL` lifts the lock failed password sign-ins put on the account's
+  email at once, rather than waiting it out (`gateway/login_limits.py`). A
+  lock on the address someone signs in from stays until it runs out.
 - `grant-operator EMAIL` and `revoke-operator EMAIL` make an account a
   platform operator, or a regular account again. The account at
   GATEWAY_ADMIN_EMAIL stays an operator, and the server keeps at least one.
@@ -76,6 +79,7 @@ from switch_core.db.stores.room_link_store import RoomLinkStore
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.user_store import UserStore, email_taken
 from switch_core.gateway.auth import hash_password_off_loop, list_held_memberships
+from switch_core.gateway.login_limits import clear_login_failures
 from switch_core.gateway.schemas import Email, Password
 from switch_core.main import build_connector_apps, build_service_broker
 from switch_core.operator_commands import (
@@ -218,6 +222,31 @@ async def sign_out(
                 session,
                 actor_user_id=None,
                 action=ServerAuditAction.USER_SESSIONS_ENDED,
+                target_type="user",
+                target_id=user.id,
+                details=_by_command(),
+            )
+            await session.commit()
+            return user
+
+
+# ── unlock ────────────────────────────────────────────────────────────────────
+
+
+async def unlock(session_factory: async_sessionmaker[AsyncSession], email: str) -> User:
+    """Let the account try a password sign-in again at once, clearing the
+    failed sign-ins counted against its email."""
+    user_store = UserStore()
+    with no_tenant():
+        async with session_factory() as session:
+            user = await user_store.get_by_email(session, email)
+            if user is None:
+                raise CommandRefused(f"No account has the email {email}.")
+            await clear_login_failures(session, user.email)
+            await record_server_audit_event(
+                session,
+                actor_user_id=None,
+                action=ServerAuditAction.USER_SIGN_IN_LOCK_CLEARED,
                 target_type="user",
                 target_id=user.id,
                 details=_by_command(),
@@ -846,6 +875,17 @@ def _parser() -> argparse.ArgumentParser:
         ),
     )
     sign_out_command.add_argument("email")
+    unlock_command = commands.add_parser(
+        "unlock",
+        help="lift the lock failed password sign-ins put on an account",
+        description=(
+            "Let someone locked out by failed password sign-ins try again at "
+            "once, rather than wait the lock out. Clears the count on the "
+            "account's email only: a lock on the address they sign in from "
+            "stays until it runs out."
+        ),
+    )
+    unlock_command.add_argument("email")
     grant = commands.add_parser(
         "grant-operator",
         help="make an account a platform operator",
@@ -897,6 +937,9 @@ async def _run(config: SwitchConfig, arguments: argparse.Namespace) -> int:
             elif command == "sign-out":
                 user = await sign_out(session_factory, arguments.email)
                 print(f"Ended every session of {user.email} ({user.id}).")
+            elif command == "unlock":
+                user = await unlock(session_factory, arguments.email)
+                print(f"{user.email} ({user.id}) can try a password sign-in again.")
             elif command == "grant-operator":
                 user = await grant_operator(session_factory, arguments.email)
                 print(f"{user.email} ({user.id}) is now a platform operator.")

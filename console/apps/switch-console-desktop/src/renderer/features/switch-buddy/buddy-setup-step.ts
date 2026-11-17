@@ -17,6 +17,7 @@ export type BuddySetupStep =
   | { kind: 'choose' }
   | { kind: 'connect'; platform: BuddyPlatform }
   | { kind: 'link'; bridge: RemoteBridge }
+  | { kind: 'checklist'; bridge: RemoteBridge }
   | { kind: 'guide'; bridge: RemoteBridge }
   | { kind: 'resuming' }
   | { kind: 'create'; bridge: RemoteBridge }
@@ -123,7 +124,9 @@ function isChat(resume: BuddyResume | undefined): resume is ChatSummary {
  * connection chosen, every resume is waited for, so one already handed off wins.
  *
  * Only Slack and Discord get a channel made for them: elsewhere, once linked, they are
- * told how to bring the buddy into a chat themselves. Every platform waits for
+ * told how to bring the buddy into a chat themselves. A platform with no
+ * directory (Telegram) gets one checklist from saying hello to the bot to
+ * talking to the buddy, linking included. Every platform waits for
  * the link, since the buddy answers only its owner; on one with no directory
  * the link card says how to be seen there first.
  */
@@ -148,6 +151,9 @@ export function buddySetupStep({
   const bridge = buddyBridge(platform, bridges, identities, resumes, chosenBridgeId);
   if (!bridge) return { kind: 'connect', platform };
   if (!identities) return { kind: 'loading' };
+  // With no directory to pick yourself from, linking starts by saying hello to
+  // the bot, and the steps after it are all yours to do in the app: one list.
+  if (bridge.directorySearchSupported === false) return { kind: 'checklist', bridge };
   if (!identities.some((identity) => identity.bridgeId === bridge.id))
     return { kind: 'link', bridge };
   if (!CHANNEL_PLATFORMS.includes(platform)) return { kind: 'guide', bridge };

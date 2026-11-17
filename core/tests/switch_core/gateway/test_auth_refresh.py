@@ -36,7 +36,9 @@ def _request(*, tenant_id: str | None) -> SimpleNamespace:
     # resolved this request to, which it must carry forward into the re-minted
     # cookie (CHOO-2723).
     return SimpleNamespace(
-        state=SimpleNamespace(tenant_id=tenant_id, session_auth_time=_SIGNED_IN)
+        state=SimpleNamespace(
+            tenant_id=tenant_id, session_auth_time=_SIGNED_IN, session_id="session-1"
+        )
     )
 
 
@@ -83,6 +85,8 @@ async def test_refresh_carries_the_selected_tenant_forward() -> None:
     payload = decode_jwt(token, _KEYRING)
     assert payload["tenant_id"] == "tenant-b"
     assert payload["auth_time"] == int(_SIGNED_IN.timestamp())
+    # The same session, so signing out of it refuses this copy too.
+    assert payload["sid"] == "session-1"
 
 
 async def test_refresh_cookie_is_httponly_and_respects_secure_flag() -> None:

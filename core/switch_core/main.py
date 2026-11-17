@@ -1184,6 +1184,7 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
         frontend_base_url=config.dashboard_base_url,
         follow_the_conversation_enabled=config.follow_the_conversation_enabled,
         decision_availability=decision_client.availability,
+        feature_flags=config.feature_flags,
     )
 
     # ── Agent management (off unless the agent_management flag is on) ─────────
@@ -1300,6 +1301,7 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
             ),
             webhook_secret=config.telegram_app_webhook_secret,
             on_connected=_attach_shared_telegram_bridges,
+            feature_flags=config.feature_flags,
         )
         collab_lifecycle.reserve_resource(
             bot_resource(telegram_app.bot_id), "Telegram app bot"
@@ -1827,6 +1829,7 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
             members=config.discord_app_members,
             install_service=install_service,
             on_connected=_attach_shared_discord_bridges,
+            feature_flags=config.feature_flags,
         )
         collab_lifecycle.add_bridge_starting_listener(discord_gateway.attach_if_live)
         discord_gateway.own(ownership)

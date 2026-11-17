@@ -91,7 +91,7 @@ artifacts:
     description: >-
       The Switch protocol client and the MCP tool surface each session host
       serves. Bundled into Switch Console and its sidecar, not published.
-    version: 0.8.3
+    version: 0.8.4
     declared_in: console/packages/switch-agent-runtime/package.json
 
   sidecar:
@@ -247,10 +247,11 @@ contracts:
 
   gateway-api:
     description: >-
-      The HTTP API switch-core serves to first-party UI clients. Excludes the
-      authentication surface, which is deliberately frozen and unversioned so
-      that a client can always authenticate far enough to be told what is
-      wrong.
+      The HTTP API switch-core serves to first-party UI clients. Excludes
+      signing in, refreshing a session and signing out, which are deliberately
+      frozen and unversioned so that a client can always sign in far enough to
+      be told what is wrong. The rest of /auth is part of it, sign-up and the
+      browser sign-in link included.
     # Revision 2 is what switch-core 0.31.0 shipped while still declaring 1.
     # An agent's definition carries `auto_mode`, which a server without it
     # refuses (a strict body takes no field it does not know), and signing in
@@ -267,12 +268,15 @@ contracts:
     # Revision 4 adds the paste route of a service connection (`PasteBody`)
     # and the `choices` a sign-in starts with (`StartFlow`).
     #
+    # Revision 5 adds the sign-in link Switch Console hands a browser
+    # (`MintHandoffBody`), and its peek and redeem (`HandoffCodeBody`).
+    #
     # A strict request body changing is the change most easily missed, so
     # core/tests/switch_core/gateway/test_gateway_api_revision.py fails until
     # it is recorded against a raised `speaks`.
     artifacts:
-      switch-core: { speaks: 4, accepts: 2 }
-      switch-console: { speaks: 4, accepts: 1 }
+      switch-core: { speaks: 5, accepts: 2 }
+      switch-console: { speaks: 5, accepts: 1 }
 
   stack-compose:
     description: >-

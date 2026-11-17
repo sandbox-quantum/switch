@@ -561,6 +561,7 @@ describe('room creation', () => {
           home_url: 'mattermost://chat.example.com/switch',
           channel_creation_supported: true,
           channel_creation_enabled: true,
+          directory_search_hint: 'Your name, handle or email',
         },
         { bridge_id: 'b2', bridge_type: 'slack', display_name: 'Slack', status: 'stopped' },
       ]) as never
@@ -578,6 +579,7 @@ describe('room creation', () => {
         channelCreationSupported: true,
         canCreateChannels: true,
         directorySearchSupported: true,
+        directorySearchHint: 'Your name, handle or email',
         attention: null,
         teamPlacementSupported: false,
         channelIdsRefused: null,
@@ -586,6 +588,7 @@ describe('room creation', () => {
         publicChannelAddsCreator: false,
         receivesWebhooks: false,
         webhookUrl: null,
+        commands: {},
       },
       {
         id: 'b2',
@@ -602,6 +605,7 @@ describe('room creation', () => {
         channelCreationSupported: true,
         canCreateChannels: true,
         directorySearchSupported: true,
+        directorySearchHint: 'Your name or handle',
         attention: null,
         teamPlacementSupported: false,
         channelIdsRefused: null,
@@ -610,6 +614,7 @@ describe('room creation', () => {
         publicChannelAddsCreator: false,
         receivesWebhooks: false,
         webhookUrl: null,
+        commands: {},
       },
     ]);
   });
@@ -2437,6 +2442,7 @@ describe('sign-up support', () => {
       oidcEnabled: false,
       oidcProviderLabel: null,
       signupEnabled: true,
+      testAccountResetEnabled: false,
       oidcLoginOptions: [],
       oidcBrowserHandoff: false,
     });
@@ -2454,6 +2460,13 @@ describe('sign-up support', () => {
     const read = await fetchAuthConfig(SERVER);
     expect(read.oidcLoginOptions).toEqual([{ id: 'google', label: 'Google' }]);
     expect(read.oidcBrowserHandoff).toBe(true);
+  });
+
+  it.each([true, false, undefined])('reads test-account reset support: %s', async (enabled) => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ ...config, test_account_reset_enabled: enabled })
+    );
+    expect((await fetchAuthConfig(SERVER)).testAccountResetEnabled).toBe(enabled === true);
   });
 
   it('treats a server predating sign-up as not offering it', async () => {
@@ -2936,12 +2949,31 @@ describe('linked messaging accounts', () => {
         bridgeType: 'slack',
         externalUserId: 'U1',
         externalUsername: 'ada',
+        externalDisplayName: 'ada',
+        hasHandle: true,
         requestedByName: 'Grace',
         codeExpiresAt: '2026-10-27T12:30:00Z',
       },
     ]);
     const [url] = fetchMock.mock.calls[0] as unknown as [string];
     expect(url).toBe('https://switch.example.com/gateway/auth/me/identities/pending');
+  });
+
+  it('carries the name of an account whose handle Switch made up', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse([
+        {
+          ...LINKED,
+          external_username: 'MM_42',
+          external_display_name: 'M M',
+          has_handle: false,
+        },
+      ]) as never
+    );
+
+    const [linked] = await fetchMyIdentities(SERVER);
+
+    expect(linked).toMatchObject({ externalDisplayName: 'M M', hasHandle: false });
   });
 
   it('reads a server without the pending route as having none pending', async () => {
