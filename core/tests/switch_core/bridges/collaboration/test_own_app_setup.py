@@ -103,6 +103,36 @@ class TestSlackManifest:
         assert query["new_app"] == ["1"]
         assert json.loads(query["manifest_json"][0]) == manifest
 
+    def test_the_create_link_stays_short_enough_for_slack_to_prefill(self) -> None:
+        """Slack ignores a manifest in a link much longer than about 7,300
+        characters and opens its app list instead of the prefilled dialog.
+        6,000 leaves room for the next few commands and events; four more
+        bot events stand in for the next additions."""
+        manifest = slack_manifest(ALL_ON)
+        assert len(slack_create_url(manifest)) <= 6000
+
+        manifest["settings"]["event_subscriptions"]["bot_events"] += [
+            "channel_deleted",
+            "channel_archive",
+            "group_deleted",
+            "group_archive",
+        ]
+        assert len(slack_create_url(manifest)) <= 6000
+
+    def test_every_command_has_a_short_phrase(self) -> None:
+        for command in slack_manifest(ALL_ON)["features"]["slash_commands"]:
+            assert command["command"].removeprefix("/") in (
+                own_app_setup._SLACK_DESCRIPTIONS
+            ), command
+            assert len(command["description"]) <= 50, command
+
+    def test_only_commands_with_arguments_escape_mentions(self) -> None:
+        by_name = {command.name: command for command in COMMANDS}
+        for entry in slack_manifest(ALL_ON)["features"]["slash_commands"]:
+            takes_arguments = bool(by_name[entry["command"][1:]].args_spec)
+            assert entry.get("should_escape", False) is takes_arguments, entry
+            assert ("usage_hint" in entry) is takes_arguments, entry
+
 
 class TestCheckingSlackTokens:
     async def test_reads_the_workspace_once_both_tokens_work(self) -> None:
