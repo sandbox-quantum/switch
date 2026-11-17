@@ -16,7 +16,12 @@ import {
 } from "@mui/material";
 import { useEffect, useId, useRef, useState } from "react";
 import { useAuth } from "../../data/AuthContext";
-import { ApiError, accountDeletionRefusal, deleteMyAccount } from "../../data/api";
+import {
+  ApiError,
+  type SignedOut,
+  accountDeletionRefusal,
+  deleteMyAccount,
+} from "../../data/api";
 
 interface Props {
   open: boolean;
@@ -43,14 +48,15 @@ function messageOf(err: unknown): string {
  * reason shows the same way. Once the account is gone this browser is signed
  * out like any other sign-out. */
 export default function DeleteAccountDialog({ open, email, onClose }: Props) {
-  const { logout } = useAuth();
+  const { finishSignOut } = useAuth();
   const descriptionId = useId();
   const closeRef = useRef<HTMLButtonElement>(null);
   const [check, setCheck] = useState<Check>({ state: "checking" });
   const [typed, setTyped] = useState("");
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [deleted, setDeleted] = useState(false);
+  // Set once the account is gone, with how to finish signing this browser out.
+  const [deleted, setDeleted] = useState<SignedOut | null>(null);
   // Read by `confirm` itself, so two presses before a render cannot both send.
   const sending = useRef(false);
 
@@ -83,8 +89,7 @@ export default function DeleteAccountDialog({ open, email, onClose }: Props) {
     setDeleting(true);
     setError(null);
     try {
-      await deleteMyAccount(typed.trim());
-      setDeleted(true);
+      setDeleted(await deleteMyAccount(typed.trim()));
     } catch (err) {
       // A refusal, something that changed since the dialog opened, takes the
       // form's place as the check's would; anything else shows under it.
@@ -101,13 +106,10 @@ export default function DeleteAccountDialog({ open, email, onClose }: Props) {
 
   const close = () => {
     if (deleting) return;
-    if (deleted) {
-      // The account and its cookie are already gone, so a sign-out call that
-      // fails changes nothing: loading the app again lands signed out too.
-      logout().catch((err) => {
-        console.warn("Signing out after deleting the account failed; reloading", err);
-        window.location.assign("/");
-      });
+    if (deleted !== null) {
+      // The account and its cookie are already gone: only what the browser
+      // holds is left to clear.
+      finishSignOut(deleted);
       return;
     }
     onClose();
@@ -132,7 +134,7 @@ export default function DeleteAccountDialog({ open, email, onClose }: Props) {
     >
       {/* The design system's modal, as `ConfirmDialog` draws it. */}
       <DialogTitle sx={{ fontSize: "1.0625rem", fontWeight: 600, pt: 3, pr: 8, pb: 0.5 }}>
-        {deleted ? "Your account is deleted" : "Delete your account"}
+        {deleted !== null ? "Your account is deleted" : "Delete your account"}
       </DialogTitle>
       <IconButton
         ref={closeRef}
@@ -144,7 +146,7 @@ export default function DeleteAccountDialog({ open, email, onClose }: Props) {
         <CloseOutlined sx={{ fontSize: 18 }} />
       </IconButton>
       <DialogContent sx={{ pb: 3 }}>
-        {deleted ? (
+        {deleted !== null ? (
           <DialogContentText id={descriptionId} sx={{ fontSize: "0.875rem", lineHeight: "20px" }}>
             {email} no longer has an account. Closing this signs you out.
           </DialogContentText>
@@ -205,9 +207,9 @@ export default function DeleteAccountDialog({ open, email, onClose }: Props) {
       </DialogContent>
       <DialogActions sx={{ px: 3, py: 2, borderTop: "1px solid var(--sw-border)" }}>
         {/* Named apart from the close icon, which is "Close". */}
-        {deleted || check.state === "refused" ? (
+        {deleted !== null || check.state === "refused" ? (
           <Button variant="outlined" onClick={close}>
-            {deleted ? "Done" : "OK"}
+            {deleted !== null ? "Done" : "OK"}
           </Button>
         ) : (
           <>

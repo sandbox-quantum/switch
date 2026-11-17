@@ -1,7 +1,12 @@
 import { Alert, Button, Stack } from "@mui/material";
-import { BrowserRouter, Navigate, Route, Routes } from "react-router";
+import { BrowserRouter, Navigate, Route, Routes, useLocation } from "react-router";
 import { AuthProvider, useAuth } from "./data/AuthContext";
-import { appView, readPendingInvite } from "./data/sessionState";
+import {
+  appView,
+  dashboardLocation,
+  nextAfterSignIn,
+  readPendingInvite,
+} from "./data/sessionState";
 import { DevRoleCorner } from "./layout/DevRoleSlot";
 import PageShell from "./layout/PageShell";
 import { renderRoutes } from "./routes/renderRoutes";
@@ -12,6 +17,21 @@ import AcceptInvitePage from "./pages/onboarding/AcceptInvitePage";
 import InviteCapture from "./pages/onboarding/InviteCapture";
 import OnboardingPage from "./pages/onboarding/OnboardingPage";
 import WorkspacePickerPage from "./pages/onboarding/WorkspacePickerPage";
+
+/** Signed out anywhere but sign-in: to sign-in, saying where to come back to. */
+function ToSignIn() {
+  const { pathname, search } = useLocation();
+  const next = nextAfterSignIn(pathname, search);
+  return (
+    <Navigate to={next === null ? "/login" : `/login?${new URLSearchParams({ next })}`} replace />
+  );
+}
+
+/** Signed in on sign-in: on to where it was asked to come back to. */
+function FromSignIn() {
+  const { search } = useLocation();
+  return <Navigate to={dashboardLocation(new URLSearchParams(search).get("next")) ?? "/"} replace />;
+}
 
 export function AppRoutes() {
   const { session, loading, loadError, capabilities } = useAuth();
@@ -43,7 +63,7 @@ export function AppRoutes() {
       <Routes>
         <Route path="/login" element={<LoginPage />} />
         <Route path="/invite" element={<InviteCapture />} />
-        <Route path="*" element={<Navigate to="/login" replace />} />
+        <Route path="*" element={<ToSignIn />} />
       </Routes>
     );
   }
@@ -77,7 +97,7 @@ export function AppRoutes() {
         <Route path="*" element={<NotFoundPage />} />
       </Route>
       <Route path="/invite" element={<InviteCapture />} />
-      <Route path="/login" element={<Navigate to="/" replace />} />
+      <Route path="/login" element={<FromSignIn />} />
     </Routes>
   );
 }

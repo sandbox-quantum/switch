@@ -378,8 +378,10 @@ def _not_all_ended(failed: int, end_session_url: str | None) -> JSONResponse:
         status_code=502,
         content={
             "detail": (
-                f"Signed out here, but {failed} of your sign-ins elsewhere "
-                "could not be ended at WorkOS. Try again in a moment."
+                "You're signed out of Switch everywhere, but "
+                f"{failed} of your sign-ins at WorkOS could not be ended, so "
+                "they may still sign you in without asking for a password. "
+                "Sign in and sign out of every device again to end them."
             ),
             "end_session_url": end_session_url,
         },

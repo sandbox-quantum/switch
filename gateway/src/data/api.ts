@@ -456,6 +456,19 @@ export function errorText(detail: unknown, fallback: string): string {
   return fallback;
 }
 
+/** Fired when Switch refuses a request for the session it came with, so the
+ * dashboard reads its session again rather than showing the refusal page by
+ * page: the session may have ended (signed out elsewhere, or its sign-in at
+ * the identity provider ended). Not fired by reading the session itself,
+ * which answers signed out with its own 401. */
+export const SESSION_REFUSED_EVENT = "switch:session-refused";
+
+function noteRefusedSession(path: string, status: number): void {
+  if (status === 401 && path !== "/auth/session" && path !== "/auth/login") {
+    window.dispatchEvent(new Event(SESSION_REFUSED_EVENT));
+  }
+}
+
 async function jsonRequest<T>(
   path: string,
   method: string,
@@ -468,6 +481,7 @@ async function jsonRequest<T>(
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
   if (!res.ok) {
+    noteRefusedSession(path, res.status);
     const payload = await res.json().catch(() => null);
     const detail = payload?.detail ?? null;
     throw new ApiError(
@@ -485,6 +499,7 @@ async function jsonRequest<T>(
 async function noContentRequest(path: string, method: string): Promise<void> {
   const res = await fetch(`${BASE}${path}`, { method, credentials: "include" });
   if (!res.ok) {
+    noteRefusedSession(path, res.status);
     const payload = await res.json().catch(() => null);
     const detail = payload?.detail ?? null;
     throw new ApiError(
@@ -1613,16 +1628,46 @@ export async function login(email: string, password: string): Promise<UserInfo> 
   return jsonRequest<UserInfo>("/auth/login", "POST", { email, password });
 }
 
+/** What signing out answers. `endSessionUrl` is set when the session stood on
+ * a WorkOS AuthKit session: the browser goes there for WorkOS to end that too,
+ * and comes back to sign-in. `notice` says what could not be ended. */
+export interface SignedOut {
+  endSessionUrl: string | null;
+  notice: string | null;
+}
+
+interface SignOutAnswer {
+  end_session_url?: string | null;
+  detail?: unknown;
+}
+
+function signedOut(answer: SignOutAnswer, notice: string | null): SignedOut {
+  return { endSessionUrl: answer.end_session_url ?? null, notice };
+}
+
 // Throws when the cookie wasn't cleared, so a failed sign-out never looks
 // like a signed-out browser that a reload would sign straight back in.
-export async function logout(): Promise<void> {
-  await jsonRequest("/auth/logout", "POST");
+export async function logout(): Promise<SignedOut> {
+  return signedOut(await jsonRequest<SignOutAnswer>("/auth/logout", "POST"), null);
 }
 
 // Ends every session the account holds, this one included: a copied cookie or
-// a browser left signed in elsewhere stops working at once.
-export async function signOutEverywhere(): Promise<void> {
-  await jsonRequest("/auth/sessions/revoke", "POST");
+// a browser left signed in elsewhere stops working at once. A 502 means some
+// sign-ins elsewhere could not be ended at WorkOS; this one is signed out all
+// the same, so it is answered, not thrown.
+export async function signOutEverywhere(): Promise<SignedOut> {
+  const path = "/auth/sessions/revoke";
+  const res = await fetch(`${BASE}${path}`, { method: "POST", credentials: "include" });
+  const answer = ((await res.json().catch(() => null)) ?? {}) as SignOutAnswer;
+  if (res.status === 502) {
+    return signedOut(answer, errorText(answer.detail ?? null, "Some sign-ins could not be ended."));
+  }
+  if (!res.ok) {
+    noteRefusedSession(path, res.status);
+    const detail = answer.detail ?? null;
+    throw new ApiError(res.status, detail, errorText(detail, `${res.status} ${res.statusText}`));
+  }
+  return signedOut(answer, null);
 }
 
 /** The signed-in account, as Your account shows it. */
@@ -1648,8 +1693,8 @@ export async function accountDeletionRefusal(): Promise<string | null> {
 }
 
 /** Deletes the account everywhere, confirmed by its email typed out. */
-export async function deleteMyAccount(email: string): Promise<void> {
-  await jsonRequest("/auth/me", "DELETE", { email });
+export async function deleteMyAccount(email: string): Promise<SignedOut> {
+  return signedOut(await jsonRequest<SignOutAnswer>("/auth/me", "DELETE", { email }), null);
 }
 
 export type SignupMode = "default_tenant" | "invite_only" | "open";
@@ -2506,10 +2551,14 @@ export async function fetchAuthConfig(): Promise<AuthConfig> {
 
 // Full-page navigation (not fetch): the IdP redirect round-trip must happen
 // at the top level so cookies and the callback redirect work. `provider` is
-// one of the configured login options, or null for the provider's own choice.
-export function oidcLoginUrl(provider: string | null): string {
-  const query = provider === null ? "" : `?provider=${encodeURIComponent(provider)}`;
-  return `${BASE}/auth/oidc/login${query}`;
+// one of the configured login options, or null for the provider's own choice;
+// `next` is where on the dashboard to land.
+export function oidcLoginUrl(provider: string | null, next: string | null): string {
+  const query = new URLSearchParams();
+  if (provider !== null) query.set("provider", provider);
+  if (next !== null) query.set("next", next);
+  const search = query.toString();
+  return `${BASE}/auth/oidc/login${search === "" ? "" : `?${search}`}`;
 }
 
 /** Where an admin signs in to their organization's WorkOS account, for the

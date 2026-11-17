@@ -5,10 +5,13 @@ import { AppRoutes } from "./App";
 import type { Session, TenantMembership } from "./data/api";
 import { AuthProvider } from "./data/AuthContext";
 import type { FeatureFlagKey } from "./data/featureFlags";
+import { SESSION_REFUSED_EVENT } from "./data/api";
 import {
   clearPendingInvite,
+  keepSignOutNotice,
   markSignedOut,
   noteHandOff,
+  readSignOutNotice,
   signedOutOnPurpose,
   storePendingInvite,
 } from "./data/sessionState";
@@ -233,13 +236,15 @@ describe("AppRoutes", () => {
     ).toBeTruthy();
   });
 
-  it("goes straight to the identity provider when it is the only way in", async () => {
+  it("goes straight to the identity provider when it is the only way in, to come back to the page asked for", async () => {
     mockFetch({
       ...signedOut,
       "/auth/config": [200, { ...authConfig, password_login_enabled: false, signup_mode: "invite_only" }],
     });
     renderAt("/rooms");
-    await waitFor(() => expect(leaveFor).toHaveBeenCalledWith("/gateway/auth/oidc/login"));
+    await waitFor(() =>
+      expect(leaveFor).toHaveBeenCalledWith("/gateway/auth/oidc/login?next=%2Frooms"),
+    );
     expect(leaveFor).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole("heading", { name: "Sign in to Switch" })).toBeNull();
     expect(screen.getByLabelText("Loading")).toBeTruthy();
@@ -329,6 +334,58 @@ describe("AppRoutes", () => {
     expect(await screen.findByText(/Signing in didn't finish, so you're back here/)).toBeTruthy();
     expect(await screen.findByRole("button", { name: "Continue with Example SSO" })).toBeTruthy();
     expect(leaveFor).not.toHaveBeenCalled();
+  });
+
+  it("says why the last sign-in failed, and waits to be asked rather than handing off again", async () => {
+    mockFetch({
+      ...signedOut,
+      "/auth/config": [200, { ...authConfig, password_login_enabled: false }],
+    });
+    renderAt("/login?sign_in_error=impersonation&next=%2Frooms");
+    expect(
+      await screen.findByText(
+        "Switch can't be signed in to on someone else's behalf. Sign in as yourself.",
+      ),
+    ).toBeTruthy();
+    // Said once: dropped from the address, so a reload hands off as usual.
+    await landsOn("/login?next=%2Frooms");
+    expect(await screen.findByRole("button", { name: "Continue with Example SSO" })).toBeTruthy();
+    expect(leaveFor).not.toHaveBeenCalled();
+  });
+
+  it("names a sign-in failure it has no words for", async () => {
+    mockFetch({ ...signedOut, "/auth/config": [200, authConfig] });
+    renderAt("/login?sign_in_error=something_new");
+    expect(await screen.findByText("Signing in didn't finish (something_new). Try again.")).toBeTruthy();
+  });
+
+  it("says what signing out could not end, once, on the sign-in page it comes back to", async () => {
+    keepSignOutNotice("2 sign-ins at WorkOS could not be ended.");
+    mockFetch({
+      ...signedOut,
+      "/auth/config": [200, { ...authConfig, password_login_enabled: false }],
+    });
+    renderAt("/login");
+    expect(await screen.findByText("2 sign-ins at WorkOS could not be ended.")).toBeTruthy();
+    expect(leaveFor).not.toHaveBeenCalled();
+    expect(readSignOutNotice()).toBeNull();
+  });
+
+  it("comes back to the page asked for after signing in with a password", async () => {
+    mockFetch({ ...signedOut, "/auth/config": [200, authConfig] });
+    renderAt("/rooms");
+    await landsOn("/login?next=%2Frooms");
+    mockFetch({ ...signedInAs("member"), "/auth/login": [200, { id: "u1" }] });
+    fireEvent.change(await screen.findByLabelText(/Email/), { target: { value: "ada@example.com" } });
+    fireEvent.change(screen.getByLabelText(/Password/), { target: { value: "pw" } });
+    fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
+    await landsOn("/rooms");
+  });
+
+  it("lands on the home page when told to come back somewhere off the dashboard", async () => {
+    mockFetch(signedInAs("member"));
+    renderAt("/login?next=%2F%2Felsewhere.example.test%2F");
+    await landsOn("/");
   });
 
   it("offers the password form, and says why, when the ways to sign in cannot be read", async () => {
@@ -658,6 +715,23 @@ describe("today's layout", () => {
     expect(screen.queryByRole("menuitem", { name: "Your account" })).toBeNull();
   });
 
+  it("signs out, and says what could not be ended, when some sign-ins elsewhere stay", async () => {
+    mockFetch({
+      ...signedInAs("member"),
+      "/auth/sessions/revoke": [
+        502,
+        { detail: "1 sign-in at WorkOS could not be ended.", end_session_url: null },
+      ],
+      "/auth/config": [200, authConfig],
+    });
+    renderAt("/rooms");
+    fireEvent.click(await screen.findByRole("button", { name: "Account menu" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Sign out of all devices" }));
+    expect(await screen.findByRole("heading", { name: "Sign in to Switch" })).toBeTruthy();
+    expect(await screen.findByText("1 sign-in at WorkOS could not be ended.")).toBeTruthy();
+    expect(signedOutOnPurpose()).toBe(true);
+  });
+
   it("stays signed in, saying so, when signing out of every device from the menu fails", async () => {
     mockFetch({
       ...signedInAs("member"),
@@ -670,6 +744,61 @@ describe("today's layout", () => {
       await screen.findByText("Couldn't sign out of every device: Internal Server Error"),
     ).toBeTruthy();
     expect(screen.getByRole("button", { name: "Account menu" })).toBeTruthy();
+  });
+});
+
+describe("signing out of a sign-in at WorkOS", () => {
+  const originalLocation = window.location;
+  const assign = vi.fn();
+
+  beforeEach(() => {
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      writable: true,
+      value: { ...originalLocation, assign },
+    });
+  });
+
+  afterEach(() => {
+    assign.mockClear();
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      writable: true,
+      value: originalLocation,
+    });
+  });
+
+  it("leaves for WorkOS to end it, coming back to a sign-in that hands off as Flint Trust's does", async () => {
+    // An invitation to follow, so the screen is the one before a workspace,
+    // which the next person to sign in must not inherit.
+    storePendingInvite("abc");
+    mockFetch({
+      ...signedInAs("org_admin"),
+      "/auth/logout": [200, { ok: true, end_session_url: "https://auth.example.test/logout" }],
+    });
+    renderAt("/");
+    fireEvent.click(await screen.findByRole("button", { name: "Sign out" }));
+    await waitFor(() => expect(assign).toHaveBeenCalledWith("https://auth.example.test/logout"));
+    expect(signedOutOnPurpose()).toBe(false);
+    expect(window.sessionStorage.getItem("switch.pendingInvite")).toBeNull();
+  });
+
+  it("keeps what signing out of every device could not end for the page it comes back to", async () => {
+    mockFetch({
+      ...signedInAs("member"),
+      "/auth/sessions/revoke": [
+        502,
+        {
+          detail: "1 sign-in at WorkOS could not be ended.",
+          end_session_url: "https://auth.example.test/logout",
+        },
+      ],
+    });
+    renderAt("/rooms");
+    fireEvent.click(await screen.findByRole("button", { name: "Account menu" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Sign out of all devices" }));
+    await waitFor(() => expect(assign).toHaveBeenCalledWith("https://auth.example.test/logout"));
+    expect(readSignOutNotice()).toBe("1 sign-in at WorkOS could not be ended.");
   });
 });
 
@@ -1330,6 +1459,15 @@ describe("a page that falls behind the server", () => {
       .mocked(fetch)
       .mock.calls.filter(([input]) => String(input).endsWith("/auth/session"));
     expect(sessionReads).toHaveLength(1);
+  });
+
+  it("reads the session again when a request is refused for it, and reloads once it has ended", async () => {
+    mockFetch(signedInAs("member"));
+    renderAt("/rooms");
+    await railLabels();
+    mockFetch(signedOut);
+    window.dispatchEvent(new Event(SESSION_REFUSED_EVENT));
+    await waitFor(() => expect(reload).toHaveBeenCalled());
   });
 
   it("warns, keeping the page, when the session cannot be read on coming back to the tab", async () => {

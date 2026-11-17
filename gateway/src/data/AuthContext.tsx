@@ -3,8 +3,10 @@ import type { ReactNode } from "react";
 import { useLocation, useNavigate } from "react-router";
 import {
   type CurrentTenant,
+  SESSION_REFUSED_EVENT,
   type Session,
   type SessionUser,
+  type SignedOut,
   fetchFeatureFlags,
   fetchSession,
   loadCurrentTenant,
@@ -16,7 +18,12 @@ import {
 import { type Capabilities, capabilitiesOf } from "./capabilities";
 import { ALL_OFF, type FeatureFlags, GATEWAY_V2 } from "./featureFlags";
 import { landingAfterSwitch } from "./settingsLanding";
-import { clearPendingInvite, clearSignInMarks, markSignedOut } from "./sessionState";
+import {
+  clearPendingInvite,
+  clearSignInMarks,
+  keepSignOutNotice,
+  markSignedOut,
+} from "./sessionState";
 import {
   followWorkspaceLink,
   forgetLinkForSignIn,
@@ -53,6 +60,9 @@ interface AuthState {
   login: (email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
   logoutEverywhere: () => Promise<void>;
+  // Finishes a sign-out the server already made, such as deleting the
+  // account: leaves for WorkOS when it says to, else shows sign-in.
+  finishSignOut: (signedOut: SignedOut) => void;
   switchTo: (tenantId: string) => Promise<void>;
 }
 
@@ -219,11 +229,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const onVisibilityChange = () => {
       if (document.visibilityState === "visible") void revalidate(false);
     };
+    // A request refused for its session (see `SESSION_REFUSED_EVENT`): read
+    // it again, and a session that has ended reloads the page signed out.
+    const onSessionRefused = () => void revalidate(false);
     window.addEventListener("pageshow", onPageShow);
     document.addEventListener("visibilitychange", onVisibilityChange);
+    window.addEventListener(SESSION_REFUSED_EVENT, onSessionRefused);
     return () => {
       window.removeEventListener("pageshow", onPageShow);
       document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.removeEventListener(SESSION_REFUSED_EVENT, onSessionRefused);
     };
   }, [revalidate]);
   const recheck = useCallback(async () => {
@@ -247,21 +262,31 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // The next person to sign in on this tab must not inherit an invitation,
   // or a link, they never followed. Both are dropped only once signed out: a
   // sign-out that fails leaves the person here, with what they had.
-  const logout = useCallback(async () => {
-    await apiLogout();
+  //
+  // A session that stood on a WorkOS sign-in leaves for WorkOS to end that
+  // too, and comes back to sign-in, which hands straight to WorkOS again, as
+  // Flint Trust does. Otherwise this tab is marked signed out on purpose, so
+  // sign-in waits to be asked rather than handing off to an identity
+  // provider whose own session would sign the person straight back in.
+  const finishSignOut = useCallback((signedOut: SignedOut) => {
     clearPendingInvite();
     forgetLinkForSignIn();
+    if (signedOut.notice !== null) keepSignOutNotice(signedOut.notice);
+    if (signedOut.endSessionUrl !== null) {
+      window.location.assign(signedOut.endSessionUrl);
+      return;
+    }
     markSignedOut();
     setLoaded({ session: null, tenant: null, flags: ALL_OFF });
   }, []);
 
+  const logout = useCallback(async () => {
+    finishSignOut(await apiLogout());
+  }, [finishSignOut]);
+
   const logoutEverywhere = useCallback(async () => {
-    await signOutEverywhere();
-    clearPendingInvite();
-    forgetLinkForSignIn();
-    markSignedOut();
-    setLoaded({ session: null, tenant: null, flags: ALL_OFF });
-  }, []);
+    finishSignOut(await signOutEverywhere());
+  }, [finishSignOut]);
 
   // A full reload rather than a state update: every page holds data fetched
   // for the workspace it was opened in, and none of it is valid in the next.
@@ -291,6 +316,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     login,
     logout,
     logoutEverywhere,
+    finishSignOut,
     switchTo,
   };
 

@@ -8,12 +8,16 @@ import {
   TextField,
 } from "@mui/material";
 import { useCallback, useEffect, useState } from "react";
+import { useLocation, useNavigate } from "react-router";
 import { type AuthConfig, fetchAuthConfig, oidcLoginUrl } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
 import {
+  clearSignOutNotice,
+  dashboardLocation,
   handedOffRecently,
   noteHandOff,
   readPendingInvite,
+  readSignOutNotice,
   signedOutOnPurpose,
 } from "../../data/sessionState";
 import AuthLayout, { AuthLoading } from "./AuthLayout";
@@ -26,11 +30,40 @@ type ConfigState =
   | { status: "failed"; message: string };
 
 /** What this tab knew on arriving at sign-in: whether its person signed out
- * on purpose, and whether it is back from the identity provider too soon for
- * the sign-in to have finished. Either one keeps the page from handing off. */
+ * on purpose, whether it is back from the identity provider too soon for the
+ * sign-in to have finished, why a sign-in failed, and what signing out could
+ * not do. Any one keeps the page from handing off, so it can be read. */
 interface Arrival {
   signedOut: boolean;
   didNotFinish: boolean;
+  signInError: string | null;
+  signOutNotice: string | null;
+}
+
+/** What the server's `?sign_in_error=` code means for the person signing in. */
+export function signInErrorMessage(code: string): string {
+  switch (code) {
+    case "cancelled":
+      return "Signing in was cancelled.";
+    case "expired":
+      return "That sign-in took too long or was already used. Try again.";
+    case "email_unverified":
+      return "Your identity provider doesn't say your email address is verified. Verify it there, then sign in again.";
+    case "account_conflict":
+      return "Your email address belongs to a Switch account that signs in another way, and your identity provider doesn't say it's verified. Sign in the way you did before.";
+    case "signup_refused":
+      return "Switch can't make an account for you from where you're signing in.";
+    case "impersonation":
+      return "Switch can't be signed in to on someone else's behalf. Sign in as yourself.";
+    case "unavailable":
+      return "Couldn't reach the identity provider to finish signing in. Try again in a moment.";
+    case "misconfigured":
+      return "Signing in isn't set up correctly here. Ask whoever runs Switch for you to check its sign-in settings.";
+    case "refused":
+      return "The identity provider refused the sign-in. Try again, and if it keeps happening, ask whoever runs Switch for you.";
+    default:
+      return `Signing in didn't finish (${code}). Try again.`;
+  }
 }
 
 function subtitleFor(config: AuthConfig | null, arrival: Arrival): string {
@@ -48,6 +81,8 @@ function subtitleFor(config: AuthConfig | null, arrival: Arrival): string {
 
 export default function LoginPage() {
   const { login } = useAuth();
+  const location = useLocation();
+  const navigate = useNavigate();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -56,7 +91,26 @@ export default function LoginPage() {
   const [arrival] = useState<Arrival>(() => ({
     signedOut: signedOutOnPurpose(),
     didNotFinish: handedOffRecently(Date.now()),
+    signInError: new URLSearchParams(location.search).get("sign_in_error"),
+    signOutNotice: readSignOutNotice(),
   }));
+  const [next] = useState(() =>
+    dashboardLocation(new URLSearchParams(location.search).get("next")),
+  );
+
+  // Said once: reloading the page, or coming back to it, does not say it
+  // again.
+  useEffect(() => {
+    clearSignOutNotice();
+    if (arrival.signInError !== null) {
+      const query = new URLSearchParams(location.search);
+      query.delete("sign_in_error");
+      const search = query.toString();
+      navigate({ search: search === "" ? "" : `?${search}` }, { replace: true });
+    }
+    // Once, on arrival: what it removes is already held in `arrival`.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -100,8 +154,12 @@ export default function LoginPage() {
   const passwordLoginEnabled = config?.password_login_enabled ?? true;
   const sso = config ? ssoButtons(config) : [];
   const only = config ? onlyWayIn(config) : null;
-  const handOffTo =
-    only !== null && !arrival.signedOut && !arrival.didNotFinish ? oidcLoginUrl(only.id) : null;
+  const stay =
+    arrival.signedOut ||
+    arrival.didNotFinish ||
+    arrival.signInError !== null ||
+    arrival.signOutNotice !== null;
+  const handOffTo = only !== null && !stay ? oidcLoginUrl(only.id, next) : null;
 
   useEffect(() => {
     if (handOffTo === null) return;
@@ -125,7 +183,13 @@ export default function LoginPage() {
               {configState.message}
             </Alert>
           )}
-          {arrival.didNotFinish && (
+          {arrival.signOutNotice !== null && (
+            <Alert severity="warning">{arrival.signOutNotice}</Alert>
+          )}
+          {arrival.signInError !== null && (
+            <Alert severity="error">{signInErrorMessage(arrival.signInError)}</Alert>
+          )}
+          {arrival.didNotFinish && arrival.signInError === null && (
             <Alert severity="warning">
               Signing in didn't finish, so you're back here. Try again, and if this keeps
               happening, check that this browser allows cookies for this site.
@@ -177,7 +241,7 @@ export default function LoginPage() {
               startIcon={signInProviderLogo(option.id, option.label)}
               onClick={() => {
                 noteHandOff(Date.now());
-                window.location.href = oidcLoginUrl(option.id);
+                window.location.href = oidcLoginUrl(option.id, next);
               }}
             >
               {`Continue with ${option.label}`}
