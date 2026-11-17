@@ -527,8 +527,37 @@ describe('mid-turn steering', () => {
     });
     await until(() => expect(host.snapshot().requests[0]?.state).toBe('open'));
 
-    expect((await host.command(message('correction', 'steer'))).status).toBe('applied');
+    await host.command(message('correction', 'steer'));
 
     expect(host.snapshot().requests[0]?.state).toBe('open');
+  });
+
+  it('queues a message sent while the turn waits on an answer, and runs it after', async () => {
+    const { host, emit, sent, complete } = await start({ steering: true });
+    await host.command(message('first', 'queue'));
+    await until(() => expect(host.snapshot().turns[0]?.status).toBe('running'));
+    emit({
+      type: 'user-input.requested',
+      turnId: 'first',
+      requestId: 'confirm',
+      questions: [
+        {
+          id: 'q1',
+          header: 'Confirm',
+          question: 'Create it?',
+          options: [{ label: 'Create it', value: 'create' }],
+          multiSelect: false,
+          allowCustomAnswer: false,
+        },
+      ],
+    });
+    await until(() => expect(host.snapshot().requests[0]?.state).toBe('open'));
+
+    await host.command(message('aside', 'steer'));
+    expect(sent).toEqual(['first']);
+
+    emit({ type: 'user-input.resolved', requestId: 'confirm' });
+    complete('first');
+    await until(() => expect(sent).toEqual(['first', 'aside']));
   });
 });

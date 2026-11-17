@@ -178,6 +178,9 @@ class AgentSessionActivityStore:
         - its session is live when it is placed (`AgentSessionPlacement`) over
           a connection whose process holds its lease, or when a heartbeat for
           the turn's room is fresh. A live session's turn is never ended;
+        - a turn waiting on an open request is never ended either: it is
+          quiet because a person has not answered yet, and the request's own
+          expiry is what bounds the wait;
         - otherwise the turn is ended once nothing in it has moved for
           `offline_quiet` if the agent has no live connection and no fresh
           heartbeat at all, or for the longer `session_quiet` if the agent is
@@ -228,9 +231,17 @@ class AgentSessionActivityStore:
             AgentSession.lifecycle == "heartbeat",
             AgentSession.last_seen_at > func.now() - literal(heartbeat_ttl),
         )
+        waiting = exists().where(
+            ApprovalRequest.tenant_id == turn.tenant_id,
+            ApprovalRequest.agent_id == turn.agent_id,
+            ApprovalRequest.session_id == turn.session_id,
+            ApprovalRequest.turn_id == turn.turn_id,
+            ApprovalRequest.state == "open",
+        )
         gone = and_(
             ~placed,
             ~beating_here,
+            ~waiting,
             or_(
                 and_(quiet(offline_quiet), ~connected, ~beating),
                 quiet(session_quiet),

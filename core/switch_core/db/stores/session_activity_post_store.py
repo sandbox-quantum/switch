@@ -104,6 +104,27 @@ class ApprovalRequestPostStore:
         )
         return result.scalar_one_or_none()
 
+    async def latest_in_thread(
+        self,
+        session: AsyncSession,
+        bridge_id: str,
+        channel_id: str,
+        thread_ref: str,
+    ) -> ApprovalRequestPost | None:
+        """The newest card posted in a thread, for a reply in that thread."""
+        result = await session.execute(
+            select(ApprovalRequestPost)
+            .where(
+                ApprovalRequestPost.bridge_id == bridge_id,
+                ApprovalRequestPost.external_channel_id == channel_id,
+                ApprovalRequestPost.thread_ref == thread_ref,
+                ApprovalRequestPost.removed_at.is_(None),
+            )
+            .order_by(ApprovalRequestPost.created_at.desc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
 
 class TurnStatusPostStore:
     async def get(
