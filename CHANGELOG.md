@@ -4308,6 +4308,11 @@ version of their own to them without also giving them a release of their own.
   agent"; it was the only place Console showed that name.
 
 #### Fixed
+- **Connectors: turn a service on before you set it up.** A connector whose
+  app is not set up, and which is off in the workspace, now shows "Turn on" in
+  Discover. "Set up" shows after it is on. In Admin → Connectors, the switch of
+  a service that is off and can never work on this server is disabled; it can
+  still be turned off.
 - **Cursor, Goose, Kiro and Mistral Vibe can be installed on Windows.** Each
   offers its vendor's Windows install, which works from PowerShell or Command
   Prompt, where before it said "Not found" with nothing to install. Cursor and

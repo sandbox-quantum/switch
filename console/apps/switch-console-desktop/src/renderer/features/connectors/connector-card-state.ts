@@ -90,7 +90,8 @@ function unavailableState(
 
 /**
  * The one state a connector's card shows. When several apply, the first of
- * these wins: not built yet, not usable on this server, switched off in this
+ * these wins: not built yet, not usable on this server (except an app that is
+ * not set up yet waits on the workspace's switch first), switched off in this
  * workspace, needing a fresh sign-in, connected, and otherwise ready to
  * connect. A server without the workspace switch sends no
  * `workspace_enabled`, which reads as on. Where the person looking can fix
@@ -103,7 +104,9 @@ export function connectorCardState(
 ): ConnectorCardState {
   if (entry.status === 'coming_soon')
     return { kind: 'coming_soon', label: 'Coming soon', detail: null, tone: 'muted', fix: null };
-  if (entry.unavailable_reason !== null)
+  const setUpLater =
+    entry.unavailable_code === 'app_not_set_up' && entry.workspace_enabled === false;
+  if (entry.unavailable_reason !== null && !setUpLater)
     return unavailableState(entry, entry.unavailable_reason, viewer);
   if (entry.workspace_enabled === false)
     return entry.organization_locked
