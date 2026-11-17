@@ -7,6 +7,7 @@ same sentence the deletion would refuse with, and change nothing.
 
 from __future__ import annotations
 
+import secrets
 import uuid
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -86,6 +87,7 @@ def _client(app: Any, user_id: str, email: str) -> httpx.AsyncClient:
         TEST_KEYRING,
         TENANT_ZERO_ID,
         session_version=0,
+        session_id=secrets.token_urlsafe(16),
         auth_time=datetime.now(UTC),
     )
     return httpx.AsyncClient(
