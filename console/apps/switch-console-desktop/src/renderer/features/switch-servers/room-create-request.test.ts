@@ -80,8 +80,9 @@ describe('roomCreateRequest', () => {
         bridgeId: 'b1',
         agentIds: [],
         userNames: [],
-        // A new public channel and the server's default access, as before.
-        channel: { kind: 'new', private: false },
+        // A new private channel unless public is chosen, and the server's
+        // default access.
+        channel: { kind: 'new', private: true },
         groupId: null,
         access: null,
       },

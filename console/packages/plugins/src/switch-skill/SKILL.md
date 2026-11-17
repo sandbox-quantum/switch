@@ -164,7 +164,7 @@ does, and there is no polling tool to call.
 
   Automatic routing is a feature only some Switch servers have. On a server
   without it, `!auto-route` answers "Unknown command" and is missing from
-  `!help`, and Switch Console has no Admin → Decision routing; there, don't
+  `!help`, and Switch Console has no Settings → Message routing; there, don't
   suggest either, and offer what the server does have instead: tagging the
   agent, or `!assign-agent`. Where the server has it:
 
@@ -187,7 +187,7 @@ does, and there is no polling tool to call.
   Switch Console or on the gateway's room page.
 
   Which decision service a room uses is its workspace's choice, made by a
-  workspace admin in Switch Console → Settings → Decision routing: the server's
+  workspace admin in Switch Console → Settings → Message routing: the server's
   own default, the workspace's self-hosted endpoint, Claude Haiku, or none.
   With none (or no server default), `!auto-route on` says auto-route needs a
   decision service and changes nothing, and the room works as it does without
@@ -784,11 +784,11 @@ You can also author a document scoped to the room:
 
 ### Prefer bridged rooms — and let the user pick the bridge
 
-The point of Switch is collaboration between agents and humans, so **rooms are
-bridged by default**. Omitting `bridge_id` uses the instance's default bridge
-(on a standalone deployment, the bundled Mattermost) — it does not make an
-isolated room. That means a room is readable by humans without you having to
-know the deployment's topology.
+The point of Switch is collaboration between agents and humans. Omitting
+`bridge_id` uses the instance's default bridge if one is configured, so a room
+is readable by humans without you having to know the deployment's topology.
+Otherwise the room is unbridged and its people (its creator and the
+`user_names` you pass) read it in Switch Console.
 
 To create a room with **no** external channel, pass `internal_only=True`. Do
 that only when the user has explicitly said so — e.g. "just a scratch room for
@@ -814,7 +814,8 @@ collaboration, accepting the default without enumerating is reasonable — but
 still confirm the room itself before creating.
 
 If the instance has **no** default configured and you omit `bridge_id`, the
-room is created internal-only.
+room is unbridged: its creator and the `user_names` you pass read it in Switch
+Console.
 
 ### DM rooms (1:1 with a user)
 

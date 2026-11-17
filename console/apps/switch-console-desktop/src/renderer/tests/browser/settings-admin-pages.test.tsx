@@ -420,7 +420,7 @@ it('offers no Decision routing on a server without auto-route, asking it nothing
   const page = await render();
 
   await vi.waitFor(() => expect(page.textContent).toContain('Preferences'));
-  expect(page.textContent).not.toContain('Decision routing');
+  expect(page.textContent).not.toContain('Message routing');
   expect(switchServers.getDecisionSettings).not.toHaveBeenCalled();
 });
 

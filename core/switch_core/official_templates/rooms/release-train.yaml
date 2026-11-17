@@ -92,6 +92,7 @@ resources:
     name: "Release - {version}"
     description: "Release coordination for {version}. Feature tracking, go/no-go, and release notes."
     bridge: "{bridge}"
+    channel_type: channel_private
     agents: [release_manager, qa_coordinator]
     users:
       - {if: "{bridge}", value: ["{$creator}"]}

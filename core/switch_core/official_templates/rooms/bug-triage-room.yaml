@@ -87,6 +87,7 @@ resources:
     name: "{product} - Bug Triage"
     description: "Bug triage and prioritization for {product}. Daily review, severity assignment, and owner tracking."
     bridge: "{bridge}"
+    channel_type: channel_private
     agents: [triage_assistant, repro_helper]
     users:
       - {if: "{bridge}", value: ["{$creator}"]}

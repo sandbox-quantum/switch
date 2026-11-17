@@ -191,3 +191,41 @@ class TestCheckingSlackTokens:
 
     async def test_an_app_from_the_manifest_has_every_scope_it_needs(self) -> None:
         assert set(own_app_setup.REQUIRED_SLACK_SCOPES) <= set(BOT_SCOPES)
+
+
+class TestWhatLinkingAnAccountNeeds:
+    """Confirming a link takes a tap on the app's message (Interactivity), or
+    `/link-account` (the command and its scope), and the app has to message the
+    person first (`im:write`). An app made from the manifest has all of it."""
+
+    def test_the_manifest_turns_on_everything_linking_uses(self) -> None:
+        manifest = own_app_setup.slack_manifest({})
+
+        assert manifest["settings"]["interactivity"] == {"is_enabled": True}
+        assert manifest["settings"]["socket_mode_enabled"] is True
+        assert "message.im" in manifest["settings"]["event_subscriptions"]["bot_events"]
+        commands = {c["command"] for c in manifest["features"]["slash_commands"]}
+        assert {"/link-account", "/unlink-account"} <= commands
+        scopes = set(manifest["oauth_config"]["scopes"]["bot"])
+        assert {"commands", "im:write", "users:read"} <= scopes
+        assert set(own_app_setup.REQUIRED_SLACK_SCOPES) <= scopes
+
+    async def test_an_app_without_the_command_scope_is_told_before_connecting(
+        self,
+    ) -> None:
+        granted = ",".join(s for s in BOT_SCOPES if s not in ("commands", "im:write"))
+
+        def handle(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/api/auth.test":
+                return httpx.Response(
+                    200,
+                    json={"ok": True, "team_id": "T123"},
+                    headers={"x-oauth-scopes": granted},
+                )
+            return httpx.Response(200, json={"ok": True, "url": "wss://x"})
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as http:
+            with pytest.raises(SetupCheckError) as refused:
+                await check_slack(http, bot_token="xoxb-1", app_token="xapp-1")
+        assert "missing the commands, im:write scopes" in str(refused.value)
+        assert "Interactivity" in str(refused.value)

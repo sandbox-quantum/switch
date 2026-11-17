@@ -49,7 +49,7 @@ export type RoomCreateOptions = {
 };
 
 export const DEFAULT_ROOM_OPTIONS: RoomCreateOptions = {
-  channel: { kind: 'new', private: false },
+  channel: { kind: 'new', private: true },
   groupId: null,
   access: null,
 };

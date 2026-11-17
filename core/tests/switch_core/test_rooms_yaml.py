@@ -11,6 +11,7 @@ for real.
 from __future__ import annotations
 
 import uuid
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -20,6 +21,7 @@ from fastapi import HTTPException
 from sqlalchemy import insert, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core import official_templates as official_rooms
 from switch_core.addressing import owner_only_policy
 from switch_core.agent_runs import AgentOrigin
 from switch_core.authz import Principal
@@ -187,9 +189,8 @@ class FakeConsoleRooms:
     async def require_can_join(self, tenant_id: str, user_id: str) -> None:
         return None
 
-    def wiring(self, enabled: bool) -> ConsoleRooms:
+    def wiring(self) -> ConsoleRooms:
         return ConsoleRooms(
-            enabled=enabled,
             add_member=self.add_member,
             require_can_join=self.require_can_join,
         )
@@ -249,7 +250,7 @@ async def env(session_factory: async_sessionmaker[AsyncSession]):
         session_factory=session_factory,
         room_group_store=RoomGroupStore(),
         telemetry=None,
-        console_rooms=console.wiring(enabled=True),
+        console_rooms=console.wiring(),
     )
 
     async with session_factory() as session:
@@ -292,7 +293,8 @@ def test_parse_minimal(env):
         """
     )
     assert spec.name == "Room A"
-    assert spec.channel_type == "channel_public"
+    # Left unset, so the room is made private (`RoomService.create_room`).
+    assert spec.channel_type is None
     assert spec.references == []
 
 
@@ -518,6 +520,70 @@ async def test_provision_no_agents_or_users(env):
     assert result.room_name == "Agentless"
     assert len(result.created_document_ids) == 1
     assert result.failed_attachments == []
+
+
+@pytest.mark.asyncio
+async def test_a_room_that_names_no_channel_type_leaves_it_to_the_server(env):
+    """The server makes such a room private (`RoomService.create_room`); the
+    template passes no channel type rather than a public one."""
+    spec, _ = _svc(env).parse(
+        """
+        room:
+          name: "Unsaid"
+          description: "no channel type"
+        """
+    )
+    await _svc(env).provision(spec, user_id=env["user_id"], is_admin=False)
+    assert env["rooms"].configs[-1].channel_type is None
+
+
+@pytest.mark.asyncio
+async def test_a_room_that_asks_for_a_public_channel_gets_one(env):
+    spec, _ = _svc(env).parse(
+        """
+        room:
+          name: "Open"
+          description: "asked for public"
+          channel_type: channel_public
+        """
+    )
+    await _svc(env).provision(spec, user_id=env["user_id"], is_admin=False)
+    assert env["rooms"].configs[-1].channel_type == "channel_public"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("extra", "is_default"), [("", True), ("require_private: true", False)]
+)
+async def test_a_templates_private_channel_is_a_default_unless_required(
+    env, extra, is_default
+):
+    """The flag the room service reads; a template's room never falls back to
+    public whatever it says (`test_room_service_channel_checks`)."""
+    spec, _ = _svc(env).parse(
+        f"""
+        room:
+          name: "Hush"
+          description: "private"
+          channel_type: channel_private
+          {extra}
+        """
+    )
+    await _svc(env).provision(spec, user_id=env["user_id"], is_admin=False)
+    config = env["rooms"].configs[-1]
+    assert config.channel_type == "channel_private"
+    assert config.channel_type_is_default is is_default
+
+
+@pytest.mark.parametrize("slug", ["fundraising-war-room", "hiring-pipeline"])
+def test_the_rooms_that_were_private_before_require_it(slug):
+    path = Path(official_rooms.__file__).parent / "rooms" / f"{slug}.yaml"
+    room = yaml.safe_load(path.read_text())["resources"]
+    assert any(
+        entry.get("require_private") is True
+        for entry in (room.values() if isinstance(room, dict) else room)
+        if isinstance(entry, dict)
+    )
 
 
 @pytest.mark.asyncio
@@ -2912,7 +2978,7 @@ CONSOLE_TEXT = (
 
 def _without_console(env) -> RoomYamlService:
     svc = _svc(env)
-    svc._console_rooms = env["console"].wiring(enabled=False)
+    svc._console_rooms = None
     return svc
 
 
@@ -2931,7 +2997,7 @@ async def test_a_switch_console_room_is_internal_with_its_runner_in_it(env):
 
 
 @pytest.mark.asyncio
-async def test_switch_console_is_offered_last_only_with_group_chats(env):
+async def test_switch_console_is_offered_last_only_with_a_chat_service(env):
     reader = _reader(env)
     async with env["session_factory"]() as session:
         offered = await _svc(env)._names_of(session, "bridge", reader)
@@ -2941,14 +3007,14 @@ async def test_switch_console_is_offered_last_only_with_group_chats(env):
 
 
 @pytest.mark.asyncio
-async def test_switch_console_is_refused_without_group_chats(env):
+async def test_switch_console_is_refused_without_a_chat_service(env):
     svc = _without_console(env)
     parsed = svc.parse_template(CONSOLE_TEXT, inputs={"bridge": CONSOLE_ROOM})
-    with pytest.raises(ValueError, match="param 'bridge'.*group_chats"):
+    with pytest.raises(ValueError, match="param 'bridge'.*Switch Console rooms"):
         await svc.check_entity_params(parsed, reader=_reader(env))
-    with pytest.raises(ValueError, match="group_chats"):
+    with pytest.raises(ValueError, match="Switch Console rooms"):
         await svc.check_bridges(parsed, creator="alice")
-    with pytest.raises(ValueError, match="group_chats"):
+    with pytest.raises(ValueError, match="Switch Console rooms"):
         await svc.provision(parsed.spec, user_id=env["user_id"], is_admin=False)
     assert env["rooms"].configs == []
 

@@ -60,7 +60,7 @@ from switch_core.clients.agent_admin import DELETE_CONFIRM_SECONDS
 from switch_core.db.models import CollaborationBridge, User, require_tenant_id
 from switch_core.db.session_scope import shared_tenant_session
 from switch_core.db.stores.template_store import TemplateStore
-from switch_core.feature_flags import AGENT_MANAGEMENT, SWITCH_BUDDY
+from switch_core.feature_flags import SWITCH_BUDDY
 from switch_core.names import refuse_hidden_characters
 from switch_core.providers.registry import offered_provider_ids
 from switch_core.rooms_yaml import GroupSpec, RoomReader, template_json_schema
@@ -980,15 +980,12 @@ async def create_room(
 ) -> dict[str, Any]:
     """Create a new Switch room.
 
-    Rooms are bridged by default: omitting `bridge_id` uses the instance's
-    default bridge (on a standalone deployment, the bundled Mattermost), so the
-    room is readable by humans without the caller knowing the deployment's
-    topology. Pass `bridge_id` to choose a specific bridge — call
-    `list_bridges` to discover ids and present the choice to the user. Pass
-    `internal_only=True` for an agent-only room with no external channel.
-
-    If the instance has no default bridge configured and you omit `bridge_id`,
-    the room is created internal-only.
+    Omitting `bridge_id` uses the instance's default bridge if one is
+    configured; otherwise the room is unbridged and its people (its creator and
+    the `user_names` given) read it in Switch Console. Pass `bridge_id` to
+    choose a specific bridge — call `list_bridges` to discover ids and present
+    the choice to the user. Pass `internal_only=True` for an agent-only room
+    with no external channel.
 
     Args:
         name: Display name for the room.
@@ -1005,7 +1002,7 @@ async def create_room(
             `your_usernames`). Only meaningful for bridged rooms; to put your
             owner in an internal-only room, use `include_owner`.
         channel_type: One of "channel_public", "channel_private", or "direct".
-            Required when `bridge_id` is set; ignored for internal-only rooms.
+            Omitted, a new channel is private.
             Use "direct" to open a 1:1 DM room — exactly one entry in
             `agent_names` and one in `user_names`. On Slack this is provisioned
             as a private channel with that user invited; the user must already
@@ -1027,10 +1024,11 @@ async def create_room(
             entry is `{"target_room_id": "...", "label": "..."}`.
         read_visibility: Who may see the room: "public" (everyone in the
             workspace) or "private" (those taking part, its owner and
-            admins). Omit it and the room follows its channel: a private
-            channel or DM makes a private room, a public channel or no
-            channel a public one. Only the owner and admins change a room,
-            whichever it is.
+            admins). Omit it and the room follows its channel: a public
+            channel makes a public room, anything else a private one, and a
+            room is private unless you ask for public. A private channel or
+            DM cannot have a public room. Only the owner and admins change a
+            room, whichever it is.
         write_visibility: Ignored. Accepted so older instructions that pass
             it still work; a room has no write visibility of its own.
         group_name: Optional existing room group to file this room under (a
@@ -2143,7 +2141,6 @@ def _agent_templates() -> AgentTemplates:
     return AgentTemplates(
         TemplateStore(),
         max_bytes=protocol.config.template_max_bytes,
-        agent_management=protocol.config.feature_flags[AGENT_MANAGEMENT],
         switch_buddy=protocol.config.feature_flags[SWITCH_BUDDY],
         telemetry=protocol.telemetry,
     )

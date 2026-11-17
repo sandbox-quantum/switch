@@ -134,9 +134,7 @@ export default function MessagingAppsPage() {
         title={<Typography variant="h5">Messaging apps</Typography>}
         description={
           <Typography variant="body2" color="text.secondary" mt={0.5}>
-            {isAdmin
-              ? `The messaging apps connected to ${workspaceName}, and who you are inside them.`
-              : `Who you are in the messaging apps connected to ${workspaceName}.`}
+            {`The messaging apps available to people in ${workspaceName}. Admins control which messaging apps are enabled and members link their own accounts.`}
           </Typography>
         }
         actions={

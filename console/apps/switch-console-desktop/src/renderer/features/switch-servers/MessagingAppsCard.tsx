@@ -43,10 +43,6 @@ import {
 } from '@renderer/lib/ui/dropdown-menu';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import { log } from '@renderer/utils/logger';
-import {
-  ambiguousBundledBridgeMessage,
-  bundledMattermostBridge,
-} from '@shared/core/switch-servers/bundled-bridge';
 import type {
   LinkedIdentity,
   PendingIdentity,
@@ -107,9 +103,6 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
   const flags = useFeatureFlags(serverId);
   // With chats on, Switch Console's own chats and rooms need no messaging app.
   const chatsWithoutApp = flags.agent_chats || flags.group_chats;
-  // Only a stack Switch Console runs has a chat whose credentials it generated and
-  // can therefore show; anyone else's Mattermost is their own to hand out.
-  const isManaged = !!switchServersStore.servers.find((s) => s.id === serverId)?.managed;
 
   const bridgesQuery = useQuery({
     queryKey: ['remote-bridges', workspaceId],
@@ -118,23 +111,6 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
   });
 
   const bridges = useMemo(() => orderBridges(bridgesQuery.data ?? []), [bridgesQuery.data]);
-  // Only the bundled Mattermost has those generated credentials; a Mattermost
-  // the user connected themselves beside it does not.
-  const bundledChoice = useMemo(
-    () => (isManaged ? bundledMattermostBridge(bridges) : null),
-    [isManaged, bridges]
-  );
-  const bundledBridgeId = bundledChoice?.kind === 'bundled' ? bundledChoice.bridge.id : null;
-  const ambiguousBundledIds =
-    bundledChoice?.kind === 'ambiguous' ? bundledChoice.bridgeIds.join(',') : null;
-  useEffect(() => {
-    if (ambiguousBundledIds !== null) {
-      log.warn(
-        `Not showing the bundled Mattermost sign-in. ${ambiguousBundledBridgeMessage(ambiguousBundledIds.split(','))}`,
-        { serverId }
-      );
-    }
-  }, [ambiguousBundledIds, serverId]);
 
   // Which platforms the signed-in user may connect another chat on. Asked only
   // once there is a connection whose chats arrive that way, which also keeps
@@ -350,7 +326,6 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
             <Fragment key={bridge.id}>
               <MessagingAppRow
                 workspaceId={workspaceId}
-                serverId={serverId}
                 bridge={bridge}
                 /* Nothing is drawn in the identity column until the list
                     arrives: "not linked" and "not known yet" look identical,
@@ -373,7 +348,6 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
                       }
                     : null
                 }
-                showBundledSignIn={bridge.id === bundledBridgeId}
                 isAdmin={isAdmin}
                 savingChannelCreation={savingBridgeId === bridge.id}
                 onToggleChannelCreation={(enabled) =>
@@ -460,20 +434,18 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
  * Only Link stays outside the menu: an app you have not claimed an account on
  * has exactly one thing worth doing to it, and burying that is what would make
  * the row's warning unactionable. Everything else — changing or dropping the
- * account, requiring older links be confirmed, channel creation, the bundled
- * chat's credentials, opening the app, replacing its token, disconnecting it —
+ * account, requiring older links be confirmed, channel creation, opening the
+ * app, replacing its token, disconnecting it —
  * is in the menu.
  */
 export function MessagingAppRow({
   workspaceId,
-  serverId,
   bridge,
   identities,
   pending,
   currentUserId,
   onReleased,
   olderLinks,
-  showBundledSignIn,
   isAdmin,
   savingChannelCreation,
   onToggleChannelCreation,
@@ -484,8 +456,6 @@ export function MessagingAppRow({
   /** Null while this install has not resolved the server's workspace; the
    *  identity actions are the only thing that needs it, and they wait. */
   workspaceId: string | null;
-  /** Only for the bundled chat's sign-in, which is about the gateway. */
-  serverId: string;
   bridge: RemoteBridge;
   /** Accounts linked to the user in this workspace, or null while unknown. */
   identities: LinkedIdentity[] | null;
@@ -496,7 +466,6 @@ export function MessagingAppRow({
   /** Set for an admin when the app has links made before links had to be
    *  confirmed: how many, and how to stop trusting them. */
   olderLinks: { count: number; onRequireConfirmation: () => void } | null;
-  showBundledSignIn: boolean;
   isAdmin: boolean;
   savingChannelCreation: boolean;
   onToggleChannelCreation: (enabled: boolean) => void;
@@ -508,7 +477,6 @@ export function MessagingAppRow({
   onDisconnect: () => void;
 }) {
   const showClaimIdentity = useShowModal('claimIdentityModal');
-  const showBundledChatSignIn = useShowModal('bundledChatSignInModal');
   const showTeamsPlacement = useShowModal('teamsPlacementModal');
   const [releasing, setReleasing] = useState(false);
   const [releaseError, setReleaseError] = useState<string | null>(null);
@@ -809,17 +777,7 @@ export function MessagingAppRow({
               </>
             )}
 
-            {(showBundledSignIn || bridge.homeUrl) && <DropdownMenuSeparator />}
-            {showBundledSignIn && (
-              <DropdownMenuItem
-                onClick={() =>
-                  showBundledChatSignIn({ serverId, bridgeDisplayName: bridge.displayName })
-                }
-              >
-                <KeyRound className="size-4" />
-                Sign-in details…
-              </DropdownMenuItem>
-            )}
+            {bridge.homeUrl && <DropdownMenuSeparator />}
             {/* Offered only when the link resolves — an older server, or a bridge
               that is down, reports none. */}
             {bridge.homeUrl && (
@@ -828,10 +786,7 @@ export function MessagingAppRow({
                   // Through the channel opener, so Slack and Discord open in
                   // their app when it is installed rather than the browser.
                   void reportOpenAttempt(
-                    rpc.switchRooms.openRoomChannel({
-                      serverId,
-                      channelUrl: bridge.homeUrl as string,
-                    }),
+                    rpc.switchRooms.openRoomChannel({ channelUrl: bridge.homeUrl as string }),
                     `Could not open ${platform}`,
                     bridge.homeUrl as string
                   )

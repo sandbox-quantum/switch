@@ -134,9 +134,9 @@ back and take the id from there.
 
 ## "The room got created in the wrong workspace"
 
-**An instance's default bridge is not necessarily where the humans are.** Deployments
-routinely run a bundled chat server as the default while the real collaboration happens in a
-Slack workspace. Anything that creates rooms should resolve the target explicitly rather
+**An instance's default bridge is not necessarily where the humans are.** A deployment's
+default can be one chat server while the real collaboration happens in a Slack workspace, and
+with no default at all the room lands in Switch Console only. Anything that creates rooms should resolve the target explicitly rather
 than accepting the default — and the failure is invisible to the agent that made it, so
 nobody finds out until a user says "what channel?".
 

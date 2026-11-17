@@ -41,6 +41,7 @@ import {
   fetchUsage,
   fetchAllExternalUsers,
   fetchBridges,
+  fetchMyIdentities,
   fetchBridgeTypes,
   fetchBridgeUsers,
   fetchDocumentRooms,
@@ -70,6 +71,7 @@ import {
   fetchRooms,
   fetchTemplates,
   type TemplateFilter,
+  type LinkedIdentity,
 } from "./api";
 
 export interface UseQueryResult<T> {
@@ -173,6 +175,10 @@ export function useRoomGroups(): UseQueryResult<RoomGroupDetail[]> {
 
 export function useBridges(): UseQueryResult<BridgeDetail[]> {
   return useQuery(fetchBridges);
+}
+/** The accounts linked to the signed-in person, on every connection. */
+export function useMyIdentities(): UseQueryResult<LinkedIdentity[]> {
+  return useQuery(fetchMyIdentities);
 }
 export function useBridgeTypes(): UseQueryResult<BridgeTypeInfo[]> {
   return useQuery(fetchBridgeTypes);

@@ -611,9 +611,11 @@ ROUTES: dict[str, Case] = {
         },
         why="Run as a saved template the caller may read: a private one isn't there to anyone else.",
     ),
-    "GET /gateway/rooms/{room_id}": get(f"{G}/rooms/{{room}}", owner_or_admins()),
+    "GET /gateway/rooms/{room_id}": get(
+        f"{G}/rooms/{{room}}", owner_or_admins(refused=404)
+    ),
     "GET /gateway/rooms/{room_id}/yaml": get(
-        f"{G}/rooms/{{room}}/yaml", owner_or_admins()
+        f"{G}/rooms/{{room}}/yaml", owner_or_admins(refused=404)
     ),
     "PATCH /gateway/rooms/{room_id}": patch(
         f"{G}/rooms/{{room}}", owner_or_admins(), json={"description": "changed"}
@@ -626,16 +628,16 @@ ROUTES: dict[str, Case] = {
         f"{G}/rooms/{{room}}/unarchive", owner_or_admins()
     ),
     "GET /gateway/rooms/{room_id}/admins": get(
-        f"{G}/rooms/{{room}}/admins", owner_or_admins()
+        f"{G}/rooms/{{room}}/admins", owner_or_admins(refused=404)
     ),
     "PUT /gateway/rooms/{room_id}/admins/{target_user_id}": put(
         f"{G}/rooms/{{room}}/admins/{{member_target}}",
-        owner_or_admins(ok=400),
+        owner_or_admins(ok=400, refused=404),
         why="Let through, then refused: the person isn't in the room.",
     ),
     "DELETE /gateway/rooms/{room_id}/admins/{target_user_id}": delete(
         f"{G}/rooms/{{room}}/admins/{{member_target}}",
-        owner_or_admins(),
+        owner_or_admins(refused=404),
         why="Taking off someone who isn't a room admin changes nothing.",
     ),
     "POST /gateway/rooms/{room_id}/sync-name": post(
@@ -644,7 +646,7 @@ ROUTES: dict[str, Case] = {
         why="Let through, then refused: the room has no platform channel to name.",
     ),
     "GET /gateway/rooms/{room_id}/roles": get(
-        f"{G}/rooms/{{room}}/roles", owner_or_admins()
+        f"{G}/rooms/{{room}}/roles", owner_or_admins(refused=404)
     ),
     "POST /gateway/rooms/{room_id}/roles": post(
         f"{G}/rooms/{{room}}/roles",
@@ -674,7 +676,7 @@ ROUTES: dict[str, Case] = {
         why="A room setting: the room's owner and admins (`room_policy`).",
     ),
     "GET /gateway/rooms/{room_id}/schedules": get(
-        f"{G}/rooms/{{room}}/schedules", owner_or_admins()
+        f"{G}/rooms/{{room}}/schedules", owner_or_admins(refused=404)
     ),
     "POST /gateway/rooms/{room_id}/schedules": post(
         f"{G}/rooms/{{room_agent}}/schedules",
@@ -717,25 +719,27 @@ ROUTES: dict[str, Case] = {
         f"{G}/rooms/{{room}}/observe", owner_or_admins(), json={"observe_config": {}}
     ),
     "POST /gateway/rooms/{room_id}/agents": post(
-        f"{G}/rooms/{{room}}/agents", owner_or_admins(), json={"agent_ids": ["{agent}"]}
+        f"{G}/rooms/{{room}}/agents",
+        owner_or_admins(refused=404),
+        json={"agent_ids": ["{agent}"]},
     ),
     "PATCH /gateway/rooms/{room_id}/agents/{agent_id}": patch(
         f"{G}/rooms/{{room_agent}}/agents/{{agent}}",
-        owner_or_admins(),
+        owner_or_admins(refused=404),
         json={"receives_join_events": True},
     ),
     "DELETE /gateway/rooms/{room_id}/agents/{agent_id}": delete(
-        f"{G}/rooms/{{room_agent}}/agents/{{agent}}", owner_or_admins()
+        f"{G}/rooms/{{room_agent}}/agents/{{agent}}", owner_or_admins(refused=404)
     ),
     "POST /gateway/rooms/{room_id}/users": post(
         f"{G}/rooms/{{room}}/users",
-        owner_or_admins(ok=400),
+        owner_or_admins(ok=400, refused=404),
         json={"user_names": []},
         why="Let through, then refused: people join through the room's platform channel, and it has none.",
     ),
     "POST /gateway/rooms/{room_id}/users/remove": post(
         f"{G}/rooms/{{room}}/users/remove",
-        owner_or_admins(ok=400),
+        owner_or_admins(ok=400, refused=404),
         json={"user_names": ["nobody"]},
         why="Removing a person is the owner's or an admin's; let through, then refused, as the room has no platform channel to take them out of.",
     ),
@@ -759,10 +763,10 @@ ROUTES: dict[str, Case] = {
     ),
     "GET /gateway/linked-rooms/graph": get(f"{G}/linked-rooms/graph", anyone()),
     "GET /gateway/rooms/{room_id}/linked-rooms": get(
-        f"{G}/rooms/{{room}}/linked-rooms", owner_or_admins()
+        f"{G}/rooms/{{room}}/linked-rooms", owner_or_admins(refused=404)
     ),
     "GET /gateway/rooms/{room_id}/linked-rooms/inbound": get(
-        f"{G}/rooms/{{room}}/linked-rooms/inbound", owner_or_admins()
+        f"{G}/rooms/{{room}}/linked-rooms/inbound", owner_or_admins(refused=404)
     ),
     "POST /gateway/rooms/{room_id}/linked-rooms": post(
         f"{G}/rooms/{{room}}/linked-rooms",
@@ -773,7 +777,7 @@ ROUTES: dict[str, Case] = {
         f"{G}/rooms/{{linked_room}}/linked-rooms/{{other_room}}", owner_or_admins()
     ),
     "GET /gateway/rooms/{room_id}/references": get(
-        f"{G}/rooms/{{room}}/references", owner_or_admins()
+        f"{G}/rooms/{{room}}/references", owner_or_admins(refused=404)
     ),
     "POST /gateway/rooms/{room_id}/references/{reference_id}": post(
         f"{G}/rooms/{{room}}/references/{{reference}}", owner_or_admins()
@@ -782,19 +786,21 @@ ROUTES: dict[str, Case] = {
         f"{G}/rooms/{{room_reference}}/references/{{reference}}", owner_or_admins()
     ),
     "GET /gateway/rooms/{room_id}/documents": get(
-        f"{G}/rooms/{{room}}/documents", owner_or_admins()
+        f"{G}/rooms/{{room}}/documents", owner_or_admins(refused=404)
     ),
     "GET /gateway/rooms/{room_id}/documents/{document_id}": get(
-        f"{G}/rooms/{{room_document}}/documents/{{document}}", owner_or_admins()
+        f"{G}/rooms/{{room_document}}/documents/{{document}}",
+        owner_or_admins(refused=404),
     ),
     "POST /gateway/rooms/{room_id}/documents/{document_id}": post(
         f"{G}/rooms/{{room}}/documents/{{document}}", owner_or_admins()
     ),
     "DELETE /gateway/rooms/{room_id}/documents/{document_id}": delete(
-        f"{G}/rooms/{{room_document}}/documents/{{document}}", owner_or_admins()
+        f"{G}/rooms/{{room_document}}/documents/{{document}}",
+        owner_or_admins(refused=404),
     ),
     "GET /gateway/rooms/{room_id}/packages": get(
-        f"{G}/rooms/{{room}}/packages", owner_or_admins()
+        f"{G}/rooms/{{room}}/packages", owner_or_admins(refused=404)
     ),
     "POST /gateway/rooms/{room_id}/packages/{package_id}": post(
         f"{G}/rooms/{{room}}/packages/{{package}}", owner_or_admins()

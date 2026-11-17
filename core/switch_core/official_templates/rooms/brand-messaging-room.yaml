@@ -94,6 +94,7 @@ resources:
     name: "{brand} - Brand & Messaging"
     description: "Brand consistency and messaging strategy for {brand}. Content review, positioning updates, and messaging analysis."
     bridge: "{bridge}"
+    channel_type: channel_private
     agents: [brand_reviewer, messaging_analyst]
     users:
       - {if: "{bridge}", value: ["{$creator}"]}

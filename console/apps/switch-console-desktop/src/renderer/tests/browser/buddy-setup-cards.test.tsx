@@ -209,9 +209,9 @@ afterEach(async () => {
   root = null;
 });
 
-async function render(): Promise<HTMLElement> {
+async function render(width = 720): Promise<HTMLElement> {
   container = document.createElement('div');
-  container.style.width = '720px';
+  container.style.width = `${width}px`;
   container.style.padding = '16px';
   document.body.appendChild(container);
   root = createRoot(container);
@@ -295,7 +295,6 @@ describe('switch-buddy setup cards', () => {
     expect(el.textContent).toContain('#buddy-ada ready');
     await click(el, 'Open Slack');
     expect(openRoomChannel).toHaveBeenCalledWith({
-      serverId: 'srv-1',
       channelUrl: 'https://slack.example/archives/C123',
     });
     expect(handoffCalls()).toHaveLength(0);
@@ -618,6 +617,42 @@ describe('switch-buddy setup cards', () => {
     await shot(el, 'i-retry-done');
   });
 
+  it('(k0) the Switch Console tile comes last, after every messaging app', async () => {
+    const el = await render();
+    const grid = el.querySelector('[data-testid="buddy-setup-cards"] .grid');
+    const tiles = [...grid!.querySelectorAll<HTMLButtonElement>(':scope > button')];
+
+    expect(tiles.map((tile) => tile.querySelector('.font-semibold')?.textContent)).toEqual([
+      'Slack',
+      'Microsoft Teams',
+      'Discord',
+      'Telegram',
+      'Switch Console',
+    ]);
+    expect(tiles[4].textContent).toContain('Connect an app later');
+    expect(el.textContent).not.toContain('Chat right here');
+    expect(tiles.some((tile) => tile.getAttribute('aria-pressed') === 'true')).toBe(false);
+  });
+
+  it.each([
+    ['narrow', 720],
+    ['wide', 1200],
+  ] as const)(
+    '(k0) %s: Switch Console is one of the cards, and no taller than the others',
+    async (label, width) => {
+      await page.viewport(width + 40, 900);
+      const el = await render(width);
+      const grid = el.querySelector<HTMLElement>('[data-testid="buddy-setup-cards"] .grid')!;
+      const tiles = [...grid.querySelectorAll<HTMLButtonElement>(':scope > button')];
+      const consoleTile = tiles[4];
+
+      expect(consoleTile.offsetWidth).toBe(tiles[0].offsetWidth);
+      expect(consoleTile.offsetHeight).toBeLessThanOrEqual(tiles[0].offsetHeight);
+      if (width >= 1200) expect(new Set(tiles.map((tile) => tile.offsetTop)).size).toBe(1);
+      await shot(el, `k0-console-card-${label}`);
+    }
+  );
+
   it('(k) the Switch Console tile says in the chat that the person is staying', async () => {
     const el = await render();
 
@@ -870,7 +905,6 @@ describe('switch-buddy setup cards', () => {
     expect(el.textContent).toContain('#dm-ada-switch-buddy ready');
     await click(el, 'Open Discord');
     expect(openRoomChannel).toHaveBeenCalledWith({
-      serverId: 'srv-1',
       channelUrl: 'https://discord.com/channels/1/2',
     });
     await shot(el, 'x-discord-done');
@@ -922,11 +956,11 @@ describe('switch-buddy setup cards', () => {
     expect(findButton(el, 'Create channel and continue')).toBeDefined();
   });
 
-  it('(q) a failed first read of the chat apps: says so, and Retry reads them again', async () => {
+  it('(q) a failed first read of the messaging apps: says so, and Retry reads them again', async () => {
     listBridges.mockReset().mockRejectedValueOnce(new Error('down')).mockResolvedValue([]);
     const el = await render();
 
-    expect(el.textContent).toContain('Couldn’t check your chat apps');
+    expect(el.textContent).toContain('Couldn’t check your messaging apps');
     await shot(el, 'x-apps-check-failed');
     await click(el, 'Retry');
 

@@ -315,6 +315,33 @@ describe('the workspaces the switcher offers', () => {
     expect(row('ws-b').getAttribute('aria-current')).toBe('true');
   });
 
+  it("names a server's lone built-in workspace after the server", async () => {
+    const builtIn = { ...workspace('ws-d', 'srv-1'), name: 'Default', slug: 'default' };
+    await openSwitcher([server('srv-1', 'Local Switch server')], [builtIn], 'ws-d');
+
+    const trigger = container!.querySelector<HTMLElement>('[aria-label="Switch workspace"]')!;
+    expect(trigger.textContent).toContain('Local Switch server');
+    expect(trigger.textContent).not.toContain('Default');
+    // The row in the open list is the workspace, so it keeps the workspace's own name.
+    expect(row('Default').getAttribute('aria-current')).toBe('true');
+    const names = [...document.querySelectorAll('[data-row-name]')].map((el) => el.textContent);
+    expect(names).toContain('Default');
+    expect(names).not.toContain('Local Switch server');
+  });
+
+  it('keeps "Default" on the trigger beside other workspaces on its server', async () => {
+    const builtIn = { ...workspace('ws-d', 'srv-1'), name: 'Default', slug: 'default' };
+    await openSwitcher(
+      [server('srv-1', 'Local Switch server')],
+      [builtIn, workspace('ws-a', 'srv-1')],
+      'ws-d'
+    );
+
+    const trigger = container!.querySelector<HTMLElement>('[aria-label="Switch workspace"]')!;
+    expect(trigger.textContent).toContain('Default');
+    expect(trigger.textContent).toContain('Local Switch server');
+  });
+
   it('switches to the one clicked', async () => {
     await openSwitcher(
       [server('srv-1', 'Acme')],

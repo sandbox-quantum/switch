@@ -99,6 +99,7 @@ resources:
     name: "{market} - Competitive Intel"
     description: "Competitive intelligence for the {market} market. Signal tracking, analysis, and battle card updates."
     bridge: "{bridge}"
+    channel_type: channel_private
     agents: [competitor_monitor, intel_synthesizer]
     users:
       - {if: "{bridge}", value: ["{$creator}"]}

@@ -98,7 +98,7 @@ export function settingsSections(audience: SettingsAudience): SettingsItem[][] {
       ? [{ id: 'connectors' as const, label: 'Connectors' }]
       : []),
     ...(audience.workspaceAdmin && audience.decisionRouting
-      ? [{ id: 'decision-routing' as const, label: 'Decision routing' }]
+      ? [{ id: 'decision-routing' as const, label: 'Message routing' }]
       : []),
     ...(audience.workspaceAdmin ? [{ id: 'guardrails' as const, label: 'Guardrails' }] : []),
     ...(audience.operatesGatewaylessServer && audience.serviceConnections

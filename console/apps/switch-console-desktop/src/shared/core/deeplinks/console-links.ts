@@ -41,7 +41,7 @@ export const CONSOLE_PAGES = {
   home: { description: "The server's home: the workspace at a glance." },
   server: {
     description:
-      "This server's own settings, where this Switch Console runs it: start, stop, update, the Mattermost beside it.",
+      "This server's own settings, where this Switch Console runs it: start, stop, update.",
   },
   agents: { description: 'Every agent on the server.' },
   'agents/new': { description: 'Add a new agent.' },

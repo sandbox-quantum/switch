@@ -152,23 +152,17 @@
     {
       "route": "DELETE /gateway/management/agents/{agent_id}",
       "auth": "session",
-      "flags": [
-        "agent_management"
-      ]
+      "flags": []
     },
     {
       "route": "DELETE /gateway/management/controllers/{controller_id}",
       "auth": "session",
-      "flags": [
-        "agent_management"
-      ]
+      "flags": []
     },
     {
       "route": "DELETE /gateway/management/controllers/{controller_id}/provider-logins/{provider}",
       "auth": "session",
-      "flags": [
-        "agent_management"
-      ]
+      "flags": []
     },
     {
       "route": "DELETE /gateway/messaging-apps/installs/{install_id}",
@@ -204,16 +198,12 @@
     {
       "route": "DELETE /gateway/organizations/current/workspaces/{workspace_id}/devices/{controller_id}",
       "auth": "session",
-      "flags": [
-        "agent_management"
-      ]
+      "flags": []
     },
     {
       "route": "DELETE /gateway/organizations/current/workspaces/{workspace_id}/managed-agents/{agent_id}",
       "auth": "session",
-      "flags": [
-        "agent_management"
-      ]
+      "flags": []
     },
     {
       "route": "DELETE /gateway/organizations/current/workspaces/{workspace_id}/members/{user_id}",
@@ -665,37 +655,27 @@
     {
       "route": "GET /gateway/management/agents",
       "auth": "session",
-      "flags": [
-        "agent_management"
-      ]
+      "flags": []
     },
     {
       "route": "GET /gateway/management/agents/{agent_id}",
       "auth": "session",
-      "flags": [
-        "agent_management"
-      ]
+      "flags": []
     },
     {
       "route": "GET /gateway/management/controllers",
       "auth": "session",
-      "flags": [
-        "agent_management"
-      ]
+      "flags": []
     },
     {
       "route": "GET /gateway/management/controllers/{controller_id}/provider-logins",
       "auth": "session",
-      "flags": [
-        "agent_management"
-      ]
+      "flags": []
     },
     {
       "route": "GET /gateway/management/operations",
       "auth": "session",
-      "flags": [
-        "agent_management"
-      ]
+      "flags": []
     },
     {
       "route": "GET /gateway/management/providers",
@@ -705,9 +685,7 @@
     {
       "route": "GET /gateway/management/workspace",
       "auth": "session",
-      "flags": [
-        "agent_management"
-      ]
+      "flags": []
     },
     {
       "route": "GET /gateway/messaging-apps",
@@ -758,9 +736,7 @@
     {
       "route": "GET /gateway/organizations/current/devices",
       "auth": "session",
-      "flags": [
-        "agent_management"
-      ]
+      "flags": []
     },
     {
       "route": "GET /gateway/organizations/current/guardrails",
@@ -1142,16 +1118,12 @@
     {
       "route": "PATCH /gateway/management/agents/{agent_id}",
       "auth": "session",
-      "flags": [
-        "agent_management"
-      ]
+      "flags": []
     },
     {
       "route": "PATCH /gateway/management/controllers/{controller_id}",
       "auth": "session",
-      "flags": [
-        "agent_management"
-      ]
+      "flags": []
     },
     {
       "route": "PATCH /gateway/organizations/current",
@@ -1453,30 +1425,22 @@
     {
       "route": "POST /gateway/management/agents",
       "auth": "session",
-      "flags": [
-        "agent_management"
-      ]
+      "flags": []
     },
     {
       "route": "POST /gateway/management/controllers",
       "auth": "session",
-      "flags": [
-        "agent_management"
-      ]
+      "flags": []
     },
     {
       "route": "POST /gateway/management/enrollment-codes",
       "auth": "session",
-      "flags": [
-        "agent_management"
-      ]
+      "flags": []
     },
     {
       "route": "POST /gateway/management/operations",
       "auth": "session",
-      "flags": [
-        "agent_management"
-      ]
+      "flags": []
     },
     {
       "route": "POST /gateway/messaging-apps/{platform}/claim",
@@ -1839,16 +1803,12 @@
     {
       "route": "PUT /gateway/management/agents/{agent_id}",
       "auth": "session",
-      "flags": [
-        "agent_management"
-      ]
+      "flags": []
     },
     {
       "route": "PUT /gateway/management/controllers/{controller_id}/provider-logins/{provider}",
       "auth": "session",
-      "flags": [
-        "agent_management"
-      ]
+      "flags": []
     },
     {
       "route": "PUT /gateway/organizations/current/connector-apps/{service}",
