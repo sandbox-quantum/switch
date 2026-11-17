@@ -11,7 +11,7 @@ import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider
 import { Alert, AlertDescription, AlertTitle } from '@renderer/lib/ui/alert';
 import { Button } from '@renderer/lib/ui/button';
 import { Spinner } from '@renderer/lib/ui/spinner';
-import { type SwitchServer } from '@shared/core/switch-servers/switch-servers';
+import { type SwitchServer, urlHost } from '@shared/core/switch-servers/switch-servers';
 import { homeRedirect } from './home-target';
 import { HomeFooter } from './home/home-footer';
 import { HomeHeader } from './home/home-header';
@@ -226,6 +226,7 @@ const ServerUnreachableCard = observer(function ServerUnreachableCard({
   // modelled separately. Console watches its process, and the status page says
   // what that found.
   const managed = server.managed;
+  const reason = store.unreachableReason(serverId);
 
   // Keep probing while this is on screen. Waiting for the user to press
   // something would leave a server that recovered looking down. This only
@@ -242,18 +243,21 @@ const ServerUnreachableCard = observer(function ServerUnreachableCard({
 
   return (
     <div className={`${card} flex items-center justify-between gap-3`}>
-      <div className="flex items-center gap-2 text-sm">
-        <PlugZap className="size-4 text-amber-500" />
-        <span className="text-foreground">
-          {managed ? `${server.name} isn't answering` : 'Cannot reach the server'}
-        </span>
-        <span className="text-foreground-muted">
-          {retrying
-            ? 'Reconnecting…'
-            : managed
-              ? 'Server status shows what it is doing.'
-              : 'Check your connection.'}
-        </span>
+      <div className="flex min-w-0 flex-col gap-1 text-sm">
+        <div className="flex items-center gap-2">
+          <PlugZap className="size-4 shrink-0 text-amber-500" />
+          <span className="text-foreground">
+            {managed ? `${server.name} isn't answering` : `Can't reach ${urlHost(server.url)}`}
+          </span>
+          <span className="text-foreground-muted">
+            {retrying
+              ? 'Reconnecting…'
+              : managed
+                ? 'Server status shows what it is doing.'
+                : 'Check the address and your connection.'}
+          </span>
+        </div>
+        {!managed && reason && <p className="pl-6 text-xs text-foreground-muted">{reason}</p>}
       </div>
       <div className="flex shrink-0 items-center gap-2">
         {managed && (

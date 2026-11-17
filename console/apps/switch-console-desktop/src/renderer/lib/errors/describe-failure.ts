@@ -45,6 +45,10 @@ function describeGatewayFailure(error: RpcError, fallback: string): FailureDescr
         detail: null,
       };
     case 'network':
+      // The main process names the address and why it never answered ("Can't
+      // reach host: the address doesn't resolve."); older text is a bare
+      // `fetch failed`, which needs the generic sentence in front of it.
+      if (isSentence(error.message)) return { headline: error.message, detail: null };
       return {
         headline:
           'Could not reach the server. Check that it is running and that you are on its network.',

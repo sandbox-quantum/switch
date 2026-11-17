@@ -48,6 +48,7 @@ vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
     statusFor: () => ({ connected: false }),
     refreshing: new Set(),
     isUnreachable: () => false,
+    unreachableReason: () => null,
     isHostBlocked: () => false,
     refreshStatus: () => Promise.resolve(),
     ensureAuthConfig: () => Promise.resolve(),

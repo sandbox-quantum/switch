@@ -1,7 +1,11 @@
 import { makeAutoObservable, runInAction } from 'mobx';
 import { hostReachabilityStore } from '@renderer/features/remote-hosts/host-reachability-store';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
-import { describeFailure, type FailureDescription } from '@renderer/lib/errors/describe-failure';
+import {
+  describeFailure,
+  type FailureDescription,
+  failureText,
+} from '@renderer/lib/errors/describe-failure';
 import { events, rpc } from '@renderer/lib/ipc';
 import { appState } from '@renderer/lib/stores/app-state';
 import type { InviteServer } from '@shared/core/switch-servers/switch-cloud';
@@ -64,6 +68,19 @@ export class SwitchServersStore {
    * cached answer forever.
    */
   readonly authConfigUnreachable = new Set<string>();
+  /** Why the last failed status read failed, by server id, for as long as
+   * {@link statusUnreachable} holds that server. */
+  private readonly statusFailures = new Map<string, string>();
+  /** Why the last failed auth-config read failed, by server id, for as long as
+   * {@link authConfigUnreachable} holds that server. */
+  private readonly authConfigFailures = new Map<string, string>();
+  /**
+   * Server ids that have answered this app at least once since it started: a
+   * status read or a sign-in-options read came back, a refusal included. A
+   * server just added that is not in here has never been reached, so a typo
+   * and a server that is down look the same, and neither is somewhere to land.
+   */
+  private readonly answered = new Set<string>();
 
   loadingServers = false;
   /** Whether the list has been read at least once. Until it has, an empty
@@ -194,6 +211,38 @@ export class SwitchServersStore {
    */
   authConfigCheckFailed(serverId: string): boolean {
     return this.authConfigUnreachable.has(serverId);
+  }
+
+  /** Why the last sign-in-options read failed, while {@link authConfigCheckFailed} holds. */
+  authConfigFailure(serverId: string): string | null {
+    if (!this.authConfigUnreachable.has(serverId)) return null;
+    return this.authConfigFailures.get(serverId) ?? null;
+  }
+
+  /**
+   * Why the server cannot be reached, from whichever read
+   * {@link isUnreachable} went by. Null when it is not unreachable.
+   */
+  unreachableReason(serverId: string): string | null {
+    if (!this.isUnreachable(serverId)) return null;
+    if (this.statuses.has(serverId)) return this.statusFailures.get(serverId) ?? null;
+    return this.authConfigFailures.get(serverId) ?? null;
+  }
+
+  /** Whether the server has ever answered this app since it started. */
+  hasAnswered(serverId: string): boolean {
+    return this.answered.has(serverId);
+  }
+
+  /**
+   * Where leaving setup lands: the server just set up, unless it has never
+   * answered and another workspace is already open, which then stays open.
+   * Making an unreached server active would put a typo in charge of the window.
+   */
+  serverToOpenAfterSetup(serverId: string): string {
+    const current = this.activeServerId;
+    if (this.answered.has(serverId) || current === null) return serverId;
+    return current;
   }
 
   /** Whether a sign-in-options read is in flight right now. The sign-in panel
@@ -390,6 +439,8 @@ export class SwitchServersStore {
       runInAction(() => {
         this.statuses.set(serverId, status);
         this.statusUnreachable.delete(serverId);
+        this.statusFailures.delete(serverId);
+        this.answered.add(serverId);
       });
     } catch (cause) {
       // An unreachable server is a real, displayable state — record it as
@@ -402,6 +453,7 @@ export class SwitchServersStore {
       runInAction(() => {
         this.statuses.set(serverId, { serverId, connected: false, user: null });
         this.statusUnreachable.add(serverId);
+        this.statusFailures.set(serverId, failureText(cause, 'Could not read the server status.'));
       });
     } finally {
       // An overtaken check leaves the flag to the one still running.
@@ -468,15 +520,19 @@ export class SwitchServersStore {
       runInAction(() => {
         this.authConfigs.set(serverId, config);
         this.authConfigUnreachable.delete(serverId);
+        this.authConfigFailures.delete(serverId);
+        this.answered.add(serverId);
       });
     } catch (cause) {
-      // Not the error banner: the raw text is our own IPC method name wrapped
-      // around a fetch failure, which tells the user nothing they can act on.
-      // The page states the one thing that matters, that the server cannot be
-      // reached, and the detail stays in the console for us.
+      // Not the error banner, which every server's page shows: the sign-in
+      // panel of this server is where the reason belongs.
       console.warn(`[switch-servers] could not read auth config for ${serverId}`, cause);
       runInAction(() => {
         this.authConfigUnreachable.add(serverId);
+        this.authConfigFailures.set(
+          serverId,
+          failureText(cause, 'Could not check sign-in options.')
+        );
       });
     } finally {
       runInAction(() => {
@@ -637,7 +693,10 @@ export class SwitchServersStore {
       this.authConfigs.delete(serverId);
       this.authConfigWanted.delete(serverId);
       this.statusUnreachable.delete(serverId);
+      this.statusFailures.delete(serverId);
       this.authConfigUnreachable.delete(serverId);
+      this.authConfigFailures.delete(serverId);
+      this.answered.delete(serverId);
       this.signInErrors.delete(serverId);
     });
     // The removed id also sits in the server view's saved params, where it
