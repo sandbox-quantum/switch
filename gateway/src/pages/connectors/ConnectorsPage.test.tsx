@@ -249,6 +249,26 @@ describe("the Connectors catalogue", () => {
     expect(screen.queryByRole("button", { name: "Connect Google Workspace" })).toBeNull();
   });
 
+  it("says a connector whose app isn't set up needs setup", async () => {
+    signedIn();
+    answer({
+      "GET /service-connections": {
+        connections: [
+          {
+            ...google,
+            connectable: false,
+            unavailable_code: "app_not_set_up",
+            unavailable_reason: "Switch's Google Workspace app isn't set up.",
+          },
+        ],
+      },
+    });
+    renderPage();
+
+    expect(await screen.findByText("Needs setup")).toBeTruthy();
+    expect(screen.queryByText("Unavailable")).toBeNull();
+  });
+
   it("marks a connection that needs a fresh sign-in", async () => {
     signedIn();
     answer({

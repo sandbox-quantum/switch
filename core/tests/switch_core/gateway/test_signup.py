@@ -69,6 +69,7 @@ async def signup_app(session_factory):
         keyring=TEST_KEYRING,
         gateway_cookie_secure=False,
         **LOGIN_LIMIT_DEFAULTS,
+        gateway_allow_test_account_reset=False,
     )
     identity: dict[str, User] = {}
 

@@ -38,7 +38,7 @@ export function ConnectorTile({
   return (
     <div
       className={cn(
-        'relative flex items-start gap-3 rounded-lg border border-border p-4 transition-colors',
+        'relative isolate flex items-start gap-3 rounded-lg border border-border p-4 transition-colors',
         inert ? 'opacity-60' : onOpen && 'hover:bg-background-tertiary-2'
       )}
     >
