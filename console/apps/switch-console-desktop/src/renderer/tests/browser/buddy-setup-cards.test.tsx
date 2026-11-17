@@ -671,7 +671,7 @@ describe('switch-buddy setup cards', () => {
     expect(list?.textContent).toContain('/invite_agent @switch-buddy');
     await click(el, 'Open in Telegram');
     expect(openRoomChannel).toHaveBeenCalledWith(
-      expect.objectContaining({ channelUrl: 'https://t.me/example_bot' })
+      expect.objectContaining({ channelUrl: 'https://t.me/example_bot?start=hello' })
     );
     await shot(el, 'n-telegram-checklist-hello');
   });
@@ -698,7 +698,7 @@ describe('switch-buddy setup cards', () => {
       kind: 'pending',
       pending: { id: 'ext-2', externalUsername: 'ada' },
       alreadyLinked: false,
-      code: null,
+      code: { code: 'K7Q2' },
     });
     const el = await render();
 
@@ -713,7 +713,7 @@ describe('switch-buddy setup cards', () => {
     );
     expect(shown.at(-1)).toMatchObject({
       id: 'claimIdentityModal',
-      args: { bridgeId: 'b-4', confirm: { identityId: 'ext-2' } },
+      args: { bridgeId: 'b-4', confirm: { identityId: 'ext-2' }, confirmCode: { code: 'K7Q2' } },
     });
   });
 
@@ -735,6 +735,27 @@ describe('switch-buddy setup cards', () => {
     ).not.toBeNull();
     expect(el.textContent).toContain('mention switch-buddy, and say what you work on');
     await shot(el, 'n-telegram-checklist-linked');
+  });
+
+  it('(n) Telegram: ticks the group once buddy is in a room there, and moves on', async () => {
+    listBridges.mockResolvedValue([telegram]);
+    listMyIdentities.mockResolvedValue([
+      { bridgeId: 'b-4', externalUsername: 'ada', verified: true } as LinkedIdentity,
+    ]);
+    listAgentRooms.mockResolvedValue([{ roomId: 'r-tg', roomName: 'Ada & bot', archived: false }]);
+    listRooms.mockResolvedValue([
+      { id: 'r-tg', bridgeType: 'telegram', channelType: 'channel_private', createdAt: '' },
+    ]);
+    const el = await render();
+
+    await vi.waitFor(() =>
+      expect(el.textContent).toContain('switch-buddy is in a Telegram group with you.')
+    );
+    expect(el.querySelectorAll('[data-done="true"]')).toHaveLength(3);
+    expect(el.querySelector('[aria-current="step"]')?.textContent).toContain(
+      'Tell switch-buddy what you work on'
+    );
+    await shot(el, 'n-telegram-checklist-in-group');
   });
 
   it('(o) Discord linked: continues in a private Discord channel, then opens it', async () => {

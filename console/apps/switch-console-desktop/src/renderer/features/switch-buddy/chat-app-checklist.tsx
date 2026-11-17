@@ -14,7 +14,9 @@ import { cn } from '@renderer/utils/utils';
 import type {
   BridgePerson,
   LinkedIdentity,
+  RemoteAgentRoom,
   RemoteBridge,
+  RemoteRoomSummary,
 } from '@shared/core/switch-servers/switch-servers';
 import { typedCommand } from '@shared/core/switch-servers/typed-command';
 
@@ -36,6 +38,7 @@ export function ChatAppChecklist({
   workspaceId,
   bridge,
   label,
+  agentId,
   agentName,
   identities,
   onIdentitiesChanged,
@@ -44,6 +47,7 @@ export function ChatAppChecklist({
   workspaceId: string;
   bridge: RemoteBridge;
   label: string;
+  agentId: string;
   agentName: string;
   identities: LinkedIdentity[];
   onIdentitiesChanged: () => void;
@@ -56,6 +60,21 @@ export function ChatAppChecklist({
     refetchInterval: linked ? false : SEEN_POLL_MS,
   });
   const candidates = newestUnlinked(peopleQuery.data ?? []);
+  // In a group: the buddy is in a room on this app other than the bot's
+  // direct chat. Read while linked and not there yet.
+  const inGroupQuery = useQuery({
+    queryKey: ['buddy-in-group', workspaceId, agentId, bridge.type],
+    queryFn: async () => {
+      const [agentRooms, rooms] = await Promise.all([
+        rpc.workspaces.listAgentRooms({ workspaceId, agentId }),
+        rpc.workspaces.listRooms(workspaceId),
+      ]);
+      return inAGroupOn(bridge.type, agentRooms, rooms);
+    },
+    enabled: linked !== null,
+    refetchInterval: (query) => (query.state.data ? false : SEEN_POLL_MS),
+  });
+  const inGroup = inGroupQuery.data === true;
   const [claiming, setClaiming] = useState<string | null>(null);
   const [claimError, setClaimError] = useState<string | null>(null);
 
@@ -79,6 +98,7 @@ export function ChatAppChecklist({
             externalUsername: result.pending.externalUsername,
             kind: result.alreadyLinked ? 'unverified' : 'pending',
           },
+          confirmCode: result.code,
           onSuccess: onIdentitiesChanged,
           onClose: onIdentitiesChanged,
         });
@@ -127,7 +147,7 @@ export function ChatAppChecklist({
               ? linked
                 ? `Seen you as ${handle(linked.externalUsername)}.`
                 : `Seen you as ${handle(candidates[0].username)}.`
-              : `Open the bot in ${label} and press Start, so Switch knows your account.`
+              : `Open the bot in ${label} and press Start (or send it “hello”), so Switch knows your account.`
           }
         >
           {!seen && (
@@ -137,9 +157,12 @@ export function ChatAppChecklist({
                   size="sm"
                   onClick={() =>
                     void reportOpenAttempt(
-                      rpc.switchRooms.openRoomChannel({ serverId, channelUrl: bridge.homeUrl! }),
+                      rpc.switchRooms.openRoomChannel({
+                        serverId,
+                        channelUrl: helloUrl(bridge.homeUrl!),
+                      }),
                       `Could not open ${label}`,
-                      bridge.homeUrl!
+                      helloUrl(bridge.homeUrl!)
                     )
                   }
                 >
@@ -219,23 +242,50 @@ export function ChatAppChecklist({
         </Step>
         <Step
           n={3}
-          done={false}
-          current={linked !== null}
+          done={inGroup}
+          current={linked !== null && !inGroup}
           title={`Make a group with ${agentName}`}
-          detail={`Create a ${label} group with you and the ${bot} bot, then send this in it:`}
+          detail={
+            inGroup
+              ? `${agentName} is in a ${label} group with you.`
+              : `Create a ${label} group with you and the ${bot} bot, then send this in it:`
+          }
         >
-          <CopyCommand command={invite} />
+          {!inGroup && <CopyCommand command={invite} />}
         </Step>
         <Step
           n={4}
           done={false}
-          current={false}
+          current={inGroup}
           title={`Tell ${agentName} what you work on`}
           detail={`In that group, reply to the bot’s message, mention ${agentName}, and say what you work on.`}
         />
       </ol>
     </div>
   );
+}
+
+/**
+ * The bot's link, with a start parameter: Telegram offers Start again only to
+ * a link carrying one, so someone who has used the bot before can still say
+ * hello with a tap. A link that already has a query is left alone.
+ */
+export function helloUrl(homeUrl: string): string {
+  return homeUrl.includes('?') ? homeUrl : `${homeUrl}?start=hello`;
+}
+
+/** Whether the agent is in a room on this app that is not a direct chat with the app. */
+export function inAGroupOn(
+  bridgeType: string,
+  agentRooms: RemoteAgentRoom[],
+  rooms: RemoteRoomSummary[]
+): boolean {
+  const onApp = new Set(
+    rooms
+      .filter((room) => room.bridgeType === bridgeType && room.channelType !== 'lobby')
+      .map((room) => room.id)
+  );
+  return agentRooms.some((room) => !room.archived && onApp.has(room.roomId));
 }
 
 /** Accounts nobody has linked yet, newest first: likeliest the one just seen. */

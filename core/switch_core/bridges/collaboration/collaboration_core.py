@@ -1389,9 +1389,14 @@ class CollaborationCore:
         """The Slack app's DM ("lobby") is deprecated for talking to agents.
         Reply with a pointer to the onboarding docs instead of routing."""
         thread_root_id = msg.root_id or msg.message_ref
-        await self._adapter.admin_message(
-            msg.channel_id, _LOBBY_DEPRECATION_NOTICE, thread_root_id
+        # Where saying hello here is how Switch comes to know someone, it is
+        # answered as the hello it is rather than as a mistake.
+        notice = (
+            _LOBBY_DEPRECATION_NOTICE
+            if self._adapter.supports_directory_search
+            else _LOBBY_HELLO
         )
+        await self._adapter.admin_message(msg.channel_id, notice, thread_root_id)
 
     async def _handle_inbound_message(self, msg: InboundMessage) -> str | None:
         """Write a platform message into its room as its sender, and return

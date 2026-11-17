@@ -27,7 +27,7 @@ def _msg(channel_type: str) -> InboundMessage:
     )
 
 
-def _adapter_fake() -> SimpleNamespace:
+def _adapter_fake(directory: bool = True) -> SimpleNamespace:
     notices: list[tuple[str, str, str | None]] = []
 
     async def admin_message(
@@ -40,7 +40,11 @@ def _adapter_fake() -> SimpleNamespace:
         notices.append((channel_id, content, thread_root_id))
         return "D123:999.9"
 
-    return SimpleNamespace(admin_message=admin_message, notices=notices)
+    return SimpleNamespace(
+        admin_message=admin_message,
+        notices=notices,
+        supports_directory_search=directory,
+    )
 
 
 async def test_lobby_message_posts_deprecation_notice() -> None:
@@ -59,6 +63,15 @@ async def test_lobby_message_posts_deprecation_notice() -> None:
     assert "isn't where you talk to agents" in content
     assert "channel" in content
     assert "atlassian.net" not in content
+
+
+async def test_a_hello_where_there_is_no_directory_is_answered_as_one() -> None:
+    """On Telegram a direct message is how Switch comes to know someone."""
+    adapter = _adapter_fake(directory=False)
+    await CollaborationCore._handle_lobby_message(
+        SimpleNamespace(_adapter=adapter), _msg("lobby")
+    )
+    assert "Switch has seen your account" in adapter.notices[0][1]
 
 
 async def test_inbound_lobby_message_short_circuits_routing() -> None:

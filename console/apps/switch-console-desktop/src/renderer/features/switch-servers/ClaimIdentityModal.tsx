@@ -29,6 +29,9 @@ type ClaimIdentityModalArgs = {
    * before links had to be confirmed — rather than on the search. A fresh code
    * is asked for on open, since the server keeps none to show again. */
   confirm?: AccountLinkTarget;
+  /** The code the claim behind `confirm` came back with, shown rather than
+   * replaced by a new one (which would send the account a second prompt). */
+  confirmCode?: LinkCode | null;
 };
 
 type Props = BaseModalProps<{ identity: LinkedIdentity }> & ClaimIdentityModalArgs;
@@ -54,6 +57,7 @@ export const ClaimIdentityModal = observer(function ClaimIdentityModal({
   workspaceId,
   bridgeId,
   confirm,
+  confirmCode,
   onSuccess,
   onClose,
 }: Props) {
@@ -65,7 +69,7 @@ export const ClaimIdentityModal = observer(function ClaimIdentityModal({
   const [waiting, setWaiting] = useState<{
     target: AccountLinkTarget;
     code: LinkCode | null;
-  } | null>(confirm ? { target: confirm, code: null } : null);
+  } | null>(confirm ? { target: confirm, code: confirmCode ?? null } : null);
 
   const bridgesQuery = useQuery({
     queryKey: ['remote-bridges', workspaceId],

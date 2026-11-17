@@ -396,6 +396,7 @@ const Cards = observer(function Cards({
             workspaceId={workspaceId}
             bridge={step.bridge}
             label={label}
+            agentId={agentId}
             agentName={agentName}
             identities={ids.identities ?? []}
             onIdentitiesChanged={ids.refresh}
