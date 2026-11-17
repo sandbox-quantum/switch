@@ -1422,8 +1422,9 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
 
   const createAll = async () => {
     if (!loaded || workspaceId === null || blockedReason !== null) return;
-    // A fresh run gets a key of its own; Retry sends the last one again.
-    if (!partlyDone) runKey.current = crypto.randomUUID();
+    // A fresh run gets a key of its own; Retry sends the last one again,
+    // including after a run that outlasted the wait with nothing settled yet.
+    if (!partlyDone && outlasted === null) runKey.current = crypto.randomUUID();
     setOutlasted(null);
     setPhase('creating');
     setCreateError(null);

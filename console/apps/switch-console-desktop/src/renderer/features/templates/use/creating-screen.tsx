@@ -100,7 +100,9 @@ export function CreatingScreen({
           <div
             className={cn(
               'h-full rounded-full transition-[width] duration-500 ease-out motion-reduce:transition-none',
-              phase === 'failed' ? 'bg-destructive' : 'bg-emerald-600 dark:bg-emerald-500'
+              phase === 'failed' && outlasted !== 'running'
+                ? 'bg-destructive'
+                : 'bg-emerald-600 dark:bg-emerald-500'
             )}
             style={{ width: `${Math.max(progress, 0.04) * 100}%` }}
           />
@@ -140,7 +142,16 @@ export function CreatingScreen({
 
         {phase === 'failed' && (
           <div className="flex flex-col gap-3">
-            {error && <p className="text-[13px] text-destructive">{error}</p>}
+            {error && (
+              <p
+                className={cn(
+                  'text-[13px]',
+                  outlasted === 'running' ? 'text-foreground-muted' : 'text-destructive'
+                )}
+              >
+                {error}
+              </p>
+            )}
             <div className="flex items-center justify-center gap-2">
               {onRetry && (
                 <Button size="sm" onClick={onRetry}>
