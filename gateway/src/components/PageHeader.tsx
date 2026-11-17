@@ -8,9 +8,10 @@ import type { ReactNode } from "react";
  * (an `h5` for a page, `subtitle1` for a section inside one), so this only
  * supplies the row's layout.
  *
- * At a width where the text and actions no longer fit side by side, the
- * actions drop to their own line below the text rather than wrapping into
- * it, clipping, or being pushed off the page. Several actions wrap among
+ * The text takes the room the actions leave and wraps within it, so the
+ * actions stay at the right. Once the text would be narrower than about
+ * 320px, the actions drop to their own line below it rather than wrapping
+ * into it, clipping, or being pushed off the page. Several actions wrap among
  * themselves on that line, and each one stays on a single line of its own.
  */
 export default function PageHeader({
@@ -26,7 +27,7 @@ export default function PageHeader({
 }) {
   return (
     <Stack direction="row" flexWrap="wrap" sx={{ gap: 2, ...sx }}>
-      <Box sx={{ minWidth: 0 }}>
+      <Box sx={{ flex: "1 1 320px", minWidth: 0 }}>
         {title}
         {description}
       </Box>
