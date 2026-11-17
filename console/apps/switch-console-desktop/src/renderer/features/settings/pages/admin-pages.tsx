@@ -249,7 +249,8 @@ function WorkspaceGuardrailsView({
         )}
       </p>
       <div className="flex gap-2">
-        {checking && policyUrl !== null && (
+        {/* Organization settings shows the policy too, so its admins get the one way there. */}
+        {!administersOrganization(workspace) && checking && policyUrl !== null && (
           <Button
             variant="outline"
             size="sm"

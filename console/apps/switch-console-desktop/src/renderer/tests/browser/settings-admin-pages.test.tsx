@@ -481,6 +481,8 @@ it('sends an organization admin to Organization settings to change them', async 
   expect(page.querySelector('[role="note"]')!.textContent).toBe(
     'As an organization admin, you are able to change the guardrails for every workspace in your organization.'
   );
+  // Organization settings shows the policy too: one way there, not two.
+  expect(button(/^View policy/, page)).toBeUndefined();
   await act(async () => button(/Change in Organization settings/, page)!.click());
   expect(openServerPage).toHaveBeenCalledWith(
     'server',
