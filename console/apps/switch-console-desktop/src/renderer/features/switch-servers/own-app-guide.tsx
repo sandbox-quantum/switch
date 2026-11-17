@@ -98,18 +98,18 @@ function Step({
 }
 
 /**
- * A step's instructions above a picture of the Slack page they describe, wide
- * enough to read and expandable to full size.
+ * A step's instructions and the field they lead to, above a picture of the
+ * Slack page they describe, wide enough to read and expandable to full size.
  */
 function WithShot({ src, alt, children }: { src: string; alt: string; children: ReactNode }) {
   return (
     <div className="space-y-3">
-      <div className="min-w-0">{children}</div>
+      <div className="min-w-0 space-y-3">{children}</div>
       <ExpandableImage
         src={src}
         alt={alt}
         containerClassName="block"
-        className="w-full rounded-lg border border-border bg-white shadow-sm"
+        className="w-full rounded-lg"
       />
     </div>
   );
@@ -318,8 +318,8 @@ function SlackGuide({ workspaceId, config, fields, setField, setInput }: Props) 
                 Copy the <b>Bot User OAuth Token</b> (xoxb-…) and paste it below.
               </li>
             </ol>
+            <TokenField fieldKey="bot_token" fallbackLabel="Bot token" {...tokenProps} />
           </WithShot>
-          <TokenField fieldKey="bot_token" fallbackLabel="Bot token" {...tokenProps} />
         </Step>
         <Step n={3} title="Generate the app-level token" done={works}>
           <WithShot
@@ -339,8 +339,8 @@ function SlackGuide({ workspaceId, config, fields, setField, setInput }: Props) 
               </li>
               <li>Copy the token (xapp-…) and paste it below.</li>
             </ol>
+            <TokenField fieldKey="app_token" fallbackLabel="App-level token" {...tokenProps} />
           </WithShot>
-          <TokenField fieldKey="app_token" fallbackLabel="App-level token" {...tokenProps} />
         </Step>
       </ol>
       {ready && check.isFetching && (
