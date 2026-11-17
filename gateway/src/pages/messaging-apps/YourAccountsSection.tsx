@@ -259,7 +259,7 @@ function AppAccounts({
   const unavailable = unavailableReason(app);
   const findable = findableNote(app);
   const counting = lines.some((line) => line.kind !== "pending");
-  // The bundled Mattermost is named after its platform, and "Mattermost ·
+  // An app named after its platform reads as the platform alone: "Mattermost ·
   // Mattermost" says nothing twice.
   const title = app.display_name === platform ? platform : `${platform} · ${app.display_name}`;
   const linkButton = useRef<HTMLButtonElement>(null);

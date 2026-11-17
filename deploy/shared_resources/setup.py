@@ -204,10 +204,6 @@ def bundled_mattermost_bridge(
     by a person (``preconfigured`` false). Several and no single marked one
     is ambiguous: one of them may be a Mattermost somebody connected by hand,
     and nothing says which.
-
-    The same rule as ``bundledMattermostBridge`` in Switch Console
-    (``src/shared/core/switch-servers/bundled-bridge.ts``), which repoints the
-    bundled bridge before this runs.
     """
     mattermost = [b for b in bridges if b.get("bridge_type") == "mattermost"]
     marked = [b for b in mattermost if b.get("preconfigured") is True]
