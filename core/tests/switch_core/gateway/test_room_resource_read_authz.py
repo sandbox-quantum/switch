@@ -102,7 +102,7 @@ class TestRoomResourceReadAuthz:
                     other,
                     await _is_admin(session, other),
                 )
-            assert exc.value.status_code == 403
+            assert exc.value.status_code == 404
 
     async def test_non_owner_cannot_list_room_documents(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -124,7 +124,7 @@ class TestRoomResourceReadAuthz:
                     other,
                     await _is_admin(session, other),
                 )
-            assert exc.value.status_code == 403
+            assert exc.value.status_code == 404
 
     async def test_non_owner_cannot_detach_room_document(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -145,7 +145,7 @@ class TestRoomResourceReadAuthz:
                     other,
                     await _is_admin(session, other),
                 )
-            assert exc.value.status_code == 403
+            assert exc.value.status_code == 404
 
     async def test_non_owner_cannot_detach_reference(
         self, session_factory: async_sessionmaker[AsyncSession]

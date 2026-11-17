@@ -13,6 +13,7 @@ vi.mock("../../data/hooks", () => ({
   useAgents: vi.fn(),
   useBridges: vi.fn(),
   useBridgeUsers: vi.fn(),
+  useMyIdentities: vi.fn(),
   useRoomGroups: vi.fn(),
   useRoomAgentCandidates: vi.fn(),
 }));
@@ -49,6 +50,7 @@ function chooseBridge(name: string) {
 beforeEach(() => {
   vi.mocked(hooks.useAgents).mockReturnValue(result([agent]));
   vi.mocked(hooks.useBridgeUsers).mockReturnValue(result([]));
+  vi.mocked(hooks.useMyIdentities).mockReturnValue(result([]) as never);
   vi.mocked(hooks.useRoomGroups).mockReturnValue(result([]));
   // The server's invite rule lets the viewer put the agent in a new room.
   vi.mocked(hooks.useRoomAgentCandidates).mockReturnValue(result({ agent_ids: [agent.id] }) as never);

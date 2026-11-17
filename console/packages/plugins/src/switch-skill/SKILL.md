@@ -164,7 +164,7 @@ does, and there is no polling tool to call.
 
   Automatic routing is a feature only some Switch servers have. On a server
   without it, `!auto-route` answers "Unknown command" and is missing from
-  `!help`, and Switch Console has no Admin → Decision routing; there, don't
+  `!help`, and Switch Console has no Settings → Message routing; there, don't
   suggest either, and offer what the server does have instead: tagging the
   agent, or `!assign-agent`. Where the server has it:
 
@@ -187,7 +187,7 @@ does, and there is no polling tool to call.
   Switch Console or on the gateway's room page.
 
   Which decision service a room uses is its workspace's choice, made by a
-  workspace admin in Switch Console → Settings → Decision routing: the server's
+  workspace admin in Switch Console → Settings → Message routing: the server's
   own default, the workspace's self-hosted endpoint, Claude Haiku, or none.
   With none (or no server default), `!auto-route on` says auto-route needs a
   decision service and changes nothing, and the room works as it does without

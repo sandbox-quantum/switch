@@ -23,7 +23,7 @@ Don't say it otherwise.
 ## Teams private channel
 
 If the connection has a default team and `can_create_channels`, make it like any
-other chat app's private channel: `create_room` with the chat's `bridge_id`,
+other messaging app's private channel: `create_room` with the chat's `bridge_id`,
 `channel_type` "channel_private", `read_visibility` and `write_visibility`
 "private", their username in `user_names`. Otherwise they add the Switch app to a
 chat or channel and send `!invite-agent @<agent-name>` and
@@ -160,6 +160,37 @@ Confluence (Atlassian), GitHub, Google (Gmail, Drive, Calendar) and the like.
 - **Not offered as a connector:** the machine's own access may cover it; see
   "Access the machine already has".
 
+## Onboarding connectors
+
+The connectors to offer after the work question, best first. Offer only those
+`get_my_context` lists for the workspace, and leave out any already connected.
+
+| Their answer | Connectors |
+|---|---|
+| Engineering | GitHub, Linear, Google Workspace |
+| Product | Linear, Notion, Google Workspace |
+| Design | Canva, Notion, Google Workspace |
+| Sales | Salesforce, Google Workspace |
+| Marketing | Google Workspace, Canva, Notion |
+| Other, or skipped | Google Workspace, GitHub |
+
+Never suggest a service Switch has no connector for (Figma, HubSpot): say the
+machine's own access may cover it (§ "Access the machine already has").
+
+## Room templates by work
+
+The official room templates to offer for a new room, best first, by id. Offer
+only those `list_templates` lists: a workspace admin may have removed some.
+
+| Their answer | Room templates |
+|---|---|
+| Engineering | official:sprint-room, official:code-review-room, official:incident-war-room |
+| Product | official:product-trio-room, official:user-research-lab, official:launch-war-room |
+| Design | official:design-review-studio, official:user-research-lab, official:brand-messaging-room |
+| Sales | official:deal-room, official:pipeline-review-room, official:sales-enablement-room |
+| Marketing | official:campaign-war-room, official:content-pipeline, official:launch-war-room |
+| Other, or skipped | official:product-trio-room, official:launch-war-room, official:okr-tracker |
+
 ## Access the machine already has
 
 An agent also gets what is set up on its machine, with no Switch connector:
@@ -202,7 +233,7 @@ It changes the advice:
 
 - **Switch Cloud:** messaging apps usually have the official app, and their
   agents can run on a cloud machine or their computer.
-- **A server Switch Console runs:** it comes with a built-in chat app. Their
+- **A server Switch Console runs:** it comes with a built-in messaging app. Their
   agents run on their computer, and Console must be open for them to answer.
   Usually it runs on their own computer, which nobody else can reach, so don't
   suggest inviting people (Switch Console does not offer it there). If they ask, say so; to work with others they need a

@@ -91,7 +91,7 @@ async function render() {
 }
 
 function shown(): boolean {
-  return document.body.textContent?.includes('Your first AI assistant in Switch') ?? false;
+  return document.body.textContent?.includes('Your first AI assistant in Switch Rooms') ?? false;
 }
 
 function button(label: string): HTMLButtonElement {

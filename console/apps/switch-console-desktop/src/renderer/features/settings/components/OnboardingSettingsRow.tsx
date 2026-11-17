@@ -24,7 +24,7 @@ export const OnboardingChecklistRow: React.FC = () => {
   return (
     <SettingRow
       title="Onboarding checklist"
-      description="Show the “Setting up Switch” checklist in the sidebar, with the steps left to finish setting up."
+      description="Show the “Setting up Switch Rooms” checklist in the sidebar, with the steps left to finish setting up."
       control={
         <>
           <ResetToDefaultButton

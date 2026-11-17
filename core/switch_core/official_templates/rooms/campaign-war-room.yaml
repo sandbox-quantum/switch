@@ -92,6 +92,7 @@ resources:
     name: "Campaign - {campaign}"
     description: "Campaign coordination for {campaign}. Timeline, creative approvals, and performance tracking."
     bridge: "{bridge}"
+    channel_type: channel_private
     agents: [campaign_tracker, performance_analyst]
     users:
       - {if: "{bridge}", value: ["{$creator}"]}

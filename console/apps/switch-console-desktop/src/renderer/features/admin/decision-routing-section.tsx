@@ -40,7 +40,7 @@ function resultText(result: { kind: string; message?: string }): string {
     case 'forbidden':
       return 'Only an admin of this workspace can view or change its decision routing.';
     case 'unsupported':
-      return 'Decision routing isn’t available on this Switch server.';
+      return 'Message routing isn’t available on this Switch server.';
     default:
       return result.message ?? 'Could not reach the decision routing settings.';
   }

@@ -99,6 +99,9 @@ def test_every_room_template_plans_its_room_and_agents():
         assert sorted(room.agents) == sorted(a.name for a in plan.new_agents)
         assert room.users == ["{$creator}"] and room.bridge == "{bridge}"
         assert room.instructions
+        # Every official room is private, in Switch and on its messaging app.
+        assert room.channel_type == "channel_private", template.id
+        assert room.read_visibility in (None, "private"), template.id
 
 
 def test_room_template_runs_without_bridge():

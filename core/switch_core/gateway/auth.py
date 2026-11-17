@@ -1809,11 +1809,14 @@ async def ensure_room_action(
     owns_target: bool = False,
 ) -> None:
     """Raise HTTP 403 with the policy's reason unless `principal` may do
-    `action` to `room`."""
+    `action` to `room`. A room they may not see is not found, so the answer
+    does not confirm that a private room exists."""
     decision = await decide_room_action(
         session, room_store, room, principal, action, owns_target=owns_target
     )
     if not decision.allowed:
+        if action == "read":
+            raise HTTPException(status_code=404, detail="Room not found")
         raise HTTPException(status_code=403, detail=decision.reason)
 
 

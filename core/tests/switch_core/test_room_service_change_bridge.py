@@ -421,6 +421,7 @@ class TestChangeBridge:
             bridge_id=None,
             channel_type=None,
             external_channel_id=None,
+            read_visibility="public",
         )
         new_bridge = _FakeCollaborationCore(
             events, transport_user_id="@bot-new:switch.local", new_channel_id="chan-new"
@@ -438,8 +439,41 @@ class TestChangeBridge:
         # No bridge to tear down -> no kick, no remove_room_mapping.
         assert not any(e[0] == "kick" for e in events)
         assert not any(e[0] == "remove_room_mapping" for e in events)
-        # Defaulted to a public channel for the previously-internal room.
+        # A public room with no channel type gets a public channel.
         assert ("create_channel", "Internal", "d", "channel_public") in events
+
+    async def test_a_private_room_with_no_channel_type_gets_a_private_channel(
+        self,
+    ) -> None:
+        events: list[Any] = []
+        room = SimpleNamespace(
+            owner_id="owner-1",
+            id="room-1",
+            tenant_id="room-tenant",
+            name="Internal",
+            description="d",
+            transport_room_id="!mx:switch.local",
+            bridge_id=None,
+            channel_type=None,
+            external_channel_id=None,
+            read_visibility="private",
+        )
+        new_bridge = _FakeCollaborationCore(
+            events, transport_user_id="@bot-new:switch.local", new_channel_id="chan-new"
+        )
+        svc, room_store = _build_service(
+            room=room,
+            agent_ids=["a1"],
+            agent_names={"a1": "agent.one"},
+            bridges={"bridge-new": new_bridge},
+            events=events,
+        )
+        _owner_linked(svc)
+
+        await svc.change_bridge("room-1", bridge_id="bridge-new")
+
+        assert room_store.update_bridge_calls[0]["channel_type"] == "channel_private"
+        assert ("create_channel", "Internal", "d", "channel_private") in events
 
     async def test_reuses_existing_channel_when_id_provided(self) -> None:
         events: list[Any] = []
@@ -822,6 +856,7 @@ class TestChangeBridge:
             bridge_id=None,
             channel_type=None,
             external_channel_id=None,
+            read_visibility="public",
         )
         new_bridge = _FakeCollaborationCore(
             events, transport_user_id="@bot-new:switch.local", new_channel_id="chan-new"

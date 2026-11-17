@@ -64,7 +64,12 @@ from switch_core.db.stores.room_store import (
 )
 from switch_core.db.tenant_lookup import all_tenant_ids
 from switch_core.provisioning import Provisioning
-from switch_core.room_policy import FIXED_MEMBERSHIP, visibility_for_channel
+from switch_core.room_policy import (
+    FIXED_MEMBERSHIP,
+    PRIVATE_CHANNELS,
+    visibility_for_channel,
+    visible_from_outside,
+)
 from switch_core.telemetry import TelemetryService, emit_safely
 from switch_core.telemetry.ages import age_days
 from switch_core.telemetry.snapshot import (
@@ -185,6 +190,10 @@ class RoomCreateConfig(BaseModel):
     created_by_kind: Literal["user", "agent", "system"] = "user"
     # Provisioned from a room template rather than created directly.
     from_template: bool = False
+    # The given `channel_type` is a default (a template's), not the creator's
+    # choice: a private channel the creator cannot be put in falls back to a
+    # public one, as an omitted one does (`PUBLIC_NO_LINKED_ACCOUNT`).
+    channel_type_is_default: bool = False
     # The Switch Console chat creation this room is for, stamped into the
     # room's metadata in the same insert so a retried creation finds it.
     chat_operation_id: str | None = None
@@ -210,6 +219,18 @@ class RoomCreateResult(BaseModel):
 
 
 ROOM_NAME_MAX = 200
+
+#: The `failed_attachments` entry's `id` for a room made public, with no
+#: choice made, because its creator has no linked account to put in a private
+#: channel on that app.
+PUBLIC_NO_LINKED_ACCOUNT = "public_no_linked_account"
+
+# How a refusal names a channel that only its members can read.
+_CHANNEL_WORDS = {
+    "channel_private": "private channel",
+    "group": "group conversation",
+    "direct": "direct message",
+}
 
 
 class MembershipFixed(ValueError):
@@ -418,7 +439,7 @@ class RoomService:
                     raise ValueError(f"Linked room not found: {link.target_room_id}")
                 # A link shows its target's name and description in the new
                 # room, so linking needs read access to the target.
-                if not can(principal, "read", target):
+                if not visible_from_outside(principal, target):
                     raise PermissionError(
                         f"User {config.acting_user_id} cannot link to room "
                         f"{link.target_room_id}"
@@ -676,19 +697,21 @@ class RoomService:
                 f"A private {platform} channel needs an owner, and the {platform} "
                 f"account linked to you cannot be made one: {platform} accepts "
                 "only an account in your organisation's directory. Link your "
-                "work account instead, or choose a public channel."
+                "work account instead, in Switch Console under Settings → "
+                "Messaging apps, or choose a public channel."
             )
         if needs_owner:
             raise PrivateChannelOwnerMissing(
                 f"A private {platform} channel needs an owner, and you have no "
                 f"{platform} account linked to Switch. Link your {platform} "
-                "account first in Switch Console, or choose a public channel."
+                "account first, in Switch Console under Settings → Messaging "
+                "apps, or choose a public channel."
             )
         raise PrivateChannelOwnerMissing(
             f"Only the people added to a private {platform} channel can see it, "
             f"and you have no {platform} account linked to Switch to add. Link "
-            f"your {platform} account first in Switch Console, or choose a "
-            "public channel."
+            f"your {platform} account first, in Switch Console under Settings → "
+            "Messaging apps, or choose a public channel."
         )
 
     async def _create_channel(
@@ -925,13 +948,66 @@ class RoomService:
                 external_channel_id
             )
 
+        # Private unless whoever creates the room asks for public: by naming a
+        # public channel, or by asking for a public room (`read_visibility`).
+        chose = config.read_visibility is not None or (
+            channel_type is not None and not config.channel_type_is_default
+        )
         if channel_type is None:
-            channel_type = "channel_public"
+            channel_type = (
+                "channel_public"
+                if config.read_visibility == "public"
+                else "channel_private"
+            )
+        # With no choice made, a private channel its creator cannot be put in
+        # would be one nobody can open: it is made public instead, and said so.
+        # Never for a template's room: a template run shows no choice before it
+        # creates the room, so it is refused and the creator links an account.
+        fallback: dict[str, Any] | None = None
+        if (
+            not chose
+            and not config.from_template
+            and collaboration_core is not None
+            and external_channel_id is None
+            and channel_type == "channel_private"
+        ):
+            try:
+                await self._private_channel_creator(
+                    collaboration_core,
+                    bridge_id,  # type: ignore[arg-type]
+                    channel_type,
+                    config.owner_id,
+                )
+            except PrivateChannelOwnerMissing:
+                platform = collaboration_core.adapter.platform_name
+                channel_type = "channel_public"
+                fallback = {
+                    "kind": "visibility",
+                    "id": PUBLIC_NO_LINKED_ACCOUNT,
+                    "error": (
+                        f"Made public: you have no {platform} account linked to "
+                        "Switch to put in a private channel. Link your account "
+                        "to make it private, in Switch Console under Settings → "
+                        "Messaging apps."
+                    ),
+                }
 
         read_visibility = config.read_visibility or visibility_for_channel(channel_type)
         if read_visibility not in VISIBILITIES:
             raise ValueError(
                 f"Invalid read_visibility '{read_visibility}' (expected public|private)"
+            )
+        if (
+            collaboration_core is not None
+            and read_visibility == "public"
+            and channel_type in PRIVATE_CHANNELS
+        ):
+            raise ValueError(
+                f"A room on a {_CHANNEL_WORDS.get(channel_type, channel_type)} "
+                "cannot be public: only the channel's members can read the "
+                "channel, so the room must be private too. Leave "
+                "read_visibility out, or ask for a public channel "
+                "(channel_type 'channel_public')."
             )
 
         is_dm = (
@@ -1238,6 +1314,8 @@ class RoomService:
             )
 
         self.room_changed(room.tenant_id, room.id)
+        if fallback is not None:
+            failed_attachments.insert(0, fallback)
         return RoomCreateResult(room=room, failed_attachments=failed_attachments)
 
     async def _seed_aliases(
@@ -2162,10 +2240,16 @@ class RoomService:
         if new_bridge is None:
             raise ValueError(f"Bridge not running: {bridge_id}")
 
-        # Keep the room's existing privacy when not told otherwise; fall back to
-        # a public channel for a room that had no bridge.
+        # Keep the room's existing privacy when not told otherwise. A room that
+        # never had a channel type gets a channel as visible as the room.
         resolved_channel_type: ChannelType = (
-            channel_type or room.channel_type or "channel_public"  # type: ignore[assignment]
+            channel_type  # type: ignore[assignment]
+            or room.channel_type
+            or (
+                "channel_public"
+                if room.read_visibility == "public"
+                else "channel_private"
+            )
         )
 
         created_channel_name: str | None = None
