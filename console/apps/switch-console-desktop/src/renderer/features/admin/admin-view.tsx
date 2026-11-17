@@ -58,7 +58,12 @@ const AdminPanel = observer(function AdminPanel() {
   const flags = useServerFeatureFlags(serverId);
   const access = connectorsPageAccess(flags);
   const workspace = workspacesStore.onServerInScope(serverId);
-  const groups = adminGroupsInScope(serverId, access === 'shown');
+  // A section the server stops offering (its flag turned off on a refresh)
+  // gives way to the first one left, through `shownAdminSection`.
+  const groups = adminGroupsInScope(serverId, {
+    serviceConnections: access === 'shown',
+    decisionRouting: flags?.flags.decision_routing === true,
+  });
   const section = shownAdminSection(groups, params.section);
   const serverName =
     switchServersStore.servers.find((s) => s.id === serverId)?.name ?? 'This server';

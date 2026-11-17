@@ -25,7 +25,8 @@ export type AdminGroup = { scope: AdminScope; items: AdminSection[] };
  * - Connectors: the workspace's connector switches, for its admins, where
  *   the server has service connections on.
  * - Decision routing: which decision service the workspace's auto-route
- *   rooms ask, for its admins. It is not about connectors, so it is there
+ *   rooms ask, for its admins, where the server has auto-route
+ *   (`decision_routing`) on. It is not about connectors, so it is there
  *   whether or not the server has service connections on.
  * - Switch Trust: the deployment's guardrails, for the server's operator.
  * - Connector apps: the apps connectors sign in through, for the operator of
@@ -40,13 +41,18 @@ export function adminGroups(person: {
   operator: boolean;
   operatesGatewaylessServer: boolean;
   serviceConnections: boolean;
+  decisionRouting: boolean;
 }): AdminGroup[] {
-  const { serviceConnections } = person;
+  const { serviceConnections, decisionRouting } = person;
   const groups: AdminGroup[] = [
     {
       scope: 'workspace',
       items: person.administers
-        ? ['messaging-apps', ...(serviceConnections ? (['connectors'] as const) : []), 'decision']
+        ? [
+            'messaging-apps',
+            ...(serviceConnections ? (['connectors'] as const) : []),
+            ...(decisionRouting ? (['decision'] as const) : []),
+          ]
         : [],
     },
     {

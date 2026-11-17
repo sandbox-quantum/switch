@@ -24,7 +24,7 @@ const featureFlags = vi.hoisted(() => ({
     success: true,
     data: {
       serverId: 'server',
-      flags: { service_connections: true },
+      flags: { service_connections: true, decision_routing: true },
       fetchedAt: 1,
       error: null,
     },
@@ -335,7 +335,7 @@ it('gives the workspace’s admins Decision routing under Workspace, with servic
     success: true,
     data: {
       serverId: 'server',
-      flags: { service_connections: false },
+      flags: { service_connections: false, decision_routing: true },
       fetchedAt: 1,
       error: null,
     },
@@ -367,6 +367,26 @@ it('gives the workspace’s admins Decision routing under Workspace, with servic
   expect(workspace.textContent).toBe('Workspace · AcmeMessaging appsDecision routing');
   expect(workspace.querySelector('[aria-current="page"]')!.textContent).toBe('Decision routing');
   expect(workspaces.getWorkspaceServices).not.toHaveBeenCalled();
+});
+
+it('offers no Decision routing on a server without auto-route, asking it nothing', async () => {
+  featureFlags.get.mockResolvedValueOnce({
+    success: true,
+    data: {
+      serverId: 'server',
+      flags: { service_connections: true, decision_routing: false },
+      fetchedAt: 1,
+      error: null,
+    },
+  });
+  workspaces.getWorkspaceServices.mockResolvedValue(SERVICES);
+  const page = await render();
+
+  await vi.waitFor(() => expect(tiles(page)).not.toBeNull());
+  const workspace = page.querySelector('nav [role="group"][aria-label="Workspace"]')!;
+  expect(workspace.textContent).toBe('Workspace · AcmeMessaging appsConnectors');
+  expect(page.textContent).not.toContain('Decision routing');
+  expect(switchServers.getDecisionSettings).not.toHaveBeenCalled();
 });
 
 it('opens Decision routing from its menu entry beside Connectors', async () => {

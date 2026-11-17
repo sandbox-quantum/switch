@@ -61,6 +61,7 @@ describe('the Admin page’s sections', () => {
     operator: false,
     operatesGatewaylessServer: false,
     serviceConnections: true,
+    decisionRouting: true,
   };
 
   it('gives workspace admins its messaging apps, connector switches and decision routing', () => {
@@ -94,11 +95,28 @@ describe('the Admin page’s sections', () => {
         operator: true,
         operatesGatewaylessServer: true,
         serviceConnections: false,
+        decisionRouting: true,
       })
     ).toEqual([
       { scope: 'workspace', items: ['messaging-apps', 'decision'] },
       { scope: 'server', items: ['switch-trust'] },
     ]);
+  });
+
+  it('offers decision routing only on a server with auto-route on', () => {
+    const admin = { ...person, administers: true, operator: true };
+    expect(adminGroups({ ...admin, decisionRouting: false })).toEqual([
+      { scope: 'workspace', items: ['messaging-apps', 'connectors'] },
+      { scope: 'server', items: ['switch-trust'] },
+    ]);
+    expect(adminGroups({ ...admin, serviceConnections: false, decisionRouting: false })[0]).toEqual(
+      { scope: 'workspace', items: ['messaging-apps'] }
+    );
+  });
+
+  it('opens the first section when decision routing is asked for where the server lacks it', () => {
+    const off = adminGroups({ ...person, administers: true, decisionRouting: false });
+    expect(shownAdminSection(off, 'decision')).toBe('messaging-apps');
   });
 
   it('opens the section asked for when the person may use it, otherwise the first', () => {

@@ -45,7 +45,8 @@ export const WorkspaceNav = observer(function WorkspaceNav() {
   const { params: adminParams } = useParams('admin');
   const active = switchServersStore.activeServer;
   const health = useRoomHealth(active?.id ?? null);
-  const serviceConnections = useFeatureFlags(active?.id ?? null).service_connections;
+  const featureFlags = useFeatureFlags(active?.id ?? null);
+  const serviceConnections = featureFlags.service_connections;
   const warningCount =
     health.data?.agents.filter((agent) => connectionNeedsAttention(agent.state)).length ?? 0;
   // While the server can't answer, only Settings — where it is operated — stays live.
@@ -66,7 +67,11 @@ export const WorkspaceNav = observer(function WorkspaceNav() {
   const shown = active
     ? workspaceNavViews({
         serviceConnections,
-        admin: adminGroupsInScope(active.id, serviceConnections).length > 0,
+        admin:
+          adminGroupsInScope(active.id, {
+            serviceConnections,
+            decisionRouting: featureFlags.decision_routing,
+          }).length > 0,
       })
     : [];
   const onSettings =

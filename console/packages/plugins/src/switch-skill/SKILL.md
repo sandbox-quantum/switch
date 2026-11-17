@@ -162,6 +162,12 @@ does, and there is no polling tool to call.
   them back on. Each command on its own says what is set now; changing one is
   for the room's owner, a room admin or a workspace admin.
 
+  Automatic routing is a feature only some Switch servers have. On a server
+  without it, `!auto-route` answers "Unknown command" and is missing from
+  `!help`, and Switch Console has no Admin → Decision routing; there, don't
+  suggest either, and offer what the server does have instead: tagging the
+  agent, or `!assign-agent`. Where the server has it:
+
   In a room where people turned on automatic routing (`!auto-route on`), a
   message that tags nobody and that no follow-up or assigned agent caught goes
   to a decision service, which picks the one agent best placed to answer it,
