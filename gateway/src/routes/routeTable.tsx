@@ -3,6 +3,7 @@ import HomeOutlined from "@mui/icons-material/HomeOutlined";
 import LocalLibraryOutlined from "@mui/icons-material/LocalLibraryOutlined";
 import MeetingRoomOutlined from "@mui/icons-material/MeetingRoomOutlined";
 import PowerOutlined from "@mui/icons-material/PowerOutlined";
+import RocketLaunchOutlined from "@mui/icons-material/RocketLaunchOutlined";
 import SettingsOutlined from "@mui/icons-material/SettingsOutlined";
 import SmartToyOutlined from "@mui/icons-material/SmartToyOutlined";
 import ViewQuiltOutlined from "@mui/icons-material/ViewQuiltOutlined";
@@ -17,6 +18,7 @@ import {
   connectorAppManagers,
   everyone,
   gatewayChats,
+  gatewayOnboarding,
   organizationAdmins,
   organizationAdminsOnly,
   organizationConnectorApps,
@@ -61,6 +63,13 @@ import PrivateChannelRoomsPage from "../pages/workspace/PrivateChannelRoomsPage"
 import WorkspaceConnectorsPage from "../pages/workspace/WorkspaceConnectorsPage";
 import WorkspaceGeneralPage from "../pages/workspace/WorkspaceGeneralPage";
 import WorkspaceUsersPage from "../pages/workspace/WorkspaceUsersPage";
+
+const GetStartedPage = lazy(() => import("../pages/get-started/GetStartedPage"));
+const getStarted = (
+  <Suspense fallback={null}>
+    <GetStartedPage />
+  </Suspense>
+);
 
 // The chat UI is loaded only when the page is opened.
 const ChatsPage = lazy(() => import("../pages/chats/ChatsPage"));
@@ -183,6 +192,7 @@ export const ROUTES: readonly AppRoute[] = [
   page("/overview", everyone, <OverviewPage />),
 
   page("/ecosystem", everyone, <EcosystemGraphPage />),
+  page("/get-started", allOf(gatewayOnboarding, agentManagement), getStarted),
   page("/chats", gatewayChats, chats),
   page("/chats/agents/:agentId", gatewayChats, chats),
   page("/chats/rooms/:roomId", gatewayChats, chats),
@@ -419,6 +429,7 @@ export const RAIL: readonly RailItem[] = [
   railItem("Home", "/overview", HomeOutlined, {
     activeFor: ["/overview", "/ecosystem"],
   }),
+  railItem("Get started", "/get-started", RocketLaunchOutlined),
   railItem("Chats", "/chats", ForumOutlined),
   railItem("Agents", "/agents", SmartToyOutlined),
   railItem("Rooms", "/rooms", MeetingRoomOutlined),

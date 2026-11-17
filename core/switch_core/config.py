@@ -19,6 +19,7 @@ from switch_core.feature_flags import (
     BUDDY_SLACK_HANDOFF,
     DECISION_ROUTING,
     FOLLOW_THE_CONVERSATION,
+    GATEWAY_ONBOARDING,
     HOSTED_AGENTS,
     KNOWN_FEATURE_FLAGS,
     ORGANIZATION_CONNECTOR_APPS,
@@ -1544,6 +1545,10 @@ class SwitchConfig(BaseSettings):
     @property
     def hosted_agents_enabled(self) -> bool:
         return self.feature_flags[HOSTED_AGENTS]
+
+    @property
+    def gateway_onboarding_enabled(self) -> bool:
+        return self.feature_flags[GATEWAY_ONBOARDING]
 
     @property
     def service_connections_enabled(self) -> bool:

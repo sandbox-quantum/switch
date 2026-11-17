@@ -1891,6 +1891,9 @@ class AuthConfigResponse(BaseModel):
     # authenticated everywhere (CHOO-1865).
     password_login_enabled: bool
     signup_enabled: bool
+    # Whether the web dashboard's sign-in page offers sign-up too, behind
+    # `gateway_onboarding`; Console offers it wherever `signup_enabled` is.
+    web_signup_enabled: bool
     test_account_reset_enabled: bool
     oidc_enabled: bool
     oidc_provider_label: str | None

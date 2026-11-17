@@ -15,9 +15,9 @@ vi.hoisted(() => {
   } as unknown as typeof window.electronAPI;
 });
 
+import { buddyWelcomeMessage } from '@switch-console/chat-ui/model/buddy-welcome-message';
 import { ChatMarkdown } from '@switch-console/chat-ui/ui/chat-markdown';
 import { ConsoleChatHost } from '@renderer/features/chats/console-chat-host';
-import { buddyWelcomeMessage } from '@renderer/features/switch-buddy/buddy-welcome-message';
 import '@renderer/index.css';
 
 let container: HTMLDivElement | null = null;

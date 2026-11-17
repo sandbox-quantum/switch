@@ -335,6 +335,10 @@ export interface RoomPerson {
 }
 
 export interface RoomDetail extends RoomSummary {
+  /** The room's channel on its messaging app, where Switch knows how to link to it; absent from older servers. */
+  external_channel_url?: string | null;
+  /** The channel's name on its messaging app; absent from older servers. */
+  linked_channel_name?: string | null;
   transport_room_id: string;
   /** @deprecated Alias of `transport_room_id`, carried for the compatibility window. */
   matrix_room_id: string;
@@ -1629,6 +1633,15 @@ export async function login(email: string, password: string): Promise<UserInfo> 
   return jsonRequest<UserInfo>("/auth/login", "POST", { email, password });
 }
 
+/** Creates an account and signs it in, where the server offers sign-up. */
+export async function signUp(input: {
+  email: string;
+  password: string;
+  display_name: string | null;
+}): Promise<UserInfo> {
+  return jsonRequest<UserInfo>("/auth/signup", "POST", input);
+}
+
 // Throws when the cookie wasn't cleared, so a failed sign-out never looks
 // like a signed-out browser that a reload would sign straight back in.
 export async function logout(): Promise<void> {
@@ -1668,6 +1681,11 @@ export async function deleteMyAccount(email: string): Promise<void> {
   await jsonRequest("/auth/me", "DELETE", { email });
 }
 
+/** Wipes a test account and everything it owns, on a test server that allows it, confirmed by its email. */
+export async function resetTestAccount(email: string): Promise<void> {
+  await jsonRequest("/auth/me/reset-test-account", "POST", { email });
+}
+
 /** A sign-in link Switch Console handed this browser, as its page asks about
  * it before spending it. */
 export interface BrowserHandoffPeek {
@@ -1695,6 +1713,10 @@ export type SignupMode = "default_tenant" | "invite_only" | "open";
 
 export interface AuthConfig {
   password_login_enabled: boolean;
+  /** Whether this page offers sign-up; absent from older servers. */
+  web_signup_enabled?: boolean;
+  /** Whether this is a test server, which offers test tools; absent from older servers. */
+  test_account_reset_enabled?: boolean;
   oidc_enabled: boolean;
   oidc_provider_label: string | null;
   signup_mode: SignupMode;

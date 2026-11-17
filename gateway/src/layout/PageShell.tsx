@@ -2,7 +2,8 @@ import { Alert, Box, Button, Stack } from "@mui/material";
 import { type ReactNode, Suspense, lazy } from "react";
 import { Outlet, useLocation } from "react-router";
 import { useAuth } from "../data/AuthContext";
-import { GATEWAY_CHATS } from "../data/featureFlags";
+import { GATEWAY_CHATS, GATEWAY_ONBOARDING } from "../data/featureFlags";
+import { FULL_WINDOW } from "../routes/roleMatrix";
 import { AREAS, enteredArea } from "../routes/routeTable";
 import LinkNoticeBanner from "./LinkNoticeBanner";
 import NavRail from "./NavRail";
@@ -10,6 +11,20 @@ import TopBar from "./TopBar";
 
 // Loaded only on a server with chats in the dashboard: it carries the chat UI.
 const WebChatHost = lazy(() => import("../pages/chats/WebChatHost"));
+
+// Loaded only on a server with getting started on the web.
+const CloudWarmUp = lazy(() => import("../pages/get-started/CloudWarmUp"));
+
+/** Warms the person's cloud device under every page, where the server has getting started on the web. */
+function WarmUp() {
+  const { capabilities } = useAuth();
+  if (!capabilities.features[GATEWAY_ONBOARDING]) return null;
+  return (
+    <Suspense fallback={null}>
+      <CloudWarmUp />
+    </Suspense>
+  );
+}
 
 /** Keeps the person's chats live under every page, where the server has them. */
 function WithChats({ children }: { children: ReactNode }) {
@@ -34,6 +49,12 @@ export default function PageShell() {
   const { capabilities } = useAuth();
   const area = enteredArea(pathname, capabilities);
   const withRail = area === null || !AREAS[area].outsideWorkspace;
+  if (FULL_WINDOW.includes(pathname))
+    return (
+      <Box component="main" sx={{ height: "100vh" }}>
+        <Outlet />
+      </Box>
+    );
   return (
     <Box
       sx={{
@@ -69,6 +90,7 @@ export default function PageShell() {
           }}
         >
           <Box sx={area === null ? undefined : { px: 3, pt: 3, "&:empty": { display: "none" } }}>
+            <WarmUp />
             <WorkspaceMismatchBanner />
             <StaleSessionBanner />
             <LinkNoticeBanner />

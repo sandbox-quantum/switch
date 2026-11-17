@@ -16,6 +16,7 @@
     "noEmit": true,
     "paths": {
       "@switch-console/chat-ui/*": ["../console/packages/chat-ui/src/*"],
+      "@switch-console/provider-icons/*": ["../console/packages/plugins/src/agents/impl/*/icon.ts"],
       "*": ["./node_modules/@types/*", "./node_modules/*"]
     }
   },

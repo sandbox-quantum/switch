@@ -10,6 +10,8 @@ COPY gateway/package.json gateway/package-lock.json ./
 RUN npm ci
 # The chat UI it shares with Switch Console, compiled from source beside it.
 COPY console/packages/chat-ui/ /src/console/packages/chat-ui/
+# The AI providers' icons, from Switch Console's plugins.
+COPY console/packages/plugins/src/agents/impl/ /src/console/packages/plugins/src/agents/impl/
 COPY console/tsconfig.base.json /src/console/
 COPY gateway/ .
 # A dashboard test imports this Console module to check the links Console opens;

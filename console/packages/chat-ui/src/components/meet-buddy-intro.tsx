@@ -64,11 +64,14 @@ function seconds(value: number): Promise<void> {
 
 export function MeetBuddyIntro({
   firstName,
+  here,
   play,
   onPlayed,
   after,
 }: {
   firstName: string | null;
+  /** Where the person is meeting it (`buddyIntroLines`). */
+  here: string;
   play: boolean;
   onPlayed: () => void;
   /** Drawn under the lines once they are all said, as the last turn of the chat. */
@@ -81,7 +84,7 @@ export function MeetBuddyIntro({
   const [talking, setTalking] = useState(!animated);
   const [bubble, setBubble] = useState(animated ? -1 : Number.POSITIVE_INFINITY);
   const expression = useBuddyExpression(landed && !reduced);
-  const lines = buddyIntroLines(firstName);
+  const lines = buddyIntroLines(firstName, here);
   const playedRef = useRef(onPlayed);
   playedRef.current = onPlayed;
 

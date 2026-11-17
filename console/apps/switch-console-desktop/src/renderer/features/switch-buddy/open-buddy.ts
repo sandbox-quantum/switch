@@ -1,6 +1,14 @@
 import { focusComposerWhenOpened } from '@switch-console/chat-ui/components/chat-composer';
 import { introduceChat } from '@switch-console/chat-ui/components/chat-entrance';
 import type { ChatSummary } from '@switch-console/chat-ui/contracts/chats';
+import {
+  buddyHandoffRequestId,
+  buddyRestartedHandoffRequestId,
+} from '@switch-console/chat-ui/model/buddy-setup-step';
+import {
+  buddyChannelOpener,
+  buddyWelcomeMessage,
+} from '@switch-console/chat-ui/model/buddy-welcome-message';
 import { chatsStore, chatTitler } from '@renderer/features/chats/stores/chats';
 import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
 import { failureText } from '@renderer/lib/errors/describe-failure';
@@ -12,10 +20,11 @@ import { RpcError } from '@shared/lib/ipc/rpc-error';
 import { firstNameOf } from './buddy-identity';
 import { buddyIntroStore } from './buddy-intro-store';
 import { buddyPerson } from './buddy-person';
-import { buddyChannelOpener, buddyWelcomeMessage } from './buddy-welcome-message';
 
 /** What the buddy's first chat is called, as on the board; it keeps it. */
 export const BUDDY_CHAT_NAME = 'Welcome';
+
+export { buddyHandoffRequestId, buddyRestartedHandoffRequestId };
 
 /** The buddy chats being found or made, by server and agent: one at a time each. */
 const finding = new Map<string, Promise<ChatSummary>>();
@@ -168,29 +177,6 @@ export async function openBuddyAfterOnboarding(
   }
   buddyIntroStore.skipped();
   appState.navigation.navigate('switchBuddy', { serverId });
-}
-
-/**
- * The same for every attempt to continue with the buddy on one
- * connection, so a double click, a second window or a reopened Console all
- * land on the one chat the server made for the first.
- */
-export function buddyHandoffRequestId(agentId: string, bridgeId: string): string {
-  return `buddy-handoff:${agentId}:${bridgeId}`;
-}
-
-/**
- * A hand-off started again, deliberately, after the person linked a different
- * account than the first one was made for: a new room for that account, never
- * the old one. Fixed by the account too, so a double click or a restart still
- * lands on the one room made for it.
- */
-export function buddyRestartedHandoffRequestId(
-  agentId: string,
-  bridgeId: string,
-  externalAccountId: string
-): string {
-  return `${buddyHandoffRequestId(agentId, bridgeId)}:${externalAccountId}`;
 }
 
 /** The handoffs under way, by request id: one at a time each. */

@@ -147,6 +147,8 @@ export interface Controller {
    * its providers; and revoke it. */
   can_edit: boolean;
   can_remove: boolean;
+  /** The key a provider login is sealed to for it; null for a controller that keeps none. Absent from older servers. */
+  public_key?: { alg: string; key: string; key_id: string } | null;
 }
 
 export interface Definition {
@@ -177,6 +179,8 @@ export interface ManagedAgent {
   status: AgentStatus | null;
   created_at: string;
   updated_at: string;
+  /** The template run that created it, as the server vouches for it; absent from older servers. */
+  template?: { id: string; key: string; revision?: number | null } | null;
   /** What the caller may do to it: start, stop, restart and edit it; and
    * stop managing it. */
   can_edit: boolean;

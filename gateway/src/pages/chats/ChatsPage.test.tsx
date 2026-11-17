@@ -18,7 +18,9 @@ const api = vi.hoisted(() => ({
   loadRooms: vi.fn(),
 }));
 vi.mock("../../data/api", () => api);
-vi.mock("../../data/AuthContext", () => ({ useAuth: () => ({ user: { id: "me" } }) }));
+vi.mock("../../data/AuthContext", () => ({
+  useAuth: () => ({ user: { id: "me" }, capabilities: { features: {} } }),
+}));
 
 const client = vi.hoisted(() => ({ addChatMember: vi.fn(async () => []) }));
 vi.mock("./webChatClient", async (importOriginal) => ({
@@ -292,6 +294,20 @@ describe("ChatsPage", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Join the conversation" }));
     await waitFor(() => expect(client.addChatMember).toHaveBeenCalledWith("launch", "me"));
     expect(refresh).toHaveBeenCalled();
+  });
+
+  it("points a room on a messaging app at its channel there", async () => {
+    api.fetchRoom.mockResolvedValue({
+      name: "Sprint Room",
+      can_manage: true,
+      bridge_id: "b1",
+      bridge_type: "mattermost",
+      external_channel_url: "https://chat.example/acme/channels/sprint",
+    } as never);
+    renderAt("/chats/rooms/sprint", storeWith([]));
+    expect(await screen.findByText(/conversation is on/)).toBeTruthy();
+    const open = screen.getByRole("link", { name: /^Open in/ });
+    expect(open.getAttribute("href")).toBe("https://chat.example/acme/channels/sprint");
   });
 
   it("offers no join for a room on a messaging app", async () => {

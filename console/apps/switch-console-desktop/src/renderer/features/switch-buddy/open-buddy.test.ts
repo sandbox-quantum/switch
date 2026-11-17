@@ -25,7 +25,7 @@ vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
   switchServersStore: { statusFor: () => ({ user: { name: 'Max Tam' } }) },
 }));
 vi.mock('./buddy-intro-store', () => ({ buddyIntroStore: { skipped } }));
-vi.mock('./buddy-welcome-message', () => ({
+vi.mock('@switch-console/chat-ui/model/buddy-welcome-message', () => ({
   buddyChannelOpener: () => 'opener',
   buddyWelcomeMessage: ({ firstName, agentName }: { firstName: string; agentName: string }) =>
     `welcome ${firstName} from ${agentName}`,

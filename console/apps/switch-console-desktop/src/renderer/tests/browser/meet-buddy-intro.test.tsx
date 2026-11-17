@@ -14,8 +14,8 @@ vi.hoisted(() => {
   } as unknown as typeof window.electronAPI;
 });
 
-import { buddyIntroLines } from '@renderer/features/switch-buddy/buddy-intro-lines';
-import { MeetBuddyIntro } from '@renderer/features/switch-buddy/meet-buddy-intro';
+import { buddyIntroLines } from '@switch-console/chat-ui/components/buddy-intro-lines';
+import { MeetBuddyIntro } from '@switch-console/chat-ui/components/meet-buddy-intro';
 import '@renderer/index.css';
 
 let container: HTMLDivElement | null = null;
@@ -36,6 +36,7 @@ async function render(play: boolean, onPlayed = () => {}) {
     root!.render(
       <MeetBuddyIntro
         firstName="Max"
+        here="Console"
         play={play}
         onPlayed={onPlayed}
         after={<p data-testid="after">pick</p>}
@@ -58,7 +59,7 @@ describe('Meet switch-buddy opening', () => {
   it('is drawn at rest when it has already played', async () => {
     await render(false);
     expect(container!.textContent).toContain('Meet switch-buddy');
-    expect(shownLines()).toEqual(buddyIntroLines('Max'));
+    expect(shownLines()).toEqual(buddyIntroLines('Max', 'Console'));
     expect(container!.querySelector('[data-testid="after"]')).not.toBeNull();
   });
 

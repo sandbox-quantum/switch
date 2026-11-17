@@ -534,6 +534,7 @@ class TestTheLockLeavesOtherWaysIn:
                     session_factory=world.factory,
                     user_store=UserStore(),
                     organization_directory=LocalDirectory(),
+                    hosted=None,
                 )
 
         assert response.status_code == 303

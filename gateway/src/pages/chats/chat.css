@@ -14,6 +14,8 @@
 @source "../../../node_modules/streamdown/dist/*.js";
 
 @custom-variant dark (&:is([data-mui-color-scheme="dark"] *));
+/* Console's name for its dark theme, which the shared pages use too. */
+@custom-variant emdark (&:is([data-mui-color-scheme="dark"] *));
 
 @theme inline {
   --font-sans: inherit;
@@ -28,6 +30,7 @@
   --color-background-3: var(--sw-accent);
   --color-background-quaternary: var(--sw-muted);
   --color-background-quaternary-1: var(--sw-secondary);
+  --color-background-tertiary: var(--sw-muted);
   --color-background-tertiary-1: var(--sw-muted);
   --color-foreground: var(--sw-foreground);
   --color-foreground-muted: var(--sw-muted-foreground);
@@ -77,6 +80,7 @@
   --hair-soft: color-mix(in oklch, var(--sw-foreground) 6%, transparent);
   --menu-pill: var(--sw-card);
   --menu-faint: var(--sw-muted);
+  --segment-track: color-mix(in oklch, var(--sw-foreground) 6%, transparent);
 }
 
 /* Tailwind's reset, inside the chat only. */

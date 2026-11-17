@@ -13,7 +13,7 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { type BridgeDetail, createBridge } from "../../data/api";
 import { useBridgeTypes } from "../../data/hooks";
 import {
@@ -24,6 +24,8 @@ import {
 
 interface Props {
   open: boolean;
+  /** The messaging app to open on, as its bridge type; "" to let the person pick. */
+  initialType: string;
   onClose: () => void;
   onSuccess: (bridge: BridgeDetail) => void;
 }
@@ -34,6 +36,7 @@ function humanize(key: string): string {
 
 export default function RegisterMessagingAppDialog({
   open,
+  initialType,
   onClose,
   onSuccess,
 }: Props) {
@@ -69,6 +72,12 @@ export default function RegisterMessagingAppDialog({
     },
     [bridgeTypes],
   );
+
+  // Opened for one app, it starts on that app's form once the types are known.
+  useEffect(() => {
+    if (open && initialType && bridgeTypes?.some((t) => t.key === initialType))
+      handleTypeChange(initialType);
+  }, [open, initialType, bridgeTypes, handleTypeChange]);
 
   const reset = useCallback(() => {
     setSelectedType("");

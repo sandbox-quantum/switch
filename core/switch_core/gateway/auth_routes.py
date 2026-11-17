@@ -438,6 +438,8 @@ async def auth_config(
     return AuthConfigResponse(
         password_login_enabled=config.gateway_password_login_enabled,
         signup_enabled=config.gateway_signup_open,
+        web_signup_enabled=config.gateway_signup_open
+        and config.gateway_onboarding_enabled,
         test_account_reset_enabled=config.gateway_allow_test_account_reset,
         oidc_enabled=config.gateway_oidc_enabled,
         oidc_provider_label=config.gateway_oidc_provider_label,

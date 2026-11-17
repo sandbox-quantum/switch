@@ -14,9 +14,9 @@
  *
  * Plain data with no imports, because the harness reads it too. Every page
  * assumes the server has `agent_management`, `service_connections`,
- * `organization_connector_apps` and `gateway_chats` on, as the harness's
- * stack does, and more than one organization: the server's default one and
- * the harness's own. */
+ * `organization_connector_apps`, `gateway_chats` and `gateway_onboarding` on,
+ * as the harness's stack does, and more than one organization: the server's
+ * default one and the harness's own. */
 
 /** The roles, each a real account in the harness:
  *
@@ -37,6 +37,11 @@ const ADMINS: readonly Persona[] = ["orgAdmin", "workspaceAdmin", "operator"];
 const ORGANIZATION_ADMIN_OR_OPERATOR: readonly Persona[] = ["orgAdmin", "operator"];
 const ORGANIZATION_ADMIN: readonly Persona[] = ["orgAdmin"];
 const OPERATOR: readonly Persona[] = ["operator"];
+
+/** Pages that fill the window, with no rail or top bar, as Console's first
+ * run does. The shell draws them bare, and the harness, which follows the
+ * rail from page to page, comes back to one with a rail after each. */
+export const FULL_WINDOW: readonly string[] = ["/get-started"];
 
 export interface MatrixPage {
   /** The route's own path, `:name` parameters included. */
@@ -66,6 +71,7 @@ function page(path: string, open: readonly Persona[]): MatrixPage {
 export const PAGES: readonly MatrixPage[] = [
   page("/overview", EVERYONE),
   page("/ecosystem", EVERYONE),
+  page("/get-started", EVERYONE),
   page("/chats", EVERYONE),
   page("/chats/agents/:agentId", EVERYONE),
   page("/chats/rooms/:roomId", EVERYONE),
@@ -137,6 +143,7 @@ export const REDIRECTS: readonly MatrixRedirect[] = [
 // The ecosystem graph has no rail item of its own: Home links to it.
 const RAIL_EVERYONE = [
   "Home",
+  "Get started",
   "Chats",
   "Agents",
   "Rooms",

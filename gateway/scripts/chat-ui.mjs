@@ -11,8 +11,19 @@ export const CHAT_UI_SRC = fileURLToPath(
   new URL("../../console/packages/chat-ui/src", import.meta.url),
 );
 
+/* The AI providers' icons, as Console's plugins carry them. */
+export const PROVIDER_ICONS_SRC = fileURLToPath(
+  new URL("../../console/packages/plugins/src/agents/impl", import.meta.url),
+);
+
 export const chatUiResolve = {
-  alias: [{ find: /^@switch-console\/chat-ui\/(.*)$/, replacement: `${CHAT_UI_SRC}/$1` }],
+  alias: [
+    { find: /^@switch-console\/chat-ui\/(.*)$/, replacement: `${CHAT_UI_SRC}/$1` },
+    {
+      find: /^@switch-console\/provider-icons\/([a-z-]+)$/,
+      replacement: `${PROVIDER_ICONS_SRC}/$1/icon.ts`,
+    },
+  ],
   dedupe: [
     "react",
     "react-dom",

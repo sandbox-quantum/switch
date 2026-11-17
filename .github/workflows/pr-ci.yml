@@ -129,8 +129,10 @@ jobs:
             gateway:
               - *shared
               - 'gateway/**'
-              # The chat UI the gateway compiles from Console's package.
+              # The chat UI the gateway compiles from Console's package, and
+              # the AI providers' icons it takes from Console's plugins.
               - 'console/packages/chat-ui/**'
+              - 'console/packages/plugins/src/agents/impl/*/icon.ts'
               # The dashboard pages Switch Console opens, which the gateway's
               # tests check it still routes.
               - 'console/apps/switch-console-desktop/src/shared/core/switch-servers/dashboard-pages.ts'
@@ -160,6 +162,7 @@ jobs:
               - *shared
               - 'gateway/**'
               - 'console/packages/chat-ui/**'
+              - 'console/packages/plugins/src/agents/impl/*/icon.ts'
               - 'core/**'
               - 'console/tooling-e2e/**'
               - 'console/pnpm-lock.yaml'
