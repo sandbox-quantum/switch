@@ -21,6 +21,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState } 
 import ConfirmDialog from "../../components/ConfirmDialog";
 import InfoTip from "../../components/InfoTip";
 import DataTable, { type TableColumn, TableEmptyState } from "../../components/DataTable";
+import PageHeader from "../../components/PageHeader";
 import RowActionsMenu, { type RowAction } from "../../components/RowActionsMenu";
 import {
   type BridgeDetail,
@@ -127,21 +128,24 @@ export default function MessagingAppsPage() {
 
   return (
     <Box>
-      <Stack direction="row" alignItems="flex-start" spacing={2} mb={3}>
-        <Box sx={{ flexGrow: 1 }}>
-          <Typography variant="h5">Messaging apps</Typography>
+      <PageHeader
+        sx={{ mb: 3 }}
+        title={<Typography variant="h5">Messaging apps</Typography>}
+        description={
           <Typography variant="body2" color="text.secondary" mt={0.5}>
             {isAdmin
               ? `The messaging apps connected to ${workspaceName}, and who you are inside them.`
               : `Who you are in the messaging apps connected to ${workspaceName}.`}
           </Typography>
-        </Box>
-        {isAdmin && (
-          <Button variant="contained" startIcon={<AddOutlined />} onClick={() => setRegisterOpen(true)}>
-            Add messaging app
-          </Button>
-        )}
-      </Stack>
+        }
+        actions={
+          isAdmin && (
+            <Button variant="contained" startIcon={<AddOutlined />} onClick={() => setRegisterOpen(true)}>
+              Add messaging app
+            </Button>
+          )
+        }
+      />
 
       {isAdmin && (
         <ConnectedApps

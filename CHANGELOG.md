@@ -876,6 +876,12 @@ version of their own to them without also giving them a release of their own.
   last column has a header menu could be scrolled 23px to the side at any
   width, because the menu button the table hides until the header is hovered
   stuck out past it.
+- **A page or section title's buttons cope with a narrow window.** Add
+  budget, Add user, Create API key and the other buttons beside a dashboard
+  heading could wrap onto the title, get clipped, or run past the edge of
+  the page as the window narrowed, instead of moving to their own line. The
+  usage period picker, the resources tabs and the sign-out buttons on Your
+  account had the same problem; all now give way cleanly.
 
 #### Security
 - **Cookie-signed changes must come from Switch's own origins.** Every POST,

@@ -9,6 +9,7 @@ import { type ReactNode, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
 import ConfirmDialog from "../../components/ConfirmDialog";
 import DataTable, { TableEmptyState, type TableColumn } from "../../components/DataTable";
+import PageHeader from "../../components/PageHeader";
 import RowActionsMenu, { type RowAction } from "../../components/RowActionsMenu";
 import { useAuth } from "../../data/AuthContext";
 import { type TemplateSummary, deleteTemplate, fetchTemplateContent } from "../../data/api";
@@ -186,15 +187,16 @@ export default function TemplatesPage() {
 
   return (
     <Box>
-      <Stack direction="row" sx={{ alignItems: "flex-start", justifyContent: "space-between", gap: 2, mb: 3 }}>
-        <Box sx={{ minWidth: 0 }}>
-          <Typography variant="h5">Templates</Typography>
+      <PageHeader
+        sx={{ mb: 3 }}
+        title={<Typography variant="h5">Templates</Typography>}
+        description={
           <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
             Starting points for a new agent, room or group in {workspaceName}.
           </Typography>
-        </Box>
-        {newTemplate}
-      </Stack>
+        }
+        actions={newTemplate}
+      />
 
       {copyError && (
         <Alert severity="error" onClose={() => setCopyError(null)} sx={{ mb: 2 }}>

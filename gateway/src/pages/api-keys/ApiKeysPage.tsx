@@ -12,6 +12,7 @@ import DataTable, {
 } from "../../components/DataTable";
 import InfoTip from "../../components/InfoTip";
 import PageBanner from "../../components/PageBanner";
+import PageHeader from "../../components/PageHeader";
 import RowActionsMenu, { type RowAction } from "../../components/RowActionsMenu";
 import { useAuth } from "../../data/AuthContext";
 import {
@@ -310,17 +311,20 @@ function ApiKeys({ scope, userId, workspace }: { scope: ListScope; userId: strin
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0 }}>
-      <Stack direction="row" spacing={2} sx={{ alignItems: "flex-start", justifyContent: "space-between", mb: 3 }}>
-        <Box sx={{ minWidth: 0 }}>
-          <Typography variant="h5">API keys</Typography>
+      <PageHeader
+        sx={{ mb: 3 }}
+        title={<Typography variant="h5">API keys</Typography>}
+        description={
           <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
             {yours ? `Your keys in ${workspace}.` : `The keys in ${workspace}. Only a key's owner can copy it.`}
           </Typography>
-        </Box>
-        <Button variant="contained" startIcon={<AddCircleOutline />} onClick={() => setCreateOpen(true)}>
-          Create API key
-        </Button>
-      </Stack>
+        }
+        actions={
+          <Button variant="contained" startIcon={<AddCircleOutline />} onClick={() => setCreateOpen(true)}>
+            Create API key
+          </Button>
+        }
+      />
 
       {data !== null && error !== null && (
         <Box sx={{ mb: 2 }}>

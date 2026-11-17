@@ -20,6 +20,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router";
 import ConfirmDialog from "../../components/ConfirmDialog";
 import DataTable, { type TableColumn, TableEmptyState } from "../../components/DataTable";
+import PageHeader from "../../components/PageHeader";
 import RowActionsMenu, { type RowAction } from "../../components/RowActionsMenu";
 import { useAuth } from "../../data/AuthContext";
 import {
@@ -377,36 +378,39 @@ export default function RoomsPage() {
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0 }}>
-      <Stack direction="row" alignItems="flex-start" justifyContent="space-between" spacing={2} mb={2}>
-        <Box>
-          <Typography variant="h5">Rooms</Typography>
+      <PageHeader
+        sx={{ mb: 2 }}
+        title={<Typography variant="h5">Rooms</Typography>}
+        description={
           <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
             {scope === "yours"
               ? `Rooms in ${workspace} that you own, are in, or have an agent in.`
               : `Rooms in ${workspace}.`}
           </Typography>
-        </Box>
-        <Stack direction="row" spacing={1} sx={{ flexShrink: 0 }}>
-          {selectedRooms.length > 0 && (
-            <Button
-              variant="outlined"
-              startIcon={viewingArchived ? <UnarchiveOutlined /> : <ArchiveOutlined />}
-              onClick={() =>
-                viewingArchived ? void unarchive(selectedRooms) : ask({ kind: "archive", rooms: selectedRooms })
-              }
-            >
-              {viewingArchived ? "Unarchive" : "Archive"} ({selectedRooms.length})
+        }
+        actions={
+          <>
+            {selectedRooms.length > 0 && (
+              <Button
+                variant="outlined"
+                startIcon={viewingArchived ? <UnarchiveOutlined /> : <ArchiveOutlined />}
+                onClick={() =>
+                  viewingArchived ? void unarchive(selectedRooms) : ask({ kind: "archive", rooms: selectedRooms })
+                }
+              >
+                {viewingArchived ? "Unarchive" : "Archive"} ({selectedRooms.length})
+              </Button>
+            )}
+            <Button variant="outlined" startIcon={<FolderOutlined />} onClick={() => navigate("/rooms/groups")}>
+              Manage groups
             </Button>
-          )}
-          <Button variant="outlined" startIcon={<FolderOutlined />} onClick={() => navigate("/rooms/groups")}>
-            Manage groups
-          </Button>
-          <Button variant="outlined" startIcon={<AccountTreeIcon />} onClick={() => navigate("/rooms/graph")}>
-            Graph view
-          </Button>
-          {newRoom}
-        </Stack>
-      </Stack>
+            <Button variant="outlined" startIcon={<AccountTreeIcon />} onClick={() => navigate("/rooms/graph")}>
+              Graph view
+            </Button>
+            {newRoom}
+          </>
+        }
+      />
 
       {notice && (
         <Alert severity={notice.severity} onClose={() => setNotice(null)} sx={{ mb: 2 }}>

@@ -8,7 +8,6 @@ import {
   Chip,
   CircularProgress,
   Snackbar,
-  Stack,
   Typography,
 } from "@mui/material";
 import { useCallback, useMemo, useState } from "react";
@@ -18,6 +17,7 @@ import DataTable, {
   type TableColumn,
   TableEmptyState,
 } from "../../components/DataTable";
+import PageHeader from "../../components/PageHeader";
 import RowActionsMenu, { type RowAction } from "../../components/RowActionsMenu";
 import { type ListedUser, endUserSessions } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
@@ -132,21 +132,20 @@ export default function UsersPage() {
 
   return (
     <Box>
-      <Stack direction="row" alignItems="center" justifyContent="space-between" mb={2}>
-        <Stack spacing={0.5}>
-          <Typography variant="h5">Users</Typography>
-          <Typography variant="body2" sx={{ color: "text.secondary" }}>
+      <PageHeader
+        sx={{ mb: 2 }}
+        title={<Typography variant="h5">Users</Typography>}
+        description={
+          <Typography variant="body2" sx={{ color: "text.secondary", mt: 0.5 }}>
             Every account, whichever workspaces it is in.
           </Typography>
-        </Stack>
-        <Button
-          variant="contained"
-          startIcon={<AddCircleOutline />}
-          onClick={() => setCreateOpen(true)}
-        >
-          Add user
-        </Button>
-      </Stack>
+        }
+        actions={
+          <Button variant="contained" startIcon={<AddCircleOutline />} onClick={() => setCreateOpen(true)}>
+            Add user
+          </Button>
+        }
+      />
 
       {error !== null && (
         <Alert severity="error" sx={{ mb: 2 }}>

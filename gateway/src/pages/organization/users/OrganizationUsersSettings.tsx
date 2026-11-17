@@ -12,6 +12,7 @@ import {
 import { useCallback, useMemo, useState } from "react";
 import ConfirmDialog from "../../../components/ConfirmDialog";
 import DataTable, { type TableColumn, TableEmptyState } from "../../../components/DataTable";
+import PageHeader from "../../../components/PageHeader";
 import RowActionsMenu, { type RowAction } from "../../../components/RowActionsMenu";
 import { useAuth } from "../../../data/AuthContext";
 import {
@@ -314,30 +315,28 @@ export default function OrganizationUsersSettings({
 
   return (
     <Box>
-      <Stack
-        direction="row"
-        spacing={2}
-        sx={{ alignItems: "flex-start", justifyContent: "space-between", mb: 3 }}
-      >
-        <Stack spacing={0.5}>
-          <Typography variant="h5">Users</Typography>
-          <Typography variant="body2" color="text.secondary">
+      <PageHeader
+        sx={{ mb: 3 }}
+        title={<Typography variant="h5">Users</Typography>}
+        description={
+          <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
             Everyone in {organization.name}. Someone is removed from each workspace before they can
             be removed from the organization.
           </Typography>
-        </Stack>
-        {organization.administers && (
-          <Button
-            variant="contained"
-            startIcon={<Add />}
-            onClick={() => setInviting("pick")}
-            disabled={openWorkspaces.length === 0}
-            sx={{ flexShrink: 0 }}
-          >
-            Invite users
-          </Button>
-        )}
-      </Stack>
+        }
+        actions={
+          organization.administers && (
+            <Button
+              variant="contained"
+              startIcon={<Add />}
+              onClick={() => setInviting("pick")}
+              disabled={openWorkspaces.length === 0}
+            >
+              Invite users
+            </Button>
+          )
+        }
+      />
       <Stack spacing={1.5} sx={{ mb: 3 }}>
         <OrganizationUsersNotices
           asOperator={asOperator}

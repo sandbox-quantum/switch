@@ -1,7 +1,8 @@
 import AddIcon from "@mui/icons-material/Add";
-import { Box, Button, Stack, Tab, Tabs, Typography } from "@mui/material";
+import { Box, Button, Tab, Tabs, Typography } from "@mui/material";
 import { useState } from "react";
 import { Navigate, useLocation, useNavigate, useSearchParams } from "react-router";
+import PageHeader from "../../components/PageHeader";
 import CreateDocumentDialog from "./CreateDocumentDialog";
 import CreatePackageDialog from "./CreatePackageDialog";
 import CreateReferenceDialog from "./CreateReferenceDialog";
@@ -89,20 +90,22 @@ export default function ResourcesPage({ withTemplates }: { withTemplates: boolea
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0 }}>
-      <Stack direction="row" alignItems="center" justifyContent="space-between" mb={2}>
-        <Typography variant="h5">Resources</Typography>
-        <Button
-          variant="contained"
-          startIcon={<AddIcon />}
-          onClick={() => setCreateOpen(true)}
-        >
-          {active.newLabel}
-        </Button>
-      </Stack>
+      <PageHeader
+        sx={{ mb: 2 }}
+        title={<Typography variant="h5">Resources</Typography>}
+        actions={
+          <Button variant="contained" startIcon={<AddIcon />} onClick={() => setCreateOpen(true)}>
+            {active.newLabel}
+          </Button>
+        }
+      />
 
       <Tabs
         value={tab}
         onChange={(_, v) => setTab(v as ResourceTab)}
+        variant="scrollable"
+        scrollButtons="auto"
+        allowScrollButtonsMobile
         sx={{ mb: 2, borderBottom: 1, borderColor: "divider" }}
       >
         {tabs.map((t) => (

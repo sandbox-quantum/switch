@@ -23,6 +23,7 @@ import ConfirmDialog from "../../components/ConfirmDialog";
 import DataTable, { TableEmptyState } from "../../components/DataTable";
 import InfoTip from "../../components/InfoTip";
 import PageBanner from "../../components/PageBanner";
+import PageHeader from "../../components/PageHeader";
 import type { RowAction } from "../../components/RowActionsMenu";
 import { useAuth } from "../../data/AuthContext";
 import { deleteAgent } from "../../data/api";
@@ -494,23 +495,28 @@ function Devices({
       <Stack spacing={4}>
         <DevicesTable rows={deviceRows} showOwner={showOwner} actionsFor={deviceActions} emptyState={emptyDevices} />
         <Box>
-          <Stack direction="row" spacing={2} sx={{ alignItems: "center", justifyContent: "space-between", mb: 2 }}>
-            <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
-              <Typography variant="subtitle1" component="h2" sx={{ fontWeight: 600 }}>
-                Managed agents
-              </Typography>
-              <InfoTip>"Wanted" is what its owner asked for; "Actual" is what its device last reported.</InfoTip>
-            </Stack>
-            <Button
-              variant="outlined"
-              startIcon={<AddCircleOutline />}
-              onClick={async () => {
-                if (await loadOwn()) setEditingAgent("new");
-              }}
-            >
-              New managed agent
-            </Button>
-          </Stack>
+          <PageHeader
+            sx={{ mb: 2 }}
+            title={
+              <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
+                <Typography variant="subtitle1" component="h2" sx={{ fontWeight: 600 }}>
+                  Managed agents
+                </Typography>
+                <InfoTip>"Wanted" is what its owner asked for; "Actual" is what its device last reported.</InfoTip>
+              </Stack>
+            }
+            actions={
+              <Button
+                variant="outlined"
+                startIcon={<AddCircleOutline />}
+                onClick={async () => {
+                  if (await loadOwn()) setEditingAgent("new");
+                }}
+              >
+                New managed agent
+              </Button>
+            }
+          />
           <ManagedAgentsTable
             rows={agentRows}
             showOwner={showOwner}
@@ -544,19 +550,22 @@ function Devices({
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0 }}>
-      <Stack direction="row" spacing={2} sx={{ alignItems: "flex-start", justifyContent: "space-between", mb: 3 }}>
-        <Box sx={{ minWidth: 0 }}>
-          <Typography variant="h5">Devices</Typography>
+      <PageHeader
+        sx={{ mb: 3 }}
+        title={<Typography variant="h5">Devices</Typography>}
+        description={
           <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
             {showOwner
               ? `The devices that run agents in ${workspace}.`
               : `Your devices that run agents in ${workspace}.`}
           </Typography>
-        </Box>
-        <Button variant="contained" startIcon={<AddCircleOutline />} onClick={() => setAddOpen(true)}>
-          Add device
-        </Button>
-      </Stack>
+        }
+        actions={
+          <Button variant="contained" startIcon={<AddCircleOutline />} onClick={() => setAddOpen(true)}>
+            Add device
+          </Button>
+        }
+      />
 
       <Stack spacing={2} sx={{ mb: 2, "&:empty": { display: "none" } }}>
         {data !== null && loadError !== null && (

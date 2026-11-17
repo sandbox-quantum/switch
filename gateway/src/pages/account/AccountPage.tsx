@@ -242,7 +242,7 @@ function AccountCard({
           {description}
         </Typography>
       </Box>
-      <Stack direction="row" sx={{ gap: 1, flexShrink: 0 }}>
+      <Stack direction="row" flexWrap="wrap" sx={{ gap: 1, flexShrink: 0 }}>
         {children}
       </Stack>
       {error && (
