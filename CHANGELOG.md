@@ -457,6 +457,13 @@ version of their own to them without also giving them a release of their own.
   already refused both, so the current Workspace page no longer offers them.
 
 #### Changed
+- **The Discord connect form asks for the Server ID.** Discord's own app
+  calls the guild id a Server ID, and that is what you copy from the server
+  icon; the setting's key stays `guild_id`.
+- **The dashboard's budget page is called Usage & budget,** and its Add
+  budget button no longer squeezes until its label wraps out of it on a
+  narrower window. Back to workspace, in Organization settings and Platform,
+  returns to the page you came from rather than always to home.
 - **Auto-route's messages send workspace admins to Settings, not Admin.**
   Where a room says auto-route needs a decision service, or that the
   workspace turned it off, it points at Switch Console → Settings → Decision
