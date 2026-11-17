@@ -457,6 +457,10 @@ version of their own to them without also giving them a release of their own.
   already refused both, so the current Workspace page no longer offers them.
 
 #### Changed
+- **Auto-route's messages send workspace admins to Settings, not Admin.**
+  Where a room says auto-route needs a decision service, or that the
+  workspace turned it off, it points at Switch Console → Settings → Decision
+  routing, where the page now lives.
 - **Switch Trust guardrails are set per organization instead of once for
   the whole server.** Each organization's admins connect its own policy, with
   a policy ID and an API key, under Organization settings › Guardrails. Switch
@@ -4244,6 +4248,15 @@ version of their own to them without also giving them a release of their own.
   A machine cannot be given a Mistral Vibe login from Console yet.
 
 #### Changed
+- **The Admin pages are in Settings.** The Admin item is gone from the
+  sidebar. Workspace admins find Connectors and Decision routing in Settings,
+  after Agent providers, and every workspace admin sees Guardrails there:
+  which Switch Trust policy checks the workspace, or that none does, with the
+  way to the workspace's Guardrails page in the dashboard, or for an
+  organization admin to Organization settings. Each page says under its title
+  what your role lets you do there. Messaging apps is one page for everyone,
+  with Connect and each app's settings for admins and without the tooltips
+  and second heading. Links that opened Admin open the matching Settings page.
 - **Admin › Switch Trust points to the organization's guardrails on a server
   that sets them per organization.** Such a server no longer has a
   server-wide policy to edit, so the form gives way to its note and a button

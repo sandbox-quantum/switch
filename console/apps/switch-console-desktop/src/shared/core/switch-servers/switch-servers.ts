@@ -985,6 +985,26 @@ export type TrustSettings = {
 /** Outcome of loading Switch Trust's settings (`GET /trust-settings`).
  * Admin-only (a deployment operator, not a workspace admin), so a signed-in
  * non-operator gets `forbidden` rather than an empty form. */
+/** The Switch Trust policy that checks a workspace's messages, as anyone in
+ * it may read it (`GET /workspace/guardrails`). Its organization's admins
+ * connect it; nobody else changes it. */
+export type WorkspaceGuardrails = {
+  /** Something checks the workspace's messages. */
+  checking: boolean;
+  policyId: string | null;
+  /** Switch Trust's name for the policy, when it gave one. */
+  policyName: string | null;
+  /** Where the policy is shown on Switch Trust, when Switch can link there. */
+  policyUrl: string | null;
+};
+
+export type FetchWorkspaceGuardrailsResult =
+  | { kind: 'loaded'; guardrails: WorkspaceGuardrails }
+  /** The server predates per-organization guardrails. */
+  | { kind: 'unsupported' }
+  | { kind: 'unauthenticated' }
+  | { kind: 'error'; message: string };
+
 export type FetchTrustSettingsResult =
   | { kind: 'loaded'; settings: TrustSettings }
   /** A server that has each organization set its own policy, which no longer

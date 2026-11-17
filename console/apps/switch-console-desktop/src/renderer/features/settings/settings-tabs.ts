@@ -3,15 +3,21 @@
  *
  * Settings is about this person and this computer, so most of it is the same
  * for everyone. What changes is what needs a server (your messaging accounts,
- * keys and account live on one), what needs agent management, and whether the
+ * keys and account live on one), what needs agent management, whether the
  * server serves the web gateway that its workspace and organization settings
- * live in.
+ * live in, and what the person administers: a workspace's admins also look
+ * after its connectors and decision routing here and see its guardrails, and
+ * whoever runs a server with no web gateway its connector apps.
  */
 
 export type SettingsPageTab =
   | 'preferences'
   | 'messaging-apps'
   | 'clis-models'
+  | 'connectors'
+  | 'decision-routing'
+  | 'guardrails'
+  | 'connector-apps'
   | 'api-keys'
   | 'devices'
   | 'remote-hosts'
@@ -30,6 +36,10 @@ export const SETTINGS_TABS: readonly SettingsPageTab[] = [
   'preferences',
   'messaging-apps',
   'clis-models',
+  'connectors',
+  'decision-routing',
+  'guardrails',
+  'connector-apps',
   'api-keys',
   'devices',
   'remote-hosts',
@@ -63,6 +73,12 @@ export type SettingsAudience = {
   workspaceSettings: boolean;
   /** As `workspaceSettings`, and you administer the workspace's organization. */
   organizationSettings: boolean;
+  /** You administer the active workspace, or run its server. */
+  workspaceAdmin: boolean;
+  /** You run the active server, and it serves no web gateway. */
+  operatesGatewaylessServer: boolean;
+  /** The server has service connections on. */
+  serviceConnections: boolean;
 };
 
 /**
@@ -76,6 +92,16 @@ export function settingsSections(audience: SettingsAudience): SettingsItem[][] {
     { id: 'preferences', label: 'Preferences' },
     ...(audience.hasServer ? [{ id: 'messaging-apps' as const, label: 'Messaging apps' }] : []),
     { id: 'clis-models', label: 'Agent providers' },
+    ...(audience.workspaceAdmin && audience.serviceConnections
+      ? [{ id: 'connectors' as const, label: 'Connectors' }]
+      : []),
+    ...(audience.workspaceAdmin
+      ? [{ id: 'decision-routing' as const, label: 'Decision routing' }]
+      : []),
+    ...(audience.workspaceAdmin ? [{ id: 'guardrails' as const, label: 'Guardrails' }] : []),
+    ...(audience.operatesGatewaylessServer && audience.serviceConnections
+      ? [{ id: 'connector-apps' as const, label: 'Connector apps' }]
+      : []),
     ...(audience.hasServer ? [{ id: 'api-keys' as const, label: 'API keys' }] : []),
     // The devices Switch knows are yours exist only where agent management runs.
     ...(audience.agentManagement ? [{ id: 'devices' as const, label: 'Devices' }] : []),
@@ -104,7 +130,7 @@ export function settingsSections(audience: SettingsAudience): SettingsItem[][] {
 /**
  * The tab to show: the one asked for while the sidebar offers it, else
  * Preferences, so a tab that went away (a server signed out of, agent
- * management turned off) never leaves an empty pane.
+ * management turned off, an admin role taken away) never leaves an empty pane.
  */
 export function shownSettingsTab(
   tab: SettingsPageTab,
