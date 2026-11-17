@@ -173,8 +173,9 @@ it('names the address an unmanaged server cannot be reached at, and why', async 
   try {
     await render();
     expect(document.body.textContent).toContain("Can't reach localhost:41001");
-    expect(document.body.textContent).toContain('(ECONNREFUSED)');
-    expect(document.body.textContent).toContain('Check the address and your connection');
+    expect(document.body.textContent).toContain(
+      'Nothing is answering at that address and port (ECONNREFUSED).'
+    );
     expect(button(/^Server status$/)).toBeUndefined();
   } finally {
     LOCAL.managed = true;
