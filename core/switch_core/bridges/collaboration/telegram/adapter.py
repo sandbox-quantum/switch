@@ -1009,12 +1009,12 @@ class TelegramAdapter(PlatformAdapter):
     async def announce_visibility(self, channel_id: str) -> None:
         """Tell a chat what the bridge can see in it, when that changes.
 
-        A mention-only bridge works — agents are addressed by `@name`, which is
-        one of the few things Telegram does deliver — but it will not follow a
-        conversation nobody tags it in, and the failure is otherwise
-        indistinguishable from agents ignoring people. So it is said in the
-        chat, where whoever just added the bot is looking, along with the one
-        action that fixes it.
+        A mention-only bridge works only for what Telegram still delivers:
+        replies to the bot's messages, which carry every agent's, `@bot`
+        mentions and commands. A message that names an agent without replying
+        never arrives, and the failure is otherwise indistinguishable from
+        agents ignoring people. So it is said in the chat, where whoever just
+        added the bot is looking, with what works there and what fixes it.
 
         Said again only when the answer actually changes, so promoting the bot
         confirms itself and retracts the warning, and demoting it does not go
@@ -1044,10 +1044,12 @@ class TelegramAdapter(PlatformAdapter):
         )
         await self.admin_message(
             channel_id,
-            "⚠️ **I can only see messages that tag me here.** Telegram is "
-            "filtering this chat before anything reaches me, so agents will "
-            f"follow whatever is addressed to `@{self._bot_username}` "
-            "or to an agent by name, and nothing else.\n\n"
+            "⚠️ **I only see some messages here.** Group Privacy is on for "
+            "this bot, so Telegram passes me only replies to my messages "
+            "(agents post through me, so that includes theirs), messages that "
+            f"mention `@{self._bot_username}`, and commands. A message that "
+            "only names an agent never reaches it: **reply to the agent's "
+            "message instead.**\n\n"
             "**To fix it everywhere, once:** in @BotFather, "
             "`/mybots` → this bot → Bot Settings → Group Privacy → "
             "**Turn off**. Telegram reads that when I join a chat, so I have "
@@ -1057,6 +1059,18 @@ class TelegramAdapter(PlatformAdapter):
             "No particular permission is needed. If Telegram converts the group "
             "to a supergroup when you do, that is expected — the Switch room "
             "follows it.",
+        )
+
+    async def agent_greeting(
+        self, channel_id: str, agent_name: str, greeting: str
+    ) -> str:
+        """In a group the bot sees only replies and commands in, a tag never
+        reaches the agent, so its greeting says to reply to it instead."""
+        if (await self._chat_visibility(channel_id)).status != "mention_only":
+            return greeting
+        return (
+            f"Hi! I'm {agent_name}. This group shows me only replies to my "
+            "messages and commands, so reply to this message when you need me."
         )
 
     async def ensure_channel_subscriptions(

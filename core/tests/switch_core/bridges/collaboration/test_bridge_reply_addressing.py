@@ -271,3 +271,35 @@ async def test_settling_a_split_post_maps_every_part() -> None:
             "further_post_ids": ["-100:502", "-100:503"],
         }
     ]
+
+
+async def test_a_join_greeting_is_posted_as_the_platform_words_it() -> None:
+    """The marked join line goes through the adapter, which says how to reach
+    the agent where tagging it would not (a mention-only Telegram group)."""
+    posted: list[str] = []
+
+    class _Greeter:
+        async def agent_greeting(self, channel_id: str, agent: str, line: str) -> str:
+            return f"Hi! I'm {agent}. Reply to this message when you need me."
+
+        def translate_outbound(self, body: str) -> str:
+            return body
+
+        async def send_message(
+            self, channel_id: str, sender: str, text: str, **_kw: Any
+        ) -> str:
+            posted.append(text)
+            return "-100:9"
+
+    bridge = SimpleNamespace(_adapter=_Greeter())
+    event = SimpleNamespace(
+        event_id="$hi",
+        body="Hey there! Tag @scout if you need me.",
+        content={"com.switch.agent_greeting": True},
+    )
+
+    await CollaborationCore._post_outbound_message(
+        bridge, "-100", event, "scout", None, admin_marker=None, is_system=False
+    )
+
+    assert posted == ["Hi! I'm scout. Reply to this message when you need me."]

@@ -21,7 +21,7 @@ from switch_core.account_links import is_prompt_token
 from switch_core.agent_display_name import ZERO_WIDTH_SPACE, defuse_label_markup
 from switch_core.aliases import AliasError, validate_alias_format
 from switch_core.attachments import parse_attachment_group
-from switch_core.bridges.agent.commands import stop_control_frame
+from switch_core.bridges.agent.commands import AGENT_GREETING_KEY, stop_control_frame
 from switch_core.bridges.collaboration.adapter import (
     AgentIdentity,
     AgentPresentation,
@@ -3583,13 +3583,16 @@ class CollaborationCore:
                 message_type=message_type,
             )
         assert sender_name is not None  # guarded by the caller
+        body = event.body
+        if event_content.get(AGENT_GREETING_KEY) is True:
+            body = await self._adapter.agent_greeting(channel_id, sender_name, body)
         # Only the marker pages a channel. An `@channel` an agent wrote
         # itself is defused by `translate_outbound` like any other text.
         room_wide = is_room_wide_mention(event_content)
         text = (
-            self._adapter.render_room_wide_mention(event.body)
+            self._adapter.render_room_wide_mention(body)
             if room_wide
-            else self._adapter.translate_outbound(event.body)
+            else self._adapter.translate_outbound(body)
         )
         if UI_CONTENT_KEY in event_content:
             try:

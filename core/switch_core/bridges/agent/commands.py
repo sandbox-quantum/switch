@@ -87,6 +87,11 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+#: Content key on an agent's join greeting, so a bridge can say how to reach
+#: the agent where the usual "tag @agent" would not work (a Telegram group the
+#: bot sees only replies and commands in).
+AGENT_GREETING_KEY = "com.switch.agent_greeting"
+
 AGENT_GREETINGS = [
     "Hey there! Tag @{name} if you need me.",
     "Hi! Mention @{name} to get my attention.",

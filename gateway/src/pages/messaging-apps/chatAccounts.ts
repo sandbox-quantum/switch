@@ -69,6 +69,11 @@ export interface LinkTarget {
   /** The account's row id. */
   identityId: string;
   username: string;
+  /** How to name the account when its username is a handle Switch made up
+   * for someone the platform gave none (a Telegram account without a
+   * username): their name as the platform shows it. Absent to name the
+   * account by its handle. */
+  displayName?: string;
   kind: "pending" | "unverified";
 }
 

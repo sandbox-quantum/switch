@@ -2473,8 +2473,43 @@ def test_a_mention_only_chat_is_told_so_in_the_chat() -> None:
     _run(adapter.announce_visibility(str(CHAT_ID)))
 
     posted = _bot(adapter).messages[-1]["text"]
-    assert "only see messages that tag me" in posted
+    assert "only see some messages here" in posted
+    # What reaches agents here, said truthfully: a message that only names
+    # one never does.
+    assert "replies to my messages" in posted
+    assert f"@{BOT_USERNAME}" in posted
+    assert "commands" in posted
+    assert "reply to the agent" in posted.lower()
+    assert "by name" not in posted
+    # And what fixes it.
+    assert "Group Privacy" in posted
+    assert "added back" in posted
     assert "administrator" in posted
+
+
+def test_an_agents_join_line_says_to_reply_to_it_in_a_mention_only_chat() -> None:
+    adapter = _adapter()
+    adapter._privacy_mode_disabled = False
+    _bot(adapter).member_status = "member"
+
+    line = _run(
+        adapter.agent_greeting(
+            str(CHAT_ID),
+            "scout",
+            "Hello! I'm ready — just tag @scout when you need me.",
+        )
+    )
+
+    assert "reply to this message" in line
+    assert "tag @scout" not in line
+
+
+def test_an_agents_join_line_is_left_alone_where_the_bot_sees_everything() -> None:
+    adapter = _adapter()
+    _bot(adapter).member_status = "administrator"
+    usual = "Hello! I'm ready — just tag @scout when you need me."
+
+    assert _run(adapter.agent_greeting(str(CHAT_ID), "scout", usual)) == usual
 
 
 def test_a_fully_visible_chat_is_not_told_anything() -> None:
@@ -2581,7 +2616,7 @@ def test_the_install_handshake_reports_a_chat_it_cannot_read() -> None:
 
     _run(adapter._handle_message(_FakeInbound(text="/start switch")))
 
-    assert "only see messages that tag me" in _bot(adapter).messages[-1]["text"]
+    assert "only see some messages here" in _bot(adapter).messages[-1]["text"]
 
 
 def test_a_group_start_naming_an_agent_runs_the_invite_as_whoever_added_the_bot() -> (
@@ -2694,7 +2729,7 @@ def test_demoting_the_bot_says_what_was_lost() -> None:
     _bot(adapter).member_status = "member"
     _run(adapter.announce_visibility(str(CHAT_ID)))
 
-    assert "only see messages that tag me" in _bot(adapter).messages[-1]["text"]
+    assert "only see some messages here" in _bot(adapter).messages[-1]["text"]
 
 
 def test_a_chat_that_was_already_visible_is_not_congratulated() -> None:
@@ -2758,7 +2793,7 @@ def test_being_added_by_hand_still_discloses_a_mention_only_chat() -> None:
     assert [j.channel_id for j in joins] == [str(CHAT_ID)]
     # After provisioning: a notice about a room that does not exist yet would
     # point at nothing.
-    assert "only see messages that tag me" in _bot(adapter).messages[-1]["text"]
+    assert "only see some messages here" in _bot(adapter).messages[-1]["text"]
 
 
 def test_a_chat_reissued_a_new_id_is_re_assessed() -> None:
