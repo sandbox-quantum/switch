@@ -4,6 +4,7 @@ import asyncio
 import logging
 import time
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 import jwt
@@ -14,6 +15,10 @@ from switch_core.bridges.collaboration.models import BridgeCredentialError
 logger = logging.getLogger(__name__)
 
 DEFAULT_TOKEN_URI = "https://oauth2.googleapis.com/token"
+ALLOWED_TOKEN_HOSTS = frozenset({
+    "oauth2.googleapis.com",
+    "accounts.google.com",
+})
 DEFAULT_SERVICE_ACCOUNT_SCOPES = (
     "https://www.googleapis.com/auth/chat.bot https://www.googleapis.com/auth/pubsub"
 )
@@ -22,6 +27,47 @@ WORKSPACE_EVENTS_SCOPES = (
     "https://www.googleapis.com/auth/chat.spaces.readonly "
     "https://www.googleapis.com/auth/chat.memberships.readonly"
 )
+
+
+def validate_token_uri(token_uri: str) -> None:
+    """Validate that token_uri uses HTTPS and points to a permitted Google OAuth host."""
+    if not token_uri or not isinstance(token_uri, str):
+        raise BridgeCredentialError(
+            "Service account token_uri must be a non-empty string."
+        )
+
+    try:
+        parsed = urlparse(token_uri)
+    except Exception as exc:
+        raise BridgeCredentialError(
+            f"Invalid service account token_uri '{token_uri}': {exc}"
+        ) from exc
+
+    if parsed.scheme.lower() != "https":
+        raise BridgeCredentialError(
+            f"Service account token_uri must use HTTPS scheme: {token_uri}"
+        )
+
+    hostname = (parsed.hostname or "").lower()
+    if not hostname or hostname not in ALLOWED_TOKEN_HOSTS:
+        raise BridgeCredentialError(
+            f"Service account token_uri hostname '{hostname}' is not a permitted Google OAuth endpoint."
+        )
+
+    if parsed.port is not None and parsed.port != 443:
+        raise BridgeCredentialError(
+            f"Service account token_uri port {parsed.port} is not permitted."
+        )
+
+    if parsed.username or parsed.password:
+        raise BridgeCredentialError(
+            "Service account token_uri must not contain user credentials."
+        )
+
+    if parsed.query or parsed.fragment:
+        raise BridgeCredentialError(
+            "Service account token_uri must not contain query parameters or fragments."
+        )
 
 
 class GoogleAuthManager:
@@ -88,6 +134,7 @@ class GoogleAuthManager:
             raise BridgeCredentialError(
                 f"Failed to load service account private key: {exc}"
             ) from exc
+        validate_token_uri(self._token_uri)
 
     def _mint_jwt_assertion(self) -> str:
         now = int(time.time())
@@ -165,8 +212,9 @@ class GoogleAuthManager:
                     )
                 except Exception:
                     err_desc = resp.text
+                err_text = str(err_desc)[:300]
                 raise BridgeCredentialError(
-                    f"Google OAuth rejected service account assertion (status {resp.status_code}): {err_desc}"
+                    f"Google OAuth rejected service account assertion (status {resp.status_code}): {err_text}"
                 )
 
             token_data = resp.json()
@@ -236,8 +284,9 @@ class GoogleAuthManager:
                     )
                 except Exception:
                     err_desc = resp.text
+                err_text = str(err_desc)[:300]
                 raise BridgeCredentialError(
-                    f"Google OAuth rejected User OAuth refresh token (status {resp.status_code}): {err_desc}"
+                    f"Google OAuth rejected User OAuth refresh token (status {resp.status_code}): {err_text}"
                 )
 
             token_data = resp.json()

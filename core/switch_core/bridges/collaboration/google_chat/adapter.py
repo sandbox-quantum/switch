@@ -21,6 +21,7 @@ from switch_core.bridges.collaboration.adapter import (
 )
 from switch_core.bridges.collaboration.google_chat.auth import (
     GoogleAuthManager,
+    validate_token_uri,
 )
 from switch_core.bridges.collaboration.google_chat.cards import (
     render_request_card,
@@ -121,6 +122,18 @@ class GoogleChatConnectionConfig(BridgeConnectionConfig):
             raise ValueError("service_account_json missing required 'client_email'.")
         if not data.get("private_key"):
             raise ValueError("service_account_json missing required 'private_key'.")
+        if "token_uri" in data:
+            raw_uri = data["token_uri"]
+            if not isinstance(raw_uri, str) or not raw_uri:
+                raise ValueError(
+                    "service_account_json 'token_uri' is invalid: must be a non-empty string."
+                )
+            try:
+                validate_token_uri(raw_uri)
+            except Exception as exc:
+                raise ValueError(
+                    f"service_account_json 'token_uri' is invalid: {exc}"
+                ) from exc
         return v
 
     @property
