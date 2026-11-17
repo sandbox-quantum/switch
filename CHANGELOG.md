@@ -52,7 +52,24 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+### [0.32.0] - 2026-11-17
+
 #### Added
+- **Group chats.** A room can be a group chat: `POST /chats` with
+  `kind: "group"`, read positions and unread counts (`chat_reads`), mention
+  spans, and naming people in a message without waking agents. Fleet-wide
+  behind the `group_chats` flag, which this release turns on by default.
+- **Retry a failed turn.** A turn that failed can be retried without posting
+  the message again, from the room or with the `!retry` command, which is held
+  to the same permission rules as the Retry control.
+- **Restart a device's controller from Switch.** A device's agent controller
+  can be restarted from Switch (Workspace/Organization settings › Devices),
+  without touching the host.
+- **More messaging platforms (preview — behind a feature flag, off by
+  default).** Cisco Webex, Rocket.Chat, Matrix (through a bot account on any
+  homeserver), Signal, Zulip and Google Chat can be connected as collaboration
+  platforms alongside the existing ones. Gated by the newer-platforms feature
+  flag and off unless a deployment turns it on.
 - **Unrecognized WorkOS roles are reported.** Under
   `ORGANIZATION_DIRECTORY=workos`, a membership whose role is not `org_admin`,
   `admin`, `editor` or `viewer` is still a Member, as before, but it is now
