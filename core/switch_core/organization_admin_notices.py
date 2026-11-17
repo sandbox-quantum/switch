@@ -57,6 +57,9 @@ class AdminChangeKind(StrEnum):
     LEFT = "left"
     # Their account was deleted, which takes their `org_admin` rows with it.
     ACCOUNT_DELETED = "account_deleted"
+    # Deleting their account took their `org_admin` rows, then failed: the
+    # account is still there, and a retry finds no admin role to tell about.
+    ACCOUNT_DELETION_INCOMPLETE = "account_deletion_incomplete"
     # A platform operator made them `org_admin` (`switch-promote-org-admin`).
     PROMOTED_BY_OPERATOR = "promoted_by_operator"
 
@@ -121,6 +124,15 @@ def describe(change: AdminChange, organization: str) -> tuple[str, str]:
             return no_longer, (
                 f"{deleted}, so they are no longer an organization admin of "
                 f"{organization}."
+            )
+        case AdminChangeKind.ACCOUNT_DELETION_INCOMPLETE:
+            if change.actor is not None and change.actor.user_id == target.user_id:
+                started = f"{target} started deleting their Switch account"
+            else:
+                started = f"{_who(change.actor)} started deleting the Switch account of {target}"
+            return no_longer, (
+                f"{started}. The deletion didn't finish, but it had already ended "
+                f"their organization admin access to {organization}."
             )
         case AdminChangeKind.PROMOTED_BY_OPERATOR:
             return (
@@ -196,6 +208,9 @@ class OrganizationAdminNotices:
         for email in [*admins, change.target.email]:
             recipients.setdefault(email.lower(), email)
         link = self.dashboard_base_url.rstrip("/") + AUDIT_LOG_PATH
+        # Only an admin can open the log: not the person it was made to, once
+        # they are no admin there.
+        can_open_log = {email.lower() for email in admins}
         await asyncio.gather(
             *(
                 self._send_one(
@@ -206,10 +221,10 @@ class OrganizationAdminNotices:
                         summary=summary,
                         occurred_at=occurred_at,
                         reason=change.reason,
-                        audit_log_link=link,
+                        audit_log_link=link if key in can_open_log else None,
                     ),
                 )
-                for to in recipients.values()
+                for key, to in recipients.items()
             )
         )
 

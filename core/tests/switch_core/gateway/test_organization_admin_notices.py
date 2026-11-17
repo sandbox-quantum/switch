@@ -151,8 +151,14 @@ class TestDemoting:
             f"{ada} ({_email(ada)}) made {bob} ({_email(bob)}) a member of Acme, "
             "so they are no longer an organization admin there."
         )
-        assert email.audit_log_link == f"{DASHBOARD}/settings/org/audit-log"
         assert email.reason is None
+        # The log is linked for the admins, who can open it, and not for the
+        # person no longer one.
+        assert {email.to: email.audit_log_link for email in mailer.sent} == {
+            _email(ada): f"{DASHBOARD}/settings/org/audit-log",
+            _email(cy): f"{DASHBOARD}/settings/org/audit-log",
+            _email(bob): None,
+        }
         [event] = await _organization_events(
             session_factory, tenant_id, OrganizationAuditAction.ROLE_CHANGED
         )
@@ -430,6 +436,21 @@ def _person(name: str) -> Person:
             "bob",
             "Bob (bob@example.invalid) left Acme, where they were an organization "
             "admin.",
+        ),
+        (
+            AdminChangeKind.ACCOUNT_DELETION_INCOMPLETE,
+            "bob",
+            "Bob (bob@example.invalid) started deleting their Switch account. The "
+            "deletion didn't finish, but it had already ended their organization "
+            "admin access to Acme.",
+        ),
+        (
+            AdminChangeKind.ACCOUNT_DELETION_INCOMPLETE,
+            None,
+            "A platform operator, with a server command, started deleting the "
+            "Switch account of Bob (bob@example.invalid). The deletion didn't "
+            "finish, but it had already ended their organization admin access to "
+            "Acme.",
         ),
         (
             AdminChangeKind.PROMOTED_BY_OPERATOR,

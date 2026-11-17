@@ -266,8 +266,7 @@ export default function ServiceAccessSection({
 
         {grants && canGrant && githubBlocked !== null && (
           <Typography variant="body2" color="text.secondary">
-            {githubBlocked}
-            {githubService?.server_setup_needed && <SetUp />}
+            {githubService && <BlockedReason reason={githubBlocked} service={githubService} />}
           </Typography>
         )}
         {grants && canGrant && githubBlocked === null && (editing || !githubGrant) && (
@@ -351,19 +350,33 @@ export const BY_COMMAND = "It's set up with the switch-connector-apps command, w
 export const BY_ORGANIZATION_ADMIN =
   "An admin of your organization sets it up in Organization settings › Connector apps.";
 
-/** What to do about a service that waits on its connector app: whoever may
- * set up the deployment's connector apps is led to them, in Organization
- * settings. Anyone else is told who sets it up, after the server's own
- * reason: an admin of their organization while it is the deployment's only
- * one, or else, as on a server that does not say which, whoever runs Switch,
- * with its command. */
-function SetUp() {
+/** What the server's reason for a service waiting on its connector app
+ * becomes on a deployment whose one organization's admins set the apps up:
+ * its own names whoever runs Switch. */
+export function setUpByOrganizationAdmin(name: string): string {
+  return `${name}'s connector app isn't set up on this server yet. ${BY_ORGANIZATION_ADMIN}`;
+}
+
+/** Why a service can't be granted and, for one waiting on its connector
+ * app, what to do about it: whoever may set up the deployment's connector
+ * apps is led to them, in Organization settings. Anyone else is told who
+ * sets it up: an admin of their organization while it is the deployment's
+ * only one, in place of the server's reason; or else, as on a server that
+ * does not say which, whoever runs Switch, with its command. */
+function BlockedReason({ reason, service }: { reason: string; service: ServiceConnection }) {
   const { capabilities } = useAuth();
-  if (capabilities.canManageConnectorApps) return <SetUpLink to="/settings/org/connector-apps" />;
+  if (!service.server_setup_needed) return <>{reason}</>;
+  if (capabilities.canManageConnectorApps)
+    return (
+      <>
+        {reason}
+        <SetUpLink to="/settings/org/connector-apps" />
+      </>
+    );
+  if (capabilities.connectorAppsInDashboard) return <>{setUpByOrganizationAdmin(service.name)}</>;
   return (
     <>
-      {" "}
-      <span>{capabilities.connectorAppsInDashboard ? BY_ORGANIZATION_ADMIN : BY_COMMAND}</span>
+      {reason} <span>{BY_COMMAND}</span>
     </>
   );
 }
@@ -446,8 +459,7 @@ function OnOffGrant({
       )}
       {blocked && (
         <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-          {blocked}
-          {service.server_setup_needed && <SetUp />}
+          <BlockedReason reason={blocked} service={service} />
         </Typography>
       )}
       {!grant && !connected && !blocked && (

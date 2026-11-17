@@ -7,7 +7,7 @@ import { AuthProvider } from "./data/AuthContext";
 import { gatewayFetch } from "./data/gatewayFetch";
 import type { FeatureFlagKey } from "./data/featureFlags";
 import { clearPendingInvite, storePendingInvite } from "./data/sessionState";
-import { keepLinkForSignIn } from "./data/workspaceLink";
+import { OPERATOR_ELSEWHERE, keepLinkForSignIn } from "./data/workspaceLink";
 
 const acme: TenantMembership = {
   id: "t1",
@@ -666,7 +666,7 @@ describe("the layout", () => {
       renderAt("/settings/org/connector-apps");
       const labels = await menuLabels("Organization settings");
       expect(labels.indexOf("Connector apps")).toBe(labels.indexOf("Connectors") + 1);
-      expect(await screen.findByRole("heading", { name: "Connectors" })).toBeTruthy();
+      expect(await screen.findByRole("heading", { name: "Connector apps" })).toBeTruthy();
     });
 
     it("opens from a workspace in no organization for whoever may set them up", async () => {
@@ -683,7 +683,7 @@ describe("the layout", () => {
       renderAt("/settings/org");
       await landsOn("/settings/org/connector-apps");
       expect(await menuLabels("Organization settings")).toEqual(["Connector apps"]);
-      expect(await screen.findByRole("heading", { name: "Connectors" })).toBeTruthy();
+      expect(await screen.findByRole("heading", { name: "Connector apps" })).toBeTruthy();
       cleanup();
 
       mockFetch(routes);
@@ -1351,9 +1351,10 @@ describe("a link naming a workspace", () => {
   it("does not switch to a workspace the session is not in, and says so", async () => {
     mockFetch(signedInAs("operator"));
     renderAt("/rooms?workspace=t9");
+    // The operator is also told where they act on someone else's.
     expect(
       await screen.findByText(
-        "The link you followed is for a workspace you aren't in, so this is Acme.",
+        `The link you followed is for a workspace you aren't in, so this is Acme. ${OPERATOR_ELSEWHERE}`,
       ),
     ).toBeTruthy();
     await landsOn("/rooms");

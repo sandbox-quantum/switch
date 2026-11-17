@@ -88,6 +88,7 @@ from switch_core.operator_commands import (
     account_by_email,
     admin_notices,
     database,
+    print_refusal,
     read_text_file,
     run,
     signals,
@@ -661,6 +662,7 @@ async def delete_account(
                     },
                 )
                 await session.commit()
+                await deletion.admin_notices.send_all(error.admin_changes)
                 raise CommandRefused(
                     f"Deleting {plan.user.email} failed partway, after leaving "
                     f"{len(error.completed)} of {len(plan.workspaces)} "
@@ -945,7 +947,7 @@ async def _run(config: SwitchConfig, arguments: argparse.Namespace) -> int:
                     "session it held has ended."
                 )
     except CommandRefused as refused:
-        print(f"Refused: {refused}", file=sys.stderr)
+        print_refusal(refused)
         return 1
     return 0
 
