@@ -90,7 +90,6 @@ from switch_core.gateway.schemas import (
     RoomFreezeState,
     RoomObserveRequest,
     RoomPerson,
-    RoomProtectionRequest,
     RoomRoleCreateRequest,
     RoomRoleDetail,
     RoomRoleUpdateRequest,
@@ -352,7 +351,6 @@ async def _build_room_detail(
         matrix_room_id=room.transport_room_id,
         external_channel_id=room.external_channel_id,
         instructions=room.instructions,
-        protection_config=room.protection_config,
         observe_config=room.observe_config,
         agent_ids=agent_ids,
         agent_statuses={
@@ -1401,42 +1399,6 @@ async def put_room_group(
         detail = str(e)
         status = 404 if "Room not found" in detail else 400
         raise HTTPException(status_code=status, detail=detail) from e
-    await session.commit()
-    room = await room_store.get(session, room_id)
-    if room is None:
-        raise HTTPException(status_code=404, detail="Room not found")
-    return await _build_room_detail(
-        session,
-        room,
-        room_store,
-        bridge_store,
-        external_user_store,
-        protocol,
-        principal,
-        decisions,
-    )
-
-
-@router.put("/{room_id}/protection")
-async def put_protection(
-    room_id: str,
-    req: RoomProtectionRequest,
-    session: Annotated[AsyncSession, Depends(get_session)],
-    room_service: Annotated[RoomService, Depends(get_room_service)],
-    room_store: Annotated[RoomStore, Depends(get_room_store)],
-    bridge_store: Annotated[CollaborationBridgeStore, Depends(get_bridge_store)],
-    external_user_store: Annotated[ExternalUserStore, Depends(get_external_user_store)],
-    protocol: Annotated[AgentCore, Depends(get_protocol)],
-    decisions: Annotated[DecisionAvailability, Depends(get_decision_availability)],
-    user: Annotated[User, Depends(get_current_user)],
-    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
-) -> RoomDetail:
-    principal = Principal(user.id, is_admin)
-    await _require_room_released(session, room_store, room_id, principal, "configure")
-    try:
-        await room_service.update_protection_config(room_id, req.protection_config)
-    except ValueError:
-        raise HTTPException(status_code=404, detail="Room not found")
     await session.commit()
     room = await room_store.get(session, room_id)
     if room is None:

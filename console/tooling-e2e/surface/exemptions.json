@@ -290,7 +290,6 @@
     "PUT /gateway/room-groups/{group_id}/rooms",
     "PUT /gateway/rooms/{room_id}/group",
     "PUT /gateway/rooms/{room_id}/observe",
-    "PUT /gateway/rooms/{room_id}/protection",
     "PUT /gateway/service-connections/{service}/key",
     "PUT /gateway/tenants/{tenant_id}/budgets/{budget_id}",
     "PUT /gateway/trust-settings",

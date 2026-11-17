@@ -298,8 +298,8 @@ agent's name/icon, preserving threads and attachments.
   `BridgeCore.handle_protection_verdict`
   ([`bridges/collaboration/bridge_core.py`](../core/switch_core/bridges/collaboration/bridge_core.py))
   has no callers — note it sits in the *collaboration* bridge, not this one.
-  `Room.protection_config` is persisted and settable via
-  `PUT /gateway/rooms/{id}/protection`, but nothing reads it yet.
+  `Room.protection_config`, once persisted and settable via
+  `PUT /gateway/rooms/{id}/protection` but never read, has been removed.
 
 ### 4.4 In-room commands
 

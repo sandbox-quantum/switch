@@ -150,7 +150,6 @@ class RoomCreateConfig(BaseModel):
     internal_only: bool = False
     external_channel_id: str | None = None
     instructions: str | None = None
-    protection_config: dict[str, object] | None = None
     observe_config: dict[str, object] | None = None
     admin_mode: bool = False
     created_by: str | None = None
@@ -1171,7 +1170,6 @@ class RoomService:
                 external_channel_id=external_channel_id,
                 admin_mode=config.admin_mode,
                 instructions=config.instructions,
-                protection_config=config.protection_config,
                 observe_config=config.observe_config,
                 created_by=config.created_by,
                 created_by_agent_id=config.created_by_agent_id,
@@ -1835,14 +1833,6 @@ class RoomService:
                 await self._room_store.set_receives_join_events(
                     session, room_id, agent_id, value
                 )
-            await session.commit()
-
-    async def update_protection_config(
-        self, room_id: str, config: dict[str, object]
-    ) -> None:
-        tenant_id = await self._room_tenant(room_id)
-        async with tenant_session(self._session_factory, tenant_id) as session:
-            await self._room_store.update_protection_config(session, room_id, config)
             await session.commit()
 
     async def update_observe_config(

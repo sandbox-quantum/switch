@@ -221,7 +221,6 @@ class RoomDetail(RoomSummary):
     room_admin_candidates: list[RoomPerson] = []
     external_channel_id: str | None
     instructions: str | None
-    protection_config: dict[str, Any] | None
     observe_config: dict[str, Any] | None
     agent_ids: list[str]
     agent_statuses: dict[str, str]
@@ -314,10 +313,6 @@ class RoomUsersRemoved(BaseModel):
     room: RoomDetail
     not_in_room: list[str] = []
     platform_refused: list[str] = []
-
-
-class RoomProtectionRequest(BaseModel):
-    protection_config: dict[str, Any]
 
 
 class RoomObserveRequest(BaseModel):

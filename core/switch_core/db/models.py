@@ -1245,6 +1245,9 @@ class Room(TenantScoped, Base):
         Boolean, server_default="false", nullable=False
     )
     instructions: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Unused: nothing reads or writes it. It stays mapped only because a pod
+    # on an earlier release still selects it during a rolling deploy; a later
+    # release drops the column.
     protection_config: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     observe_config: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     created_by: Mapped[str | None] = mapped_column(

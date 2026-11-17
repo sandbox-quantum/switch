@@ -334,7 +334,6 @@ export interface RoomDetail extends RoomSummary {
   matrix_room_id: string;
   external_channel_id: string | null;
   instructions: string | null;
-  protection_config: Record<string, unknown> | null;
   observe_config: Record<string, unknown> | null;
   agent_ids: string[];
   agent_statuses: Record<string, string>;
@@ -654,15 +653,6 @@ export async function removeRoomAdmin(roomId: string, userId: string): Promise<R
     `/rooms/${roomId}/admins/${encodeURIComponent(userId)}`,
     "DELETE",
   );
-}
-
-export async function updateRoomProtection(
-  roomId: string,
-  config: Record<string, unknown>,
-): Promise<RoomDetail> {
-  return jsonRequest<RoomDetail>(`/rooms/${roomId}/protection`, "PUT", {
-    protection_config: config,
-  });
 }
 
 export async function updateRoomObserve(

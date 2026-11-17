@@ -1890,11 +1890,6 @@
       "flags": []
     },
     {
-      "route": "PUT /gateway/rooms/{room_id}/protection",
-      "auth": "session",
-      "flags": []
-    },
-    {
       "route": "PUT /gateway/rooms/{room_id}/schedules/{schedule_id}",
       "auth": "session",
       "flags": []

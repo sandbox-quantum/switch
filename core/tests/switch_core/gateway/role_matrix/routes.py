@@ -716,11 +716,6 @@ ROUTES: dict[str, Case] = {
         f"{G}/rooms/{{room_agent}}/schedules/{{room_schedule}}",
         owner_or_admins(),
     ),
-    "PUT /gateway/rooms/{room_id}/protection": put(
-        f"{G}/rooms/{{room}}/protection",
-        owner_or_admins(),
-        json={"protection_config": {}},
-    ),
     "POST /gateway/rooms/{room_id}/freeze": post(
         f"{G}/rooms/{{room}}/freeze",
         admins(),
