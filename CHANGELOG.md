@@ -676,6 +676,11 @@ version of their own to them without also giving them a release of their own.
 - **A stopped agent's unfinished turn is ended.** The sweep that ends
   abandoned turns now treats a session whose connection closed as gone, so a
   turn left open when its agent stopped is ended after the quiet window.
+- **Connectors in the web dashboard: turn on and set up from the
+  connector's page.** A workspace admin turns a connector on from its page,
+  in place of a link to the workspace settings. When its app is not set up,
+  the server operator gets a "Set up" button that opens that app's setup. The
+  list shows "Needs setup" for such a connector.
 - **A sign-out that fails in the dashboard says so.** Signing out, or out of
   every device, from the account menu or the screens before a workspace said
   nothing when Switch didn't answer, and a failed sign-out of this browser
