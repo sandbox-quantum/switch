@@ -4580,9 +4580,7 @@ version of their own to them without also giving them a release of their own.
   cloud machine an Antigravity login now offers Vertex AI beside this
   computer's sign-in: a Google Cloud project, a region, and a service account
   key or this computer's `gcloud auth application-default login` sign-in. It
-  needs Google's `agy` CLI on the machine. Antigravity agents on this computer
-  also pick up `AGY_ADC_AUTH` and `GOOGLE_CLOUD_QUOTA_PROJECT` from your
-  environment, so `agy` set up for Vertex AI there works in Switch as well.
+  needs Google's `agy` CLI on the machine.
 - **Home's chat bar takes several lines, and switch-buddy comes alive
   beside it.** The box grows with what you type, up to ten lines, then
   scrolls; Enter sends and Shift+Enter starts a new line. Each time Home
