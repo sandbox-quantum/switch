@@ -677,7 +677,7 @@
         "critical": 50
       }
     },
-    "priority": 3
+    "priority": 2
   },
   {
     "name": "[Switch REPLACE-WITH-ENV] Controller token exchanges and enrolments refused",

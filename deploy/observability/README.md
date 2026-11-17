@@ -122,8 +122,8 @@ arrives. Setting `NOTIFY_SECURITY` to the same value as `NOTIFY` works, with a
 warning, for a deployment that has no separate security channel.
 
 Today `category:security` covers the credential refusal alerts and password
-sign-in failures (see [Hosted agents](#hosted-agents)); all three are P3 or P4,
-so none of them pages yet. Alerts on the `switch.event: security.*` log lines
+sign-in failures (see [Hosted agents](#hosted-agents)). The bearer-route
+credential refusals alert is P2 and pages; the other two are P4. Alerts on the `switch.event: security.*` log lines
 are meant to follow, routed the same way.
 
 **Name the security on-call owner.** Whoever `NOTIFY_SECURITY_PAGE` reaches
@@ -195,7 +195,7 @@ where it goes:
 
 ```text
 route: [Switch prod] the database is unreachable [ops P1] -> @slack-example-ops
-route: [Switch prod] Controller credential refusals rising [security P3] -> @slack-example-security
+route: [Switch prod] Controller credential refusals rising [security P2] -> @slack-example-security @pagerduty-example-security
 ```
 
 It needs no Datadog keys; given them, it also reads Datadog to say which
@@ -516,7 +516,7 @@ is the kind of machine (`vm` for every machine this server makes today).
   credentials by reason code and kind of route only, never the client's
   address or any part of the credential.
 - Credential refusals have two alerts, both routed as security (see
-  [Routing](#routing)). **The more urgent one** (P3) watches the bearer
+  [Routing](#routing)). **The more urgent one** (P2, pages) watches the bearer
   routes only (`agent`, `controller`, `hosted_controller`) for the reasons that
   mean a token was guessed (`invalid_credential`, `missing_credential`,
   `wrong`, `missing`), at more than 50 in 10 minutes. A revoked or expired
