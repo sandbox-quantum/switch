@@ -481,7 +481,7 @@ async def list_bridges(
     _user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> list[BridgeDetail]:
-    bridges = await bridge_store.get_all(session)
+    bridges = await bridge_store.get_listed(session)
 
     details = []
     for bridge in bridges:

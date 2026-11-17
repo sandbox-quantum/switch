@@ -21,7 +21,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.bridges.agent.api_key_cache import ApiKeyCache
 from switch_core.bridges.agent.app import create_agent_bridge_app
 from switch_core.bridges.agent.auth import BearerAuthMiddleware, ControllerPrincipal
-from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.bridges.agent.protocol.event_buffer import EventBuffer
 from switch_core.db.models import TENANT_ZERO_ID, Tenant
 from switch_core.db.stores.agent_store import AgentStore
@@ -29,10 +28,8 @@ from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.keys import Keyring
 from switch_core.management import tokens
 from switch_core.management.auth import ManagementAuthenticator
-from switch_core.management.wiring import create_management
 from switch_core.tenant_context import current_tenant_id
 from switch_core.trust.client import NullTrustClient
-from switch_core.user_changes import LocalUserChanges
 from tests.db_buffer import QuietRooms
 from tests.switch_core.management.harness import (
     TOKEN_SECRET,
@@ -275,23 +272,7 @@ class TestPublicPaths:
         assert _refusal(sent) == (401, "invalid_credential")
 
 
-class TestTheFlagOff:
-    async def test_create_management_returns_nothing(self) -> None:
-        class _Off:
-            agent_management_enabled = False
-
-        assert (
-            create_management(
-                _Off(),  # type: ignore[arg-type]
-                object(),  # type: ignore[arg-type]
-                AgentConnectionRegistry().controllers,
-                object(),  # type: ignore[arg-type]
-                object(),  # type: ignore[arg-type]
-                LocalUserChanges(),
-            )
-            is None
-        )
-
+class TestWithoutManagementInstalled:
     async def test_the_agent_bridge_app_mounts_no_management_route(self) -> None:
         class _Config:
             agent_auth_cache_ttl_seconds = 1

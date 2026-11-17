@@ -80,6 +80,12 @@ def _agent_management_off_afterwards() -> Iterator[None]:
     set_cloud_enrollment(None)
 
 
+@pytest.fixture(autouse=True)
+def _controller_token_secret(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every deployment sets it, so every `SwitchConfig` a test builds has one."""
+    monkeypatch.setenv("CONTROLLER_TOKEN_SECRET", "test-controller-token-secret" * 2)
+
+
 async def _seed_tenant_zero(conn: AsyncConnection) -> None:
     """Insert the one tenant every scoped row's `tenant_id` default points at.
 

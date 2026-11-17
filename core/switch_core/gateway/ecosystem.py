@@ -109,7 +109,7 @@ async def get_ecosystem_graph(
             edges.append(EcosystemEdge(source=type_node_id, target=agent_node_id))
 
     # One branch per connected collaboration app.
-    bridges = await bridge_store.get_all(session)
+    bridges = await bridge_store.get_listed(session)
     for bridge in bridges:
         bridge_node_id = f"bridge:{bridge.id}"
         nodes.append(

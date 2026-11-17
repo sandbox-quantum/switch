@@ -189,9 +189,8 @@ class FakeConsoleRooms:
     async def require_can_join(self, tenant_id: str, user_id: str) -> None:
         return None
 
-    def wiring(self, enabled: bool) -> ConsoleRooms:
+    def wiring(self) -> ConsoleRooms:
         return ConsoleRooms(
-            enabled=enabled,
             add_member=self.add_member,
             require_can_join=self.require_can_join,
         )
@@ -251,7 +250,7 @@ async def env(session_factory: async_sessionmaker[AsyncSession]):
         session_factory=session_factory,
         room_group_store=RoomGroupStore(),
         telemetry=None,
-        console_rooms=console.wiring(enabled=True),
+        console_rooms=console.wiring(),
     )
 
     async with session_factory() as session:
@@ -2979,7 +2978,7 @@ CONSOLE_TEXT = (
 
 def _without_console(env) -> RoomYamlService:
     svc = _svc(env)
-    svc._console_rooms = env["console"].wiring(enabled=False)
+    svc._console_rooms = None
     return svc
 
 
@@ -2998,7 +2997,7 @@ async def test_a_switch_console_room_is_internal_with_its_runner_in_it(env):
 
 
 @pytest.mark.asyncio
-async def test_switch_console_is_offered_last_only_with_group_chats(env):
+async def test_switch_console_is_offered_last_only_with_a_chat_service(env):
     reader = _reader(env)
     async with env["session_factory"]() as session:
         offered = await _svc(env)._names_of(session, "bridge", reader)
@@ -3008,14 +3007,14 @@ async def test_switch_console_is_offered_last_only_with_group_chats(env):
 
 
 @pytest.mark.asyncio
-async def test_switch_console_is_refused_without_group_chats(env):
+async def test_switch_console_is_refused_without_a_chat_service(env):
     svc = _without_console(env)
     parsed = svc.parse_template(CONSOLE_TEXT, inputs={"bridge": CONSOLE_ROOM})
-    with pytest.raises(ValueError, match="param 'bridge'.*group_chats"):
+    with pytest.raises(ValueError, match="param 'bridge'.*Switch Console rooms"):
         await svc.check_entity_params(parsed, reader=_reader(env))
-    with pytest.raises(ValueError, match="group_chats"):
+    with pytest.raises(ValueError, match="Switch Console rooms"):
         await svc.check_bridges(parsed, creator="alice")
-    with pytest.raises(ValueError, match="group_chats"):
+    with pytest.raises(ValueError, match="Switch Console rooms"):
         await svc.provision(parsed.spec, user_id=env["user_id"], is_admin=False)
     assert env["rooms"].configs == []
 
