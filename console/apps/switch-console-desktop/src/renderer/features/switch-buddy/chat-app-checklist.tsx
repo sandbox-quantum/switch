@@ -60,21 +60,12 @@ export function ChatAppChecklist({
     refetchInterval: linked ? false : SEEN_POLL_MS,
   });
   const candidates = newestUnlinked(peopleQuery.data ?? []);
-  // In a group: the buddy is in a room on this app other than the bot's
-  // direct chat. Read while linked and not there yet.
-  const inGroupQuery = useQuery({
-    queryKey: ['buddy-in-group', workspaceId, agentId, bridge.type],
-    queryFn: async () => {
-      const [agentRooms, rooms] = await Promise.all([
-        rpc.workspaces.listAgentRooms({ workspaceId, agentId }),
-        rpc.workspaces.listRooms(workspaceId),
-      ]);
-      return inAGroupOn(bridge.type, agentRooms, rooms);
-    },
+  const { inGroup, talking } = useGroupProgress({
+    workspaceId,
+    agentId,
+    bridge,
     enabled: linked !== null,
-    refetchInterval: (query) => (query.state.data ? false : SEEN_POLL_MS),
   });
-  const inGroup = inGroupQuery.data === true;
   const [claiming, setClaiming] = useState<string | null>(null);
   const [claimError, setClaimError] = useState<string | null>(null);
 
@@ -265,10 +256,14 @@ export function ChatAppChecklist({
         </Step>
         <Step
           n={4}
-          done={false}
-          current={inGroup}
+          done={talking}
+          current={inGroup && !talking}
           title={`Tell ${agentName} what you work on`}
-          detail={`In that group, mention ${agentName} and say what you work on.`}
+          detail={
+            talking
+              ? `You’re talking to ${agentName} there.`
+              : `In that group, mention ${agentName} and say what you work on.`
+          }
         />
       </ol>
     </div>
@@ -299,18 +294,77 @@ export function groupInviteUrl(
   return /^[A-Za-z0-9_-]{1,64}$/.test(payload) ? `${bridge.homeUrl}?startgroup=${payload}` : null;
 }
 
-/** Whether the agent is in a room on this app that is not a direct chat with the app. */
-export function inAGroupOn(
+/**
+ * Whether the buddy is in a group on this app with the person, and whether
+ * they have talked to it there. Read while not yet talking; once seen talking
+ * it is remembered on this machine, since the session that showed it moves on.
+ */
+export function useGroupProgress({
+  workspaceId,
+  agentId,
+  bridge,
+  enabled,
+}: {
+  workspaceId: string;
+  agentId: string;
+  bridge: Pick<RemoteBridge, 'id' | 'type'> | null;
+  enabled: boolean;
+}): { inGroup: boolean; talking: boolean } {
+  const key = `switch-buddy:talking:${workspaceId}:${agentId}:${bridge?.id ?? ''}`;
+  const remembered = bridge !== null && readFlag(key);
+  const query = useQuery({
+    queryKey: ['buddy-in-group', workspaceId, agentId, bridge?.type],
+    queryFn: async () => {
+      const [agentRooms, rooms] = await Promise.all([
+        rpc.workspaces.listAgentRooms({ workspaceId, agentId }),
+        rpc.workspaces.listRooms(workspaceId),
+      ]);
+      return groupProgress(bridge?.type ?? '', agentRooms, rooms);
+    },
+    enabled: enabled && bridge !== null && !remembered,
+    refetchInterval: (q) => (q.state.data?.talking ? false : SEEN_POLL_MS),
+  });
+  const talking = remembered || query.data?.talking === true;
+  if (talking && !remembered) writeFlag(key);
+  return { inGroup: talking || query.data?.inGroup === true, talking };
+}
+
+function readFlag(key: string): boolean {
+  try {
+    return window.localStorage.getItem(key) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function writeFlag(key: string): void {
+  try {
+    window.localStorage.setItem(key, '1');
+  } catch {
+    // Not remembered: read from the server again next time.
+  }
+}
+
+/**
+ * Where the agent is on this app: in a room there other than a direct chat
+ * with the app, and whether one of its sessions has answered in one, which
+ * only a message to it there starts.
+ */
+export function groupProgress(
   bridgeType: string,
   agentRooms: RemoteAgentRoom[],
   rooms: RemoteRoomSummary[]
-): boolean {
+): { inGroup: boolean; talking: boolean } {
   const onApp = new Set(
     rooms
       .filter((room) => room.bridgeType === bridgeType && room.channelType !== 'lobby')
       .map((room) => room.id)
   );
-  return agentRooms.some((room) => !room.archived && onApp.has(room.roomId));
+  const groups = agentRooms.filter((room) => !room.archived && onApp.has(room.roomId));
+  return {
+    inGroup: groups.length > 0,
+    talking: groups.some((room) => room.sessionAttended === true),
+  };
 }
 
 /** Accounts nobody has linked yet, newest first: likeliest the one just seen. */

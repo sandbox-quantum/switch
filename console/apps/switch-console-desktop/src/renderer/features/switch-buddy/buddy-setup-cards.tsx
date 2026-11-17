@@ -32,7 +32,7 @@ import {
   buddyResumeBridges,
   buddySetupStep,
 } from './buddy-setup-step';
-import { ChatAppChecklist } from './chat-app-checklist';
+import { ChatAppChecklist, useGroupProgress } from './chat-app-checklist';
 import {
   BUDDY_CHAT_NAME,
   buddyHandoffRequestId,
@@ -165,6 +165,18 @@ const Cards = observer(function Cards({
     for (const query of resumeQueries) if (query.isError) void query.refetch();
   };
 
+  // Set up and talking to the buddy there: the cards fold into one line, and
+  // open again for connecting another app.
+  const checklistBridge = step.kind === 'checklist' ? step.bridge : null;
+  const progress = useGroupProgress({
+    workspaceId,
+    agentId,
+    bridge: checklistBridge,
+    enabled: (ids.identities ?? []).some((identity) => identity.bridgeId === checklistBridge?.id),
+  });
+  const [connectAnother, setConnectAnother] = useState(false);
+  const settled = checklistBridge !== null && progress.talking && !connectAnother;
+
   const doneRoomId = step.kind === 'done' ? step.chat.roomId : null;
   const roomQuery = useQuery({
     queryKey: ['buddy-handoff-room', workspaceId, doneRoomId],
@@ -218,6 +230,29 @@ const Cards = observer(function Cards({
 
   const pressed = (app: BuddyPlatform) =>
     platform === app && (picked !== null || (step.kind !== 'loading' && step.kind !== 'unknown'));
+
+  if (settled)
+    return (
+      <div className="mt-4" data-testid="buddy-setup-cards">
+        <StatusRow>
+          <CheckCircle2 className="size-4 shrink-0 text-foreground-success" />
+          <span className="min-w-0 flex-1">
+            <span className="font-semibold">{label} is set up.</span> You’re talking to {agentName}{' '}
+            there.
+          </span>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => {
+              setConnectAnother(true);
+              setPicked(null);
+            }}
+          >
+            Connect another app
+          </Button>
+        </StatusRow>
+      </div>
+    );
 
   return (
     <div className="@container mt-4 flex flex-col gap-3" data-testid="buddy-setup-cards">

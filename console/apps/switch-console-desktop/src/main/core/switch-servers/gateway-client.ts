@@ -1553,13 +1553,16 @@ export async function fetchAgentRooms(
       status: string;
       room_role: string | null;
     }>;
+    sessions?: Array<{ room_id: string | null }>;
   };
+  const attended = new Set((json.sessions ?? []).map((s) => s.room_id));
   return (json.rooms ?? []).map((r) => ({
     roomId: r.room_id,
     roomName: r.room_name,
     archived: r.archived,
     status: r.status,
     roomRole: r.room_role,
+    sessionAttended: attended.has(r.room_id),
   }));
 }
 

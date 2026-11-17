@@ -169,6 +169,7 @@ beforeEach(async () => {
   listBridges.mockReset().mockResolvedValue([]);
   listMyIdentities.mockReset().mockResolvedValue([]);
   listBridgePeople.mockReset().mockResolvedValue([]);
+  window.localStorage.clear();
   claimBridgeIdentity.mockReset();
   getRoomDetail.mockReset().mockResolvedValue({
     linkedChannelName: '#buddy-ada',
@@ -756,6 +757,28 @@ describe('switch-buddy setup cards', () => {
       'Tell switch-buddy what you work on'
     );
     await shot(el, 'n-telegram-checklist-in-group');
+  });
+
+  it('(n) Telegram: once buddy has answered in the group, folds into a Connect another app bar', async () => {
+    listBridges.mockResolvedValue([telegram]);
+    listMyIdentities.mockResolvedValue([
+      { bridgeId: 'b-4', externalUsername: 'ada', verified: true } as LinkedIdentity,
+    ]);
+    listAgentRooms.mockResolvedValue([
+      { roomId: 'r-tg', roomName: 'Ada & bot', archived: false, sessionAttended: true },
+    ]);
+    listRooms.mockResolvedValue([
+      { id: 'r-tg', bridgeType: 'telegram', channelType: 'channel_private', createdAt: '' },
+    ]);
+    const el = await render();
+
+    await vi.waitFor(() => expect(el.textContent).toContain('Telegram is set up.'));
+    expect(el.textContent).toContain('You’re talking to switch-buddy there.');
+    expect(el.textContent).not.toContain('Where does your team chat?');
+    await shot(el, 'n-telegram-settled');
+
+    await click(el, 'Connect another app');
+    expect(el.textContent).toContain('Where does your team chat?');
   });
 
   it('(o) Discord linked: continues in a private Discord channel, then opens it', async () => {
