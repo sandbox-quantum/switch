@@ -119,6 +119,13 @@ export function ChatAppChecklist({
   const seen = linked !== null || candidates.length > 0;
   const bot = bridge.displayName;
   const invite = typedCommand(bridge, 'invite-agent', { agent: agentName });
+  const groupUrl = groupInviteUrl(bridge, agentName);
+  const open = (url: string) =>
+    void reportOpenAttempt(
+      rpc.switchRooms.openRoomChannel({ serverId, channelUrl: url }),
+      `Could not open ${label}`,
+      url
+    );
 
   return (
     <div
@@ -153,19 +160,7 @@ export function ChatAppChecklist({
           {!seen && (
             <div className="flex flex-wrap items-center gap-3">
               {bridge.homeUrl && (
-                <Button
-                  size="sm"
-                  onClick={() =>
-                    void reportOpenAttempt(
-                      rpc.switchRooms.openRoomChannel({
-                        serverId,
-                        channelUrl: helloUrl(bridge.homeUrl!),
-                      }),
-                      `Could not open ${label}`,
-                      helloUrl(bridge.homeUrl!)
-                    )
-                  }
-                >
+                <Button size="sm" onClick={() => open(helloUrl(bridge.homeUrl!))}>
                   Open in {label}
                 </Button>
               )}
@@ -251,14 +246,29 @@ export function ChatAppChecklist({
               : `Create a ${label} group with you and the ${bot} bot, then send this in it:`
           }
         >
-          {!inGroup && <CopyCommand command={invite} />}
+          {!inGroup && (
+            <div className="flex flex-col items-start gap-2">
+              {groupUrl && (
+                <Button size="sm" onClick={() => open(groupUrl)}>
+                  Add the bot to a group
+                </Button>
+              )}
+              {groupUrl && (
+                <span className="text-sm text-foreground-muted">
+                  Pick a group with just you in it, and {agentName} joins with the bot. Or send this
+                  in the group yourself:
+                </span>
+              )}
+              <CopyCommand command={invite} />
+            </div>
+          )}
         </Step>
         <Step
           n={4}
           done={false}
           current={inGroup}
           title={`Tell ${agentName} what you work on`}
-          detail={`In that group, reply to the bot’s message, mention ${agentName}, and say what you work on.`}
+          detail={`In that group, mention ${agentName} and say what you work on.`}
         />
       </ol>
     </div>
@@ -272,6 +282,21 @@ export function ChatAppChecklist({
  */
 export function helloUrl(homeUrl: string): string {
   return homeUrl.includes('?') ? homeUrl : `${homeUrl}?start=hello`;
+}
+
+/**
+ * Telegram's add-to-a-group link for the bot, naming the agent to invite as
+ * it joins (`startgroup=invite-<agent>`, which the bridge reads as the
+ * invite command), or null where there is none: another platform, no bot
+ * link, or an agent name Telegram will not carry in a start parameter.
+ */
+export function groupInviteUrl(
+  bridge: Pick<RemoteBridge, 'type' | 'homeUrl'>,
+  agentName: string
+): string | null {
+  if (bridge.type !== 'telegram' || !bridge.homeUrl || bridge.homeUrl.includes('?')) return null;
+  const payload = `invite-${agentName}`;
+  return /^[A-Za-z0-9_-]{1,64}$/.test(payload) ? `${bridge.homeUrl}?startgroup=${payload}` : null;
 }
 
 /** Whether the agent is in a room on this app that is not a direct chat with the app. */

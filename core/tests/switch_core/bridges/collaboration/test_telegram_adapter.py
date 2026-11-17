@@ -2508,6 +2508,27 @@ def test_the_install_handshake_reports_a_chat_it_cannot_read() -> None:
     assert "only see messages that tag me" in _bot(adapter).messages[-1]["text"]
 
 
+def test_a_group_start_naming_an_agent_runs_the_invite_as_whoever_added_the_bot() -> (
+    None
+):
+    """Console's "Add to a group" opens `?startgroup=invite-<agent>`, so adding
+    the bot invites the agent through the same command typing it would."""
+    adapter = _adapter()
+    commands: list[InboundCommand] = []
+    adapter._on_command = lambda c: _collect(commands, c)
+    _bot(adapter).member_status = "administrator"
+
+    _run(
+        adapter._handle_message(
+            _FakeInbound(text=f"/start@{BOT_USERNAME} invite-switch-buddy")
+        )
+    )
+
+    assert [(c.command, c.args) for c in commands] == [
+        ("invite-agent", "@switch-buddy")
+    ]
+
+
 def test_a_bare_start_in_a_group_is_absorbed_too() -> None:
     # A bot added by hand gets one as well, and it is no more a Switch command
     # there than it is after an install link.

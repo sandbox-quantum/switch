@@ -104,9 +104,9 @@ The goal: a useful answer from their own agent, in as few messages as you can.
      `internal_only` and `include_owner` true, `channel_type` "channel_private",
      `read_visibility` and `write_visibility` "private". It is in their chats in
      Switch Console; they @-mention the agent there.
-   - **Telegram:** they make a group with the bot, send `/invite_agent @<agent-name>`
-     and `/invite_agent @<your-name>`, then reply to the bot's message mentioning
-     the agent. Read playbook § "Telegram private channel" first.
+   - **Telegram:** they make a group with the bot and send `/invite_agent @<agent-name>`
+     and `/invite_agent @<your-name>`, then talk to the agent there by name.
+     Read playbook § "Telegram private channel" first.
    - **Teams:** they may send `!invite-agent @<agent-name>` and
      `!invite-agent @<your-name>`. Read playbook § "Teams private channel" first.
    - **Otherwise:** `create_room` with the chat's `bridge_id` (`get_room_detail` of

@@ -733,7 +733,7 @@ describe('switch-buddy setup cards', () => {
     expect(
       el.querySelector('button[aria-label="Copy /invite_agent @switch-buddy"]')
     ).not.toBeNull();
-    expect(el.textContent).toContain('mention switch-buddy, and say what you work on');
+    expect(el.textContent).toContain('mention switch-buddy and say what you work on');
     await shot(el, 'n-telegram-checklist-linked');
   });
 

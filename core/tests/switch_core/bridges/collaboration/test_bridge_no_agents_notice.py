@@ -190,3 +190,19 @@ async def test_auto_create_with_agents_posts_no_notice() -> None:
     assert result == ("room-uuid", "!m:switch.local")
     assert bridge._room_service.configs[0].agent_ids == ["a1"]
     assert bridge.notices == []
+
+
+async def test_a_room_made_by_an_invite_does_not_say_it_has_no_agents() -> None:
+    """The agent the invite names is a moment away; "no agents in it yet" would
+    be the first, and wrong, thing said in the new room."""
+    bridge = _fake_bridge(agent_ids=[])
+
+    await CollaborationCore._create_room_for_channel(
+        bridge,
+        channel_id="C0BGC39BFSR",
+        channel_type="channel_public",
+        channel_name="general",
+        inviting_an_agent=True,
+    )
+
+    assert bridge.notices == []

@@ -1926,6 +1926,7 @@ class CollaborationCore:
                         agent_name=cmd.agent_name,
                         sender_name=cmd.sender_name,
                         channel_name=cmd.channel_name,
+                        inviting_an_agent=cmd.command == "invite-agent",
                     )
             if room_ids is None:
                 return
@@ -2217,6 +2218,7 @@ class CollaborationCore:
         sender_name: str | None = None,
         channel_name: str | None = None,
         added_by_external_user_id: str | None = None,
+        inviting_an_agent: bool = False,
     ) -> tuple[str, str] | None:
         # Callers hold the per-channel lock. Guard against provisioning a
         # duplicate room for a channel that is already (or is being) bridged:
@@ -2306,7 +2308,9 @@ class CollaborationCore:
             channel_id,
         )
 
-        if not agent_ids:
+        # Not when the room is being made by an invite: the agent is a moment
+        # away, and "no agents in it yet" would be the first thing said there.
+        if not agent_ids and not inviting_an_agent:
             # create_room invited the bridge client before returning, so posting
             # now cannot predate its join. admin_message goes straight to the
             # channel via the platform API (not through the room), so it surfaces

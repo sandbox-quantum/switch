@@ -338,6 +338,8 @@ _COMMAND_PREFIXES = ("!", "/")
 # install started from Switch from someone adding the bot by hand, which is
 # worth saying in the chat and in the logs.
 _INSTALL_PAYLOAD = "switch"
+# A group start naming an agent to invite (`startgroup=invite-<agent>`).
+_INVITE_PAYLOAD_PREFIX = "invite-"
 
 # Supergroup and channel ids are the internal id with a -100 prefix; t.me/c/
 # links carry the internal id alone.
@@ -3078,6 +3080,7 @@ class TelegramAdapter(PlatformAdapter):
             content.strip(), chat_id, channel_type, channel_name
         ):
             return
+        content = self._start_as_invite(content.strip(), channel_type) or content
         if await self._handle_start(content.strip(), chat_id, channel_type):
             return
 
@@ -3321,6 +3324,26 @@ class TelegramAdapter(PlatformAdapter):
                 removed_by_name=removed_by,
             )
         )
+
+    def _start_as_invite(self, text: str, channel_type: ChannelType) -> str | None:
+        """The invite a group's `/start invite-<agent>` stands for, or None.
+
+        Switch Console's "Add to a group" opens `t.me/<bot>?startgroup=
+        invite-<agent>`: Telegram adds the bot to the group picked and posts
+        that start in it, as whoever added it. Read as that person typing
+        `/invite-agent @<agent>`, so it goes through the same command, with
+        the same checks, as typing it would.
+        """
+        if channel_type == "lobby":
+            return None
+        parsed = self._parse_command(text)
+        if parsed is None or parsed[0] != "start":
+            return None
+        payload = parsed[1]
+        if not payload.startswith(_INVITE_PAYLOAD_PREFIX):
+            return None
+        agent = payload[len(_INVITE_PAYLOAD_PREFIX) :]
+        return f"/invite-agent @{agent}" if agent else None
 
     async def _handle_start(
         self, text: str, chat_id: str, channel_type: ChannelType
