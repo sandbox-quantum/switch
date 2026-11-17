@@ -123,6 +123,7 @@ import {
   type TeamsTeam,
   type TeamsTeamsResult,
   type TrustSettings,
+  type WorkspaceGuardrails,
   type UnconfirmedLink,
   type UpdateTrustSettingsParams,
   type LinkedRoom,
@@ -540,6 +541,26 @@ function mapTrustSettings(json: TrustSettingsJson): TrustSettings {
 export async function fetchTrustSettings(server: SwitchServer): Promise<TrustSettings> {
   const res = await gatewayFetch(server, '/trust-settings', { authenticated: true });
   return mapTrustSettings((await res.json()) as TrustSettingsJson);
+}
+
+type WorkspaceGuardrailsJson = {
+  checking: boolean;
+  policy_id: string | null;
+  policy_name: string | null;
+  policy_url: string | null;
+};
+
+/** The policy that checks the selected workspace's messages, for anyone in it
+ * (`GET /workspace/guardrails`). */
+export async function fetchWorkspaceGuardrails(server: SwitchServer): Promise<WorkspaceGuardrails> {
+  const res = await gatewayFetch(server, '/workspace/guardrails', { authenticated: true });
+  const json = (await res.json()) as WorkspaceGuardrailsJson;
+  return {
+    checking: json.checking,
+    policyId: json.policy_id,
+    policyName: json.policy_name,
+    policyUrl: json.policy_url,
+  };
 }
 
 /** Save Switch Trust's settings, admin-only (`PUT /trust-settings`).

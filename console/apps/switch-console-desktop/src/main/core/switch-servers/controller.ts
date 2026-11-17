@@ -44,6 +44,7 @@ import {
   type ClearTrustSettingsResult,
   type CreatedRegistrationKey,
   type FetchDecisionSettingsResult,
+  type FetchWorkspaceGuardrailsResult,
   type FetchTrustSettingsResult,
   type PasswordLoginParams,
   type RenameServerParams,
@@ -153,6 +154,7 @@ import { requireSwitchCloudEndpoint, switchCloudEndpoint } from './switch-cloud'
 import {
   clearTrustSettingsOnServer,
   fetchTrustSettingsFromServer,
+  fetchWorkspaceGuardrailsFromServer,
   updateTrustSettingsOnServer,
 } from './trust-settings';
 
@@ -594,6 +596,11 @@ export const switchServersController = createRPCController({
 
   clearTrustSettings: async (serverId: string): Promise<ClearTrustSettingsResult> =>
     clearTrustSettingsOnServer(await requireReachableServer(serverId)),
+
+  /** The policy that checks a workspace's messages, for anyone in it to read;
+   * its organization's admins change it in the dashboard. */
+  getWorkspaceGuardrails: (workspaceId: string): Promise<FetchWorkspaceGuardrailsResult> =>
+    withReachableWorkspaceSession(workspaceId, fetchWorkspaceGuardrailsFromServer),
 
   /**
    * A workspace's decision routing settings, its admins only. Scoped to the

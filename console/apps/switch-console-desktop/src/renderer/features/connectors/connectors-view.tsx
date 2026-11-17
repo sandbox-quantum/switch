@@ -215,15 +215,15 @@ function Connectors({
       term="connector"
       description={DESCRIPTION}
       action={
-        // Turning a service on or off for everyone is the Admin page's; only
-        // the way there is here, for whoever may.
+        // Turning a service on or off for everyone is in Settings; only the
+        // way there is here, for whoever may.
         viewer.administers && (
           <Button
             variant="ghost"
             size="sm"
-            onClick={() => navigate('admin', { serverId, section: 'connectors' })}
+            onClick={() => navigate('settings', { tab: 'connectors' })}
           >
-            Manage in Admin
+            Manage in Settings
             <ArrowRight className="size-3.5" />
           </Button>
         )

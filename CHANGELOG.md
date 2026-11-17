@@ -476,6 +476,17 @@ version of their own to them without also giving them a release of their own.
   already refused both, so the current Workspace page no longer offers them.
 
 #### Changed
+- **The Discord connect form asks for the Server ID.** Discord's own app
+  calls the guild id a Server ID, and that is what you copy from the server
+  icon; the setting's key stays `guild_id`.
+- **The dashboard's budget page is called Usage & budget,** and its Add
+  budget button no longer squeezes until its label wraps out of it on a
+  narrower window. Back to workspace, in Organization settings and Platform,
+  returns to the page you came from rather than always to home.
+- **Auto-route's messages send workspace admins to Settings, not Admin.**
+  Where a room says auto-route needs a decision service, or that the
+  workspace turned it off, it points at Switch Console → Settings → Decision
+  routing, where the page now lives.
 - **Switch Trust guardrails are set per organization instead of once for
   the whole server.** Each organization's admins connect its own policy, with
   a policy ID and an API key, under Organization settings › Guardrails. Switch
@@ -4338,6 +4349,15 @@ version of their own to them without also giving them a release of their own.
   signed in, or the server is older than the sign-in link, the page opens
   signed out as before. The sessions the old Console windows kept, those of
   servers you have since removed included, are cleared once, at the next start.
+- **The Admin pages are in Settings.** The Admin item is gone from the
+  sidebar. Workspace admins find Connectors and Decision routing in Settings,
+  after Agent providers, and every workspace admin sees Guardrails there:
+  which Switch Trust policy checks the workspace, or that none does, with the
+  way to the workspace's Guardrails page in the dashboard, or for an
+  organization admin to Organization settings. Each page says under its title
+  what your role lets you do there. Messaging apps is one page for everyone,
+  with Connect and each app's settings for admins and without the tooltips
+  and second heading. Links that opened Admin open the matching Settings page.
 - **Admin › Switch Trust points to the organization's guardrails on a server
   that sets them per organization.** Such a server no longer has a
   server-wide policy to edit, so the form gives way to its note and a button

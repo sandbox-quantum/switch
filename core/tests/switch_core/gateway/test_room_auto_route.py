@@ -43,6 +43,7 @@ from switch_core.db.stores.user_store import UserStore
 from switch_core.decision.settings import (
     FLAG_OFF_REASON,
     NO_BACKEND_REASON,
+    WORKSPACE_OFF_REASON,
     DecisionAvailability,
     ServerDefault,
 )
@@ -239,7 +240,7 @@ class TestTheRoomDetail:
 
         assert detail["auto_route"]["available"] is False
         assert detail["auto_route"]["reason"] == NO_BACKEND_REASON
-        assert "Switch Console → Admin → Decision routing" in NO_BACKEND_REASON
+        assert "Switch Console → Settings → Decision routing" in NO_BACKEND_REASON
 
     async def test_unavailable_when_the_workspace_chose_none(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -260,7 +261,8 @@ class TestTheRoomDetail:
             detail = (await client.get(f"/rooms/{room.id}")).json()
 
         assert detail["auto_route"]["available"] is False
-        assert "turned auto-route off" in detail["auto_route"]["reason"]
+        assert detail["auto_route"]["reason"] == WORKSPACE_OFF_REASON
+        assert "Switch Console → Settings → Decision routing" in WORKSPACE_OFF_REASON
 
 
 class TestTheToggle:

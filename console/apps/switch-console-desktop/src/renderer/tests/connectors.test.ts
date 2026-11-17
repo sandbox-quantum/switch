@@ -1275,31 +1275,21 @@ describe('with the service_connections flag off', () => {
     error: null,
   });
 
-  it('leaves Connectors out of the nav, and shows Admin when it has something for you', () => {
-    expect(workspaceNavViews({ serviceConnections: false, admin: false })).toEqual([
+  it('leaves Connectors out of the nav with the flag off, and never shows Admin', () => {
+    expect(workspaceNavViews({ serviceConnections: false })).toEqual([
       'server',
       'serverAgents',
       'serverRooms',
       'library',
       'templates',
     ]);
-    // Admin's messaging apps and Switch Trust do not need service connections.
-    expect(workspaceNavViews({ serviceConnections: false, admin: true })).toEqual([
-      'server',
-      'serverAgents',
-      'serverRooms',
-      'library',
-      'templates',
-      'admin',
-    ]);
-    expect(workspaceNavViews({ serviceConnections: true, admin: true })).toEqual([
+    expect(workspaceNavViews({ serviceConnections: true })).toEqual([
       'server',
       'serverAgents',
       'serverRooms',
       'library',
       'templates',
       'connectors',
-      'admin',
     ]);
   });
 

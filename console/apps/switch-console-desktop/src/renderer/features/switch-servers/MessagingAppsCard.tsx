@@ -4,7 +4,6 @@ import {
   Clock,
   Copy,
   ExternalLink,
-  Info,
   Key,
   KeyRound,
   Link2,
@@ -25,7 +24,6 @@ import { Fragment, useEffect, useMemo, useState } from 'react';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { BridgeIcon, hasBridgeIcon } from '@renderer/lib/components/bridge-icon';
 import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
-import { TermInfo } from '@renderer/lib/components/term-info';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { toast as showToast } from '@renderer/lib/hooks/use-toast';
 import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
@@ -44,7 +42,6 @@ import {
   DropdownMenuTrigger,
 } from '@renderer/lib/ui/dropdown-menu';
 import { Spinner } from '@renderer/lib/ui/spinner';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
 import { log } from '@renderer/utils/logger';
 import {
   ambiguousBundledBridgeMessage,
@@ -90,41 +87,12 @@ import { administersWorkspaceInScope } from './workspace-admin';
  * signed-in user administering the workspace, because the endpoint is; linking an account is
  * not, because claiming an identity is something every user does for themselves.
  */
-/** Why a server has messaging apps at all: the agents registered here become
- * reachable in them. Linking is deliberately not explained here — it has its
- * own hover on the rows and the warning that are actually about it, and saying
- * both on the heading made the section's purpose the smaller half of a wall of
- * text. */
-const MESSAGING_APPS_PURPOSE =
-  'Connecting a messaging app puts this server’s agents in it, so you can talk to them where you already work.';
-
-/** Shown beside a row that has no linked account, and beside the card-level
- * warning, so the consequence is one hover away from the thing warning about
- * it rather than only in the section heading. */
-const NO_ACCOUNT_EXPLANATION =
-  'Switch cannot tell which account in this app is you. Agents set to answer only their owner will not recognise you here, and messages from you read as if from a stranger.';
-
-/** Beside a link made before links had to be confirmed. */
-const NOT_CONFIRMED_EXPLANATION =
-  'This link was made before Switch asked accounts to confirm them. It still works. Confirm it by posting a one-time code from the account.';
-
-/** Beside a link waiting for its code, which is not a link yet. */
-const WAITING_EXPLANATION =
-  'This account is not linked until a one-time code is posted from it. Until then your agents do not recognise you here.';
-
 export const MessagingAppsCard = observer(function MessagingAppsCard({
   serverId,
   className,
-  personal = false,
 }: {
   serverId: string;
   className?: string;
-  /**
-   * Only your own accounts in each app, for Settings: linking and unlinking
-   * them. The workspace's side — connecting an app, its token, its defaults —
-   * is for its admins, in Admin and the workspace settings.
-   */
-  personal?: boolean;
 }) {
   const queryClient = useQueryClient();
   const showConnectMessagingApp = useShowModal('connectMessagingAppModal');
@@ -133,8 +101,9 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
   const showConnectChat = useShowModal('connectChatModal');
   const showRequireLinkConfirmation = useShowModal('requireLinkConfirmationModal');
   const workspaceId = workspacesStore.idOnServerInScope(serverId);
-  const administers = administersWorkspaceInScope(serverId);
-  const isAdmin = administers && !personal;
+  // Everyone links their own accounts here; the workspace's side (connecting
+  // an app, its token, its defaults) is for its admins.
+  const isAdmin = administersWorkspaceInScope(serverId);
   const flags = useFeatureFlags(serverId);
   // With chats on, Switch Console's own chats and rooms need no messaging app.
   const chatsWithoutApp = flags.agent_chats || flags.group_chats;
@@ -309,31 +278,8 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
 
   return (
     <div className={className}>
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
-          <h3 className="text-sm font-medium text-foreground">Messaging apps</h3>
-          <TermInfo term="messagingApp" />
-          {/* What the section is for, in the order the two facts matter:
-              connecting puts the agents somewhere people already are, and
-              linking is what lets those agents tell who is talking to them.
-              It used to be the "Your account" column's header tooltip; with
-              the columns gone it belongs to the heading. */}
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <span
-                  tabIndex={0}
-                  aria-label={MESSAGING_APPS_PURPOSE}
-                  className="inline-flex text-foreground-muted"
-                >
-                  <Info className="size-3.5" />
-                </span>
-              }
-            />
-            <TooltipContent className="max-w-xs">{MESSAGING_APPS_PURPOSE}</TooltipContent>
-          </Tooltip>
-          {bridgesQuery.isLoading && <Spinner className="size-3.5" />}
-        </div>
+      <div className="flex items-center justify-end gap-3 empty:hidden">
+        {bridgesQuery.isLoading && <Spinner className="size-3.5" />}
         {isAdmin && (
           <Button
             size="sm"
@@ -393,12 +339,10 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
       ) : bridges.length === 0 && !bridgesQuery.isLoading ? (
         <p className="mt-3 text-xs text-foreground-muted">
           {chatsWithoutApp
-            ? `No messaging app is connected. They are optional: chats and rooms in Switch Console work without one. ${isAdmin ? 'Connect one to also reach your agents from Slack, Discord and others.' : administers ? 'Connect one from Admin to also reach your agents from Slack, Discord and others.' : 'An admin of this workspace can connect one to reach your agents from Slack, Discord and others.'}`
+            ? `No messaging app is connected. They are optional: chats and rooms in Switch Console work without one. ${isAdmin ? 'Connect one to also reach your agents from Slack, Discord and others.' : 'An admin of this workspace can connect one to reach your agents from Slack, Discord and others.'}`
             : isAdmin
               ? 'No messaging app is connected, so rooms created here would be unreachable. Connect one to get started.'
-              : administers
-                ? 'No messaging app is connected. Connect one from Admin.'
-                : 'No messaging app is connected. An admin of this workspace can connect one.'}
+              : 'No messaging app is connected. An admin of this workspace can connect one.'}
         </p>
       ) : (
         <div className="mt-2 flex flex-col">
@@ -431,7 +375,6 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
                 }
                 showBundledSignIn={bridge.id === bundledBridgeId}
                 isAdmin={isAdmin}
-                personal={personal}
                 savingChannelCreation={savingBridgeId === bridge.id}
                 onToggleChannelCreation={(enabled) =>
                   void handleToggleChannelCreation(bridge, enabled)
@@ -532,7 +475,6 @@ export function MessagingAppRow({
   olderLinks,
   showBundledSignIn,
   isAdmin,
-  personal = false,
   savingChannelCreation,
   onToggleChannelCreation,
   onConnectChat,
@@ -556,8 +498,6 @@ export function MessagingAppRow({
   olderLinks: { count: number; onRequireConfirmation: () => void } | null;
   showBundledSignIn: boolean;
   isAdmin: boolean;
-  /** Only your own side of the app, as Settings shows it: no workspace settings in the menu. */
-  personal?: boolean;
   savingChannelCreation: boolean;
   onToggleChannelCreation: (enabled: boolean) => void;
   /** Set on a connection whose chats are connected one at a time, for a user
@@ -671,17 +611,14 @@ export function MessagingAppRow({
     }
   };
 
-  // What it costs not to be linked, and — where the app has no directory to
-  // search — how to become linkable at all. The second half is not obvious and
-  // is the reason nothing offered to link on the way in.
+  // Where the app has no directory to search, how to become linkable at all:
+  // not obvious, and the reason nothing offered to link on the way in.
   const orderingNote = identityLinkOrderingNote({
     displayName: bridge.displayName,
     directorySearchSupported: bridge.directorySearchSupported,
   });
-  const noAccountHelp =
-    orderingNote === null ? NO_ACCOUNT_EXPLANATION : `${NO_ACCOUNT_EXPLANATION} ${orderingNote}`;
 
-  // Why the switch cannot be moved, when it cannot. Said in a tooltip rather
+  // Why the switch cannot be moved, when it cannot. Said in a line rather
   // than left to a greyed control, because "off" and "this platform cannot do
   // it at all" are different claims and look identical otherwise.
   const channelsLockedReason = !bridge.channelCreationSupported
@@ -720,18 +657,7 @@ export function MessagingAppRow({
               <span className="truncate font-mono text-xs text-foreground-muted">
                 {accountHandle(identity.externalUsername)}
               </span>
-              {!identity.verified && (
-                <Tooltip>
-                  <TooltipTrigger
-                    render={
-                      <span tabIndex={0} aria-label={NOT_CONFIRMED_EXPLANATION}>
-                        <Badge variant="secondary">Not confirmed</Badge>
-                      </span>
-                    }
-                  />
-                  <TooltipContent className="max-w-xs">{NOT_CONFIRMED_EXPLANATION}</TooltipContent>
-                </Tooltip>
-              )}
+              {!identity.verified && <Badge variant="secondary">Not confirmed</Badge>}
             </span>
           ) : waiting !== null ? (
             <span className="flex min-w-0 items-center gap-1 text-xs text-foreground-muted">
@@ -740,40 +666,17 @@ export function MessagingAppRow({
                 <span className="font-mono">{accountHandle(waiting.externalUsername)}</span> ·
                 Waiting for confirmation
               </span>
-              <Tooltip>
-                <TooltipTrigger
-                  render={
-                    <span
-                      tabIndex={0}
-                      aria-label={WAITING_EXPLANATION}
-                      className="inline-flex text-foreground-muted"
-                    >
-                      <Info className="size-3" />
-                    </span>
-                  }
-                />
-                <TooltipContent className="max-w-xs">{WAITING_EXPLANATION}</TooltipContent>
-              </Tooltip>
             </span>
           ) : (
-            <span className="flex items-center gap-1 text-xs text-amber-600 dark:text-amber-500">
-              <TriangleAlert className="size-3 shrink-0" />
-              No account linked
-              <Tooltip>
-                <TooltipTrigger
-                  render={
-                    <span
-                      tabIndex={0}
-                      aria-label={noAccountHelp}
-                      className="inline-flex text-foreground-muted"
-                    >
-                      <Info className="size-3" />
-                    </span>
-                  }
-                />
-                <TooltipContent className="max-w-xs">{noAccountHelp}</TooltipContent>
-              </Tooltip>
-            </span>
+            <>
+              <span className="flex items-center gap-1 text-xs text-amber-600 dark:text-amber-500">
+                <TriangleAlert className="size-3 shrink-0" />
+                No account linked
+              </span>
+              {orderingNote !== null && (
+                <p className="text-xs text-foreground-muted">{orderingNote}</p>
+              )}
+            </>
           )}
           {releaseError !== null && (
             <p className="mt-0.5 text-xs text-destructive">{releaseError}</p>
@@ -864,7 +767,7 @@ export function MessagingAppRow({
               </>
             )}
 
-            {!personal && (
+            {isAdmin && (
               <>
                 <DropdownMenuSeparator />
                 {/* "Off" and "this platform has no such thing" are different claims,
@@ -874,7 +777,7 @@ export function MessagingAppRow({
                 {bridge.channelCreationSupported ? (
                   <DropdownMenuCheckboxItem
                     checked={bridge.canCreateChannels}
-                    disabled={!isAdmin || savingChannelCreation}
+                    disabled={savingChannelCreation}
                     onCheckedChange={(next) => onToggleChannelCreation(next)}
                   >
                     Create channels on {platform}
@@ -887,7 +790,7 @@ export function MessagingAppRow({
                 )}
               </>
             )}
-            {!personal && bridge.receivesWebhooks && (
+            {isAdmin && bridge.receivesWebhooks && (
               <>
                 <DropdownMenuSeparator />
                 {/* The address the platform delivers this connection's events
