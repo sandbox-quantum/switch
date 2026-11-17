@@ -1586,6 +1586,11 @@ export type BridgePerson = {
   linkedName: string | null;
   /** When Switch first saw the account; null on a server predating the field. */
   firstSeenAt: string | null;
+  /** How to name them where `username` is a handle Switch made up (a
+   * Telegram account without a username), with `hasHandle` false. Absent
+   * from a server predating them, which means a real handle. */
+  displayName?: string;
+  hasHandle?: boolean;
 };
 
 /** A bridged room's channel, as the New room dialog asks for it. */
