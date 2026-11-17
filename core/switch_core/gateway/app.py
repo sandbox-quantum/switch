@@ -40,6 +40,7 @@ from switch_core.gateway.agent_sessions import router as agent_sessions_router
 from switch_core.gateway.agents import router as agents_router
 from switch_core.gateway.api_keys import router as api_keys_router
 from switch_core.gateway.auth_routes import router as auth_router
+from switch_core.gateway.browser_handoff import router as browser_handoff_router
 from switch_core.gateway.changes import router as changes_router
 from switch_core.gateway.chats import chat_error_response
 from switch_core.gateway.chats import router as chats_router
@@ -253,6 +254,7 @@ def create_gateway_app(
         agent_sessions_router, prefix="/agent-sessions", tags=["session activity"]
     )
     app.include_router(auth_router, tags=["auth"])
+    app.include_router(browser_handoff_router, tags=["auth"])
     app.include_router(oidc_router, tags=["auth"])
     app.include_router(workos_sign_in_router, tags=["auth"])
     app.include_router(tenants_router, tags=["tenants"])

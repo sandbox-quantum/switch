@@ -8,6 +8,7 @@ change (`db/session_version_ddl.py`) is the one under test, not a stand-in.
 
 from __future__ import annotations
 
+import secrets
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Annotated
@@ -91,6 +92,7 @@ def _token(user_id: str, email: str, role: str, version: int) -> str:
         None,
         session_version=version,
         auth_time=datetime.now(UTC),
+        session_id=secrets.token_urlsafe(16),
     )
 
 

@@ -10,6 +10,7 @@ and the toggle's route is not mounted, as `gateway/app.py` mounts it.
 
 from __future__ import annotations
 
+import secrets
 import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
@@ -189,6 +190,7 @@ def _as(app: FastAPI, user: User) -> httpx.AsyncClient:
                 TENANT_ZERO_ID,
                 session_version=0,
                 auth_time=datetime.now(UTC),
+                session_id=secrets.token_urlsafe(16),
             )
         },
     )

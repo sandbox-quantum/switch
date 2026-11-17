@@ -8,6 +8,7 @@ the write was issued.
 
 from __future__ import annotations
 
+import secrets
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
@@ -84,6 +85,7 @@ def _client(app: FastAPI, user_id: str, email: str) -> httpx.AsyncClient:
                 None,
                 session_version=0,
                 auth_time=datetime.now(UTC),
+                session_id=secrets.token_urlsafe(16),
             )
         },
     )
