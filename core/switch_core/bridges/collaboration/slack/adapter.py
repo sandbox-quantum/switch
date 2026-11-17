@@ -5,6 +5,7 @@ import logging
 import math
 import re
 import time
+import traceback
 import uuid
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
@@ -549,6 +550,31 @@ def _prompt_button(prompt: DirectPrompt, position: int, label: str) -> dict[str,
     if position == len(prompt.labels):
         button["style"] = "danger"
     return button
+
+
+# Said, to the person alone, when a button press or a slash command reached
+# this app but could not be acted on. It says nothing of why: what went wrong
+# is in the server's log, and a reason shown here could carry what it must not.
+COULD_NOT_PROCESS = (
+    "Switch couldn't process that. Try again in a moment. If you were linking "
+    "your account, type `/link-account` with the code Switch Console shows you."
+)
+
+
+def _failure_without_message(error: BaseException) -> str:
+    """An exception's type and where it was raised, without its message.
+
+    Logged for a press or an account command that failed. Its message is left
+    out because it can carry what the person sent: a link code, a prompt's
+    token, or a database error quoting either as a bound parameter.
+    """
+    # Where each frame is, not its source line, which a test (or a line that
+    # builds a message) could quote the value in.
+    frames = " <- ".join(
+        f"{frame.filename}:{frame.lineno} in {frame.name}"
+        for frame in reversed(traceback.extract_tb(error.__traceback__))
+    )
+    return f"{type(error).__name__} at {frames}"
 
 
 # The ids Slack gives an app's bot, under which an app's posts with no user are
@@ -2166,12 +2192,23 @@ class SlackAdapter(PlatformAdapter):
         # A slash command reaches the app from any conversation, including a
         # person's message to themselves, and is answered only to them. The
         # typed form is for a workspace whose app predates the command.
-        return (
+        instructions = (
             f"Type `/link-account {code}` from that account anywhere in Slack: "
             "a message to yourself works, and only you see the reply. If Slack "
             f"doesn't know the command, post `!link-account {code}` in a "
             "channel Switch is in."
         )
+        # An app the workspace made itself is only as complete as it was made:
+        # one built by hand rather than from the manifest has no Interactivity,
+        # and a tap on its message reaches nobody.
+        if connection_config.get("event_delivery", "socket_mode") != "webhook":
+            instructions += (
+                " If tapping a number in Switch's message does nothing, the Slack "
+                "app's Interactivity is off: whoever set up the app can turn it "
+                "on by pasting this connection's manifest on the app's App "
+                "Manifest page."
+            )
+        return instructions
 
     def adapt_icon_url(self, icon_url: str) -> str:
         # Overridden for Slack alone: it flattens a transparent avatar onto
@@ -4044,6 +4081,7 @@ class SlackAdapter(PlatformAdapter):
             message = payload.get("message") or {}
             if card_ref is not None:
                 self._pressed_cards.setdefault(card_ref, []).append(message)
+            thread_ref = f"{channel_id}:{thread_ts}" if thread_ts else None
             try:
                 await self._on_interaction(
                     InboundInteraction(
@@ -4054,8 +4092,20 @@ class SlackAdapter(PlatformAdapter):
                         action_id=action_id,
                         value=value,
                         message_ref=message_ref,
-                        thread_ref=f"{channel_id}:{thread_ts}" if thread_ts else None,
+                        thread_ref=thread_ref,
                     )
+                )
+            except Exception as error:
+                # Slack never sends a press again, so a press that fails here
+                # is otherwise lost without a word to whoever made it.
+                logger.error(
+                    "Could not act on a button press by %s in %s: %s",
+                    user_id,
+                    channel_id,
+                    _failure_without_message(error),
+                )
+                await self.tell_actor(
+                    channel_id, user_id, user.name, thread_ref, COULD_NOT_PROCESS
                 )
             finally:
                 if card_ref is not None:
@@ -4331,18 +4381,29 @@ class SlackAdapter(PlatformAdapter):
             # was run. A visible "Running" post would show a link code to the
             # channel, and fails outright where the app is not a member.
             if self._on_command:
-                await self._on_command(
-                    InboundCommand(
-                        channel_id=channel_id,
-                        channel_type=channel_type,
-                        sender_id=user_id,
-                        sender_name=user.name,
-                        command=command,
-                        args=args,
-                        channel_name=channel_name,
-                        reply_ref=str(payload.get("response_url", "")) or None,
-                    )
+                inbound = InboundCommand(
+                    channel_id=channel_id,
+                    channel_type=channel_type,
+                    sender_id=user_id,
+                    sender_name=user.name,
+                    command=command,
+                    args=args,
+                    channel_name=channel_name,
+                    reply_ref=str(payload.get("response_url", "")) or None,
                 )
+                try:
+                    await self._on_command(inbound)
+                except Exception as error:
+                    # Slack never sends a slash command again, so one that
+                    # fails here is otherwise answered with nothing at all.
+                    logger.error(
+                        "Could not act on /%s from %s in %s: %s",
+                        command,
+                        user_id,
+                        channel_id,
+                        _failure_without_message(error),
+                    )
+                    await self.answer_command(inbound, COULD_NOT_PROCESS)
             return
 
         # Post the visible "Running …" message as the app and use it as the

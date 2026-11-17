@@ -91,6 +91,7 @@ resources:
     name: "{area} - Architecture Decisions"
     description: "Technical decision-making for {area}. Structured evaluation of architecture proposals."
     bridge: "{bridge}"
+    channel_type: channel_private
     agents: [architecture_analyst, security_reviewer]
     users:
       - {if: "{bridge}", value: ["{$creator}"]}

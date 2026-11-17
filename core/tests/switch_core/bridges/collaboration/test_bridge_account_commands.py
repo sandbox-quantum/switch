@@ -8,6 +8,7 @@ through the adapter, and no room is made for wherever the command was typed.
 
 from __future__ import annotations
 
+import logging
 import uuid
 from types import SimpleNamespace
 
@@ -211,6 +212,78 @@ class TestLinkAccount:
 
         assert not await _verified(world)
         assert adapter.answers[0][1] == CODE_REFUSED
+
+    async def test_a_code_already_used_is_refused_when_posted_again(
+        self, world: _World
+    ) -> None:
+        """A replayed code links nothing a second time: the request it was
+        issued on is spent once the link is confirmed."""
+        code = await _code(world)
+        bridge, adapter = _bridge(world)
+        await CollaborationCore._handle_inbound_command(
+            bridge, _command("link-account", code)
+        )
+        assert await _verified(world)
+
+        await CollaborationCore._handle_inbound_command(
+            bridge, _command("link-account", code)
+        )
+
+        assert [text for _, text in adapter.answers][1] == CODE_REFUSED
+
+    async def test_a_code_posted_from_another_account_is_refused(
+        self, world: _World
+    ) -> None:
+        """Bob, whom Switch knows, posting the code issued for Ada's account
+        links neither account, and Ada's code still works afterwards."""
+        async with world.session_factory() as session:
+            bob = ExternalUser(
+                bridge_id=world.bridge_id,
+                external_user_id="U-bob",
+                external_username="bob",
+                client_id=await _client(session, "external_user"),
+            )
+            session.add(bob)
+            await session.commit()
+            bob_id = bob.id
+        code = await _code(world)
+        bridge, adapter = _bridge(world)
+
+        await CollaborationCore._handle_inbound_command(
+            bridge, _command("link-account", code, sender="U-bob")
+        )
+
+        assert not await _verified(world)
+        assert adapter.answers[0][1] == CODE_REFUSED
+        async with world.session_factory() as session:
+            assert await _STORE.get_claim(session, bob_id, world.ada.id) is None
+
+        await CollaborationCore._handle_inbound_command(
+            bridge, _command("link-account", code)
+        )
+        assert await _verified(world)
+
+    async def test_no_code_reaches_the_log_on_success_or_failure(
+        self, world: _World, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        caplog.set_level(logging.DEBUG)
+        marker = "ZQ9X-7MKP"
+        code = await _code(world)
+        bridge, _adapter = _bridge(world)
+
+        await CollaborationCore._handle_inbound_command(
+            bridge, _command("link-account", marker)
+        )
+        await CollaborationCore._handle_inbound_command(
+            bridge, _in_channel("link-account", marker, sender="U-stranger")
+        )
+        await CollaborationCore._handle_inbound_command(
+            bridge, _command("link-account", code)
+        )
+
+        assert await _verified(world)
+        assert marker not in caplog.text
+        assert code not in caplog.text
 
     async def test_no_code_gets_the_usage(self, world: _World) -> None:
         bridge, adapter = _bridge(world)
@@ -462,14 +535,17 @@ class TestPromptPresses:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         answered: list[InboundInteraction] = []
+        bound_to: list[object] = []
 
-        async def _answer(interaction: InboundInteraction, **_kwargs: object) -> None:
+        async def _answer(interaction: InboundInteraction, **kwargs: object) -> None:
             answered.append(interaction)
+            bound_to.append(kwargs.get("bridge_id"))
 
         monkeypatch.setattr(collaboration_core, "answer_prompt", _answer)
         bridge = SimpleNamespace(
             _adapter=object(),
             _session_factory=object(),
+            _bridge_id="bridge-1",
             _bridge_tenant_id=TENANT_ZERO_ID,
             _external_user_store=_STORE,
             _user_store=UserStore(),
@@ -488,3 +564,5 @@ class TestPromptPresses:
         await CollaborationCore._handle_inbound_interaction(bridge, press)
 
         assert answered == [press]
+        # Bound to the connection it arrived on, one workspace of the platform.
+        assert bound_to == ["bridge-1"]

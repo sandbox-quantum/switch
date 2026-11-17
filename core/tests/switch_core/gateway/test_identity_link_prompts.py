@@ -202,7 +202,10 @@ async def _tap(
     *,
     label: str,
     sender: str = "U-ada",
+    bridge_id: str | None = None,
 ) -> None:
+    """Tap `label` on `prompt`, on the account's own connection unless
+    `bridge_id` names another."""
     position = prompt.labels.index(label) + 1
     await answer_prompt(
         InboundInteraction(
@@ -219,6 +222,7 @@ async def _tap(
         tenant_id=TENANT_ZERO_ID,
         external_user_store=_STORE,
         user_store=UserStore(),
+        bridge_id=world.bridge_id if bridge_id is None else bridge_id,
     )
 
 
@@ -440,6 +444,42 @@ class TestTappingAPrompt:
         assert not await _verified(world)
         assert await _waiting(world)
         assert adapter.settled == []
+        assert adapter.told == [link_prompts.SOMEONE_ELSE]
+
+    async def test_the_same_user_id_in_another_workspace_cannot_answer(
+        self, world: _World
+    ) -> None:
+        """A tap is bound to the connection (one Slack workspace) as well as
+        the user id: the same id arriving on another connection is refused."""
+        adapter = _Adapter()
+        code = await _claim(world, adapter)
+        [(_to, prompt)] = adapter.sent
+
+        await _tap(
+            world,
+            adapter,
+            prompt,
+            label=str(code.prompt.number),
+            bridge_id=str(uuid.uuid4()),
+        )
+
+        assert not await _verified(world)
+        assert await _waiting(world)
+        assert adapter.settled == []
+        assert adapter.told == [link_prompts.SOMEONE_ELSE]
+
+        await _tap(world, adapter, prompt, label=str(code.prompt.number))
+        assert await _verified(world)
+
+    async def test_a_tap_naming_no_connection_is_refused(self, world: _World) -> None:
+        adapter = _Adapter()
+        code = await _claim(world, adapter)
+        [(_to, prompt)] = adapter.sent
+
+        await _tap(world, adapter, prompt, label=str(code.prompt.number), bridge_id="")
+
+        assert not await _verified(world)
+        assert await _waiting(world)
         assert adapter.told == [link_prompts.SOMEONE_ELSE]
 
     async def test_a_newer_code_retires_the_older_prompt(self, world: _World) -> None:

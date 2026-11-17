@@ -93,6 +93,7 @@ resources:
     name: "Close - {period}"
     description: "Financial close coordination for {period}. Checklist tracking, variance analysis, and cross-department coordination."
     bridge: "{bridge}"
+    channel_type: channel_private
     agents: [close_tracker, variance_analyst]
     users:
       - {if: "{bridge}", value: ["{$creator}"]}

@@ -70,6 +70,7 @@ resources:
     name: "Onboarding - {new_hire}"
     description: "Onboarding room for {new_hire} joining {team}. Questions, checklist tracking, and buddy support."
     bridge: "{bridge}"
+    channel_type: channel_private
     agents: [onboarding_guide]
     users:
       - {if: "{bridge}", value: ["{$creator}"]}

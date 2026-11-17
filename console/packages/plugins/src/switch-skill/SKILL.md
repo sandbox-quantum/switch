@@ -181,7 +181,7 @@ does, and there is no polling tool to call.
   Switch Console or on the gateway's room page.
 
   Which decision service a room uses is its workspace's choice, made by a
-  workspace admin in Switch Console → Admin → Decision routing: the server's
+  workspace admin in Switch Console → Admin → Message routing: the server's
   own default, the workspace's self-hosted endpoint, Claude Haiku, or none.
   With none (or no server default), `!auto-route on` says auto-route needs a
   decision service and changes nothing, and the room works as it does without
@@ -734,7 +734,7 @@ resources naming each other by key, and `if:` as the one conditional.
   agents with `list_managed_agents` as after `create_agent`. A `bridge`
   param also takes `"Switch Console"`: the room is then on no messaging app,
   with your owner in it as one of their Switch Console chats. That needs the
-  server's group chats, and suits a person with no chat app connected.
+  server's group chats, and suits a person with no messaging app connected.
 - **`save_template`**: save a template for your owner, `private` or
   `shared`. Only you can change or delete it afterwards.
 - **`update_template`** / **`delete_template`**: only for templates you saved.
@@ -797,7 +797,8 @@ room too; it appears in their Switch Console chats as a group chat, where they
    offering one is offering a room that cannot be made.
 3. Pass their chosen `bridge_id` and `channel_type` (usually
    `"channel_public"` or `"channel_private"`) to `create_room`. Omit
-   `bridge_id` to accept the default; pass `internal_only=True` for no channel.
+   `channel_type` and the room is private. Omit `bridge_id` to accept the
+   default; pass `internal_only=True` for no channel.
 
 If the instance has a default bridge and the room is clearly for
 collaboration, accepting the default without enumerating is reasonable — but

@@ -221,7 +221,7 @@ async def test_no_server_default_offers_no_haiku_and_says_why(
         )
 
     assert body["effective"]["available"] is False
-    assert "Decision routing" in body["effective"]["reason"]
+    assert "Message routing" in body["effective"]["reason"]
     assert body["server_default"]["configured"] is False
     assert body["options"] == {"haiku_anthropic": False, "haiku_bedrock": False}
     assert haiku.status_code == 422

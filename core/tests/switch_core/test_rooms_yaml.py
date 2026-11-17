@@ -290,7 +290,8 @@ def test_parse_minimal(env):
         """
     )
     assert spec.name == "Room A"
-    assert spec.channel_type == "channel_public"
+    # Left unset, so the room is made private (`RoomService.create_room`).
+    assert spec.channel_type is None
     assert spec.references == []
 
 
@@ -516,6 +517,35 @@ async def test_provision_no_agents_or_users(env):
     assert result.room_name == "Agentless"
     assert len(result.created_document_ids) == 1
     assert result.failed_attachments == []
+
+
+@pytest.mark.asyncio
+async def test_a_room_that_names_no_channel_type_leaves_it_to_the_server(env):
+    """The server makes such a room private (`RoomService.create_room`); the
+    template passes no channel type rather than a public one."""
+    spec, _ = _svc(env).parse(
+        """
+        room:
+          name: "Unsaid"
+          description: "no channel type"
+        """
+    )
+    await _svc(env).provision(spec, user_id=env["user_id"], is_admin=False)
+    assert env["rooms"].configs[-1].channel_type is None
+
+
+@pytest.mark.asyncio
+async def test_a_room_that_asks_for_a_public_channel_gets_one(env):
+    spec, _ = _svc(env).parse(
+        """
+        room:
+          name: "Open"
+          description: "asked for public"
+          channel_type: channel_public
+        """
+    )
+    await _svc(env).provision(spec, user_id=env["user_id"], is_admin=False)
+    assert env["rooms"].configs[-1].channel_type == "channel_public"
 
 
 @pytest.mark.asyncio

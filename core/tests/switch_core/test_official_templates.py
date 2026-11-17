@@ -182,6 +182,106 @@ def test_switch_buddy_describes_the_default_addressing():
     assert "A new agent answers only its owner" not in instructions
 
 
+def _buddy_words() -> str:
+    return " ".join((_PACKAGED / "switch-buddy" / "AGENT.md").read_text().split())
+
+
+def _playbook_table(heading: str) -> dict[str, list[str]]:
+    """A playbook table's rows, by their first cell, as the comma-separated
+    names in the second."""
+    section = _PLAYBOOK.read_text().split(f"## {heading}", 1)[1].split("\n## ", 1)[0]
+    rows = [
+        [cell.strip() for cell in row.split("|")[1:3]]
+        for row in section.splitlines()
+        if row.startswith("| ") and "---" not in row and "Their answer" not in row
+    ]
+    return {
+        answer: [name.strip() for name in names.split(",")] for answer, names in rows
+    }
+
+
+def test_switch_buddy_asks_the_work_question_as_a_form_with_skip():
+    instructions = _buddy_words()
+    assert (
+        'one question form, "What do you mostly work on?", with Engineering, Product, '
+        'Design, Sales, Marketing, Other and "Skip for now", in that order.'
+    ) in instructions
+    assert "Do not repeat it as text." in instructions
+    assert 'ask the work question and run "Their first agent"' in instructions
+
+
+def test_switch_buddy_offers_skip_on_every_onboarding_step():
+    instructions = _buddy_words()
+    assert 'Every onboarding step has "Skip for now".' in instructions
+    assert '"No problem, you can do this later from Settings."' in instructions
+    assert '"Want to connect your tools?"' in instructions
+    assert "ends with **Something else** and **Skip for now**" in instructions
+
+
+def test_switch_buddy_suggests_only_connectors_switch_has():
+    rows = _playbook_table("Onboarding connectors")
+    catalog = {
+        yaml.safe_load(path.read_text())["name"]
+        for path in (_PACKAGED.parent / "connections" / "catalog").glob("*/*.yaml")
+    }
+    names = {name for names in rows.values() for name in names}
+    assert set(rows) == {
+        "Engineering",
+        "Product",
+        "Design",
+        "Sales",
+        "Marketing",
+        "Other, or skipped",
+    }
+    assert names <= catalog, names - catalog
+
+
+def test_switch_buddy_suggests_only_room_templates_switch_ships():
+    rows = _playbook_table("Room templates by work")
+    catalogue = yaml.safe_load((_PACKAGED / "rooms" / "catalogue.yaml").read_text())
+    ids = {template for templates in rows.values() for template in templates}
+    assert len(rows) == 6 and all(len(templates) <= 3 for templates in rows.values())
+    assert {f"official:{slug}" for slug in catalogue} >= ids, ids
+
+
+def test_switch_buddy_offers_templates_for_a_new_room_and_confirms_first():
+    instructions = _buddy_words()
+    assert (
+        "Unless this chat already says what they work on, ask the work question first."
+        in instructions
+    )
+    assert 'One form, "Start from a template?"' in instructions
+    assert 'plus "Start from scratch". None listed: leave the form out.' in instructions
+    assert (
+        "then confirm in one proposal (the room's name, the agents it adds, where it lives)"
+        in instructions
+    )
+    assert "`run_template` after a yes." in instructions
+
+
+def test_switch_buddy_never_loops_on_a_refused_room():
+    """A run refused for lack of "can manage agents" falls back to building the
+    room; one refused over their linked account offers linking or public, and
+    is never retried into the same refusal."""
+    instructions = _buddy_words()
+    assert "A refusal: say why, once, in plain words." in instructions
+    # Every linked-account refusal from a private channel ends with these words.
+    assert (
+        'One ending "or choose a public channel" is about their linked account'
+        in instructions
+    )
+    # run_template takes no channel_type: public is a room from scratch, never the template.
+    assert (
+        "or a public room from scratch (`create_room` with `channel_type` "
+        '"channel_public"). A template can\'t be made public: never offer that. '
+        "Never retry into the same refusal." in instructions
+    )
+    assert (
+        "Any other refusal of a template (you can't manage agents, say): go on as for "
+        '"Start from scratch".'
+    ) in instructions
+
+
 def test_an_unknown_official_id_is_none():
     assert (
         official_template("official:nope", agent_management=True, switch_buddy=True)

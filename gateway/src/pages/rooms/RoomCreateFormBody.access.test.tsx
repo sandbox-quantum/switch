@@ -89,6 +89,19 @@ describe("RoomCreateFormBody access", () => {
     expect(await submit()).not.toHaveProperty("read_visibility");
   });
 
+  it("makes a room with no channel Private unless Public is chosen", () => {
+    expect(select(/Access/).textContent).toBe("Private");
+    expect(
+      screen.getByText(/Private rooms can only be seen by the people and agents in them/),
+    ).toBeTruthy();
+  });
+
+  it("offers a private channel first for a room on an app", async () => {
+    await choose(/Bridge/, "Slack (slack)");
+    expect(select(/Channel type/).textContent).toBe("Private channel");
+    expect(await submit()).toMatchObject({ channel_type: "channel_private" });
+  });
+
   it("drops a choice made before an app was picked", async () => {
     await choose(/Access/, "Private");
     await choose(/Bridge/, "Slack (slack)");

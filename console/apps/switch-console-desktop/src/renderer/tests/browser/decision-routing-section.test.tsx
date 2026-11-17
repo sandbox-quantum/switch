@@ -67,7 +67,7 @@ const NO_SERVICE: DecisionSettings = {
     threshold: null,
     available: false,
     reason:
-      'Auto-route needs a decision service. A workspace admin can set one up in Switch Console → Admin → Decision routing.',
+      'Auto-route needs a decision service. A workspace admin can set one up in Switch Console → Admin → Message routing.',
   },
   serverDefault: { configured: false, endpoint: null, hasApiKey: false },
   options: { haikuAnthropic: false, haikuBedrock: false },
@@ -402,7 +402,7 @@ it('tells a member who is not the workspace’s admin that it is theirs to chang
   const el = await render({ kind: 'forbidden' });
 
   expect(el.textContent).toContain(
-    'Only an admin of this workspace can view or change its decision routing.'
+    'Only an admin of this workspace can view or change its message routing.'
   );
   expect(el.querySelector('[role="radio"]')).toBeNull();
 });

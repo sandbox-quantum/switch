@@ -63,7 +63,20 @@ export default function TemplatesTab({ refreshKey }: Props) {
 
   const columns = useMemo<GridColDef<TemplateSummary>[]>(
     () => [
-      { field: "name", headerName: "Name", flex: 1, minWidth: 180 },
+      {
+        field: "name",
+        headerName: "Name",
+        flex: 1,
+        minWidth: 300,
+        renderCell: ({ row }) => (
+          <Box sx={{ display: "flex", alignItems: "center", gap: 1, minWidth: 0 }}>
+            <Box component="span" sx={{ overflow: "hidden", textOverflow: "ellipsis" }}>
+              {row.name}
+            </Box>
+            {row.official && <Chip size="small" color="primary" variant="outlined" label="Official" />}
+          </Box>
+        ),
+      },
       {
         field: "description",
         headerName: "Description",
@@ -88,7 +101,7 @@ export default function TemplatesTab({ refreshKey }: Props) {
         field: "owner_name",
         headerName: "Owner",
         width: 150,
-        renderCell: ({ value, row }) => value ?? row.owner_id,
+        renderCell: ({ value, row }) => (row.official ? "Switch" : (value ?? row.owner_id)),
       },
       { field: "version", headerName: "Rev", width: 70, type: "number" },
       {

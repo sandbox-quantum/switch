@@ -41,12 +41,13 @@ import yaml
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError, model_validator
 
 from switch_core.agent_runs import AgentOrigin, kickoff_fingerprint
-from switch_core.authz import Principal, can, require_group_filing
+from switch_core.authz import Principal, require_group_filing
 from switch_core.bridges.collaboration.models import ChannelType
 from switch_core.bridges.resource.registry import validate_reference_value
 from switch_core.clients.actor import SystemActor
 from switch_core.clients.admin_messages import OnBehalfOf
 from switch_core.db.models import User, require_tenant_id
+from switch_core.room_policy import visible_from_outside
 from switch_core.room_service import RoleSpec, RoomCreateConfig
 from switch_core.telemetry import TelemetryService, emit_after_commit
 
@@ -459,7 +460,9 @@ class RoomSpec(BaseModel):
     instructions: str | None = None
     # Collaboration bridge display name; omit for an internal-only room.
     bridge: str | None = None
-    channel_type: Literal["channel_public", "channel_private"] = "channel_public"
+    # Omitted, the room is private (`RoomService.create_room`); a public room
+    # has to be asked for.
+    channel_type: Literal["channel_public", "channel_private"] | None = None
     # Omitted, the room follows its channel (`room_policy.visibility_for_channel`).
     read_visibility: str | None = None
     # Accepted from older templates and ignored: a room has no write
@@ -995,7 +998,7 @@ class RoomYamlService:
         return [
             r.name
             for r in await self._room_store.get_all(session)
-            if r.id in member_of or can(reader.principal, "read", r)
+            if r.id in member_of or visible_from_outside(reader.principal, r)
         ]
 
     async def builtins_for(
@@ -1159,7 +1162,7 @@ class RoomYamlService:
             name=spec.name,
             description=spec.description,
             instructions=spec.instructions,
-            channel_type=cast(ChannelType, spec.channel_type),
+            channel_type=cast(ChannelType | None, spec.channel_type),
             agent_names=spec.agents or None,
             user_names=None if console else (spec.users or None),
             bridge_id=bridge_id,

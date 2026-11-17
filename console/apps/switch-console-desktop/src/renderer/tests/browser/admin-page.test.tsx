@@ -70,6 +70,11 @@ vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
   switchServersStore: { servers: [{ id: 'server', name: 'Dev Server' }] },
 }));
 
+// Switch Trust's own settings are tested with it; this page only frames them.
+vi.mock('@renderer/features/switch-servers/GuardrailsSection', () => ({
+  GuardrailsSection: () => null,
+}));
+
 // Connector apps are in the web gateway; Admin keeps them for a Switch without one.
 vi.mock('@renderer/features/switch-servers/server-gateway', () => ({
   servesWebGateway: () => admin.servesGateway,
@@ -199,7 +204,7 @@ it('lists its sections under what they reach, and each service as a tile with wh
   expect(workspaces.getWorkspaceServices).toHaveBeenCalledWith('workspace');
   expect(page.textContent).toContain('Choose which services people in Acme can connect');
   const workspace = page.querySelector('nav [role="group"][aria-label="Workspace"]')!;
-  expect(workspace.textContent).toBe('Workspace · AcmeMessaging appsConnectorsDecision routing');
+  expect(workspace.textContent).toBe('Workspace · AcmeMessaging appsConnectorsMessage routing');
   expect(workspace.querySelector('[aria-current="page"]')!.textContent).toBe('Connectors');
   expect(page.querySelector('nav [role="group"][aria-label="Server"]')).toBeNull();
   expect(tiles(page)!.textContent).toContain('3 members connected · 2 agents use it');
@@ -326,11 +331,11 @@ it('tells someone who administers nothing whom to ask, asking the server nothing
     expect(page.textContent).toContain('Ask a workspace admin to change these.')
   );
   expect(workspaces.getWorkspaceServices).not.toHaveBeenCalled();
-  expect(page.textContent).not.toContain('Decision routing');
+  expect(page.textContent).not.toContain('Message routing');
   expect(switchServers.getDecisionSettings).not.toHaveBeenCalled();
 });
 
-it('gives the workspace’s admins Decision routing under Workspace, with service connections off too', async () => {
+it('gives the workspace’s admins Message routing under Workspace, with service connections off too', async () => {
   featureFlags.get.mockResolvedValueOnce({
     success: true,
     data: {
@@ -363,28 +368,44 @@ it('gives the workspace’s admins Decision routing under Workspace, with servic
     expect(page.textContent).toContain('This workspace uses the server default')
   );
   expect(switchServers.getDecisionSettings).toHaveBeenCalledWith('workspace');
+  expect(page.textContent).toContain(
+    'Controls which routing service determines the responding agent when a message is posted without tagging one directly.'
+  );
   const workspace = page.querySelector('nav [role="group"][aria-label="Workspace"]')!;
-  expect(workspace.textContent).toBe('Workspace · AcmeMessaging appsDecision routing');
-  expect(workspace.querySelector('[aria-current="page"]')!.textContent).toBe('Decision routing');
+  expect(workspace.textContent).toBe('Workspace · AcmeMessaging appsMessage routing');
+  expect(workspace.querySelector('[aria-current="page"]')!.textContent).toBe('Message routing');
   expect(workspaces.getWorkspaceServices).not.toHaveBeenCalled();
 });
 
-it('opens Decision routing from its menu entry beside Connectors', async () => {
+it('opens Message routing from its menu entry beside Connectors', async () => {
   workspaces.getWorkspaceServices.mockResolvedValue(SERVICES);
   switchServers.getDecisionSettings.mockResolvedValue({ kind: 'forbidden' });
   const page = await render();
   await vi.waitFor(() => expect(tiles(page)).not.toBeNull());
 
   const entry = [...page.querySelectorAll<HTMLElement>('nav button')].find(
-    (button) => button.textContent === 'Decision routing'
+    (button) => button.textContent === 'Message routing'
   )!;
   await act(async () => entry.click());
 
   await vi.waitFor(() =>
     expect(page.textContent).toContain(
-      'Only an admin of this workspace can view or change its decision routing.'
+      'Only an admin of this workspace can view or change its message routing.'
     )
   );
+});
+
+it("describes Switch Trust on the server it is set up on, naming a server that isn't local", async () => {
+  admin.operator = true;
+  navigation.navigate('admin', { section: 'switch-trust' });
+  const page = await render();
+
+  await vi.waitFor(() =>
+    expect(page.textContent).toContain(
+      'Content guardrails applied to outbound messages on Dev Server prior to delivery.'
+    )
+  );
+  expect(page.textContent).not.toContain('the local Switch server');
 });
 
 function connectorApp(overrides: Partial<ConnectorApp>): ConnectorApp {

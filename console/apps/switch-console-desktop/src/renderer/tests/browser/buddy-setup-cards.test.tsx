@@ -193,9 +193,9 @@ afterEach(async () => {
   root = null;
 });
 
-async function render(): Promise<HTMLElement> {
+async function render(width = 720): Promise<HTMLElement> {
   container = document.createElement('div');
-  container.style.width = '720px';
+  container.style.width = `${width}px`;
   container.style.padding = '16px';
   document.body.appendChild(container);
   root = createRoot(container);
@@ -598,6 +598,48 @@ describe('switch-buddy setup cards', () => {
     await shot(el, 'i-retry-done');
   });
 
+  it('(k0) the Switch Console tile comes last, after every messaging app', async () => {
+    const el = await render();
+    const grid = el.querySelector('[data-testid="buddy-setup-cards"] .grid');
+    const tiles = [...grid!.querySelectorAll<HTMLButtonElement>(':scope > button')];
+
+    expect(tiles.map((tile) => tile.querySelector('.font-semibold')?.textContent)).toEqual([
+      'Slack',
+      'Microsoft Teams',
+      'Discord',
+      'Telegram',
+      'Switch Console',
+    ]);
+    expect(tiles[4].textContent).toContain(
+      'Chat in the console and connect to your messaging app later'
+    );
+    expect(el.textContent).not.toContain('Chat right here');
+    expect(tiles.some((tile) => tile.getAttribute('aria-pressed') === 'true')).toBe(false);
+  });
+
+  it.each([
+    ['narrow', 720],
+    ['wide', 1200],
+  ] as const)(
+    '(k0) %s: the platforms share one row and Console has its own full-width row',
+    async (label, width) => {
+      await page.viewport(width + 40, 900);
+      const el = await render(width);
+      const grid = el.querySelector<HTMLElement>('[data-testid="buddy-setup-cards"] .grid')!;
+      const tiles = [...grid.querySelectorAll<HTMLButtonElement>(':scope > button')];
+      const platforms = tiles.slice(0, 4);
+      const consoleTile = tiles[4];
+
+      expect(new Set(platforms.map((tile) => tile.offsetTop)).size).toBe(1);
+      expect(consoleTile.offsetTop).toBeGreaterThan(
+        platforms[0].offsetTop + platforms[0].offsetHeight - 1
+      );
+      expect(consoleTile.offsetWidth).toBe(grid.clientWidth);
+      expect(consoleTile.offsetHeight).toBeLessThan(platforms[0].offsetHeight);
+      await shot(el, `k0-console-row-${label}`);
+    }
+  );
+
   it('(k) the Switch Console tile says in the chat that the person is staying', async () => {
     const el = await render();
 
@@ -731,11 +773,11 @@ describe('switch-buddy setup cards', () => {
     expect(findButton(el, 'Create channel and continue')).toBeDefined();
   });
 
-  it('(q) a failed first read of the chat apps: says so, and Retry reads them again', async () => {
+  it('(q) a failed first read of the messaging apps: says so, and Retry reads them again', async () => {
     listBridges.mockReset().mockRejectedValueOnce(new Error('down')).mockResolvedValue([]);
     const el = await render();
 
-    expect(el.textContent).toContain('Couldn’t check your chat apps');
+    expect(el.textContent).toContain('Couldn’t check your messaging apps');
     await shot(el, 'x-apps-check-failed');
     await click(el, 'Retry');
 

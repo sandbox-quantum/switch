@@ -121,7 +121,7 @@ export default function PeopleSection({ tenantId }: { tenantId: string }) {
     <Stack spacing={1.5}>
       <Typography variant="h6">People</Typography>
       <Typography variant="body2" sx={{ color: "text.secondary" }}>
-        Everyone seen in this workspace&apos;s rooms, through a chat app (including apps since
+        Everyone seen in this workspace&apos;s rooms, through a messaging app (including apps since
         disconnected) or Switch Console (including deleted accounts, shown as Former member).
         Erasing
         someone permanently deletes every message they sent and their files, for example to

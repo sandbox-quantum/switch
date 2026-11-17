@@ -1000,7 +1000,7 @@ async def create_room(
             `your_usernames`). Only meaningful for bridged rooms; to put your
             owner in an internal-only room, use `include_owner`.
         channel_type: One of "channel_public", "channel_private", or "direct".
-            Required when `bridge_id` is set; ignored for internal-only rooms.
+            Omitted, a new channel is private.
             Use "direct" to open a 1:1 DM room — exactly one entry in
             `agent_names` and one in `user_names`. On Slack this is provisioned
             as a private channel with that user invited; the user must already
@@ -1022,10 +1022,11 @@ async def create_room(
             entry is `{"target_room_id": "...", "label": "..."}`.
         read_visibility: Who may see the room: "public" (everyone in the
             workspace) or "private" (those taking part, its owner and
-            admins). Omit it and the room follows its channel: a private
-            channel or DM makes a private room, a public channel or no
-            channel a public one. Only the owner and admins change a room,
-            whichever it is.
+            admins). Omit it and the room follows its channel: a public
+            channel makes a public room, anything else a private one, and a
+            room is private unless you ask for public. A private channel or
+            DM cannot have a public room. Only the owner and admins change a
+            room, whichever it is.
         write_visibility: Ignored. Accepted so older instructions that pass
             it still work; a room has no write visibility of its own.
         group_name: Optional existing room group to file this room under (a

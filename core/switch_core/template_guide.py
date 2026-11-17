@@ -111,7 +111,7 @@ existing agent may stand in for it.
   description: text              # REQUIRED
   instructions: text             # standing brief for the room's agents
   bridge: messaging app display name, "Switch Console", or "{param}"
-  channel_type: channel_public | channel_private
+  channel_type: channel_private (the default) | channel_public
   agents: [agent keys, or names of agents that exist]
   users: [usernames on its messaging app; "{$creator}" is the deployer]
   roles: [{name, instructions, exclusive: true | false}]

@@ -110,7 +110,7 @@ describe("MessagingAppsPage", () => {
     setup({ isAdmin: false, bridges: [bridgeDetail({ display_name: "Acme Slack", bridge_type: "slack" })] });
     render(<MessagingAppsPage />);
 
-    expect(screen.getByText("Who you are in the messaging apps connected to Acme.")).toBeTruthy();
+    expect(screen.getByText("The messaging apps available to people in Acme. Admins control which messaging apps are enabled and members link their own accounts.")).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "Connected to Acme" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Add messaging app" })).toBeNull();
     expect(screen.queryByRole("switch")).toBeNull();

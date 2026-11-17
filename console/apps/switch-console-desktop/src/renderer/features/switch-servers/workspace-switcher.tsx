@@ -21,6 +21,7 @@ import {
   usePendingInvitations,
 } from '@renderer/features/workspaces/pending-invitations';
 import { WorkspaceAvatar } from '@renderer/features/workspaces/workspace-avatar';
+import { workspaceDisplayName } from '@renderer/features/workspaces/workspace-title';
 import {
   workspaceCreationKey,
   workspacesStore,
@@ -350,6 +351,10 @@ const WorkspaceMenu = observer(function WorkspaceMenu({
     active.tenantId === null &&
     serverAvailability(activeServer.id) === 'available' &&
     workspacesStore.hasNoMembership(activeServer.id);
+  const activeName = workspaceDisplayName(active, activeServer);
+  // Named after its server, the line under it says where the server runs instead.
+  const serverLine =
+    activeName === activeServer.name ? serverPlacementLabel(activeServer) : activeServer.name;
   const anyMatch =
     query.trim() === '' ||
     store.servers.some(
@@ -368,13 +373,16 @@ const WorkspaceMenu = observer(function WorkspaceMenu({
               aria-label="Switch workspace"
               className="flex w-full items-center gap-[10px] rounded-[9px] px-2 py-1.5 text-left hover:bg-[var(--sel-soft)] data-[popup-open]:bg-[var(--sel-soft)]"
             >
-              <WorkspaceAvatar name={active.name} size="md" active />
+              <WorkspaceAvatar name={activeName} size="md" active />
               <span className="min-w-0 flex-1">
-                <span className="block truncate text-sm font-medium text-foreground">
-                  {noWorkspaceYet ? 'No workspace yet' : active.name}
+                <span
+                  className="block truncate text-sm font-medium text-foreground"
+                  title={noWorkspaceYet ? undefined : activeName}
+                >
+                  {noWorkspaceYet ? 'No workspace yet' : activeName}
                 </span>
                 <span className="flex items-center gap-1.5 text-xs text-foreground-muted">
-                  <span className="truncate">{activeServer.name}</span>
+                  {serverLine && <span className="truncate">{serverLine}</span>}
                   {activeServer.managed ? (
                     <ManagedServerDot server={activeServer} size={6} />
                   ) : (
@@ -868,6 +876,7 @@ const WorkspaceMenuItem = observer(function WorkspaceMenuItem({
   const { toast } = useToast();
   const showInvitePeopleModal = useShowModal('invitePeopleModal');
   const isActive = workspacesStore.activeId === workspace.id;
+  const name = workspaceDisplayName(workspace, server);
   // Kept in the list rather than hidden: its agents are still here and the row
   // is the only thing that says where they went. Disabled, because the gateway
   // refuses every call scoped to it — offering it would turn a fact the app
@@ -889,7 +898,7 @@ const WorkspaceMenuItem = observer(function WorkspaceMenuItem({
       aria-current={isActive ? 'true' : undefined}
       className={cn('group/ws', WORKSPACE_ROW, isActive && 'bg-[var(--sel-soft)]')}
       disabled={unavailable !== null}
-      title={unavailable ? UNAVAILABLE_REASON[unavailable](workspace.name) : undefined}
+      title={unavailable ? UNAVAILABLE_REASON[unavailable](name) : undefined}
       onClick={() => {
         void workspacesStore
           .setActive(workspace.id)
@@ -900,14 +909,14 @@ const WorkspaceMenuItem = observer(function WorkspaceMenuItem({
             // you picked.
             toast({
               title: 'Could not switch workspace',
-              description: `${workspace.name} is still there; the app stayed where it was.`,
+              description: `${name} is still there; the app stayed where it was.`,
               variant: 'destructive',
             });
           });
       }}
     >
       <span className={cn('flex shrink-0', dormant && 'opacity-50')}>
-        <WorkspaceAvatar name={workspace.name} size="tile" active={isActive && !dormant} />
+        <WorkspaceAvatar name={name} size="tile" active={isActive && !dormant} />
       </span>
       <span
         data-row-name
@@ -916,7 +925,7 @@ const WorkspaceMenuItem = observer(function WorkspaceMenuItem({
           dormant ? 'text-[var(--fg-dim)]' : 'text-[var(--fg-name)]'
         )}
       >
-        {workspace.name}
+        {name}
       </span>
       {unavailable && (
         <span className="shrink-0 rounded bg-background-tertiary px-1 py-px text-[10px] font-medium tracking-wide text-foreground-muted uppercase">

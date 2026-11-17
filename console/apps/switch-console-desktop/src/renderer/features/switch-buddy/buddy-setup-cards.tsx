@@ -222,11 +222,7 @@ const Cards = observer(function Cards({
         Where does your team chat?
         <TermInfo term="messagingApp" />
       </div>
-      <div className="grid grid-cols-2 gap-3 @md:grid-cols-3 @2xl:grid-cols-5">
-        <button type="button" onClick={stay} className={TILE_CLASS}>
-          <SwitchConsoleMark size={28} />
-          <TileText name="Switch Console" subtitle="Chat right here" />
-        </button>
+      <div className="grid grid-cols-2 gap-3 @md:grid-cols-4">
         {TILES.map((app) => (
           <button
             key={app.bridgeType}
@@ -242,6 +238,17 @@ const Cards = observer(function Cards({
             <TileText name={app.name} subtitle={app.subtitle} />
           </button>
         ))}
+        <button
+          type="button"
+          onClick={stay}
+          className={cn(TILE_CLASS, 'col-span-full flex-row items-center')}
+        >
+          <SwitchConsoleMark size={28} />
+          <TileText
+            name="Switch Console"
+            subtitle="Chat in the console and connect to your messaging app later"
+          />
+        </button>
       </div>
 
       {platform && step.kind === 'loading' && (
@@ -254,7 +261,7 @@ const Cards = observer(function Cards({
       {step.kind === 'unknown' && (
         <StatusRow className="border-border-destructive text-foreground-destructive">
           <div className="min-w-0 flex-1">
-            <div className="font-semibold">Couldn’t check {label || 'your chat apps'}</div>
+            <div className="font-semibold">Couldn’t check {label || 'your messaging apps'}</div>
             <div>Switch did not answer.</div>
           </div>
           <Button size="sm" variant="outline" onClick={retry}>

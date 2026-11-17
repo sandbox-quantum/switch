@@ -171,7 +171,12 @@ async def test_a_room_created_with_a_new_channel_records_the_channels_real_name(
 ) -> None:
     svc, bridge_id = await _service(session_factory)
     result = await svc.create_room(
-        RoomCreateConfig(name="Payments Team", description="d", bridge_id=bridge_id)
+        RoomCreateConfig(
+            name="Payments Team",
+            description="d",
+            bridge_id=bridge_id,
+            channel_type="channel_public",
+        )
     )
     assert await _naming(session_factory, result.room.id) == (
         "Payments Team",
@@ -274,7 +279,12 @@ async def test_a_channel_slack_refuses_fails_the_room_with_slacks_reason(
 
     with pytest.raises(BridgeOperationError, match="channels:manage"):
         await svc.create_room(
-            RoomCreateConfig(name=name, description="d", bridge_id=bridge_id)
+            RoomCreateConfig(
+                name=name,
+                description="d",
+                bridge_id=bridge_id,
+                channel_type="channel_public",
+            )
         )
 
     assert web.creates == 1

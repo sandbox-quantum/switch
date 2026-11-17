@@ -559,7 +559,9 @@ describe('a server that messages the account a number to tap', () => {
     expect(number?.textContent).toBe('42');
     expect(code?.textContent).toBe('7KQ2-M9XD');
     expect(number!.compareDocumentPosition(code!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(el.textContent).toContain('Didn’t get it? Post this code from that account instead:');
+    expect(el.textContent).toContain(
+      'Didn’t get it, or tapping does nothing? Post this code from that account instead:'
+    );
     expect(el.textContent).toMatch(/Waiting for confirmation\. The code expires at \d\d:\d\d/);
     expect(button(el, 'Copy')).toBeDefined();
     expect(el.querySelector('[data-testid="link-prompt-unavailable"]')).toBeNull();
@@ -647,7 +649,7 @@ describe('a server that messages the account a number to tap', () => {
     expect(el.querySelector('[data-testid="link-prompt-number"]')).toBeNull();
     expect(el.querySelector('[data-testid="link-prompt-unavailable"]')).toBeNull();
     expect(el.textContent).not.toContain('We sent');
-    expect(el.textContent).not.toContain('Didn’t get it?');
+    expect(el.textContent).not.toContain('Didn’t get it');
     expect(el.textContent).toContain('Waiting for the code. It expires at');
     expect(button(el, 'Get a new code')).toBeDefined();
     expect(button(el, 'Send again')).toBeUndefined();

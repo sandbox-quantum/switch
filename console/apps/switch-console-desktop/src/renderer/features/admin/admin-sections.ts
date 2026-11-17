@@ -6,7 +6,7 @@ export const ADMIN_MENU_LABELS = {
   'messaging-apps': 'Messaging apps',
   connectors: 'Connectors',
   'switch-trust': 'Switch Trust',
-  decision: 'Decision routing',
+  decision: 'Message routing',
   apps: 'Connector apps',
 } as const satisfies Record<AdminSection, string>;
 

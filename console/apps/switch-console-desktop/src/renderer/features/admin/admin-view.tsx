@@ -20,6 +20,7 @@ import { PageContent } from '@renderer/lib/components/page-layout';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { SearchInput } from '@renderer/lib/ui/search-input';
 import { Spinner } from '@renderer/lib/ui/spinner';
+import { runsOnThisComputer } from '@shared/core/switch-servers/switch-servers';
 import { AdminFrame, adminGroupsInScope } from './admin-frame';
 import {
   ADMIN_MENU_LABELS,
@@ -60,8 +61,8 @@ const AdminPanel = observer(function AdminPanel() {
   const workspace = workspacesStore.onServerInScope(serverId);
   const groups = adminGroupsInScope(serverId, access === 'shown');
   const section = shownAdminSection(groups, params.section);
-  const serverName =
-    switchServersStore.servers.find((s) => s.id === serverId)?.name ?? 'This server';
+  const server = switchServersStore.servers.find((s) => s.id === serverId);
+  const serverName = server?.name ?? 'This server';
 
   // Only the connector sections need the flags; the others still open.
   if (
@@ -95,8 +96,8 @@ const AdminPanel = observer(function AdminPanel() {
               title={ADMIN_MENU_LABELS[section]}
               description={
                 section === 'messaging-apps'
-                  ? `The apps people in ${workspace.name} reach their agents from. Everyone links their own account in Settings.`
-                  : `Guardrails that check what is sent on ${serverName} before it goes out, once they are set up.`
+                  ? `The messaging apps available to people in ${workspace.name}. Admins control which messaging apps are enabled and members link their own accounts.`
+                  : `Content guardrails applied to outbound messages on ${server && runsOnThisComputer(server) ? 'the local Switch server' : serverName} prior to delivery.`
               }
             />
             {section === 'messaging-apps' ? (
@@ -116,7 +117,7 @@ const AdminPanel = observer(function AdminPanel() {
             <PageHeader
               sticky
               title={ADMIN_MENU_LABELS.decision}
-              description={`In an auto-route room, Switch asks a decision service which agent should answer a message that tags nobody. Choose the one ${workspace.name}’s rooms use.`}
+              description="Controls which routing service determines the responding agent when a message is posted without tagging one directly."
             />
             {/* Keyed so a workspace switch reads that workspace's own setting. */}
             <DecisionRoutingSection key={workspace.id} workspaceId={workspace.id} />

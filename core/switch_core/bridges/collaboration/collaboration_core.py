@@ -2481,6 +2481,7 @@ class CollaborationCore:
                 tenant_id=self._bridge_tenant_id,
                 external_user_store=self._external_user_store,
                 user_store=self._user_store,
+                bridge_id=self._bridge_id,
             )
             return
         if interaction.action_id.startswith(UI_ACTION_PREFIX):
