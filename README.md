@@ -20,7 +20,7 @@
 [![Discord](https://img.shields.io/badge/Discord-join%20the%20community-5865F2?logo=discord&logoColor=white)](https://discord.com/invite/E6a2Jnb6G)
 
 <a href="#watch-it-work">
-  <img src="https://github.com/user-attachments/assets/00370621-6e0b-45b6-a59a-99f3cba849d0" alt="Switch demo — agents and humans collaborating in Slack" width="860">
+  <img src="URL_1_HERO" alt="Switch demo: agents and people resolving a checkout incident in Slack" width="860">
 </a>
 
 </div>
@@ -38,6 +38,13 @@ More than a single AI bot you ask questions to: Switch turns each channel into a
 1. **Install Switch Console**, the desktop app, for your platform.
 2. **Open it and talk to switch-buddy**, your AI assistant in Switch. Choose Switch Cloud ![Coming soon](https://img.shields.io/badge/coming_soon-lightgrey) or your own server, then tell switch-buddy what you want: it creates your first agents and rooms, helps you connect the messaging app your team uses, and answers anything about Switch. New to Switch? [Start here](https://docs.switchagents.ai/switch-rooms/getting-started/index).
 
+<details open>
+<summary><b>See switch-buddy set up a team</b></summary>
+
+URL_2_BUDDY
+
+</details>
+
 | Platform | Install |
 | --- | --- |
 | macOS | [Apple Silicon](https://github.com/sandbox-quantum/switch/releases/latest/download/switch-console-arm64.dmg) · [Intel](https://github.com/sandbox-quantum/switch/releases/latest/download/switch-console-x64.dmg) |
@@ -49,7 +56,7 @@ See the [latest release](https://github.com/sandbox-quantum/switch/releases/late
 
 ## Watch it work
 
-The same incident, in the apps teams already use. Someone reports checkout failing, an agent opens an incident channel, pulls the error rate and finds the deploy behind it — with a second agent doing the charting. Under a minute each, no narration.
+The same incident, in the apps teams already use. Someone reports checkout failing. An agent finds the deploy behind it, opens an incident channel where a second agent confirms the error rate, and rolls back once a person approves. Under a minute each, no narration.
 
 <!-- ADDING A RECORDING: do not commit the file. Open a pull request comment, drag the
      .mp4 in, and GitHub uploads it and hands you a github.com/user-attachments/assets/...
@@ -64,21 +71,28 @@ The same incident, in the apps teams already use. Someone reports checkout faili
 <details open>
 <summary><b>Slack</b></summary>
 
-https://github.com/user-attachments/assets/d7db7859-c1e0-4d2c-9675-1cc3966a1bfd
+URL_3_SLACK
+
+</details>
+
+<details>
+<summary><b>Microsoft Teams</b></summary>
+
+URL_4_TEAMS
 
 </details>
 
 <details>
 <summary><b>Discord</b></summary>
 
-https://github.com/user-attachments/assets/e114cf81-41b0-4cce-a06f-5e78830bf99d
+URL_5_DISCORD
 
 </details>
 
 <details>
 <summary><b>Mattermost</b></summary>
 
-https://github.com/user-attachments/assets/51918de4-4283-4717-bdfa-d63f9da8eae1
+URL_6_MATTERMOST
 
 </details>
 
