@@ -4,7 +4,14 @@ import logging
 from datetime import UTC, datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    HTTPException,
+    Request,
+    Response,
+)
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -588,6 +595,7 @@ async def delete_my_account(
     req: DeleteAccountRequest,
     request: Request,
     response: Response,
+    background: BackgroundTasks,
     session: Annotated[AsyncSession, Depends(get_system_session)],
     session_factory: Annotated[
         async_sessionmaker[AsyncSession], Depends(get_session_factory)
@@ -615,7 +623,10 @@ async def delete_my_account(
     nothing bound, carries only the rows that belong to no workspace — the
     `users` row and its sign-in identities. The caller confirms by typing
     their email, since an SSO account has no password to ask for. A refusal
-    is a 409 saying what to do first, and leaves the account untouched.
+    is a 409 saying what to do first, and leaves the account untouched. The
+    admins of an organization the caller was `org_admin` of are e-mailed
+    after the response, once the deletion has committed and nothing here
+    holds a connection.
     """
     user = await _confirmed_user(session, user_store, caller, req)
     deletion = _account_deletion(
@@ -641,9 +652,10 @@ async def delete_my_account(
     if reason is not None:
         raise HTTPException(status_code=409, detail=reason)
     try:
-        await deletion.delete(session, user, workspaces, actor_id=user.id)
+        changes = await deletion.delete(session, user, workspaces, actor_id=user.id)
     except AccountDeletionRefused as refused:
         raise HTTPException(status_code=409, detail=str(refused)) from None
+    background.add_task(notices.send_all, changes)
     response.delete_cookie("switch_auth", path="/")
     return {"ok": True}
 
@@ -653,6 +665,7 @@ async def reset_test_account(
     req: DeleteAccountRequest,
     request: Request,
     response: Response,
+    background: BackgroundTasks,
     session: Annotated[AsyncSession, Depends(get_system_session)],
     session_factory: Annotated[
         async_sessionmaker[AsyncSession], Depends(get_session_factory)
@@ -710,9 +723,10 @@ async def reset_test_account(
         deletion, session_factory, user_store, user.id
     )
     try:
-        await reset.reset(session, user, workspaces)
+        changes = await reset.reset(session, user, workspaces)
     except AccountDeletionRefused as refused:
         raise HTTPException(status_code=409, detail=str(refused)) from None
+    background.add_task(notices.send_all, changes)
     response.delete_cookie("switch_auth", path="/")
     return {"ok": True}
 

@@ -564,7 +564,8 @@ async def delete_account(
 ) -> None:
     """Delete the account `plan` describes, recorded in the server's audit
     log as the operator's deletion from the dashboard was: deleted, refused,
-    or failed part-way."""
+    or failed part-way. The admins of an organization it was `org_admin` of
+    are e-mailed once the deletion has committed and its session is closed."""
     user_id = plan.user.id
     reason = plan.blocked
     if reason is not None:
@@ -588,7 +589,9 @@ async def delete_account(
                 },
             )
             try:
-                await deletion.delete(session, user, plan.workspaces, actor_id=None)
+                changes = await deletion.delete(
+                    session, user, plan.workspaces, actor_id=None
+                )
             except AccountDeletionRefused as refused:
                 await session.rollback()
                 await _record_refusal(session_factory, user_id, str(refused))
@@ -618,6 +621,7 @@ async def delete_account(
                     "audit log records what was finished. Run it again to "
                     "finish."
                 ) from error
+    await deletion.admin_notices.send_all(changes)
 
 
 async def run_delete(

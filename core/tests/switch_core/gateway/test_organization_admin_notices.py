@@ -6,6 +6,7 @@ nothing (`organization_admin_notices.py`)."""
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -33,6 +34,7 @@ from tests.switch_core.gateway.test_organization_routes import (
     _organization_events,
     _workspace,
 )
+from tests.switch_core.pool_checkouts import PoolCheckouts
 
 
 class _RecordingMailer:
@@ -49,6 +51,44 @@ class _RecordingMailer:
 class _FailingMailer(_RecordingMailer):
     async def send_admin_change(self, email: AdminChangeEmail) -> None:
         raise InviteEmailFailed("relay refused the message")
+
+
+class SentAfter:
+    """Notes when an app under test has sent its response, for a fake to ask
+    while it is called."""
+
+    def __init__(self) -> None:
+        self.responded = False
+
+    def wrap(self, app: Any) -> Any:
+        async def asgi(scope: Any, receive: Any, send: Any) -> None:
+            async def noting(message: Any) -> None:
+                await send(message)
+                if message["type"] == "http.response.body" and not message.get(
+                    "more_body", False
+                ):
+                    self.responded = True
+
+            await app(scope, receive, noting)
+
+        return asgi
+
+
+class WatchedMailer(_RecordingMailer):
+    """Keeps each e-mail's recipient, whether the response had gone when it
+    was sent, and how many connections the request held then."""
+
+    def __init__(self, response: SentAfter, pool_checkouts: PoolCheckouts) -> None:
+        super().__init__()
+        self._response = response
+        self._pool_checkouts = pool_checkouts
+        self.seen: list[tuple[str, bool, int]] = []
+
+    async def send_admin_change(self, email: AdminChangeEmail) -> None:
+        self.seen.append(
+            (email.to, self._response.responded, self._pool_checkouts.held_now())
+        )
+        await super().send_admin_change(email)
 
 
 class _BrokenMailer(_RecordingMailer):

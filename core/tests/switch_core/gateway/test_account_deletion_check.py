@@ -10,6 +10,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from typing import Any
 
 import httpx
 from fastapi import FastAPI
@@ -25,17 +26,26 @@ from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway import dependencies as gw_deps
 from switch_core.gateway.auth import create_jwt
 from switch_core.gateway.auth_routes import router
+from switch_core.gateway.invite_mail import InviteMailer
 from tests.conftest import TEST_KEYRING
 from tests.switch_core.accounts.test_account_deletion import (
     ADMIN_EMAIL,
     _deletion,
     _SignInFlows,
 )
+from tests.switch_core.gateway.test_organization_admin_notices import (
+    SentAfter,
+    WatchedMailer,
+)
 from tests.switch_core.gateway.test_tenant_api_routes import _make_member
+from tests.switch_core.pool_checkouts import PoolCheckouts
 
 
-def _app(session_factory: async_sessionmaker[AsyncSession]) -> FastAPI:
-    deletion, _, _ = _deletion(session_factory)
+def _app(
+    session_factory: async_sessionmaker[AsyncSession],
+    mailer: InviteMailer | None = None,
+) -> FastAPI:
+    deletion, _, _ = _deletion(session_factory, mailer)
 
     async def _session_dep():
         async with session_factory() as session:
@@ -68,7 +78,7 @@ def _app(session_factory: async_sessionmaker[AsyncSession]) -> FastAPI:
     return app
 
 
-def _client(app: FastAPI, user_id: str, email: str) -> httpx.AsyncClient:
+def _client(app: Any, user_id: str, email: str) -> httpx.AsyncClient:
     token = create_jwt(
         user_id,
         email,
@@ -203,3 +213,44 @@ async def test_the_operators_account_is_refused(
     assert response.status_code == 200, response.text
     refusal = response.json()["refusal"]
     assert refusal is not None and "administrator account" in refusal
+
+
+async def test_deleting_an_org_admin_emails_after_the_response_holding_nothing(
+    session_factory: async_sessionmaker[AsyncSession],
+    pool_checkouts: PoolCheckouts,
+) -> None:
+    """The organization's admins and the person are e-mailed once the
+    account is gone and the response has been sent, with no connection held
+    while the relay is talked to."""
+    leaving = await _make_member(
+        session_factory, name="leaving-admin", tenant_id=TENANT_ZERO_ID, role="member"
+    )
+    staying = await _make_member(
+        session_factory, name="staying-admin", tenant_id=TENANT_ZERO_ID, role="admin"
+    )
+    async with session_factory() as session:
+        session.add_all(
+            [
+                OrganizationMember(
+                    organization_id=TENANT_ZERO_ID, user_id=user_id, role="org_admin"
+                )
+                for user_id in (leaving, staying)
+            ]
+        )
+        await session.commit()
+    response = SentAfter()
+    mailer = WatchedMailer(response, pool_checkouts)
+    app = pool_checkouts.wrap(response.wrap(_app(session_factory, mailer)))
+
+    async with _client(app, leaving, "leaving-admin@example.invalid") as client:
+        deleted = await client.request(
+            "DELETE", "/auth/me", json={"email": "leaving-admin@example.invalid"}
+        )
+
+    assert deleted.status_code == 200, deleted.text
+    assert sorted(mailer.seen) == [
+        ("leaving-admin@example.invalid", True, 0),
+        ("staying-admin@example.invalid", True, 0),
+    ]
+    async with session_factory() as session:
+        assert await session.get(User, leaving) is None

@@ -28,8 +28,11 @@ ahead would strand something nobody else could reach:
 - an active messaging app installed in a workspace nobody else is in, which
   would keep receiving messages for no one.
 
-An organization they were `org_admin` of records them as removed in its
-audit log, and its other admins are e-mailed (`organization_admin_notices.py`).
+An organization they were `org_admin` of loses that row before anything
+else changes. Once the account is gone, the organization's audit log records
+them as removed, and the caller e-mails its admins
+(`organization_admin_notices.py`). Nobody is told an account was deleted
+before it is.
 
 A workspace the person is alone in is deleted once it is empty
 (`workspace_deletion.py`). Rooms they created stay, so a workspace with any
@@ -469,6 +472,8 @@ class AccountDeletion:
     templates: TemplateStore
     clients: TenantClients
     admin_email: str
+    # Who is e-mailed about the `org_admin` rows a deletion takes: by the
+    # caller, with what `delete` returns, once it holds no connection.
     admin_notices: OrganizationAdminNotices
 
     async def with_former_workspaces(
@@ -599,7 +604,7 @@ class AccountDeletion:
         user: User,
         workspaces: list[Workspace],
         actor_id: str | None,
-    ) -> None:
+    ) -> list[AdminChange]:
         """Delete the account. `session` is the caller's, and carries the
         deletion of the rows that belong to no workspace; the caller has
         checked `refusal` first. `actor_id` is who asked: the person
@@ -608,11 +613,22 @@ class AccountDeletion:
         (`switch-accounts delete`), which the events say instead
         (`PLATFORM_OPERATOR_COMMAND`).
 
+        The person's `org_admin` rows go first (`_leave_organizations_as_admin`).
+        Each of those organizations records the removal in its audit log only
+        once the account's own rows have committed, as removed because the
+        account was deleted; a deletion that fails partway records it there
+        as removed by a deletion that did not finish, since the row is gone
+        either way. Returns what to e-mail those organizations' admins,
+        unsent: the caller sends it (`admin_notices.send_all`) once it holds
+        no connection, so a slow relay holds none.
+
         Raises `AccountDeletionRefused` before anything is changed if an
         organization's last `org_admin` check no longer holds, and
         `AccountDeletionIncomplete` when it fails partway."""
         user_id = user.id
-        await self._leave_organizations_as_admin(user, workspaces, actor_id)
+        target = Person(user.id, user.name, user.email)
+        actor = target if actor_id == user.id else await self._person(actor_id)
+        organizations = await self._leave_organizations_as_admin(user, workspaces)
         completed: list[Workspace] = []
         try:
             for workspace in workspaces:
@@ -623,28 +639,43 @@ class AccountDeletion:
             )
             await session.commit()
         except Exception as error:
+            await self._record_organization_removals(
+                organizations, user_id, actor_id, "account_deletion_incomplete"
+            )
             raise AccountDeletionIncomplete(user_id, completed) from error
+        await self._record_organization_removals(
+            organizations, user_id, actor_id, "account_deleted"
+        )
         logger.info(
             "Deleted the account of user %s at the request of %s", user_id, actor_id
         )
+        return [
+            AdminChange(
+                organization_id=organization_id,
+                kind=AdminChangeKind.ACCOUNT_DELETED,
+                target=target,
+                actor=actor,
+                reason=None,
+            )
+            for organization_id in organizations
+        ]
 
     async def _leave_organizations_as_admin(
-        self, user: User, workspaces: list[Workspace], actor_id: str | None
-    ) -> None:
+        self, user: User, workspaces: list[Workspace]
+    ) -> list[str]:
         """Take the person's `org_admin` rows away, each under the lock every
         write that could leave an organization without an `org_admin` takes
         (`OrganizationStore.lock_admins`), so `refusal` holds against another
         admin stepping down at the same moment. Every check runs before any
         row goes. Only Switch's rows go: a membership in a directory kept
         outside Switch (`organization_directory.py`) is the person's beyond
-        Switch, and stays there.
+        Switch, and stays there. Returns the organizations, by id.
 
-        Each organization records them as removed in its audit log, in the
-        transaction that removes them, and its admins and the person are
-        e-mailed once it commits."""
+        The audit log is written later, by `delete`: what it says depends on
+        whether the rest of the deletion succeeds."""
         organizations = await self.organizations_administered(user.id, workspaces)
         if not organizations:
-            return
+            return []
         async with AsyncExitStack() as stack:
             held = []
             for organization_id in sorted(organizations):
@@ -680,35 +711,54 @@ class AccountDeletion:
                         OrganizationMember.user_id == user.id,
                     )
                 )
-                await record_organization_audit_event(
-                    session,
-                    organization_id=organization_id,
-                    actor_user_id=actor_id,
-                    action=OrganizationAuditAction.MEMBER_REMOVED,
-                    target_type="user",
-                    target_id=user.id,
-                    details={
-                        "role": ORGANIZATION_ADMIN_ROLE,
-                        "reason": "account_deleted",
-                        # Anyone but the person is the operator, there on
-                        # the operator flag alone.
-                        **({"platform_access": True} if actor_id != user.id else {}),
-                        **_by_command(actor_id),
-                    },
-                )
                 await session.commit()
-        target = Person(user.id, user.name, user.email)
-        actor = await self._person(actor_id)
-        for organization_id in sorted(organizations):
-            await self.admin_notices.send(
-                AdminChange(
-                    organization_id=organization_id,
-                    kind=AdminChangeKind.ACCOUNT_DELETED,
-                    target=target,
-                    actor=actor,
-                    reason=None,
+        return sorted(organizations)
+
+    async def _record_organization_removals(
+        self,
+        organization_ids: list[str],
+        user_id: str,
+        actor_id: str | None,
+        reason: Literal["account_deleted", "account_deletion_incomplete"],
+    ) -> None:
+        """Record in each organization's audit log that the person's
+        `org_admin` row went with their account's deletion, which by now has
+        committed or failed: `reason` says which. Each organization in a
+        transaction of its own. A write that fails is logged, not raised: the
+        deletion has finished, one way or the other, and raising would
+        misreport it."""
+        for organization_id in organization_ids:
+            try:
+                async with organization_session(
+                    self.session_factory, organization_id
+                ) as session:
+                    await record_organization_audit_event(
+                        session,
+                        organization_id=organization_id,
+                        actor_user_id=actor_id,
+                        action=OrganizationAuditAction.MEMBER_REMOVED,
+                        target_type="user",
+                        target_id=user_id,
+                        details={
+                            "role": ORGANIZATION_ADMIN_ROLE,
+                            "reason": reason,
+                            # Anyone but the person is the operator, there on
+                            # the operator flag alone.
+                            **(
+                                {"platform_access": True} if actor_id != user_id else {}
+                            ),
+                            **_by_command(actor_id),
+                        },
+                    )
+                    await session.commit()
+            except Exception:
+                logger.exception(
+                    "User %s's org_admin row in organization %s went with their "
+                    "account's deletion (%s), but its audit log does not record it",
+                    user_id,
+                    organization_id,
+                    reason,
                 )
-            )
 
     async def organizations_administered(
         self, user_id: str, workspaces: list[Workspace]

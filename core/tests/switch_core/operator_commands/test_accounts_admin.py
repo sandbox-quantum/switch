@@ -28,12 +28,14 @@ from switch_core.accounts_admin import (
 from switch_core.bridges.agent.registration_bootstrap import (
     BOOTSTRAP_OWNER_MARKER_META_KEY,
 )
+from switch_core.db.audit import OrganizationAuditAction
 from switch_core.db.models import (
     TENANT_ZERO_ID,
     AgentController,
     ApiKey,
     AuditEvent,
     Organization,
+    OrganizationAuditEvent,
     Room,
     ServerAuditEvent,
     ServiceConnection,
@@ -41,6 +43,7 @@ from switch_core.db.models import (
     TenantMember,
     User,
 )
+from switch_core.gateway.invite_mail import AdminChangeEmail
 from switch_core.operator_commands import CommandRefused
 from switch_core.tenant_context import tenant_scope
 from tests.conftest import RLSHarness
@@ -51,7 +54,11 @@ from tests.switch_core.accounts.test_account_deletion import (
     _deletion,
     _invitation,
 )
-from tests.switch_core.operator_commands.helpers import email_of, make_organization
+from tests.switch_core.operator_commands.helpers import (
+    RecordingMailer,
+    email_of,
+    make_organization,
+)
 
 pytestmark = pytest.mark.no_ambient_tenant
 
@@ -337,6 +344,63 @@ class TestDelete:
             await delete_account(deletion, rls_harness.restricted, plan)
 
         assert await _user(rls_harness, only_admin.id) is not None
+
+
+class _MailerAfterTheFact(RecordingMailer):
+    """Keeps, for each e-mail, whether the account was still there and how
+    many of the command's connections were checked out as it was sent."""
+
+    def __init__(self, rls_harness: RLSHarness, user_id: str) -> None:
+        super().__init__()
+        self._rls_harness = rls_harness
+        self._user_id = user_id
+        self.seen: list[tuple[str, bool, int]] = []
+
+    async def send_admin_change(self, email: AdminChangeEmail) -> None:
+        pool = self._rls_harness.restricted_engine.sync_engine.pool
+        checked_out = pool.checkedout()  # type: ignore[attr-defined]
+        exists = await _user(self._rls_harness, self._user_id) is not None
+        self.seen.append((email.to, exists, checked_out))
+        await super().send_admin_change(email)
+
+
+async def test_an_org_admin_deleted_is_emailed_about_once_gone_holding_nothing(
+    rls_harness: RLSHarness,
+) -> None:
+    made = await make_organization(
+        rls_harness,
+        people={
+            "keeper": ("admin", "org_admin"),
+            "leaving": ("member", "org_admin"),
+        },
+    )
+    leaving, keeper = made.ids["leaving"], made.ids["keeper"]
+    mailer = _MailerAfterTheFact(rls_harness, leaving)
+    deletion, _, _ = _deletion(rls_harness.restricted, mailer)
+
+    plan = await plan_deletion(deletion, rls_harness.restricted, email_of(leaving))
+    await delete_account(deletion, rls_harness.restricted, plan)
+
+    assert sorted(mailer.seen) == sorted(
+        [(email_of(leaving), False, 0), (email_of(keeper), False, 0)]
+    )
+    async with rls_harness.owner() as session:
+        [event] = await session.scalars(
+            select(OrganizationAuditEvent).where(
+                OrganizationAuditEvent.organization_id == made.organization_id
+            )
+        )
+    assert (event.action, event.target_id, event.actor_user_id) == (
+        OrganizationAuditAction.MEMBER_REMOVED,
+        leaving,
+        None,
+    )
+    assert event.details == {
+        "role": "org_admin",
+        "reason": "account_deleted",
+        "platform_access": True,
+        **COMMAND,
+    }
 
 
 class _Terminal:
