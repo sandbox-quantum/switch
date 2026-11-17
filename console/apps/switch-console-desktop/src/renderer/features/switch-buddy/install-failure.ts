@@ -1,5 +1,5 @@
+import { installOutputSummary } from '@renderer/lib/providers/install-output-summary';
 import type { AgentInstallError } from '@shared/core/providers/agent-payload';
-import { installOutputSummary } from './install-output-summary';
 
 /** What the card says when installing a provider's CLI failed, by why. */
 export function installFailure(name: string, error: AgentInstallError): string {
