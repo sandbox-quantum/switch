@@ -170,9 +170,9 @@ async def test_a_platform_with_a_directory_does_not_record_direct_messages() -> 
 
 
 async def _lobby_command(
-    command: str,
+    command: str, *, directory: bool = True
 ) -> tuple[list[tuple[str, str, str | None]], list]:
-    adapter = _adapter_fake()
+    adapter = _adapter_fake(directory)
     created: list[object] = []
 
     async def _create_room_for_channel(**kwargs: object) -> None:
@@ -216,3 +216,14 @@ async def test_another_command_in_a_direct_chat_makes_no_room_either() -> None:
     notices, created = await _lobby_command("invite-agent")
     assert created == []
     assert "isn't where you talk to agents" in notices[0][1]
+
+
+async def test_another_command_where_there_is_no_directory_gets_advice_that_works() -> (
+    None
+):
+    """On Telegram an @-mention alone never reaches a bot with Group Privacy
+    on; a reply to an agent's message does."""
+    notices, created = await _lobby_command("invite-agent", directory=False)
+    assert created == []
+    assert "reply to its messages there" in notices[0][1]
+    assert "@-mention" not in notices[0][1]

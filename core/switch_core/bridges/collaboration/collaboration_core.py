@@ -1989,7 +1989,12 @@ class CollaborationCore:
             # every agent in it. Start is how a person first says hello there.
             await self._adapter.admin_message(
                 cmd.channel_id,
-                _LOBBY_HELLO if cmd.command == "start" else _LOBBY_DEPRECATION_NOTICE,
+                # Where there is no directory (Telegram) the hello's advice
+                # is the one that works: an @-mention alone does not reach a
+                # bot with Group Privacy on, a reply to an agent's message does.
+                _LOBBY_HELLO
+                if cmd.command == "start" or not self._adapter.supports_directory_search
+                else _LOBBY_DEPRECATION_NOTICE,
                 cmd.root_id or cmd.message_ref,
             )
             return
