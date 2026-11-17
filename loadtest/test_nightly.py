@@ -630,6 +630,7 @@ def test_a_full_pool_at_realistic_load_fails_the_night_and_says_where():
     text = report_text(result, cfg, [])
     assert "a pod's database pool filled at realistic load (every 3 min)" in text
     assert "of 40" in text and len(text) < 2000
+    assert "cons" in text and "9.0s" not in text and " 9000" in text
     series = datadog_series({**result, "restarts": 0, "duration_s": 1}, cfg, 1.0)
     full = [
         s for s in series

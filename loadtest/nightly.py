@@ -498,7 +498,7 @@ def report_text(result: dict, cfg: Config, comparison: list[str]) -> str:
     lines += result.get("notes", [])
     if result["rows"]:
         table = [
-            f"{'step':<14}{'sent/s':>8}{'p50':>7}{'p99':>8}{'err':>5}{'lost':>6}{'pods':>6}{'db':>6}{'pool':>6}"
+            f"{'step':<14}{'sent/s':>8}{'p50':>7}{'p99':>8}{'err':>5}{'lost':>6}{'pods':>6}{'db':>6}{'pool':>6}{'cons':>7}"
         ]
         for r in result["rows"]:
             pool = "-" if r.get("pool_busy_max") is None else str(r["pool_busy_max"])
@@ -506,6 +506,7 @@ def report_text(result: dict, cfg: Config, comparison: list[str]) -> str:
                 f"{r['label']:<14}{r['sent_per_s']:>8.1f}{_ms(r['delivery_ms_p50']):>7}"
                 f"{_ms(r['delivery_ms_p99']):>8}{r['errors']:>5}{r['missing']:>6}"
                 f"{_pct(r['pod_cpu_avg_pct']):>6}{_pct(r['db_cpu_avg_pct']):>6}{pool:>6}"
+                f"{_ms(r.get('console_refresh_ms_p99')):>7}"
                 + ("  full" if r.get("pool_full") else "")
                 + ("  broke" if r["broken"] else "")
             )
@@ -518,6 +519,7 @@ def report_text(result: dict, cfg: Config, comparison: list[str]) -> str:
             "pods is switch-core's average CPU, db the database's; pool the most "
             "connections one pod had checked out"
             + (f", of {ceiling}" if ceiling else "")
+            + "; cons the Consoles' sidebar re-read p99 in ms"
         )
     lines += comparison
     if cfg.dashboard_url:
