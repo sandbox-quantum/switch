@@ -76,7 +76,11 @@ export function WelcomePage({
           </h1>
         </Enter>
         <ul className="grid w-full gap-8 sm:grid-cols-3">
-          <Point order={2} icon={<MessagesSquare className="size-5" />} title="In your chat app">
+          <Point
+            order={2}
+            icon={<MessagesSquare className="size-5" />}
+            title="In your messaging app"
+          >
             Bring your agents from any provider to your messaging apps and start working together.
           </Point>
           <Point order={3} icon={<Users className="size-5" />} title="Shared knowledge">

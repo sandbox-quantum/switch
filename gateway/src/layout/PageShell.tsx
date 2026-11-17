@@ -1,7 +1,7 @@
 import { Alert, Box, Button, Stack } from "@mui/material";
 import { Outlet, useLocation } from "react-router";
 import { useAuth } from "../data/AuthContext";
-import { type Layout, outsideWorkspace } from "../routes/routeTable";
+import { AREAS, enteredArea } from "../routes/routeTable";
 import LinkNoticeBanner from "./LinkNoticeBanner";
 import NavRail from "./NavRail";
 import TopBar from "./TopBar";
@@ -9,12 +9,15 @@ import TopBar from "./TopBar";
 /** The signature shell: a narrow icon rail and a slim top bar sitting bare on
  *  the warm canvas, framing a single rounded content surface. Chrome recedes so
  *  the content is the hero — an "app within a surface", not edge-to-edge chrome.
- *  The new layout's organization settings and Platform area are places of
- *  their own, outside the workspace: no rail there, and the top bar leads
- *  back. */
-export default function PageShell({ layout }: { layout: Layout }) {
+ *  Organization settings are a place of their own, outside the workspace: no
+ *  rail there, and the top bar leads back. A settings area draws its own title
+ *  bar, menu and padding across the whole surface; one refused is shown like
+ *  any other page. */
+export default function PageShell() {
   const { pathname } = useLocation();
-  const withRail = !outsideWorkspace(pathname, layout);
+  const { capabilities } = useAuth();
+  const area = enteredArea(pathname, capabilities);
+  const withRail = area === null || !AREAS[area].outsideWorkspace;
   return (
     <Box
       sx={{
@@ -24,7 +27,7 @@ export default function PageShell({ layout }: { layout: Layout }) {
         backgroundColor: "var(--sw-canvas)",
       }}
     >
-      {withRail && <NavRail layout={layout} />}
+      {withRail && <NavRail />}
       <Stack
         sx={{
           flex: 1,
@@ -35,7 +38,7 @@ export default function PageShell({ layout }: { layout: Layout }) {
           pb: "var(--surface-gutter)",
         }}
       >
-        <TopBar layout={layout} />
+        <TopBar />
         <Stack
           component="main"
           sx={{
@@ -46,11 +49,14 @@ export default function PageShell({ layout }: { layout: Layout }) {
             backgroundColor: "background.paper",
             color: "text.primary",
             boxShadow: "var(--sw-shadow-surface)",
-            p: 4,
+            ...(area === null ? { p: 4 } : { overflowY: "hidden" }),
           }}
         >
-          <StaleSessionBanner />
-          <LinkNoticeBanner />
+          <Box sx={area === null ? undefined : { px: 3, pt: 3, "&:empty": { display: "none" } }}>
+            <WorkspaceMismatchBanner />
+            <StaleSessionBanner />
+            <LinkNoticeBanner />
+          </Box>
           <Outlet />
         </Stack>
       </Stack>
@@ -74,6 +80,27 @@ function StaleSessionBanner() {
       }
     >
       Could not check your session with Switch: {staleError}. This page may be out of date.
+    </Alert>
+  );
+}
+
+/** Says so when the server refused a write because another tab moved the
+ * session to another workspace: everything this page shows is the old one's,
+ * so the way on is to reload it. */
+export function WorkspaceMismatchBanner() {
+  const { workspaceMismatch } = useAuth();
+  if (workspaceMismatch === null) return null;
+  return (
+    <Alert
+      severity="warning"
+      sx={{ mb: 2 }}
+      action={
+        <Button color="inherit" size="small" onClick={() => window.location.reload()}>
+          Reload
+        </Button>
+      }
+    >
+      {workspaceMismatch}
     </Alert>
   );
 }

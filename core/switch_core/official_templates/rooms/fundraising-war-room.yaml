@@ -91,6 +91,8 @@ resources:
     description: "Fundraising coordination for {round}. Investor pipeline, term sheets, and due diligence management."
     bridge: "{bridge}"
     channel_type: channel_private
+    # Private even for someone with no linked account, who is refused.
+    require_private: true
     agents: [investor_tracker, diligence_coordinator]
     users:
       - {if: "{bridge}", value: ["{$creator}"]}

@@ -34,6 +34,11 @@ export type AccountLinkTarget = {
   /** The `ExternalUser` row id. */
   identityId: string;
   externalUsername: string;
+  /** How to name the account when its username is a handle Switch made up
+   * for someone the platform gave none (a Telegram account without a
+   * username): their name as the platform shows it. Absent to name the
+   * account by its handle. */
+  displayName?: string;
   kind: 'pending' | 'unverified';
 };
 
@@ -257,7 +262,7 @@ export const AccountLinkConfirmation = observer(function AccountLinkConfirmation
     }
   };
 
-  const handle = accountHandle(target.externalUsername);
+  const handle = target.displayName ?? accountHandle(target.externalUsername);
 
   if (confirmed !== null) {
     return (
@@ -357,7 +362,7 @@ export const AccountLinkConfirmation = observer(function AccountLinkConfirmation
           )}
           <div className="flex flex-col gap-2">
             <p className="text-xs text-foreground-muted">
-              Didn’t get it? Post this code from that account instead:
+              Didn’t get it, or tapping does nothing? Post this code from that account instead:
             </p>
             {codeBox}
             {instructions}

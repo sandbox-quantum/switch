@@ -4,6 +4,7 @@ import type {
   MattermostUser,
 } from "../clients/mattermost-client.ts";
 import {
+  SwitchHttpError,
   sleep,
   type RegisteredAgent,
   type RoomDetail,
@@ -194,6 +195,42 @@ export class Fixtures {
   }
 
   /**
+   * A throwaway person in the signed-in admin's workspace, who gets there as
+   * people do: they sign up, which puts them in the server's default
+   * workspace, and follow an invitation link from the admin if the admin's
+   * workspace is another. `client` is signed in as them.
+   *
+   * Teardown has them delete their own account, from a fresh sign-in so that
+   * it still works after the scenario ended their sessions. Signing in being
+   * refused means the scenario already deleted it.
+   */
+  async account(role: string): Promise<Account> {
+    const name = this.names.name(role);
+    const email = `${name}@e2e.invalid`;
+    const password = `e2e-${this.names.runId}-${crypto.randomUUID()}`;
+    const { id, client } = await this.switchClient.signUp({
+      email,
+      password,
+      displayName: name,
+    });
+    this.defer(`the account ${email}`, async () => {
+      try {
+        await this.switchClient.as(email, password).deleteMyAccount(email);
+      } catch (error) {
+        if (error instanceof SwitchHttpError && error.status === 401) return;
+        throw error;
+      }
+    });
+    const workspace = await this.switchClient.tenantId();
+    if ((await client.tenantId()) !== workspace) {
+      await client.acceptInvitation(
+        await this.switchClient.createInvitation(workspace, "member"),
+      );
+    }
+    return { id, name, email, password, client };
+  }
+
+  /**
    * The scenario deleted `agent` itself, and checked that it is gone, so
    * teardown has nothing left to remove for it.
    */
@@ -249,6 +286,15 @@ export class Fixtures {
     if (!this.env.mattermost) throw new Error("No Mattermost configured.");
     return this.env.mattermost.team;
   }
+}
+
+/** A person a scenario signed up: who they are, how they sign in, and a client signed in as them. */
+export interface Account {
+  id: string;
+  name: string;
+  email: string;
+  password: string;
+  client: SwitchClient;
 }
 
 export interface BridgedRoom {

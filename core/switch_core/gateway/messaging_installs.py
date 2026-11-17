@@ -294,6 +294,8 @@ async def list_installs(
 def _room_allows(principal: Principal, action: Action, room: Room | None) -> bool:
     """Whether a chat's room lets `principal` act on it; a chat with no room
     left (an ended one) has nothing private to show."""
+    if action == "read":
+        return room is None or room_policy.visible_from_outside(principal, room)
     return room is None or can(principal, action, room)
 
 

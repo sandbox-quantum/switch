@@ -776,6 +776,36 @@ class CollaborationBridgeLifecycleService:
             return True
         return adapter_cls.supports_directory_search
 
+    def typed_commands(
+        self, bridge_type: str, connection_config: Mapping[str, object]
+    ) -> dict[str, str]:
+        """The commands a person is told to type, spelled for this platform,
+        with `{agent}` and `{code}` where the caller fills in the argument.
+        See `PlatformAdapter.typed_command`."""
+        adapter_cls = self._adapter_registry.get(bridge_type)
+        if adapter_cls is None:
+            raise ValueError(
+                f"No adapter is registered for bridge type {bridge_type!r}"
+            )
+        return {
+            "invite-agent": adapter_cls.typed_command(
+                "invite-agent", "@{agent}", connection_config
+            ),
+            "link-account": adapter_cls.typed_command(
+                "link-account", "{code}", connection_config
+            ),
+        }
+
+    def directory_search_hint(self, bridge_id: str, bridge_type: str) -> str:
+        """What a bridge's account search can find a person by, as its
+        placeholder: the running adapter's own answer, which can depend on
+        what the connection was granted, else the platform's."""
+        bridge = self._bridges.get(bridge_id)
+        if bridge is not None:
+            return bridge.adapter.account_search_hint()
+        adapter_cls = self._adapter_registry.get(bridge_type) or PlatformAdapter
+        return adapter_cls.directory_search_hint
+
     def link_code_instructions(
         self, bridge_type: str, connection_config: Mapping[str, object], code: str
     ) -> str:
@@ -1328,6 +1358,7 @@ class CollaborationBridgeLifecycleService:
             adapter.set_bridge_id(bridge_id)
             adapter.set_session_factory(self._session_factory)
             adapter.set_outbound_policy(self._config.outbound_policy)
+            adapter.set_feature_flags(self._config.feature_flags)
             adapter.set_service_url_persister(
                 lambda service_url: self._persist_service_url(
                     bridge_id, tenant_id, service_url
@@ -1786,8 +1817,8 @@ class CollaborationBridgeLifecycleService:
         `bridge_connected` fires every time, so a flapping bridge shows up.
         `connector_added` fires only on the first ever connect.
         `first_connector_added` is the first connector a *person* added: a
-        preconfigured one never claims it, or the bundled Mattermost would
-        take it seconds after install on every deployment that ships one.
+        preconfigured one never claims it, or a bundled connector would take
+        it seconds after install on every deployment that ships one.
         """
         preconfigured = bridge_id in self._preconfigured
         emit_safely(

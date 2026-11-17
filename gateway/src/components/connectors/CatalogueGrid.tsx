@@ -30,7 +30,10 @@ export default function CatalogueGrid<T extends CatalogueConnector>({
     const needle = query.trim().toLocaleLowerCase();
     if (!needle) return connectors;
     return connectors.filter((connector) =>
-      [connector.name, connector.category, connector.description].join(" ").toLocaleLowerCase().includes(needle),
+      [connector.name, connector.category, connector.description, connector.publisher ?? ""]
+        .join(" ")
+        .toLocaleLowerCase()
+        .includes(needle),
     );
   }, [connectors, query]);
 

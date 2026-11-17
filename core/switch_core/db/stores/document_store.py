@@ -54,6 +54,14 @@ class DocumentStore:
         )
         return list(result.scalars().all())
 
+    async def list_library(self, session: AsyncSession) -> list[Document]:
+        """Every library document in the bound tenant, whoever owns it: none
+        of a room's own."""
+        result = await session.execute(
+            select(Document).where(Document.room_id.is_(None))
+        )
+        return list(result.scalars().all())
+
     async def update_fields(
         self,
         session: AsyncSession,

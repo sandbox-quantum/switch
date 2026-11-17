@@ -85,7 +85,8 @@ describe.skipIf(!process.env.SWITCH_MIGRATION_INTEGRATION)('moving off Docker', 
       })
     );
 
-    // A stack's database with something in each of its two databases.
+    // A stack's database with something in it. A Mattermost database an older
+    // stack left behind stays in the Docker volume; only switch is moved.
     await composeUpService(host, 'postgres');
     const container = await serviceContainerId(host, 'postgres');
     const psql = (db: string, sql: string) =>
@@ -97,12 +98,10 @@ describe.skipIf(!process.env.SWITCH_MIGRATION_INTEGRATION)('moving off Docker', 
     await psql('postgres', 'CREATE DATABASE mattermost');
     await psql('switch', 'CREATE TABLE agents (id int primary key, name text)');
     await psql('switch', "INSERT INTO agents VALUES (1, 'kept')");
-    await psql('mattermost', 'CREATE TABLE posts (id int)');
-    await psql('mattermost', 'INSERT INTO posts VALUES (7)');
 
     const layout = nativeLayout(root);
     const exported = await exportDockerStack(host, layout, () => {});
-    expect(exported.dumps.map((dump) => dump.database).sort()).toEqual(['mattermost', 'switch']);
+    expect(exported.dumps.map((dump) => dump.database).sort()).toEqual(['switch']);
 
     const postgres = await resolvePostgres(layout, null, () => {});
     const passwords = { owner: secrets.dbPassword, runtime: secrets.dbRuntimePassword };
@@ -143,7 +142,6 @@ describe.skipIf(!process.env.SWITCH_MIGRATION_INTEGRATION)('moving off Docker', 
           { env: { ...process.env, PGPASSWORD: secrets.dbPassword }, encoding: 'utf8' }
         ).trim();
       expect(query('switch', 'SELECT name FROM agents WHERE id = 1')).toBe('kept');
-      expect(query('mattermost', 'SELECT id FROM posts')).toBe('7');
     } finally {
       await stopCluster(postgres, layout, () => {});
     }

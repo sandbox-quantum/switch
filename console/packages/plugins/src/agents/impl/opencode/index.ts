@@ -4,6 +4,7 @@ import {
   npmDependency,
   opencodeMcpAdapter,
 } from '@switch-console/core/agents/plugins/helpers';
+import { addToUserPath, removeFromProfile } from '../windows-user-path';
 import { icon } from './icon';
 import { opencodeLaunchProfileModels } from './models';
 import {
@@ -15,39 +16,79 @@ import {
 const validateSessionId = (id: string) => id.startsWith('ses');
 
 /**
- * OpenCode, installed into the user prefix on Linux.
+ * OpenCode 1, from its `opencode-ai` package. OpenCode 2 is published as
+ * `@opencode/cli` and serves an API Switch does not speak yet, so installing
+ * it would give a CLI whose sign-in can never be checked.
  *
- * npm's default global prefix there is a system directory, so `npm install -g`
- * needs root — which the user a remote agent runs as typically does not have,
- * and the install fails with EACCES. `$HOME/.local` needs no root, and
- * `$HOME/.local/bin` is already on the PATH Switch Console captures for a
- * remote host, so the binary is found afterwards without further wiring.
+ * On Linux it goes into the user prefix: npm's default global prefix there is
+ * a system directory, so `npm install -g` needs root, which the user a remote
+ * agent runs as typically does not have. `$HOME/.local/bin` is already on the
+ * PATH Switch Console captures for a remote host. macOS and Windows keep the
+ * plain global install: their default prefixes are user-writable.
  *
- * macOS and Windows keep the plain global install: their default prefixes are
- * user-writable, and changing them would strand anyone who already has it.
+ * Windows also offers OpenCode's own build, first, because a fresh Windows
+ * has no Node and so no npm: the release zip, unpacked into
+ * `~\.opencode\bin`, which is added to the user's PATH.
  */
-const OPENCODE_HOST_DEPENDENCY = (() => {
-  const base = npmDependency({ id: 'opencode', package: '@opencode/cli' });
+const OPENCODE_PACKAGE = 'opencode-ai';
 
-  // Uninstall must target both the current package (@opencode/cli) and the
-  // legacy name (opencode-ai) that Console used to install. Users may have
-  // either one; npm silently skips whichever isn't present.
+/** The newest OpenCode 1 release, the last one Switch's OpenCode session speaks to. */
+export const OPENCODE_WINDOWS_RELEASE = 'v1.19.5';
+
+/**
+ * Downloads and unpacks the release, then adds its folder to the user's PATH.
+ * Written without `$`, `%` or double quotes inside, so it runs the same from
+ * cmd.exe and from PowerShell.
+ */
+export const OPENCODE_WINDOWS_INSTALL = [
+  'powershell -ExecutionPolicy ByPass -c "',
+  "[Net.ServicePointManager]::SecurityProtocol = 'Tls12';",
+  `(New-Object Net.WebClient).DownloadFile('https://github.com/anomalyco/opencode/releases/download/${OPENCODE_WINDOWS_RELEASE}/opencode-windows-x64.zip', [IO.Path]::Combine([IO.Path]::GetTempPath(), 'opencode-windows-x64.zip'));`,
+  "Expand-Archive -Force ([IO.Path]::Combine([IO.Path]::GetTempPath(), 'opencode-windows-x64.zip')) ([IO.Path]::Combine([Environment]::GetFolderPath('UserProfile'), '.opencode', 'bin'));",
+  `${addToUserPath('.opencode', 'bin')}"`,
+].join(' ');
+
+/** Removes what the release install unpacked, and nothing else. */
+export const OPENCODE_WINDOWS_UNINSTALL = `powershell -ExecutionPolicy ByPass -c "${removeFromProfile('.opencode', 'bin')}"`;
+
+const OPENCODE_HOST_DEPENDENCY = (() => {
+  const base = npmDependency({ id: 'opencode', package: OPENCODE_PACKAGE });
+
+  // Uninstall also removes `@opencode/cli`, which Console installed for a
+  // while; npm skips whichever isn't present.
   const patchUninstall = (options: typeof base.installCommands.macos) =>
     options?.map((opt) => ({
       ...opt,
-      ...(opt.uninstallCommand ? { uninstallCommand: opt.uninstallCommand + ' opencode-ai' } : {}),
+      ...(opt.uninstallCommand
+        ? { uninstallCommand: `${opt.uninstallCommand} @opencode/cli` }
+        : {}),
     }));
+
+  const windowsNpm = (patchUninstall(base.installCommands.windows) ?? []).map(
+    ({ recommended: _recommended, ...option }) => option
+  );
 
   return {
     ...base,
     installCommands: {
       macos: patchUninstall(base.installCommands.macos),
-      windows: patchUninstall(base.installCommands.windows),
+      windows: [
+        {
+          method: 'powershell' as const,
+          label: 'OpenCode release',
+          command: OPENCODE_WINDOWS_INSTALL,
+          updateCommand: OPENCODE_WINDOWS_INSTALL,
+          uninstallCommand: OPENCODE_WINDOWS_UNINSTALL,
+          installedAt: ['.opencode\\bin\\'],
+          recommended: true,
+        },
+        ...windowsNpm,
+      ],
       linux: [
         {
           method: 'npm' as const,
-          command: 'npm install -g --prefix "$HOME/.local" @opencode/cli',
-          uninstallCommand: 'npm uninstall -g --prefix "$HOME/.local" @opencode/cli opencode-ai',
+          command: `npm install -g --prefix "$HOME/.local" ${OPENCODE_PACKAGE}`,
+          uninstallCommand: `npm uninstall -g --prefix "$HOME/.local" ${OPENCODE_PACKAGE} @opencode/cli`,
           recommended: true,
         },
       ],

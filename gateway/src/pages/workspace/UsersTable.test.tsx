@@ -3,6 +3,7 @@ import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Member } from "../../data/api";
 import { applyFilters, filterOptions } from "../../components/tableFilters";
+import { initialsOf } from "./UserAvatar";
 import UsersTable, { USER_SEARCH, compareRoles, roleFilter } from "./UsersTable";
 
 vi.mock("../../components/DataTable", () => import("../../test/FakeDataTable"));
@@ -195,6 +196,14 @@ describe("UsersTable", () => {
     ]);
   });
 
+  it("leads each row with the person's initials", () => {
+    renderTable([member({ user_id: "al", name: "Ada Lovelace" })]);
+
+    expect(screen.getByText("AL").getAttribute("aria-hidden")).toBe("true");
+    expect(initialsOf("Grace Brewster Hopper", "grace@example.com")).toBe("GB");
+    expect(initialsOf("  ", "zed@example.com")).toBe("Z");
+  });
+
   it("calls an org admin with their own membership an Org admin too", () => {
     renderTable([
       member({ user_id: "oam", name: "Oscar", role: "member", organization_role: "org_admin" }),
@@ -263,7 +272,10 @@ describe("UsersTable", () => {
     const { onChanged, onSelfChanged } = renderTable([ME, BOB]);
 
     fireEvent.click(within(openMenu("Bob")).getByText("Change role"));
-    const dialog = screen.getByRole("dialog");
+    const dialog = screen.getByRole("dialog", { name: "Change access" });
+    expect(
+      within(dialog).getByText("This changes their role in Acme only. People can be in several workspaces, with a role in each."),
+    ).toBeTruthy();
     const save = within(dialog).getByRole("button", { name: "Save" }) as HTMLButtonElement;
     expect(save.disabled).toBe(true);
     fireEvent.click(within(dialog).getByLabelText(/Workspace admin/));

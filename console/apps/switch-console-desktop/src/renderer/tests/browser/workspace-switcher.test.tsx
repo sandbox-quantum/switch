@@ -83,6 +83,7 @@ vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
       return state.servers;
     },
     serverById: (id: string) => state.servers.find((s) => s.id === id) ?? null,
+    statusFor: () => null,
   },
 }));
 
@@ -99,6 +100,11 @@ vi.mock('@renderer/features/workspaces/workspaces-store', () => ({
     get active() {
       return state.workspaces.find((w) => w.id === state.activeId) ?? null;
     },
+    get workspaces() {
+      return state.workspaces;
+    },
+    serverIdFor: (workspaceId: string) =>
+      state.workspaces.find((w) => w.id === workspaceId)?.serverId ?? null,
     onServer: (serverId: string) => state.workspaces.filter((w) => w.serverId === serverId),
     hasNoMembership: (serverId: string) => state.noMembership.has(serverId),
     setActive: state.setActive,
@@ -307,6 +313,33 @@ describe('the workspaces the switcher offers', () => {
 
     expect(row('ws-a').getAttribute('aria-current')).toBeNull();
     expect(row('ws-b').getAttribute('aria-current')).toBe('true');
+  });
+
+  it("names a server's lone built-in workspace after the server", async () => {
+    const builtIn = { ...workspace('ws-d', 'srv-1'), name: 'Default', slug: 'default' };
+    await openSwitcher([server('srv-1', 'Local Switch server')], [builtIn], 'ws-d');
+
+    const trigger = container!.querySelector<HTMLElement>('[aria-label="Switch workspace"]')!;
+    expect(trigger.textContent).toContain('Local Switch server');
+    expect(trigger.textContent).not.toContain('Default');
+    // The row in the open list is the workspace, so it keeps the workspace's own name.
+    expect(row('Default').getAttribute('aria-current')).toBe('true');
+    const names = [...document.querySelectorAll('[data-row-name]')].map((el) => el.textContent);
+    expect(names).toContain('Default');
+    expect(names).not.toContain('Local Switch server');
+  });
+
+  it('keeps "Default" on the trigger beside other workspaces on its server', async () => {
+    const builtIn = { ...workspace('ws-d', 'srv-1'), name: 'Default', slug: 'default' };
+    await openSwitcher(
+      [server('srv-1', 'Local Switch server')],
+      [builtIn, workspace('ws-a', 'srv-1')],
+      'ws-d'
+    );
+
+    const trigger = container!.querySelector<HTMLElement>('[aria-label="Switch workspace"]')!;
+    expect(trigger.textContent).toContain('Default');
+    expect(trigger.textContent).toContain('Local Switch server');
   });
 
   it('switches to the one clicked', async () => {

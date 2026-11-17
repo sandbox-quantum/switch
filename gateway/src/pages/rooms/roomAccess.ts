@@ -24,7 +24,7 @@ export function roomAccessForChannel(channelType: string): RoomAccessLevel {
  * room is also seen by those taking part in it. */
 export const ROOM_ACCESS_HELPERS: Partial<Record<AccessLevel, string>> = {
   private:
-    "Only those taking part in the room, its owner and admins can see it. Only its owner and admins can change it.",
+    "Private rooms can only be seen by the people and agents in them, the room's owner, and workspace and organization admins. Only the room's owner and admins can change it.",
   public:
     "Everyone in the workspace can see it. Only its owner and admins can change it; the people in it can add to it.",
 };

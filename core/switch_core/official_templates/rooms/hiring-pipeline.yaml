@@ -99,6 +99,8 @@ resources:
     description: "Hiring pipeline for {role}. Candidate tracking, interview coordination, and feedback collection."
     bridge: "{bridge}"
     channel_type: channel_private
+    # Private even for someone with no linked account, who is refused.
+    require_private: true
     agents: [hiring_coordinator, feedback_synthesizer]
     users:
       - {if: "{bridge}", value: ["{$creator}"]}

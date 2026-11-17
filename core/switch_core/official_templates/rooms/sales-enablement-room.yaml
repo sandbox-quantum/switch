@@ -98,6 +98,7 @@ resources:
     name: "{team} - Sales Enablement"
     description: "Sales collateral and enablement for {team}. Battle cards, playbooks, objection handling, and content management."
     bridge: "{bridge}"
+    channel_type: channel_private
     agents: [enablement_writer, content_organizer]
     users:
       - {if: "{bridge}", value: ["{$creator}"]}

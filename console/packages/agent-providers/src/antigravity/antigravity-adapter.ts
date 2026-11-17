@@ -77,6 +77,9 @@ export const antigravityAcp: AcpProviderHooks = {
   launch: antigravityLaunch,
   loginCommand: AGY_LOGIN,
   loginCommandFor: antigravityLoginCommand,
+  // agy 1.5 connects to HTTP MCP servers, headers included, without declaring
+  // `mcpCapabilities.http`.
+  mcpCapabilities: { http: true },
   // A check must never sign in, nor change how the CLI signs in: `authenticate`
   // with Google's methods opens a browser, and agy keeps the method it is
   // sent, so an API key chosen once would replace the user's Google sign-in.

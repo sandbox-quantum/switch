@@ -21,11 +21,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.authz import Principal
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
+from switch_core.config import DeploymentKind, SwitchConfig
 from switch_core.connections.broker import ServiceBroker, get_service_broker
 from switch_core.db.models import ServiceTokenIssuance, User, require_tenant_id
 from switch_core.db.stores.user_store import UserStore
+from switch_core.deeplinks import gateway_url_is_loopback, url_host_address
 from switch_core.gateway.auth import get_current_user, get_tenant_is_admin
-from switch_core.gateway.dependencies import get_protocol, get_session, get_user_store
+from switch_core.gateway.dependencies import (
+    get_config,
+    get_protocol,
+    get_session,
+    get_user_store,
+)
 from switch_core.management.dependencies import get_management
 from switch_core.management.errors import ManagementRoute
 from switch_core.management.schemas import (
@@ -50,6 +57,7 @@ CurrentUser = Annotated[User, Depends(get_current_user)]
 IsAdmin = Annotated[bool, Depends(get_tenant_is_admin)]
 Protocol = Annotated[AgentCore, Depends(get_protocol)]
 Broker = Annotated[ServiceBroker, Depends(get_service_broker)]
+Config = Annotated[SwitchConfig, Depends(get_config)]
 
 
 def _controller(view: dict[str, Any]) -> dict[str, Any]:
@@ -81,19 +89,78 @@ async def revoke_controller_tokens(
     )
 
 
+def remote_devices(
+    deployment_kind: DeploymentKind, server_url: str | None
+) -> dict[str, bool | str | None]:
+    """Whether a device other than the one Switch runs on could enroll here,
+    and if not, why, in words the person adding one can act on.
+
+    A server Switch Console runs listens where only its own computer reaches
+    it, and Console writes its configuration on every start, so there is no
+    setting to point anyone at. A public address on the loopback interface
+    resolves only on the computer serving it. With no public address there is
+    nothing to judge: the caller knows the address it reached Switch at.
+    """
+    if deployment_kind == "managed_by_console":
+        return {
+            "supported": False,
+            "reason": (
+                "This Switch is run by Switch Console, and only the computer it "
+                "runs on can reach it, so other devices can't be added. To run "
+                "agents on other devices, use Switch Cloud or a Switch they can "
+                "reach."
+            ),
+        }
+    if server_url and _names_no_one_address(server_url):
+        return {
+            "supported": False,
+            "reason": (
+                f"This Switch's public address is {server_url}, which names no "
+                "address another device can connect to. Set GATEWAY_PUBLIC_URL "
+                "to an address other devices reach, such as the network IP or "
+                "name of the computer it runs on."
+            ),
+        }
+    if server_url and gateway_url_is_loopback(server_url):
+        return {
+            "supported": False,
+            "reason": (
+                f"This Switch's public address is {server_url}, which only the "
+                "computer it runs on can reach. Set GATEWAY_PUBLIC_URL to an "
+                "address other devices reach, such as that computer's network "
+                "IP or name."
+            ),
+        }
+    return {"supported": True, "reason": None}
+
+
+def _names_no_one_address(url: str) -> bool:
+    """Whether `url`'s host is the unspecified address (`0.0.0.0`, `::`, or
+    another way of writing one, as `url_host_address` reads it): one a server
+    binds to listen everywhere, which no device can connect to."""
+    address = url_host_address(url)
+    return address is not None and address.is_unspecified
+
+
 @router.post("/enrollment-codes", status_code=201)
 async def create_enrollment_code(
-    session: Session, user: CurrentUser, management: Management
-) -> dict[str, str | None]:
+    session: Session, user: CurrentUser, management: Management, config: Config
+) -> dict[str, Any]:
     """A one-time code, and the agent bridge's public origin a controller
     enrolls against with it (`server_url`, null when `GATEWAY_PUBLIC_URL` is
     not set: the page the owner is on is the gateway, which need not serve the
-    agent bridge, so it is no stand-in)."""
+    agent bridge, so it is no stand-in).
+
+    `remote_devices` says whether another device could enroll here at all.
+    The code is issued either way: Switch Console enrolls the SSH hosts it
+    sets up with one, whatever that says."""
     code, expires_at = await management.issue_enrollment_code(session, owner_id=user.id)
+    server_url = management.settings.server_url
     return {
         "code": code,
         "expires_at": wire_time(expires_at),
-        "server_url": management.settings.server_url,
+        "server_url": server_url,
+        "remote_devices": remote_devices(config.deployment_kind, server_url),
     }
 
 

@@ -169,7 +169,10 @@ export function CategoryChip({ label }: { label: string }) {
   return <Chip label={label} size="small" sx={{ maxWidth: "100%" }} title={label} />;
 }
 
-/** Search over the name, description and owner, as each list offers. */
+/** Search over the name, description and owner, as each list offers, and
+ * its placeholder, which says so. */
+export const RESOURCE_SEARCH_LABEL = "Search by name, description or owner";
+
 export function resourceSearchText(row: Owned & { name: string; description: string }): string {
   return [row.name, row.description, row.owner_name ?? ""].join(" ");
 }

@@ -113,7 +113,7 @@ describe("an agent's connection cards", () => {
           connectable: false,
           unavailable_code: 'app_not_set_up',
           unavailable_reason:
-            'Google is not set up here. Whoever runs Switch can set it up in Switch Console, under Admin → Connector apps.',
+            'Google is not set up here. Whoever runs Switch can set it up in Switch Console, under Settings → Connector apps.',
         }),
         service('box', {
           status: 'not_connected',

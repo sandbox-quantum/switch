@@ -35,6 +35,8 @@ _MAX_ATTEMPTS = 2
 
 _LAST_TENANT_KEY = "last_tenant_id"
 
+_ORGANIZATIONS_LEFT_KEY = "organizations_left"
+
 # Postgres's default name for `users.email`'s unique constraint, from the
 # migration that created the table.
 _EMAIL_CONSTRAINT = "users_email_key"
@@ -91,18 +93,32 @@ class SignupRefusedError(Exception):
 
 class UserStore:
     async def create(self, session: AsyncSession, user: User) -> None:
-        """Create the user, and the membership that lets them ever sign in.
+        """Create the user, and a membership in the tenant bound to the
+        caller's context: self sign-up, JIT OIDC provisioning into the default
+        workspace, the agent-registration service account and startup admin
+        seeding, each of which places the account somewhere on purpose.
 
-        Tenant resolution (`gateway/auth.py`) raises rather than guessing when
-        a user has no membership, so every path that creates a user — this
-        one, reached by the admin "create user" endpoint, JIT OIDC
-        provisioning, and startup admin seeding — must leave exactly one
-        `tenant_members` row behind, or that user's first login cannot be
-        placed in a tenant at all.
+        An account the platform operator adds is placed nowhere
+        (`create_without_membership`).
         """
         session.add(user)
         await session.flush()
         await self.ensure_membership(session, user)
+
+    async def create_without_membership(
+        self, session: AsyncSession, user: User
+    ) -> None:
+        """Create the user in no workspace and no organization, as the
+        platform operator adding an account from Platform › Users does.
+
+        The account signs in to onboarding (`describe_session_state`'s
+        `needs_workspace`) until an invitation, a domain join or an
+        organization admin puts it in a workspace. Its global role is the
+        server's, not any organization's, so an operator made this way holds
+        no workspace or organization role either.
+        """
+        session.add(user)
+        await session.flush()
 
     async def ensure_membership(self, session: AsyncSession, user: User) -> bool:
         """Give `user` a membership if they have none; leave any they have.
@@ -124,8 +140,7 @@ class UserStore:
         an OIDC login — so a password-only account in that state had no remedy
         inside the product and needed direct SQL.
 
-        Joins the tenant bound to the caller's context, so an admin creating a
-        user joins them to their own tenant. There is no fallback: `tenant_id`
+        Joins the tenant bound to the caller's context. There is no fallback: `tenant_id`
         is not nullable and nothing else in this schema fills it in, so an
         unbound caller would otherwise get whichever tenant this function
         happened to name — the same silent write into a real tenant that
@@ -136,27 +151,32 @@ class UserStore:
         `gateway/oidc_routes.py`).
 
         The role mirrors the migration's own mapping for pre-existing users:
-        `admin` for the global admin role, `member` otherwise.
+        `admin` for the global admin role, `member` otherwise. That reaches an
+        operator only through startup seeding, which makes the configured
+        administrator account the default workspace's admin; an operator the
+        platform operator adds is created with no membership, and linking an
+        identity joins as a member (`_link_identity`).
         """
+        return await self._ensure_membership(
+            session, user, "admin" if user.role == "admin" else "member"
+        )
+
+    async def _ensure_membership(
+        self, session: AsyncSession, user: User, role: str
+    ) -> bool:
         existing = await session.execute(
             select(TenantMember.tenant_id).where(TenantMember.user_id == user.id)
         )
         if existing.first() is not None:
             return False
         tenant_id = require_tenant_id()
-        session.add(
-            TenantMember(
-                tenant_id=tenant_id,
-                user_id=user.id,
-                role="admin" if user.role == "admin" else "member",
-            )
-        )
+        session.add(TenantMember(tenant_id=tenant_id, user_id=user.id, role=role))
         await session.flush()
         await self._join_organization(
             session,
             tenant_id=tenant_id,
             user_id=user.id,
-            role="org_admin" if user.role == "admin" else "member",
+            role="org_admin" if role == "admin" else "member",
         )
         return True
 
@@ -469,9 +489,55 @@ class UserStore:
         # in again. The startup admin seeding repairs the deployment's own
         # admin; this repairs anyone else who signs in through an IdP. Under
         # self-service sign-up an account with none is not stranded — it is
-        # sent to onboarding — so there is nothing to repair.
+        # sent to onboarding — so there is nothing to repair. A member, even
+        # for an operator: the server's role grants no workspace's.
         if join_tenant:
-            await self.ensure_membership(session, user)
+            await self._ensure_membership(session, user, "member")
+
+    async def remember_organization_left(
+        self, session: AsyncSession, user_id: str, organization_id: str
+    ) -> None:
+        """Note that `user_id` was taken out of a workspace of
+        `organization_id`, which may have been their last there: the
+        organizations someone may be left in with no workspace, for them to
+        be offered leaving (`organizations_left`). `users` is global, so any
+        session writes it; lands when the caller commits."""
+        user = await session.get(User, user_id)
+        if user is None:
+            raise RuntimeError(f"User {user_id} has no row to note an organization on")
+        left = self.organizations_left(user)
+        if organization_id in left:
+            return
+        user.metadata_ = {
+            **(user.metadata_ or {}),
+            _ORGANIZATIONS_LEFT_KEY: sorted([*left, organization_id]),
+        }
+        await session.flush()
+
+    def organizations_left(self, user: User) -> list[str]:
+        """The organizations `remember_organization_left` noted for `user`.
+
+        Only a hint, as `last_tenant_id` is: whoever reads it checks each
+        against the person's memberships as they stand.
+        """
+        value = (user.metadata_ or {}).get(_ORGANIZATIONS_LEFT_KEY)
+        return (
+            [v for v in value if isinstance(v, str)] if isinstance(value, list) else []
+        )
+
+    async def forget_organization_left(
+        self, session: AsyncSession, user: User, organization_id: str
+    ) -> None:
+        """Drop `organization_id` from `organizations_left`, once they have
+        left it. Lands when the caller commits."""
+        left = self.organizations_left(user)
+        if organization_id not in left:
+            return
+        user.metadata_ = {
+            **(user.metadata_ or {}),
+            _ORGANIZATIONS_LEFT_KEY: [o for o in left if o != organization_id],
+        }
+        await session.flush()
 
     def last_tenant_id(self, user: User) -> str | None:
         """The workspace `user` last selected, as recorded by
@@ -492,6 +558,19 @@ class UserStore:
         next sign-in lands there rather than asking again."""
         user.metadata_ = {**(user.metadata_ or {}), _LAST_TENANT_KEY: tenant_id}
         await session.flush()
+
+    async def lock_operators(self, session: AsyncSession) -> set[str]:
+        """The platform operators' ids, with each of their `users` rows locked
+        until the transaction ends, in id order so two callers lock them in
+        the same order. Backs "the server always keeps an operator", as
+        `lock_admins` backs a workspace's keeping an admin."""
+        result = await session.scalars(
+            select(User.id)
+            .where(User.role == "admin")
+            .order_by(User.id)
+            .with_for_update()
+        )
+        return set(result.all())
 
     async def get_all(self, session: AsyncSession) -> list[User]:
         result = await session.execute(select(User))
@@ -726,11 +805,13 @@ class UserStore:
         what makes that hold when two admins act at once: without it, each of
         two concurrent demotions counts two admins and both commit. With it,
         the second waits for the first, and its count leaves out the row the
-        first demoted or removed.
+        first demoted or removed. In user order, so two callers lock the rows
+        in the same order.
         """
         result = await session.scalars(
             select(TenantMember.user_id)
             .where(TenantMember.role == "admin")
+            .order_by(TenantMember.user_id)
             .with_for_update()
         )
         return len(result.all())

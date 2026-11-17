@@ -14,7 +14,7 @@ function signedIn({ admin = false } = {}) {
       user: { id: "me", name: "Ada", email: "ada@example.test", is_operator: false },
       tenant: { id: "t1", slug: "acme", name: "Acme", role: admin ? "admin" : "member", organization_role: null, organization_id: "o1" },
     },
-    capabilities: { administersWorkspace: admin, administersOrganization: false, features: { gateway_v2: true } },
+    capabilities: { administersWorkspace: admin, administersOrganization: false },
     isOperator: false,
   } as unknown as ReturnType<typeof useAuth>);
 }
@@ -121,7 +121,9 @@ describe("the Connectors catalogue", () => {
     expect(await screen.findByText("Google Workspace")).toBeTruthy();
     expect(screen.getByRole("button", { name: "All" }).getAttribute("aria-pressed")).toBe("true");
     fireEvent.click(screen.getByRole("button", { name: "Yours" }));
-    expect(screen.getByText("You haven't connected anything yet. The All tab lists every connector.")).toBeTruthy();
+    expect(
+      screen.getByText("You haven't connected anything yet. The All tab lists every connector you can use here."),
+    ).toBeTruthy();
   });
 
   it("connects through the sign-in that comes back here, from the card's plus", async () => {
@@ -181,9 +183,10 @@ describe("the Connectors catalogue", () => {
     const dialog = await screen.findByRole("dialog");
     fireEvent.change(within(dialog).getByLabelText("API key"), { target: { value: "dd-key" } });
     connections[0] = { ...datadog, status: "active", can_revoke: true };
-    fireEvent.click(within(dialog).getByRole("button", { name: "Add keys" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Connect" }));
 
     expect(await screen.findByRole("img", { name: "Connected to Datadog" })).toBeTruthy();
+    expect(screen.getByText("Connected Datadog.")).toBeTruthy();
     expect(screen.getByRole("button", { name: "All" }).getAttribute("aria-pressed")).toBe("true");
     expect(screen.getByText("Google Workspace")).toBeTruthy();
   });
@@ -247,6 +250,26 @@ describe("the Connectors catalogue", () => {
 
     expect(await screen.findByText("Unavailable")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Connect Google Workspace" })).toBeNull();
+  });
+
+  it("says a connector whose app isn't set up needs setup", async () => {
+    signedIn();
+    answer({
+      "GET /service-connections": {
+        connections: [
+          {
+            ...google,
+            connectable: false,
+            unavailable_code: "app_not_set_up",
+            unavailable_reason: "Switch's Google Workspace app isn't set up.",
+          },
+        ],
+      },
+    });
+    renderPage();
+
+    expect(await screen.findByText("Needs setup")).toBeTruthy();
+    expect(screen.queryByText("Unavailable")).toBeNull();
   });
 
   it("marks a connection that needs a fresh sign-in", async () => {

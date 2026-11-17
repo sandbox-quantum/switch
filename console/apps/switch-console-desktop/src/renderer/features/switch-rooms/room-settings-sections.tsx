@@ -43,7 +43,7 @@ export const ACCESS_LABELS: Record<RoomAccess, string> = {
 export const ACCESS_HELPERS: Record<RoomAccess, string> = {
   public: 'Everyone in the workspace can see it. Only its owner and admins can change it.',
   private:
-    'Only those taking part in the room, its owner and admins can see it. Only its owner and admins can change it.',
+    'Private rooms can only be seen by the people and agents in them, the room’s owner, and workspace and organization admins. Only the room’s owner and admins can change it.',
 };
 
 /** The access settings in the order they are offered, most open first. */

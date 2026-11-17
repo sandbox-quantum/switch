@@ -27,8 +27,6 @@ export type LocalServerSecrets = {
   secretKeys: string;
   controllerTokenSecret: string;
   gatewayAdminPassword: string;
-  mattermostAdminPassword: string;
-  mattermostUserPassword: string;
 };
 
 function token(bytes = 24): string {
@@ -46,8 +44,6 @@ export function generateSecrets(): LocalServerSecrets {
     secretKeys: `console:${randomBytes(32).toString('hex')}`,
     controllerTokenSecret: randomBytes(32).toString('hex'),
     gatewayAdminPassword: token(),
-    mattermostAdminPassword: token(),
-    mattermostUserPassword: token(),
   };
 }
 

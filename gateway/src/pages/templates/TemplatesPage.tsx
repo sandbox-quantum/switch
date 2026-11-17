@@ -1,86 +1,147 @@
-import AddIcon from "@mui/icons-material/Add";
+import CloseOutlined from "@mui/icons-material/CloseOutlined";
 import ContentCopyOutlined from "@mui/icons-material/ContentCopyOutlined";
 import DeleteOutline from "@mui/icons-material/DeleteOutline";
 import EditOutlined from "@mui/icons-material/EditOutlined";
-import PlayArrowOutlined from "@mui/icons-material/PlayArrowOutlined";
-import VerifiedOutlined from "@mui/icons-material/VerifiedOutlined";
-import { Alert, Box, Button, Chip, CircularProgress, Stack, Typography } from "@mui/material";
-import { type ReactNode, useMemo, useState } from "react";
+import PersonOutline from "@mui/icons-material/PersonOutline";
+import SearchOutlined from "@mui/icons-material/SearchOutlined";
+import {
+  Alert,
+  Box,
+  Button,
+  CircularProgress,
+  IconButton,
+  InputAdornment,
+  Link,
+  Stack,
+  Tab,
+  Tabs,
+  TextField,
+  ToggleButton,
+  ToggleButtonGroup,
+  Typography,
+} from "@mui/material";
+import { type ReactNode, useState } from "react";
 import { useNavigate } from "react-router";
 import ConfirmDialog from "../../components/ConfirmDialog";
-import DataTable, { TableEmptyState, type TableColumn } from "../../components/DataTable";
-import RowActionsMenu, { type RowAction } from "../../components/RowActionsMenu";
+import PageHeader from "../../components/PageHeader";
+import type { RowAction } from "../../components/RowActionsMenu";
+import { SCREEN_READER_ONLY } from "../../components/screenReaderOnly";
 import { useAuth } from "../../data/AuthContext";
-import { type TemplateSummary, deleteTemplate, fetchTemplateContent } from "../../data/api";
+import { type TemplateSummary, deleteTemplate } from "../../data/api";
+import { AGENT_MANAGEMENT, SWITCH_BUDDY } from "../../data/featureFlags";
 import { useTemplates } from "../../data/hooks";
-import { formatDate } from "../../theme/format";
 import CreateTemplateDialog, { type TemplateDraft } from "../resources/CreateTemplateDialog";
-import RunInConsoleDialog from "./RunInConsoleDialog";
+import CreateTemplateMenu, { type CreateWay } from "./CreateTemplateMenu";
+import { duplicateDraft } from "./duplicate";
+import OpenInConsoleDialog, { UseInConsoleDialog } from "./OpenInConsoleDialog";
+import TemplateCard from "./TemplateCard";
+import {
+  NO_FILTER,
+  TEMPLATE_SCOPES,
+  TYPE_FILTERS,
+  type TemplateFilter,
+  type TemplateScope,
+  type TypeFilter,
+  librarySections,
+  narrowed,
+  scopeCounts,
+  typeCounts,
+} from "./templateFilters";
 import {
   type TemplateAction,
+  consoleBuddyLink,
   consoleRunLink,
-  copyName,
-  kindLabel,
-  newestFirst,
-  ownerLabel,
+  consoleTemplatesLink,
   templateMenu,
 } from "./templateRows";
 
-const NOUN = { one: "template", other: "templates" };
-
 const ACTION_LABELS: Record<TemplateAction, { label: string; icon: ReactNode }> = {
-  run: { label: "Run template", icon: <PlayArrowOutlined fontSize="small" /> },
   edit: { label: "Edit template", icon: <EditOutlined fontSize="small" /> },
   duplicate: { label: "Duplicate as my own", icon: <ContentCopyOutlined fontSize="small" /> },
   delete: { label: "Delete template", icon: <DeleteOutline fontSize="small" /> },
 };
 
+/** What the two hand-offs to Switch Console say before they open it. */
+const CONSOLE_WAYS: Record<"agent" | "console", { title: string; description: string }> = {
+  agent: {
+    title: "Create with your personal agent",
+    description:
+      "Your personal agent, switch-buddy, is in Switch Console. Tell it what the template should create, and it writes the template and saves it to this workspace.",
+  },
+  console: {
+    title: "Create in Console",
+    description:
+      "On Switch Console’s Templates page, choose Create template to import a file, paste or write the YAML, or make a template from a room you already have.",
+  },
+};
+
 /** The page's open dialog, one at a time. */
 type Dialog =
   | { kind: "create"; draft: TemplateDraft | null }
-  | { kind: "run"; template: TemplateSummary }
+  | { kind: "console"; way: "agent" | "console" }
+  | { kind: "use"; template: TemplateSummary }
   | { kind: "delete"; template: TemplateSummary };
 
+/** A label with its count beside it, muted, as the tabs and chips show it. */
+function Counted({ label, count }: { label: string; count: number }) {
+  return (
+    <span>
+      {label}{" "}
+      <Box component="span" sx={{ ml: 0.25, color: "text.secondary", fontVariantNumeric: "tabular-nums" }}>
+        {count}
+      </Box>
+    </span>
+  );
+}
+
 /**
- * Templates, a page of its own in the new layout: the workspace's own, which
- * have owners and so a row menu that changes from row to row, and the ones
- * that come with Switch, which nobody changes. Each row's menu follows what
- * the server says the viewer may do with that template.
+ * Templates: a library of cards, the workspace's own first and then the
+ * ones that come with Switch, most used first. Tabs pick whose, chips the
+ * kind, and a search and Only mine narrow both; every count says what you
+ * would get by picking it. A card opens its template; Use hands it to Switch
+ * Console, and the "…" follows what the server says the viewer may do.
  */
 export default function TemplatesPage() {
   const navigate = useNavigate();
-  const { user, session } = useAuth();
+  const { user, session, capabilities } = useAuth();
   const workspace = session?.tenant ?? null;
   const { data, loading, error, refetch } = useTemplates();
+  const [scope, setScope] = useState<TemplateScope>(NO_FILTER.scope);
+  const [type, setType] = useState<TypeFilter>(NO_FILTER.type);
+  const [query, setQuery] = useState(NO_FILTER.query);
+  const [onlyMine, setOnlyMine] = useState(NO_FILTER.onlyMine);
   const [dialog, setDialog] = useState<Dialog | null>(null);
   const [copyError, setCopyError] = useState<string | null>(null);
 
-  const templates = useMemo(() => data ?? [], [data]);
-  const shared = useMemo(() => newestFirst(templates.filter((t) => !t.official)), [templates]);
-  const official = useMemo(
-    () => templates.filter((t) => t.official).sort((a, b) => b.run_count - a.run_count),
-    [templates],
-  );
+  const templates = data ?? [];
+  const filter: TemplateFilter = { scope, type, query, onlyMine, viewerId: user?.id ?? null };
+  const scopes = scopeCounts(templates, filter);
+  const types = typeCounts(templates, filter);
+  const sections = librarySections(templates, filter);
+  const shown = sections.reduce((n, s) => n + s.items.length, 0);
+
+  // switch-buddy is served only with both flags on; without it there is no
+  // personal agent to ask.
+  const ways: CreateWay[] = [
+    ...(capabilities.features[AGENT_MANAGEMENT] && capabilities.features[SWITCH_BUDDY] ? ["agent" as const] : []),
+    "console",
+    "yaml",
+  ];
+
+  const clearFilters = () => {
+    setScope(NO_FILTER.scope);
+    setType(NO_FILTER.type);
+    setQuery(NO_FILTER.query);
+    setOnlyMine(NO_FILTER.onlyMine);
+  };
 
   const open = (template: TemplateSummary) => navigate(`/templates/${encodeURIComponent(template.id)}`);
 
   const duplicate = async (template: TemplateSummary) => {
     setCopyError(null);
     try {
-      const content = await fetchTemplateContent(template.id);
-      const mine = new Set(templates.filter((t) => t.owner_id === user?.id).map((t) => t.name));
-      setDialog({
-        kind: "create",
-        draft: {
-          name: copyName(template.name, mine),
-          description: template.description,
-          kind: template.kind,
-          // Private until its new owner says otherwise: an admin may be
-          // copying a template only its owner and the admins could see.
-          access: "private",
-          content,
-        },
-      });
+      if (user === null) throw new Error("you are not signed in");
+      setDialog({ kind: "create", draft: await duplicateDraft(template, user.id) });
     } catch (e) {
       setCopyError(`Could not copy “${template.name}”: ${e instanceof Error ? e.message : String(e)}`);
     }
@@ -92,108 +153,108 @@ export default function TemplatesPage() {
       destructive: action === "delete",
       disabledReason,
       onClick: () => {
-        if (action === "run") setDialog({ kind: "run", template });
-        else if (action === "edit") open(template);
+        if (action === "edit") open(template);
         else if (action === "duplicate") void duplicate(template);
         else setDialog({ kind: "delete", template });
       },
     }));
 
-  const nameColumn: TableColumn<TemplateSummary> = {
-    field: "name",
-    headerName: "Template",
-    flex: 2,
-    minWidth: 240,
-    renderCell: ({ row }) => (
-      <Stack sx={{ minWidth: 0, justifyContent: "center", height: "100%" }}>
-        <Stack direction="row" spacing={1} sx={{ alignItems: "center", minWidth: 0 }}>
-          <Typography variant="body2" noWrap sx={{ fontWeight: 500 }}>
-            {row.name}
-          </Typography>
-          {row.read_visibility === "private" && <Chip size="small" variant="outlined" label="Private" />}
-        </Stack>
-        <Typography variant="caption" color="text.secondary" noWrap title={row.description}>
-          {row.description}
-        </Typography>
-      </Stack>
-    ),
-  };
-  const typeColumn: TableColumn<TemplateSummary> = {
-    field: "kind",
-    headerName: "Type",
-    width: 120,
-    valueGetter: (_value, row) => kindLabel(row.kind),
-    filter: { value: (row) => kindLabel(row.kind) },
-    renderCell: ({ row }) => <Chip size="small" variant="outlined" label={kindLabel(row.kind)} />,
-  };
-  const runsColumn: TableColumn<TemplateSummary> = {
-    field: "run_count",
-    headerName: "Runs",
-    type: "number",
-    width: 96,
-  };
-  const actionsColumn: TableColumn<TemplateSummary> = {
-    field: "actions",
-    headerName: "",
-    width: 64,
-    sortable: false,
-    disableColumnMenu: true,
-    renderCell: ({ row, tabIndex }) => (
-      <RowActionsMenu label={`Actions for ${row.name}`} actions={actionsFor(row)} tabIndex={tabIndex} />
-    ),
-  };
-
-  const sharedColumns: TableColumn<TemplateSummary>[] = [
-    nameColumn,
-    typeColumn,
-    {
-      field: "owner_name",
-      headerName: "Owner",
-      flex: 1,
-      minWidth: 180,
-      valueGetter: (_value, row) => ownerLabel(row),
-      filter: { value: (row) => ownerLabel(row) },
-      renderCell: ({ row }) => (
-        <Stack direction="row" spacing={1} sx={{ alignItems: "center", minWidth: 0, height: "100%" }}>
-          <Typography variant="body2" noWrap>
-            {ownerLabel(row)}
-          </Typography>
-          {row.owner_id !== null && row.owner_id === user?.id && (
-            <Chip size="small" label="You" />
-          )}
-        </Stack>
-      ),
-    },
-    runsColumn,
-    {
-      field: "updated_at",
-      headerName: "Updated",
-      width: 120,
-      valueFormatter: (value) => formatDate(value as string),
-    },
-    actionsColumn,
-  ];
-  // No Updated column: a template that comes with Switch changes only with
-  // a release, so it has no date of its own.
-  const officialColumns: TableColumn<TemplateSummary>[] = [nameColumn, typeColumn, runsColumn, actionsColumn];
-
-  const workspaceName = workspace?.name ?? "this workspace";
-  const newTemplate = (
-    <Button variant="contained" startIcon={<AddIcon />} onClick={() => setDialog({ kind: "create", draft: null })}>
-      New template
-    </Button>
-  );
+  const clearable = templates.length > 0 && narrowed(filter);
+  const emptyLine =
+    templates.length === 0
+      ? `There are no templates on ${workspace?.name ?? "this workspace"} yet.`
+      : clearable
+        ? "No templates match these filters."
+        : scope === "workspace"
+          ? "No workspace templates yet. Create one, or duplicate an official one to make it your own."
+          : "No templates here yet.";
 
   return (
     <Box>
-      <Stack direction="row" sx={{ alignItems: "flex-start", justifyContent: "space-between", gap: 2, mb: 3 }}>
-        <Box sx={{ minWidth: 0 }}>
-          <Typography variant="h5">Templates</Typography>
-          <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-            Starting points for a new agent, room or group in {workspaceName}.
+      <PageHeader
+        sx={{ mb: 2 }}
+        title={<Typography variant="h5">Templates</Typography>}
+        description={
+          <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5, maxWidth: 680 }}>
+            Templates create agents and rooms on this workspace. Pick one, fill in what it asks, and everything it
+            describes is created in one go, or nothing is.
           </Typography>
-        </Box>
-        {newTemplate}
+        }
+        actions={
+          <CreateTemplateMenu
+            ways={ways}
+            onChoose={(way) =>
+              setDialog(way === "yaml" ? { kind: "create", draft: null } : { kind: "console", way })
+            }
+          />
+        }
+      />
+
+      <Tabs
+        value={scope}
+        onChange={(_event, next: TemplateScope) => setScope(next)}
+        aria-label="Official or workspace templates"
+        sx={{ mb: 2.5, borderBottom: 1, borderColor: "divider" }}
+      >
+        {TEMPLATE_SCOPES.map((s) => (
+          <Tab key={s.value} value={s.value} label={<Counted label={s.label} count={scopes[s.value]} />} />
+        ))}
+      </Tabs>
+
+      <Stack direction="row" spacing={1.5} useFlexGap sx={{ alignItems: "center", flexWrap: "wrap", mb: 3 }}>
+        {/* Plain text rather than `type="search"`, whose own clear glyph
+            would sit beside this one. */}
+        <TextField
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder="Search templates"
+          fullWidth={false}
+          sx={{ width: { xs: "100%", sm: 320 } }}
+          slotProps={{
+            htmlInput: { "aria-label": "Search templates" },
+            input: {
+              startAdornment: (
+                <InputAdornment position="start">
+                  <SearchOutlined fontSize="small" />
+                </InputAdornment>
+              ),
+              endAdornment: query ? (
+                <InputAdornment position="end">
+                  <IconButton size="small" edge="end" aria-label="Clear search" onClick={() => setQuery("")}>
+                    <CloseOutlined fontSize="small" />
+                  </IconButton>
+                </InputAdornment>
+              ) : undefined,
+            },
+          }}
+        />
+        <ToggleButtonGroup
+          size="small"
+          exclusive
+          value={type}
+          onChange={(_event, next: TypeFilter | null) => {
+            if (next) setType(next);
+          }}
+          aria-label="Filter by template type"
+        >
+          {TYPE_FILTERS.map((t) => (
+            <ToggleButton key={t.value} value={t.value} sx={{ px: 1.5 }}>
+              <Counted label={t.label} count={types[t.value]} />
+            </ToggleButton>
+          ))}
+        </ToggleButtonGroup>
+        {/* Templates you made yourself; the official ones have no owner, so
+            they drop out while it is on. */}
+        <ToggleButton
+          size="small"
+          value="mine"
+          selected={onlyMine}
+          onChange={() => setOnlyMine((on) => !on)}
+          sx={{ ml: { sm: "auto" }, px: 1.5, gap: 0.75 }}
+        >
+          <PersonOutline fontSize="small" />
+          Only mine
+        </ToggleButton>
       </Stack>
 
       {copyError && (
@@ -201,7 +262,6 @@ export default function TemplatesPage() {
           {copyError}
         </Alert>
       )}
-
       {error && data !== null && (
         // A refresh that failed after an action: what is on screen stays,
         // since it was right a moment ago, with why it could not be updated.
@@ -209,54 +269,95 @@ export default function TemplatesPage() {
           Could not refresh templates: {error}
         </Alert>
       )}
+
       {error && data === null ? (
-        // Shown in place of the tables: an empty table would read as a
-        // workspace with no templates.
+        // In place of the library: an empty one would read as a workspace
+        // with no templates.
         <Alert severity="error">Could not load templates: {error}</Alert>
       ) : loading && data === null ? (
         <CircularProgress />
       ) : (
-        <Stack spacing={5}>
-          <Box component="section" aria-labelledby="shared-templates">
-            <Typography id="shared-templates" variant="h6" sx={{ mb: 2 }}>
-              Shared templates
-            </Typography>
-            <DataTable
-              rows={shared}
-              columns={sharedColumns}
-              noun={NOUN}
-              search={{
-                label: "Search shared templates",
-                text: (row) => [row.name, row.description, ownerLabel(row), kindLabel(row.kind)].join(" "),
-              }}
-              pinnedRight={["actions"]}
-              onRowClick={(params) => open(params.row)}
-              emptyState={
-                <TableEmptyState title={`No shared templates in ${workspaceName} yet`}>
-                  Create one to give the workspace a starting point.
-                </TableEmptyState>
-              }
-              sx={{ "& .MuiDataGrid-row": { cursor: "pointer" } }}
-            />
+        <>
+          {/* Announced as the filters change the list, since the change
+              happens away from the control being used. */}
+          <Box role="status" aria-live="polite" sx={SCREEN_READER_ONLY}>
+            {`${shown} ${shown === 1 ? "template" : "templates"} shown`}
           </Box>
-
-          <Box component="section" aria-labelledby="official-templates">
-            <Stack direction="row" spacing={1} sx={{ alignItems: "center", mb: 2 }}>
-              <Typography id="official-templates" variant="h6">
-                Official templates
+          {sections.length === 0 ? (
+            <Stack spacing={1.5} sx={{ alignItems: "flex-start", py: 5 }}>
+              <Typography variant="body2" color="text.secondary">
+                {emptyLine}
               </Typography>
-              <Chip size="small" icon={<VerifiedOutlined />} label="Maintained by Switch" />
+              {clearable && (
+                <Button variant="outlined" onClick={clearFilters}>
+                  Clear filters
+                </Button>
+              )}
             </Stack>
-            <DataTable
-              rows={official}
-              columns={officialColumns}
-              pinnedRight={["actions"]}
-              onRowClick={(params) => open(params.row)}
-              emptyState={<TableEmptyState title="No official templates in this workspace" />}
-              sx={{ "& .MuiDataGrid-row": { cursor: "pointer" } }}
-            />
-          </Box>
-        </Stack>
+          ) : (
+            <Stack spacing={4}>
+              {sections.map((section) => (
+                <Box component="section" key={section.id} aria-labelledby={`templates-${section.id}`}>
+                  <Stack direction="row" spacing={1} useFlexGap sx={{ alignItems: "center", mb: 1.5 }}>
+                    <Typography
+                      id={`templates-${section.id}`}
+                      variant="overline"
+                      component="h2"
+                      sx={{ color: "text.secondary", lineHeight: 1.5 }}
+                    >
+                      {section.label}
+                    </Typography>
+                    <Box
+                      component="span"
+                      sx={{
+                        px: 0.75,
+                        borderRadius: "6px",
+                        backgroundColor: "var(--sw-muted)",
+                        color: "text.secondary",
+                        fontSize: "0.75rem",
+                        fontWeight: 500,
+                        fontVariantNumeric: "tabular-nums",
+                      }}
+                    >
+                      {section.total}
+                    </Box>
+                    {section.preview && (
+                      <Link
+                        component="button"
+                        variant="body2"
+                        onClick={() => setScope("official")}
+                        sx={{ ml: "auto" }}
+                      >
+                        See all {section.total}
+                      </Link>
+                    )}
+                  </Stack>
+                  <Box
+                    sx={{
+                      display: "grid",
+                      gap: 2,
+                      gridTemplateColumns: {
+                        xs: "minmax(0, 1fr)",
+                        md: "repeat(2, minmax(0, 1fr))",
+                        lg: "repeat(3, minmax(0, 1fr))",
+                      },
+                    }}
+                  >
+                    {section.items.map((template) => (
+                      <TemplateCard
+                        key={template.id}
+                        template={template}
+                        actions={actionsFor(template)}
+                        onOpen={() => open(template)}
+                        onUse={() => setDialog({ kind: "use", template })}
+                      />
+                    ))}
+                  </Box>
+                </Box>
+              ))}
+            </Stack>
+          )}
+        </>
       )}
 
       {dialog?.kind === "create" && (
@@ -273,8 +374,20 @@ export default function TemplatesPage() {
           }}
         />
       )}
-      {dialog?.kind === "run" && workspace && (
-        <RunInConsoleDialog
+      {dialog?.kind === "console" && workspace && (
+        <OpenInConsoleDialog
+          title={CONSOLE_WAYS[dialog.way].title}
+          description={CONSOLE_WAYS[dialog.way].description}
+          link={
+            dialog.way === "agent"
+              ? consoleBuddyLink(workspace.id, window.location.origin)
+              : consoleTemplatesLink(workspace.id, window.location.origin)
+          }
+          onClose={() => setDialog(null)}
+        />
+      )}
+      {dialog?.kind === "use" && workspace && (
+        <UseInConsoleDialog
           templateName={dialog.template.name}
           link={consoleRunLink(dialog.template.id, workspace.id, window.location.origin)}
           onClose={() => setDialog(null)}
