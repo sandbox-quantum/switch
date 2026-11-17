@@ -11,8 +11,9 @@ import type { ReactNode } from "react";
  * The text takes the room the actions leave and wraps within it, so the
  * actions stay at the right. Once the text would be narrower than about
  * 320px, the actions drop to their own line below it rather than wrapping
- * into it, clipping, or being pushed off the page. Several actions wrap among
- * themselves on that line, and each one stays on a single line of its own.
+ * into it, clipping, or being pushed off the page. The actions are never
+ * wider than the header: several wrap among themselves, onto as many lines as
+ * the width needs, and each one stays on a single line of its own.
  */
 export default function PageHeader({
   title,
@@ -35,7 +36,12 @@ export default function PageHeader({
         <Stack
           direction="row"
           flexWrap="wrap"
-          sx={{ gap: 1, flexShrink: 0, "& > *": { whiteSpace: "nowrap" } }}
+          sx={{
+            gap: 1,
+            flexShrink: 0,
+            maxWidth: "100%",
+            "& > *": { whiteSpace: "nowrap" },
+          }}
         >
           {actions}
         </Stack>
