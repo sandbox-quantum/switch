@@ -868,6 +868,22 @@ describe("the layout", () => {
       }
     });
 
+    it("leads back to the page it was entered from, however far into it someone went", async () => {
+      mockFetch(signedInAs("org_admin"));
+      renderAt("/settings/general");
+      fireEvent.click(await screen.findByRole("link", { name: "Organization settings" }));
+      await landsOn("/settings/org/general");
+      const menu = await screen.findByRole("navigation", { name: "Organization settings" });
+      fireEvent.click(within(menu).getByRole("link", { name: "Users" }));
+      await landsOn("/settings/org/users");
+
+      const back = await screen.findByRole("link", { name: "Back to workspace" });
+      expect(back.getAttribute("href")).toBe("/settings/general");
+      fireEvent.click(back);
+      await landsOn("/settings/general");
+      expect(await screen.findByRole("navigation", { name: "Main" })).toBeTruthy();
+    });
+
     it("keeps the rail everywhere else in settings", async () => {
       mockFetch(signedInAs("org_admin"));
       renderAt("/settings/general");

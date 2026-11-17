@@ -369,6 +369,11 @@
       "flags": []
     },
     {
+      "route": "DELETE /gateway/users/{user_id}/sign-in-lock",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "DELETE /gateway/workspace/services/{service}",
       "auth": "session",
       "flags": [
@@ -1255,6 +1260,21 @@
     {
       "route": "POST /gateway/api-keys",
       "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/auth/handoff",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/auth/handoff/peek",
+      "auth": "none",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/auth/handoff/redeem",
+      "auth": "none",
       "flags": []
     },
     {

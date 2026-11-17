@@ -6,6 +6,7 @@ import { DevRoleCorner } from "./layout/DevRoleSlot";
 import PageShell from "./layout/PageShell";
 import { renderRoutes } from "./routes/renderRoutes";
 import { NotFoundPage } from "./routes/StatusPages";
+import BrowserHandoffPage from "./pages/auth/BrowserHandoffPage";
 import LoginPage from "./pages/auth/LoginPage";
 import AcceptInvitePage from "./pages/onboarding/AcceptInvitePage";
 import InviteCapture from "./pages/onboarding/InviteCapture";
@@ -102,11 +103,22 @@ export function AppRoutes() {
 }
 
 export default function App() {
+  // The sign-in link Switch Console opens stands outside the session and both
+  // layouts, beside the sign-in page: it reads its code off the address before
+  // anything else runs, and replaces whatever session this browser holds.
   return (
     <BrowserRouter>
-      <AuthProvider>
-        <AppRoutes />
-      </AuthProvider>
+      <Routes>
+        <Route path="/auth/handoff" element={<BrowserHandoffPage />} />
+        <Route
+          path="*"
+          element={
+            <AuthProvider>
+              <AppRoutes />
+            </AuthProvider>
+          }
+        />
+      </Routes>
     </BrowserRouter>
   );
 }

@@ -177,7 +177,7 @@ function BudgetsSection({ tenantId }: { tenantId: string }) {
 
   return (
     <Box>
-      <Stack direction="row" alignItems="center" justifyContent="space-between" mb={1}>
+      <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={2} mb={1}>
         <Box>
           <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
             Budgets
@@ -188,7 +188,12 @@ function BudgetsSection({ tenantId }: { tenantId: string }) {
             never stopped. No budget means no limit.
           </Typography>
         </Box>
-        <Button variant="contained" startIcon={<AddCircleOutline />} onClick={() => openEditor(null)}>
+        <Button
+          variant="contained"
+          startIcon={<AddCircleOutline />}
+          onClick={() => openEditor(null)}
+          sx={{ flexShrink: 0, whiteSpace: "nowrap" }}
+        >
           Add budget
         </Button>
       </Stack>

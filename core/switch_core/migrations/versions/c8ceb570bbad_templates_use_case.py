@@ -11,7 +11,7 @@ column, and an insert that leaves it out stores NULL, which the constraint
 allows.
 
 Revision ID: c8ceb570bbad
-Revises: e2c7a94f1b38
+Revises: 368b45a3d82d
 Create Date: 2026-11-16 12:00:00.000000
 
 """
@@ -22,7 +22,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "c8ceb570bbad"
-down_revision: str | None = "e2c7a94f1b38"
+down_revision: str | None = "368b45a3d82d"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 expand_only: bool = True

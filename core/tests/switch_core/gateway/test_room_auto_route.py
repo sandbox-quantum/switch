@@ -8,6 +8,7 @@ triage agent; the toggle writes the same settings `!auto-route` does.
 
 from __future__ import annotations
 
+import secrets
 import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
@@ -42,6 +43,7 @@ from switch_core.db.stores.user_store import UserStore
 from switch_core.decision.settings import (
     FLAG_OFF_REASON,
     NO_BACKEND_REASON,
+    WORKSPACE_OFF_REASON,
     DecisionAvailability,
     ServerDefault,
 )
@@ -185,6 +187,7 @@ def _as(app: FastAPI, user: User) -> httpx.AsyncClient:
                 TENANT_ZERO_ID,
                 session_version=0,
                 auth_time=datetime.now(UTC),
+                session_id=secrets.token_urlsafe(16),
             )
         },
     )
@@ -237,7 +240,7 @@ class TestTheRoomDetail:
 
         assert detail["auto_route"]["available"] is False
         assert detail["auto_route"]["reason"] == NO_BACKEND_REASON
-        assert "Switch Console → Admin → Decision routing" in NO_BACKEND_REASON
+        assert "Switch Console → Settings → Decision routing" in NO_BACKEND_REASON
 
     async def test_unavailable_when_the_workspace_chose_none(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -258,7 +261,8 @@ class TestTheRoomDetail:
             detail = (await client.get(f"/rooms/{room.id}")).json()
 
         assert detail["auto_route"]["available"] is False
-        assert "turned auto-route off" in detail["auto_route"]["reason"]
+        assert detail["auto_route"]["reason"] == WORKSPACE_OFF_REASON
+        assert "Switch Console → Settings → Decision routing" in WORKSPACE_OFF_REASON
 
 
 class TestTheToggle:

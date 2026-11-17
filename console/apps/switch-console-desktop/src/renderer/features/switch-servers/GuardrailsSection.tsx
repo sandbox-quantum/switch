@@ -46,8 +46,8 @@ function recoverableResultText(result: { kind: string; message?: string }): stri
 }
 
 /**
- * Switch Trust's one server-global guardrails settings, in Admin under
- * Server, for a server that still has them. A newer server has each
+ * Switch Trust's one server-global guardrails settings, in Settings under
+ * Guardrails, for a server that still has them. A newer server has each
  * organization connect its own policy in the dashboard, and answers the read
  * with where to go instead. This shows that, with a way to the organization's
  * guardrails for an operator who is also one of its admins, and why there is

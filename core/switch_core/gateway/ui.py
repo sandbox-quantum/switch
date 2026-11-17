@@ -50,6 +50,8 @@ PAGE_PATHS: tuple[str, ...] = (
     "/",
     "/login",
     "/invite",
+    # Where Switch Console's sign-in link opens, in either layout.
+    "/auth/handoff",
     "/ecosystem",
     "/rooms",
     "/rooms/new",

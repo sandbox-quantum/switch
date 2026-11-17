@@ -44,6 +44,7 @@ import {
   type ClearTrustSettingsResult,
   type CreatedRegistrationKey,
   type FetchDecisionSettingsResult,
+  type FetchWorkspaceGuardrailsResult,
   type FetchTrustSettingsResult,
   type PasswordLoginParams,
   type RenameServerParams,
@@ -75,6 +76,7 @@ import {
   signup,
 } from './auth';
 import { bundledChatSignInFor } from './bundled-chat-sign-in';
+import { openDashboardPage } from './dashboard-page';
 import {
   clearDecisionSettingsOnServer,
   fetchDecisionSettingsFromServer,
@@ -121,7 +123,6 @@ import {
   fetchWorkspaceCreation,
   type WorkspaceCreation,
 } from './gateway-client';
-import { openAuthenticatedGatewayPage } from './gateway-web';
 import {
   startGitHubBrowserFlow,
   getGitHubBrowserFlow,
@@ -129,11 +130,7 @@ import {
 } from './github-browser-flow';
 import { deleteManagedClaudeCredential } from './managed-claude-credential';
 import { hostUnreachable, requireReachableServer, requireServer } from './require-server';
-import {
-  assertServerAddress,
-  assertServesDashboard,
-  NotTheServerAddressError,
-} from './server-address';
+import { assertServerAddress, NotTheServerAddressError } from './server-address';
 import {
   addServer,
   DuplicateServerUrlError,
@@ -157,12 +154,15 @@ import { requireSwitchCloudEndpoint, switchCloudEndpoint } from './switch-cloud'
 import {
   clearTrustSettingsOnServer,
   fetchTrustSettingsFromServer,
+  fetchWorkspaceGuardrailsFromServer,
   updateTrustSettingsOnServer,
 } from './trust-settings';
 
 /** A sign-in's own error union, as a reportable code. Never its message. */
 const SIGN_IN_FAILURE: Record<LoginError['kind'], TelemetrySignInFailure> = {
   invalid_credentials: 'invalid_credentials',
+  paused: 'rate_limited',
+  unreachable: 'unreachable',
   cancelled: 'cancelled',
   failed: 'failed',
 };
@@ -597,6 +597,11 @@ export const switchServersController = createRPCController({
   clearTrustSettings: async (serverId: string): Promise<ClearTrustSettingsResult> =>
     clearTrustSettingsOnServer(await requireReachableServer(serverId)),
 
+  /** The policy that checks a workspace's messages, for anyone in it to read;
+   * its organization's admins change it in the dashboard. */
+  getWorkspaceGuardrails: (workspaceId: string): Promise<FetchWorkspaceGuardrailsResult> =>
+    withReachableWorkspaceSession(workspaceId, fetchWorkspaceGuardrailsFromServer),
+
   /**
    * A workspace's decision routing settings, its admins only. Scoped to the
    * workspace named, not the server: each workspace chooses its own decision
@@ -792,22 +797,14 @@ export const switchServersController = createRPCController({
   },
 
   /**
-   * Open a gateway web page (operator dashboard). For the managed local server —
-   * whose session Switch Console owns — this opens an in-app window with the
-   * `switch_auth` cookie injected, so the dashboard loads already signed in.
-   * Remote servers open in the OS browser as before: we can't inject our
-   * httponly cookie into the system browser, so an authenticated in-app window
-   * is reserved for the local server. `url` must be on the server's gateway
-   * origin.
+   * Open a dashboard page in the default browser, signed in as Console's
+   * account where Console is signed in, through a one-time sign-in link
+   * rather than Console's own session (`openDashboardPage`). `url` must be on
+   * the server's dashboard origin.
    */
   openGatewayPage: async (params: { serverId: string; url: string }): Promise<void> => {
     const server = await requireReachableServer(params.serverId);
-    if (server.managed) {
-      await openAuthenticatedGatewayPage(server, params.url);
-    } else {
-      await assertServesDashboard(server);
-      await appService.openExternal(params.url);
-    }
+    await openDashboardPage(server, params.url);
   },
 
   getConnectionStatus: async (serverId: string): Promise<ServerConnectionStatus> => {

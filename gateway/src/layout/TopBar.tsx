@@ -5,7 +5,7 @@ import MenuBookOutlined from "@mui/icons-material/MenuBookOutlined";
 import { Alert, Box, Button, IconButton, Snackbar, Stack, Tooltip, Typography } from "@mui/material";
 import { useCallback, useEffect, useState } from "react";
 import type { MouseEvent, ReactNode } from "react";
-import { Link as RouterLink, useLocation } from "react-router";
+import { Link as RouterLink, useLocation, useNavigate } from "react-router";
 import { useAuth } from "../data/AuthContext";
 import { useOrganizationRenamed } from "../data/organizationEvents";
 import {
@@ -16,6 +16,7 @@ import {
 import CreateInvitationDialog from "../pages/workspace/CreateInvitationDialog";
 import { areaOf, outsideWorkspace, underAreaOutsideWorkspace } from "../routes/routeTable";
 import { DevRoleSlot } from "./DevRoleSlot";
+import { useWayBackToWorkspace } from "./wayBack";
 import WorkspaceMenu from "./WorkspaceMenu";
 
 const SECTION_LABELS: [prefix: string, label: string][] = [
@@ -26,7 +27,7 @@ const SECTION_LABELS: [prefix: string, label: string][] = [
   ["/templates", "Templates"],
   ["/connectors", "Connectors"],
   ["/resources", "Resources"],
-  ["/usage", "Usage"],
+  ["/usage", "Usage & budget"],
   ["/settings/org", "Organization settings"],
   ["/settings", "Settings"],
   ["/platform", "Platform"],
@@ -59,18 +60,22 @@ function PageLabel({ label }: { label: string | undefined }) {
 
 /** The breadcrumb: "Organization / Workspace", which opens the
  * workspace switcher, then the page. In an area outside the workspace,
- * organization settings or Platform, the way back to it instead: from
- * organization settings to the workspace settings page that was open. */
+ * organization settings or Platform, the way back to it instead: back to the
+ * page it was entered from, or, when it was opened directly, from
+ * organization settings to workspace settings and from Platform home. */
 function WorkspaceCrumbs({
   section,
   outside,
-  backTo,
+  wayBack,
+  fallback,
 }: {
   section: string | undefined;
   outside: boolean;
-  backTo: string;
+  wayBack: { href: string; delta: number } | null;
+  fallback: string;
 }) {
   const { session, switchTo } = useAuth();
+  const navigate = useNavigate();
   const [organizations, setOrganizations] = useState<OrganizationName[]>([]);
   const [organizationsError, setOrganizationsError] = useState<string | null>(null);
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
@@ -115,7 +120,14 @@ function WorkspaceCrumbs({
     crumbs = (
       <Button
         component={RouterLink}
-        to={backTo}
+        to={wayBack?.href ?? fallback}
+        onClick={(e: MouseEvent<HTMLElement>) => {
+          if (wayBack === null || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) {
+            return;
+          }
+          e.preventDefault();
+          void navigate(wayBack.delta);
+        }}
         color="inherit"
         startIcon={<ChevronLeftOutlined sx={{ fontSize: 18 }} />}
         sx={{ ...CRUMB_TEXT, px: 1 }}
@@ -208,7 +220,8 @@ export default function TopBar() {
     !outside && underAreaOutsideWorkspace(pathname)
       ? undefined
       : SECTION_LABELS.find(([prefix]) => pathname.startsWith(prefix))?.[1];
-  const backTo = areaOf(pathname) === "organization" ? "/settings" : "/";
+  const fallback = areaOf(pathname) === "organization" ? "/settings" : "/";
+  const wayBack = useWayBackToWorkspace();
 
   return (
     <Stack
@@ -221,7 +234,7 @@ export default function TopBar() {
         pr: 1,
       }}
     >
-      <WorkspaceCrumbs section={section} outside={outside} backTo={backTo} />
+      <WorkspaceCrumbs section={section} outside={outside} wayBack={wayBack} fallback={fallback} />
 
       <Stack direction="row" sx={{ alignItems: "center", gap: 1 }}>
         <DevRoleSlot />

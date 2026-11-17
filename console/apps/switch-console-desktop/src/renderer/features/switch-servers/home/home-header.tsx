@@ -1,10 +1,20 @@
 import { useQueryClient } from '@tanstack/react-query';
-import { ExternalLink, MoreHorizontal, Pencil, RefreshCw, Trash2, Unplug } from 'lucide-react';
+import {
+  ExternalLink,
+  House,
+  MoreHorizontal,
+  Pencil,
+  RefreshCw,
+  Trash2,
+  Unplug,
+} from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { useState } from 'react';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
+import { WorkspaceAvatar } from '@renderer/features/workspaces/workspace-avatar';
 import { workspaceTitle } from '@renderer/features/workspaces/workspace-title';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
+import { TitlebarBreadcrumb } from '@renderer/lib/components/titlebar/titlebar-breadcrumb';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
@@ -19,9 +29,7 @@ import {
 import { cn } from '@renderer/utils/utils';
 import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import { navigateHome } from '../home-target';
-import { serverIcon } from '../server-icon';
-import { ServerStatusPill, serverPlacementLabel } from '../server-presentation';
-import { isSwitchCloudServer } from '../switch-cloud-store';
+import { ServerStatusPill } from '../server-presentation';
 import { switchRoomsStore } from '../switch-rooms-store';
 import { switchServersStore } from '../switch-servers-store';
 import { myIdentitiesQueryKey } from '../use-my-identities';
@@ -31,9 +39,8 @@ import { myIdentitiesQueryKey } from '../use-my-identities';
 const MIN_REFRESH_FEEDBACK_MS = 600;
 
 /**
- * Home's one header row: which server, which workspace on it, how the
- * connection is doing, and the server's own actions. It stands in for both
- * the titlebar breadcrumb the other workspace pages keep and a page title.
+ * Home's one header row: the workspace / Home trail every workspace page
+ * keeps, then how the connection is doing and the server's own actions.
  */
 export const HomeHeader = observer(function HomeHeader({
   server,
@@ -90,30 +97,21 @@ export const HomeHeader = observer(function HomeHeader({
   // A background status poll spins the button too: it is the same reading the
   // button asks for, so the page should not look idle while one is in flight.
   const busy = refreshingPage || switchServersStore.refreshing.has(serverId);
-  const PlacementIcon = serverIcon(server);
   const title = workspaceTitle(server);
 
   return (
-    <div className="flex min-w-0 items-center gap-2 pl-4 text-sm">
-      {/* Before sign-in the title is named after the server; saying it twice says nothing. */}
-      {title !== server.name && (
-        <>
-          <span className="max-w-48 truncate text-foreground-muted">{server.name}</span>
-          <span aria-hidden className="text-foreground-muted">
-            /
-          </span>
-        </>
-      )}
-      <span className="flex min-w-0 items-center gap-1.5">
-        <PlacementIcon
-          aria-label={
-            serverPlacementLabel(server) ??
-            (isSwitchCloudServer(server) ? 'Switch Cloud' : 'Reached over the network')
-          }
-          className="size-3.5 shrink-0"
-        />
-        <span className="truncate font-medium text-foreground">{title}</span>
-      </span>
+    <div className="flex min-w-0 items-center gap-2 text-sm">
+      <TitlebarBreadcrumb
+        crumbs={[
+          {
+            key: 'server',
+            icon: <WorkspaceAvatar name={title} size="sm" active />,
+            label: title,
+            maxWidthClassName: 'max-w-40',
+          },
+          { key: 'section', icon: <House className="size-3.5 shrink-0" />, label: 'Home' },
+        ]}
+      />
       <ServerStatusPill server={server} />
       <div className="ml-2 flex shrink-0 items-center gap-0.5">
         {canRefresh && (

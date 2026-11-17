@@ -123,6 +123,7 @@ import {
   type TeamsTeam,
   type TeamsTeamsResult,
   type TrustSettings,
+  type WorkspaceGuardrails,
   type UnconfirmedLink,
   type UpdateTrustSettingsParams,
   type LinkedRoom,
@@ -542,6 +543,26 @@ export async function fetchTrustSettings(server: SwitchServer): Promise<TrustSet
   return mapTrustSettings((await res.json()) as TrustSettingsJson);
 }
 
+type WorkspaceGuardrailsJson = {
+  checking: boolean;
+  policy_id: string | null;
+  policy_name: string | null;
+  policy_url: string | null;
+};
+
+/** The policy that checks the selected workspace's messages, for anyone in it
+ * (`GET /workspace/guardrails`). */
+export async function fetchWorkspaceGuardrails(server: SwitchServer): Promise<WorkspaceGuardrails> {
+  const res = await gatewayFetch(server, '/workspace/guardrails', { authenticated: true });
+  const json = (await res.json()) as WorkspaceGuardrailsJson;
+  return {
+    checking: json.checking,
+    policyId: json.policy_id,
+    policyName: json.policy_name,
+    policyUrl: json.policy_url,
+  };
+}
+
 /** Save Switch Trust's settings, admin-only (`PUT /trust-settings`).
  * `params.apiKey` left unset leaves whatever key is already stored
  * untouched — see {@link UpdateTrustSettingsParams}. */
@@ -859,6 +880,28 @@ export class PasswordChangedSessionNotSavedError extends Error {
 export async function fetchMe(server: SwitchServer): Promise<SwitchUser> {
   const res = await gatewayFetch(server, '/auth/me', { authenticated: true });
   return mapUser((await res.json()) as UserResponseJson);
+}
+
+const browserHandoffSchema = z.object({ path: z.string(), expires_at: z.string() });
+
+/**
+ * A one-time link that opens `next` (a dashboard path, with its query and
+ * fragment) in a browser signed in as this session's account
+ * (`POST /auth/handoff`). Console's own session never leaves Console: the
+ * browser redeems the link for a session of its own. `path` carries the code
+ * in its fragment, so never log it.
+ */
+export async function mintBrowserHandoff(
+  server: SwitchServer,
+  next: string
+): Promise<{ path: string; expiresAt: string }> {
+  const res = await gatewayFetch(server, '/auth/handoff', {
+    authenticated: true,
+    method: 'POST',
+    body: { next },
+  });
+  const minted = browserHandoffSchema.parse(await res.json());
+  return { path: minted.path, expiresAt: minted.expires_at };
 }
 
 /** A tenant the signed-in user belongs to, as `GET /tenants` reports it. */

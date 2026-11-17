@@ -94,6 +94,9 @@ class AuditAction(StrEnum):
     # the clean-up of rooms made before rooms followed their channel
     # (`private_channel_rooms.py`).
     ROOM_MADE_PRIVATE = "room.made_private"
+    # Switch Console signed a browser in to the workspace with a one-time
+    # link, opening a dashboard page (`details.next`).
+    BROWSER_HANDOFF = "auth.browser_handoff"
 
 
 class OrganizationAuditAction(StrEnum):
@@ -161,6 +164,9 @@ class ServerAuditAction(StrEnum):
     # Every session the account held was ended, by the person ("Sign out of
     # all devices") or by the operator for them.
     USER_SESSIONS_ENDED = "user.sessions_ended"
+    # The operator lifted the lock failed password sign-ins put on an account's
+    # email address, so its owner could try again at once.
+    USER_SIGN_IN_LOCK_CLEARED = "user.sign_in_lock_cleared"
     WORKSPACE_DELETED = "workspace.deleted"
     # A run of the operator's purge of an organization at its owner's request
     # (`accounts/organization_purge.py`) began deleting, naming the accounts
