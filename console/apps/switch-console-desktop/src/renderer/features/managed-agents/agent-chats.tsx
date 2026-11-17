@@ -208,7 +208,7 @@ export const AgentChats = observer(function AgentChats({ agent }: { agent: Manag
         : (openAgentChat(agent, params.roomId)?.roomId ?? null);
   const open = (id: string) => setParams({ roomId: id, section: undefined, room: undefined });
   useEffect(() => {
-    if (!section && !shownRoom && roomId && params.roomId !== roomId) setParams({ roomId });
+    if (!section && !shownRoom && roomId && !params.roomId) setParams({ roomId });
   }, [section, shownRoom, roomId, params.roomId, setParams]);
   useEffect(() => {
     if (restoring) setParams({ roomId: directChats.start(serverId, agentId) });
