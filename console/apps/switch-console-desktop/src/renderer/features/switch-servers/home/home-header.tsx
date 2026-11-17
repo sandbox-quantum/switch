@@ -3,7 +3,7 @@ import { ExternalLink, MoreHorizontal, Pencil, RefreshCw, Trash2, Unplug } from 
 import { observer } from 'mobx-react-lite';
 import { useState } from 'react';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
-import { workspaceTitle } from '@renderer/features/workspaces/workspace-title';
+import { breadcrumbTitle } from '@renderer/features/workspaces/workspace-title';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
@@ -91,7 +91,7 @@ export const HomeHeader = observer(function HomeHeader({
   // button asks for, so the page should not look idle while one is in flight.
   const busy = refreshingPage || switchServersStore.refreshing.has(serverId);
   const PlacementIcon = serverIcon(server);
-  const title = workspaceTitle(server);
+  const title = breadcrumbTitle(server);
 
   return (
     <div className="flex min-w-0 items-center gap-2 pl-4 text-sm">

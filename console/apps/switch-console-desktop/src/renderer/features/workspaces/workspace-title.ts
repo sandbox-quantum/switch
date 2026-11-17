@@ -5,6 +5,9 @@ import { workspacesStore } from './workspaces-store';
 /** The slug of the workspace every self-hosted Switch server is created with. */
 const BUILT_IN_WORKSPACE_SLUG = 'default';
 
+/** Its name until someone renames it; a renamed one keeps the name it was given. */
+const BUILT_IN_WORKSPACE_NAME = 'Default';
+
 /**
  * What a workspace is called where the Console says where you are.
  *
@@ -15,7 +18,9 @@ const BUILT_IN_WORKSPACE_SLUG = 'default';
  * server it keeps its own name, so it is not mistaken for the whole server.
  */
 export function workspaceDisplayName(workspace: Workspace, server: SwitchServer): string {
-  if (workspace.slug !== BUILT_IN_WORKSPACE_SLUG) return workspace.name;
+  if (workspace.slug !== BUILT_IN_WORKSPACE_SLUG || workspace.name !== BUILT_IN_WORKSPACE_NAME) {
+    return workspace.name;
+  }
   const serverName = server.name.trim();
   if (serverName === '' || workspacesStore.onServer(server.id).length !== 1) return workspace.name;
   return serverName;

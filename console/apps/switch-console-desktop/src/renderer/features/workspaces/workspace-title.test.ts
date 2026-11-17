@@ -88,6 +88,12 @@ describe('what a workspace is called where the Console says where you are', () =
     expect(workspaceDisplayName(named, server)).toBe('SandboxAQ');
   });
 
+  it('keeps the name of a built-in workspace someone renamed', () => {
+    const renamed = workspace('Platform team', 't-0', 'default');
+    state.onServer = [renamed];
+    expect(workspaceDisplayName(renamed, local)).toBe('Platform team');
+  });
+
   it('keeps "Default" when the server has no name to give', () => {
     state.onServer = [builtIn];
     expect(workspaceDisplayName(builtIn, { ...local, name: '  ' })).toBe('Default');
