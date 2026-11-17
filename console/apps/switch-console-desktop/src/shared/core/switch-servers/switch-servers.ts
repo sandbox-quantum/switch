@@ -190,7 +190,7 @@ export type UpdateServerResult = {
   propagation: ServerApiUrlPropagation;
 };
 
-/** Which login methods a gateway offers — read unauthenticated from
+/** Authentication and account capabilities — read unauthenticated from
  * `GET /gateway/auth/config` so the UI shows the right options. */
 export type SwitchAuthConfig = {
   passwordLoginEnabled: boolean;
@@ -205,6 +205,8 @@ export type SwitchAuthConfig = {
   /** Whether anyone may create an account with an email and password. False
    * for a server predating the field. */
   signupEnabled: boolean;
+  /** Whether this server allows test-account resets. False on older servers. */
+  testAccountResetEnabled: boolean;
 };
 
 /** What a switch-core says about itself to an authenticated client (CHOO-1865).

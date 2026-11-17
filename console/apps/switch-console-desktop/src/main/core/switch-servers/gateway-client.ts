@@ -502,6 +502,7 @@ export async function fetchAuthConfig(server: SwitchServer): Promise<SwitchAuthC
     oidc_enabled: boolean;
     oidc_provider_label: string | null;
     signup_enabled?: boolean;
+    test_account_reset_enabled?: boolean;
     oidc_login_options?: { id: string; label: string }[];
     oidc_browser_handoff?: boolean;
   };
@@ -510,6 +511,7 @@ export async function fetchAuthConfig(server: SwitchServer): Promise<SwitchAuthC
     oidcEnabled: json.oidc_enabled,
     oidcProviderLabel: json.oidc_provider_label,
     signupEnabled: json.signup_enabled === true,
+    testAccountResetEnabled: json.test_account_reset_enabled === true,
     // Absent on servers predating them: one button, in the app's own window.
     oidcLoginOptions: (json.oidc_login_options ?? []).map(({ id, label }) => ({ id, label })),
     oidcBrowserHandoff: json.oidc_browser_handoff === true,
