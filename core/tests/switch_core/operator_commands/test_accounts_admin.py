@@ -36,6 +36,7 @@ from switch_core.db.models import (
     AuditEvent,
     Organization,
     OrganizationAuditEvent,
+    OrganizationMember,
     Room,
     ServerAuditEvent,
     ServiceConnection,
@@ -439,6 +440,40 @@ def no_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("sys.stdin", _Terminal(False))
 
 
+async def _account_member_of_tenant_zero(rls_harness: RLSHarness, user_id: str) -> None:
+    with tenant_scope(TENANT_ZERO_ID):
+        async with rls_harness.owner() as session:
+            session.add(
+                TenantMember(tenant_id=TENANT_ZERO_ID, user_id=user_id, role="member")
+            )
+            await session.commit()
+
+
+async def _holds(
+    rls_harness: RLSHarness, tenant_id: str, user_id: str, blocker: str
+) -> None:
+    """`user_id` comes to own an agent, a device or an open chat in
+    `tenant_id`, each of which only a running server can remove."""
+    with tenant_scope(tenant_id):
+        async with rls_harness.owner() as session:
+            owner = await session.get(User, user_id)
+            assert owner is not None
+            if blocker == "agent":
+                await _agent(session, tenant_id, owner, "latecomer")
+            elif blocker == "device":
+                session.add(
+                    AgentController(
+                        tenant_id=tenant_id,
+                        owner_id=user_id,
+                        name="new laptop",
+                        kind="console",
+                    )
+                )
+            else:
+                session.add(_room(tenant_id, owner, "Late chat", private=True))
+            await session.commit()
+
+
 async def _owns_an_agent(rls_harness: RLSHarness, owner: User, name: str) -> None:
     with tenant_scope(TENANT_ZERO_ID):
         async with rls_harness.owner() as session:
@@ -706,9 +741,79 @@ class TestDeleteCommand:
             )
 
         out = capsys.readouterr().out
-        assert "The account changed while you were confirming." in out
+        assert "The account changed since it was shown." in out
         assert "  Agents it owns (1): latecomer" in out
         assert await _user(rls_harness, leaving.id) is not None
+
+    @pytest.mark.parametrize("blocker", ["agent", "device", "chat"])
+    async def test_a_blocker_made_in_another_workspace_after_the_plan_changes_nothing(
+        self,
+        rls_harness: RLSHarness,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+        no_terminal: None,
+        blocker: str,
+    ) -> None:
+        """With --yes the plan shown is the one deleted, so the command looks
+        at every workspace again before it changes any: something only a
+        running server can remove, made in the second workspace meanwhile,
+        stops it before the first is left."""
+        made = await make_organization(
+            rls_harness,
+            people={
+                "keeper": ("admin", "org_admin"),
+                "leaving": ("member", "org_admin"),
+            },
+        )
+        leaving_id = made.ids["leaving"]
+        await _account_member_of_tenant_zero(rls_harness, leaving_id)
+        await _account(rls_harness, "zero-admin", workspace_role="admin")
+        mailer = RecordingMailer()
+        deletion, _, _ = _deletion(rls_harness.restricted, mailer)
+        planned = 0
+
+        async def a_blocker_arrives_meanwhile(
+            deletion: AccountDeletion, session_factory: object, email: str
+        ) -> DeletionPlan:
+            nonlocal planned
+            planned += 1
+            plan = await plan_deletion(deletion, rls_harness.restricted, email)
+            if planned == 1:
+                await _holds(rls_harness, made.tenant_id, leaving_id, blocker)
+            return plan
+
+        monkeypatch.setattr(
+            accounts_admin, "plan_deletion", a_blocker_arrives_meanwhile
+        )
+        monkeypatch.setattr("builtins.input", _never_asked)
+
+        with pytest.raises(CommandRefused, match="Nothing was deleted"):
+            await run_delete(
+                deletion,
+                rls_harness.restricted,
+                email_of(leaving_id),
+                execute=True,
+                yes=True,
+            )
+
+        assert planned == 2
+        assert "The account changed since it was shown." in capsys.readouterr().out
+        assert await _user(rls_harness, leaving_id) is not None
+        async with rls_harness.owner() as session:
+            memberships = set(
+                await session.scalars(
+                    select(TenantMember.tenant_id).where(
+                        TenantMember.user_id == leaving_id
+                    )
+                )
+            )
+            org_admin = await session.get(
+                OrganizationMember, (made.organization_id, leaving_id)
+            )
+        assert memberships == {TENANT_ZERO_ID, made.tenant_id}
+        assert org_admin is not None and org_admin.role == "org_admin"
+        assert await _server_events(rls_harness) == []
+        assert mailer.sent == []
 
 
 def _room(tenant_id: str, owner: User, name: str, *, private: bool) -> Room:

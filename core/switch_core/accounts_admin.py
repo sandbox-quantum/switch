@@ -12,7 +12,8 @@
   a running server can stop and remove those, so they go first, from the
   dashboard or Switch Console. Without `--execute` it only says what would
   happen; with it, the operator types the account's e-mail to confirm, unless
-  `--yes` is given.
+  `--yes` is given. Either way it looks again just before deleting, and
+  deletes nothing if the account has changed since it was shown.
 - `sign-out EMAIL` ends every session the account holds.
 - `grant-operator EMAIL` and `revoke-operator EMAIL` make an account a
   platform operator, or a regular account again. The account at
@@ -320,9 +321,12 @@ async def revoke_operator(
 class _NoAgentBridge:
     """The agent bridge, for a command that runs none. The deletion is
     refused before it starts while the account owns an agent
-    (`DeletionPlan.needs_the_server`), so nothing is asked to delete one. A
-    key the deletion removes is forgotten by each running server when its
-    short-lived cache entry expires (`ApiKeyCache`)."""
+    (`DeletionPlan.needs_the_server`, looked at again just before the
+    deletion starts), so it is asked to delete one only when the agent was
+    made while the deletion was working through the account's other
+    workspaces (`delete_account`). A key the deletion removes is forgotten by
+    each running server when its short-lived cache entry expires
+    (`ApiKeyCache`)."""
 
     def __init__(self) -> None:
         self.api_key_cache = _NothingCached()
@@ -331,8 +335,9 @@ class _NoAgentBridge:
         self, *, agent_id: str | None = None, agent_name: str | None = None
     ) -> object:
         raise RuntimeError(
-            "switch-accounts delete was asked to delete an agent, which only a "
-            "running server can do; it should have refused first"
+            f"the account owns an agent ({agent_id}) made since the deletion "
+            "started, which only a running server can delete; delete it from "
+            "the dashboard or Switch Console first"
         )
 
 
@@ -347,8 +352,9 @@ class _NoChats:
 
     async def set_room_archived(self, room_id: str, archived: bool) -> None:
         raise RuntimeError(
-            "switch-accounts delete was asked to archive a chat, which only a "
-            "running server can do; it should have refused first"
+            f"the account opened a chat ({room_id}) since the deletion started, "
+            "which only a running server can archive; archive it from the "
+            "dashboard or Switch Console first"
         )
 
 
@@ -560,12 +566,31 @@ async def _record_refusal(
 async def delete_account(
     deletion: AccountDeletion,
     session_factory: async_sessionmaker[AsyncSession],
-    plan: DeletionPlan,
+    shown: DeletionPlan,
 ) -> None:
-    """Delete the account `plan` describes, recorded in the server's audit
+    """Delete the account `shown` describes, recorded in the server's audit
     log as the operator's deletion from the dashboard was: deleted, refused,
     or failed part-way. The admins of an organization it was `org_admin` of
-    are e-mailed once the deletion has committed and its session is closed."""
+    are e-mailed once the deletion has committed and its session is closed.
+
+    Immediately before anything changes, it looks at every workspace again,
+    as `plan_deletion` does, and deletes nothing unless it finds the account
+    as `shown`: the plan can be stale by then, for the confirmation prompt can
+    wait a long time and the person can act meanwhile, and an agent, device
+    or open chat (`DeletionPlan.needs_the_server`) must stop it before the
+    first workspace is left, not be found in the second. The look is not
+    held under a lock, because nothing that makes an agent, a device or a
+    chat takes one it could hold. One made while the deletion is working
+    through the account's earlier workspaces is found only when its own
+    workspace is reached: the deletion stops there, failed partway, and a
+    run once it has gone finishes."""
+    plan = await plan_deletion(deletion, session_factory, shown.user.email)
+    if describe(plan) != describe(shown):
+        print("\nThe account changed since it was shown. Now:\n")
+        print_plan(plan)
+        raise CommandRefused(
+            "Nothing was deleted. Run it again to delete the account as it is now."
+        )
     user_id = plan.user.id
     reason = plan.blocked
     if reason is not None:
@@ -634,9 +659,9 @@ async def run_delete(
 ) -> int:
     """`switch-accounts delete`: show what is connected to the account and
     anything that blocks deleting it, then, with `execute`, delete it once
-    the operator has typed its e-mail, or at once with `yes`. Returns the
-    exit status; a deletion refused or not confirmed raises
-    `CommandRefused`."""
+    the operator has typed its e-mail, or at once with `yes`, as long as it
+    is still as shown (`delete_account`). Returns the exit status; a deletion
+    refused or not confirmed raises `CommandRefused`."""
     plan = await plan_deletion(deletion, session_factory, email)
     print_plan(plan)
     reason = plan.blocked
@@ -653,15 +678,6 @@ async def run_delete(
         return 0
     if not yes:
         confirm(plan.user.email)
-        # The prompt can wait a long time; delete only what was shown.
-        again = await plan_deletion(deletion, session_factory, email)
-        if describe(again) != describe(plan):
-            print("\nThe account changed while you were confirming. Now:\n")
-            print_plan(again)
-            raise CommandRefused(
-                "Nothing was deleted. Run it again to delete the account as it is now."
-            )
-        plan = again
     await delete_account(deletion, session_factory, plan)
     print(f"\nDeleted the account {plan.user.email}.")
     return 0
@@ -802,7 +818,9 @@ def _parser() -> argparse.ArgumentParser:
             "stop and remove. Without --execute it stops there. With it, the "
             "account's e-mail must be typed to confirm before anything is "
             "deleted; --yes skips that, for scripts. Without --yes it needs a "
-            "terminal to ask on, and refuses otherwise."
+            "terminal to ask on, and refuses otherwise. Either way it looks "
+            "again just before deleting, and deletes nothing if the account has "
+            "changed since it was shown."
         ),
     )
     delete.add_argument("email")
