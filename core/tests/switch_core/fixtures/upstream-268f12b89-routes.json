@@ -1,5 +1,5 @@
 {
- "source": "upstream main 35b791558: every (method, path) the gateway app (with agent management mounted) and the agent bridge app (with the controller router) serve, walked from app.routes",
+ "source": "upstream main 268f12b89: every (method, path) the gateway app (with agent management mounted) and the agent bridge app (with the controller router) serve, walked from app.routes",
  "gateway": [
   [
    "DELETE",
@@ -44,10 +44,6 @@
   [
    "DELETE",
    "/collaborations/{bridge_id}/teams/{team_id}"
-  ],
-  [
-   "DELETE",
-   "/decision-settings"
   ],
   [
    "DELETE",
@@ -188,10 +184,6 @@
   [
    "DELETE",
    "/trust-settings"
-  ],
-  [
-   "DELETE",
-   "/users/{user_id}"
   ],
   [
    "GET",
@@ -347,10 +339,6 @@
   ],
   [
    "GET",
-   "/decision-settings"
-  ],
-  [
-   "GET",
    "/documents"
   ],
   [
@@ -435,10 +423,6 @@
   ],
   [
    "GET",
-   "/operator/workspaces"
-  ],
-  [
-   "GET",
    "/organizations"
   ],
   [
@@ -472,6 +456,10 @@
   [
    "GET",
    "/organizations/current/workspaces/{workspace_id}/members/{user_id}/removal"
+  ],
+  [
+   "GET",
+   "/organizations/without-workspace"
   ],
   [
    "GET",
@@ -679,10 +667,6 @@
   ],
   [
    "GET",
-   "/users"
-  ],
-  [
-   "GET",
    "/version"
   ],
   [
@@ -807,6 +791,18 @@
   ],
   [
    "POST",
+   "/auth/handoff"
+  ],
+  [
+   "POST",
+   "/auth/handoff/peek"
+  ],
+  [
+   "POST",
+   "/auth/handoff/redeem"
+  ],
+  [
+   "POST",
    "/auth/login"
   ],
   [
@@ -903,10 +899,6 @@
   ],
   [
    "POST",
-   "/decision-settings/test"
-  ],
-  [
-   "POST",
    "/documents"
   ],
   [
@@ -932,6 +924,10 @@
   [
    "POST",
    "/invitations/mine/accept"
+  ],
+  [
+   "POST",
+   "/invitations/preview"
   ],
   [
    "POST",
@@ -984,6 +980,10 @@
   [
    "POST",
    "/organizations/current/workspaces/{workspace_id}/restore"
+  ],
+  [
+   "POST",
+   "/organizations/{organization_id}/leave"
   ],
   [
    "POST",
@@ -1150,14 +1150,6 @@
    "/tenants/{tenant_id}/switch"
   ],
   [
-   "POST",
-   "/users"
-  ],
-  [
-   "POST",
-   "/users/{user_id}/sessions/revoke"
-  ],
-  [
    "PUT",
    "/agents/{agent_id}/addressing-policy"
   ],
@@ -1199,10 +1191,6 @@
   ],
   [
    "PUT",
-   "/decision-settings"
-  ],
-  [
-   "PUT",
    "/management/agents/{agent_id}"
   ],
   [
@@ -1224,10 +1212,6 @@
   [
    "PUT",
    "/rooms/{room_id}/admins/{target_user_id}"
-  ],
-  [
-   "PUT",
-   "/rooms/{room_id}/auto-route"
   ],
   [
    "PUT",
