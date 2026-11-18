@@ -596,6 +596,9 @@ export class LocalFileSystem implements FileSystemProvider {
   }
 
   async saveAttachment(
+    // srcPath is taken as-is (no resolvePath/containment check) — callers must only ever
+    // pass a path sourced from a native dialog or an app-written temp file (e.g.
+    // app.getPath('temp')/'downloads'/'userData'), never a raw string from the renderer/IPC.
     srcPath: string,
     subdir?: string
   ): Promise<{
@@ -627,7 +630,20 @@ export class LocalFileSystem implements FileSystemProvider {
         return { success: false, error: 'Unsupported attachment type' };
       }
 
-      const destDir = join(this.rootPath, '.switchdash', subdir ?? 'attachments');
+      const normalizedSubdir =
+        typeof subdir === 'string' ? subdir.replace(/\\/g, '/').replace(/^\/+/, '') : undefined;
+      const targetRel = join('.switchdash', normalizedSubdir ?? 'attachments');
+      const destDir = this.resolvePath(targetRel);
+      const switchdashDir = join(this.rootPath, '.switchdash');
+      const switchdashPrefix = switchdashDir.endsWith(sep) ? switchdashDir : switchdashDir + sep;
+      if (!destDir.startsWith(switchdashPrefix) && destDir !== switchdashDir) {
+        throw new FileSystemError(
+          `Path traversal detected: ${subdir}`,
+          FileSystemErrorCodes.PATH_ESCAPE,
+          subdir
+        );
+      }
+
       await fs.mkdir(destDir, { recursive: true });
 
       const baseName = basename(srcPath);
@@ -650,7 +666,7 @@ export class LocalFileSystem implements FileSystemProvider {
       }
 
       await fs.copyFile(srcPath, destAbs);
-      const relPath = relative(this.rootPath, destAbs);
+      const relPath = this.relPath(destAbs);
       return { success: true, absPath: destAbs, relPath, fileName: destName };
     } catch (err: unknown) {
       return { success: false, error: err instanceof Error ? err.message : String(err) };
