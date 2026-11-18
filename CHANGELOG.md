@@ -4610,6 +4610,13 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Fixed
+- **The workspace switcher shows on every build, not only one that can reach
+  Switch Cloud.** A build without a Switch Cloud address, stable included,
+  kept the older list of servers at the top of the sidebar, so a second
+  workspace on a server, and Create organization, New workspace and the
+  invitations waiting for you, couldn't be reached from it. Workspaces belong
+  to the server, so the switcher now lists each server's workspaces whether or
+  not the build knows a Cloud.
 - **The sidebar reads a workspace's agents' rooms in one request**, rather
   than one request per agent on every refresh (every 20 seconds while the
   window is open, and whenever it is focused). On a server from before that
