@@ -732,7 +732,13 @@ export class HostDependencyManager {
 
     const installResult = await this.runCommandLogged('install', id, command);
     if (!installResult.success) {
-      return err(installResult.error);
+      return err({
+        ...installResult.error,
+        runYourself: {
+          command,
+          where: this.platform === 'windows' ? 'a PowerShell window' : 'a terminal',
+        },
+      });
     }
 
     await this.ctx.refreshShellEnv?.();

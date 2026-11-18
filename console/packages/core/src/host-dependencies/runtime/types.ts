@@ -55,10 +55,16 @@ export type InstallCommandError =
     }
   | { type: 'process-open-failed'; message: string };
 
+/**
+ * The install command for the person to run themselves when it failed from
+ * Switch Console, and where: Windows installers run in PowerShell.
+ */
+export type RunYourself = { command: string; where: 'a PowerShell window' | 'a terminal' };
+
 export type DependencyInstallError =
   | { type: 'unknown-dependency'; id: string }
   | { type: 'no-install-command'; id: string }
-  | InstallCommandError
+  | (InstallCommandError & { runYourself?: RunYourself })
   | { type: 'not-detected-after-install'; id: string };
 
 export type DependencyInstallResult = Result<DependencyState, DependencyInstallError>;

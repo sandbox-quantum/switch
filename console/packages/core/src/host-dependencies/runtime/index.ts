@@ -13,6 +13,7 @@ export {
   type DependencyDescriptor,
   type DependencyId,
   type DependencyInstallError,
+  type RunYourself,
   type DependencyInstallResult,
   type DependencyProbeOptions,
   type DependencyState,

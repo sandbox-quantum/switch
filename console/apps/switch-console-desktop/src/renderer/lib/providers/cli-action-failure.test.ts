@@ -17,4 +17,20 @@ describe('cliActionFailure', () => {
       'Remove it the way it was installed'
     );
   });
+
+  it('says how to run a failed install by hand', () => {
+    expect(
+      cliActionFailure({
+        type: 'command-failed',
+        message: 'Install command failed.',
+        output: "New-Item : Cannot find path 'C:\\x' because it does not exist.",
+        runYourself: {
+          command: 'powershell -c "irm https://example.com/install.ps1 | iex"',
+          where: 'a PowerShell window',
+        },
+      })
+    ).toBe(
+      'Install command failed. New-Item : Cannot find path \'C:\\x\' because it does not exist. To install it yourself, run this in a PowerShell window, then Recheck: powershell -c "irm https://example.com/install.ps1 | iex"'
+    );
+  });
 });
