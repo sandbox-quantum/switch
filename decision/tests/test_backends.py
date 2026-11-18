@@ -1,6 +1,7 @@
 import asyncio
 import json
 import math
+import threading
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -465,6 +466,26 @@ def test_decide_via_bedrock(monkeypatch):
     )
     assert body["backend"] == "bedrock"
     assert len(fake.calls) == 1
+
+
+def test_bedrock_creates_client_off_the_event_loop(monkeypatch):
+    fake = _FakeBedrock(_converse("billing-bot", 0.8))
+    client_threads = []
+
+    def make_client(_settings):
+        client_threads.append(threading.get_ident())
+        return fake
+
+    monkeypatch.setattr(backends, "bedrock_client", make_client)
+
+    async def invoke():
+        loop_thread = threading.get_ident()
+        answer = await backends.ask_bedrock(_bedrock_settings(), _req())
+        assert answer.choice == "billing-bot"
+        assert len(client_threads) == 1
+        assert client_threads[0] != loop_thread
+
+    asyncio.run(invoke())
 
 
 def test_bedrock_error_is_502_naming_model(monkeypatch):
