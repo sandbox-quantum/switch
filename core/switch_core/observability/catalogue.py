@@ -654,7 +654,13 @@ RUNTIME_GC_PAUSE = _spec(
 # `backend` is the kind of backend that was asked — `server_default`,
 # `endpoint`, `haiku_anthropic`, `haiku_bedrock` or `machine` — never which
 # endpoint, workspace or machine: those are per tenant and live in the decision
-# record the router logs for each message.
+# record the router logs for each message. `model` is the model that answered,
+# as the server's own decision service names it (`gemini-decision-1`,
+# `claude-haiku-5-5`, ...): a workspace's own endpoint is `workspace_endpoint`
+# whatever it says, a decision with no answer is `unknown`, and a name that is
+# not plain, or past the few a process keeps, is `other`
+# (`decision.client.MAX_MODEL_LABELS`). `backend` says who was asked, `model`
+# what answered: the server default is one backend whichever model it runs.
 DECISION_LATENCY_BOUNDS_MS: tuple[float, ...] = (
     25.0,
     50.0,
@@ -678,8 +684,9 @@ DECISION_REQUESTS = _spec(
     "{decision}",
     "Decisions asked of a backend, by backend and outcome: `agent` (it picked "
     "one), `none` (it picked nobody, or its pick fell below the threshold) or "
-    "`failed` (no usable answer).",
+    "`failed` (no usable answer). `model` is the model that answered.",
     "backend",
+    "model",
     "outcome",
 )
 DECISION_FAILURES = _spec(
@@ -688,8 +695,9 @@ DECISION_FAILURES = _spec(
     "{failure}",
     "Decisions that got no usable answer, by backend and reason (`timeout`, "
     "`unreachable`, `error_status`, `bad_answer`, `key_unreadable`, "
-    "`endpoint_refused`).",
+    "`endpoint_refused`). `model` is `unknown` unless an answer came back.",
     "backend",
+    "model",
     "reason",
 )
 # What a failed answer said went wrong behind the service, from the fixed
@@ -701,8 +709,10 @@ DECISION_BACKEND_ERRORS = _spec(
     "{error}",
     "Failed answers by what the backend said went wrong behind it: the model "
     "server unreachable, timing out or erroring, the model not loaded, "
-    "credentials missing, the upstream refusing, or `unknown`.",
+    "credentials missing, the upstream refusing, or `unknown`. No answer came "
+    "back, so `model` is `unknown` (or `workspace_endpoint`).",
     "backend",
+    "model",
     "kind",
 )
 DECISION_DURATION = _spec(
@@ -713,6 +723,7 @@ DECISION_DURATION = _spec(
     "request, failures included. Compare with switch.decision.model_time: the "
     "gap is the network and the backend's queue.",
     "backend",
+    "model",
     bounds=DECISION_LATENCY_BOUNDS_MS,
 )
 DECISION_MODEL_TIME = _spec(
@@ -722,6 +733,7 @@ DECISION_MODEL_TIME = _spec(
     "How long the backend says its model took for an answered decision. "
     "Missing for an endpoint that does not say.",
     "backend",
+    "model",
     bounds=DECISION_LATENCY_BOUNDS_MS,
 )
 DECISION_CONFIDENCE = _spec(
@@ -731,6 +743,7 @@ DECISION_CONFIDENCE = _spec(
     "The backend's confidence in each answered decision, 0 to 1, for setting "
     "the threshold: how many answers fall just under it.",
     "backend",
+    "model",
     bounds=(0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0),
 )
 # One per undecided message, however it ended — the one place every path meets
