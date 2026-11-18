@@ -61,6 +61,47 @@ async function saved(base: string, sessionId: string, agentId: string): Promise<
   );
 }
 
+const sessionConfig = {
+  session: {
+    sessionId: 'session-1',
+    agentId: 'agent',
+    hostId: 'host',
+    epoch: 'initial',
+    provider: 'codex',
+    status: 'starting',
+    connectivity: 'online',
+    pendingRequestIds: [],
+    capabilities: {
+      input: 'queue',
+      approvals: true,
+      questions: true,
+      interrupt: true,
+      reset: false,
+      compact: false,
+      modelChange: false,
+      attachmentMimeTypes: [],
+    },
+  },
+  start: {
+    provider: 'codex',
+    input: {
+      sessionId: 'session-1',
+      cwd: '/work',
+      runtimeMode: 'approval-required',
+      env: {},
+      mcpServers: {},
+    },
+  },
+};
+
+/** An `ensure` naming `sessionId`, whose configuration says `agentId` owns it. */
+const ensuring = (sessionId: string, agentId: string) => ({
+  config: { ...sessionConfig, session: { ...sessionConfig.session, sessionId, agentId } },
+  resuming: false,
+  restart: false,
+  startSource: 'room' as const,
+});
+
 async function started() {
   const base = await mkdtemp(join(tmpdir(), 'control-'));
   roots.push(base);
@@ -115,12 +156,17 @@ it('relays requests to a session host and its events back', async () => {
   unsubscribe();
 
   expect(
-    await console.ensure({ config: {}, resuming: false, restart: false, startSource: 'room' })
+    await console.ensure({
+      config: sessionConfig,
+      resuming: false,
+      restart: false,
+      startSource: 'room',
+    })
   ).toEqual({
     created: true,
   });
   expect(ensure).toHaveBeenCalledWith({
-    config: {},
+    config: sessionConfig,
     resuming: false,
     restart: false,
     startSource: 'room',
@@ -236,7 +282,15 @@ it('never reads or commands a session of another agent', async () => {
     await expect(console.place(id, 'room')).rejects.toThrow(refused);
     if (id === 'theirs') await expect(console.forget(id)).rejects.toThrow(refused);
     await expect(console.reasoning(id, null)).rejects.toThrow(refused);
+    // A configuration naming another agent would record that agent as the owner.
+    await expect(console.ensure(ensuring(id, 'other'))).rejects.toThrow(refused);
+    // Naming itself does not win a session another agent already owns.
+    if (id === 'theirs')
+      await expect(console.ensure(ensuring(id, 'agent'))).rejects.toThrow(refused);
   }
+  // A session of its own, and one nothing owns yet, both start.
+  expect(await console.ensure(ensuring('session', 'agent'))).toEqual({ created: true });
+  expect(await console.ensure(ensuring('unknown', 'agent'))).toEqual({ created: true });
   expect(sent).not.toHaveBeenCalled();
   expect(placed).not.toHaveBeenCalled();
   expect(forgot).not.toHaveBeenCalledWith('theirs');
@@ -405,51 +459,18 @@ it('still starts a session for a Console that sends no start source', async () =
   });
   socket.write(`${JSON.stringify({ token: control.token })}\n`);
   socket.write(
-    `${JSON.stringify({ id: 1, ensure: { config: {}, resuming: false, restart: false } })}\n`
+    `${JSON.stringify({ id: 1, ensure: { config: sessionConfig, resuming: false, restart: false } })}\n`
   );
 
   await vi.waitFor(() =>
     expect(replies).toContainEqual({ id: 1, ok: true, value: { created: true } })
   );
-  expect(ensure).toHaveBeenCalledWith({ config: {}, resuming: false, restart: false });
+  expect(ensure).toHaveBeenCalledWith({ config: sessionConfig, resuming: false, restart: false });
 
   socket.destroy();
   stop.abort();
   await serving;
 });
-
-const sessionConfig = {
-  session: {
-    sessionId: 'session-1',
-    agentId: 'agent',
-    hostId: 'host',
-    epoch: 'initial',
-    provider: 'codex',
-    status: 'starting',
-    connectivity: 'online',
-    pendingRequestIds: [],
-    capabilities: {
-      input: 'queue',
-      approvals: true,
-      questions: true,
-      interrupt: true,
-      reset: false,
-      compact: false,
-      modelChange: false,
-      attachmentMimeTypes: [],
-    },
-  },
-  start: {
-    provider: 'codex',
-    input: {
-      sessionId: 'session-1',
-      cwd: '/work',
-      runtimeMode: 'approval-required',
-      env: {},
-      mcpServers: {},
-    },
-  },
-};
 
 it('starts the session a sidecar is asked for with the start source it was given', async () => {
   paths.base = '/sessions';
@@ -485,15 +506,39 @@ it('records a start source an older Console did not send as not known', async ()
   expect(launched.ensureSharedProcess.mock.calls[0]![0]).toMatchObject({ startSource: null });
 });
 
+it('refuses to ensure a session belonging to another agent', async () => {
+  const { ensure, stop, serving, client } = await started();
+  const console = client();
+  await console.ready;
+
+  // A session nothing owns yet, whose configuration would record another agent.
+  await expect(console.ensure(ensuring('new-session', 'other'))).rejects.toThrow(
+    'Session new-session is not a session of agent agent.'
+  );
+  // A session another agent already owns, whose configuration names this one.
+  await expect(console.ensure(ensuring('theirs', 'agent'))).rejects.toThrow(
+    'Session theirs is not a session of agent agent.'
+  );
+  expect(ensure).not.toHaveBeenCalled();
+
+  stop.abort();
+  await serving;
+});
+
 it('carries a start source Console could not name as null, which a resume always does', async () => {
   const { ensure, stop, serving, client } = await started();
   const console = client();
   await console.ready;
 
-  await console.ensure({ config: {}, resuming: true, restart: false, startSource: null });
+  await console.ensure({
+    config: sessionConfig,
+    resuming: true,
+    restart: false,
+    startSource: null,
+  });
 
   expect(ensure).toHaveBeenCalledWith({
-    config: {},
+    config: sessionConfig,
     resuming: true,
     restart: false,
     startSource: null,
@@ -520,7 +565,7 @@ it('starts a session whose start source is newer than this sidecar, as not known
   socket.write(
     `${JSON.stringify({
       id: 1,
-      ensure: { config: {}, resuming: false, restart: false, startSource: 'scheduled' },
+      ensure: { config: sessionConfig, resuming: false, restart: false, startSource: 'scheduled' },
     })}\n`
   );
 
@@ -528,7 +573,7 @@ it('starts a session whose start source is newer than this sidecar, as not known
     expect(replies).toContainEqual({ id: 1, ok: true, value: { created: true } })
   );
   expect(ensure).toHaveBeenCalledWith({
-    config: {},
+    config: sessionConfig,
     resuming: false,
     restart: false,
     startSource: null,

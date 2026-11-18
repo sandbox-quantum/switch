@@ -220,6 +220,19 @@ export async function handleControlMessage(
   if ('journal' in message) return readJournalSnapshot(message.journal);
   if ('attachment' in message) return context.transfers.receive(message.attachment);
   if ('attachmentCancel' in message) return context.transfers.cancel(message.attachmentCancel);
+  // `ensure` can't be gated through `namedSession` above: that gate requires a
+  // pre-existing owner, and `ensure` is what creates one. A session starting
+  // for the first time has nothing saved to compare, so the gate would refuse
+  // every new session. `ensure` also makes two claims where the others make
+  // one — the session it names, and the agent its configuration says owns it —
+  // and both must hold, or it would either record another agent as the owner
+  // or take over a session that already has one.
+  const ensured = sharedConfigSchema.parse(message.ensure.config);
+  if (ensured.session.agentId !== context.agentId)
+    throw notOwnSession(context.agentId, ensured.session.sessionId);
+  const ensuredOwner = await sessionOwner(ensured.session.sessionId);
+  if (ensuredOwner !== null && ensuredOwner !== context.agentId)
+    throw notOwnSession(context.agentId, ensured.session.sessionId);
   return context.ensure(message.ensure);
 }
 
