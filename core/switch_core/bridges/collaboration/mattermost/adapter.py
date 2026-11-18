@@ -4245,19 +4245,19 @@ class MattermostAdapter(PlatformAdapter):
         password: str | None = None,
         token: str | None = None,
     ) -> Driver:
-        url = self._config.url.rstrip("/")
-        scheme = "https" if url.startswith("https") else "http"
-        host = re.sub(r"^https?://", "", url)
-        port = 443 if scheme == "https" else 8065
-
+        url = _server_url(self._config.url)
+        scheme = url.scheme.lower()
+        host = url.hostname
+        assert host is not None  # checked by MattermostConnectionConfig
         if ":" in host:
-            host, port_str = host.rsplit(":", 1)
-            port = int(port_str)
+            host = f"[{host}]"
+        port = url.port if url.port is not None else _DRIVER_DEFAULT_PORTS[scheme]
 
         opts: dict[str, object] = {
             "url": host,
             "scheme": scheme,
             "port": port,
+            "basepath": f"{url.path.rstrip('/')}/api/v4",
             "verify": self._config.verify_tls,
             "request_timeout": _MM_REQUEST_TIMEOUT_SECONDS,
             "websocket_kw_args": {
