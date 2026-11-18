@@ -88,6 +88,9 @@ export const platformSchema = z.object({
 });
 export type Platform = z.infer<typeof platformSchema>;
 
+/** This machine, OS account and data folder, as `readDeviceId` derives it: a SHA-256 in hex. */
+export const deviceIdSchema = z.string().regex(/^[0-9a-f]{64}$/);
+
 // §1 Enrollment and authentication
 
 export const enrollRequestSchema = z.object({
@@ -99,13 +102,23 @@ export const enrollRequestSchema = z.object({
     description: z.string().max(500).optional(),
     platform: platformSchema,
     version: z.string().min(1),
+    /**
+     * Which machine, OS account and data folder this is, so Switch takes over the device
+     * it already was here rather than adding another. Left out when unknown.
+     */
+    device_id: deviceIdSchema.optional(),
   }),
   /** The key the provider logins its owner gives this machine are sealed to. */
   public_key: z.object({ alg: z.literal('X25519'), key: z.string().min(1) }).optional(),
 });
 export type EnrollRequest = z.infer<typeof enrollRequestSchema>;
 
-export const enrollResponseSchema = z.object({ controller_id: id, credential: id });
+export const enrollResponseSchema = z.object({
+  controller_id: id,
+  credential: id,
+  /** Switch took over the device this install already was, with its agents. */
+  adopted: z.boolean().optional(),
+});
 export type EnrollResponse = z.infer<typeof enrollResponseSchema>;
 
 export const tokenRequestSchema = z.object({ credential: id });
@@ -274,6 +287,8 @@ export const statusReportSchema = z.object({
     sessions_max: z.number().int().nonnegative(),
     /** The absolute directory agents' workspaces are made in when nothing else names one. */
     workspaces_dir: z.string().min(1),
+    /** Which machine, OS account and data folder this is (`readDeviceId`); left out when unknown. */
+    device_id: deviceIdSchema.optional(),
   }),
   providers: z.array(providerStatusSchema),
   tools: z.array(toolStatusSchema),

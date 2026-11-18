@@ -392,6 +392,19 @@ class ControllerPresence:
             binding = self._bindings[agent_id]
             self._bindings[agent_id] = replace(binding, controller_name=name)
 
+    def credential_replaced(self, controller_id: str) -> None:
+        """Another controller on the same device took this one over with a
+        credential of its own. Whatever stream the process that held it still
+        has here ends as taken over, which that process does not retry, and
+        this process's token cache forgets it, so a token for the old
+        credential is checked against the new one. Unlike `revoke_controller`,
+        the new holder opens a stream as any controller does."""
+        if self._auth_cache is not None:
+            self._auth_cache.invalidate_controller(controller_id)
+        conn = self._connections.pop(controller_id, None)
+        if conn is not None:
+            self._take_over(conn)
+
     def revoke_controller(self, controller_id: str) -> None:
         """A revoked controller's stream ends and it cannot open another.
 
