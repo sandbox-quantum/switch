@@ -167,6 +167,10 @@ _SOON = 1
 _CLOCK = 2
 
 
+# What a work message (`!work-threads`) says once its turn has finished.
+WORK_LOG = "Work log"
+
+
 @dataclass(frozen=True)
 class _Target:
     channel_id: str
@@ -1286,7 +1290,7 @@ class AgentSessionActivityPublisher:
         else:
             self._live_turns.pop(key, None)
         if post is not None and drawn.final and not was_final:
-            await self._settle_work_message(key, post, view, target, elapsed)
+            await self._settle_work_message(key, post, view, target)
             await self._stamp_drawn(post)
         if drawn.status != view.turn.status:
             drawn.status = view.turn.status
@@ -1361,12 +1365,7 @@ class AgentSessionActivityPublisher:
         return replace(target, thread_ref=work_ref)
 
     async def _settle_work_message(
-        self,
-        key: _Key,
-        post: TurnStatusPost,
-        view: TurnView,
-        target: _Target,
-        elapsed: float | None,
+        self, key: _Key, post: TurnStatusPost, view: TurnView, target: _Target
     ) -> None:
         """Write the line a turn ended on into its work message, if it has one.
 
@@ -1382,8 +1381,14 @@ class AgentSessionActivityPublisher:
             return
         work_ref = work_ref or post.thread_ref
         assert work_ref is not None
-        summary = turn_state(
-            view.items, view.turn, tool_detail=True, elapsed_seconds=elapsed
+        # A finished turn's work message only has to say where its steps are:
+        # how long it took and how many calls it made head the steps already.
+        # One that stopped short says how, which is news the steps do not lead
+        # with.
+        summary = (
+            WORK_LOG
+            if view.turn.status == "completed"
+            else turn_state(view.items, view.turn, tool_detail=True)
         )
         try:
             await self._adapter.settle_work_message(

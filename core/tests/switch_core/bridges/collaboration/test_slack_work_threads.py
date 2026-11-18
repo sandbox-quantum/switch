@@ -112,7 +112,12 @@ async def test_a_work_message_is_a_divider_with_a_session_for_the_asker() -> Non
     assert ref == f"{CHANNEL}:{client._ts}.0"
     assert posted["channel"] == CHANNEL
     assert "thread_ts" not in posted, "the work message is at the channel root"
-    assert posted["blocks"] == [{"type": "divider"}]
+    assert posted["blocks"] == [
+        {
+            "type": "context",
+            "elements": [{"type": "mrkdwn", "text": "_Working on it…_"}],
+        }
+    ]
     assert posted["text"] == "Agent is working on this"
     [session] = _sessions(client)
     assert session["channel_id"] == CHANNEL
@@ -145,18 +150,31 @@ async def test_a_work_message_slack_refuses_is_reported() -> None:
     assert _sessions(client) == []
 
 
-async def test_settling_edits_in_the_summary_and_ends_the_session() -> None:
+async def test_settling_edits_in_the_last_line_renames_and_ends_the_session() -> None:
     client = FakeWebClient()
     adapter = _adapter(client)
-    await adapter.settle_work_message(
-        CHANNEL, "Agent", f"{CHANNEL}:5.0", "Worked for 30s. 2 tool calls."
-    )
+    await adapter.settle_work_message(CHANNEL, "Agent", f"{CHANNEL}:5.0", "Work log")
     [edit] = client.updated
     assert (edit["channel"], edit["ts"]) == (CHANNEL, "5.0")
-    assert edit["text"] == "Worked for 30s. 2 tool calls."
-    assert edit["blocks"][0]["type"] == "context"
-    [session] = _sessions(client)
-    assert session == {"channel_id": CHANNEL, "thread_ts": "5.0", "status": "active"}
+    assert edit["text"] == "Work log"
+    assert edit["blocks"] == [
+        {"type": "context", "elements": [{"type": "mrkdwn", "text": "_Work log_"}]}
+    ]
+    calls = [
+        (method, kwargs["json"])
+        for method, kwargs in client.api_calls
+        if method.startswith("agents.sessions.")
+    ]
+    assert calls == [
+        (
+            "agents.sessions.rename",
+            {"channel_id": CHANNEL, "thread_ts": "5.0", "title": "Agent · Work log"},
+        ),
+        (
+            "agents.sessions.setStatus",
+            {"channel_id": CHANNEL, "thread_ts": "5.0", "status": "active"},
+        ),
+    ]
 
 
 async def test_a_stream_in_a_thread_nobody_spoke_in_goes_to_whoever_the_turn_answers() -> (

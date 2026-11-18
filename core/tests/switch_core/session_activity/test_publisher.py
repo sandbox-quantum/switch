@@ -1465,8 +1465,7 @@ async def test_a_root_asked_turn_works_in_a_thread_under_its_own_message(
     )
     [settled] = platform.of("settle_work_message")
     assert settled.ref == opened.ref
-    assert settled.content.startswith("Worked for ")
-    assert settled.content.endswith("1 tool call.")
+    assert settled.content == "Work log", "the steps already say how long it took"
     assert len(platform.of("open_work_message")) == 1
     post = await _turn_post(session_factory)
     assert post.thread_ref == opened.ref
@@ -1499,6 +1498,11 @@ async def test_a_root_asked_turn_that_failed_is_shown_without_steps(
     [opened] = work_platform.of("open_work_message")
     await work_platform.wait_until(lambda: len(_turns(work_platform)) == 1)
     assert _turns(work_platform)[0].thread_ref == opened.ref
+    await work_platform.wait_until(
+        lambda: bool(work_platform.of("settle_work_message"))
+    )
+    [settled] = work_platform.of("settle_work_message")
+    assert settled.content == "Turn ended with an error."
 
 
 async def test_a_turn_asked_in_a_thread_keeps_its_work_there(
