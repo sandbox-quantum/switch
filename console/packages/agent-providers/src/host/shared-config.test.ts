@@ -663,9 +663,31 @@ describe('the skills of the agent’s service grants', () => {
       );
       expect(await sessionServiceGrants(config)).toEqual({
         grants: [],
-        unavailable: "Switch refused this agent's service grants (HTTP 503).",
+        unavailable:
+          "Couldn't reach the Switch server at https://switch.test to read this agent's service grants (HTTP 503 from something between this machine and Switch).",
       });
-      expect(warn).toHaveBeenCalledWith(expect.stringContaining('HTTP 503'));
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining(
+          "starts without its agent's service grants: Couldn't reach the Switch server at https://switch.test"
+        )
+      );
+
+      vi.stubGlobal(
+        'fetch',
+        vi.fn<typeof fetch>(
+          async () =>
+            new Response(
+              JSON.stringify({
+                error: { code: 'forbidden', message: 'Not this agent.', retryable: false },
+              }),
+              { status: 403 }
+            )
+        )
+      );
+      const refused = await sessionServiceGrants(config);
+      expect(refused.unavailable).toMatch(
+        /^Switch refused this agent's service grants \(HTTP 403, forbidden:/
+      );
     } finally {
       warn.mockRestore();
       await rm(root, { recursive: true, force: true });

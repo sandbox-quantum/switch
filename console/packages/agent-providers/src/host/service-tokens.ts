@@ -117,7 +117,7 @@ export class AgentServiceTokens {
       revisions = await this.readRevisions();
     } catch (error) {
       console.warn(
-        `Switch could not be reached to check this agent's ${service} grant (${error instanceof Error ? error.message : String(error)}); handing out the current token, which expires at ${new Date(token.expiresAt).toISOString()}.`
+        `Switch could not confirm this agent's ${service} grant (${error instanceof Error ? error.message : String(error)}); handing out the current token, which expires at ${new Date(token.expiresAt).toISOString()}.`
       );
       return true;
     }
