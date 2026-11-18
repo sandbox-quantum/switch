@@ -53,6 +53,23 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Added
+- **A computer enrolled again keeps its device and agents.** A controller
+  enrolling on a machine and OS account its owner already has a device for
+  in the workspace (Switch Console set up again after a reinstall or with a
+  fresh data folder, or a headless controller enrolled again) takes that
+  device over when it isn't running: same id, name and agents, with a new
+  credential. Before, it was added as another device of the same name, and
+  its agents stayed on the old one. A device running at that moment is
+  another controller on the same machine and is left alone, as is a device
+  enrolled or taken over in the last minute that hasn't reported since.
+  Switch Cloud machines never are. Enrollment (`POST
+  /gateway/management/controllers` and `POST
+  /v1/management/controllers/enroll`) and status reports take an optional
+  `device_id`; Switch keeps only a hash of it with the owner's id, never the
+  id itself, and the enroll responses add `adopted`. A status report keeps
+  the device current, so a device enrolled before it could say is matched
+  from its next report. `device_id` in the Console enroll body raises the
+  `gateway-api` revision to 7.
 - **`GET /gateway/agents/rooms` lists the rooms of up to 100 agents in one
   request** (`agent_id`, repeated), each as `GET /gateway/agents/{agent_id}`
   lists them, in the same few statements however many agents are asked
@@ -1324,6 +1341,12 @@ version of their own to them without also giving them a release of their own.
   redirects to it.
 
 #### Security
+- **A controller's access token works only with the credential it was
+  exchanged for.** Tokens now name their credential, and one whose
+  controller no longer has it (rotated away, or replaced when another
+  controller took the device over) is refused as expired, so only the
+  holder of the current credential can exchange a new one. A token issued
+  before this release keeps working until it expires, within the hour.
 - **Cookie-signed changes must come from Switch's own origins.** Every POST,
   PUT, PATCH and DELETE that carries the sign-in cookie, sign-in itself and the
   change socket are checked against `GATEWAY_PUBLIC_URL`, `FRONTEND_BASE_URL`
@@ -4618,6 +4641,13 @@ version of their own to them without also giving them a release of their own.
 ### [0.41.0] - 2026-11-17
 
 #### Added
+- **This computer keeps its agents when Switch Console is set up again on
+  it.** Console tells the server which computer and OS account it runs on
+  when it turns on managed agents, so a reinstall or a fresh data folder
+  takes over the device this computer already was, agents included, instead
+  of adding another of the same name. It needs a server that takes it
+  (`gateway-api` 7); an older one adds a device as before. In the Move
+  dialog, devices that share a name now say when each was last seen.
 - **Group chats.** Create a group chat from New room, open it in the room
   view, and manage its agents and people from its Configuration tab. Offered
   only where the server has them on (`group_chats`), which this release does by
@@ -7230,6 +7260,14 @@ tags; see RELEASING.md.
 ### [Unreleased]
 
 #### Added
+- **Says which machine and OS account it runs on.** Enrolling, and every
+  status report, carry `device_id`: a SHA-256 of the platform's machine id
+  (a Mac's hardware UUID, Windows's MachineGuid, Linux's machine-id) and the
+  OS user name, with the host name on Linux and Windows, where a cloned
+  image can share a machine id. A server that keeps it takes over the
+  device the machine already was rather than adding another, and the
+  enroll output says so. `--device-id` prints it, for Switch Console, which
+  enrolls its computer itself. Left out wherever it can't be read.
 - **Signs Antigravity in through Vertex AI.** A Vertex AI login given for
   Antigravity is taken, its Google credential written to the agent's own
   `provider-home/google-credentials.json`, and `agy` run with `AGY_ADC_AUTH`,

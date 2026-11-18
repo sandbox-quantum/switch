@@ -45,7 +45,10 @@ class _AuthenticatedAs:
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         scope["controller"] = ControllerPrincipal(
-            controller_id=CONTROLLER, owner_id="owner-1", tenant_id="tenant-1"
+            controller_id=CONTROLLER,
+            owner_id="owner-1",
+            tenant_id="tenant-1",
+            key_id=None,
         )
         await self.app(scope, receive, send)
 

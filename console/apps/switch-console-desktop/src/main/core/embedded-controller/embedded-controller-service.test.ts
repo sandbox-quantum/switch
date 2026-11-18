@@ -39,6 +39,7 @@ const CREDENTIAL = 'swcc_credential-placeholder-value';
 const SERVER = 'server-1';
 const WORKSPACE = 'workspace-1';
 const NOW = Date.parse('2026-01-01T00:00:00Z');
+const DEVICE_ID = 'd'.repeat(64);
 
 let base: string;
 let secrets: Map<string, string>;
@@ -79,6 +80,7 @@ function service(overrides: Partial<EmbeddedControllerDeps> = {}): EmbeddedContr
       sharedHost: () => '/app/dist-sidecar/shared-host.mjs',
     },
     controllerVersion: async () => '0.1.0',
+    controllerDeviceId: async () => DEVICE_ID,
     spawn: spawned.spawn,
     execPath: '/app/electron',
     env: () => ({ PATH: '/usr/bin', HOME: '/home/someone' }),
@@ -158,6 +160,7 @@ beforeEach(() => {
       apiUrl: 'https://switch.example.com',
       controllerId: 'controller-1',
       credential: CREDENTIAL,
+      adopted: false,
     })),
     read: vi.fn<ManagementPort['read']>(async () => ({ kind: 'ok', controller: null, agents: [] })),
     update: vi.fn<ManagementPort['update']>(async () => {}),
@@ -185,6 +188,7 @@ describe('EmbeddedControllerService', () => {
       name: 'build-box',
       platform: { os: 'linux', arch: 'x64', os_version: '6.1.0' },
       version: '0.1.0',
+      deviceId: DEVICE_ID,
     });
     expect(secrets.get(credentialSecretKey(SERVER))).toBe(CREDENTIAL);
 
@@ -233,6 +237,27 @@ describe('EmbeddedControllerService', () => {
     expect(events.map((event) => event.phase.kind)).toEqual(['enrolling', 'running']);
   });
 
+  it('enrolls as the device this computer already was, when Switch takes it over', async () => {
+    management.enroll.mockResolvedValueOnce({
+      serverId: SERVER,
+      apiUrl: 'https://switch.example.com',
+      controllerId: 'controller-before',
+      credential: CREDENTIAL,
+      adopted: true,
+    });
+    await enabled();
+    expect(storedRecord()).toMatchObject({ kind: 'enrolled', controllerId: 'controller-before' });
+    expect(calls[0]!.args).toContain('controller-before');
+  });
+
+  it('enrolls with no device id when the controller cannot tell which computer this is', async () => {
+    await enabled({ controllerDeviceId: async () => null });
+    expect(management.enroll).toHaveBeenCalledWith(
+      WORKSPACE,
+      expect.objectContaining({ deviceId: null })
+    );
+  });
+
   it('enrolls again when Switch no longer lists the machine, forgetting the old identity', async () => {
     const running = await enabled();
     management.enroll.mockResolvedValueOnce({
@@ -240,6 +265,7 @@ describe('EmbeddedControllerService', () => {
       apiUrl: 'https://switch.example.com',
       controllerId: 'controller-2',
       credential: 'swcc_second',
+      adopted: false,
     });
     await running.enrollAgain(SERVER);
     expect(management.revoke).not.toHaveBeenCalled();
@@ -261,6 +287,7 @@ describe('EmbeddedControllerService', () => {
       apiUrl: 'https://switch.example.com',
       controllerId: 'controller-3',
       credential: 'swcc_third',
+      adopted: false,
     });
     await running.enrollAgain(SERVER);
     expect(storedRecord()).toMatchObject({ kind: 'enrolled', controllerId: 'controller-3' });

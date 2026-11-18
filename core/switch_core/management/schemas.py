@@ -28,6 +28,7 @@ from switch_core.db.models import (
 )
 from switch_core.db.models import AgentDefinition as AgentDefinitionRow
 from switch_core.management.advanced_config import validate_advanced_config
+from switch_core.management.device_identity import DEVICE_ID_PATTERN
 from switch_core.management.sealed_logins import PublicKey, key_id
 from switch_core.process_lease import ProcessLeases
 from switch_core.providers.registry import AgentProviderId
@@ -149,6 +150,9 @@ class ControllerDescription(_ControllerBody):
     )
     platform: Platform
     version: str
+    # Which machine and OS account it runs on (`management/device_identity.py`);
+    # absent from a controller that cannot tell, or is older than this field.
+    device_id: str | None = Field(default=None, pattern=DEVICE_ID_PATTERN)
 
     @field_validator("name")
     @classmethod
@@ -197,6 +201,11 @@ class MachineStatus(_StatusBody):
     # The absolute directory the controller makes agents' workspaces in. A
     # controller older than this field does not send it.
     workspaces_dir: str | None = None
+    # Which machine and OS account it runs on (`management/device_identity.py`),
+    # kept as the controller's `device_hash` and not in its stored status.
+    # Checked where it is used, not here: a malformed one must not cost the
+    # rest of the report.
+    device_id: str | None = None
 
 
 class ProviderStatus(_StatusBody):
@@ -341,6 +350,8 @@ class ConsoleControllerRequest(_GatewayBody):
     platform: Platform
     version: str
     public_key: PublicKey | None = None
+    # As a controller enrolling by code says it (`ControllerDescription`).
+    device_id: str | None = Field(default=None, pattern=DEVICE_ID_PATTERN)
 
     @field_validator("name")
     @classmethod

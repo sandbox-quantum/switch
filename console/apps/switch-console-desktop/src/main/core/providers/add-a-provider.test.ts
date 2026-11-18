@@ -111,6 +111,7 @@ describe('a provider added as a plugin and a runtime', () => {
         cloud: false,
         workspacesDir: null,
         os: null,
+        lastSeenAt: null,
         local: null,
       },
       allFeatureFlagsOff()

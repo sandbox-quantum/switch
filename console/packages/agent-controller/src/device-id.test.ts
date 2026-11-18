@@ -58,7 +58,9 @@ describe('readDeviceId', () => {
           return text;
         },
       });
-    const etc = await readDeviceId(files({ '/etc/machine-id': 'b08dfa6083e7567a1921a715000001fb\n' }));
+    const etc = await readDeviceId(
+      files({ '/etc/machine-id': 'b08dfa6083e7567a1921a715000001fb\n' })
+    );
     expect(etc).toMatch(/^[0-9a-f]{64}$/);
     expect(
       await readDeviceId(files({ '/var/lib/dbus/machine-id': 'b08dfa6083e7567a1921a715000001fb' }))
