@@ -487,6 +487,16 @@ export class ProviderStatuses {
   }
 
   /** Checks every provider now, whatever its last check, all at once. */
+  /** Where each provider's CLI was found at its last check, or `not found`. */
+  locations(): Partial<Record<Provider, string>> {
+    return Object.fromEntries(
+      PROVIDERS.flatMap((provider) => {
+        const entry = this.entries.get(provider);
+        return entry ? [[provider, entry.path ?? 'not found']] : [];
+      })
+    );
+  }
+
   async checkAll(options: { verify?: boolean } = {}): Promise<void> {
     await Promise.all(PROVIDERS.map((provider) => this.check(provider, options)));
   }
