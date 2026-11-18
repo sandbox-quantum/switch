@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import UTC, datetime, timedelta
@@ -53,7 +54,9 @@ from switch_core.gateway.chats import (
     chat_activity_events,
     chat_events,
 )
+from switch_core.logging_context import structured_fields
 from switch_core.observability.metrics import MetricsRegistry, install, uninstall
+from switch_core.security_events import LOGGER_NAME as SECURITY_LOGGER_NAME
 from switch_core.session_activity.listener import Change
 from switch_core.transport import RoomRef
 from switch_core.transport.observer import ParticipantMessage
@@ -706,6 +709,41 @@ async def test_uploads_are_idempotent_and_media_is_scoped_to_the_room(
         f"/chats/{room_id}/media", params={"uri": uri}, headers=chats.as_user(chats.bob)
     )
     assert stranger.status_code == 403
+
+
+async def test_an_upload_and_a_download_are_security_events_of_the_person(
+    chats: _Harness, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO, logger=SECURITY_LOGGER_NAME)
+    agent = await chats.agent("helper", owner=chats.alice)
+    room_id = await chats.new_chat(chats.alice, agent, "c1")
+    staged = await chats.upload(chats.alice, room_id, "u1", b"bytes", "secret.png")
+    uri = staged.json()["uri"]
+    await chats.send(chats.alice, room_id, "s1", "", uploadIds=["u1"])
+    media = await chats.client.get(
+        f"/chats/{room_id}/media",
+        params={"uri": uri},
+        headers=chats.as_user(chats.alice),
+    )
+    assert media.status_code == 200
+
+    events = [
+        structured_fields(record)
+        for record in caplog.records
+        if record.name == SECURITY_LOGGER_NAME
+        and structured_fields(record)["switch"]["event"].startswith(
+            "security.attachment."
+        )
+    ]
+    assert [e["switch"]["event"] for e in events] == [
+        "security.attachment.uploaded",
+        "security.attachment.downloaded",
+    ]
+    for event in events:
+        assert event["switch"]["actor_user_id"] == chats.alice.id
+        assert event["switch"]["room_id"] == room_id
+        assert event["switch"]["agent_id"] is None
+        assert event["security_details"] == {"media_uri": uri, "size": 5}
 
 
 @pytest.mark.parametrize(

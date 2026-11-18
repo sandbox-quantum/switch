@@ -140,6 +140,7 @@ from switch_core.observability.catalogue import (
 )
 from switch_core.observability.metrics import metrics
 from switch_core.process_lease import LEASE_TTL
+from switch_core.security_events import SecuritySignal, log_security_event
 from switch_core.tenant_context import tenant_scope
 from switch_core.transport.stored import to_inbound
 from switch_core.transport.types import (
@@ -714,6 +715,7 @@ class Routed:
         seq: int,
         stored: list[tuple[str, int]],
         deadline_in: float | None,
+        sent_by: RoomMember | None,
         announcement: str | None = None,
     ) -> None:
         self._router = router
@@ -724,6 +726,8 @@ class Routed:
         self.seq = seq
         self._stored = stored
         self._deadline_in = deadline_in
+        # The agent that posted the row, when it is a message an agent posted.
+        self._sent_by = sent_by
         # What the trigger would have announced for the row, when the writer
         # announces it and its own events itself once it has committed.
         self._announcement = announcement
@@ -761,6 +765,20 @@ class Routed:
         reads = self._reads
         if reads is None:
             return
+        if self._sent_by is not None:
+            log_security_event(
+                SecuritySignal.AGENT_MESSAGE_SENT,
+                tenant_id=reads.tenant_id,
+                actor_user_id=None,
+                target_type="room",
+                target_id=reads.room_id,
+                agent_id=self._sent_by.agent.id,
+                room_id=reads.room_id,
+                details={
+                    "message_id": self._row.event_id,
+                    "kind": "file" if isinstance(self._row, InboundMedia) else "text",
+                },
+            )
         plan = self._plan
         if plan.arrival is not None:
             router.services.connections.controllers.room_joined(
@@ -1151,6 +1169,11 @@ class MessageRouter:
             seq=message.seq,
             stored=stored,
             deadline_in=deadline_in,
+            sent_by=(
+                reads.member(message.sender_client_id)
+                if reads is not None and isinstance(row, InboundMessage)
+                else None
+            ),
             announcement=(
                 message_announcement(
                     room_id, message.seq, message.id, message.event_type
@@ -2474,8 +2497,16 @@ class MessageRouter:
         )
         stored = await self._store_own_events(session, reads, plan.deliveries, lead)
         await session.commit()
+        # The files were posted, and counted, as they were written.
         return Routed(
-            self, reads, plan, lead, seq=lead.seq, stored=stored, deadline_in=None
+            self,
+            reads,
+            plan,
+            lead,
+            seq=lead.seq,
+            stored=stored,
+            deadline_in=None,
+            sent_by=None,
         )
 
     # ── After the commit ──────────────────────────────────────────────────────
