@@ -89,6 +89,7 @@ class AgentControllerStore:
         version: str | None,
         public_key: dict[str, Any] | None,
         api_key_id: str,
+        device_hash: str | None,
     ) -> AgentController:
         controller = AgentController(
             owner_id=owner_id,
@@ -99,6 +100,7 @@ class AgentControllerStore:
             version=version,
             public_key=public_key,
             api_key_id=api_key_id,
+            device_hash=device_hash,
         )
         session.add(controller)
         await session.flush()
@@ -132,6 +134,56 @@ class AgentControllerStore:
             .execution_options(populate_existing=True)
         )
         return result.scalar_one_or_none()
+
+    async def lock_same_device(
+        self,
+        session: AsyncSession,
+        tenant_id: str,
+        *,
+        owner_id: str,
+        kind: str,
+        device_hash: str,
+    ) -> list[AgentController]:
+        """The owner's controllers of `kind` in the workspace on the machine
+        and account `device_hash` names, not revoked, each row locked until
+        the caller's transaction ends and read afresh: two controllers
+        enrolling on the same device take turns."""
+        result = await session.execute(
+            select(AgentController)
+            .where(
+                AgentController.tenant_id == tenant_id,
+                AgentController.owner_id == owner_id,
+                AgentController.kind == kind,
+                AgentController.device_hash == device_hash,
+                AgentController.revoked_at.is_(None),
+                AgentController.api_key_id.is_not(None),
+            )
+            .order_by(AgentController.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        return list(result.scalars().all())
+
+    async def take_over(
+        self,
+        session: AsyncSession,
+        controller: AgentController,
+        *,
+        api_key_id: str,
+        platform: dict[str, Any],
+        version: str,
+        public_key: dict[str, Any] | None,
+    ) -> None:
+        """Hand a locked controller (`lock_same_device`) to a new process on
+        the same device: its credential and sealing key, and none of what the
+        old process last reported. Its id, name, description and agents stay."""
+        controller.api_key_id = api_key_id
+        controller.platform = platform
+        controller.version = version
+        controller.public_key = public_key
+        controller.status = None
+        controller.status_seq = None
+        await session.flush()
 
     async def get_by_api_key(
         self, session: AsyncSession, tenant_id: str, api_key_id: str
@@ -320,9 +372,13 @@ class AgentControllerStore:
         status: dict[str, Any],
         version: str,
         platform: dict[str, Any],
+        device_hash: str | None,
         seen_at: datetime,
     ) -> bool:
         """Store a status report unless one at or past `seq` is already stored.
+        A `device_hash` replaces the one kept, so a controller enrolled before
+        it could say, or whose data moved to another machine, is matched by
+        where it runs now; None leaves the kept one as it is.
 
         Returns whether it was stored. The comparison is in the `UPDATE`
         itself, so two reports racing each other cannot leave the older one
@@ -335,6 +391,8 @@ class AgentControllerStore:
             "version": version,
             "platform": platform,
         }
+        if device_hash is not None:
+            values["device_hash"] = device_hash
         result = await session.execute(
             update(AgentController)
             .where(

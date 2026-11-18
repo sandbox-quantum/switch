@@ -269,12 +269,16 @@ contracts:
     # Revision 6 adds a template's `use_case` to the bodies that create and
     # change one (`TemplateCreateRequest`, `TemplateUpdateRequest`).
     #
+    # Revision 7 adds `device_id` to Switch Console enrolling this computer
+    # (`ConsoleControllerRequest`): which machine, OS account and data folder
+    # it is, so an enrollment on a device the person already has takes it over.
+    #
     # A strict request body changing is the change most easily missed, so
     # core/tests/switch_core/gateway/test_gateway_api_revision.py fails until
     # it is recorded against a raised `speaks`.
     artifacts:
-      switch-core: { speaks: 6, accepts: 2 }
-      switch-console: { speaks: 6, accepts: 1 }
+      switch-core: { speaks: 7, accepts: 2 }
+      switch-console: { speaks: 7, accepts: 1 }
 
   stack-compose:
     description: >-

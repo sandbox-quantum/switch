@@ -37,6 +37,7 @@ from tests.switch_core.management.harness import (
     add_member,
     build_harness,
     cookies_for,
+    credential_key_id,
     enroll_console,
 )
 
@@ -127,6 +128,7 @@ class TestAValidToken:
             controller_id=controller.controller_id,
             owner_id=controller.owner.id,
             tenant_id=TENANT_ZERO_ID,
+            key_id=await credential_key_id(harness, controller.credential),
         )
 
     async def test_binds_the_tokens_own_tenant(self, harness: Harness) -> None:
@@ -195,6 +197,7 @@ class TestRefusals:
             controller_id=controller.controller_id,
             tenant_id=TENANT_ZERO_ID,
             owner_id=controller.owner.id,
+            key_id=await credential_key_id(harness, controller.credential),
             now=datetime.now(UTC) - timedelta(hours=2),
         )
         mw, _ = _middleware(harness, controller_auth=harness.management.authenticator)

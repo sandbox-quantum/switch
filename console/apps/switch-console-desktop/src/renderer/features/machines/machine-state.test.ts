@@ -3,6 +3,7 @@ import type {
   MachineDetail,
   MachineProviderDetail,
   ManagedAgentView,
+  OwnedMachine,
 } from '@shared/core/managed-agents/managed-agents';
 import {
   addDeviceRefusal,
@@ -15,6 +16,7 @@ import {
   machineNotices,
   placedAgents,
   moveTarget,
+  namesakeLabel,
   platformLabel,
   sessionsLabel,
 } from './machine-state';
@@ -373,5 +375,42 @@ describe('addDeviceRefusal', () => {
   it('leaves a server Console runs on an SSH host, or anyone else’s, to the server to answer', () => {
     expect(addDeviceRefusal({ ...server, managed: true, managementKind: 'remote' })).toBeNull();
     expect(addDeviceRefusal(server)).toBeNull();
+  });
+});
+
+describe('namesakeLabel', () => {
+  const NOW = new Date('2026-11-18T10:00:00Z');
+  const device = (id: string, patch: Partial<OwnedMachine> = {}): OwnedMachine => ({
+    id,
+    name: 'GCXWMY2NX4',
+    kind: 'console',
+    state: 'offline',
+    providers: [],
+    acceptsLogins: false,
+    cloud: false,
+    workspacesDir: null,
+    os: 'macos',
+    lastSeenAt: null,
+    local: null,
+    ...patch,
+  });
+
+  it('tells devices of one name apart by when each was last seen', () => {
+    const here = device('here', { state: 'online', local: { kind: 'this-computer' } });
+    const last = device('last-night', { lastSeenAt: '2026-11-17T20:00:00Z' });
+    const never = device('never');
+    const machines = [here, last, never];
+    expect(namesakeLabel(last, machines, NOW)).toBe('Last seen 14 hours ago');
+    expect(namesakeLabel(never, machines, NOW)).toBe('Never seen');
+    // This computer, and a device online now, need no telling apart.
+    expect(namesakeLabel(here, machines, NOW)).toBeNull();
+    expect(namesakeLabel(device('busy', { state: 'online' }), machines, NOW)).toBeNull();
+  });
+
+  it('says nothing of a device whose name is its own, a revoked namesake not counting', () => {
+    const own = device('own', { name: 'build-box', lastSeenAt: '2026-11-17T20:00:00Z' });
+    const alone = device('alone');
+    expect(namesakeLabel(own, [own, alone], NOW)).toBeNull();
+    expect(namesakeLabel(alone, [alone, device('gone', { state: 'revoked' })], NOW)).toBeNull();
   });
 });
