@@ -6,7 +6,7 @@ import json
 import math
 import os
 from dataclasses import dataclass
-from typing import Any, Literal, get_args
+from typing import Any, Literal, TypeGuard, get_args
 
 import anthropic
 import boto3
@@ -539,16 +539,28 @@ def read_gemini_decision(
     def option(key: object) -> str:
         return NONE if key == nobody_key else str(key)
 
-    probabilities = {
-        option(k): float(v) for k, v in raw_probs.items() if isinstance(v, (int, float))
-    }
+    def is_probability(value: object) -> TypeGuard[int | float]:
+        return (
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and 0.0 <= value <= 1.0
+        )
+
+    if not all(is_probability(value) for value in raw_probs.values()):
+        raise ModelServerError(
+            "Decisions API response has an invalid option probability",
+            kind="model_server_error",
+        )
+    probabilities = {option(k): float(v) for k, v in raw_probs.items()}
     choice = option(raw_choice)
     confidence = probabilities.get(choice, answer.get("confidence"))
     if raw_choice != nobody_key and raw_choice not in agent_names:
-        raise InvalidChoiceError(raw_choice, _confidence_of(confidence))
-    if not isinstance(confidence, (int, float)):
+        raise InvalidChoiceError(
+            raw_choice, float(confidence) if is_probability(confidence) else 0.0
+        )
+    if not is_probability(confidence):
         raise ModelServerError(
-            f"Decisions API response has no probability for {raw_choice!r}",
+            "Decisions API response has missing or invalid confidence",
             kind="model_server_error",
         )
     return ModelAnswer(
