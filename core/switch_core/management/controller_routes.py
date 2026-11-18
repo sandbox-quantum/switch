@@ -53,6 +53,8 @@ from switch_core.bridges.agent.protocol.controller_stream import (
     ControllerFrame,
     controller_event_stream,
 )
+from switch_core.connections.broker import ServiceBroker, get_service_broker
+from switch_core.db.models import ServiceTokenIssuance
 from switch_core.db.session_scope import tenant_session
 from switch_core.management import reason_codes, socket_calls
 from switch_core.management.auth import ManagementAuthenticator
@@ -64,6 +66,7 @@ from switch_core.management.dependencies import (
     require_controller,
 )
 from switch_core.management.errors import ManagementError, ManagementRoute, error_body
+from switch_core.management.gateway_routes import revoke_controller_tokens
 from switch_core.management.schemas import (
     MAX_STATUS_BYTES,
     ControllerConnectionRequest,
@@ -184,7 +187,11 @@ async def enroll_controller(
     session_factory: Annotated[
         async_sessionmaker[AsyncSession], Depends(get_management_session_factory)
     ],
-) -> dict[str, str]:
+    broker: Annotated[ServiceBroker, Depends(get_service_broker)],
+) -> dict[str, str | bool]:
+    """Spend an enrollment code. `adopted`: the controller took over its
+    owner's device on the same machine, account and data folder, which keeps its id and
+    agents, rather than adding another (`Management.enroll`)."""
     tenant_id = await authenticator.tenant_of_secret(body.proof.code)
     if tenant_id is None:
         raise ManagementError(
@@ -193,14 +200,24 @@ async def enroll_controller(
             "The enrollment code is invalid, already used, or expired.",
         )
     async with tenant_session(session_factory, tenant_id) as session:
-        controller, credential = await management.enroll(
+        enrolled = await management.enroll(
             session,
             tenant_id,
             code=body.proof.code,
             description=body.controller,
             public_key=body.public_key,
         )
-    return {"controller_id": controller.id, "credential": credential}
+        if enrolled.adopted:
+            await revoke_controller_tokens(
+                session,
+                broker,
+                ServiceTokenIssuance.controller_id == enrolled.controller.id,
+            )
+    return {
+        "controller_id": enrolled.controller.id,
+        "credential": enrolled.credential,
+        "adopted": enrolled.adopted,
+    }
 
 
 @router.post("/v1/management/controllers/{controller_id}/token")

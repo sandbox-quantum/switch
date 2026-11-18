@@ -52,7 +52,29 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+### [0.32.1] - 2026-11-18
+
 #### Added
+- **A computer enrolled again keeps its device and agents.** A controller
+  enrolling from a machine, OS account and data folder its owner already has
+  a device for in the workspace (Switch Console set up again after a
+  reinstall or with its data folder wiped, or a headless controller enrolled
+  again) takes that device over when it isn't running: same id, name and
+  agents, with a new credential and its old service tokens revoked. Before,
+  it was added as another device of the same name, and its agents stayed on
+  the old one. A second install on the same account with a data folder of
+  its own (a development build beside Switch Console, say) is a device of
+  its own, so the two don't take a device from each other. A device running
+  at that moment is left alone, as is a device enrolled or taken over in the
+  last minute that hasn't reported since.
+  Switch Cloud machines never are. Enrollment (`POST
+  /gateway/management/controllers` and `POST
+  /v1/management/controllers/enroll`) and status reports take an optional
+  `device_id`; Switch keeps only a hash of it with the owner's id, never the
+  id itself, and the enroll responses add `adopted`. A status report keeps
+  the device current, so a device enrolled before it could say is matched
+  from its next report. `device_id` in the Console enroll body raises the
+  `gateway-api` revision to 7.
 - **`GET /gateway/agents/rooms` lists the rooms of up to 100 agents in one
   request** (`agent_id`, repeated), each as `GET /gateway/agents/{agent_id}`
   lists them, in the same few statements however many agents are asked
@@ -66,6 +88,13 @@ version of their own to them without also giving them a release of their own.
   refresh of its sidebar, so one open window with a few dozen agents could
   take every connection in the pool for a moment. It now asks only about the
   agent's own rooms, and the agent tools that describe an agent do the same.
+
+#### Changed
+- **Auto-route (preview — behind a feature flag, off by default).** A room's
+  assigned agent and auto-route are now mutually exclusive, and an auto-route
+  room with a single agent delivers an untagged message straight to it when a
+  single person is present. The decision service also gains a **Gemini** backend
+  option alongside the existing ones.
 
 ### [0.32.0] - 2026-11-17
 
@@ -1335,6 +1364,12 @@ version of their own to them without also giving them a release of their own.
   redirects to it.
 
 #### Security
+- **A controller's access token works only with the credential it was
+  exchanged for.** Tokens now name their credential, and one whose
+  controller no longer has it (rotated away, or replaced when another
+  controller took the device over) is refused as expired, so only the
+  holder of the current credential can exchange a new one. A token issued
+  before this release keeps working until it expires, within the hour.
 - **Cookie-signed changes must come from Switch's own origins.** Every POST,
   PUT, PATCH and DELETE that carries the sign-in cookie, sign-in itself and the
   change socket are checked against `GATEWAY_PUBLIC_URL`, `FRONTEND_BASE_URL`
@@ -4620,6 +4655,8 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+### [0.41.1] - 2026-11-18
+
 #### Fixed
 - **The workspace switcher shows on every build, not only one that can reach
   Switch Cloud.** A build without a Switch Cloud address, stable included,
@@ -4632,10 +4669,29 @@ version of their own to them without also giving them a release of their own.
   than one request per agent on every refresh (every 20 seconds while the
   window is open, and whenever it is focused). On a server from before that
   request it still asks for one agent at a time.
+- **Install failures show the whole error.** A provider install that fails now
+  surfaces the full error in the UI, and logs it in full, instead of a
+  truncated message.
+- **Cursor sessions use supported permission modes.** Cursor launches with a
+  permission mode its CLI accepts, falling back to the provider's default
+  rather than one it would reject.
+
+#### Changed
+- **switch-buddy's opening messages slide in** on the way from onboarding or
+  Home, rather than appearing all at once.
 
 ### [0.41.0] - 2026-11-17
 
 #### Added
+- **This computer keeps its agents when Switch Console is set up again on
+  it.** Console tells the server which computer, OS account and data folder
+  it runs from when it turns on managed agents, so a reinstall, or its data
+  folder wiped and set up again, takes over the device this Console already
+  was, agents included, instead of adding another of the same name. A
+  Console with a data folder of its own beside it (a development build, a
+  second profile) stays a device of its own. It needs a server that takes it
+  (`gateway-api` 7); an older one adds a device as before. In the Move
+  dialog, devices that share a name now say when each was last seen.
 - **switch-buddy's first message slides in.** At the end of onboarding its
   welcome fades in as it rises into place, and the "Where does your team
   chat?" cards follow just after. From Home, the message you sent comes in
@@ -7254,6 +7310,18 @@ tags; see RELEASING.md.
 ### [Unreleased]
 
 #### Added
+- **Says which machine, OS account and data folder it runs from.**
+  Enrolling, and every status report, carry `device_id`: a SHA-256 of the
+  platform's machine id (a Mac's hardware UUID, Windows's MachineGuid,
+  Linux's machine-id), the OS user name and the data directory (or
+  `--device-root`, which Switch Console passes as its own data folder), with
+  the host name on Linux and Windows, where a cloned image can share a
+  machine id. A server that keeps it takes over the device that install
+  already was rather than adding another, and the enroll output says so. A
+  container whose host name changes each time it starts still enrolls as a
+  new device each time. `--device-id --device-root <folder>` prints it, for
+  Switch Console, which enrolls its computer itself. Left out wherever it
+  can't be read.
 - **Signs Antigravity in through Vertex AI.** A Vertex AI login given for
   Antigravity is taken, its Google credential written to the agent's own
   `provider-home/google-credentials.json`, and `agy` run with `AGY_ADC_AUTH`,

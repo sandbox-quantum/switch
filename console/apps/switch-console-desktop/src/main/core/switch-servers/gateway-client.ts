@@ -5295,15 +5295,29 @@ type ManagedAgentJson = {
  */
 export async function enrollConsoleController(
   server: SwitchServer,
-  body: { name: string; platform: ControllerPlatform; version: string }
-): Promise<{ controllerId: string; credential: string }> {
+  body: { name: string; platform: ControllerPlatform; version: string; deviceId: string | null }
+): Promise<{ controllerId: string; credential: string; adopted: boolean }> {
   const res = await managementFetch(server, '/controllers', {
     authenticated: true,
     method: 'POST',
-    body: { name: body.name, kind: 'console', platform: body.platform, version: body.version },
+    body: {
+      name: body.name,
+      kind: 'console',
+      platform: body.platform,
+      version: body.version,
+      ...(body.deviceId === null ? {} : { device_id: body.deviceId }),
+    },
   });
-  const json = (await res.json()) as { controller_id: string; credential: string };
-  return { controllerId: json.controller_id, credential: json.credential };
+  const json = (await res.json()) as {
+    controller_id: string;
+    credential: string;
+    adopted?: boolean;
+  };
+  return {
+    controllerId: json.controller_id,
+    credential: json.credential,
+    adopted: json.adopted === true,
+  };
 }
 
 /**
