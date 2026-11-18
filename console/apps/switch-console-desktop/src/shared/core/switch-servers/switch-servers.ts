@@ -530,6 +530,12 @@ export type RoomAutoRoute = {
   /** That agent's name, for display; null when there is none, or from a
    * server that predates it. */
   fallbackAgentName: string | null;
+  /** The room's assigned agent (`!assign-agent`), which gets every message
+   * first, so auto-route can't be turned on while it is set; null when none,
+   * or from a server that predates it. */
+  assignedAgent: string | null;
+  /** That agent's name, for display. */
+  assignedAgentName: string | null;
 };
 
 /** A change to a room's auto-route setting (`PUT /rooms/{id}/auto-route`);
@@ -1586,6 +1592,11 @@ export type BridgePerson = {
   linkedName: string | null;
   /** When Switch first saw the account; null on a server predating the field. */
   firstSeenAt: string | null;
+  /** How to name them where `username` is a handle Switch made up (a
+   * Telegram account without a username), with `hasHandle` false. Absent
+   * from a server predating them, which means a real handle. */
+  displayName?: string;
+  hasHandle?: boolean;
 };
 
 /** A bridged room's channel, as the New room dialog asks for it. */

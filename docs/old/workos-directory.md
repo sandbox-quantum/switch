@@ -71,6 +71,16 @@ or Switch's rows cannot be written, the sign-in goes ahead with Switch's rows
 as they were, and the failure is logged. A sign-in never takes anything away;
 the mirror does.
 
+## Roles
+
+Switch reads the WorkOS role `org_admin` as Org Admin and every other role as
+Member, so an environment needs a role with that slug for anyone to be an Org
+Admin.
+
+It expects the other roles to be `admin`, `editor` or `viewer`. A membership
+with any other role is still a Member, so nobody loses access over a role name,
+but Switch logs it at `warning`, with the WorkOS membership and organization.
+
 ## The mirror
 
 One switch-core process follows WorkOS's Events API, every 30 seconds, for

@@ -75,6 +75,7 @@ async function render(items: ChatActivityItem[]): Promise<HTMLDivElement> {
         <ChatActivityBlock
           activity={activity}
           turn={turn}
+          withReasoning
           agent={{ name: 'helper', iconUrl: null }}
           head
           endReason={null}

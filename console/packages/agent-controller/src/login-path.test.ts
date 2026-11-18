@@ -71,5 +71,8 @@ describe('withUserBinDirs', () => {
     expect(withUserBinDirs('/usr/bin', home)).toBe(['/usr/bin', bin].join(delimiter));
     const already = [bin, '/usr/bin'].join(delimiter);
     expect(withUserBinDirs(already, home)).toBe(already);
+    const opencode = join(home, '.opencode', 'bin');
+    await mkdir(opencode, { recursive: true });
+    expect(withUserBinDirs(already, home)).toBe([already, opencode].join(delimiter));
   });
 });
