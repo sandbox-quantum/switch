@@ -57,6 +57,34 @@ version of their own to them without also giving them a release of their own.
   request** (`agent_id`, repeated), each as `GET /gateway/agents/{agent_id}`
   lists them, in the same few statements however many agents are asked
   about. An id with no agent behind it is left out.
+
+#### Fixed
+- **Reading an agent no longer reads every room in the workspace.**
+  `GET /gateway/agents/{agent_id}` loaded every room its reader may see, to
+  learn which of the agent's rooms to name, and held a database connection
+  while it did. Switch Console reads each of its agents this way on every
+  refresh of its sidebar, so one open window with a few dozen agents could
+  take every connection in the pool for a moment. It now asks only about the
+  agent's own rooms, and the agent tools that describe an agent do the same.
+
+### [0.32.0] - 2026-11-17
+
+#### Added
+- **Group chats.** A room can be a group chat: `POST /chats` with
+  `kind: "group"`, read positions and unread counts (`chat_reads`), mention
+  spans, and naming people in a message without waking agents. Fleet-wide
+  behind the `group_chats` flag, which this release turns on by default.
+- **Retry a failed turn.** A turn that failed can be retried without posting
+  the message again, from the room or with the `!retry` command, which is held
+  to the same permission rules as the Retry control.
+- **Restart a device's controller from Switch.** A device's agent controller
+  can be restarted from Switch (Workspace/Organization settings › Devices),
+  without touching the host.
+- **More messaging platforms (preview — behind a feature flag, off by
+  default).** Cisco Webex, Rocket.Chat, Matrix (through a bot account on any
+  homeserver), Signal, Zulip and Google Chat can be connected as collaboration
+  platforms alongside the existing ones. Gated by the newer-platforms feature
+  flag and off unless a deployment turns it on.
 - **Unrecognized WorkOS roles are reported.** Under
   `ORGANIZATION_DIRECTORY=workos`, a membership whose role is not `org_admin`,
   `admin`, `editor` or `viewer` is still a Member, as before, but it is now
@@ -1034,13 +1062,6 @@ version of their own to them without also giving them a release of their own.
   expire. The warning stays when the revocation fails, when a grant is
   removed, and for other pass-through services. A catalog entry sets this
   with `revocation_ends_tokens`.
-- **Reading an agent no longer reads every room in the workspace.**
-  `GET /gateway/agents/{agent_id}` loaded every room its reader may see, to
-  learn which of the agent's rooms to name, and held a database connection
-  while it did. Switch Console reads each of its agents this way on every
-  refresh of its sidebar, so one open window with a few dozen agents could
-  take every connection in the pool for a moment. It now asks only about the
-  agent's own rooms, and the agent tools that describe an agent do the same.
 - **Deleting an agent from the dashboard says why when it is refused**,
   rather than only that it could not.
 - **A workspace's connector list credits an organization's default to the
@@ -4588,7 +4609,36 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Fixed
+- **The sidebar reads a workspace's agents' rooms in one request**, rather
+  than one request per agent on every refresh (every 20 seconds while the
+  window is open, and whenever it is focused). On a server from before that
+  request it still asks for one agent at a time.
+
+### [0.41.0] - 2026-11-17
+
 #### Added
+- **Group chats.** Create a group chat from New room, open it in the room
+  view, and manage its agents and people from its Configuration tab. Offered
+  only where the server has them on (`group_chats`), which this release does by
+  default.
+- **Reworked Rooms experience.** New Room at the top of the sidebar's Rooms tab
+  (name and who's in it, in one field); rooms shown as cards with a filter by
+  messaging-app connection and archive from a card's menu; unread counts on
+  rooms and chats; leave a room as any member; and `@`-mention autocomplete
+  with badges in the chat composer.
+- **Room admins.** A room can have room admins, shown and managed on every
+  surface alongside the room's owner.
+- **Linear connector.** Linear joins the available connectors.
+- **Decision routing / auto-route (preview — behind a feature flag, off by
+  default).** Where the server offers it, a room can route untagged messages
+  through a decision service to the agent best placed to answer; the Decision
+  routing settings and the room auto-route toggle appear in Console and the
+  dashboard. Off unless the server turns the flag on.
+- **More agent providers (preview — behind a feature flag, off by default).**
+  Goose, Qwen Code, Factory Droid, Cline and DeepSeek Harness join the provider
+  list, behind the additional-providers flag (Pi, GitHub Copilot CLI, Kiro and
+  Junie are already available).
 - **Antigravity can be given a Vertex AI login, as Claude can.** Giving a
   cloud machine an Antigravity login now offers Vertex AI beside this
   computer's sign-in: a Google Cloud project, a region, and a service account
@@ -4974,10 +5024,6 @@ version of their own to them without also giving them a release of their own.
   shows its own error page and never sends the browser back. After a minute,
   the connect step now says what to check. GitHub's step does too, and names
   the GitHub App's Callback URL.
-- **The sidebar reads a workspace's agents' rooms in one request**, rather
-  than one request per agent on every refresh (every 20 seconds while the
-  window is open, and whenever it is focused). On a server from before that
-  request it still asks for one agent at a time.
 - **Usage data recognises Switch Cloud the way the app shows it**, by its
   address's origin, and adding the Cloud by its address reports it as `cloud`
   rather than `external`. A Switch Cloud address that cannot be read is logged,
