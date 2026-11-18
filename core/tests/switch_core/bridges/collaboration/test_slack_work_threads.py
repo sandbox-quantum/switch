@@ -218,3 +218,96 @@ async def test_a_turn_with_nobody_to_address_is_still_an_ordinary_post() -> None
     )
     assert client.started == []
     assert len(client.posted) == 1
+
+
+def _notes(client: FakeWebClient, work_ref: str) -> list[str]:
+    ts = work_ref.split(":", 1)[1]
+    return [edit["text"] for edit in client.updated if edit["ts"] == ts]
+
+
+def _done_tool() -> Item:
+    return _tool().model_copy(update={"status": "completed"})
+
+
+async def test_the_step_a_turn_is_on_is_edited_into_its_work_message() -> None:
+    client = FakeWebClient()
+    adapter = _adapter(client)
+    work = await adapter.open_work_message(CHANNEL, "Agent", "working", ASKER)
+    content = TurnActivity([_tool()], _turn(), recipient_external_id=ASKER)
+    ref = await adapter.post_rich(CHANNEL, "Agent", content, work)
+    assert _notes(client, work) == ["Working on it… · Running: Ran pytest"]
+    note = [e for e in client.updated if e["text"].startswith("Working")][0]
+    assert note["blocks"] == [
+        {
+            "type": "context",
+            "elements": [
+                {"type": "mrkdwn", "text": "_Working on it… · Running: Ran pytest_"}
+            ],
+        }
+    ]
+
+    # Nothing changed in the line: no edit, whatever else is redrawn.
+    await adapter.update_rich(CHANNEL, "Agent", ref, content, work)
+    assert len(_notes(client, work)) == 1
+
+    # Between calls it names the last one, as the plan's header does.
+    await adapter.update_rich(
+        CHANNEL, "Agent", ref, TurnActivity([_done_tool()], _turn()), work
+    )
+    assert _notes(client, work)[-1] == "Working on it… · Last: Ran pytest"
+
+
+async def test_an_ended_turn_leaves_the_line_to_the_work_log() -> None:
+    client = FakeWebClient()
+    adapter = _adapter(client)
+    work = await adapter.open_work_message(CHANNEL, "Agent", "working", ASKER)
+    await adapter.post_rich(
+        CHANNEL,
+        "Agent",
+        TurnActivity([_done_tool()], _turn("completed"), recipient_external_id=ASKER),
+        work,
+    )
+    assert _notes(client, work) == []
+
+
+async def test_only_a_work_message_this_process_posted_gets_the_step() -> None:
+    client = FakeWebClient()
+    adapter = _adapter(client)
+    await adapter.post_rich(
+        CHANNEL,
+        "Agent",
+        TurnActivity([_tool()], _turn(), recipient_external_id=ASKER),
+        f"{CHANNEL}:9.0",
+    )
+    assert client.updated == []
+
+
+async def test_the_step_waits_out_slacks_edit_limit() -> None:
+    client = FakeWebClient()
+    adapter = _adapter(client)
+    work = await adapter.open_work_message(CHANNEL, "Agent", "working", ASKER)
+    adapter._rich_update_cooldown.start(30)
+    await adapter.post_rich(
+        CHANNEL,
+        "Agent",
+        TurnActivity([_tool()], _turn(), recipient_external_id=ASKER),
+        work,
+    )
+    assert _notes(client, work) == []
+
+
+async def test_a_refused_step_edit_starts_the_cooldown_and_spares_the_turn() -> None:
+    client = FakeWebClient()
+    client.update_error = FakeResponse(
+        {"error": "ratelimited"}, headers={"Retry-After": "5"}
+    )
+    adapter = _adapter(client)
+    work = await adapter.open_work_message(CHANNEL, "Agent", "working", ASKER)
+    await adapter.post_rich(
+        CHANNEL,
+        "Agent",
+        TurnActivity([_tool()], _turn(), recipient_external_id=ASKER),
+        work,
+    )
+    assert client.started, "the turn is still drawn"
+    assert adapter._rich_update_cooldown.remaining() > 0

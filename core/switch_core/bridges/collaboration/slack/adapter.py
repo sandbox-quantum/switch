@@ -75,6 +75,7 @@ from switch_core.bridges.collaboration.session.renderers.slack import (
     render_attention,
     render_request,
     render_turn_with_request,
+    running_step,
     with_mention,
 )
 from switch_core.bridges.collaboration.slack.agent_groups import (
@@ -605,6 +606,15 @@ _SLACK_BOT_ACCOUNT = "This is a Slack app's or bot's account, which isn't one pe
 WORKING_NOTE = "Working on it…"
 
 
+#: How much of a step a work message's line shows. It is read at a glance, and
+#: the whole step heads the plan in the thread.
+_MAX_WORK_NOTE = 150
+
+
+def _truncate_note(line: str) -> str:
+    return line if len(line) <= _MAX_WORK_NOTE else line[: _MAX_WORK_NOTE - 1] + "…"
+
+
 def _work_note(text: str) -> dict[str, Any]:
     """A work message's one block: a line of small italic text."""
     return {
@@ -727,6 +737,9 @@ class SlackAdapter(PlatformAdapter):
         # one never seen through an inbound event.
         self._work_thread_channels: dict[str, bool] = {}
         self._session_refusals_logged: set[str] = set()
+        # Work messages this process posted, and the line each now shows, so a
+        # step change is edited into it once and an unchanged one not at all.
+        self._work_notes: OrderedDict[str, str] = OrderedDict()
         self._last_user_message_ts: dict[str, str] = {}
         # The message a card button was pressed on, by message ref, as each
         # press in flight carried it, held while the press is handled.
@@ -1227,6 +1240,7 @@ class SlackAdapter(PlatformAdapter):
         reader's expanded plan — alone. Everything else, and every thread a
         stream cannot be opened in, is an ordinary Block Kit post.
         """
+        await self._note_work_step(content, thread_root_id)
         if self._streamable(content, thread_root_id):
             assert isinstance(content, TurnActivity) and thread_root_id
             ref = await self._open_stream(
@@ -1275,6 +1289,7 @@ class SlackAdapter(PlatformAdapter):
             raise RichContentThrottled(
                 retry_after=remaining, text="Waiting for Slack to allow updates."
             )
+        await self._note_work_step(content, thread_root_id)
         stream = self._streams.get(message_ref)
         if stream is not None and isinstance(content, TurnActivity):
             try:
@@ -1830,7 +1845,11 @@ class SlackAdapter(PlatformAdapter):
         ):
             arguments["initiator_user_id"] = initiator_external_id
         await self._set_session_status(arguments)
-        return f"{channel_id}:{ts}"
+        work_ref = f"{channel_id}:{ts}"
+        self._work_notes[work_ref] = WORKING_NOTE
+        if len(self._work_notes) > _MAX_OPEN_STREAMS:
+            self._work_notes.popitem(last=False)
+        return work_ref
 
     async def settle_work_message(
         self, channel_id: str, agent_name: str, message_ref: str, summary: str
@@ -1843,6 +1862,7 @@ class SlackAdapter(PlatformAdapter):
         is over for now, and `closed` says the agent will not answer there
         again.
         """
+        self._work_notes.pop(message_ref, None)
         client = self._web_client
         if client is None:
             return
@@ -1876,6 +1896,51 @@ class SlackAdapter(PlatformAdapter):
         await self._set_session_status(
             {"channel_id": channel_id, "thread_ts": ts, "status": "active"}
         )
+
+    async def _note_work_step(
+        self, content: RichContent, thread_root_id: str | None
+    ) -> None:
+        """Edit the step a turn is on into its work message, when it changed.
+
+        "Working on it… · Running: Read file 2". An edit, so it notifies
+        nobody, and only when the line would read differently, so a redraw for
+        the clock or a remark costs nothing. While Slack is limiting edits it
+        is skipped rather than queued: the turn's next change, or its next
+        clock redraw, brings the line up to date.
+
+        Only for a work message this process posted. After a restart the line
+        keeps the last step it showed until the turn ends and it becomes the
+        work log.
+        """
+        if not isinstance(content, TurnActivity) or thread_root_id is None:
+            return
+        shown = self._work_notes.get(thread_root_id)
+        if shown is None or content.turn.status in TURN_ENDED:
+            return
+        step = running_step(content.items, content.turn)
+        line = WORKING_NOTE if step is None else f"{WORKING_NOTE} · {step}"
+        line = _truncate_note(line)
+        if line == shown or self._rich_update_cooldown.remaining() > 0:
+            return
+        client = self._web_client
+        channel_id, ts = self._parse_message_ref(thread_root_id)
+        if client is None or not ts:
+            return
+        try:
+            await client.chat_update(
+                channel=channel_id, ts=ts, text=line, blocks=[_work_note(line)]
+            )
+        except SlackApiError as error:
+            # A rate limit starts the cooldown the turn's own redraws respect.
+            # Anything else leaves the line as it was; the turn is unaffected.
+            if self._throttled(error, line) is None:
+                logger.warning(
+                    "Could not show the current step on work message %s (%s).",
+                    thread_root_id,
+                    error.response.get("error"),
+                )
+            return
+        self._work_notes[thread_root_id] = line
 
     async def _set_session_status(self, arguments: dict[str, Any]) -> None:
         await self._session_call("agents.sessions.setStatus", arguments)
