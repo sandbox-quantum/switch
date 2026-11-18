@@ -399,6 +399,7 @@ async def test_v2_off_a_boxs_controller_cannot_reconnect_or_open_a_sealed_login(
         controller_id=controller.controller_id,
         owner_id=controller.owner.id,
         tenant_id=TENANT_ZERO_ID,
+        key_id=None,
     )
     service = harness.management.service
     async with tenant_session(harness.session_factory, TENANT_ZERO_ID) as session:

@@ -31,6 +31,7 @@ def _token(*, secret: str = SECRET, now: datetime | None = None) -> str:
         controller_id="c1",
         tenant_id="t1",
         owner_id="o1",
+        key_id="k1",
         now=now or datetime.now(UTC),
     )
     return token

@@ -83,7 +83,9 @@ class _FakeControllerAuth:
             raise ControllerAuthError(
                 "invalid_credential", "not a valid controller token"
             )
-        return ControllerPrincipal(controller_id="c-1", owner_id="o-1", tenant_id="t-1")
+        return ControllerPrincipal(
+            controller_id="c-1", owner_id="o-1", tenant_id="t-1", key_id=None
+        )
 
 
 def _middleware(
