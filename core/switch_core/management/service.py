@@ -27,7 +27,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.agent_icon import (
@@ -269,7 +269,7 @@ class ManagementService:
                 session, tenant_id, twin, description, public_key
             )
             await session.commit()
-            self.presence.credential_replaced(twin.id)
+            self.signals.credential_replaced(twin.id)
             self.user_changes.publish(tenant_id, owner_id, MACHINE, twin.id)
             return Enrolled(twin, credential, adopted=True)
         key, credential = await self._new_hash_only_key(
@@ -331,7 +331,10 @@ class ManagementService:
         if not twins:
             return None
         leases = await self.leases(session)
-        settled_before = self.now() - TAKE_OVER_GRACE
+        # The database's clock, as it stamped `updated_at`: the app's need not
+        # agree with it.
+        database_now = (await session.execute(select(func.now()))).scalar_one()
+        settled_before = database_now - TAKE_OVER_GRACE
         idle = [
             twin
             for twin in twins
@@ -362,9 +365,10 @@ class ManagementService:
         An access token the old process still holds names the old credential,
         and is refused from now (`ManagementAuthenticator.current`), so that
         process cannot act for the device again. Once the caller has
-        committed, `ControllerPresence.credential_replaced` ends any stream it
-        still holds here and drops this process's cached answer; every other
-        process drops its own on the row's credential changing."""
+        committed, `ControllerSignals.credential_replaced` has every process
+        end any stream the old holder still has there; each drops its cached
+        answer for the controller too, as it does on the row's credential
+        changing."""
         key, credential = await self._new_hash_only_key(
             session,
             owner_id=controller.owner_id,
@@ -541,7 +545,7 @@ class ManagementService:
                 )
         await session.commit()
         if twin is not None:
-            self.presence.credential_replaced(twin.id)
+            self.signals.credential_replaced(twin.id)
         if replaced is not None and replaced != controller.id:
             self._announce_revoked(replaced)
             for row in moved:

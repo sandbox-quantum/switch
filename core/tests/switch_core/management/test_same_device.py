@@ -16,7 +16,7 @@ from datetime import UTC, datetime, timedelta
 import httpx
 import jwt
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.db.models import (
@@ -84,6 +84,18 @@ async def _row(harness: Harness, controller_id: str) -> AgentController:
         row = await session.get(AgentController, controller_id)
     assert row is not None
     return row
+
+
+async def _settle(harness: Harness) -> None:
+    """Age every device past the grace a just-enrolled one is given, by the
+    database's clock, which the grace is measured on."""
+    async with tenant_session(harness.session_factory, TENANT_ZERO_ID) as session:
+        await session.execute(
+            update(AgentController).values(
+                updated_at=AgentController.updated_at - timedelta(minutes=2)
+            )
+        )
+        await session.commit()
 
 
 async def _offline(harness: Harness, controller: EnrolledController) -> None:
@@ -172,7 +184,7 @@ class TestTakingOverADevice:
 
         async with harness.client() as client:
             first = await enroll()
-            harness.clock.advance(minutes=2)
+            await _settle(harness)
             second = await enroll()
 
         assert first["adopted"] is False
@@ -257,7 +269,7 @@ class TestWhatIsLeftAlone:
         async with harness.client() as client:
             first = await _enroll(client, owner, DEVICE)
             racing = await _enroll(client, owner, DEVICE)
-            harness.clock.advance(minutes=2)
+            await _settle(harness)
             later = await _enroll(client, owner, DEVICE)
 
         assert racing["adopted"] is False
@@ -274,7 +286,7 @@ class TestWhatIsLeftAlone:
         grace = await add_member(harness.session_factory, "grace")
         async with harness.client() as client:
             mine = await _enroll(client, ada, DEVICE)
-            harness.clock.advance(minutes=2)
+            await _settle(harness)
             theirs = await _enroll(client, grace, DEVICE)
             elsewhere = await _enroll(client, ada, OTHER_DEVICE)
             unnamed = await _enroll(client, ada, None)
@@ -292,7 +304,7 @@ class TestWhatIsLeftAlone:
                 cookies=cookies_for(owner),
             )
             assert gone.status_code == 200, gone.text
-            harness.clock.advance(minutes=2)
+            await _settle(harness)
             again = await _enroll(client, owner, DEVICE)
 
         assert again["adopted"] is False
@@ -304,7 +316,7 @@ class TestWhatIsLeftAlone:
         owner = await add_member(harness.session_factory, "ada")
         async with harness.client() as client:
             first = await _enroll(client, owner, None)
-            harness.clock.advance(minutes=2)
+            await _settle(harness)
             second = await _enroll(client, owner, None)
 
         assert second["controller_id"] != first["controller_id"]

@@ -7266,7 +7266,8 @@ tags; see RELEASING.md.
   OS user name, with the host name on Linux and Windows, where a cloned
   image can share a machine id. A server that keeps it takes over the
   device the machine already was rather than adding another, and the
-  enroll output says so. `--device-id` prints it, for Switch Console, which
+  enroll output says so. A container whose host name changes each time it
+  starts still enrolls as a new device each time. `--device-id` prints it, for Switch Console, which
   enrolls its computer itself. Left out wherever it can't be read.
 - **Signs Antigravity in through Vertex AI.** A Vertex AI login given for
   Antigravity is taken, its Google credential written to the agent's own

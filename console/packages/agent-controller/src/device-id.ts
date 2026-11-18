@@ -76,7 +76,9 @@ async function machineId(sources: DeviceIdSources): Promise<string | null> {
  * files live in that user's home, so two accounts on one computer are two
  * devices. On Linux and Windows the host name goes in too, since a cloned disk
  * or image carries the machine id it was cloned from; a Mac's hardware UUID
- * belongs to the hardware. Null when any of it cannot be read, and the
+ * belongs to the hardware. So a container given a new host name each time it
+ * starts is a new device each time, as before: better than one clone taking
+ * over another machine's device and its agents. Null when any of it cannot be read, and the
  * controller enrolls as a new device, as it always did.
  */
 export async function readDeviceId(sources: DeviceIdSources): Promise<string | null> {
