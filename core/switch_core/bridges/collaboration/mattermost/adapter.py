@@ -67,6 +67,9 @@ from switch_core.bridges.collaboration.mattermost.callback import (
     read_press,
 )
 from switch_core.bridges.collaboration.mattermost.http_client import NoRedirectClient
+from switch_core.bridges.collaboration.mattermost.websocket_client import (
+    MattermostDriver,
+)
 from switch_core.bridges.collaboration.models import (
     Attachment,
     AttachmentFailure,
@@ -4271,7 +4274,7 @@ class MattermostAdapter(PlatformAdapter):
             opts["login_id"] = login_id
             opts["password"] = password
 
-        return Driver(opts, client_cls=NoRedirectClient)
+        return MattermostDriver(opts, client_cls=NoRedirectClient)
 
     async def _mm_api(
         self, method: str, endpoint: str, data: dict[str, Any] | None = None
