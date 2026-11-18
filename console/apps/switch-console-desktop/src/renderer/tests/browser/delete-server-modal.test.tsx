@@ -275,6 +275,8 @@ describe('the paths the rest leave', () => {
 
     expect(document.body.textContent).toContain('Delete “Team Server”?');
     expect(document.querySelectorAll('[role="radiogroup"]')).toHaveLength(0);
+    expect(document.body.textContent).toContain('all its data and secrets');
+    expect(document.body.textContent).not.toContain('containers');
     expect(confirmButton().textContent).toContain('Delete server');
   });
 
