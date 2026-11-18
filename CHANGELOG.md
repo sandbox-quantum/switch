@@ -4655,6 +4655,8 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+### [0.41.1] - 2026-11-18
+
 #### Fixed
 - **The workspace switcher shows on every build, not only one that can reach
   Switch Cloud.** A build without a Switch Cloud address, stable included,
@@ -4667,6 +4669,16 @@ version of their own to them without also giving them a release of their own.
   than one request per agent on every refresh (every 20 seconds while the
   window is open, and whenever it is focused). On a server from before that
   request it still asks for one agent at a time.
+- **Install failures show the whole error.** A provider install that fails now
+  surfaces the full error in the UI, and logs it in full, instead of a
+  truncated message.
+- **Cursor sessions use supported permission modes.** Cursor launches with a
+  permission mode its CLI accepts, falling back to the provider's default
+  rather than one it would reject.
+
+#### Changed
+- **switch-buddy's opening messages slide in** on the way from onboarding or
+  Home, rather than appearing all at once.
 
 ### [0.41.0] - 2026-11-17
 
