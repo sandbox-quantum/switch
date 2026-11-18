@@ -31,7 +31,7 @@ import {
   InputGroupInput,
 } from '@renderer/lib/ui/input-group';
 import { cn } from '@renderer/utils/utils';
-import { type ChatSummary } from '@shared/core/chats/chats';
+import { type ChatMember, type ChatSummary } from '@shared/core/chats/chats';
 import { knownAgentTypeDisplayName } from '@shared/core/providers/agent-provider-registry';
 import { runsOnThisComputer } from '@shared/core/switch-servers/switch-servers';
 import type { RemoteRoomDetail } from '@shared/core/switch-servers/switch-servers';
@@ -294,6 +294,46 @@ export const AddPeoplePanel = observer(function AddPeoplePanel({
     </>
   );
 });
+
+/** Add an existing Switch account to an unbridged room by its Switch user ID. */
+export function AddNativePeoplePanel({
+  serverId,
+  workspaceId,
+  tenantId,
+  roomId,
+  memberIds,
+  loadingMembers,
+  onAdded,
+}: {
+  serverId: string;
+  workspaceId: string;
+  tenantId: string;
+  roomId: string;
+  memberIds: Set<string>;
+  loadingMembers: boolean;
+  onAdded: (members: ChatMember[]) => void;
+}) {
+  const roster = useQuery(workspaceRosterQuery(serverId, tenantId));
+  return (
+    <AddParticipantPanel
+      noun="person"
+      searchPlaceholder="Search workspace members…"
+      allInText="Everyone in this workspace who can be added is already in the room."
+      loading={roster.isPending || loadingMembers}
+      loadError={roster.isError ? failureText(roster.error, 'Could not list the people.') : null}
+      candidates={addablePeople(roster.data ?? [], memberIds).map((person) => ({
+        id: person.userId,
+        name: person.name,
+        mark: <PersonMark name={person.name} userId={person.userId} size="sm" />,
+        detail: person.email ?? '',
+      }))}
+      footer={<InviteHint serverId={serverId} workspaceId={workspaceId} />}
+      onAdd={async (userId) =>
+        onAdded(await rpc.chats.addMember({ serverId, workspaceId, roomId, userId }))
+      }
+    />
+  );
+}
 
 /**
  * Make someone in the room one of its room admins: the people in it with a
