@@ -36,6 +36,13 @@ def statement_timeout(limit: str | None) -> Iterator[None]:
         _limit.reset(token)
 
 
+def lift_statement_timeout() -> None:
+    """Drop the limit for the rest of the work bound under it, for work that
+    turns out to write. The binding's own exit restores what was there.
+    Transactions that began before keep the limit they were stamped with."""
+    _limit.set(None)
+
+
 def timed_out(exc: BaseException) -> bool:
     """Whether `exc` is, or was caused by, Postgres cancelling a statement
     that ran past its statement timeout."""
