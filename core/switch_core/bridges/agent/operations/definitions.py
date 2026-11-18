@@ -2562,6 +2562,8 @@ async def get_agent_detail(agent_id: str) -> dict[str, Any]:
         Address agents by `name`; `display_name` routes nothing.
         `can_manage_agents` is whether the agent's owner lets it list their
         machines and create agents on them, where agent management runs.
+        A session's `created_at` dates its stored record and is null for a
+        live connection or controller without a record.
         `addressing` is who may address the agent, and so who may answer
         its questions and approvals in a room (outside one, only its owner):
         {policy} for another agent, {policy, rules} when you look yourself

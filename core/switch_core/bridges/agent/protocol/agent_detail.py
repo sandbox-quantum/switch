@@ -362,6 +362,7 @@ async def assemble_agent_detail(
                 else None,
                 lifecycle=row.lifecycle,
                 state=session_state(row, now),
+                created_at=cast(datetime, row.created_at).isoformat(),
                 last_seen_at=str(row.last_seen_at),
                 controller_id=None,
             )
@@ -391,6 +392,7 @@ async def assemble_agent_detail(
                     else None,
                     lifecycle="connection",
                     state="live",
+                    created_at=None,
                     last_seen_at=str(now),
                     controller_id=None,
                 )
@@ -407,6 +409,7 @@ async def assemble_agent_detail(
                 room_name=None,
                 lifecycle="controller",
                 state="live",
+                created_at=None,
                 last_seen_at=str(now),
                 controller_id=binding.controller_id,
             )
