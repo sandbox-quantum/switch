@@ -398,6 +398,8 @@ def _auto_route_detail(state: AutoRouteState) -> RoomAutoRoute:
         reason=state.reason,
         fallback_agent=state.fallback_agent,
         fallback_agent_name=state.fallback_agent_name,
+        assigned_agent=state.assigned_agent,
+        assigned_agent_name=state.assigned_agent_name,
     )
 
 

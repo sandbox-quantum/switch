@@ -150,6 +150,7 @@ describe('a room command', () => {
       ],
       ['channel_follow_up', 'it continues their exchange with you'],
       ['main_agent', "you are this room's assigned agent"],
+      ['one_to_one', 'you are the only agent in this room and they are the only person'],
     ] as const;
     for (const [followUp, why] of cases) {
       const said = text({ ...event, payload: { ...event.payload, follow_up: followUp } });

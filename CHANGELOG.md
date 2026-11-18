@@ -694,6 +694,17 @@ version of their own to them without also giving them a release of their own.
   Where a room says auto-route needs a decision service, or that the
   workspace turned it off, it points at Switch Console → Settings → Decision
   routing, where the page now lives.
+- **An auto-route room with one person and one agent no longer asks the
+  decision model.** Every untagged message from that person reaches the agent,
+  in the channel and in threads, as in a direct message; a second person or
+  agent brings the decision back. The model's scores in such rooms sit close
+  to its threshold, so people had to tag the only agent there.
+- **An assigned agent and auto-route can't both be on.** `!assign-agent` in a
+  room with auto-route on assigns the agent and turns auto-route off, saying
+  so; turning auto-route on (`!auto-route on`, the dashboard and Switch
+  Console) is refused while an agent is assigned. A room that has both from
+  before keeps them, and `!auto-route` and the room pages say auto-route is on
+  but not acting.
 - **Switch Trust guardrails are set per organization instead of once for
   the whole server.** Each organization's admins connect its own policy, with
   a policy ID and an API key, under Organization settings › Guardrails. Switch
@@ -4633,6 +4644,13 @@ version of their own to them without also giving them a release of their own.
 ### [Unreleased]
 
 #### Fixed
+- **The workspace switcher shows on every build, not only one that can reach
+  Switch Cloud.** A build without a Switch Cloud address, stable included,
+  kept the older list of servers at the top of the sidebar, so a second
+  workspace on a server, and Create organization, New workspace and the
+  invitations waiting for you, couldn't be reached from it. Workspaces belong
+  to the server, so the switcher now lists each server's workspaces whether or
+  not the build knows a Cloud.
 - **The sidebar reads a workspace's agents' rooms in one request**, rather
   than one request per agent on every refresh (every 20 seconds while the
   window is open, and whenever it is focused). On a server from before that

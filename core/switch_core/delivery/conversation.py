@@ -131,6 +131,9 @@ class ConversationRoute(StrEnum):
     THREAD_FOLLOW_UP = "thread_follow_up"
     CHANNEL_FOLLOW_UP = "channel_follow_up"
     MAIN_AGENT = "main_agent"
+    # The room's only agent, in an auto-route room whose only person sent the
+    # message: no model is needed to know whom it is for.
+    ONE_TO_ONE = "one_to_one"
 
 
 @dataclass(frozen=True)
@@ -302,6 +305,8 @@ class RoomConversation:
         self._thread_rows: list[Message] | None = None
         self._channel_rows: list[Message] | None = None
         self._agent_names: set[str] | None = None
+        self._one_to_one_read = False
+        self._one_to_one_agent: str | None = None
 
     @property
     def auto_route_on(self) -> bool:
@@ -315,7 +320,8 @@ class RoomConversation:
         """Which rule delivers the message to `agent`, if any."""
         message = self._message
         is_main_agent = self._main_agent_id == agent.id
-        if not self._follow_ups_enabled and not is_main_agent:
+        is_only_agent = await self._one_to_one_agent_id(session) == agent.id
+        if not self._follow_ups_enabled and not is_main_agent and not is_only_agent:
             # Settled from the room's settings alone: nothing to read.
             return ConversationDecision(
                 None, "follow-ups are switched off in this room"
@@ -347,11 +353,34 @@ class RoomConversation:
             )
         if follow_up.route is not None:
             return follow_up
+        if is_only_agent:
+            return ConversationDecision(
+                ConversationRoute.ONE_TO_ONE,
+                "the only agent in an auto-route room with one person",
+            )
         if is_main_agent:
             return ConversationDecision(
                 ConversationRoute.MAIN_AGENT, "the room's main agent"
             )
         return follow_up
+
+    async def _one_to_one_agent_id(self, session: AsyncSession) -> str | None:
+        """The room's only agent, when automatic routing is on and the sender
+        is the only person present; None otherwise. Read once per message, and
+        only in a room with automatic routing on."""
+        if self._one_to_one_read:
+            return self._one_to_one_agent
+        found: str | None = None
+        if self._auto_route_on and self._channel_type != "direct":
+            store = self._rules.room_store
+            agent_ids = await store.get_agent_ids(session, self._room_id)
+            if len(agent_ids) == 1 and await store.people_present(
+                session, self._room_id
+            ) == {self._message.sender}:
+                found = agent_ids[0]
+        self._one_to_one_read = True
+        self._one_to_one_agent = found
+        return found
 
     @property
     def message(self) -> ConversationMessage:

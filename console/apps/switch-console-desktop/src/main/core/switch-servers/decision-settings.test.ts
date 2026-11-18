@@ -470,6 +470,8 @@ describe('a room’s auto-route setting', () => {
       reason: null,
       fallbackAgent: 'agent-7',
       fallbackAgentName: 'triage-bot',
+      assignedAgent: null,
+      assignedAgentName: null,
     });
   });
 
@@ -491,6 +493,8 @@ describe('a room’s auto-route setting', () => {
       reason: null,
       fallbackAgent: null,
       fallbackAgentName: null,
+      assignedAgent: null,
+      assignedAgentName: null,
     });
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe('https://switch.example.com/gateway/rooms/room-1/auto-route');

@@ -245,6 +245,41 @@ class TestAssignAgent:
         await _unassign(host, "@someone:test")
         assert posted[-1] == "No agent is assigned in this room."
 
+    async def test_assigning_turns_auto_route_off_and_says_so(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        room_id = await _room(session_factory)
+        ids = await _agents(session_factory, room_id)
+        manager = next(n for n in ids if n.startswith("manager"))
+        async with session_factory() as session:
+            await RoomStore().set_auto_route_on(session, room_id, True)
+            await RoomStore().set_auto_route_fallback(session, room_id, ids[manager])
+            await session.commit()
+        host, posted = _host(session_factory, room_id)
+
+        await _assign(host, f"@{manager}", "@someone:test")
+
+        assert posted[-1].startswith("From now on, every message here goes to")
+        assert "Automatic routing was on, so I turned it off" in posted[-1]
+        async with session_factory() as session:
+            store = RoomStore()
+            assert await store.main_agent_id(session, room_id) == ids[manager]
+            assert not await store.auto_route_on(session, room_id)
+            # The triage agent is kept for when auto-route comes back on.
+            assert await store.auto_route_fallback(session, room_id) == ids[manager]
+
+    async def test_assigning_without_auto_route_says_nothing_about_it(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        room_id = await _room(session_factory)
+        ids = await _agents(session_factory, room_id)
+        manager = next(n for n in ids if n.startswith("manager"))
+        host, posted = _host(session_factory, room_id)
+
+        await _assign(host, f"@{manager}", "@someone:test")
+
+        assert "Automatic routing" not in posted[-1]
+
     async def test_by_alias(
         self, session_factory: async_sessionmaker[AsyncSession]
     ) -> None:
