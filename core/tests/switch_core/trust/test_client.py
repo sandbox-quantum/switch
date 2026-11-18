@@ -11,7 +11,11 @@ from dataclasses import dataclass
 
 import httpx
 import pytest
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.db.audit import AuditAction
+from switch_core.db.models import TENANT_ZERO_ID, AuditEvent
 from switch_core.keys import UndecryptableError
 from switch_core.logging_context import log_context, structured_fields
 from switch_core.security_events import LOGGER_NAME as SECURITY_LOGGER_NAME
@@ -194,7 +198,9 @@ async def test_a_workspace_in_no_organization_is_not_checked_and_asked_about_onc
 
 
 @pytest.mark.asyncio
-async def test_dynamic_client_turns_an_undecryptable_key_into_a_check_error() -> None:
+async def test_dynamic_client_turns_an_undecryptable_key_into_a_check_error(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
     """A key encrypted under a key since dropped from SECRET_KEYS must not
     crash message sending — `check_message` only fails open on
     `GuardrailsCheckError`, so the decrypt failure has to become one."""
@@ -209,7 +215,12 @@ async def test_dynamic_client_turns_an_undecryptable_key_into_a_check_error() ->
         await _check(client)
 
     result = await check_message(
-        client, tenant_id="tenant-1", role="user", content="hi", room_id="room-1"
+        client,
+        session_factory,
+        tenant_id="tenant-1",
+        role="user",
+        content="hi",
+        room_id="room-1",
     )
     assert result.outcome == "errored"
 
@@ -467,10 +478,17 @@ async def test_null_client_always_allows():
 
 
 @pytest.mark.asyncio
-async def test_check_message_fails_open_on_error():
+async def test_check_message_fails_open_on_error(
+    session_factory: async_sessionmaker[AsyncSession],
+):
     client = _dynamic_client(_ROW, lambda request: httpx.Response(500, text="boom"))
     result = await check_message(
-        client, tenant_id="tenant-1", role="user", content="hi", room_id="room-1"
+        client,
+        session_factory,
+        tenant_id="tenant-1",
+        role="user",
+        content="hi",
+        room_id="room-1",
     )
     assert result == TrustCheckResult(
         outcome="errored", policy_id=None, policy_name=None
@@ -478,7 +496,9 @@ async def test_check_message_fails_open_on_error():
 
 
 @pytest.mark.asyncio
-async def test_check_message_passes_through_a_block():
+async def test_check_message_passes_through_a_block(
+    session_factory: async_sessionmaker[AsyncSession],
+):
     client = _dynamic_client(
         _ROW,
         lambda request: httpx.Response(
@@ -486,7 +506,12 @@ async def test_check_message_passes_through_a_block():
         ),
     )
     result = await check_message(
-        client, tenant_id="tenant-1", role="assistant", content="hi", room_id="room-1"
+        client,
+        session_factory,
+        tenant_id="tenant-1",
+        role="assistant",
+        content="hi",
+        room_id="room-1",
     )
     assert result.blocked is True
 
@@ -508,54 +533,127 @@ def _security_records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecor
     return [r for r in caplog.records if r.name == SECURITY_LOGGER_NAME]
 
 
-@pytest.mark.asyncio
-async def test_a_verdict_other_than_ok_is_a_security_event_without_the_text(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    caplog.set_level(logging.INFO, logger=SECURITY_LOGGER_NAME)
-    client = _Verdict(
+def _verdict(outcome: str) -> _Verdict:
+    return _Verdict(
         TrustCheckResult(
-            outcome="redacted",
+            outcome=outcome,  # type: ignore[arg-type]
             policy_id="policy-1",
             policy_name="No secrets",
             findings=(TrustFinding("secret", "aws_key", "high"),),
-            redacted_content="my key is [REDACTED]",
+            redacted_content="my key is [REDACTED]" if outcome == "redacted" else None,
         )
     )
-    with log_context(user_id="user-1"):
-        await check_message(
+
+
+async def _check_verdict(
+    client: _Verdict, sessions: async_sessionmaker[AsyncSession]
+) -> TrustCheckResult:
+    with log_context(user_id="user-1", agent_id="agent-1"):
+        return await check_message(
             client,  # type: ignore[arg-type]
-            tenant_id="tenant-1",
-            role="user",
+            sessions,
+            tenant_id=TENANT_ZERO_ID,
+            role="assistant",
             content="my key is AKIAEXAMPLE",
             room_id="room-1",
         )
 
+
+async def _verdict_rows(
+    sessions: async_sessionmaker[AsyncSession],
+) -> list[AuditEvent]:
+    async with sessions() as session:
+        return list((await session.execute(select(AuditEvent))).scalars().all())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("outcome", "action"),
+    [
+        ("blocked", AuditAction.TRUST_MESSAGE_BLOCKED),
+        ("redacted", AuditAction.TRUST_MESSAGE_REDACTED),
+    ],
+)
+async def test_a_block_or_redaction_is_an_audit_row_without_the_text(
+    session_factory: async_sessionmaker[AsyncSession],
+    caplog: pytest.LogCaptureFixture,
+    outcome: str,
+    action: AuditAction,
+) -> None:
+    caplog.set_level(logging.INFO, logger=SECURITY_LOGGER_NAME)
+
+    await _check_verdict(_verdict(outcome), session_factory)
+
+    [row] = await _verdict_rows(session_factory)
+    assert row.action == action
+    assert row.tenant_id == TENANT_ZERO_ID
+    assert row.actor_user_id == "user-1"
+    assert (row.target_type, row.target_id) == ("room", "room-1")
+    assert row.details == {
+        "outcome": outcome,
+        "policy_id": "policy-1",
+        "policy_name": "No secrets",
+        "role": "assistant",
+        "findings": [
+            {"category": "secret", "detector_name": "aws_key", "severity": "high"}
+        ],
+        "agent_id": "agent-1",
+    }
+    [record] = _security_records(caplog)
+    fields = structured_fields(record)
+    assert fields["switch"]["event"] == f"security.{action.value}"
+    assert fields["switch"]["agent_id"] == "agent-1"
+    assert fields["switch"]["room_id"] == "room-1"
+    for text in ("AKIAEXAMPLE", "REDACTED"):
+        assert text not in json.dumps(fields)
+        assert text not in json.dumps(row.details)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["alerted", "errored"])
+async def test_an_alert_or_error_is_written_to_the_log_only(
+    session_factory: async_sessionmaker[AsyncSession],
+    caplog: pytest.LogCaptureFixture,
+    outcome: str,
+) -> None:
+    caplog.set_level(logging.INFO, logger=SECURITY_LOGGER_NAME)
+
+    await _check_verdict(_verdict(outcome), session_factory)
+
+    assert await _verdict_rows(session_factory) == []
     [record] = _security_records(caplog)
     fields = structured_fields(record)
     assert fields["switch"]["event"] == "security.trust.verdict"
-    assert fields["switch"]["room_id"] == "room-1"
-    assert fields["switch"]["tenant_id"] == "tenant-1"
-    assert fields["switch"]["actor_user_id"] == "user-1"
-    details = fields["security_details"]
-    assert details["outcome"] == "redacted"
-    assert details["policy_id"] == "policy-1"
-    assert details["policy_name"] == "No secrets"
-    assert json.loads(str(details["findings"])) == [
-        {"category": "secret", "detector_name": "aws_key", "severity": "high"}
-    ]
+    assert fields["switch"]["scope"] == "log"
+    assert fields["security_details"]["outcome"] == outcome
     assert "AKIAEXAMPLE" not in json.dumps(fields)
-    assert "REDACTED" not in json.dumps(fields)
+
+
+class _BrokenSessions:
+    def __call__(self) -> AsyncSession:
+        raise ConnectionRefusedError("database unreachable")
+
+
+@pytest.mark.asyncio
+async def test_a_block_that_cannot_be_recorded_is_raised_not_passed(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The verdict never reaches the caller, so nothing it would have done
+    with it, delivering included, happens."""
+    with pytest.raises(ConnectionRefusedError):
+        await _check_verdict(_verdict("blocked"), _BrokenSessions())  # type: ignore[arg-type]
 
 
 @pytest.mark.asyncio
 async def test_an_ok_verdict_is_not_a_security_event(
+    session_factory: async_sessionmaker[AsyncSession],
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     caplog.set_level(logging.INFO, logger=SECURITY_LOGGER_NAME)
     client = _Verdict(TrustCheckResult(outcome="ok", policy_id="p", policy_name="n"))
     await check_message(
         client,  # type: ignore[arg-type]
+        session_factory,
         tenant_id="tenant-1",
         role="user",
         content="hi",

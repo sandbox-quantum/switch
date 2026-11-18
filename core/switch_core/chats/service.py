@@ -2450,6 +2450,7 @@ class ChatService:
             text_check, files_check = await asyncio.gather(
                 check_message(
                     self._trust_client,
+                    self.session_factory,
                     tenant_id=tenant_id,
                     role="user",
                     content=body,
@@ -2457,6 +2458,7 @@ class ChatService:
                 ),
                 check_attachments(
                     self._trust_client,
+                    self.session_factory,
                     tenant_id=tenant_id,
                     role="user",
                     files=files,
@@ -2466,6 +2468,7 @@ class ChatService:
         elif body.strip():
             text_check = await check_message(
                 self._trust_client,
+                self.session_factory,
                 tenant_id=tenant_id,
                 role="user",
                 content=body,
@@ -2474,6 +2477,7 @@ class ChatService:
         elif files:
             files_check = await check_attachments(
                 self._trust_client,
+                self.session_factory,
                 tenant_id=tenant_id,
                 role="user",
                 files=files,

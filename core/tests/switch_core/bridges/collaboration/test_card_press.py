@@ -24,6 +24,7 @@ from switch_core.clients.mentions import mention_tokens
 from switch_core.delivery.addressing import named_agents
 from switch_core.sessions.errors import SessionError
 from switch_core.transport.derived_ids import derived_writes
+from switch_core.trust import client as trust_client_module
 from switch_core.trust.client import NullTrustClient, TrustCheckResult
 from switch_core.ui_spec import (
     UI_CONTENT_KEY,
@@ -530,15 +531,25 @@ class _RedactingTrust:
         return True
 
 
-def test_a_press_switch_trust_redacted_carries_no_raw_value() -> None:
+def test_a_press_switch_trust_redacted_carries_no_raw_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     bridge = _bridge(_card(), channel="C1", card_ref=CARD_REF)
     bridge._trust_client = _RedactingTrust()
+    # The audit row itself is tested against Postgres (`trust/test_client.py`).
+    recorded: list[str] = []
+
+    async def record_verdict(_sessions: Any, result: Any, **_kw: Any) -> None:
+        recorded.append(result.outcome)
+
+    monkeypatch.setattr(trust_client_module, "record_verdict", record_verdict)
 
     _press(bridge)
 
     [(_, body, _)] = bridge.actor.sent
     assert "v-1" not in body
     assert bridge.actor.extra == [None]
+    assert recorded == ["redacted"]
 
 
 def test_a_presser_who_may_not_address_the_author_is_refused() -> None:

@@ -132,6 +132,11 @@ class AuditAction(StrEnum):
     AGENT_AUTO_APPROVE_ENABLED = "agent.auto_approve_enabled"
     CONTROLLER_ENROLLED = "controller.enrolled"
     CONTROLLER_REVOKED = "controller.revoked"
+    # Switch Trust blocked a message, or redacted it before it was delivered
+    # (`trust/client.py`): the policy, the outcome and what each finding
+    # was, never the text found. Alerts and errors are log-only.
+    TRUST_MESSAGE_BLOCKED = "trust.message_blocked"
+    TRUST_MESSAGE_REDACTED = "trust.message_redacted"
 
 
 class OrganizationAuditAction(StrEnum):

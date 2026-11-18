@@ -1808,6 +1808,7 @@ class AgentCore:
         content."""
         check = await check_message(
             self.trust_client,
+            self.session_factory,
             tenant_id=require_tenant_id(),
             role="assistant",
             content=content,
@@ -1857,6 +1858,7 @@ class AgentCore:
         body_check, card_check = await asyncio.gather(
             check_message(
                 self.trust_client,
+                self.session_factory,
                 tenant_id=tenant_id,
                 role="assistant",
                 content=content,
@@ -1864,6 +1866,7 @@ class AgentCore:
             ),
             check_message(
                 self.trust_client,
+                self.session_factory,
                 tenant_id=tenant_id,
                 role="assistant",
                 content=trust_text(ui),
@@ -2169,6 +2172,7 @@ class AgentCore:
         if await trust_is_active(self.trust_client, tenant_id):
             files_check_task = check_attachments(
                 self.trust_client,
+                self.session_factory,
                 tenant_id=tenant_id,
                 role="assistant",
                 files=files,
@@ -2178,6 +2182,7 @@ class AgentCore:
                 caption_check, files_check = await asyncio.gather(
                     check_message(
                         self.trust_client,
+                        self.session_factory,
                         tenant_id=tenant_id,
                         role="assistant",
                         content=caption_text,

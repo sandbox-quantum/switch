@@ -1583,6 +1583,7 @@ class CollaborationCore:
         if not msg.attachments:
             check = await check_message(
                 self._trust_client,
+                self._session_factory,
                 tenant_id=tenant_id,
                 role="user",
                 content=content,
@@ -1676,6 +1677,7 @@ class CollaborationCore:
             files = [(a.data, a.filename, a.mimetype) for a in msg.attachments]
             files_check_task = check_attachments(
                 self._trust_client,
+                self._session_factory,
                 tenant_id=tenant_id,
                 role="user",
                 files=files,
@@ -1685,6 +1687,7 @@ class CollaborationCore:
                 caption_check, files_check = await asyncio.gather(
                     check_message(
                         self._trust_client,
+                        self._session_factory,
                         tenant_id=tenant_id,
                         role="user",
                         content=content,

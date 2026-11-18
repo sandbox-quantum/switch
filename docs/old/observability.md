@@ -248,10 +248,14 @@ each:
   budget period per process rather than once per refused message.
 - `security.refusal_breaker.tripped`: a caller answered 429 for repeating a
   refused request; the caller is a short prefix of its hashed credential.
-- `security.trust.verdict`: a Switch Trust verdict other than `ok`, with the
-  policy, the outcome and each finding's category, detector and severity —
-  never the text it found. The check runs before the message's transaction
-  opens, and while Switch Trust is down every message is `errored`.
+- `security.trust.verdict`: a Switch Trust verdict of `alerted` or `errored`,
+  with the policy, the outcome and each finding's category, detector and
+  severity — never the text it found. Nothing reaching the room changed, and
+  while Switch Trust is down every message is `errored`. A `blocked` or
+  `redacted` verdict is a workspace audit row instead (`trust.message_blocked`,
+  `trust.message_redacted`, with the same details), written on a short
+  session of its own before anything is delivered: if it cannot be written,
+  the send fails rather than going ahead unrecorded.
 
 `client_ip`, like the address in the access log, is the request's client
 as uvicorn resolves it. switch-core believes `X-Forwarded-For` only from the
