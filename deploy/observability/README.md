@@ -81,6 +81,11 @@ worst 15 minutes of the first week of November held 54 errors, almost all the
 Slack identity error now logged as a warning; without it the worst was 7. Log alerts filter on
 `service:switch-core`, for the reason the board's log panels do.
 
+The security detection rules are log alerts too, each watching one agent or
+person for something suspicious (a burst of messages, reading many rooms,
+moving many files, sign-ins failing): see
+[Security detection rules](#security-detection-rules).
+
 "Agent controllers keep reconnecting" watches `switch.controllers.connections`
 with `event:opened`, for the reconnect storm seen on pilot in November (about
 7,500 controller connections opened every six hours, so around 625 every 30
@@ -92,7 +97,10 @@ same metric is the churn's signature; the signal board shows every event.
 
 Priority follows what a user loses: P1 when Switch is down or messages are
 lost, P2 when some people or one platform are affected, P3 when it is slow but
-nothing is lost, P4 when only our own visibility is.
+nothing is lost, P4 when only our own visibility is. Security alerts follow
+what is at risk instead: P2 for data likely leaving now, P3 for a pattern
+someone should look at today, P4 for a record of something legitimate but
+sensitive (see [Security detection rules](#security-detection-rules)).
 
 What isn't urgent stays out of them on purpose. Causes (slow queries, CPU,
 garbage collection) belong on the dashboards, and a monitor that fires without
@@ -121,10 +129,12 @@ security monitor is at P1 or P2, so the pager is in place before the first one
 arrives. Setting `NOTIFY_SECURITY` to the same value as `NOTIFY` works, with a
 warning, for a deployment that has no separate security channel.
 
-Today `category:security` covers the credential refusal alerts and password
-sign-in failures (see [Hosted agents](#hosted-agents)). The bearer-route
-credential refusals alert is P2 and pages; the other two are P4. Alerts on the `switch.event: security.*` log lines
-are meant to follow, routed the same way.
+`category:security` covers the credential refusal alerts and password
+sign-in failures (see [Hosted agents](#hosted-agents)), and the
+[security detection rules](#security-detection-rules) on the
+`switch.event: security.*` log lines. The bearer-route credential refusals
+alert and "an agent is reading many rooms" are P2 and page; the rest are P3
+or P4 and reach the security channel only.
 
 **Name the security on-call owner.** Whoever `NOTIFY_SECURITY_PAGE` reaches
 is the security on-call: `<security on-call owner: to be named>`. Until a
@@ -136,9 +146,67 @@ one), a `priority`, the `service:`, `env:`, `team:` and `tier:` tags, and the
 handle placeholder exactly once at the end of its message. Never write a real
 handle into `monitors.json`. `check_monitors.py` checks all of that, and also
 that a monitor reading a security signal (`switch.controller.credential_refusals`,
-`switch.auth.*`, or `switch.event:security.*` logs) is tagged
-`category:security`; extend `SECURITY_SIGNALS` there when a new one appears.
-It runs on every pull request and before every import.
+`switch.auth.*`, or the security event stream's logs: `switch.event:security.*`,
+alone or in a group, `switch.action`, `switch.scope`, `switch.actor_user_id`,
+`switch.audit_event_id`, `security_details.*`, or the `switch_core.security`
+logger) is tagged `category:security`; extend `SECURITY_SIGNALS` there when a
+new one appears. A log facet's value in a message, `{{[@switch.agent_id].name}}`,
+is not taken for a handle. It runs on every pull request and before every
+import.
+
+## Security detection rules
+
+These alert on what one agent or one person is doing, not on the server as a
+whole. They are log monitors over the security event stream (see "The
+security event stream" in `docs/old/observability.md`), grouped by the actor,
+so each agent, person, address or caller fires and recovers on its own and the
+alert names it (`{{[@switch.agent_id].name}}` and the like). Every one is
+`category:security`, keeps a log sample (ids only: the stream never carries
+message text, file names or tokens), and ends with how to stop the actor:
+suspend them with the `switch-suspend` CLI or the gateway's suspend and freeze
+routes.
+
+The fields are read as Datadog attributes: the JSON log format nests them
+(`{"switch": {"agent_id": ...}, "security_details": {...}}`) and the OTLP log
+export flattens them to `switch.agent_id`, and Datadog queries both as
+`@switch.agent_id`.
+
+| Rule | Reads | Grouped by | Fires above | Priority |
+| --- | --- | --- | --- | --- |
+| An agent is posting a burst of messages | `security.agent.message_sent` | `switch.agent_id` | 300 in 5 min (60 a minute) | P3 |
+| An agent is reading many rooms | `security.agent.room_read`, distinct `switch.room_id` | `switch.agent_id` | 10 rooms in 10 min | P2 |
+| One actor is adding many room members | action `room.member_added` by a person or an acting agent | `switch.actor_user_id`, `security_details.acting_agent_id` | 10 in 10 min | P3 |
+| One actor is moving many files | `security.attachment.uploaded` / `.downloaded` | `switch.agent_id`, `switch.actor_user_id` | 50 in 10 min | P3 |
+| An agent is asking for many service tokens | `security.service_token.issued` | `switch.agent_id` | 30 in 10 min | P3 |
+| Switch Trust blocked or redacted a message | actions `trust.message_blocked` / `trust.message_redacted` (an `alerted` or `errored` verdict is the log-only `security.trust.verdict`, not alerted on) | `switch.agent_id`, `switch.actor_user_id` | any | P3 |
+| An agent was given more power | actions `agent.auto_approve_enabled`, `agent.can_manage_agents_granted` | `switch.agent_id` | any | P3 |
+| A platform operator acted in a workspace | action `platform.access` | `switch.actor_user_id` | any | P4 |
+| An API key was revealed | action `api_key.revealed` | `switch.actor_user_id` | any | P4 |
+| Sign-ins failing from one address | `security.auth.sign_in_failed` | `security_details.client_ip` | 20 in 10 min | P3 |
+| Sign-ins failing for one account | `security.auth.sign_in_failed` naming a real account | `switch.actor_user_id` | 20 in 10 min | P3 |
+| One caller keeps tripping the refusal breaker | `security.refusal_breaker.tripped` | `security_details.caller` | 5 in 10 min | P3 |
+| An agent or person was suspended | actions `agent.suspended` / `user.suspended` | `switch.target_type`, `switch.target_id` | any | P4 |
+
+**The thresholds are starting points.** They come from the load tests (an
+agent's busiest realistic step is one message every 3 minutes) and judgement,
+not from production. Revisit every one after two weeks of production
+baseline: read each rule's query over those two weeks, by group, and set the
+limit well above the busiest legitimate actor, or delete a rule that only
+ever fired for something fine.
+
+The suspension rule matches actions another change is still adding
+(`agent.suspended`, `user.suspended`); it matches them by name and stays quiet
+until the first one is written. `test_monitors.py`
+checks that every other event and action a rule names is one Core writes, since
+a log monitor matching nothing sits healthy for ever. Sign-ins by address are
+only as good as the address: unless `FORWARDED_ALLOW_IPS`
+(`switchCore.forwardedAllowIps`) names the proxy in front of switch-core,
+every attempt carries the load balancer's address and that rule counts
+everyone together.
+
+`security.agent.rooms_listed` (an agent calling `list_all_rooms`) is logged
+but has no rule of its own: listing reads names, not conversations, and an
+agent sweeping rooms has to read them next, which the room-read rule counts.
 
 ## The morning report
 

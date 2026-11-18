@@ -8,6 +8,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -72,7 +73,84 @@ def test_the_security_monitors_are_tagged_as_such():
         "Controller credential refusals rising",
         "Controller token exchanges and enrolments refused",
         "Password sign-in failures rising",
+        *DETECTION_RULES,
     } <= security
+
+
+# The security detection rules: one actor's suspicious activity, read from
+# the security event stream (`core/switch_core/security_events.py`).
+DETECTION_RULES = {
+    "Security: an agent is posting a burst of messages": 3,
+    "Security: an agent is reading many rooms": 2,
+    "Security: one actor is adding many room members": 3,
+    "Security: one actor is moving many files": 3,
+    "Security: an agent is asking for many service tokens": 3,
+    "Security: Switch Trust blocked or redacted a message": 3,
+    "Security: an agent was given more power": 3,
+    "Security: a platform operator acted in a workspace": 4,
+    "Security: an API key was revealed": 4,
+    "Security: sign-ins failing from one address": 3,
+    "Security: sign-ins failing for one account": 3,
+    "Security: one caller keeps tripping the refusal breaker": 3,
+    "Security: an agent or person was suspended": 4,
+}
+# Actions another change is adding to the audit log; the rules match them by
+# name so they alert from the first one written.
+PENDING_ACTIONS = {
+    "agent.suspended",
+    "user.suspended",
+}
+CORE = HERE.parent.parent / "core" / "switch_core"
+
+
+def detection_rules() -> dict[str, dict]:
+    return {
+        m["name"].split("] ", 1)[1]: m
+        for m in MONITORS
+        if m["name"].split("] ", 1)[1] in DETECTION_RULES
+    }
+
+
+def test_every_detection_rule_is_there_at_its_priority():
+    rules = detection_rules()
+    assert {name: m["priority"] for name, m in rules.items()} == DETECTION_RULES
+
+
+@pytest.mark.parametrize("name", sorted(DETECTION_RULES))
+def test_a_detection_rule_is_a_log_alert_per_actor_that_says_how_to_stop_it(name):
+    rule = detection_rules()[name]
+    assert rule["type"] == "log alert"
+    assert "category:security" in rule["tags"]
+    assert '.by("@' in rule["query"], "grouped by the actor, not counted overall"
+    assert rule["query"].startswith('logs("service:REPLACE-WITH-SERVICE ')
+    message = rule["message"]
+    assert "{{#is_alert}}" in message and "{{/is_alert}}" in message
+    assert "{{#is_recovery}}" in message and "{{/is_recovery}}" in message
+    alert = message.split("{{#is_alert}}", 1)[1].split("{{/is_alert}}", 1)[0]
+    assert "switch-suspend" in alert and "suspend runbook" in alert
+    assert message.endswith("\n\n@REPLACE-WITH-NOTIFICATION-HANDLE")
+    assert rule["options"]["enable_logs_sample"] is True
+
+
+def _names_in(source: Path) -> set[str]:
+    return set(re.findall(r'^\s+[A-Z_]+ = "([a-z_.]+)"', source.read_text(), re.M))
+
+
+def test_the_rules_name_only_events_and_actions_core_writes():
+    """A misspelt event or action matches nothing, and a log monitor that
+    matches nothing sits healthy for ever."""
+    signals = _names_in(CORE / "security_events.py")
+    actions = _names_in(CORE / "db" / "audit.py")
+    assert {"agent.message_sent", "auth.sign_in_failed"} <= signals
+    assert {"platform.access", "room.member_added"} <= actions
+    for name, rule in detection_rules().items():
+        query = rule["query"]
+        for group in re.findall(r'@switch\.event:(\([^)]*\)|[^"\s)]+)', query):
+            for event in re.findall(r"security\.([a-z_.]*[a-z_])", group):
+                assert event in signals, (name, event)
+        for group in re.findall(r'@switch\.action:(\([^)]*\)|[^"\s)]+)', query):
+            for action in re.split(r"\s+OR\s+", group.strip("()")):
+                assert action in actions | PENDING_ACTIONS, (name, action)
 
 
 def broken(change) -> list[str]:
@@ -125,6 +203,36 @@ def broken(change) -> list[str]:
             ),
             "must be tagged 'category:security'",
         ),
+        (
+            lambda m: m.update(
+                query='logs("service:switch-core @switch.event:(security.a OR security.b)").index("*").rollup("count").by("@switch.agent_id").last("5m") > 5'
+            ),
+            "must be tagged 'category:security'",
+        ),
+        (
+            lambda m: m.update(
+                query='logs("service:switch-core @switch.action:api_key.revealed").index("*").rollup("count").by("@switch.actor_user_id").last("5m") > 0'
+            ),
+            "must be tagged 'category:security'",
+        ),
+        (
+            lambda m: m.update(
+                query='logs("service:switch-core @security_details.outcome:blocked").index("*").rollup("count").last("5m") > 0'
+            ),
+            "must be tagged 'category:security'",
+        ),
+        (
+            lambda m: m.update(
+                query='logs("service:switch-core logger.name:switch_core.security").index("*").rollup("count").last("5m") > 0'
+            ),
+            "must be tagged 'category:security'",
+        ),
+        (
+            lambda m: m.update(
+                message="{{[@switch.agent_id].name}} [@slack-somewhere] @REPLACE-WITH-NOTIFICATION-HANDLE"
+            ),
+            "names '@slack-somewhere'",
+        ),
     ],
 )
 def test_a_broken_monitor_is_refused(change, expected):
@@ -137,6 +245,15 @@ def test_a_duplicate_name_is_refused():
         "duplicate name" in p
         for p in check_monitors.problems_in([ROUTED[0], ROUTED[0]])
     )
+
+
+def test_a_facet_value_in_a_message_is_not_a_handle():
+    m = monitor("log alert", "security", 3)
+    m["message"] = (
+        "{{#is_alert}}Agent {{[@switch.agent_id].name}} in {{ [@switch.room_id].name }}"
+        "{{/is_alert}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE"
+    )
+    assert check_monitors.problems_in([m]) == []
 
 
 def test_log_facets_in_a_query_are_not_handles():
@@ -219,6 +336,17 @@ def test_the_real_monitors_render_with_no_placeholder_left():
     assert result.returncode == 0, result.stderr
     assert len(result.stdout.splitlines()) == len(MONITORS)
     assert "REPLACE-WITH" not in result.stdout
+
+
+def test_the_detection_rules_reach_the_security_channel_and_only_p2_pages():
+    result = run_apply(HERE)
+    assert result.returncode == 0, result.stderr
+    routed = handles_by_name(result.stdout)
+    for name, priority in DETECTION_RULES.items():
+        expected = ["@slack-example-security"]
+        if priority <= 2:
+            expected.append("@pagerduty-example-security")
+        assert routed[name] == expected, name
 
 
 @pytest.mark.parametrize("var", ["NOTIFY", "NOTIFY_SECURITY", "NOTIFY_SECURITY_PAGE"])

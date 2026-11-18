@@ -43,7 +43,13 @@ def _load(name: str) -> object:
     ],
 )
 def test_every_metric_referenced_exists(filename: str) -> None:
-    referenced = _referenced_metrics(_load(filename))
+    document = _load(filename)
+    if filename == "monitors.json":
+        # A log alert reads logs, and its `switch.*` names are log attributes
+        # (the security event stream's `switch.agent_id` and the like), not
+        # metrics.
+        document = [m for m in document if m["type"] != "log alert"]  # type: ignore[union-attr]
+    referenced = _referenced_metrics(document)
     # The morning report sends its own "posted" mark; that one is not core's.
     from_report = set(
         re.findall(
