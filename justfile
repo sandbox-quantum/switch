@@ -16,13 +16,17 @@ default:
 init-env:
     #!/usr/bin/env bash
     set -euo pipefail
-    if [ -e .env ]; then
+    if [ -e .env ] || [ -L .env ]; then
       echo "✋ .env already exists — refusing to overwrite it." >&2
       echo "   Delete it first if you really want to regenerate every secret." >&2
       exit 1
     fi
-    cp .env.example .env
-    deploy/local/generate-env-secrets.sh .env local
+    umask 077
+    draft="$(mktemp -d .switch-env.XXXXXX)"
+    trap 'rm -rf "$draft"' EXIT
+    cp .env.example "$draft/.env"
+    deploy/local/generate-env-secrets.sh "$draft/.env" local
+    ln "$draft/.env" .env
     echo "✅ Wrote .env with freshly generated secrets."
     echo "   Gateway admin login: $(grep '^GATEWAY_ADMIN_EMAIL=' .env | cut -d= -f2-) / $(grep '^GATEWAY_ADMIN_PASSWORD=' .env | cut -d= -f2-)"
     echo "   The stack binds to 127.0.0.1 only (set SWITCH_BIND_ADDR to expose it)."
