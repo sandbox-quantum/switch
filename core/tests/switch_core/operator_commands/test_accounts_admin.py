@@ -912,3 +912,36 @@ async def test_a_deletion_that_fails_partway_is_recorded_with_what_it_finished(
     assert event.details["platform_operator_command"] is True
     assert event.details["workspaces"] == 2
     assert len(event.details["workspaces_completed"]) == 1
+
+
+class _FailsAtOnce(_Broker):
+    async def remove_connections(self, _session: AsyncSession, _user_id: str) -> list:
+        raise RuntimeError("the vendor is down")
+
+
+async def test_an_org_admin_whose_deletion_fails_partway_is_emailed_about_all_the_same(
+    rls_harness: RLSHarness,
+) -> None:
+    """Their `org_admin` row is gone before the failure, and a retry finds no
+    admin role left to tell anyone about, so the admins hear now."""
+    made = await make_organization(
+        rls_harness,
+        people={
+            "keeper": ("admin", "org_admin"),
+            "leaving": ("member", "org_admin"),
+        },
+    )
+    leaving, keeper = made.ids["leaving"], made.ids["keeper"]
+    mailer = RecordingMailer()
+    deletion, _, _ = _deletion(rls_harness.restricted, mailer)
+    deletion.broker = _FailsAtOnce()  # type: ignore[assignment]
+
+    plan = await plan_deletion(deletion, rls_harness.restricted, email_of(leaving))
+    with pytest.raises(CommandRefused, match="failed partway"):
+        await delete_account(deletion, rls_harness.restricted, plan)
+
+    assert await _user(rls_harness, leaving) is not None
+    assert sorted(email.to for email in mailer.sent) == sorted(
+        [email_of(leaving), email_of(keeper)]
+    )
+    assert all("The deletion didn't finish" in email.summary for email in mailer.sent)

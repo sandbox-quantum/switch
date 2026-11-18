@@ -152,14 +152,17 @@ function Connectors({
 }) {
   const catalog = useConnectorCatalog(workspaceId);
   const management = useConnectorAppManagement(workspaceId, servesDashboard);
+  // A refetch that failed keeps the last answer in `data`; the page says it
+  // couldn't check, so it goes by none.
+  const answer = management.isError ? undefined : management.data;
   const viewer: ConnectorViewer = {
     ...person,
     appSetUp: connectorAppSetUp({
       operator: person.operator,
       servesDashboard,
       gatewayV2,
-      canManage: management.data?.canManage ?? null,
-      inDashboard: management.data?.inDashboard ?? null,
+      canManage: answer?.canManage ?? null,
+      inDashboard: answer?.inDashboard ?? null,
     }),
   };
   const entries = management.isLoading ? undefined : catalog.data;

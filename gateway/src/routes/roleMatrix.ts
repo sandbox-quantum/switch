@@ -90,7 +90,6 @@ export const PAGES: readonly MatrixPage[] = [
   page("/settings/api-keys", EVERYONE),
   page("/settings/guardrails", EVERYONE),
   page("/settings/devices", EVERYONE),
-  page("/usage", ADMINS),
   page("/settings/account", EVERYONE),
 
   page("/settings/org/general", ORGANIZATION_ADMIN_OR_OPERATOR),
@@ -121,6 +120,7 @@ export const REDIRECTS: readonly MatrixRedirect[] = [
   { from: "/workspace", to: "/settings/users" },
   { from: "/workspace/private-channel-rooms", to: "/settings/general/private-channel-rooms" },
   { from: "/organization", to: "/settings/org" },
+  { from: "/usage", to: "/settings" },
   { from: "/users", to: "/settings/org/users" },
   { from: "/operator/workspaces", to: "/settings/org/workspaces" },
   { from: "/platform", to: "/settings/org/workspaces" },
@@ -159,12 +159,7 @@ const WORKSPACE_MENU_EVERYONE = [
   "Guardrails",
 ];
 const WORKSPACE_MENU_MEMBER = [...WORKSPACE_MENU_EVERYONE, "Devices", "Your account"];
-const WORKSPACE_MENU_ADMIN = [
-  ...WORKSPACE_MENU_EVERYONE,
-  "Usage & budget",
-  "Devices",
-  "Your account",
-];
+const WORKSPACE_MENU_ADMIN = WORKSPACE_MENU_MEMBER;
 
 /** Each settings area's menu, in order: the pages it lists, not the link
  * across to the other area. Null where the role may not

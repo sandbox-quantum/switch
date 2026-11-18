@@ -45,26 +45,25 @@ export const STABLE_MANAGED_SERVER_FLAGS: readonly string[] = [
   'switch_buddy',
   'follow_the_conversation',
   'service_connections',
-];
-
-/**
- * The flags a server on the canary pin (`CANARY_SWITCH_VERSION`, which dev
- * builds run too) is started with: the stable ones, plus Switch Console rooms
- * (group chats), where switch-buddy continues when no chat app is connected,
- * buddy's hand-off to a chat app's private channel, and the new gateway layout
- * (gateway v2).
- *
- * switch-core refuses to start when `FEATURE_FLAGS_ENABLED` names a flag it
- * does not know, so a flag moves to the stable list in the change that moves
- * the stable pin to a release that has it. A dev build pointed at an older
- * release with `SWITCH_CONSOLE_SERVER_VERSION` still gets this list.
- */
-export const CANARY_MANAGED_SERVER_FLAGS: readonly string[] = [
-  ...STABLE_MANAGED_SERVER_FLAGS,
   'group_chats',
   'buddy_slack_handoff',
   'gateway_v2',
 ];
+
+/**
+ * The flags a server on the canary pin (`CANARY_SWITCH_VERSION`, which dev
+ * builds run too) is started with. As of the 0.32.0 stable pin these match the
+ * stable set; a flag moves into `STABLE_MANAGED_SERVER_FLAGS` in the change
+ * that moves the stable pin to a release that has it. Canary-only flags (for a
+ * feature only the pre-release switch-core knows) go here, on top of the stable
+ * ones — there are none right now.
+ *
+ * switch-core refuses to start when `FEATURE_FLAGS_ENABLED` names a flag it
+ * does not know, so a flag only belongs here or in the stable list once the
+ * matching pin has it. A dev build pointed at an older release with
+ * `SWITCH_CONSOLE_SERVER_VERSION` still gets this list.
+ */
+export const CANARY_MANAGED_SERVER_FLAGS: readonly string[] = [...STABLE_MANAGED_SERVER_FLAGS];
 
 /** Flags this repo's switch-core has always on, so a stack run from a checkout is not sent them. */
 const ALWAYS_ON_IN_CHECKOUT: readonly string[] = ['agent_management', 'agent_chats', 'group_chats'];

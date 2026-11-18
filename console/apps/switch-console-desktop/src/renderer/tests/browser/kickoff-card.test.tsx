@@ -10,6 +10,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { page } from 'vitest/browser';
 import buddyAvatar from '@/assets/images/switch-buddy/avatar.png';
 import '@renderer/index.css';
+import { NO_ENTRANCE } from '@renderer/features/chats/chat-entrance';
 import { ChatTimelineView } from '@renderer/features/chats/components/chat-timeline';
 import {
   ChatTimeline,
@@ -132,6 +133,7 @@ it('draws a kickoff as a card from the agent that sent it', async () => {
           people={[]}
           activities={[]}
           onReply={() => {}}
+          entrance={NO_ENTRANCE}
         />
       </QueryClientProvider>
     )

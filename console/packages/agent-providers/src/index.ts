@@ -164,7 +164,9 @@ export {
   googleCredentialsSchema,
   parseGoogleCredentials,
   parseVertexLogin,
+  signsInThroughVertex,
   VERTEX_CREDENTIALS_FILE,
+  VERTEX_PROVIDERS_ONLY,
   type VertexLogin,
   vertexLoginCredential,
   vertexLoginSchema,
@@ -215,5 +217,11 @@ export type { ProviderRuntime, ProviderRuntimeOptions } from './providers/regist
 export { CONTROL_FILE, ControlClient, SidecarConnectionClosedError } from './host/control';
 export { hostSessions, hostSessionsByAgent, LIST_SCRIPT } from './host/session-list';
 export { JournalUnavailableError, replayJournal } from './host/journal-snapshot';
+export { loadNodeSqlite } from './node-sqlite';
 export { openCodeConsoleCredentialSchema } from './opencode/console-credential';
+export {
+  opencodeDataHome,
+  opencodeV1DatabaseEnv,
+  opencodeV1DatabasePath,
+} from './opencode/v1-database';
 export { windowsRegistryPath, withWindowsPathEntries } from './windows-registry-path';

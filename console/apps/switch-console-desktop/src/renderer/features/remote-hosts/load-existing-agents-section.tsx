@@ -374,11 +374,13 @@ export function LoadExistingAgentsSection({
                 directory below.
               </p>
               <Tooltip>
-                <TooltipTrigger>
-                  <Button size="sm" variant="outline" onClick={() => deepScan.mutate()}>
-                    <ScanSearch className="size-4" /> Deep scan
-                  </Button>
-                </TooltipTrigger>
+                <TooltipTrigger
+                  render={
+                    <Button size="sm" variant="outline" onClick={() => deepScan.mutate()}>
+                      <ScanSearch className="size-4" /> Deep scan
+                    </Button>
+                  }
+                />
                 <TooltipContent>
                   Scans the full filesystem on this host. May take a while on large VMs.
                 </TooltipContent>
@@ -400,11 +402,13 @@ export function LoadExistingAgentsSection({
                 )}
                 <div className="flex items-center gap-1">
                   <Tooltip>
-                    <TooltipTrigger>
-                      <Button size="sm" variant="outline" onClick={() => deepScan.mutate()}>
-                        <ScanSearch className="size-3" /> Deep scan
-                      </Button>
-                    </TooltipTrigger>
+                    <TooltipTrigger
+                      render={
+                        <Button size="sm" variant="outline" onClick={() => deepScan.mutate()}>
+                          <ScanSearch className="size-3" /> Deep scan
+                        </Button>
+                      }
+                    />
                     <TooltipContent>
                       Scans the full filesystem on this host. May take a while on large VMs.
                     </TooltipContent>

@@ -428,15 +428,23 @@ class AccountDeletionRefused(Exception):
 class AccountDeletionIncomplete(Exception):
     """Deleting the account failed partway. Each workspace is left in its own
     transaction, so the ones in `completed` stay left; the account itself and
-    every other workspace are as they were. The cause is chained."""
+    every other workspace are as they were. The cause is chained.
 
-    def __init__(self, user_id: str, completed: list[Workspace]) -> None:
+    The person's `org_admin` rows went first and stay gone, so
+    `admin_changes` is what to e-mail those organizations' admins, unsent,
+    as `AccountDeletion.delete` returns on success: a retry finds no admin
+    role left to tell them about."""
+
+    def __init__(
+        self, user_id: str, completed: list[Workspace], admin_changes: list[AdminChange]
+    ) -> None:
         super().__init__(
             f"Deleting the account of user {user_id} failed after leaving "
             f"{len(completed)} workspace(s)"
         )
         self.user_id = user_id
         self.completed = completed
+        self.admin_changes = admin_changes
 
 
 @dataclass(frozen=True)
@@ -644,7 +652,9 @@ class AccountDeletion:
         as removed by a deletion that did not finish, since the row is gone
         either way. Returns what to e-mail those organizations' admins,
         unsent: the caller sends it (`admin_notices.send_all`) once it holds
-        no connection, so a slow relay holds none.
+        no connection, so a slow relay holds none. A deletion that fails
+        partway carries its own (`AccountDeletionIncomplete.admin_changes`),
+        which the caller sends too.
 
         Raises `AccountDeletionRefused` before anything is changed if an
         organization's last `org_admin` check no longer holds, and
@@ -666,12 +676,27 @@ class AccountDeletion:
             await self._record_organization_removals(
                 organizations, user_id, actor_id, "account_deletion_incomplete"
             )
-            raise AccountDeletionIncomplete(user_id, completed) from error
+            raise AccountDeletionIncomplete(
+                user_id,
+                completed,
+                [
+                    AdminChange(
+                        organization_id=organization_id,
+                        kind=AdminChangeKind.ACCOUNT_DELETION_INCOMPLETE,
+                        target=target,
+                        actor=actor,
+                        reason=None,
+                    )
+                    for organization_id in organizations
+                ],
+            ) from error
         await self._record_organization_removals(
             organizations, user_id, actor_id, "account_deleted"
         )
         logger.info(
-            "Deleted the account of user %s at the request of %s", user_id, actor_id
+            "Deleted the account of user %s at the request of %s",
+            user_id,
+            "a platform operator command" if actor_id is None else actor_id,
         )
         return [
             AdminChange(

@@ -101,13 +101,16 @@ describe('buildEnvFile', () => {
     ]);
   });
 
-  it('turns on what switch-buddy needs only in a build with the new first run', () => {
+  it('turns on the full stable set in a build with the new first run', () => {
     expect(managedServerFeatureFlags(true, false, false)).toEqual([
       'agent_management',
       'agent_chats',
       'switch_buddy',
       'follow_the_conversation',
       'service_connections',
+      'group_chats',
+      'buddy_slack_handoff',
+      'gateway_v2',
     ]);
     expect(managedServerFeatureFlags(false, false, false)).toEqual([
       'agent_management',
@@ -119,15 +122,13 @@ describe('buildEnvFile', () => {
     ]);
   });
 
-  it('adds group chats and the chat-app hand-off on the canary switch-core only', () => {
-    expect(managedServerFeatureFlags(true, true, false)).toEqual([
-      ...STABLE_MANAGED_SERVER_FLAGS,
-      'group_chats',
-      'buddy_slack_handoff',
-      'gateway_v2',
-    ]);
-    expect(managedServerFeatureFlags(true, false, false)).not.toContain('group_chats');
-    expect(managedServerFeatureFlags(true, false, false)).not.toContain('buddy_slack_handoff');
+  it('runs the canary switch-core with the same flags as stable (no canary-only flags right now)', () => {
+    expect(managedServerFeatureFlags(true, true, false)).toEqual([...STABLE_MANAGED_SERVER_FLAGS]);
+    expect(managedServerFeatureFlags(true, true, false)).toEqual(
+      managedServerFeatureFlags(true, false, false)
+    );
+    expect(managedServerFeatureFlags(true, false, false)).toContain('group_chats');
+    expect(managedServerFeatureFlags(true, false, false)).toContain('gateway_v2');
   });
 
   it('runs switch-core as the restricted runtime role, not the schema owner', () => {

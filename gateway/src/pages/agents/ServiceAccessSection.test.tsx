@@ -9,7 +9,7 @@ import {
   type ServiceGrants,
 } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
-import ServiceAccessSection, { BY_COMMAND, BY_ORGANIZATION_ADMIN } from "./ServiceAccessSection";
+import ServiceAccessSection, { BY_COMMAND, BY_ORGANIZATION_ADMIN, setUpByOrganizationAdmin } from "./ServiceAccessSection";
 import { serviceConnection } from "../../test/serviceConnection";
 
 vi.mock("../../data/AuthContext", () => ({
@@ -463,11 +463,12 @@ describe("ServiceAccessSection", () => {
 
   it("tells anyone else who sets it up: their organization's admin with one organization, the command with several", async () => {
     try {
+      // In place of the server's reason, which names whoever runs Switch.
       viewer({ connectorAppsInDashboard: true });
       mockServer(NONE, WAITING);
       renderWaiting();
-      expect(await screen.findByText(NOT_SET_UP)).toBeTruthy();
-      expect(screen.getByText(BY_ORGANIZATION_ADMIN)).toBeTruthy();
+      expect(await screen.findByText(setUpByOrganizationAdmin("Example"))).toBeTruthy();
+      expect(screen.queryByText(NOT_SET_UP)).toBeNull();
       expect(screen.queryByText(BY_COMMAND)).toBeNull();
       expect(screen.queryByRole("link", { name: "Set up" })).toBeNull();
       cleanup();
@@ -476,7 +477,7 @@ describe("ServiceAccessSection", () => {
       mockServer(NONE, WAITING);
       renderWaiting();
       expect(await screen.findByText(BY_COMMAND)).toBeTruthy();
-      expect(screen.queryByText(BY_ORGANIZATION_ADMIN)).toBeNull();
+      expect(screen.queryByText(BY_ORGANIZATION_ADMIN, { exact: false })).toBeNull();
     } finally {
       viewer();
     }

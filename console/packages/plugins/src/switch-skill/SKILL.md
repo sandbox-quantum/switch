@@ -186,6 +186,15 @@ does, and there is no polling tool to call.
   admin or a workspace admin may turn it on or off, from the room or from its toggle in
   Switch Console or on the gateway's room page.
 
+  Two exceptions skip the decision service. In an auto-route room with only
+  one agent and one person, every untagged message from that person reaches
+  that agent, in the channel and in threads: its line says it came to you
+  because you are the only agent in this room and they are the only person.
+  A second person or agent ends that. And an assigned agent and auto-route
+  can't both be on: `!assign-agent` in an auto-route room assigns the agent
+  and turns auto-route off, saying so, and `!auto-route on` is refused while
+  an agent is assigned, until `!unassign-agent`.
+
   Which decision service a room uses is its workspace's choice, made by a
   workspace admin in Switch Console → Settings → Message routing: the server's
   own default, the workspace's self-hosted endpoint, Claude Haiku, or none.
@@ -1021,13 +1030,14 @@ does not manage agents, so say so rather than looking for another way.
   does not refuses them, naming the feature flag they need), and
   optionally `model`, `advanced_config` (e.g. `{"effort": "high"}`; keys from
   `get_advanced_config`), `instructions`, `directory`, `auto_mode` (on by
-  default: the provider's automatic review runs safe actions and asks before
-  risky ones), `auto_approve` (bypass: skips every permission check and
-  overrides `auto_mode`; off by default and unsafe, so set it only when the
-  person asks), `display_name`, `icon_url`, and `start=false` to create it
-  stopped. Leave
-  `directory` null and Switch fills in the machine's own workspace for the
-  agent, which the machine makes; any other directory must already exist
+  default where the provider supports automatic review), `auto_approve` (bypass:
+  skips permission checks and overrides `auto_mode`). New Cursor agents default
+  to bypass on and auto mode off because Cursor's ACP interface has no automatic
+  review; disclose that in the proposal. Respect an explicit request for approvals
+  by setting both false. Other providers default to bypass off; enable it only
+  when the person asks. Optional fields also include `display_name`, `icon_url`,
+  and `start=false` to create it stopped. Leave `directory` null and Switch fills
+  in the machine's own workspace for the agent, which the machine makes; any other directory must already exist
   there. Change it later with `update_agent_detail`.
 - **`list_managed_agents`** — your owner's managed agents, with the machine
   each runs on, what your owner wants (`desired_state`) and what the machine
