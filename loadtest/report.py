@@ -223,8 +223,8 @@ def render(meta: dict, phases: list[dict], teardown: dict | None) -> str:
             "",
             "## Admin bulk change",
             "",
-            "An admin making the run's bulk rooms Private, one click a batch, while the "
-            "agents' traffic runs. It fails on a click that failed or left rooms unchanged, "
+            "An admin making the run's bulk rooms Private, then archiving and unarchiving "
+            "them, one click a batch, while the agents' traffic runs. It fails on a click that failed or left rooms unchanged, "
             "on any error in the agents' traffic, or on an agents' send p99 over "
             f"{BULK_SEND_MS_P99_MAX:g} ms. Pool timeouts and a pod handing its bridges away "
             "are not visible from here: check `switch.db.pool.timeouts` and the pods' logs "

@@ -24,6 +24,7 @@ import {
   loadReferenceRooms,
 } from "../../data/api";
 import { useRooms } from "../../data/hooks";
+import { REQUESTS_AT_ONCE, settleAtMost } from "../../data/inBatches";
 import { useLoad } from "../workspace/useLoad";
 import { privateRoomsLabel } from "./privateRooms";
 
@@ -78,7 +79,7 @@ export default function ResourceAttachmentsSection({
   // refused. The list shows what went in either way; the picker stays open
   // with the reasons for the rest.
   const handleAttach = async (roomIds: string[]) => {
-    const results = await Promise.allSettled(roomIds.map((roomId) => ATTACH[kind](roomId, resourceId)));
+    const results = await settleAtMost(roomIds, (roomId) => ATTACH[kind](roomId, resourceId), REQUESTS_AT_ONCE);
     // Awaited, so the picker no longer offers what went in by the time it
     // shows the reasons for the rest.
     await refetch();

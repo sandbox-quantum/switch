@@ -1200,7 +1200,8 @@ class _Published:
     def __init__(self) -> None:
         self.notices: list[tuple[str, str, str]] = []
 
-    def publish(self, tenant_id: str, user_id: str, kind: str, id: str) -> None:
+    def publish(self, tenant_id: str, user_id: str, kind: str, id: str | None) -> None:
+        assert id is not None
         self.notices.append((user_id, kind, id))
 
 

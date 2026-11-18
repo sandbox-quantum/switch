@@ -70,6 +70,8 @@ from seed import (  # noqa: E402
     teardown,
 )
 from workload import (  # noqa: E402
+    ARCHIVE,
+    MAKE_PRIVATE,
     SCENARIOS,
     build_membership,
     build_schedule,
@@ -81,7 +83,7 @@ RUNS = Path(__file__).parent / "runs"
 # A run id names a directory under RUNS and prefixes what the run makes.
 RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
 BULK = "admin-bulk"
-# The server's own cap on one "Make N Private".
+# The server's own cap on one "Make N Private", and on one bulk archive.
 BULK_BATCH_MAX = 200
 
 
@@ -658,12 +660,15 @@ async def run(a: argparse.Namespace, kube: Kube) -> int:
         for c in bulk_plan(a.bulk_rooms, a.bulk_batch, a.bulk_at, a.bulk_gap):
             if await wait(stop, c.at - (time.monotonic() - t0)):
                 return
-            done = await admin.make_private(
-                bulk["tenant"], bulk["rooms"][c.start : c.end]
-            )
+            rooms = bulk["rooms"][c.start : c.end]
+            if c.action == MAKE_PRIVATE:
+                done = await admin.make_private(bulk["tenant"], rooms)
+            else:
+                done = await admin.bulk_archive(rooms, archived=c.action == ARCHIVE)
+            done["action"] = c.action
             done["at_s"] = round(time.monotonic() - t0, 1)
             clicks.append(done)
-            print(f"    make private: {json.dumps(done)}", flush=True)
+            print(f"    {c.action}: {json.dumps(done)}", flush=True)
 
     async def measure(
         name: str, scenario: str, step: int, duration: float, drain: bool = False
@@ -1057,8 +1062,9 @@ def main(argv: list[str] | None = None) -> int:
         if BULK in a.scenarios:
             clicks = bulk_plan(a.bulk_rooms, a.bulk_batch, a.bulk_at, a.bulk_gap)
             print(
-                f"{BULK}: {a.bulk_rooms} rooms made Private in {len(clicks)} clicks, at "
-                + ", ".join(f"{c.at:g}s ({c.end - c.start})" for c in clicks)
+                f"{BULK}: {a.bulk_rooms} rooms made Private, archived and "
+                f"unarchived in {len(clicks)} clicks, at "
+                + ", ".join(f"{c.at:g}s ({c.action} {c.end - c.start})" for c in clicks)
             )
         return 0
     try:

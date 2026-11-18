@@ -7,8 +7,8 @@
 #   python - shape TENANT PREFIX RUN_ID  give the run's bulk rooms the shape
 #                                        an admin's bulk change finds: Public,
 #                                        bound to a private channel of a bridge
-#   python - reset TENANT PREFIX RUN_ID  make them Public again, for the next
-#                                        window
+#   python - reset TENANT PREFIX RUN_ID  make them Public and unarchived again,
+#                                        for the next window
 #   python - clear TENANT PREFIX RUN_ID  unbind them and delete the bridge, so
 #                                        they archive as internal rooms
 #
@@ -82,10 +82,11 @@ async def shape(conn, tenant, prefix, run_id):
 
 
 async def reset(conn, tenant, prefix, run_id):
+    # Unarchived too: a window stopped between its archive and unarchive
+    # clicks leaves them archived.
     status = await conn.execute(
-        "update rooms set read_visibility = 'public' "
-        "where tenant_id = $1 and starts_with(name, $2) and archived_at is null "
-        "and bridge_id is not null",
+        "update rooms set read_visibility = 'public', archived_at = null "
+        "where tenant_id = $1 and starts_with(name, $2) and bridge_id is not null",
         tenant,
         prefix,
     )

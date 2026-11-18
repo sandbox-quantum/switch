@@ -158,23 +158,33 @@ def build_schedule(
     return sends
 
 
+# What the admin-bulk scenario's clicks do to its rooms, in order: every room
+# made Private, then archived, then unarchived, each in batches.
+MAKE_PRIVATE, ARCHIVE, UNARCHIVE = "make_private", "archive", "unarchive"
+BULK_ACTIONS = (MAKE_PRIVATE, ARCHIVE, UNARCHIVE)
+
+
 @dataclass(frozen=True)
 class BulkChange:
-    """One click of an admin's bulk change: rooms `start` to `end` of the
-    run's bulk rooms, `at` seconds into the window."""
+    """One click of an admin's bulk change: `action` on rooms `start` to
+    `end` of the run's bulk rooms, `at` seconds into the window."""
 
     at: float
+    action: str
     start: int
     end: int
 
 
 def bulk_plan(rooms: int, batch: int, at: float, gap: float) -> list[BulkChange]:
     """The admin-bulk scenario's clicks: the bulk rooms in batches of `batch`,
-    the first `at` seconds in and each `gap` seconds after the one before, as
-    an admin working through a long list confirms one page after another."""
+    made Private, then archived, then unarchived, the first click `at`
+    seconds in and each `gap` seconds after the one before, as an admin
+    working through a long list confirms one page after another."""
+    batches = [(start, min(start + batch, rooms)) for start in range(0, rooms, batch)]
+    clicks = [(action, *b) for action in BULK_ACTIONS for b in batches]
     return [
-        BulkChange(at + i * gap, start, min(start + batch, rooms))
-        for i, start in enumerate(range(0, rooms, batch))
+        BulkChange(at + i * gap, action, start, end)
+        for i, (action, start, end) in enumerate(clicks)
     ]
 
 

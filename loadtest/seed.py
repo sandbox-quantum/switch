@@ -193,6 +193,36 @@ class Admin:
             out["error"] = r.text[:200]
         return out
 
+    async def bulk_archive(self, room_ids: list[str], archived: bool) -> dict:
+        """One click of the Rooms page's bulk archive (or unarchive): what the
+        server changed and refused, how long it took, and its status."""
+        t = time.monotonic()
+        try:
+            r = await self.call(
+                "POST",
+                "/rooms/bulk-archive",
+                json={"room_ids": room_ids, "archived": archived},
+            )
+        except httpx.HTTPError as exc:
+            return {
+                "rooms": len(room_ids),
+                "status": None,
+                "error": type(exc).__name__,
+                "ms": round((time.monotonic() - t) * 1000, 1),
+            }
+        out: dict = {
+            "rooms": len(room_ids),
+            "status": r.status_code,
+            "ms": round((time.monotonic() - t) * 1000, 1),
+        }
+        if r.status_code == 200:
+            body = r.json()
+            out["changed"] = body["updated"]
+            out["skipped"] = len(body["refused"])
+        else:
+            out["error"] = r.text[:200]
+        return out
+
     async def close(self) -> None:
         await self.http.aclose()
 

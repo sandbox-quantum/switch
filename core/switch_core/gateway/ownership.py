@@ -96,8 +96,7 @@ async def transfer(
         await protocol.connections.agent_key_reissued(done.resource_id)
     # A chat membership held only because its holder owned this agent goes
     # with the ownership.
-    for room_id in rooms:
-        await chat_service.sync_room(tenant_id, room_id)
+    await chat_service.sync_rooms(tenant_id, rooms)
     logger.info(
         "%s moved %s %s from %s to %s",
         user.id,

@@ -26,14 +26,14 @@ At each step in `--steps`, the harness brings that many agents online and then r
 
 ### An admin's bulk change (`admin-bulk`)
 
-The other scenarios are agents' messages. `admin-bulk` is one admin's click: the steady traffic at `--rate`, and over it the workspace admin making `--bulk-rooms` rooms Private (400 by default) through the "Public rooms on private channels" page's route, `--bulk-batch` rooms a click (200, the server's cap). The first click comes `--bulk-at` seconds into the window (15) and each next one `--bulk-gap` seconds after the one before has answered (2), as an admin confirms one page after another.
+The other scenarios are agents' messages. `admin-bulk` is one admin's clicks: the steady traffic at `--rate`, and over it the workspace admin making `--bulk-rooms` rooms Private (400 by default) through the "Public rooms on private channels" page's route, then archiving and unarchiving them through the Rooms page's bulk action, `--bulk-batch` rooms a click (200, the server's cap on both). The first click comes `--bulk-at` seconds into the window (15) and each next one `--bulk-gap` seconds after the one before has answered (2), as an admin confirms one page after another.
 
 ```sh
 uv run --project core python loadtest/run.py --namespace <namespace> \
     --scenarios admin-bulk --steps 200 --rate 5 --bulk-rooms 400
 ```
 
-Only rooms bound to a private channel can be made Private, and a load run's rooms are bound to none, so this scenario is the one place the harness writes to the database itself. `bulk_rooms.py`, run in a switch-core pod over `kubectl exec` with the pod's own database login and bound to the run's workspace, makes one bridge row of the run's own that stays inactive (no pod starts it, no messaging app is called), binds the run's bulk rooms to private channels of it, and makes them Public. Before each window it makes them Public again; at the end, and on `--cleanup`, it unbinds them and deletes the bridge, and they are archived with the rest.
+Only rooms bound to a private channel can be made Private, and a load run's rooms are bound to none, so this scenario is the one place the harness writes to the database itself. `bulk_rooms.py`, run in a switch-core pod over `kubectl exec` with the pod's own database login and bound to the run's workspace, makes one bridge row of the run's own that stays inactive (no pod starts it, no messaging app is called), binds the run's bulk rooms to private channels of it, and makes them Public. Before each window it makes them Public and unarchived again; at the end, and on `--cleanup`, it unbinds them and deletes the bridge, and they are archived with the rest.
 
 `summary.md` gets an "Admin bulk change" table, one row a window: the clicks, the rooms changed, the slowest click, the database connections, and a verdict. A window fails on a click that failed or left rooms unchanged, on any error in the agents' traffic, or on an agents' send p99 over 2 s, and a failed window makes the run exit 1. The pool's own timeouts and a pod handing its bridges away happen inside switch-core, where the harness cannot see them: read `switch.db.pool.timeouts` and the pods' logs for the window.
 

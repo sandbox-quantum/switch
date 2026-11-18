@@ -2084,20 +2084,29 @@ async def bulk_archive_rooms(
     the caller may not archive, or that is gone, is left alone and named in
     ``refused`` with the reason."""
     principal = Principal(user.id, is_admin)
-    updated = 0
+    allowed: list[str] = []
     refused: list[BulkRoomRefusal] = []
-    for room_id in req.room_ids:
+    for room_id in dict.fromkeys(req.room_ids):
         refusal = await _bulk_refusal(
             session, room_store, room_id, principal, "archive"
         )
         if refusal is not None:
             refused.append(refusal)
             continue
-        # See `_require_room_released`.
-        await session.commit()
-        await room_service.set_room_archived(room_id, req.archived)
-        updated += 1
-    return BulkArchiveResponse(updated=updated, refused=refused)
+        allowed.append(room_id)
+    # See `_require_room_released`.
+    await session.commit()
+    updated = set(
+        await room_service.set_rooms_archived(
+            require_tenant_id(), allowed, req.archived
+        )
+    )
+    refused.extend(
+        BulkRoomRefusal(room_id=room_id, reason="Room not found")
+        for room_id in allowed
+        if room_id not in updated
+    )
+    return BulkArchiveResponse(updated=len(updated), refused=refused)
 
 
 async def _bulk_refusal(

@@ -53,7 +53,7 @@ a user cannot be added without saying what happens to it here.
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable
+from collections.abc import Collection, Iterable
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, Protocol
@@ -397,9 +397,11 @@ class AgentRemoval(Protocol):
 
 
 class ChatArchive(Protocol):
-    """Archives one of the person's chats. The room service's."""
+    """Archives the person's chats in a workspace. The room service's."""
 
-    async def set_room_archived(self, room_id: str, archived: bool) -> None: ...
+    async def set_rooms_archived(
+        self, tenant_id: str, room_ids: Collection[str], archived: bool
+    ) -> list[str]: ...
 
 
 class TenantClients(Protocol):
@@ -931,8 +933,8 @@ class AccountDeletion:
                 except ValueError:
                     # A sub-agent goes with its parent.
                     logger.info("Agent %s was already gone", agent_id)
-            for room_id in chat_ids:
-                await self.rooms.set_room_archived(room_id, True)
+            if chat_ids:
+                await self.rooms.set_rooms_archived(tenant_id, chat_ids, True)
 
         if controller_ids:
             await self._revoke_controllers(tenant_id, user_id, controller_ids)

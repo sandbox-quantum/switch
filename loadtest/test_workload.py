@@ -120,8 +120,14 @@ def test_an_admin_bulk_window_carries_the_steady_traffic_and_nothing_more():
 
 def test_the_bulk_rooms_go_in_batches_a_gap_apart():
     clicks = bulk_plan(rooms=426, batch=200, at=15, gap=2)
-    assert [(c.at, c.start, c.end) for c in clicks] == [
-        (15, 0, 200),
-        (17, 200, 400),
-        (19, 400, 426),
+    assert [(c.at, c.action, c.start, c.end) for c in clicks] == [
+        (15, "make_private", 0, 200),
+        (17, "make_private", 200, 400),
+        (19, "make_private", 400, 426),
+        (21, "archive", 0, 200),
+        (23, "archive", 200, 400),
+        (25, "archive", 400, 426),
+        (27, "unarchive", 0, 200),
+        (29, "unarchive", 200, 400),
+        (31, "unarchive", 400, 426),
     ]

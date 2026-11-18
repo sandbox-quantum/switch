@@ -1,5 +1,6 @@
 import { type FeatureFlagState, type FeatureFlags, featureFlagsFrom } from "./featureFlags";
 import { LONG_REQUEST_TIMEOUT_MS, gatewayFetch } from "./gatewayFetch";
+import { BULK_ROOMS_MAX, inChunks } from "./inBatches";
 
 const BASE = "/gateway";
 
@@ -733,15 +734,22 @@ export interface BulkRoomRefusal {
 /** Archive or unarchive many rooms. The server skips, without failing, any
  * room the viewer may not change or that is gone, says how many it did
  * change, and names each it skipped with the reason. */
+// One request per `BULK_ROOMS_MAX` rooms, one after another.
 export async function bulkArchiveRooms(
   roomIds: string[],
   archived: boolean,
 ): Promise<{ updated: number; refused: BulkRoomRefusal[] }> {
-  return jsonRequest<{ updated: number; refused: BulkRoomRefusal[] }>(
-    "/rooms/bulk-archive",
-    "POST",
-    { room_ids: roomIds, archived },
-  );
+  const done = { updated: 0, refused: [] as BulkRoomRefusal[] };
+  for (const chunk of inChunks(roomIds, BULK_ROOMS_MAX)) {
+    const result = await jsonRequest<{ updated: number; refused: BulkRoomRefusal[] }>(
+      "/rooms/bulk-archive",
+      "POST",
+      { room_ids: chunk, archived },
+    );
+    done.updated += result.updated;
+    done.refused.push(...result.refused);
+  }
+  return done;
 }
 
 // ── Room groups ──────────────────────────────────────────────────────────────
@@ -789,15 +797,21 @@ export async function updateRoomGroup(
   return jsonRequest<RoomGroupDetail>(`/room-groups/${groupId}`, "PATCH", input);
 }
 
+// One request per `BULK_ROOMS_MAX` rooms, one after another.
 export async function assignRoomsToGroup(
   groupId: string,
   roomIds: string[],
 ): Promise<{ assigned: number }> {
-  return jsonRequest<{ assigned: number }>(
-    `/room-groups/${groupId}/rooms`,
-    "PUT",
-    { room_ids: roomIds },
-  );
+  let assigned = 0;
+  for (const chunk of inChunks(roomIds, BULK_ROOMS_MAX)) {
+    const result = await jsonRequest<{ assigned: number }>(
+      `/room-groups/${groupId}/rooms`,
+      "PUT",
+      { room_ids: chunk },
+    );
+    assigned += result.assigned;
+  }
+  return { assigned };
 }
 
 export async function deleteRoomGroup(groupId: string): Promise<void> {

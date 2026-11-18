@@ -5,6 +5,10 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, model_validator
 
+# The most subagents one bulk registration may name: each is registered on its
+# own, with a call to every messaging app of its workspace.
+SUBAGENTS_MAX = 50
+
 # ── Agent integration profile ─────────────────────────────────────────────────
 
 

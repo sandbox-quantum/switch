@@ -17,7 +17,7 @@ from pydantic import (
 from pydantic_core import PydanticCustomError
 
 from switch_core.addressing import AddressingKind, AddressingPolicy
-from switch_core.bridges.agent.protocol.types import OverallStatus
+from switch_core.bridges.agent.protocol.types import SUBAGENTS_MAX, OverallStatus
 from switch_core.bridges.collaboration.models import (
     BridgeInstallLink,
     ChannelRetirement,
@@ -276,8 +276,19 @@ class RoomAgentUpdateRequest(BaseModel):
     receives_join_events: bool
 
 
+# The most rooms one bulk request may name. The request is answered once
+# every room is done, so its size is how long it runs.
+BULK_ROOMS_MAX = 200
+# Fewer to delete: each room is emptied one member at a time, and its
+# channel may be retired on its platform.
+BULK_DELETE_MAX = 25
+# The most people one request may add to or take out of a room: one
+# platform call each.
+ROOM_USERS_MAX = 200
+
+
 class RoomUsersRequest(BaseModel):
-    user_names: list[str]
+    user_names: list[str] = Field(max_length=ROOM_USERS_MAX)
 
 
 class RoomUsersRemoved(BaseModel):
@@ -300,7 +311,7 @@ class RoomObserveRequest(BaseModel):
 
 
 class BulkDeleteRequest(BaseModel):
-    room_ids: list[str]
+    room_ids: list[str] = Field(max_length=BULK_DELETE_MAX)
     # Also archive, delete or leave each room's platform channel, as its
     # platform allows. Off unless asked: deleting a room is often about taking
     # the agents out of a channel people keep using.
@@ -332,7 +343,7 @@ class BulkDeleteResponse(BaseModel):
 
 
 class BulkArchiveRequest(BaseModel):
-    room_ids: list[str]
+    room_ids: list[str] = Field(max_length=BULK_ROOMS_MAX)
     # True archives the rooms, False unarchives them.
     archived: bool
 
@@ -366,7 +377,7 @@ class RoomGroupCreateRequest(BaseModel):
 class RoomGroupAssignRequest(BaseModel):
     # Rooms to (re)assign into the group. Rooms already in another group are
     # moved; rooms already in this group are a no-op.
-    room_ids: list[str]
+    room_ids: list[str] = Field(max_length=BULK_ROOMS_MAX)
 
 
 class RoomGroupAssignResponse(BaseModel):
@@ -758,7 +769,7 @@ class RegisterKnownSubagentsRequest(BaseModel):
     agent_type: str
     parent_agent_id: str
     options: dict[str, Any] = {}
-    subagents: list[BulkSubagentSpec]
+    subagents: list[BulkSubagentSpec] = Field(max_length=SUBAGENTS_MAX)
     overwrite: bool = False
 
 
