@@ -42,6 +42,10 @@ class MattermostRedirectRefused(requests.HTTPError):
     """The Mattermost server answered with a redirect, which is not followed."""
 
 
+class MattermostEmailUnverified(NoAccessTokenProvided):  # type: ignore[misc]
+    """Mattermost requires the bridge account to verify its email."""
+
+
 class NoRedirectClient(Client):  # type: ignore[misc]
     def make_request(
         self,
@@ -89,9 +93,16 @@ class NoRedirectClient(Client):  # type: ignore[misc]
         except requests.HTTPError as exc:
             try:
                 body = exc.response.json()
-                message = body.get("message", body)
             except ValueError:
-                message = response.text
+                body = response.text
+            message = body.get("message", body) if isinstance(body, dict) else body
+            if (
+                response.status_code == 401
+                and endpoint == "/users/login"
+                and isinstance(body, dict)
+                and body.get("id") == "api.user.login.not_verified.app_error"
+            ):
+                raise MattermostEmailUnverified(message) from None
             # An expired session is routine: the adapter logs in again and
             # retries (`_mm_api_blocking`), and raises where it cannot.
             log = logger.warning if exc.response.status_code == 401 else logger.error
