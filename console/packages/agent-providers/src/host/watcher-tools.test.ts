@@ -7,17 +7,24 @@ import { Redactions } from './redaction';
 import type { Caller } from './session-channel';
 import { sessionToolAnswerer, WatcherControl, type WatcherHealth } from './watcher-tools';
 
-const calls = vi.hoisted(() => ({ connect: vi.fn() }));
+const calls = vi.hoisted(() => ({
+  connect: vi.fn(),
+  load: vi.fn(async (): Promise<{ name: string }[]> => []),
+}));
 vi.mock('@sandboxaq/switch-agent-runtime/hosted', () => ({
   SESSION_SELECTOR_HEADERS: {
     sessionId: 'X-Switch-Session-Id',
     hostId: 'X-Switch-Session-Host-Id',
     epoch: 'X-Switch-Session-Epoch',
   },
-  loadOperations: async () => [],
+  loadOperations: () => calls.load(),
   SwitchToolCatalog: class {
+    constructor(readonly operations: { name: string }[]) {}
     tools() {
-      return [];
+      return this.operations;
+    }
+    has(name: string) {
+      return this.operations.length === 0 || this.operations.some((op) => op.name === name);
     }
     call(ctx: { selector: Record<string, string> }, name: string, args: unknown) {
       return calls.connect(ctx.selector['X-Switch-Session-Id'], name, args);
@@ -29,6 +36,7 @@ vi.mock('./shared-config', () => ({ sharedConfigSchema: { parse: (value: unknown
 const roots: string[] = [];
 afterEach(async () => {
   vi.clearAllMocks();
+  calls.load.mockImplementation(async () => []);
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
 });
 
@@ -383,4 +391,44 @@ it('keeps a move Switch recorded itself when the stream does not take the placem
   expect(result.isError).toBeFalsy();
   expect(placements.roomOf('session')).toBe('room');
   expect(warn).toHaveBeenCalledWith(expect.stringMatching(/stated again on the next change/));
+});
+
+describe('the tool list', () => {
+  async function answerer() {
+    const base = await mkdtemp(join(tmpdir(), 'watcher-tools-'));
+    roots.push(base);
+    const answer = sessionToolAnswerer({
+      identity: { agentId: 'agent', endpoint: 'https://switch.test', token: 't' },
+      connectionId: 'connection',
+      placements: await SessionPlacements.open(base, () => []),
+      publish: async () => {},
+      placementsNameCallRooms: () => false,
+      redactions: new Redactions(),
+    });
+    return { answer, who: await caller(base, 'session') };
+  }
+
+  it('is read from Switch again for each new CLI session, so an upgrade is seen', async () => {
+    const { answer, who } = await answerer();
+    calls.load.mockResolvedValueOnce([{ name: 'post_message' }]);
+    expect(await answer(who, { type: 'tools' })).toEqual([{ name: 'post_message' }]);
+    calls.load.mockResolvedValueOnce([{ name: 'post_message' }, { name: 'run_template' }]);
+    expect(await answer(who, { type: 'tools' })).toEqual([
+      { name: 'post_message' },
+      { name: 'run_template' },
+    ]);
+  });
+
+  it('is read again when a call names a tool the copy held does not have', async () => {
+    const { answer, who } = await answerer();
+    calls.load.mockResolvedValueOnce([{ name: 'post_message' }]);
+    await answer(who, { type: 'tools' });
+    calls.load.mockResolvedValueOnce([{ name: 'post_message' }, { name: 'run_template' }]);
+    calls.connect.mockResolvedValue({ content: [{ type: 'text', text: 'ok' }] });
+
+    await answer(who, { type: 'tool', name: 'run_template', arguments: {} });
+    expect(calls.load).toHaveBeenCalledTimes(2);
+    await answer(who, { type: 'tool', name: 'post_message', arguments: {} });
+    expect(calls.load).toHaveBeenCalledTimes(2);
+  });
 });

@@ -39,6 +39,10 @@ class AutoRouteState:
     reason: str | None
     fallback_agent: str | None
     fallback_agent_name: str | None
+    # The room's assigned agent (`!assign-agent`), which gets every message
+    # before auto-route is asked, so auto-route does not act while it is set.
+    assigned_agent: str | None
+    assigned_agent_name: str | None
 
 
 class AutoRouteRefused(ValueError):
@@ -52,12 +56,16 @@ async def auto_route_state(
     checked = await availability.check(session, room.tenant_id)
     fallback_id = auto_route_fallback_in(room.metadata_)
     fallback = await session.get(Agent, fallback_id) if fallback_id else None
+    assigned_id = main_agent_in(room.metadata_)
+    assigned = await session.get(Agent, assigned_id) if assigned_id else None
     return AutoRouteState(
         on=auto_route_on_in(room.metadata_),
         available=checked.available,
         reason=checked.reason,
         fallback_agent=fallback_id,
         fallback_agent_name=fallback.name if fallback is not None else None,
+        assigned_agent=assigned_id,
+        assigned_agent_name=assigned.name if assigned is not None else None,
     )
 
 
@@ -69,9 +77,19 @@ async def set_auto_route_on(
     on: bool,
 ) -> None:
     """Turn the room's auto-route on or off. Turning it on is refused where
-    it cannot act, so nobody is told it is working when it is not; turning it
-    off always works."""
+    it cannot act, so nobody is told it is working when it is not, and while
+    an agent is assigned, which would get every message first; turning it off
+    always works."""
     if on:
+        assigned_id = main_agent_in(room.metadata_)
+        if assigned_id is not None:
+            assigned = await session.get(Agent, assigned_id)
+            name = assigned.name if assigned is not None else "an assigned agent"
+            raise AutoRouteRefused(
+                f"Every message here goes to **{name}**, assigned with "
+                "`!assign-agent`. Run `!unassign-agent` first, then turn "
+                "auto-route on."
+            )
         checked = await availability.check(session, room.tenant_id)
         if not checked.available:
             raise AutoRouteRefused(checked.reason or "Auto-route is unavailable here.")

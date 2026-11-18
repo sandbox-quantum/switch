@@ -1,11 +1,17 @@
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
-Backend = Literal["systemone", "ollama", "bedrock", "llamacpp", "anthropic"]
+Backend = Literal[
+    "systemone", "ollama", "bedrock", "llamacpp", "anthropic", "gemini_decision"
+]
 
 DEFAULT_BEDROCK_MODEL = "us.anthropic.claude-haiku-5-5-v1:0"
 DEFAULT_ANTHROPIC_MODEL = "claude-haiku-5-5"
+DEFAULT_GEMINI_DECISION_MODEL = "gemini-decision-1"
+DEFAULT_GEMINI_DECISION_URL = (
+    "https://generativelanguage.googleapis.com/v1beta/decisions"
+)
 
 DEFAULT_MODELS: dict[str, str] = {
     "systemone": "clef-flash",
@@ -13,6 +19,7 @@ DEFAULT_MODELS: dict[str, str] = {
     "bedrock": DEFAULT_BEDROCK_MODEL,
     "llamacpp": "qwen3.5-4b-q4_k_m",
     "anthropic": DEFAULT_ANTHROPIC_MODEL,
+    "gemini_decision": DEFAULT_GEMINI_DECISION_MODEL,
 }
 
 
@@ -46,6 +53,11 @@ class Settings:
     # it leads the next option (another agent or "none") by at least this
     # much, instead of applying confidence_threshold. None: the threshold.
     min_lead: float | None = None
+    # Google's Decisions API: the key (GEMINI_DECISION_API_KEY, never logged),
+    # the endpoint, and the model a per-request override to it uses.
+    gemini_decision_api_key: str | None = field(default=None, repr=False)
+    gemini_decision_url: str = DEFAULT_GEMINI_DECISION_URL
+    gemini_decision_model: str = DEFAULT_GEMINI_DECISION_MODEL
 
 
 def load_settings() -> Settings:
@@ -64,7 +76,17 @@ def load_settings() -> Settings:
     if min_lead is not None and not 0.0 <= min_lead <= 1.0:
         raise ValueError(f"DECISION_MIN_LEAD must be between 0 and 1, got {min_lead}")
     bedrock_model = os.environ.get("DECISION_BEDROCK_MODEL") or DEFAULT_BEDROCK_MODEL
-    default_model = bedrock_model if backend == "bedrock" else DEFAULT_MODELS[backend]
+    gemini_model = (
+        os.environ.get("DECISION_GEMINI_MODEL") or DEFAULT_GEMINI_DECISION_MODEL
+    )
+    gemini_key = os.environ.get("GEMINI_DECISION_API_KEY", "").strip() or None
+    if backend == "gemini_decision" and gemini_key is None:
+        raise ValueError(
+            "DECISION_BACKEND=gemini_decision needs GEMINI_DECISION_API_KEY"
+        )
+    default_model = {"bedrock": bedrock_model, "gemini_decision": gemini_model}.get(
+        backend, DEFAULT_MODELS[backend]
+    )
     return Settings(
         backend=backend,  # type: ignore[arg-type]
         model=os.environ.get("DECISION_MODEL") or default_model,
@@ -84,4 +106,8 @@ def load_settings() -> Settings:
         bedrock_enabled=_flag("DECISION_BEDROCK_ENABLED"),
         bedrock_model=bedrock_model,
         min_lead=min_lead,
+        gemini_decision_api_key=gemini_key,
+        gemini_decision_url=os.environ.get("GEMINI_DECISION_URL")
+        or DEFAULT_GEMINI_DECISION_URL,
+        gemini_decision_model=gemini_model,
     )

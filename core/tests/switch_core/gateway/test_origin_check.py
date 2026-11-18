@@ -385,12 +385,23 @@ def test_a_malformed_cookie_beside_switch_auth_cant_hide_it(cookie: str) -> None
 # ── Sign-in is checked with no cookie ───────────────────────────────
 
 
+# Signing in, and the browser sign-in Switch Console hands over: each signs a
+# browser in to an account, or says whose account it would be.
+_SIGN_IN_PATHS = [
+    "/auth/login",
+    "/auth/signup",
+    "/auth/oidc/exchange",
+    "/auth/handoff/peek",
+    "/auth/handoff/redeem",
+]
+
+
 def _sign_in_app(allowed: frozenset[str] = frozenset({SERVER})):
     """The sign-in routes behind the middleware, on a gateway app mounted at
     `/gateway` as Core mounts it, so the prefix is handled too."""
     calls: list[str] = []
     gateway = FastAPI()
-    for path in ("/auth/login", "/auth/signup", "/auth/oidc/exchange", "/other"):
+    for path in (*_SIGN_IN_PATHS, "/other"):
 
         async def handler(path: str = path) -> dict[str, bool]:
             calls.append(path)
@@ -403,7 +414,7 @@ def _sign_in_app(allowed: frozenset[str] = frozenset({SERVER})):
     return TestClient(outer, base_url=SERVER), calls
 
 
-@pytest.mark.parametrize("path", ["/auth/login", "/auth/signup", "/auth/oidc/exchange"])
+@pytest.mark.parametrize("path", _SIGN_IN_PATHS)
 @pytest.mark.parametrize(
     "headers",
     [
@@ -421,7 +432,7 @@ def test_a_foreign_sign_in_is_refused_with_no_cookie(path: str, headers: dict) -
     assert calls == []
 
 
-@pytest.mark.parametrize("path", ["/auth/login", "/auth/signup", "/auth/oidc/exchange"])
+@pytest.mark.parametrize("path", _SIGN_IN_PATHS)
 def test_sign_in_from_switch_or_console_passes(path: str) -> None:
     client, calls = _sign_in_app()
     from_page = client.post(f"/gateway{path}", headers={"origin": SERVER}, json={})

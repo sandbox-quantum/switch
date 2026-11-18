@@ -43,10 +43,9 @@ async function reportConsent(previous: TelemetrySettings, next: TelemetrySetting
 /**
  * Settings the app writes as it goes rather than a person setting them, which
  * `setting_changed` would otherwise count as people changing them: the
- * first-run notice records the usage-data answer the moment it is shown, and
- * the first run keeps its own progress in `onboarding`.
+ * first-run notice records the usage-data answer the moment it is shown.
  */
-const UNREPORTED_SETTINGS: ReadonlySet<AppSettingsKey> = new Set(['telemetry', 'onboarding']);
+const UNREPORTED_SETTINGS: ReadonlySet<AppSettingsKey> = new Set(['telemetry']);
 
 function isReportedSetting(key: AppSettingsKey): key is TelemetrySettingKey {
   return !UNREPORTED_SETTINGS.has(key);

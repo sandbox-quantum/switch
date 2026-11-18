@@ -6,6 +6,7 @@ import { AgentProfile } from '@renderer/features/managed-agents/agent-profile';
 import { agentSections } from '@renderer/features/managed-agents/agent-sections';
 import { useManagedAgents } from '@renderer/features/managed-agents/use-managed-agents';
 import { SidebarMenuRow } from '@renderer/features/sidebar/sidebar-primitives';
+import { homeRedirect } from '@renderer/features/switch-servers/home-target';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { Titlebar } from '@renderer/lib/components/titlebar/Titlebar';
 import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
@@ -62,7 +63,7 @@ const SwitchBuddyPanel = observer(function SwitchBuddyPanel() {
   const serviceConnections = useFeatureFlags(serverId).service_connections;
 
   useEffect(() => {
-    if (buddy) void openBuddyChat(serverId, buddy);
+    if (buddy) void openBuddyChat(serverId, buddy, 'in-place');
   }, [buddy, serverId]);
 
   const connect = () => {
@@ -71,7 +72,7 @@ const SwitchBuddyPanel = observer(function SwitchBuddyPanel() {
     showModal('buddySetupModal', {
       serverId,
       workspaceId,
-      onSuccess: (agent) => void openBuddyChat(serverId, agent),
+      onSuccess: (agent) => void openBuddyChat(serverId, agent, 'in-place'),
     });
   };
 
@@ -147,8 +148,7 @@ export const switchBuddyView = {
   MainPanel: SwitchBuddyPanel,
   canActivate: (params: unknown): GuardResult => {
     const value = (params ?? {}) as Partial<Record<keyof SwitchBuddyParams, unknown>>;
-    if (typeof value.serverId !== 'string')
-      return { ok: false, redirect: 'home', discardParams: true };
+    if (typeof value.serverId !== 'string') return { ...homeRedirect(), discardParams: true };
     return { ok: true };
   },
 } satisfies ViewDefinition<SwitchBuddyParams>;

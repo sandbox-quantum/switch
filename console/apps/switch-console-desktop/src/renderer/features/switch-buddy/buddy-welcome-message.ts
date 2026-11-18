@@ -15,9 +15,10 @@ function platformList(): string {
 
 /**
  * The first message switch-buddy posts in its Welcome chat: who it is, that
- * Switch brings agents to the messaging apps a team already uses, and what it
- * can help with. Written here, posted as the buddy, so it is there the moment
- * the chat opens rather than after the buddy's first session starts.
+ * Switch brings agents to the messaging apps a team already uses, what it can
+ * help with, and what teams use rooms for. Written here, posted as the buddy,
+ * so it is there the moment the chat opens rather than after the buddy's first
+ * session starts.
  *
  * The apps' logos are drawn by Console's chat; the Welcome chat is read there.
  */
@@ -30,15 +31,20 @@ export function buddyWelcomeMessage({
 }): string {
   return [
     // The intro calls it switch-buddy; the name it goes by from here on carries the person too.
-    `Hi${firstName ? ` ${firstName}` : ''}, I’m **${agentName}**, your ${agentName === 'switch-buddy' ? 'assistant' : 'switch-buddy'} for everything Switch. 👋`,
+    `Hi${firstName ? ` ${firstName}` : ''}, I’m **${agentName}**, your ${agentName === 'switch-buddy' ? 'assistant' : 'switch-buddy'} for everything Switch Rooms. 👋`,
     '',
-    `Switch brings your agents to where your team already works: ${platformList()}. Your team talks to agents in the channels they already use, and people and agents work together in shared rooms.`,
+    `Switch Rooms brings your agents to where your team already works: ${platformList()}. Your team talks to agents in the channels they already use, and people and agents work together in shared rooms.`,
     '',
     'I can help you:',
-    '- 🔌 Connect your team’s chat app',
+    '- 🔌 Connect your team’s messaging app',
     '- 🤖 Create agents and bring them into your channels',
     '- 🏠 Set up rooms where your team and agents work together',
-    '- 💬 Answer anything about Switch',
+    '- 💬 Answer anything about Switch Rooms',
+    '',
+    'For example, teams use rooms to:',
+    '- 🔍 Review pull requests, with an agent working alongside the engineers',
+    '- 🎫 Triage support questions in a shared channel with the ops team',
+    '- 🚀 Build a feature together, with agents taking on parts of the work',
     '',
     'Tell me which app your team uses, and I’ll walk you through connecting it.',
   ].join('\n');

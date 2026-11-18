@@ -1,5 +1,8 @@
 import AddOutlined from "@mui/icons-material/AddOutlined";
+import CheckOutlined from "@mui/icons-material/CheckOutlined";
+import EditOutlined from "@mui/icons-material/EditOutlined";
 import SmartToyOutlined from "@mui/icons-material/SmartToyOutlined";
+import VisibilityOutlined from "@mui/icons-material/VisibilityOutlined";
 import {
   Alert,
   Autocomplete,
@@ -14,7 +17,7 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
-import { useState } from "react";
+import { type ReactElement, useState } from "react";
 import {
   type GitHubConnection,
   type GrantedAgent,
@@ -44,6 +47,13 @@ function repositoryNamesIfKnown(github: GitHubConnection | null, grant: ServiceG
     names.every((name) => installation.repositories.some((r) => r.name === name))
     ? names
     : null;
+}
+
+/** The access badge's icon, beside the level it names: a pencil for writing,
+ * an eye for reading, a tick for one handed the owner's own token. */
+function grantIcon(grant: Pick<ServiceGrant, "access">, passThrough: boolean): ReactElement {
+  if (passThrough) return <CheckOutlined />;
+  return grant.access === "write" ? <EditOutlined /> : <VisibilityOutlined />;
 }
 
 interface Entry {
@@ -84,6 +94,7 @@ function entriesOf(
 
 function AgentCard({
   entry,
+  agentType,
   connection,
   github,
   busy,
@@ -91,6 +102,8 @@ function AgentCard({
   onRemove,
 }: {
   entry: Entry;
+  /** What the agent is ("Codex CLI"); null where the agent list didn't say. */
+  agentType: string | null;
   connection: ServiceConnection;
   github: GitHubConnection | null;
   busy: boolean;
@@ -100,6 +113,7 @@ function AgentCard({
   const repositories = connection.slug === "github" ? repositoryNamesIfKnown(github, entry.grant) : null;
   const count = repositoryCount(entry.grant);
   const detail = [
+    agentType,
     entry.ownerName,
     repositories?.length === 1
       ? repositories[0]
@@ -138,7 +152,12 @@ function AgentCard({
           <Typography variant="body2" sx={{ fontWeight: 600 }} noWrap>
             {entry.name}
           </Typography>
-          <Chip size="small" variant="outlined" label={grantLabel(entry.grant, connection.pass_through)} />
+          <Chip
+            size="small"
+            variant="outlined"
+            icon={grantIcon(entry.grant, connection.pass_through)}
+            label={grantLabel(entry.grant, connection.pass_through)}
+          />
         </Stack>
         {detail.length > 0 && (
           <Typography variant="body2" color="text.secondary" noWrap title={repositories?.join(", ")}>
@@ -180,6 +199,7 @@ export default function ConnectorAgents({
   connection,
   own,
   workspace,
+  agentTypes,
   meId,
   workspaceName,
   github,
@@ -190,6 +210,8 @@ export default function ConnectorAgents({
   own: ServiceAgent[];
   /** Every agent granted it in the workspace, for an admin; null for anyone else. */
   workspace: GrantedAgent[] | null;
+  /** Each agent's type, by its id. */
+  agentTypes: ReadonlyMap<string, string>;
   meId: string;
   workspaceName: string;
   github: GitHubConnection | null;
@@ -258,6 +280,7 @@ export default function ConnectorAgents({
             <AgentCard
               key={entry.agentId}
               entry={entry}
+              agentType={agentTypes.get(entry.agentId) ?? null}
               connection={connection}
               github={github}
               busy={busy}

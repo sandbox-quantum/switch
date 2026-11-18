@@ -67,6 +67,9 @@ class _Lifecycle:
     def supports_private_channels(self, bridge_type: str) -> bool:
         return True
 
+    def typed_commands(self, bridge_type, connection_config):
+        return {}
+
     def channel_creation_blocker(
         self, bridge_type: str, connection_config: object
     ) -> str | None:
@@ -77,6 +80,9 @@ class _Lifecycle:
 
     def supports_directory_search(self, bridge_type: str) -> bool:
         return False
+
+    def directory_search_hint(self, bridge_id: str, bridge_type: str) -> str:
+        return "Your name or handle"
 
     def receives_webhooks(self, bridge_type: str) -> bool:
         return False

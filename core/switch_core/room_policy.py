@@ -18,7 +18,7 @@ Four tiers, from narrowest to widest:
   poster with no linked Switch account counts as in the room, with no
   identity of their own.
 - **can see** — the "in the room" tier, plus everyone in the workspace when
-  the room's read visibility is public.
+  the room is open to the workspace (`open_to_workspace`).
 
 An agent acts with its owner's rights: the surface builds the `RoomCaller`
 from the owner, never from the agent, so an agent of a room admin acts as a
@@ -67,6 +67,23 @@ def visibility_for_channel(channel_type: str) -> Literal["public", "private"]:
     not move the room; its owner or an admin changes the Switch side.
     """
     return "private" if channel_type in PRIVATE_CHANNELS else "public"
+
+
+def open_to_workspace(room: RoomFacts) -> bool:
+    """Whether people who are not in the room may see it: its read visibility
+    is public and its channel is not one only its members can see.
+
+    A room on a private channel, a group or a DM stays hidden from them
+    whatever its stored read visibility, which for a room made before rooms
+    took their visibility from their channel can still say public. So does a
+    bridged room whose channel type was never recorded: it may be private.
+    `room_store.open_to_workspace` is the same rule as a query.
+    """
+    if room.read_visibility != "public":
+        return False
+    if room.channel_type is None:
+        return room.external_channel_id is None
+    return room.channel_type not in PRIVATE_CHANNELS
 
 
 class Tier(StrEnum):
@@ -176,6 +193,9 @@ class RoomFacts(Protocol):
     @property
     def channel_type(self) -> str | None: ...
 
+    @property
+    def external_channel_id(self) -> str | None: ...
+
 
 @dataclass(frozen=True)
 class RoomCaller:
@@ -236,7 +256,7 @@ def _meets(caller: RoomCaller, room: RoomFacts, tier: Tier) -> bool:
         return True
     if tier is Tier.IN_ROOM:
         return False
-    return room.read_visibility == "public"
+    return open_to_workspace(room)
 
 
 _ALLOWED = RoomDecision(True, None)
@@ -322,6 +342,12 @@ def allows(
     return decide(
         caller, room, action, owns_target=owns_target, from_inside=from_inside
     ).allowed
+
+
+def visible_from_outside(principal: Principal, room: RoomFacts) -> bool:
+    """Whether `principal` may see `room` without taking part in it: as its
+    owner, as an admin, or because it is open to the workspace."""
+    return allows(RoomCaller(principal, in_room=False), room, "read")
 
 
 def require(

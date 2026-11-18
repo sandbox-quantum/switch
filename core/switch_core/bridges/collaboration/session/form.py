@@ -20,6 +20,8 @@ would put an answer against the wrong question with nothing to report it.
 
 from __future__ import annotations
 
+import re
+import unicodedata
 from dataclasses import dataclass
 from typing import Any
 
@@ -222,6 +224,51 @@ def resolve_text_answer(
             return _malformed(kind)
         return _questions_answer(questions, answer)
     return _unknown(kind)
+
+
+def resolve_plain_reply(
+    request: SnapshotRequest, form: dict[str, Any], body: str
+) -> RequestResult | Unanswerable | None:
+    """A reply in a question card's thread that is one of its options, as is.
+
+    For the person who answers "Yes, create it" under a card offering "Yes,
+    create it" instead of typing the handle. Narrow on purpose, since a reply
+    in that thread is far more often conversation than an answer: only a card
+    asking one single-choice question, and only a message that is the whole
+    of one option's label, or its number, ignoring case, punctuation and emoji.
+    None means the message is not an answer and carries on as chat.
+    """
+    content = request.content
+    if not isinstance(content, QuestionsContent) or len(content.questions) != 1:
+        return None
+    question = content.questions[0]
+    if question.multi_select or not question.options:
+        return None
+    said = _plain(body)
+    if not said:
+        return None
+    position: int | None = None
+    if said.isdigit() and len(said) <= 2:
+        position = int(said) if 1 <= int(said) <= len(question.options) else None
+    else:
+        matching = [
+            index
+            for index, option in enumerate(question.options, start=1)
+            if _plain(option.label) == said
+        ]
+        position = matching[0] if len(matching) == 1 else None
+    if position is None:
+        return None
+    return resolve_pressed_position(form, position)
+
+
+def _plain(text: str) -> str:
+    """`text` folded to its letters, digits and single spaces, for comparing."""
+    kept = "".join(
+        char if unicodedata.category(char)[0] in "LN" else " "
+        for char in unicodedata.normalize("NFKC", text)
+    )
+    return re.sub(r"\s+", " ", kept).strip().casefold()
 
 
 def _approval_answer(

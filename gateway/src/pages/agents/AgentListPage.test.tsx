@@ -27,6 +27,7 @@ function signedInAs(role: "admin" | "member", features: FeatureFlags = ALL_OFF) 
     can_create_workspace: false,
     can_add_workspace: false,
     invite_email_enabled: false,
+    can_manage_connector_apps: false,
   } as unknown as Session;
   vi.mocked(useAuth).mockReturnValue({
     session,
@@ -144,7 +145,41 @@ describe("AgentListPage", () => {
     answer({ "GET /agents": [200, [agent("theirs", "u2")]] });
     show();
 
-    expect(await screen.findByText("You don't own any agents in Acme")).toBeTruthy();
+    expect(await screen.findByText("You don’t own any agents in Acme")).toBeTruthy();
+  });
+
+  it("words a search that matches none of a member's agents for them", async () => {
+    signedInAs("member");
+    answer({ "GET /agents": [200, [agent("mine", "u1")]] });
+    show();
+
+    fireEvent.change(await screen.findByLabelText("Search agents"), { target: { value: "nothing like it" } });
+    expect(await screen.findByText("None of your agents match the current filters.")).toBeTruthy();
+  });
+
+  it("offers only the statuses some agent has", async () => {
+    signedInAs("admin");
+    answer({ "GET /agents": [200, [agent("a", "u1", { status: "offline" }), agent("b", "u1", { status: "not_tracked" })]] });
+    show();
+
+    fireEvent.mouseDown(await screen.findByRole("combobox", { name: "Status" }));
+    const options = within(await screen.findByRole("listbox")).getAllByRole("option").map((o) => o.textContent);
+    expect(options).toEqual(["All statuses", "Offline", "Not tracked"]);
+  });
+
+  it("says what a missing parent or owner means", async () => {
+    signedInAs("admin");
+    answer({
+      "GET /agents": [
+        200,
+        [agent("orphan", "u1", { owner_id: null, owner_name: null }), agent("nameless", "u9", { owner_name: null })],
+      ],
+    });
+    show();
+
+    expect(await screen.findByText("No owner")).toBeTruthy();
+    expect(screen.getByText("Unknown")).toBeTruthy();
+    expect(screen.getAllByTitle("Top-level agent")).toHaveLength(2);
   });
 
   it("says why the list could not load, rather than show an empty one", async () => {
@@ -263,7 +298,10 @@ describe("AgentListPage", () => {
     const dialog = await screen.findByRole("dialog", { name: "Delete agent" });
     fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
 
-    expect(await screen.findByText('Deleted "doomed".')).toBeTruthy();
+    // A plain success is a snackbar, not a notice on the page.
+    const said = await screen.findByText('Deleted "doomed".');
+    expect(said.closest(".MuiSnackbar-root")).not.toBeNull();
+    expect(said.closest(".MuiAlert-root")).toBeNull();
     expect(await screen.findByText("1 agent")).toBeTruthy();
     expect(calls.filter((call) => call.method === "GET" && call.path === "/agents")).toHaveLength(2);
   });

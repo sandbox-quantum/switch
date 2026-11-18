@@ -20,7 +20,8 @@ import {
 } from "../../data/api";
 import { AccessChip, AccessSelect } from "../../components/AccessControls";
 import {
-  ACCESS_HELPERS_FOR_OTHERS,
+  LISTED_RESOURCE_HELPERS,
+  LISTED_RESOURCE_HELPERS_FOR_OTHERS,
   type AccessLevel,
   fromAccessLevel,
   toAccessLevel,
@@ -36,6 +37,8 @@ import {
   DetailLoading,
   InPackagesSection,
   InfoLine,
+  ReadOnlyBanner,
+  ownerCanChange,
   requiredHelper,
   useAfterTransfer,
   useResourceDetail,
@@ -50,13 +53,13 @@ export default function ReferenceDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { data: types } = useReferenceTypes();
-  const { data: ref, setData: setRef, error, loading, reload } = useResourceDetail(id, loadReference);
+  const { data: ref, setData: setRef, error, errorStatus, loading, reload } = useResourceDetail(id, loadReference);
   const { afterTransfer, refreshNotice } = useAfterTransfer(id, loadReference, setRef, LIST_PATH);
   const [deleteOpen, setDeleteOpen] = useState(false);
 
   if (ref === null && loading) return <DetailLoading />;
   if (ref === null || !id) {
-    return <DetailLoadFailed what="reference" listPath={LIST_PATH} error={error} onRetry={reload} />;
+    return <DetailLoadFailed what="reference" listPath={LIST_PATH} error={error} errorStatus={errorStatus} onRetry={reload} />;
   }
 
   // Visibility-filtered, so it may miss a type this reference legitimately
@@ -69,7 +72,7 @@ export default function ReferenceDetailPage() {
         <IconButton
           onClick={() => navigate(LIST_PATH)}
           size="small"
-          aria-label="Back"
+          aria-label="Back to resources"
         >
           <ArrowBack />
         </IconButton>
@@ -79,6 +82,7 @@ export default function ReferenceDetailPage() {
         <CategoryChip label={referenceTypeLabel(ref)} />
         <AccessChip pair={ref} />
       </Stack>
+      {!ref.can_edit && <ReadOnlyBanner whose={ownerCanChange("reference", ref.owner_id, ref.owner_name)} />}
 
       <Stack spacing={4}>
         <RefInfoSection ref_={ref} />
@@ -275,7 +279,7 @@ function EditFieldsSection({
         value={access}
         onChange={setAccess}
         disabled={!canChangeAccess || saving}
-        helpers={canChangeAccess ? undefined : ACCESS_HELPERS_FOR_OTHERS}
+        helpers={canChangeAccess ? LISTED_RESOURCE_HELPERS : LISTED_RESOURCE_HELPERS_FOR_OTHERS}
         sx={{ maxWidth: 320 }}
       />
       {error && <Alert severity="error">{error}</Alert>}

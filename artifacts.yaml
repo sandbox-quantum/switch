@@ -60,13 +60,13 @@
 artifacts:
   switch-core:
     description: The backend service, and the gateway API it serves.
-    version: 0.31.0
+    version: 0.32.1
     declared_in: core/pyproject.toml
     published_as: switch-core
 
   switch-console:
     description: The desktop app.
-    version: 0.40.1
+    version: 0.41.1
     declared_in: console/apps/switch-console-desktop/package.json
     # Which switch-core release this app build bundles and pulls for
     # local-server mode. DELIBERATELY NOT switch-core's version above.
@@ -78,20 +78,20 @@ artifacts:
     # main. This moves only when Switch Console is ready to bundle that release —
     # in lockstep with the bundled compose.
     pins:
-      switch-core: 0.31.0
+      switch-core: 0.32.1
     # What the canary build bundles instead, so a switch-core pre-release can be
     # tried on canary without moving stable. Never older than the stable pin
     # (`just artifacts` refuses it). When a stable switch-core release ships,
     # move `pins` to it; drop the canary pin back to it too unless a newer
     # pre-release is being tried.
     canary_pins:
-      switch-core: 0.32.0-rc.5
+      switch-core: 0.32.1
 
   agent-runtime:
     description: >-
       The Switch protocol client and the MCP tool surface each session host
       serves. Bundled into Switch Console and its sidecar, not published.
-    version: 0.8.3
+    version: 0.8.5
     declared_in: console/packages/switch-agent-runtime/package.json
 
   sidecar:
@@ -109,11 +109,6 @@ artifacts:
     description: The operator dashboard image.
     version_from: switch-core
     published_as: gateway
-
-  setup:
-    description: The collaboration-bridge seeder image.
-    version_from: switch-core
-    published_as: setup
 
   switch-decision:
     description: >-
@@ -247,10 +242,11 @@ contracts:
 
   gateway-api:
     description: >-
-      The HTTP API switch-core serves to first-party UI clients. Excludes the
-      authentication surface, which is deliberately frozen and unversioned so
-      that a client can always authenticate far enough to be told what is
-      wrong.
+      The HTTP API switch-core serves to first-party UI clients. Excludes
+      signing in, refreshing a session and signing out, which are deliberately
+      frozen and unversioned so that a client can always sign in far enough to
+      be told what is wrong. The rest of /auth is part of it, sign-up and the
+      browser sign-in link included.
     # Revision 2 is what switch-core 0.31.0 shipped while still declaring 1.
     # An agent's definition carries `auto_mode`, which a server without it
     # refuses (a strict body takes no field it does not know), and signing in
@@ -267,12 +263,22 @@ contracts:
     # Revision 4 adds the paste route of a service connection (`PasteBody`)
     # and the `choices` a sign-in starts with (`StartFlow`).
     #
+    # Revision 5 adds the sign-in link Switch Console hands a browser
+    # (`MintHandoffBody`), and its peek and redeem (`HandoffCodeBody`).
+    #
+    # Revision 6 adds a template's `use_case` to the bodies that create and
+    # change one (`TemplateCreateRequest`, `TemplateUpdateRequest`).
+    #
+    # Revision 7 adds `device_id` to Switch Console enrolling this computer
+    # (`ConsoleControllerRequest`): which machine, OS account and data folder
+    # it is, so an enrollment on a device the person already has takes it over.
+    #
     # A strict request body changing is the change most easily missed, so
     # core/tests/switch_core/gateway/test_gateway_api_revision.py fails until
     # it is recorded against a raised `speaks`.
     artifacts:
-      switch-core: { speaks: 4, accepts: 2 }
-      switch-console: { speaks: 4, accepts: 1 }
+      switch-core: { speaks: 7, accepts: 2 }
+      switch-console: { speaks: 7, accepts: 1 }
 
   stack-compose:
     description: >-

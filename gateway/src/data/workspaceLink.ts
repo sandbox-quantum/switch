@@ -47,6 +47,10 @@ export function onThisDashboard(path: string): string {
   return `${window.location.origin}${path}`;
 }
 
+/** Where the platform operator acts on a workspace they aren't in. */
+export const OPERATOR_ELSEWHERE =
+  "To make someone an admin of an organization you aren't in, run switch-promote-org-admin where Switch runs.";
+
 export type LinkOutcome = { switched: true } | { switched: false; notice: string | null };
 
 /** Switch to the workspace a link names, when `session` is somewhere else.
@@ -60,9 +64,13 @@ export async function followWorkspaceLink(wanted: string, session: Session): Pro
   if (session.tenant?.id === wanted) return { switched: false, notice: null };
   if (!session.tenants.some((tenant) => tenant.id === wanted)) {
     const here = session.tenant === null ? "" : `, so this is ${session.tenant.name}`;
+    // The operator's dashboard enters no workspace of someone else's; what
+    // they do there, making an organization's admin included, is done with
+    // the server's commands.
+    const operator = session.user.is_operator ? ` ${OPERATOR_ELSEWHERE}` : "";
     return {
       switched: false,
-      notice: `The link you followed is for a workspace you aren't in${here}.`,
+      notice: `The link you followed is for a workspace you aren't in${here}.${operator}`,
     };
   }
   await switchTenant(wanted);
@@ -105,4 +113,14 @@ export function takeLinkAfterSignIn(): WorkspaceLink | null {
 
 export function forgetLinkForSignIn(): void {
   window.sessionStorage.removeItem(AFTER_SIGN_IN_KEY);
+}
+
+/** What a page opened by id adds when the server answered that it can't
+ * find the thing or won't show it: a link that names no workspace opens in
+ * whichever one this browser used last, which need not be the thing's.
+ * Null for any other failure. */
+export function mayBeInAnotherWorkspace(status: number | null | undefined): string | null {
+  return status === 404 || status === 403
+    ? "This may be in another workspace — switch workspace or check the link."
+    : null;
 }

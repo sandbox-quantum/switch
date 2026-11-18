@@ -37,7 +37,7 @@ it('offers remote agent types whose CLI is installed on the host', async () => {
   expect(statuses).toContainEqual({
     agentId: 'codex',
     available: false,
-    blockedReason: 'Install Codex on example-host.',
+    blockedReason: 'Install OpenAI Codex on example-host.',
     blockedKind: 'not-installed',
   });
 });

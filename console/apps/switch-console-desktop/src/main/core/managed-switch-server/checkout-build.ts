@@ -9,8 +9,8 @@ import type { ServerHost } from './host/types';
  *
  * The released path pulls `switch-core:<COMPATIBLE_SWITCH_VERSION>` and friends
  * from GHCR. Here the same compose file is layered with a build override — the
- * same one `just standalone-up` uses — so compose builds `switch`, `gateway`
- * and `setup` from the working tree and tags them under a version of their own.
+ * same one `just standalone-up` uses — so compose builds `switch` and
+ * `gateway` from the working tree and tags them under a version of their own.
  *
  * The compose file itself is still the bundled pinned one — only the images
  * change. A checkout whose own `deploy/local/standalone-docker-compose.yml` has
@@ -29,7 +29,6 @@ const CHECKOUT_MARKERS = [
   'core/pyproject.toml',
   'deploy/shared_resources/images/Dockerfile.switch',
   'deploy/shared_resources/images/Dockerfile.gateway',
-  'deploy/shared_resources/images/Dockerfile.setup',
 ];
 
 /** Whether `dir` is the root of a Switch checkout the stack can be built from. */
@@ -78,7 +77,6 @@ export function checkoutBuildOverrideYaml(checkoutRoot: string): string {
     'services:',
     service('switch', 'Dockerfile.switch'),
     service('gateway', 'Dockerfile.gateway'),
-    service('setup', 'Dockerfile.setup'),
     '',
   ].join('\n');
 }

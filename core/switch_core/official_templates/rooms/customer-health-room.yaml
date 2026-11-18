@@ -87,6 +87,7 @@ resources:
     name: "{segment} - Customer Health"
     description: "Customer health monitoring for {segment}. Engagement tracking, churn risk, and retention coordination."
     bridge: "{bridge}"
+    channel_type: channel_private
     agents: [health_monitor, save_strategist]
     users:
       - {if: "{bridge}", value: ["{$creator}"]}

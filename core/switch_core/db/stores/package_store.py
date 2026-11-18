@@ -49,6 +49,11 @@ class PackageStore:
         )
         return list(result.scalars().all())
 
+    async def list_all(self, session: AsyncSession) -> list[Package]:
+        """Every package in the bound tenant, whoever owns it."""
+        result = await session.execute(select(Package))
+        return list(result.scalars().all())
+
     async def update_fields(
         self,
         session: AsyncSession,
@@ -318,18 +323,21 @@ class PackageStore:
         )
         return list(result.scalars().all())
 
-    async def list_document_ids_for_room(
+    async def list_documents_for_room(
         self, session: AsyncSession, room_id: str
-    ) -> list[str]:
+    ) -> list[tuple[str, str]]:
+        """(document id, owner of the package it is in) for each document in
+        a package attached to this room, once per package holding it."""
         result = await session.execute(
-            select(package_documents.c.document_id)
+            select(package_documents.c.document_id, Package.owner_id)
             .join(
                 room_packages,
                 room_packages.c.package_id == package_documents.c.package_id,
             )
+            .join(Package, Package.id == package_documents.c.package_id)
             .where(room_packages.c.room_id == room_id)
         )
-        return list(result.scalars().all())
+        return [(doc_id, owner_id) for doc_id, owner_id in result.all()]
 
     # ── Reverse lookups (for ref/doc list responses) ──────────────────────
 

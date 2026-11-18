@@ -1,5 +1,4 @@
 import type { ComponentType, ReactNode } from 'react';
-import { homeView } from '@renderer/app/home-view';
 import { adminView } from '@renderer/features/admin/admin-view';
 import { chatView } from '@renderer/features/chats/chat-view';
 import { connectorsView } from '@renderer/features/connectors/connectors-view';
@@ -17,6 +16,7 @@ import { settingsView } from '@renderer/features/settings/settings-view';
 import { switchBuddyView } from '@renderer/features/switch-buddy/switch-buddy-view';
 import { roomView } from '@renderer/features/switch-rooms/view';
 import { managedServerView } from '@renderer/features/switch-servers/managed-server-view';
+import { noServerView } from '@renderer/features/switch-servers/no-server-view';
 import { serverAgentsView } from '@renderer/features/switch-servers/server-agents-view';
 import { serverRoomsView } from '@renderer/features/switch-servers/server-rooms-view';
 import { serverView } from '@renderer/features/switch-servers/view';
@@ -27,11 +27,11 @@ import type { CommandProvider } from '@renderer/lib/commands/types';
 import { appState } from '@renderer/lib/stores/app-state';
 import type { ViewIdName } from '@shared/core/views/view-ids';
 
-// Switch Console views: agents-at-a-location (location), sessions (session), home, settings,
+// Switch Console views: agents-at-a-location (location), sessions (session), settings, the no-server page,
 // and a connected Switch gateway's workspace — its Home (server) plus that
 // server's agents, rooms and library. Automations, skills, and mcp were removed.
 export const views = {
-  home: homeView,
+  noServer: noServerView,
   location: locationView,
   session: sessionView,
   chat: chatView,

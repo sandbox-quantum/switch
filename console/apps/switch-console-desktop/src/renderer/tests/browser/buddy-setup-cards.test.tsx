@@ -21,8 +21,14 @@ const listRooms = vi.hoisted(() => vi.fn());
 const followConsoleLink = vi.hoisted(() => vi.fn());
 const createChat = vi.hoisted(() => vi.fn());
 const openRoomChannel = vi.hoisted(() => vi.fn());
+const listBridgePeople = vi.hoisted(() => vi.fn());
+const claimBridgeIdentity = vi.hoisted(() => vi.fn());
 const shown = vi.hoisted(
-  () => [] as { id: string; args: { onClosed?: () => void; bridgeId?: string } }[]
+  () =>
+    [] as {
+      id: string;
+      args: { onClosed?: () => void; bridgeId?: string; confirm?: { identityId: string } };
+    }[]
 );
 const listBridgeTypes = vi.hoisted(() => vi.fn());
 const listMessagingApps = vi.hoisted(() => vi.fn());
@@ -30,7 +36,7 @@ const administersWorkspaceInScope = vi.hoisted(() => vi.fn());
 const timeline = vi.hoisted(() => ({
   messages: [] as { sender: { kind: string }; body: string }[],
   pending: [] as { body: string }[],
-  send: () => {},
+  send: vi.fn(),
 }));
 
 vi.hoisted(() => {
@@ -52,6 +58,8 @@ vi.mock('@renderer/lib/ipc', () => ({
       listRooms,
       listBridgeTypes,
       listMessagingApps,
+      listBridgePeople,
+      claimBridgeIdentity,
     },
     chats: { create: createChat },
     switchRooms: { openRoomChannel },
@@ -110,7 +118,12 @@ function bridge(id: string, type: string, displayName: string): RemoteBridge {
 const acme = bridge('b-1', 'slack', 'Acme Slack');
 const globex = bridge('b-2', 'slack', 'Globex Slack');
 const teams = bridge('b-3', 'teams', 'Acme Teams');
-const telegram = bridge('b-4', 'telegram', 'example_bot');
+const telegram = {
+  ...bridge('b-4', 'telegram', 'example_bot'),
+  homeUrl: 'https://t.me/example_bot',
+  directorySearchSupported: false,
+  commands: { 'invite-agent': '/invite_agent @{agent}', 'link-account': '/link_account {code}' },
+} as RemoteBridge;
 const discord = bridge('b-5', 'discord', 'Acme Discord');
 const linked = (bridgeId: string) => ({ bridgeId }) as LinkedIdentity;
 
@@ -155,6 +168,9 @@ beforeEach(async () => {
   made = new Set();
   listBridges.mockReset().mockResolvedValue([]);
   listMyIdentities.mockReset().mockResolvedValue([]);
+  listBridgePeople.mockReset().mockResolvedValue([]);
+  window.localStorage.clear();
+  claimBridgeIdentity.mockReset();
   getRoomDetail.mockReset().mockResolvedValue({
     linkedChannelName: '#buddy-ada',
     externalChannelUrl: 'https://slack.example/archives/C123',
@@ -182,6 +198,7 @@ beforeEach(async () => {
   shown.length = 0;
   timeline.messages = [];
   timeline.pending = [];
+  timeline.send.mockReset();
   await page.viewport(760, 900);
 });
 
@@ -192,9 +209,9 @@ afterEach(async () => {
   root = null;
 });
 
-async function render(): Promise<HTMLElement> {
+async function render(width = 720): Promise<HTMLElement> {
   container = document.createElement('div');
-  container.style.width = '720px';
+  container.style.width = `${width}px`;
   container.style.padding = '16px';
   document.body.appendChild(container);
   root = createRoot(container);
@@ -278,7 +295,6 @@ describe('switch-buddy setup cards', () => {
     expect(el.textContent).toContain('#buddy-ada ready');
     await click(el, 'Open Slack');
     expect(openRoomChannel).toHaveBeenCalledWith({
-      serverId: 'srv-1',
       channelUrl: 'https://slack.example/archives/C123',
     });
     expect(handoffCalls()).toHaveLength(0);
@@ -329,7 +345,11 @@ describe('switch-buddy setup cards', () => {
 
     const summary = el.querySelector<HTMLElement>('[data-testid="buddy-created-since"]')!;
     expect(summary.textContent).toBe('Created since: Order Planner · bakery-orders room');
-    expect(listAgentRooms).toHaveBeenCalledTimes(1);
+    // Once for the agent made since; the buddy's own rooms are read to see
+    // whether it has been talked to in its channel.
+    expect(
+      listAgentRooms.mock.calls.filter(([params]) => params.agentId === 'agent-op')
+    ).toHaveLength(1);
     await click(summary, 'Order Planner');
     expect(followConsoleLink).toHaveBeenLastCalledWith('switchdash://open/agent/agent-op');
     await click(summary, 'bakery-orders');
@@ -369,7 +389,7 @@ describe('switch-buddy setup cards', () => {
     expect(el.textContent).toContain('Slack connected');
     expect(el.textContent).toContain('Link your Slack account');
     expect(findButton(el, 'Link account')).toBeDefined();
-    expect(findButton(el, 'Continue here in Switch Console')).toBeDefined();
+    expect(findButton(el, 'Switch Console')).toBeDefined();
     await shot(el, 'c-linking-skipped');
   });
 
@@ -597,6 +617,52 @@ describe('switch-buddy setup cards', () => {
     await shot(el, 'i-retry-done');
   });
 
+  it('(k0) the Switch Console tile comes last, after every messaging app', async () => {
+    const el = await render();
+    const grid = el.querySelector('[data-testid="buddy-setup-cards"] .grid');
+    const tiles = [...grid!.querySelectorAll<HTMLButtonElement>(':scope > button')];
+
+    expect(tiles.map((tile) => tile.querySelector('.font-semibold')?.textContent)).toEqual([
+      'Slack',
+      'Microsoft Teams',
+      'Discord',
+      'Telegram',
+      'Switch Console',
+    ]);
+    expect(tiles[4].textContent).toContain('Connect an app later');
+    expect(el.textContent).not.toContain('Chat right here');
+    expect(tiles.some((tile) => tile.getAttribute('aria-pressed') === 'true')).toBe(false);
+  });
+
+  it.each([
+    ['narrow', 720],
+    ['wide', 1200],
+  ] as const)(
+    '(k0) %s: Switch Console is one of the cards, and no taller than the others',
+    async (label, width) => {
+      await page.viewport(width + 40, 900);
+      const el = await render(width);
+      const grid = el.querySelector<HTMLElement>('[data-testid="buddy-setup-cards"] .grid')!;
+      const tiles = [...grid.querySelectorAll<HTMLButtonElement>(':scope > button')];
+      const consoleTile = tiles[4];
+
+      expect(consoleTile.offsetWidth).toBe(tiles[0].offsetWidth);
+      expect(consoleTile.offsetHeight).toBeLessThanOrEqual(tiles[0].offsetHeight);
+      if (width >= 1200) expect(new Set(tiles.map((tile) => tile.offsetTop)).size).toBe(1);
+      await shot(el, `k0-console-card-${label}`);
+    }
+  );
+
+  it('(k) the Switch Console tile says in the chat that the person is staying', async () => {
+    const el = await render();
+
+    await click(el, 'Switch Console');
+
+    expect(timeline.send).toHaveBeenCalledWith(
+      expect.objectContaining({ body: 'I’ll stay in Switch Console for now.' })
+    );
+  });
+
   it('(k) Console only: setup cards are hidden after staying', async () => {
     timeline.messages = [
       { sender: { kind: 'human' }, body: 'I’ll stay in Switch Console for now.' },
@@ -634,17 +700,221 @@ describe('switch-buddy setup cards', () => {
     await shot(el, 'x-teams-guide');
   });
 
-  it('(n) Telegram linked: guides inviting the buddy in the group', async () => {
+  it('(n) Telegram connected: one checklist, waiting for a hello to the bot', async () => {
     listBridges.mockResolvedValue([telegram]);
-    listMyIdentities.mockResolvedValue([linked('b-4')]);
     const el = await render();
 
-    expect(el.textContent).toContain('Continue in Telegram');
-    expect(el.textContent).toContain('/invite_agent @switch-buddy');
-    expect(el.textContent).toContain("reply to the bot's message");
-    expect(el.textContent).toContain('mention switch-buddy in that reply');
-    expect(el.textContent).not.toContain('I’ll answer');
-    await shot(el, 'x-telegram-guide');
+    const list = el.querySelector('[data-testid="chat-app-checklist"]');
+    expect(list?.textContent).toContain('Say hello to the example_bot bot');
+    expect(list?.textContent).toContain('press Start');
+    expect(list?.textContent).toContain('Waiting for your hello');
+    expect(list?.textContent).toContain('/invite_agent @switch-buddy');
+    await click(el, 'Open in Telegram');
+    expect(openRoomChannel).toHaveBeenCalledWith(
+      expect.objectContaining({ channelUrl: 'https://t.me/example_bot?start=hello' })
+    );
+    await shot(el, 'n-telegram-checklist-hello');
+  });
+
+  it('(n) Telegram: once the bot has seen them, asks "is this you?" and links', async () => {
+    listBridges.mockResolvedValue([telegram]);
+    listBridgePeople.mockResolvedValue([
+      {
+        username: 'old',
+        externalUserId: '1',
+        linkedUserIds: [],
+        linkedName: null,
+        firstSeenAt: '2026-11-01T00:00:00Z',
+      },
+      {
+        username: 'ada',
+        externalUserId: '2',
+        linkedUserIds: [],
+        linkedName: null,
+        firstSeenAt: '2026-11-17T10:00:00Z',
+      },
+    ]);
+    claimBridgeIdentity.mockResolvedValue({
+      kind: 'pending',
+      pending: { id: 'ext-2', externalUsername: 'ada' },
+      alreadyLinked: false,
+      code: { code: 'K7Q2' },
+    });
+    const el = await render();
+
+    await vi.waitFor(() => expect(el.textContent).toContain('Seen you as @ada.'));
+    expect(el.textContent).toContain('Is this you?');
+    await shot(el, 'n-telegram-checklist-is-this-you');
+    const first = [...el.querySelectorAll('button')].find((b) => b.textContent === 'That’s me');
+    await act(async () => first?.click());
+
+    expect(claimBridgeIdentity).toHaveBeenCalledWith(
+      expect.objectContaining({ bridgeId: 'b-4', externalUserId: '2' })
+    );
+    expect(shown.at(-1)).toMatchObject({
+      id: 'claimIdentityModal',
+      args: { bridgeId: 'b-4', confirm: { identityId: 'ext-2' }, confirmCode: { code: 'K7Q2' } },
+    });
+  });
+
+  it('(n) Telegram linked: hello and link are ticked, the invite is next with a copy button', async () => {
+    listBridges.mockResolvedValue([telegram]);
+    listMyIdentities.mockResolvedValue([
+      { bridgeId: 'b-4', externalUsername: 'ada', verified: true } as LinkedIdentity,
+    ]);
+    const el = await render();
+
+    await vi.waitFor(() => expect(el.textContent).toContain('Linked as @ada.'));
+    const done = el.querySelectorAll('[data-done="true"]');
+    expect(done).toHaveLength(2);
+    expect(el.querySelector('[aria-current="step"]')?.textContent).toContain(
+      'Make a group with switch-buddy'
+    );
+    expect(
+      el.querySelector('button[aria-label="Copy /invite_agent @switch-buddy"]')
+    ).not.toBeNull();
+    expect(el.textContent).toContain("reply to switch-buddy's message and say what you work on");
+    // A mention alone never reaches the bot in a group with Group Privacy on.
+    expect(el.textContent).not.toContain('mention switch-buddy and say');
+    await shot(el, 'n-telegram-checklist-linked');
+  });
+
+  it('(n) Telegram: ticks the group once buddy is in a room there, and moves on', async () => {
+    listBridges.mockResolvedValue([telegram]);
+    listMyIdentities.mockResolvedValue([
+      { bridgeId: 'b-4', externalUsername: 'ada', verified: true } as LinkedIdentity,
+    ]);
+    listAgentRooms.mockResolvedValue([{ roomId: 'r-tg', roomName: 'Ada & bot', archived: false }]);
+    listRooms.mockResolvedValue([
+      { id: 'r-tg', bridgeType: 'telegram', channelType: 'channel_private', createdAt: '' },
+    ]);
+    const el = await render();
+
+    await vi.waitFor(() =>
+      expect(el.textContent).toContain('switch-buddy is in a Telegram group with you.')
+    );
+    expect(el.querySelectorAll('[data-done="true"]')).toHaveLength(3);
+    expect(el.querySelector('[aria-current="step"]')?.textContent).toContain(
+      'Tell switch-buddy what you work on'
+    );
+    await shot(el, 'n-telegram-checklist-in-group');
+  });
+
+  it('(n) Telegram: once buddy has answered in the group, folds into a Connect another app bar', async () => {
+    listBridges.mockResolvedValue([telegram]);
+    listMyIdentities.mockResolvedValue([
+      { bridgeId: 'b-4', externalUsername: 'ada', verified: true } as LinkedIdentity,
+    ]);
+    listAgentRooms.mockResolvedValue([
+      { roomId: 'r-tg', roomName: 'Ada & bot', archived: false, answeredHere: true },
+    ]);
+    listRooms.mockResolvedValue([
+      { id: 'r-tg', bridgeType: 'telegram', channelType: 'channel_private', createdAt: '' },
+    ]);
+    const el = await render();
+
+    await vi.waitFor(() => expect(el.textContent).toContain('Telegram is set up.'));
+    expect(el.textContent).toContain('You’re talking to switch-buddy there.');
+    expect(el.textContent).not.toContain('Where does your team chat?');
+    await shot(el, 'n-telegram-settled');
+
+    await click(el, 'Connect another app');
+    expect(el.textContent).toContain('Where does your team chat?');
+  });
+
+  it('(l) Slack: once buddy has answered in its channel, folds into a bar that still opens Slack', async () => {
+    listBridges.mockResolvedValue([acme]);
+    listMyIdentities.mockResolvedValue([linked('b-1')]);
+    made.add('b-1');
+    listAgentRooms.mockResolvedValue([
+      { roomId: 'room-b-1', roomName: '#buddy-ada', archived: false, answeredHere: true },
+    ]);
+    const el = await render();
+
+    await vi.waitFor(() => expect(el.textContent).toContain('Slack is set up.'));
+    expect(el.textContent).not.toContain('Where does your team chat?');
+    expect(findButton(el, 'Open Slack')).toBeDefined();
+    expect(findButton(el, 'Connect another app')).toBeDefined();
+    await shot(el, 'l-slack-settled');
+  });
+
+  it('(n) shared Switch Telegram app: starts from a connected group, since its private chat reaches no one', async () => {
+    const shared = {
+      ...telegram,
+      channelIdsRefused: 'Chats connect with a link or code.',
+    } as RemoteBridge;
+    listBridges.mockResolvedValue([shared]);
+    const el = await render();
+
+    await vi.waitFor(() => expect(el.textContent).toContain('Connect a Telegram group'));
+    expect(el.textContent).not.toContain('Say hello to the');
+    await click(el, 'Connect a group');
+    expect(shown.at(-1)).toMatchObject({ id: 'connectMessagingAppModal' });
+    await shot(el, 'n-telegram-shared-group-first');
+  });
+
+  it('(n) shared Switch Telegram app: with a group connected, linking is next', async () => {
+    const shared = {
+      ...telegram,
+      channelIdsRefused: 'Chats connect with a link or code.',
+    } as RemoteBridge;
+    listBridges.mockResolvedValue([shared]);
+    listRooms.mockResolvedValue([
+      { id: 'r-tg', bridgeType: 'telegram', channelType: 'channel_private', createdAt: '' },
+    ]);
+    const el = await render();
+
+    await vi.waitFor(() =>
+      expect(el.textContent).toContain('A Telegram group is connected to Switch.')
+    );
+    expect(el.querySelector('[aria-current="step"]')?.textContent).toContain('Is this you?');
+  });
+
+  it('(m) Teams: once buddy has answered there, folds into the set-up bar too', async () => {
+    listBridges.mockResolvedValue([teams]);
+    listMyIdentities.mockResolvedValue([linked('b-3')]);
+    listAgentRooms.mockResolvedValue([
+      { roomId: 'r-teams', roomName: 'Ada & buddy', archived: false, answeredHere: true },
+    ]);
+    listRooms.mockResolvedValue([
+      { id: 'r-teams', bridgeType: 'teams', channelType: 'channel_private', createdAt: '' },
+    ]);
+    const el = await render();
+
+    await vi.waitFor(() => expect(el.textContent).toContain('Microsoft Teams is set up.'));
+  });
+
+  it('(n) Telegram: someone with no username is named by their name, not a made-up handle', async () => {
+    listBridges.mockResolvedValue([telegram]);
+    listBridgePeople.mockResolvedValue([
+      {
+        username: 'MM_8270654669',
+        externalUserId: '8270654669',
+        linkedUserIds: [],
+        linkedName: null,
+        firstSeenAt: '2026-11-17T10:00:00Z',
+        displayName: 'M M',
+        hasHandle: false,
+      },
+    ]);
+    const el = await render();
+
+    await vi.waitFor(() => expect(el.textContent).toContain('Seen you as M M.'));
+    expect(el.textContent).not.toContain('MM_8270654669');
+    await shot(el, 'n-telegram-no-username');
+  });
+
+  it('(n) Telegram: the one-tap add says to make the group first, since the picker cannot', async () => {
+    listBridges.mockResolvedValue([telegram]);
+    listMyIdentities.mockResolvedValue([
+      { bridgeId: 'b-4', externalUsername: 'ada', verified: true } as LinkedIdentity,
+    ]);
+    const el = await render();
+
+    await vi.waitFor(() =>
+      expect(el.textContent).toContain('First make a Telegram group with just you in it')
+    );
+    expect(findButton(el, 'Add the bot to a group')).toBeDefined();
   });
 
   it('(o) Discord linked: continues in a private Discord channel, then opens it', async () => {
@@ -668,7 +938,6 @@ describe('switch-buddy setup cards', () => {
     expect(el.textContent).toContain('#dm-ada-switch-buddy ready');
     await click(el, 'Open Discord');
     expect(openRoomChannel).toHaveBeenCalledWith({
-      serverId: 'srv-1',
       channelUrl: 'https://discord.com/channels/1/2',
     });
     await shot(el, 'x-discord-done');
@@ -720,11 +989,11 @@ describe('switch-buddy setup cards', () => {
     expect(findButton(el, 'Create channel and continue')).toBeDefined();
   });
 
-  it('(q) a failed first read of the chat apps: says so, and Retry reads them again', async () => {
+  it('(q) a failed first read of the messaging apps: says so, and Retry reads them again', async () => {
     listBridges.mockReset().mockRejectedValueOnce(new Error('down')).mockResolvedValue([]);
     const el = await render();
 
-    expect(el.textContent).toContain('Couldn’t check your chat apps');
+    expect(el.textContent).toContain('Couldn’t check your messaging apps');
     await shot(el, 'x-apps-check-failed');
     await click(el, 'Retry');
 

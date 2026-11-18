@@ -1,13 +1,17 @@
 import { Separator } from '../ui/separator';
+import { type GlossaryTerm, TermInfo } from './term-info';
 
 export function PageHeader({
   title,
+  term,
   description,
   children,
   back,
   sticky = false,
 }: {
   title: string;
+  /** The Switch term the page is about, explained beside its title. */
+  term?: GlossaryTerm;
   description?: React.ReactNode;
   children?: React.ReactNode;
   /**
@@ -22,14 +26,19 @@ export function PageHeader({
 }) {
   const body = (
     <div className="flex flex-col gap-6">
-      <div className="flex flex-col gap-1 [-webkit-app-region:drag]">
-        {back && <div className="mb-1 flex [-webkit-app-region:no-drag]">{back}</div>}
-        <h2 className="text-xl">{title}</h2>
-        <p className="text-sm text-foreground-muted [&_a]:[-webkit-app-region:no-drag] [&_button]:[-webkit-app-region:no-drag]">
-          {description}
-        </p>
+      <div className="flex flex-col gap-1">
+        {back && <div className="mb-1 flex">{back}</div>}
+        <h2 className="flex items-center gap-2 text-xl">
+          {title}
+          {term && (
+            <span className="flex">
+              <TermInfo term={term} />
+            </span>
+          )}
+        </h2>
+        <p className="text-sm text-foreground-muted">{description}</p>
       </div>
-      <div className="flex flex-col gap-4 [-webkit-app-region:no-drag]">
+      <div className="flex flex-col gap-4">
         {children}
         <Separator />
       </div>
@@ -38,7 +47,9 @@ export function PageHeader({
 
   if (!sticky) return body;
 
-  return (
-    <div className="sticky top-0 z-10 bg-background pt-10 [-webkit-app-region:drag]">{body}</div>
-  );
+  // Not a window drag region: Chromium places drag regions from layout and
+  // does not clip them to the scrolling page, so after a scroll a stale one
+  // could cover the titlebar and this header's own buttons. The window drags
+  // from the top bar above every page.
+  return <div className="sticky top-0 z-10 bg-background pt-10">{body}</div>;
 }

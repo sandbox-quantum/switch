@@ -42,7 +42,7 @@ from switch_core.decision.room import (
     set_auto_route_on,
 )
 from switch_core.decision.settings import DecisionAvailability
-from switch_core.feature_flags import AGENT_MANAGEMENT, SWITCH_BUDDY
+from switch_core.feature_flags import SWITCH_BUDDY
 from switch_core.gateway.auth import (
     authorize_room,
     decide_room_action,
@@ -72,6 +72,7 @@ from switch_core.gateway.schemas import (
     BulkArchiveResponse,
     BulkDeleteRequest,
     BulkDeleteResponse,
+    BulkRoomRefusal,
     RoomAdminEntry,
     RoomAgentsRequest,
     RoomAgentUpdateRequest,
@@ -140,6 +141,9 @@ from switch_core.template_v2 import is_v2_text
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+# Mounted only with the `decision_routing` flag on (`gateway/app.py`): a
+# server without auto-route has no such setting to change.
+auto_route_router = APIRouter()
 
 
 def _refuse_fixed_membership(room: Room) -> None:
@@ -287,7 +291,11 @@ async def _build_room_detail(
             for uid, name in await room_store.people_in_room(session, room.id)
             if uid not in taken
         ]
-    auto_route = await auto_route_state(session, decisions, room)
+    auto_route = (
+        _auto_route_detail(await auto_route_state(session, decisions, room))
+        if decisions.enabled
+        else None
+    )
     # Not held across the deeplink, which can ask the platform on a cache miss.
     await session.commit()
     external_channel_url = await _external_channel_url(room)
@@ -347,7 +355,7 @@ async def _build_room_detail(
         ),
         room_admin_candidates=candidates,
         **flags,
-        auto_route=_auto_route_detail(auto_route),
+        auto_route=auto_route,
     )
 
 
@@ -390,6 +398,8 @@ def _auto_route_detail(state: AutoRouteState) -> RoomAutoRoute:
         reason=state.reason,
         fallback_agent=state.fallback_agent,
         fallback_agent_name=state.fallback_agent_name,
+        assigned_agent=state.assigned_agent,
+        assigned_agent_name=state.assigned_agent_name,
     )
 
 
@@ -876,6 +886,11 @@ async def run_template_document(
 
     The agents a run of a known template creates are recorded as its
     install (``template_installs``), so a later revision can update them.
+    A successful run of a template named by ``template_id``, with that
+    template's own document, is counted for the catalogue here, for the
+    caller, so the run Switch Console reports after it is not counted again
+    (``record_template_run``). A document that is not the named template's
+    counts only through that report, which is believed once in a while.
     """
     loaded = (
         await readable_template(
@@ -887,7 +902,6 @@ async def run_template_document(
     source = vouched_source(
         body.template,
         loaded,
-        agent_management=config.feature_flags[AGENT_MANAGEMENT],
         switch_buddy=config.feature_flags[SWITCH_BUDDY],
     )
     inputs = body.inputs or {}
@@ -951,7 +965,24 @@ async def run_template_document(
             plans=plan.new_agents,
             created=result["created_agents"],
         )
+    if source is not None and loaded is not None and isinstance(result, dict):
+        await _count_run(session, template_store, loaded.id, user.id)
     return result
+
+
+async def _count_run(
+    session: AsyncSession, store: TemplateStore, template_id: str, user_id: str
+) -> None:
+    """Count a run that has already made its agents and rooms. A failure here
+    is not the run's, so it is logged rather than answered as one: the run's
+    agents and rooms exist, and the report Switch Console sends next counts
+    the run instead, since nothing was counted for the caller."""
+    try:
+        await store.record_run(session, template_id, run_by=user_id)
+        await session.commit()
+    except Exception:
+        await session.rollback()
+        logger.exception("Could not count a run of template %s", template_id)
 
 
 async def _run_as_person(
@@ -994,6 +1025,8 @@ async def _run_as_person(
             await rooms_yaml.check_entity_params(parsed, reader=reader)
             await rooms_yaml.check_bridges(parsed, creator=builtins["$creator"])
         checked = await creator.check(tenant_id, user.id, plans)
+        if parsed is not None:
+            await rooms_yaml.check_invites(parsed, user_id=user.id, agent_id=None)
         created = await creator.create(tenant_id, user.id, checked)
         room: ProvisionResult | GroupProvisionResult | None = None
         room_made = opening_rooms_as_made(creator, tenant_id, created, room_addressing)
@@ -1432,7 +1465,7 @@ async def put_observe(
     )
 
 
-@router.put("/{room_id}/auto-route")
+@auto_route_router.put("/{room_id}/auto-route")
 async def put_auto_route(
     room_id: str,
     req: RoomAutoRouteRequest,
@@ -2016,21 +2049,17 @@ async def bulk_delete_rooms(
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> BulkDeleteResponse:
+    """Delete many rooms at once. Each room is authorized as the single
+    delete route does it; a room the caller may not delete, or that is gone,
+    is left alone and named in ``refused`` with the reason."""
     principal = Principal(user.id, is_admin)
     deleted = 0
     channels: dict[str, RetireOutcome] = {}
+    refused: list[BulkRoomRefusal] = []
     for room_id in req.room_ids:
-        room = await room_store.get(session, room_id)
-        if room is None:
-            logger.warning("Skipping unknown room %s during bulk delete", room_id)
-            continue
-        decision = await decide_room_action(
-            session, room_store, room, principal, "delete"
-        )
-        if not decision.allowed:
-            logger.warning(
-                "Skipping room %s during bulk delete: not authorized", room_id
-            )
+        refusal = await _bulk_refusal(session, room_store, room_id, principal, "delete")
+        if refusal is not None:
+            refused.append(refusal)
             continue
         # See `_require_room_released`.
         await session.commit()
@@ -2040,7 +2069,7 @@ async def bulk_delete_rooms(
         if channel is not None:
             channels[room_id] = channel
         deleted += 1
-    return BulkDeleteResponse(deleted=deleted, channels=channels)
+    return BulkDeleteResponse(deleted=deleted, channels=channels, refused=refused)
 
 
 @router.post("/bulk-archive")
@@ -2053,25 +2082,40 @@ async def bulk_archive_rooms(
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> BulkArchiveResponse:
     """Archive or unarchive many rooms at once. Each room is authorized
-    individually with the same check as the single archive endpoint; rooms
-    the caller may not archive (or that no longer exist) are skipped."""
+    individually with the same check as the single archive endpoint; a room
+    the caller may not archive, or that is gone, is left alone and named in
+    ``refused`` with the reason."""
     principal = Principal(user.id, is_admin)
     updated = 0
+    refused: list[BulkRoomRefusal] = []
     for room_id in req.room_ids:
-        room = await room_store.get(session, room_id)
-        if room is None:
-            logger.warning("Skipping unknown room %s during bulk archive", room_id)
-            continue
-        decision = await decide_room_action(
-            session, room_store, room, principal, "archive"
+        refusal = await _bulk_refusal(
+            session, room_store, room_id, principal, "archive"
         )
-        if not decision.allowed:
-            logger.warning(
-                "Skipping room %s during bulk archive: not authorized", room_id
-            )
+        if refusal is not None:
+            refused.append(refusal)
             continue
         # See `_require_room_released`.
         await session.commit()
         await room_service.set_room_archived(room_id, req.archived)
         updated += 1
-    return BulkArchiveResponse(updated=updated)
+    return BulkArchiveResponse(updated=updated, refused=refused)
+
+
+async def _bulk_refusal(
+    session: AsyncSession,
+    room_store: RoomStore,
+    room_id: str,
+    principal: Principal,
+    action: RoomAction,
+) -> BulkRoomRefusal | None:
+    """Why a bulk action leaves this room alone, as the route for the one
+    room would answer; None when it may go ahead."""
+    room = await room_store.get(session, room_id)
+    if room is None:
+        return BulkRoomRefusal(room_id=room_id, reason="Room not found")
+    decision = await decide_room_action(session, room_store, room, principal, action)
+    if decision.allowed:
+        return None
+    assert decision.reason is not None, "room_policy gives every refusal a reason"
+    return BulkRoomRefusal(room_id=room_id, reason=decision.reason)

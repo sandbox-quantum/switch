@@ -44,8 +44,10 @@ const provider = (id: string) => ({
   description: '',
   docUrl: '',
   cliLabel: id,
+  shortName: id,
   loginCommand: id,
   knownAgentType: id,
+  supportsAutoMode: true,
 });
 
 const KEY = 'providerConfigs';

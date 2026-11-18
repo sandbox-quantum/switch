@@ -1,6 +1,6 @@
 import { when } from 'mobx';
 import { toast } from 'sonner';
-import type { AdminSection } from '@renderer/features/admin/admin-sections';
+import { settingsForAdminSection } from '@renderer/features/admin/admin-sections';
 import { isAgentSection } from '@renderer/features/managed-agents/agent-sections';
 import { resolveSettingsTab } from '@renderer/features/settings/settings-tabs';
 import { findBuddy } from '@renderer/features/switch-buddy/buddy-identity';
@@ -167,14 +167,12 @@ async function openOnServer(serverId: string, link: ConsoleLink): Promise<void> 
       else navigation.navigate('templateDetail', { serverId, templateId: link.id! });
       return;
     case 'messaging-apps/connect':
+      navigation.navigate('settings', { tab: 'messaging-apps' });
       // Connecting an app is the workspace admins'; anyone else can only link
       // their own account, which Settings does.
-      if (!administersWorkspaceInScope(serverId)) {
-        navigation.navigate('settings', { tab: 'messaging-apps' });
-        return;
+      if (administersWorkspaceInScope(serverId)) {
+        showModal('connectMessagingAppModal', { serverId, onClosed: () => {} });
       }
-      navigation.navigate('admin', { serverId, section: 'messaging-apps' });
-      showModal('connectMessagingAppModal', { serverId, onClosed: () => {} });
       return;
     case 'connections':
       navigation.navigate('connectors', { serverId });
@@ -211,14 +209,14 @@ function openServerSettings(serverId: string): void {
   appState.navigation.navigate('server', { serverId });
   toast.error('This server has no Server page here', {
     description:
-      "Someone else runs it, so its start, stop, update and Mattermost settings aren't in this Switch Console.",
+      "Someone else runs it, so its start, stop and update settings aren't in this Switch Console.",
   });
 }
 
 /**
- * Admin is for the workspace's admins. Whoever runs the server without
- * administering it is looking for its status, and is sent there; anyone else
- * lands on the home and is told why.
+ * What Admin held is in Settings now, for the workspace's admins. Whoever runs
+ * the server without administering it is looking for its status, and is sent
+ * there; anyone else lands on the home and is told why.
  */
 function openAdmin(serverId: string, tab: string | null): void {
   if (!administersWorkspaceInScope(serverId)) {
@@ -227,15 +225,12 @@ function openAdmin(serverId: string, tab: string | null): void {
       return;
     }
     appState.navigation.navigate('server', { serverId });
-    toast.error('Admin is for workspace admins', {
+    toast.error('These settings are for workspace admins', {
       description: 'Ask an admin of this workspace to change these.',
     });
     return;
   }
-  appState.navigation.navigate('admin', {
-    serverId,
-    ...(tab ? { section: tab as AdminSection } : {}),
-  });
+  appState.navigation.navigate('settings', settingsForAdminSection(tab));
 }
 
 /**

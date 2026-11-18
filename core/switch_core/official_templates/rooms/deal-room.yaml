@@ -99,6 +99,7 @@ resources:
     name: "Deal - {customer}"
     description: "Enterprise deal coordination for {customer}: {opportunity}. Stakeholder tracking, proposal building, and deal strategy."
     bridge: "{bridge}"
+    channel_type: channel_private
     agents: [deal_tracker, proposal_builder]
     users:
       - {if: "{bridge}", value: ["{$creator}"]}
