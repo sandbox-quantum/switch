@@ -5,6 +5,7 @@ import hashlib
 import json
 import math
 import os
+import threading
 from dataclasses import dataclass
 from typing import Any, Literal, get_args
 
@@ -289,32 +290,38 @@ def bedrock_request(req: DecideRequest, settings: Settings) -> dict:
 
 
 _bedrock_clients: dict[tuple[str, str | None], Any] = {}
+_bedrock_clients_lock = threading.Lock()
 
 
 def bedrock_client(settings: Settings) -> Any:
     key = (settings.aws_region, settings.aws_profile)
-    if key not in _bedrock_clients:
-        session = boto3.Session(
-            profile_name=settings.aws_profile, region_name=settings.aws_region
-        )
-        _bedrock_clients[key] = session.client(
-            "bedrock-runtime",
-            config=Config(
-                read_timeout=settings.timeout_s,
-                connect_timeout=5,
-                retries={"max_attempts": 2},
-            ),
-        )
-    return _bedrock_clients[key]
+    with _bedrock_clients_lock:
+        if key not in _bedrock_clients:
+            session = boto3.Session(
+                profile_name=settings.aws_profile, region_name=settings.aws_region
+            )
+            _bedrock_clients[key] = session.client(
+                "bedrock-runtime",
+                config=Config(
+                    read_timeout=settings.timeout_s,
+                    connect_timeout=5,
+                    retries={"max_attempts": 2},
+                ),
+            )
+        return _bedrock_clients[key]
 
 
 async def ask_bedrock(settings: Settings, req: DecideRequest) -> ModelAnswer:
     options = [a.name for a in req.agents] + [NONE]
     where = f"Bedrock {settings.model} in {settings.aws_region}"
+
+    def converse() -> Any:
+        # boto3 can resolve workload credentials when creating the client.
+        # Keep that lookup off the event loop as well as the model call.
+        return bedrock_client(settings).converse(**bedrock_request(req, settings))
+
     try:
-        body = await asyncio.to_thread(
-            bedrock_client(settings).converse, **bedrock_request(req, settings)
-        )
+        body = await asyncio.to_thread(converse)
     except (BotoCoreError, ClientError) as exc:
         code = (
             exc.response.get("Error", {}).get("Code", "")
