@@ -351,7 +351,7 @@
     "name": "[Switch REPLACE-WITH-ENV] decisions are failing",
     "type": "query alert",
     "query": "max(last_5m):moving_rollup(default_zero(sum:switch.decision.failures{service:REPLACE-WITH-SERVICE}.as_count()), 900, 'sum') / clamp_min(moving_rollup(default_zero(sum:switch.decision.requests{service:REPLACE-WITH-SERVICE}.as_count()), 900, 'sum'), 10) > 0.2",
-    "message": "{{#is_alert}}More than 20% of auto-route decisions in the last 15 minutes got no usable answer, counted against at least 10 decisions so that one or two failures in a quiet room don't fire. People's untagged messages reach nobody, or the triage agent, and rooms get an \"auto-route is unavailable\" notice.\n\n**Check:** decision failures by reason and backend errors by kind (by model; `unknown` is a decision with no answer). `timeout` or `unreachable` on the server default points at the decision service; on `endpoint`, at one workspace's own endpoint. The decision record logged for each message names the room.\n\nDashboard: the decision routing section of \"Switch — core service health\".{{/is_alert}}{{#is_recovery}}Recovered: decisions are failing.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "message": "{{#is_warning}}More than 5% of auto-route decisions in the last 15 minutes got no usable answer. Most messages still route, but about one untagged message in twenty reaches nobody and its room gets an \"auto-route is unavailable\" notice. A slow model provider (decisions timing out) shows up here first.\n\n**Check:** the share of decisions that failed and timed out, then decision failures by reason. Dashboard: the decision routing section of \"Switch — core service health\".{{/is_warning}}{{#is_alert}}More than 20% of auto-route decisions in the last 15 minutes got no usable answer, counted against at least 10 decisions so that one or two failures in a quiet room don't fire. People's untagged messages reach nobody, or the triage agent, and rooms get an \"auto-route is unavailable\" notice.\n\n**Check:** decision failures by reason and backend errors by kind (by model; `unknown` is a decision with no answer). `timeout` or `unreachable` on the server default points at the decision service; on `endpoint`, at one workspace's own endpoint. The decision record logged for each message names the room.\n\nDashboard: the decision routing section of \"Switch — core service health\".{{/is_alert}}{{#is_recovery}}Recovered: decisions are failing.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
     "tags": [
       "service:REPLACE-WITH-SERVICE",
       "env:REPLACE-WITH-ENV",
@@ -365,7 +365,8 @@
       "require_full_window": false,
       "include_tags": true,
       "thresholds": {
-        "critical": 0.2
+        "critical": 0.2,
+        "warning": 0.05
       }
     },
     "priority": 2

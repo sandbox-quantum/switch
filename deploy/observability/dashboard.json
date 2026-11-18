@@ -2669,7 +2669,69 @@
     {
       "definition": {
         "type": "timeseries",
-        "title": "Decision duration p50 / p95 (ms) by model — needs distribution mapping, see README",
+        "title": "Share of decisions that failed (%), by decision source: all failures and timeouts alone (alert warns at 5%, critical at 20%)",
+        "show_legend": true,
+        "legend_layout": "horizontal",
+        "requests": [
+          {
+            "response_format": "timeseries",
+            "queries": [
+              {
+                "data_source": "metrics",
+                "name": "failed",
+                "query": "sum:switch.decision.failures{$service,$flint_env,$version,!version:0.27.0} by {backend}.as_count()"
+              },
+              {
+                "data_source": "metrics",
+                "name": "timedout",
+                "query": "sum:switch.decision.failures{$service,$flint_env,$version,!version:0.27.0,reason:timeout} by {backend}.as_count()"
+              },
+              {
+                "data_source": "metrics",
+                "name": "asked",
+                "query": "sum:switch.decision.requests{$service,$flint_env,$version,!version:0.27.0} by {backend}.as_count()"
+              }
+            ],
+            "formulas": [
+              {
+                "formula": "100 * failed / asked",
+                "alias": "% failed"
+              },
+              {
+                "formula": "100 * timedout / asked",
+                "alias": "% timed out"
+              }
+            ],
+            "display_type": "line"
+          }
+        ],
+        "yaxis": {
+          "min": "0"
+        },
+        "markers": [
+          {
+            "value": "y = 5",
+            "display_type": "warning dashed",
+            "label": "warning: 5%"
+          },
+          {
+            "value": "y = 20",
+            "display_type": "error dashed",
+            "label": "critical: 20%"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 152,
+        "width": 12,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Decision duration p50 / p95 / p99 / max (ms) by model; a timeout counts as unknown at the timeout — needs distribution mapping, see README",
         "show_legend": true,
         "requests": [
           {
@@ -2679,6 +2741,14 @@
           {
             "q": "p95:switch.decision.duration{$service,$flint_env,$version,!version:0.27.0} by {model}",
             "display_type": "line"
+          },
+          {
+            "q": "p99:switch.decision.duration{$service,$flint_env,$version,!version:0.27.0} by {model}",
+            "display_type": "line"
+          },
+          {
+            "q": "max:switch.decision.duration{$service,$flint_env,$version,!version:0.27.0} by {model}",
+            "display_type": "line"
           }
         ],
         "markers": [
@@ -2686,12 +2756,17 @@
             "value": "y = 1500",
             "display_type": "warning dashed",
             "label": "warning: 1.5 s"
+          },
+          {
+            "value": "y = 5000",
+            "display_type": "error dashed",
+            "label": "default timeout: 5 s"
           }
         ]
       },
       "layout": {
         "x": 0,
-        "y": 152,
+        "y": 156,
         "width": 6,
         "height": 4
       }
@@ -2714,7 +2789,7 @@
       },
       "layout": {
         "x": 6,
-        "y": 152,
+        "y": 156,
         "width": 6,
         "height": 4
       }
@@ -2752,7 +2827,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 156,
+        "y": 160,
         "width": 6,
         "height": 4
       }
@@ -2771,7 +2846,7 @@
       },
       "layout": {
         "x": 6,
-        "y": 156,
+        "y": 160,
         "width": 6,
         "height": 4
       }
@@ -2790,7 +2865,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 160,
+        "y": 164,
         "width": 6,
         "height": 4
       }
@@ -2826,7 +2901,7 @@
       },
       "layout": {
         "x": 6,
-        "y": 160,
+        "y": 164,
         "width": 6,
         "height": 4
       }
@@ -2845,7 +2920,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 164,
+        "y": 168,
         "width": 6,
         "height": 4
       }
@@ -2895,7 +2970,7 @@
       },
       "layout": {
         "x": 6,
-        "y": 164,
+        "y": 168,
         "width": 6,
         "height": 4
       }
@@ -2915,7 +2990,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 168,
+        "y": 172,
         "width": 12,
         "height": 2
       }
@@ -2934,7 +3009,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 170,
+        "y": 174,
         "width": 6,
         "height": 4
       }
@@ -2953,7 +3028,7 @@
       },
       "layout": {
         "x": 6,
-        "y": 170,
+        "y": 174,
         "width": 6,
         "height": 4
       }
@@ -2972,7 +3047,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 174,
+        "y": 178,
         "width": 6,
         "height": 4
       }
@@ -2995,7 +3070,7 @@
       },
       "layout": {
         "x": 6,
-        "y": 174,
+        "y": 178,
         "width": 6,
         "height": 4
       }
@@ -3018,7 +3093,7 @@
       },
       "layout": {
         "x": 6,
-        "y": 178,
+        "y": 182,
         "width": 6,
         "height": 4
       }
@@ -3037,7 +3112,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 178,
+        "y": 182,
         "width": 6,
         "height": 4
       }
@@ -3056,7 +3131,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 182,
+        "y": 186,
         "width": 6,
         "height": 4
       }
@@ -3075,7 +3150,7 @@
       },
       "layout": {
         "x": 6,
-        "y": 182,
+        "y": 186,
         "width": 6,
         "height": 4
       }
@@ -3094,7 +3169,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 186,
+        "y": 190,
         "width": 6,
         "height": 4
       }
@@ -3117,7 +3192,7 @@
       },
       "layout": {
         "x": 6,
-        "y": 186,
+        "y": 190,
         "width": 6,
         "height": 4
       }
@@ -3140,7 +3215,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 190,
+        "y": 194,
         "width": 6,
         "height": 4
       }
@@ -3159,7 +3234,7 @@
       },
       "layout": {
         "x": 6,
-        "y": 190,
+        "y": 194,
         "width": 6,
         "height": 4
       }
@@ -3178,7 +3253,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 194,
+        "y": 198,
         "width": 6,
         "height": 4
       }
@@ -3197,7 +3272,7 @@
       },
       "layout": {
         "x": 6,
-        "y": 194,
+        "y": 198,
         "width": 6,
         "height": 4
       }
@@ -3216,7 +3291,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 198,
+        "y": 202,
         "width": 6,
         "height": 4
       }
@@ -3235,7 +3310,7 @@
       },
       "layout": {
         "x": 6,
-        "y": 198,
+        "y": 202,
         "width": 6,
         "height": 4
       }
@@ -3254,7 +3329,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 202,
+        "y": 206,
         "width": 6,
         "height": 4
       }
@@ -3273,7 +3348,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 206,
+        "y": 210,
         "width": 12,
         "height": 4
       }
