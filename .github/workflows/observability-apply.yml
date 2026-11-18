@@ -1,0 +1,65 @@
+name: Observability apply
+
+# Applies deploy/observability's monitors (and, for the deployment that keeps
+# the default service, the Signal board) to Datadog once a change to them
+# reaches main, so what is alerting is what was reviewed. PR CI's "Morning
+# report" job checks the same files on every pull request without secrets
+# (check_monitors.py, and test_monitors.py driving apply.sh in DRY_RUN).
+#
+# Everything deployment-specific lives in the `observability-prod`
+# environment, which an admin creates and restricts to main: the Datadog keys,
+# the notification handles, and which deployment these monitors watch. The
+# handles are secrets rather than variables so they are masked in this public
+# repository's logs. With any of them missing apply.sh exits non-zero, naming
+# it, before anything is sent. See deploy/observability/README.md, "Importing".
+#
+# workflow_dispatch with dry_run renders and prints every route without
+# writing anything, to check the environment before trusting it.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'deploy/observability/**'
+      - '.github/workflows/observability-apply.yml'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Render the monitors and print where each is routed, change nothing in Datadog
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+# One apply at a time, and never cancelled halfway: the later run applies the
+# newer files either way.
+concurrency:
+  group: observability-apply
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    name: Apply monitors to Datadog
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: observability-prod
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Apply
+        env:
+          DD_API_KEY: ${{ secrets.DD_API_KEY }}
+          DD_APP_KEY: ${{ secrets.DD_APP_KEY }}
+          DD_SITE: ${{ vars.DD_SITE }}
+          NOTIFY: ${{ secrets.NOTIFY }}
+          NOTIFY_SECURITY: ${{ secrets.NOTIFY_SECURITY }}
+          NOTIFY_SECURITY_PAGE: ${{ secrets.NOTIFY_SECURITY_PAGE }}
+          SERVICE: ${{ vars.OBSERVABILITY_SERVICE }}
+          ENV: ${{ vars.OBSERVABILITY_ENV }}
+          ALLOW_DEFAULT_SERVICE: ${{ vars.ALLOW_DEFAULT_SERVICE }}
+          # The payloads go to stdout in a dry run; route lines go to stderr
+          # either way, with the handles masked.
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && '1' || '' }}
+        run: deploy/observability/apply.sh > /dev/null
