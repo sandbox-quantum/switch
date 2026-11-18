@@ -187,6 +187,12 @@ class TurnActivity:
     # yet redrawn still names A after B has started, so a press on it is refused
     # for naming an ended turn rather than silently stopping B.
     interrupt_turn_id: str | None = None
+    # The platform id of whoever the turn answers, for a platform that
+    # addresses a live activity message to someone (Slack's stream). The
+    # adapter's own memory of who spoke in a thread wins when it has one; this
+    # covers a thread it has no memory of, such as one it lost on a restart or
+    # a work thread under the agent's own message that nobody has spoken in.
+    recipient_external_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -1783,6 +1789,36 @@ class PlatformAdapter(ABC):
         carries the state from here on, so an adapter that cannot send one
         does nothing and says nothing.
         """
+
+    async def hosts_work_threads(self, channel_id: str) -> bool:
+        """Whether a turn asked at this channel's root may work in a thread of
+        its own (`!work-threads`): a message of the agent's, with the turn's
+        activity under it, so the asker's thread is not the one the activity
+        lives in. False on every platform that has not built one."""
+        return False
+
+    async def open_work_message(
+        self,
+        channel_id: str,
+        agent_name: str,
+        text: str,
+        initiator_external_id: str | None,
+    ) -> str:
+        """Post the agent's work message at the channel root and return its ref.
+
+        Only called where `hosts_work_threads` said yes. `text` is what a
+        notification or screen reader is given for it; `initiator_external_id`
+        is who the work is for. Raises `RichContentFailed` when nothing was
+        posted.
+        """
+        raise NotImplementedError
+
+    async def settle_work_message(
+        self, channel_id: str, agent_name: str, message_ref: str, summary: str
+    ) -> None:
+        """Rewrite a work message, in place, as the one line its turn ended on.
+        Best effort: a refusal is the adapter's to log."""
+        raise NotImplementedError
 
     def unnotified_notice(self) -> str:
         """Why an attention post named nobody, for a platform that says so.

@@ -66,7 +66,11 @@ from switch_core.bridges.collaboration.adapter import (
     ThreadUnavailable,
     TurnActivity,
 )
-from switch_core.bridges.collaboration.session.renderers import RUNNING_CLOCK_SECONDS
+from switch_core.bridges.collaboration.session.renderers import (
+    RUNNING_CLOCK_SECONDS,
+    turn_state,
+)
+from switch_core.bridges.collaboration.session.renderers.subagents import is_tool_call
 from switch_core.db.models import (
     Agent,
     AgentSessionActivityItem,
@@ -83,7 +87,7 @@ from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
-from switch_core.db.stores.room_store import RoomStore
+from switch_core.db.stores.room_store import RoomStore, work_threads_on_in
 from switch_core.db.stores.session_activity_post_store import (
     ApprovalRequestPostStore,
     SteeredMessageMarkStore,
@@ -168,6 +172,9 @@ class _Target:
     channel_id: str
     thread_ref: str | None
     agent: Agent
+    # The room's `!work-threads` setting. Whether a turn actually gets a work
+    # thread also depends on where it was asked and on the platform.
+    work_threads: bool = False
 
     @property
     def agent_name(self) -> str:
@@ -279,6 +286,9 @@ class AgentSessionActivityPublisher:
         # memory: a restart in that window forgets the marker, and the turn
         # takes it off only if it is still running when the publisher is back.
         self._unposted: dict[_Key, TurnStatusPost] = {}
+        # A turn's work message (`!work-threads`), from when it is posted until
+        # the turn ends: the thread its activity is drawn in.
+        self._work_messages: dict[_Key, str] = {}
         self._open_cards: dict[_Key, str] = {}
         self._online_seen: dict[str, bool] = {}
         self._unsure_marks: set[_Key] = set()
@@ -615,6 +625,7 @@ class AgentSessionActivityPublisher:
                 db, key, room.external_channel_id, thread_id
             ),
             agent=agent,
+            work_threads=work_threads_on_in(room.metadata_),
         )
 
     async def _platform_ref(
@@ -752,7 +763,15 @@ class AgentSessionActivityPublisher:
             if (
                 post is None
                 and _known_root_turn(turn_row)
-                and not self._adapter.broadcasts_thread_replies
+                and (
+                    not self._adapter.broadcasts_thread_replies
+                    # The turn's work is in a thread nobody follows. A card
+                    # there would mention the asker, and a mention makes them
+                    # follow it, so the turn ending would mark it unread for
+                    # them after all: it goes where the question was, as the
+                    # answer does.
+                    or await self._works_in_own_thread(target)
+                )
             ):
                 # Asked in the channel, and this platform cannot show a
                 # threaded card there as well: the card belongs where the
@@ -1201,6 +1220,15 @@ class AgentSessionActivityPublisher:
                 if error_summary and self._adapter.separate_attention_slot
                 else None
             )
+            # Who the turn answers, for a live message addressed to someone.
+            # Only a first publication opens one, so only that asks.
+            answering = (
+                await self._recipient(
+                    db, room_id, target.agent, view.row, target.thread_ref
+                )
+                if post is None
+                else None
+            )
             db.expunge_all()
         self._online_seen[agent_id] = online
         interrupt_turn_id = None if view.ended else running
@@ -1212,6 +1240,7 @@ class AgentSessionActivityPublisher:
             view.turn,
             elapsed,
             interrupt_turn_id=interrupt_turn_id,
+            recipient_external_id=answering,
         )
         state = status_state(
             view,
@@ -1231,9 +1260,18 @@ class AgentSessionActivityPublisher:
                     view, target, asked_on
                 )
             await self._marks(key, unposted, view, target, waiting_behind=bool(unended))
-            post = await self._begin_turn(
-                key, view, target, unposted, content, state, drawn
-            )
+            drawn_in: _Target | None = target
+            if await self._works_in_own_thread(target, view.row):
+                drawn_in = await self._work_thread(
+                    key, view, target, answering, error_summary
+                )
+            if drawn_in is None:
+                post = None
+            else:
+                unposted.thread_ref = drawn_in.thread_ref
+                post = await self._begin_turn(
+                    key, view, drawn_in, unposted, content, state, drawn
+                )
             if post is not None or (view.ended and unposted.mark is None):
                 self._unposted.pop(key, None)
         else:
@@ -1248,6 +1286,7 @@ class AgentSessionActivityPublisher:
         else:
             self._live_turns.pop(key, None)
         if post is not None and drawn.final and not was_final:
+            await self._settle_work_message(key, post, view, target, elapsed)
             await self._stamp_drawn(post)
         if drawn.status != view.turn.status:
             drawn.status = view.turn.status
@@ -1255,6 +1294,107 @@ class AgentSessionActivityPublisher:
             # running turn, which may just have changed.
             for other in unended:
                 self._enqueue(("turn", agent_id, session_id, other), _SOON)
+
+    async def _works_in_own_thread(
+        self, target: _Target, turn_row: AgentSessionActivityItem | None = None
+    ) -> bool:
+        """Whether a turn here does its work in a thread under its own message.
+
+        The room has `!work-threads` on, the question was asked at the channel
+        root (a question asked in a thread keeps its work there: it cannot be
+        nested any deeper), and the platform has work threads in this channel.
+        `turn_row` None asks only about the room and the platform.
+        """
+        if not target.work_threads:
+            return False
+        if turn_row is not None and not _known_root_turn(turn_row):
+            return False
+        return await self._adapter.hosts_work_threads(target.channel_id)
+
+    async def _work_thread(
+        self,
+        key: _Key,
+        view: TurnView,
+        target: _Target,
+        answering: str | None,
+        error_summary: str | None,
+    ) -> _Target | None:
+        """Where a turn with a work thread is drawn, posting its message if due.
+
+        None while there is nothing to show: a turn that has made no tool call
+        posts no work message, so an agent that just answers adds nothing to
+        the channel but its answer. A turn that went wrong is shown anyway,
+        since how it ended is worth seeing.
+
+        The work message is remembered per turn in this process until the
+        turn's own message is stored, which records it as the thread. A
+        refusal posts nothing more and leaves the turn to the usual retries,
+        drawn where it would have been without a work thread.
+        """
+        work_ref = self._work_messages.get(key)
+        if work_ref is None:
+            went_wrong = bool(error_summary) or view.turn.status in (
+                "error",
+                "interrupted",
+            )
+            if not went_wrong and not any(is_tool_call(item) for item in view.items):
+                return None
+            try:
+                work_ref = await self._adapter.open_work_message(
+                    target.channel_id,
+                    target.agent_name,
+                    f"{target.agent_name} is working on this",
+                    answering,
+                )
+            except RichContentThrottled:
+                raise
+            except RichContentFailed as error:
+                logger.warning(
+                    "Could not post the work message for turn %s in channel %s "
+                    "(%s); drawing the turn in the asker's thread instead.",
+                    view.turn.turn_id,
+                    target.channel_id,
+                    error,
+                )
+                return target
+            self._work_messages[key] = work_ref
+        return replace(target, thread_ref=work_ref)
+
+    async def _settle_work_message(
+        self,
+        key: _Key,
+        post: TurnStatusPost,
+        view: TurnView,
+        target: _Target,
+        elapsed: float | None,
+    ) -> None:
+        """Write the line a turn ended on into its work message, if it has one.
+
+        Its thread is not the one the question was asked under, which is how a
+        work message is known after a restart as well as before one.
+        """
+        work_ref = self._work_messages.pop(key, None)
+        if work_ref is None and (
+            post.thread_ref is None
+            or post.thread_ref == target.thread_ref
+            or not await self._works_in_own_thread(target, view.row)
+        ):
+            return
+        work_ref = work_ref or post.thread_ref
+        assert work_ref is not None
+        summary = turn_state(
+            view.items, view.turn, tool_detail=True, elapsed_seconds=elapsed
+        )
+        try:
+            await self._adapter.settle_work_message(
+                target.channel_id, target.agent_name, work_ref, summary
+            )
+        except Exception:
+            logger.exception(
+                "Could not settle the work message %s of turn %s.",
+                work_ref,
+                view.turn.turn_id,
+            )
 
     def _redraw_due(self, drawn: _TurnDrawn, elapsed: float | None) -> datetime:
         """When a running turn is next due a redraw with no change of its own."""
@@ -1268,6 +1408,7 @@ class AgentSessionActivityPublisher:
     def _forget_turn(self, key: _Key) -> None:
         """Stop watching a turn that is gone, or no longer published here."""
         self._live_turns.pop(key, None)
+        self._work_messages.pop(key, None)
         self._drop_unposted(key)
 
     def _drop_unposted(self, key: _Key) -> None:

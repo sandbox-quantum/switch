@@ -710,6 +710,10 @@ class SlackAdapter(PlatformAdapter):
         self._seen_ts: OrderedDict[str, None] = OrderedDict()
         self._seen_ts_max = 1000
         self._channel_type_cache: dict[str, str] = {}
+        # Channels whose kind was looked up to answer `hosts_work_threads`, for
+        # one never seen through an inbound event.
+        self._work_thread_channels: dict[str, bool] = {}
+        self._session_refusals_logged: set[str] = set()
         self._last_user_message_ts: dict[str, str] = {}
         # The message a card button was pressed on, by message ref, as each
         # press in flight carried it, held while the press is handled.
@@ -1588,7 +1592,7 @@ class SlackAdapter(PlatformAdapter):
             else "the workspace id is unknown"
             if not self._team_id
             else "nobody in the thread to address it to"
-            if not self._requester_for(thread_root_id)
+            if not self._stream_recipient(content, thread_root_id)
             else None
         )
         if missing is None:
@@ -1622,6 +1626,25 @@ class SlackAdapter(PlatformAdapter):
         if len(self._thread_requester) > self._thread_requester_max:
             self._thread_requester.popitem(last=False)
 
+    def _stream_recipient(
+        self, content: TurnActivity, thread_root_id: str | None
+    ) -> str | None:
+        """Who a stream in this thread is addressed to: the person this process
+        last saw speak there, else whoever the turn answers.
+
+        The memory is only this process's, so a restart empties it and a work
+        thread under the agent's own message never fills it. Without the
+        second answer both would draw the turn as an ordinary post, and an
+        ordinary post makes the asker's thread unread the moment it lands.
+        """
+        requester = self._requester_for(thread_root_id)
+        if requester:
+            return requester
+        recipient = content.recipient_external_id
+        if recipient and re.fullmatch(r"[UW][A-Z0-9]+", recipient):
+            return recipient
+        return None
+
     def _requester_for(self, thread_root_id: str | None) -> str | None:
         """The person a stream in this thread would be addressed to."""
         thread_ts = self._thread_ts_of(thread_root_id)
@@ -1648,7 +1671,7 @@ class SlackAdapter(PlatformAdapter):
         client = self._web_client
         assert client is not None
         thread_ts = self._thread_ts_of(thread_root_id)
-        requester = self._requester_for(thread_root_id)
+        requester = self._stream_recipient(content, thread_root_id)
         assert thread_ts is not None and requester is not None
         try:
             opened = await client.chat_startStream(
@@ -1697,6 +1720,162 @@ class SlackAdapter(PlatformAdapter):
                 str(failed), ref=ref, text=failed.text
             ) from failed
         return ref
+
+    # ── Work threads (`!work-threads`) ───────────────────────────────────────
+
+    async def hosts_work_threads(self, channel_id: str) -> bool:
+        """Everywhere but a DM or group DM.
+
+        In a DM every new message from the bot notifies, so a work message per
+        turn would be a ping per turn, and replies there already thread under
+        the person's message. When the channel's kind cannot be learnt the
+        answer is no, which is what the room did before it was asked.
+        """
+        if self._web_client is None:
+            return False
+        cached = self._channel_type_cache.get(channel_id)
+        if cached is not None:
+            return cached not in ("im", "mpim")
+        known = self._work_thread_channels.get(channel_id)
+        if known is not None:
+            return known
+        try:
+            kind = await self.get_channel_type(channel_id)
+        except (SlackApiError, KeyError) as error:
+            logger.warning(
+                "Could not tell whether Slack channel %s is a DM (%s); keeping "
+                "turns in the asker's thread there.",
+                channel_id,
+                error,
+            )
+            return False
+        hosts = kind != "lobby"
+        self._work_thread_channels[channel_id] = hosts
+        return hosts
+
+    async def open_work_message(
+        self,
+        channel_id: str,
+        agent_name: str,
+        text: str,
+        initiator_external_id: str | None,
+    ) -> str:
+        """A divider at the channel root, and the agent session on its thread.
+
+        The divider is the whole of what the channel shows: a thin line with
+        the turn's replies under it. `text` is what a notification and a
+        screen reader get instead, since a message with blocks shows them and
+        not its text.
+
+        The session is opened here, before the stream, so it names the asker
+        as its initiator: one the stream opens takes the message's author, the
+        bot, and is listed for nobody. Doing so does not make the asker follow
+        the thread. The session is best effort; the turn is drawn either way.
+        """
+        client = self._web_client
+        if client is None:
+            raise RichContentFailed(
+                "Cannot post a work message: Slack disconnected.", text=text
+            )
+        agent = await self.agent_rendering(agent_name)
+        icon_url = slack_icon_argument(agent.icon_url, agent_name)
+        try:
+            result = await client.chat_postMessage(
+                channel=channel_id,
+                text=text,
+                blocks=[{"type": "divider"}],
+                username=agent.field_label,
+                icon_url=icon_url,
+                unfurl_links=False,
+                unfurl_media=False,
+            )
+        except SlackApiError as error:
+            throttled = self._throttled(error, text)
+            if throttled is not None:
+                raise throttled from error
+            raise RichContentFailed(
+                f"Slack would not post a work message in {channel_id}: "
+                f"{error.response.get('error')}",
+                text=text,
+            ) from error
+        ts = result.get("ts")
+        if not ts:
+            raise RichContentFailed(
+                f"Slack posted a work message in {channel_id} with no ts.", text=text
+            )
+        arguments: dict[str, Any] = {
+            "channel_id": channel_id,
+            "thread_ts": str(ts),
+            "status": "processing",
+            "title": text[:200],
+            "username": agent.field_label,
+        }
+        if icon_url:
+            arguments["icon_url"] = icon_url
+        if initiator_external_id and re.fullmatch(
+            r"[UW][A-Z0-9]+", initiator_external_id
+        ):
+            arguments["initiator_user_id"] = initiator_external_id
+        await self._set_session_status(arguments)
+        return f"{channel_id}:{ts}"
+
+    async def settle_work_message(
+        self, channel_id: str, agent_name: str, message_ref: str, summary: str
+    ) -> None:
+        """Edit the divider into the line the turn ended on, and end the session.
+
+        An edit, so it notifies nobody. The session goes `active` rather than
+        `closed`: it is over for now, and `closed` says the agent will not
+        answer there again.
+        """
+        client = self._web_client
+        if client is None:
+            return
+        _, ts = self._parse_message_ref(message_ref)
+        if not ts:
+            return
+        text = escape_mrkdwn(summary)
+        try:
+            await client.chat_update(
+                channel=channel_id,
+                ts=ts,
+                text=text,
+                blocks=[
+                    {"type": "context", "elements": [{"type": "mrkdwn", "text": text}]}
+                ],
+            )
+        except SlackApiError as error:
+            logger.warning(
+                "Could not write the summary into work message %s (%s); it stays "
+                "a divider over its steps.",
+                message_ref,
+                error.response.get("error"),
+            )
+        await self._set_session_status(
+            {"channel_id": channel_id, "thread_ts": ts, "status": "active"}
+        )
+
+    async def _set_session_status(self, arguments: dict[str, Any]) -> None:
+        """`agents.sessions.setStatus`, which nothing waits on.
+
+        A workspace without agent sessions, or an app without their scopes,
+        refuses it; the work message and its stream are unaffected, so that is
+        logged once per reason rather than on every turn.
+        """
+        client = self._web_client
+        if client is None:
+            return
+        try:
+            await client.api_call("agents.sessions.setStatus", json=arguments)
+        except SlackApiError as error:
+            code = str(error.response.get("error"))
+            if code not in self._session_refusals_logged:
+                self._session_refusals_logged.add(code)
+                logger.warning(
+                    "Slack refused agents.sessions.setStatus (%s); work threads "
+                    "still work, but show no agent session.",
+                    code,
+                )
 
     def _register_stream(self, message_ref: str, stream: _ActivityStream) -> None:
         """Hold an open stream, forgetting the oldest if there is no room.

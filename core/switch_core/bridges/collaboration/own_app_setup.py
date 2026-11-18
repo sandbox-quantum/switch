@@ -66,6 +66,7 @@ _SLACK_DESCRIPTIONS: dict[str, str] = {
     "list-references": "List the room's references",
     "list-aliases": "List agent aliases here",
     "follow-ups": "Turn follow-ups on or off",
+    "work-threads": "Put agent steps in a thread of their own",
     "auto-route": "Let Switch pick who answers untagged messages",
     "assign-agent": "Send every message here to one agent",
     "unassign-agent": "Stop sending every message to one agent",
