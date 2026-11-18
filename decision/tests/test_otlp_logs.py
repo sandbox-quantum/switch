@@ -321,6 +321,45 @@ def test_a_failed_post_is_reported_and_does_not_raise(caplog):
     assert "Log export failed, dropping 1 record" in caplog.text
 
 
+def test_collector_redirect_reports_that_the_batch_was_not_delivered(caplog):
+    seen = []
+
+    def redirect(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(
+            307, headers={"location": "https://other.example/v1/logs"}
+        )
+
+    exporter = LogExporter(_filled(2), _client(redirect), RESOURCE, 1.0, 500)
+    with caplog.at_level(logging.WARNING):
+        asyncio.run(exporter.flush_once())
+
+    assert seen == ["https://collector.example/v1/logs"]
+    assert "Log export failed, dropping 2 record" in caplog.text
+    assert "307" in caplog.text
+
+
+def test_shutdown_reports_the_inflight_batch_as_unconfirmed(caplog):
+    async def cancel_during_export():
+        started = asyncio.Event()
+
+        class InflightCollector:
+            async def post(self, _signal, _payload):
+                started.set()
+                await asyncio.Future()
+
+        exporter = LogExporter(_filled(2), InflightCollector(), RESOURCE, 0, 500)
+        task = asyncio.create_task(exporter.run_forever())
+        await asyncio.wait_for(started.wait(), 2)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    with caplog.at_level(logging.WARNING):
+        asyncio.run(cancel_during_export())
+    assert "Log export interrupted with 2 record(s) unconfirmed" in caplog.text
+
+
 def test_dropped_records_are_reported_at_error(caplog):
     exporter = LogExporter(_filled(2, capacity=1), _Client(), RESOURCE, 1.0, 500)
     with caplog.at_level(logging.ERROR):
