@@ -34,6 +34,8 @@ describe("PageHeader", () => {
     expect(getComputedStyle(actionsRow).flexShrink).toBe("0");
     expect(getComputedStyle(actionsRow).flexWrap).toBe("wrap");
     expect(getComputedStyle(button).whiteSpace).toBe("nowrap");
+    // Not stretched to the height of a title and description beside them.
+    expect(getComputedStyle(actionsRow.parentElement as HTMLElement).alignItems).toBe("flex-start");
   });
 
   // jsdom lays nothing out, so this pins the styles that keep four actions

@@ -6,6 +6,7 @@ const plugin = (metadata: {
   cliLabel?: string;
   shortName?: string;
   knownAgentType?: string;
+  supportsAutoMode?: boolean;
 }) => ({
   metadata: {
     name: `${metadata.id} name`,
@@ -34,6 +35,7 @@ describe('buildAgentProviderCatalogue', () => {
         shortName: 'beta name',
         loginCommand: 'beta login',
         knownAgentType: 'beta',
+        supportsAutoMode: true,
       },
       expect.objectContaining({ id: 'alpha', loginCommand: 'alpha login' }),
     ]);
@@ -57,6 +59,14 @@ describe('buildAgentProviderCatalogue', () => {
       shortName: 'Acme',
       knownAgentType: 'acme-code',
     });
+  });
+
+  it('preserves a provider runtime without Auto mode', () => {
+    const [entry] = buildAgentProviderCatalogue(
+      [plugin({ id: 'cursor', supportsAutoMode: false })],
+      [runtime('cursor')]
+    );
+    expect(entry.supportsAutoMode).toBe(false);
   });
 
   it('refuses a plugin with no runtime, naming it', () => {

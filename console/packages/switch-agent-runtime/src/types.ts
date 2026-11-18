@@ -56,7 +56,7 @@ export interface MessagePayload {
    * assigned agent. Absent when the message named the agent, was routed, or
    * came from a server that predates it.
    */
-  follow_up?: 'thread_follow_up' | 'channel_follow_up' | 'main_agent' | null;
+  follow_up?: 'thread_follow_up' | 'channel_follow_up' | 'main_agent' | 'one_to_one' | null;
 }
 
 export interface CommandPayload {

@@ -37,5 +37,6 @@ export function buildAgentProviderCatalogue(
     shortName: metadata.shortName ?? metadata.name,
     loginCommand: runtimeById.get(metadata.id)!.loginCommand,
     knownAgentType: metadata.knownAgentType ?? metadata.id,
+    supportsAutoMode: metadata.supportsAutoMode !== false,
   }));
 }

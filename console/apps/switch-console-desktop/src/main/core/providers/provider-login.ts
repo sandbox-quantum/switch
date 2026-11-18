@@ -2,7 +2,11 @@ import { type ChildProcess, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { createInterface } from 'node:readline';
-import { loginCommandOf, providerRuntime } from '@switch-console/agent-providers';
+import {
+  loginCommandOf,
+  opencodeV1DatabaseEnv,
+  providerRuntime,
+} from '@switch-console/agent-providers';
 import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
 import { requireProvider } from '@shared/core/providers/agent-provider-registry';
@@ -37,7 +41,10 @@ class ProviderLoginRunner {
       : (process.env.SHELL ?? (process.platform === 'darwin' ? '/bin/zsh' : '/bin/bash'));
     const child = spawn(shell, windows ? ['/c', loginCommand] : ['-lc', loginCommand], {
       cwd: homedir(),
-      env: process.env,
+      env:
+        providerId === 'opencode'
+          ? { ...process.env, ...opencodeV1DatabaseEnv(process.env) }
+          : process.env,
       stdio: ['pipe', 'pipe', 'pipe'],
       detached: !windows,
       windowsHide: true,

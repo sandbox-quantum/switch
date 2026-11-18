@@ -87,8 +87,12 @@ describe("Your account", () => {
     const row = signOutEverywhere.parentElement as HTMLElement;
     expect(within(row).getByRole("button", { name: "Sign out" })).toBeTruthy();
     expect(getComputedStyle(row).flexWrap).toBe("wrap");
-    expect(getComputedStyle(row).minWidth).toBe("0px");
+    expect(getComputedStyle(row).flexShrink).toBe("0");
+    expect(getComputedStyle(row).maxWidth).toBe("100%");
     expect(getComputedStyle(signOutEverywhere).whiteSpace).toBe("nowrap");
+    // The text gives way to the buttons only down to about 320px; then they
+    // drop below it rather than squeezing it a word to a line.
+    expect(getComputedStyle(row.previousElementSibling as HTMLElement).flexBasis).toBe("320px");
   });
 
   it("offers no password change to an account made through single sign-on", async () => {

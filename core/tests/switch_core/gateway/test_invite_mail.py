@@ -207,3 +207,15 @@ def test_an_admin_change_without_a_reason_names_none() -> None:
 
     plain, _rich = _parts(message)
     assert "reason" not in plain
+
+
+def test_an_admin_change_to_someone_no_longer_an_admin_links_no_log() -> None:
+    message = build_admin_change_message(
+        AdminChangeEmail(**{**_ADMIN_CHANGE.__dict__, "audit_log_link": None}),
+        "switch@example.com",
+    )
+
+    plain, rich = _parts(message)
+    assert "The organization's audit log records it." in plain
+    assert "http" not in plain
+    assert "href" not in rich

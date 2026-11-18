@@ -17,34 +17,40 @@ export const NavButtons = observer(function NavButtons() {
   return (
     <div className="flex items-center gap-0.5 [-webkit-app-region:no-drag]">
       <Tooltip>
-        <TooltipTrigger>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="size-7 p-0"
-            disabled={!canGoBack}
-            onClick={() => appState.history.back(applyHistoryEntry)}
-          >
-            <ArrowLeft className="h-4 w-4" />
-          </Button>
-        </TooltipTrigger>
+        <TooltipTrigger
+          render={
+            <Button
+              variant="ghost"
+              size="sm"
+              className="size-7 p-0"
+              aria-label="Go back"
+              disabled={!canGoBack}
+              onClick={() => appState.history.back(applyHistoryEntry)}
+            >
+              <ArrowLeft className="h-4 w-4" />
+            </Button>
+          }
+        />
         <TooltipContent>
           Go Back
           <BoundShortcut settingsKey="navigateBack" variant="badge" />
         </TooltipContent>
       </Tooltip>
       <Tooltip>
-        <TooltipTrigger>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="size-7 p-0"
-            disabled={!canGoForward}
-            onClick={() => appState.history.forward(applyHistoryEntry)}
-          >
-            <ArrowRight className="h-4 w-4" />
-          </Button>
-        </TooltipTrigger>
+        <TooltipTrigger
+          render={
+            <Button
+              variant="ghost"
+              size="sm"
+              className="size-7 p-0"
+              aria-label="Go forward"
+              disabled={!canGoForward}
+              onClick={() => appState.history.forward(applyHistoryEntry)}
+            >
+              <ArrowRight className="h-4 w-4" />
+            </Button>
+          }
+        />
         <TooltipContent>
           Go Forward
           <BoundShortcut settingsKey="navigateForward" variant="badge" />

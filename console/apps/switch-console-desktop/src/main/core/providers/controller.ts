@@ -6,6 +6,7 @@ import type {
   InstallOverride,
 } from '@switch-console/core/deps/runtime';
 import { reportedCliAction } from '@main/core/telemetry/cli-action';
+import { log } from '@main/lib/logger';
 import { refreshInstalledCliPath } from '@main/utils/userEnv';
 import type { ProviderCustomConfig } from '@shared/core/app-settings';
 import {
@@ -161,6 +162,14 @@ export const providersController = createRPCController({
       await refreshInstalledCliPath();
     }
     const mgr = await getDependencyManager(connectionId);
-    return mgr.probeAll(options);
+    await mgr.probeAll(options);
+    if (!connectionId) {
+      log.info('Rechecked agent CLIs', {
+        path: process.env.PATH,
+        found: Object.fromEntries(
+          mgr.getByCategory('agent').map((state) => [state.id, state.path ?? state.status])
+        ),
+      });
+    }
   },
 });
