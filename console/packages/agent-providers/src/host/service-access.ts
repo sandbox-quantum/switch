@@ -196,10 +196,13 @@ export async function readServiceGrants(
   return grantsResponseSchema.parse(await response.json()).grants;
 }
 
-/** `text` on one line, at most `max` characters before an ellipsis. */
+/**
+ * `text` on one line, at most `max` characters before an ellipsis. Format
+ * characters go too, so a bidi override cannot reorder what a reader sees.
+ */
 function cleanText(text: string, max: number): string {
-  const line = text.replace(/[\s\p{Cc}]+/gu, ' ').trim();
-  return line.length > max ? `${line.slice(0, max)}…` : line;
+  const chars = Array.from(text.replace(/[\s\p{Cc}\p{Cf}]+/gu, ' ').trim());
+  return chars.length > max ? `${chars.slice(0, max).join('')}…` : chars.join('');
 }
 
 /** A reason code as Switch writes them, or nothing. */

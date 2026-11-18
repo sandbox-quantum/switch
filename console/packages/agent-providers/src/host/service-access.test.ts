@@ -324,6 +324,30 @@ describe('readServiceGrants', () => {
     expect(message).not.toContain('BAD CODE');
   });
 
+  it('cleans and caps the reason on every path, not only the envelope', async () => {
+    expect(await grantsError(answeringText(401, 'Invalid\ncredentials'))).toBe(
+      `${REFUSED} (HTTP 401, Invalid credentials).`
+    );
+    const long = 'b'.repeat(1000);
+    expect(await grantsError(answering(429, { detail: long }))).toBe(
+      `${REFUSED} (HTTP 429, ${'b'.repeat(300)}…).`
+    );
+    const multiline = new TypeError('fetch failed', { cause: new Error('socket\nhang up') });
+    expect(await grantsError(throwing(multiline))).toBe(`${UNREACHABLE} (socket hang up).`);
+  });
+
+  it('drops format characters, so a bidi override cannot reorder the reason', async () => {
+    const message = await grantsError(
+      answering(403, { error: { code: 'forbidden', message: 'not\u202ethis\u200b agent' } })
+    );
+    expect(message).toBe(`${REFUSED} (HTTP 403, forbidden: not this agent).`);
+  });
+
+  it('cuts a long reason between characters, never inside one', async () => {
+    const message = await grantsError(answering(403, { detail: '😀'.repeat(400) }));
+    expect(message).toBe(`${REFUSED} (HTTP 403, ${'😀'.repeat(300)}…).`);
+  });
+
   it('leaves out a code or message that is empty once cleaned', async () => {
     expect(await grantsError(answering(403, { error: { code: 'forbidden', message: '  ' } }))).toBe(
       `${REFUSED} (HTTP 403, forbidden).`
