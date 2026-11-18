@@ -1,3 +1,5 @@
+import { withBrowserStorage } from "./browserStorage";
+
 /** Where a workspace switch lands, and where the settings areas send someone
  * who arrives without naming a page: back to the page they last had open, or,
  * after switching workspace from a settings page, to that same page in the new
@@ -25,7 +27,7 @@ function inSettings(pathname: string): boolean {
 export function landingAfterSwitch(pathname: string): string {
   if (LIST_PAGES.includes(pathname)) return pathname;
   if (!inSettings(pathname)) return "/";
-  window.sessionStorage.setItem(AFTER_SWITCH_KEY, pathname);
+  withBrowserStorage("sessionStorage", (storage) => storage.setItem(AFTER_SWITCH_KEY, pathname));
   return "/settings";
 }
 
@@ -33,17 +35,17 @@ export function landingAfterSwitch(pathname: string): string {
  * rendering, and cleared once the area has opened (`clearLandingAfterSwitch`)
  * rather than on the read, which React may repeat. */
 export function landingCarriedAcross(): string | null {
-  return window.sessionStorage.getItem(AFTER_SWITCH_KEY);
+  return withBrowserStorage("sessionStorage", (storage) => storage.getItem(AFTER_SWITCH_KEY)) ?? null;
 }
 
 export function clearLandingAfterSwitch(): void {
-  window.sessionStorage.removeItem(AFTER_SWITCH_KEY);
+  withBrowserStorage("sessionStorage", (storage) => storage.removeItem(AFTER_SWITCH_KEY));
 }
 
 export function rememberSettingsPage(area: SettingsArea, path: string): void {
-  window.localStorage.setItem(`${LAST_PAGE_KEY}.${area}`, path);
+  withBrowserStorage("localStorage", (storage) => storage.setItem(`${LAST_PAGE_KEY}.${area}`, path));
 }
 
 export function rememberedSettingsPage(area: SettingsArea): string | null {
-  return window.localStorage.getItem(`${LAST_PAGE_KEY}.${area}`);
+  return withBrowserStorage("localStorage", (storage) => storage.getItem(`${LAST_PAGE_KEY}.${area}`)) ?? null;
 }

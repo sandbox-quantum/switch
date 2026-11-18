@@ -1,4 +1,5 @@
 import { type Session, switchTenant } from "./api";
+import { withBrowserStorage } from "./browserStorage";
 
 /** A link into the dashboard can name the workspace it is for
  * (`?workspace=<id>`), as Switch Console's links do, so the page it opens is
@@ -88,15 +89,20 @@ const AFTER_SIGN_IN_KEY = "switch.workspaceLinkAfterSignIn";
 const AFTER_SIGN_IN_MS = 15 * 60 * 1000;
 
 export function keepLinkForSignIn(link: WorkspaceLink): void {
-  window.sessionStorage.setItem(AFTER_SIGN_IN_KEY, JSON.stringify({ ...link, at: Date.now() }));
+  withBrowserStorage("sessionStorage", (storage) =>
+    storage.setItem(AFTER_SIGN_IN_KEY, JSON.stringify({ ...link, at: Date.now() })),
+  );
 }
 
 /** The link kept for after the sign-in, once: taking it forgets it. Null
  * when there is none, or it waited too long. */
 export function takeLinkAfterSignIn(): WorkspaceLink | null {
-  const raw = window.sessionStorage.getItem(AFTER_SIGN_IN_KEY);
-  window.sessionStorage.removeItem(AFTER_SIGN_IN_KEY);
-  if (raw === null) return null;
+  const raw = withBrowserStorage("sessionStorage", (storage) => {
+    const kept = storage.getItem(AFTER_SIGN_IN_KEY);
+    storage.removeItem(AFTER_SIGN_IN_KEY);
+    return kept;
+  });
+  if (raw == null) return null;
   let kept: unknown;
   try {
     kept = JSON.parse(raw);
@@ -112,7 +118,7 @@ export function takeLinkAfterSignIn(): WorkspaceLink | null {
 }
 
 export function forgetLinkForSignIn(): void {
-  window.sessionStorage.removeItem(AFTER_SIGN_IN_KEY);
+  withBrowserStorage("sessionStorage", (storage) => storage.removeItem(AFTER_SIGN_IN_KEY));
 }
 
 /** What a page opened by id adds when the server answered that it can't
