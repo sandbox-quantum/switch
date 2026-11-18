@@ -73,6 +73,11 @@ AUTO_ROUTE_FALLBACK_KEY = "auto_route_fallback_agent"
 # When Switch last told the room auto-route is unavailable, so it says so at
 # most once an hour however many processes and restarts there are.
 DECISION_NOTICE_AT_KEY = "decision_notice_at"
+# `!work-threads on`: on Slack, a turn answering a question asked at the top
+# of the channel does its work in a thread under a message of the agent's own,
+# which nobody follows, so the turn ending does not bring the asker's thread
+# back as unread. Absent by default, so turns thread under the question.
+WORK_THREADS_ON_KEY = "work_threads_on"
 
 
 def follow_ups_enabled_in(metadata: dict | None) -> bool:
@@ -89,6 +94,11 @@ def main_agent_in(metadata: dict | None) -> str | None:
 def auto_route_on_in(metadata: dict | None) -> bool:
     """Whether a room's metadata turns automatic routing on."""
     return (metadata or {}).get(AUTO_ROUTE_ON_KEY) is True
+
+
+def work_threads_on_in(metadata: dict | None) -> bool:
+    """Whether a room's metadata turns work threads on (`!work-threads on`)."""
+    return (metadata or {}).get(WORK_THREADS_ON_KEY) is True
 
 
 def auto_route_fallback_in(metadata: dict | None) -> str | None:
@@ -138,6 +148,22 @@ class RoomStore:
         that does not exist."""
         await self._set_metadata_key(
             session, room_id, FOLLOW_UPS_OFF_KEY, None if enabled else True
+        )
+
+    async def work_threads_on(self, session: AsyncSession, room_id: str) -> bool:
+        """Whether the room's `!work-threads` setting is on. Off unless set."""
+        room = await session.get(Room, room_id)
+        if room is None:
+            return False
+        return work_threads_on_in(room.metadata_)
+
+    async def set_work_threads_on(
+        self, session: AsyncSession, room_id: str, on: bool
+    ) -> None:
+        """Turn work threads on or off for a room. Raises ValueError for a room
+        that does not exist."""
+        await self._set_metadata_key(
+            session, room_id, WORK_THREADS_ON_KEY, True if on else None
         )
 
     async def main_agent_id(self, session: AsyncSession, room_id: str) -> str | None:

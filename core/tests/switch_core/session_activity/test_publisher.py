@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -28,9 +29,11 @@ from switch_core.db.models import (
     ClientRoom,
     ExternalUser,
     ExternalUserClaim,
+    Room,
     SteeredMessageMark,
     TurnStatusPost,
 )
+from switch_core.db.stores.room_store import WORK_THREADS_ON_KEY
 from switch_core.delivery.addressing import AddressingDecision
 from switch_core.session_activity import publisher as publisher_module
 from switch_core.session_activity.listener import AgentSessionActivityListener
@@ -48,6 +51,7 @@ from switch_core.tenant_context import current_tenant_id
 
 from .bridge_fixtures import (
     BridgedRoom,
+    Drawn,
     RecordingPlatform,
     RefusedForGood,
     RefusedForNow,
@@ -1361,3 +1365,196 @@ async def test_a_task_that_died_is_logged_on_stopping_and_not_raised(
     died = [r for r in caplog.records if "stopped on an error" in r.getMessage()]
     assert len(died) == 1
     assert "tick" in died[0].getMessage()
+
+
+# ── Work threads (`!work-threads`) ───────────────────────────────────────────
+
+
+@dataclass
+class WorkThreadPlatform(RecordingPlatform):
+    """A platform with work threads, recording the work messages it is asked for."""
+
+    hosts: bool = True
+
+    async def hosts_work_threads(self, channel_id: str) -> bool:
+        return self.hosts
+
+    async def open_work_message(
+        self,
+        channel_id: str,
+        agent_name: str,
+        text: str,
+        initiator_external_id: str | None,
+    ) -> str:
+        ref = f"work-{self._ref()}"
+        self.drawn.append(Drawn("open_work_message", channel_id, ref, None, text))
+        return ref
+
+    async def settle_work_message(
+        self, channel_id: str, agent_name: str, message_ref: str, summary: str
+    ) -> None:
+        self.drawn.append(
+            Drawn("settle_work_message", channel_id, message_ref, None, summary)
+        )
+
+
+async def _work_threads_on(session_factory, bridged: BridgedRoom) -> None:
+    async with session_factory() as db, db.begin():
+        room = await db.get(Room, bridged.room_id)
+        assert room is not None
+        room.metadata_ = {**(room.metadata_ or {}), WORK_THREADS_ON_KEY: True}
+
+
+@pytest.fixture
+async def work_platform(session_factory, bridged) -> WorkThreadPlatform:
+    await _work_threads_on(session_factory, bridged)
+    return WorkThreadPlatform()
+
+
+@pytest.fixture
+async def work_publisher(
+    session_factory, bridged, listener, work_platform, online
+) -> AsyncIterator[AgentSessionActivityPublisher]:
+    publisher = _publisher(session_factory, bridged, listener, work_platform, online)
+    publisher.start()
+    try:
+        yield publisher
+    finally:
+        await publisher.stop()
+
+
+async def _tool(service, room_id, status, revision, **overrides):
+    await _step(
+        service,
+        room_id,
+        item_id="tool-1",
+        kind="tool-activity",
+        status=status,
+        revision=revision,
+        title="Ran `pytest`",
+        **overrides,
+    )
+
+
+async def test_a_root_asked_turn_works_in_a_thread_under_its_own_message(
+    service, work_publisher, work_platform, bridged, session_factory
+):
+    """Nothing is posted until the first step; then the work message, the turn
+    in its thread, and at the end the summary written into the work message."""
+    platform = work_platform
+    await _turn(service, bridged.room_id, "running", 1)
+    await asyncio.sleep(0.5)
+    assert platform.drawn == [], "no work message for a turn with no steps yet"
+
+    await _tool(service, bridged.room_id, "in-progress", 1)
+    await platform.wait_until(lambda: len(_turns(platform)) == 1)
+    [opened] = platform.of("open_work_message")
+    assert opened.thread_ref is None, "the work message is at the channel root"
+    [first] = _turns(platform)
+    assert first.call == "post_rich"
+    assert first.thread_ref == opened.ref
+
+    await _tool(service, bridged.room_id, "completed", 2)
+    await _turn(service, bridged.room_id, "completed", 5)
+    await platform.wait_until(lambda: bool(platform.of("settle_work_message")))
+    last = _turns(platform)[-1]
+    assert (last.call, last.ref, last.thread_ref) == (
+        "update_rich",
+        first.ref,
+        opened.ref,
+    )
+    [settled] = platform.of("settle_work_message")
+    assert settled.ref == opened.ref
+    assert settled.content.startswith("Worked for ")
+    assert settled.content.endswith("1 tool call.")
+    assert len(platform.of("open_work_message")) == 1
+    post = await _turn_post(session_factory)
+    assert post.thread_ref == opened.ref
+
+
+async def test_a_turn_that_just_answers_posts_no_work_message(
+    service, work_publisher, work_platform, bridged
+):
+    await _turn(service, bridged.room_id, "running", 1)
+    await _step(
+        service,
+        bridged.room_id,
+        item_id="said-1",
+        kind="assistant-message",
+        status="completed",
+        revision=1,
+        text="Here you go",
+    )
+    await _turn(service, bridged.room_id, "completed", 3)
+    await asyncio.sleep(0.8)
+    assert work_platform.drawn == []
+
+
+async def test_a_root_asked_turn_that_failed_is_shown_without_steps(
+    service, work_publisher, work_platform, bridged
+):
+    await _turn(service, bridged.room_id, "running", 1)
+    await _turn(service, bridged.room_id, "error", 2)
+    await work_platform.wait_until(lambda: bool(work_platform.of("open_work_message")))
+    [opened] = work_platform.of("open_work_message")
+    await work_platform.wait_until(lambda: len(_turns(work_platform)) == 1)
+    assert _turns(work_platform)[0].thread_ref == opened.ref
+
+
+async def test_a_turn_asked_in_a_thread_keeps_its_work_there(
+    service, work_publisher, work_platform, bridged
+):
+    await _step(
+        service,
+        bridged.room_id,
+        item_id="turn",
+        kind="turn",
+        status="running",
+        revision=1,
+        message_id="sw_reply",
+    )
+    await _tool(service, bridged.room_id, "in-progress", 1, message_id="sw_reply")
+    await work_platform.wait_until(lambda: len(_turns(work_platform)) >= 1)
+    assert _turns(work_platform)[0].thread_ref == ASKED_POST
+    assert work_platform.of("open_work_message") == []
+
+
+async def test_a_channel_without_work_threads_keeps_turns_in_the_askers_thread(
+    service, work_publisher, work_platform, bridged
+):
+    """A DM, on Slack: the platform says it has no work threads there."""
+    work_platform.hosts = False
+    await _turn(service, bridged.room_id, "running", 1)
+    [first] = await work_platform.wait_for(1)
+    assert (first.call, first.thread_ref) == ("post_rich", ASKED_POST)
+    assert work_platform.of("open_work_message") == []
+
+
+async def test_without_the_room_setting_turns_stay_in_the_askers_thread(
+    service, session_factory, bridged, listener, online
+):
+    platform = WorkThreadPlatform()
+    publisher = _publisher(session_factory, bridged, listener, platform, online)
+    publisher.start()
+    try:
+        await _turn(service, bridged.room_id, "running", 1)
+        [first] = await platform.wait_for(1)
+        assert (first.call, first.thread_ref) == ("post_rich", ASKED_POST)
+        assert platform.of("open_work_message") == []
+    finally:
+        await publisher.stop()
+
+
+async def test_a_root_asked_card_goes_to_the_channel_root_with_work_threads(
+    service, work_publisher, work_platform, bridged
+):
+    """A card in the work thread would mention the asker and make them follow
+    it; it goes where the question was, as the answer does."""
+    work_platform.broadcasts_thread_replies = True
+    await _turn(service, bridged.room_id, "running", 1)
+    await _open(service, bridged.room_id, thread_id=ASKED)
+    await work_platform.wait_until(
+        lambda: any(isinstance(d.content, RequestCard) for d in work_platform.drawn)
+    )
+    [card] = [d for d in work_platform.drawn if isinstance(d.content, RequestCard)]
+    assert card.thread_ref is None
