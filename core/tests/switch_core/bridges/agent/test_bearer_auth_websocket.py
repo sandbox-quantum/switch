@@ -107,7 +107,9 @@ class _NotAssigned:
         return True
 
     async def authenticate(self, token: str) -> ControllerPrincipal:
-        return ControllerPrincipal(controller_id="c1", owner_id="u1", tenant_id="t1")
+        return ControllerPrincipal(
+            controller_id="c1", owner_id="u1", tenant_id="t1", key_id=None
+        )
 
 
 async def test_a_controller_refused_on_the_socket_is_told_why_in_a_close() -> None:

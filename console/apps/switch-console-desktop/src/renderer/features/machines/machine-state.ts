@@ -1,3 +1,4 @@
+import { agoLabel } from '@renderer/features/switch-servers/server-times';
 import type {
   MachineDetail,
   ManagedAgentView,
@@ -383,4 +384,23 @@ export function placedAgents(
     kind: 'known',
     count: (managed.data ?? []).filter((agent) => agent.machine?.id === machineId).length,
   };
+}
+
+/**
+ * What tells a device apart from others of its owner's with the same name,
+ * most often one computer set up twice, where the one in use is this computer:
+ * when it was last seen. Null for a name no other of `machines` has, for this
+ * computer, and for a device online now.
+ */
+export function namesakeLabel(
+  machine: OwnedMachine,
+  machines: readonly OwnedMachine[],
+  now: Date
+): string | null {
+  if (machine.local?.kind === 'this-computer' || machine.state === 'online') return null;
+  const namesakes = machines.filter(
+    (other) => other.state !== 'revoked' && other.name === machine.name
+  ).length;
+  if (namesakes < 2) return null;
+  return machine.lastSeenAt ? `Last seen ${agoLabel(machine.lastSeenAt, now)}` : 'Never seen';
 }

@@ -20,17 +20,17 @@ export interface ContractRange {
  * `CONTRACTS` below. The two must never be derived from one another.
  */
 export const ARTIFACT_VERSIONS = {
-  'switch-core': '0.32.0',
-  'switch-console': '0.41.0',
+  'switch-core': '0.32.1',
+  'switch-console': '0.41.1',
   'agent-runtime': '0.8.5',
   sidecar: '1.9.12',
-  gateway: '0.32.0',
-  'switch-decision': '0.32.0',
-  'switch-decision-strands': '0.32.0',
-  'helm-chart': '0.32.0',
-  'hosted-controller': '0.32.0',
-  'hosted-controller-chart': '0.32.0',
-  compose: '0.32.0',
+  gateway: '0.32.1',
+  'switch-decision': '0.32.1',
+  'switch-decision-strands': '0.32.1',
+  'helm-chart': '0.32.1',
+  'hosted-controller': '0.32.1',
+  'hosted-controller-chart': '0.32.1',
+  compose: '0.32.1',
 } as const satisfies Record<string, string>;
 
 export type ArtifactName = keyof typeof ARTIFACT_VERSIONS;
@@ -48,8 +48,8 @@ export const CONTRACTS = {
   },
   // The HTTP API switch-core serves to first-party UI clients. Excludes signing in, refreshing a session and signing out, which are deliberately frozen and unversioned so that a client can always sign in far enough to be told what is wrong. The rest of /auth is part of it, sign-up and the browser sign-in link included.
   'gateway-api': {
-    'switch-core': { speaks: 6, accepts: 2 },
-    'switch-console': { speaks: 6, accepts: 1 },
+    'switch-core': { speaks: 7, accepts: 2 },
+    'switch-console': { speaks: 7, accepts: 1 },
   },
   // The interface of the published standalone compose artifact — its service names, profiles, and environment variables — which Switch Console's local-server mode drives.
   'stack-compose': {
