@@ -23,6 +23,7 @@ import {
   splitTurn,
   type TurnActivity,
 } from '../activity-join';
+import { Entrance } from '../chat-entrance';
 import { messageAnchorId, threadChip } from '../chat-threads';
 import {
   agentTargets,
@@ -169,6 +170,8 @@ type Props = {
   people: MentionPerson[];
   activities: AgentActivity[];
   onReply: (message: ChatMessage) => void;
+  /** Bring in the agent's first message, as the chat opens from a hand-off. */
+  firstAgentEntrance: boolean;
 };
 
 /**
@@ -183,6 +186,7 @@ export const ChatTimelineView = observer(function ChatTimelineView({
   people,
   activities,
   onReply,
+  firstAgentEntrance,
 }: Props) {
   const turnsByMessage = new Map<string, { activity: AgentActivity; turn: TurnActivity }[]>();
   /** Each turn's work log, in parts by the message each shows under (`splitTurn`). */
@@ -271,6 +275,16 @@ export const ChatTimelineView = observer(function ChatTimelineView({
       blocks.flatMap(({ turn }) => turn.requests.map((request) => request.requestId))
     )
   );
+  // Only when the conversation's start is loaded is its first agent message the first.
+  const enteringId =
+    firstAgentEntrance && !timeline.hasMore
+      ? (timeline.messages.find(
+          (message) =>
+            message.sender.kind === 'agent' &&
+            !isSessionStartingNotice(message) &&
+            turnEndNotice(message) === null
+        )?.messageId ?? null)
+      : null;
   let previous: Date | null = null;
   /** The agent whose block the last row belongs to; its next row shows no avatar or name. */
   let blockAgent: string | null = null;
@@ -438,26 +452,28 @@ export const ChatTimelineView = observer(function ChatTimelineView({
                 serverId={serverId}
               />
             ) : message.sender.kind === 'agent' ? (
-              <AgentRow
-                id={messageAnchorId(message.messageId)}
-                className={cn('group/row', spacing(head))}
-                agent={agentLabel}
-                serverId={serverId}
-                head={head}
-                trailing={<ReplyButton onReply={() => onReply(message)} />}
-              >
-                <div className="flex flex-col gap-1">
-                  {chip && <ThreadChipButton chip={chip} />}
-                  <div className="text-sm leading-relaxed">
-                    <ChatMarkdown>{message.body}</ChatMarkdown>
+              <Entrance play={message.messageId === enteringId} order={0}>
+                <AgentRow
+                  id={messageAnchorId(message.messageId)}
+                  className={cn('group/row', spacing(head))}
+                  agent={agentLabel}
+                  serverId={serverId}
+                  head={head}
+                  trailing={<ReplyButton onReply={() => onReply(message)} />}
+                >
+                  <div className="flex flex-col gap-1">
+                    {chip && <ThreadChipButton chip={chip} />}
+                    <div className="text-sm leading-relaxed">
+                      <ChatMarkdown>{message.body}</ChatMarkdown>
+                    </div>
+                    <ChatAttachments
+                      serverId={serverId}
+                      roomId={timeline.roomId}
+                      attachments={message.attachments}
+                    />
                   </div>
-                  <ChatAttachments
-                    serverId={serverId}
-                    roomId={timeline.roomId}
-                    attachments={message.attachments}
-                  />
-                </div>
-              </AgentRow>
+                </AgentRow>
+              </Entrance>
             ) : (
               // Switch's own lines (notices, kickoff headlines) are written in
               // the same Markdown as messages: drawn as text, `**name**` read

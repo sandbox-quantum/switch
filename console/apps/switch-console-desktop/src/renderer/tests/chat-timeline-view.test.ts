@@ -53,6 +53,7 @@ describe('ChatTimelineView', () => {
         people: [],
         activities: [],
         onReply: () => {},
+        firstAgentEntrance: false,
       })
     );
     expect(html).not.toContain('items-end');
@@ -81,6 +82,7 @@ describe('ChatTimelineView thread replies', () => {
         people: [],
         activities: [],
         onReply: () => {},
+        firstAgentEntrance: false,
       })
     );
     for (const [name, body] of [
@@ -118,6 +120,7 @@ describe('ChatTimelineView mentions', () => {
         people: [{ userId: 'u2', name: 'cc' }],
         activities: [],
         onReply: () => {},
+        firstAgentEntrance: false,
       })
     );
   };
@@ -147,6 +150,7 @@ describe('ChatTimelineView mentions of people no longer in the chat', () => {
         people: [{ userId: 'u9', name: 'Carol Gone' }],
         activities: [],
         onReply: () => {},
+        firstAgentEntrance: false,
       })
     );
     expect(html).toContain('data-mention="person"');
@@ -184,6 +188,7 @@ describe('ChatTimelineView mentions from the server’s spans', () => {
         people: [{ userId: 'u1', name: 'Bob Member' }],
         activities: [],
         onReply: () => {},
+        firstAgentEntrance: false,
       })
     );
     expect([...html.matchAll(/data-mention="(\w+)"[^>]*>@Bob Member</g)].map((m) => m[1])).toEqual([
@@ -204,6 +209,7 @@ describe('ChatTimelineView kickoffs', () => {
         people: [],
         activities: [],
         onReply: () => {},
+        firstAgentEntrance: false,
       })
     );
 
@@ -245,5 +251,51 @@ describe('ChatTimelineView kickoffs', () => {
 
     expect(html).toContain('text-center');
     expect(html).not.toContain('Kickoff from');
+  });
+});
+
+describe('ChatTimelineView first agent message', () => {
+  function agentMessage(seq: number): ChatMessage {
+    return {
+      ...message(seq, '', 'switch-buddy'),
+      sender: {
+        clientId: 'c',
+        name: 'switch-buddy',
+        kind: 'agent',
+        agentId: 'buddy',
+        userId: null,
+      },
+      body: `agent says ${seq}`,
+    };
+  }
+
+  function render(firstAgentEntrance: boolean): string {
+    const timeline = new ChatTimeline('room-1', api);
+    timeline.apply(message(1, 'me', 'Alice'));
+    timeline.apply(agentMessage(2));
+    timeline.apply(agentMessage(3));
+    return renderToStaticMarkup(
+      createElement(ChatTimelineView, {
+        serverId: 's',
+        timeline,
+        agents: [],
+        people: [],
+        activities: [],
+        onReply: () => {},
+        firstAgentEntrance,
+      })
+    );
+  }
+
+  it('starts hidden below its place when the chat opens from a hand-off, and only that one', () => {
+    const html = render(true);
+    const hidden = html.match(/style="opacity:0;transform:translateY\(12px\)"/g) ?? [];
+    expect(hidden).toHaveLength(1);
+    expect(html.indexOf('opacity:0')).toBeLessThan(html.indexOf('agent says 2'));
+    expect(html.indexOf('opacity:0')).toBeGreaterThan(html.indexOf('body 1'));
+  });
+
+  it('is drawn in place otherwise', () => {
+    expect(render(false)).not.toContain('opacity:0');
   });
 });

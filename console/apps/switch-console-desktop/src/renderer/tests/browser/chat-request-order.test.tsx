@@ -153,6 +153,7 @@ it('shows the question form after the text the turn posted, in reading order', a
           people={[]}
           activities={[activity]}
           onReply={() => {}}
+          firstAgentEntrance={false}
         />
       </QueryClientProvider>
     )

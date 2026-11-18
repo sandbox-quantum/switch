@@ -132,6 +132,7 @@ it('draws a kickoff as a card from the agent that sent it', async () => {
           people={[]}
           activities={[]}
           onReply={() => {}}
+          firstAgentEntrance={false}
         />
       </QueryClientProvider>
     )
