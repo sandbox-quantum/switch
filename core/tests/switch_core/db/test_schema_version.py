@@ -249,7 +249,7 @@ async def test_applying_the_chain_records_the_expand_only_revisions(
 
 
 # Main's head before it was merged with the hosted-agents v2 chain.
-_MAIN_HEAD = "e5b2c8d4f1a7"
+_MAIN_HEAD = "f3a9c1d7e2b4"
 
 
 async def test_subagent_expand_only_upgrade_is_accepted_by_the_previous_pod(
