@@ -69,6 +69,8 @@ describe('a provider added as a plugin and a runtime', () => {
       shortName: 'Dummy',
       loginCommand: 'dummy-agent login',
       knownAgentType: 'dummy',
+      // Its plugin does not say it lacks the CLI's own auto mode.
+      supportsAutoMode: true,
     });
     expect(knownAgentTypeForProvider('dummy')).toBe('dummy');
   });
