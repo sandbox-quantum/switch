@@ -75,6 +75,7 @@ async function render(items: ChatActivityItem[]): Promise<HTMLDivElement> {
         <ChatActivityBlock
           activity={activity}
           turn={turn}
+          withReasoning
           agent={{ name: 'helper', iconUrl: null }}
           head
           endReason={null}
@@ -100,7 +101,7 @@ it('folds the earlier calls of a running turn and keeps the latest on its own li
   const group = [...el.querySelectorAll('button')].find((b) =>
     b.textContent?.startsWith('3 tool calls')
   )!;
-  expect(group.textContent).toContain('· 1 failed');
+  expect(group.textContent).not.toContain('failed');
   expect(group.getAttribute('aria-expanded')).toBe('false');
   expect(rows(el).filter((r) => r.includes('git remote -v'))).toHaveLength(1);
   expect(el.textContent).not.toContain('git status');
@@ -115,4 +116,42 @@ it('shows a single call with no group line', async () => {
   const el = await render([item('turn', 'completed'), item('tool1', 'completed', 'Bash ls')]);
   expect(el.textContent).not.toMatch(/tool calls?/);
   expect(el.textContent).toContain('ls');
+});
+
+it('shows each message steered into the turn, including after it completed', async () => {
+  const el = await render([
+    item('turn', 'completed'),
+    { ...item('initial', 'completed'), kind: 'user-message', text: 'Initial request' },
+    {
+      ...item('steered1', 'completed'),
+      kind: 'user-message',
+      text: 'Use the other file',
+      delivery: 'steered',
+    },
+    {
+      ...item('steered2', 'completed'),
+      kind: 'user-message',
+      text: 'And skip the tests',
+      delivery: 'steered',
+    },
+  ]);
+  expect(rows(el)).toEqual([
+    'Steered into this turn: Use the other file',
+    'Steered into this turn: And skip the tests',
+  ]);
+  expect(el.textContent).not.toContain('Initial request');
+});
+
+it('says a queued turn waits behind the running one when its message arrived mid-turn', async () => {
+  const el = await render([
+    item('turn', 'queued'),
+    {
+      ...item('queued', 'completed'),
+      kind: 'user-message',
+      text: 'Run the tests next',
+      delivery: 'queued',
+    },
+  ]);
+  expect(el.textContent).toContain('Queued behind the running turn…');
+  expect(el.textContent).not.toContain('Steered');
 });

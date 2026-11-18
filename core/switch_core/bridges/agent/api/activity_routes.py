@@ -96,6 +96,9 @@ class ActivityReport(BaseModel):
     thread_id: _Id | None
     message_id: _Id | None
     occurred_at: datetime
+    # On a user message sent while another turn ran: "steered" into that turn,
+    # or "queued" behind it. Hosts that predate steering do not send it.
+    delivery: Literal["steered", "queued"] | None = None
     # Hosts that predate usage reporting do not send it.
     usage: list[TokenUsageIn] = Field(
         default_factory=list, max_length=MAX_MODELS_PER_TURN
@@ -211,6 +214,7 @@ async def report_activity(
         item_id=body.item_id,
         kind=body.kind,
         subagent=body.subagent,
+        delivery=body.delivery,
         revision=body.revision,
         status=body.status,
         title=body.title,

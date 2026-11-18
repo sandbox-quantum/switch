@@ -143,6 +143,7 @@ export type TelemetryCliFailure =
   | 'permission_denied'
   | 'command_failed'
   | 'process_open_failed'
+  | 'missing_prerequisite'
   | 'not_detected_after_install'
   | 'not_detected_after_update'
   | 'still_present'
@@ -353,11 +354,11 @@ export type TelemetrySessionProvisionTrigger = Exclude<SessionProvisionTrigger, 
 
 /**
  * Which setting was changed. The keys of the app's settings, and nothing else,
- * less the two the app writes as it goes rather than a person setting them:
+ * less the one the app writes as it goes rather than a person setting it:
  * `telemetry`, which the first-run notice records the moment it is shown and
- * whose own answer is `telemetry_consent_changed`, and `onboarding`.
+ * whose own answer is `telemetry_consent_changed`.
  */
-export type TelemetrySettingKey = Exclude<AppSettingsKeyName, 'telemetry' | 'onboarding'>;
+export type TelemetrySettingKey = Exclude<AppSettingsKeyName, 'telemetry'>;
 
 /** How a search ended. The search's own union, reused rather than restated. */
 export type TelemetrySearchStatus = SearchStatus;
@@ -792,6 +793,7 @@ export type TelemetryEventMap = {
   add_server_step: RendererTelemetryEvents['add_server_step'];
   onboarding_page: RendererTelemetryEvents['onboarding_page'];
   buddy_step: RendererTelemetryEvents['buddy_step'];
+  home_action: RendererTelemetryEvents['home_action'];
   /** A screen failed. A count, with nothing of what failed or where. */
   renderer_crashed: RendererTelemetryEvents['renderer_crashed'];
   /**
@@ -966,6 +968,7 @@ export const TELEMETRY_EVENT_PROPERTIES = {
   add_server_step: ['step', 'choice', 'first_run'],
   onboarding_page: ['page', 'path'],
   buddy_step: ['action', 'provider'],
+  home_action: ['action', 'chip'],
   renderer_crashed: [],
   telemetry_consent_changed: ['source', 'install_kind'],
 } as const satisfies { [K in TelemetryEventName]: readonly (keyof TelemetryEventMap[K])[] };

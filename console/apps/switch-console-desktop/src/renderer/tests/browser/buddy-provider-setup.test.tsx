@@ -31,6 +31,7 @@ vi.mock('@renderer/features/switch-buddy/create-buddy', () => ({
 vi.mock('@renderer/lib/ipc', () => ({
   events: { on: () => () => {} },
   rpc: {
+    featureFlags: { get: async () => ({ success: false }) },
     providers: {
       install: state.install,
       startLogin: vi.fn(),
@@ -90,6 +91,7 @@ async function render() {
         thisComputer={{
           state: { kind: 'ready', machine: { id: 'm-1', providers: state.providers } as never },
           recheck: state.recheck,
+          retry: () => {},
         }}
       />
     )
@@ -155,6 +157,75 @@ describe('ProviderSetup', () => {
 
     expect(state.install).toHaveBeenCalledWith('claude');
     expect(alert()).toContain('can’t install Claude Code on this computer');
+  });
+
+  it('offers installing by hand, and the Check again it tells the person to press', async () => {
+    state.providers = [missing('claude')];
+    state.install.mockResolvedValue({ success: false, error: { type: 'no-install-command' } });
+    await render();
+
+    await click('Claude Code');
+    await click('Install Claude Code');
+    const labels = [...container!.querySelectorAll('button')].map((b) => b.textContent ?? '');
+    expect(labels).toContain('Try again');
+    expect(labels).toContain('How to install Claude Code');
+
+    state.recheck.mockClear();
+    await click('Check again');
+    expect(state.recheck).toHaveBeenCalled();
+  });
+
+  it('offers Check again before any install, for a CLI installed in a terminal', async () => {
+    state.providers = [missing('claude')];
+    await render();
+
+    await click('Claude Code');
+    state.recheck.mockClear();
+    await click('Check again');
+    expect(state.recheck).toHaveBeenCalled();
+  });
+
+  it('checks again when the window is focused, at most every 15 seconds', async () => {
+    state.providers = [missing('claude')];
+    await render();
+    state.recheck.mockClear();
+
+    await act(async () => window.dispatchEvent(new Event('focus')));
+    await act(async () => window.dispatchEvent(new Event('focus')));
+    expect(state.recheck).toHaveBeenCalledTimes(1);
+  });
+
+  it('says which program an install needed instead of the shell error', async () => {
+    state.providers = [missing('opencode')];
+    state.install.mockResolvedValue({
+      success: false,
+      error: {
+        type: 'command-failed',
+        message: 'The install needs npm, which this computer does not have.',
+        output: "npm : The term 'npm' is not recognized… Check the spelling of the name",
+        missingCommand: 'npm',
+      },
+    });
+    await render();
+
+    await click('OpenCode');
+    await click('Install OpenCode');
+    expect(alert()).toContain('needs Node.js');
+    expect(alert()).not.toContain('Check the spelling');
+  });
+
+  it('keeps what the picked provider needs next pinned in view, with its error', async () => {
+    state.providers = [missing('claude')];
+    state.install.mockResolvedValue({ success: false, error: { type: 'no-install-command' } });
+    await render();
+
+    await click('Claude Code');
+    await click('Install Claude Code');
+    const panel = container!.querySelector<HTMLElement>('[data-slot="provider-action"]')!;
+    expect(getComputedStyle(panel).position).toBe('sticky');
+    expect(panel.querySelector('[role="alert"]')?.textContent).toContain(
+      'can’t install Claude Code'
+    );
   });
 
   it('clears the last error when the person starts again', async () => {

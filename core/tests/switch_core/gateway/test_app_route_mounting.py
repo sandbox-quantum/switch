@@ -46,6 +46,7 @@ def _app(**overrides: object) -> object:
         invite_mailer=None,
         connector_apps=MagicMock(**{"github_app.return_value": None}),
         config=config,
+        trust_connection_check=MagicMock(),
     )
 
 
@@ -130,3 +131,26 @@ def test_organizations_service_settings_are_mounted_only_with_both_flags() -> No
     assert not routes & paths("service_connections")
     assert not routes & paths("organization_connector_apps")
     assert routes <= paths("service_connections,organization_connector_apps")
+
+
+DECISION_ROUTES = {
+    "/decision-settings",
+    "/decision-settings/test",
+    "/rooms/{room_id}/auto-route",
+}
+
+
+def test_auto_route_is_mounted_only_with_decision_routing() -> None:
+    """A server without auto-route has no decision backend to choose or test
+    and no room auto-route to change: the routes answer 404."""
+
+    def paths(flags: str) -> set[str]:
+        return {
+            route.path
+            for route in _app(feature_flags_enabled=flags).routes  # type: ignore[attr-defined]
+        }
+
+    assert not DECISION_ROUTES & paths("follow_the_conversation")
+    assert DECISION_ROUTES <= paths("follow_the_conversation,decision_routing")
+    # The rest of the room's routes are there either way.
+    assert "/rooms/{room_id}" in paths("follow_the_conversation")

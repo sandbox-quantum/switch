@@ -109,7 +109,8 @@ def _dashboard_routes() -> set[str]:
             routes.add(_template(path))
     table = _ROUTE_TABLE.read_text()
     for path in re.findall(
-        r'\b(?:page|settingsPage|areaIndex|redirect)\(\s*"([^"]+)"', table
+        r'\b(?:page|settingsPage|personalSettingsPage|areaIndex|redirect)\(\s*"([^"]+)"',
+        table,
     ):
         routes.add(_template(path))
     return routes
@@ -327,6 +328,48 @@ def test_a_get_the_dashboard_does_not_own_reaches_the_api(
     response = _client(dist).get(path)
     assert response.status_code == 401
     assert response.json() == {"detail": "unauthorized"}
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {"accept": "text/html,application/xhtml+xml,*/*;q=0.8"},
+        {"sec-fetch-mode": "navigate"},
+    ],
+)
+def test_a_browser_at_a_path_nothing_answers_gets_the_dashboard_with_a_404(
+    dist: Path, headers: dict[str, str]
+) -> None:
+    response = _client(dist).get("/settings/no-such-page", headers=headers)
+    assert response.status_code == 404
+    assert response.text == _INDEX
+    assert response.headers["cache-control"] == "no-cache"
+
+
+def test_a_browser_at_an_api_path_still_reaches_the_api(dist: Path) -> None:
+    response = _client(dist).get("/rooms/special", headers={"accept": "text/html"})
+    assert response.status_code == 401
+
+
+def test_an_api_call_to_a_path_nothing_answers_is_not_given_a_page(dist: Path) -> None:
+    response = _client(dist).get(
+        "/settings/no-such-page", headers={"accept": "application/json"}
+    )
+    assert response.status_code == 401
+    assert response.json() == {"detail": "unauthorized"}
+
+
+@pytest.mark.parametrize("path", ["/", "/rooms", "/assets/index-3f9a1c.js"])
+def test_every_dashboard_answer_refuses_framing_and_foreign_script(
+    dist: Path, path: str
+) -> None:
+    headers = _client(dist).get(path).headers
+    assert headers["x-frame-options"] == "DENY"
+    assert headers["x-content-type-options"] == "nosniff"
+    policy = headers["content-security-policy"]
+    assert "frame-ancestors 'none'" in policy
+    assert "script-src 'self'" in policy
+    assert "unsafe-eval" not in policy
 
 
 @pytest.mark.parametrize("method", ["POST", "PUT", "DELETE", "PATCH"])

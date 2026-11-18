@@ -12,7 +12,12 @@ from switch_core.accounts.transfer import (
     agent_transfer_facts,
     agent_transfer_refusal,
 )
-from switch_core.addressing import never_allows
+from switch_core.addressing import (
+    AddressingPolicy,
+    lets_in_more,
+    never_allows,
+    parse_policy,
+)
 from switch_core.agent_display_name import InvalidDisplayName, normalise_display_name
 from switch_core.agent_icon import (
     InvalidIconUrl,
@@ -32,13 +37,16 @@ from switch_core.bridges.agent.protocol.agent_detail import (
     assemble_agent_detail,
     build_agent_summary,
     list_agent_summaries,
+    shown_to,
 )
 from switch_core.bridges.agent.protocol.statuses import overall_statuses
 from switch_core.bridges.agent.protocol.types import (
     IntegrationProfile,
 )
+from switch_core.bridges.agent.registration_bootstrap import is_bootstrap_owner
 from switch_core.chats.service import ChatService
 from switch_core.config import SwitchConfig
+from switch_core.db.audit import AuditAction, record_audit_event
 from switch_core.db.models import User, require_tenant_id
 from switch_core.db.stores.agent_definition_store import (
     AgentDefinitionStore,
@@ -61,7 +69,7 @@ from switch_core.gateway.dependencies import (
     get_session,
     get_user_store,
 )
-from switch_core.gateway.known_agents import known_agent, known_agents
+from switch_core.gateway.known_agents import known_agent, offered_known_agents
 from switch_core.gateway.schemas import (
     AgentCapabilities,
     AgentDetail,
@@ -87,9 +95,11 @@ from switch_core.gateway.schemas import (
     UpdateAgentDescriptionRequest,
     UpdateAgentDisplayNameRequest,
     UpdateAgentIconRequest,
+    UpdateAgentMidTurnDeliveryRequest,
     UpdateAgentOptionsRequest,
 )
 from switch_core.gateway.subagent_registration import derive_subagent_registrations
+from switch_core.providers.registry import ProviderNotOffered, require_offered_provider
 from switch_core.request_validation import public_errors
 
 logger = logging.getLogger(__name__)
@@ -131,7 +141,8 @@ def _with_capabilities(
     summary: AgentSummary, principal: Principal, facts: dict[str, AgentTransferFacts]
 ) -> GatewayAgentSummary:
     return GatewayAgentSummary(
-        **summary.model_dump(), **_capabilities(summary, principal, facts[summary.id])
+        **shown_to(principal, summary).model_dump(),
+        **_capabilities(summary, principal, facts[summary.id]),
     )
 
 
@@ -166,6 +177,24 @@ async def _summary_for_caller(
     return found[0]
 
 
+async def _may_widen_addressing(
+    session: AsyncSession, principal: Principal, owner_id: str | None
+) -> bool:
+    """Whether `principal` may let more people or agents address an agent:
+    its owner, whose service access it acts with; or a workspace admin when
+    the agent acts for no person, being owned by nobody or by the
+    registration service account, which signs in to nothing and holds no
+    one's service access. Without that, nobody could ever open such an agent."""
+    if owns(principal, owner_id):
+        return True
+    if not principal.is_admin:
+        return False
+    if owner_id is None:
+        return True
+    owner = await session.get(User, owner_id)
+    return owner is None or is_bootstrap_owner(owner)
+
+
 async def _detail_for_caller(
     session: AsyncSession,
     detail: AgentDetail,
@@ -186,9 +215,12 @@ async def _detail_for_caller(
         raise _agent_gone(detail.id)
     owner = owns(principal, detail.owner_id)
     return GatewayAgentDetail(
-        **detail.model_dump(exclude={"children"}),
+        **shown_to(principal, detail).model_dump(exclude={"children"}),
         **_capabilities(detail, principal, facts[detail.id]),
         can_change_manage_agents=owner,
+        can_widen_addressing=await _may_widen_addressing(
+            session, principal, detail.owner_id
+        ),
         can_grant_services=owner
         and config.service_connections_enabled
         and _has_known_spec(detail),
@@ -330,7 +362,9 @@ async def delete_agent(
 
 
 @router.get("/known-types")
-async def list_known_agent_types() -> list[KnownAgentType]:
+async def list_known_agent_types(
+    config: Annotated[SwitchConfig, Depends(get_config)],
+) -> list[KnownAgentType]:
     return [
         KnownAgentType(
             key=key,
@@ -338,7 +372,7 @@ async def list_known_agent_types() -> list[KnownAgentType]:
             tool_count=len(spec.tools),
             options_schema=spec.options_schema.model_json_schema(),
         )
-        for key, spec in known_agents().items()
+        for key, spec in offered_known_agents(config.feature_flags).items()
     ]
 
 
@@ -377,6 +411,7 @@ async def register_known_agent(
     req: RegisterKnownAgentRequest,
     user: Annotated[User, Depends(get_current_user)],
     protocol: Annotated[AgentCore, Depends(get_protocol)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> RegisterAgentResponse:
     spec = known_agent(req.agent_type)
     if spec is None:
@@ -384,6 +419,10 @@ async def register_known_agent(
             status_code=400,
             detail=f"Unknown agent type: {req.agent_type}",
         )
+    try:
+        require_offered_provider(spec.provider.id, config.feature_flags)
+    except ProviderNotOffered as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     try:
         options = spec.parse_options(req.options)
@@ -455,16 +494,13 @@ async def register_known_subagents(
         raise HTTPException(
             status_code=404, detail=f"Parent agent not found: {req.parent_agent_id}"
         )
-    try:
-        require_manage(
-            Principal(user.id, is_admin),
-            parent.owner_id,
-        )
-    except PermissionError as exc:
+    # Not an admin: the subagents would sit under someone else's agent, in
+    # its working directory, as the caller's own with keys of their own.
+    if not owns(Principal(user.id, is_admin), parent.owner_id):
         raise HTTPException(
             status_code=403,
-            detail="Only the parent agent's owner or an admin can register its subagents.",
-        ) from exc
+            detail="Only the parent agent's owner can register its subagents.",
+        )
 
     # Derive names + per-subagent options (inheriting parent settings); reject
     # in-batch duplicates before touching the DB.
@@ -592,6 +628,39 @@ async def update_agent_options(
     owner_name = user.name if agent.owner_id == user.id else None
     summary = await build_agent_summary(session, agent_store, agent, owner_name)
     return await _summary_for_caller(session, summary, user, is_admin)
+
+
+@router.put("/{agent_id}/mid-turn-delivery")
+async def update_mid_turn_delivery(
+    agent_id: str,
+    req: UpdateAgentMidTurnDeliveryRequest,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    agent_store: Annotated[AgentStore, Depends(get_agent_store)],
+    user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
+) -> AgentSummary:
+    """Choose what a message sent while the agent is working does: steer into
+    the running turn where its sender may, or always queue behind it.
+
+    Only the agent's owner (or an admin) can change it. It is sent with every
+    message, so the next one follows it without restarting the agent.
+    """
+    agent = await agent_store.get(session, agent_id)
+    if agent is None:
+        raise HTTPException(status_code=404, detail=f"Agent not found: {agent_id}")
+    try:
+        require_manage(Principal(user.id, is_admin), agent.owner_id)
+    except PermissionError:
+        raise HTTPException(
+            status_code=403,
+            detail="Only the agent's owner or an admin can change how it takes messages sent while it works.",
+        )
+    await agent_store.update(session, agent_id, mid_turn_delivery=req.mid_turn_delivery)
+    await session.commit()
+    await session.refresh(agent)
+    return await build_agent_summary(
+        session, agent_store, agent, user.name if agent.owner_id == user.id else None
+    )
 
 
 @router.put("/{agent_id}/icon")
@@ -879,22 +948,41 @@ async def update_addressing_policy(
 ) -> GatewayAgentDetail:
     """Set or clear an agent's scoped addressing policy (CHOO-1585).
 
-    ``policy: null`` clears it (the agent becomes open to anyone). Only the
-    agent's owner (or an admin) may change it.
+    ``policy: null`` clears it (the agent becomes open to anyone). Its owner
+    may set any policy. A workspace admin may only narrow it, to stop an
+    agent misbehaving, never let in anyone it did not already admit
+    (`lets_in_more`): the agent acts with the service access its owner
+    granted it, often on its owner's machine, so whoever may address it acts
+    for its owner. An agent that acts for no person (`_may_widen_addressing`)
+    an admin may open too. A change by anyone but the owner is recorded in
+    the audit log.
     """
     agent = await agent_store.get(session, agent_id)
     if agent is None:
         raise HTTPException(status_code=404, detail=f"Agent not found: {agent_id}")
 
+    principal = Principal(user.id, is_admin)
     try:
-        require_manage(
-            Principal(user.id, is_admin),
-            agent.owner_id,
-        )
+        require_manage(principal, agent.owner_id)
     except PermissionError:
         raise HTTPException(
             status_code=403,
             detail="Only the agent's owner or an admin can change its addressing policy.",
+        )
+    before = agent.addressing_policy
+    owner = owns(principal, agent.owner_id)
+    if not await _may_widen_addressing(
+        session, principal, agent.owner_id
+    ) and lets_in_more(
+        req.policy if req.policy is not None else AddressingPolicy(),
+        parse_policy(before),
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Only the agent's owner can let more people or agents address "
+                "it. You can remove its rules, or restrict it to its owner."
+            ),
         )
 
     dead = [
@@ -909,6 +997,21 @@ async def update_addressing_policy(
         )
     stored = req.policy.model_dump() if req.policy is not None else None
     await agent_store.update(session, agent_id, addressing_policy=stored)
+    if not owner:
+        await record_audit_event(
+            session,
+            tenant_id=require_tenant_id(),
+            actor_user_id=user.id,
+            action=AuditAction.AGENT_ADDRESSING_CHANGED,
+            target_type="agent",
+            target_id=agent.id,
+            details={
+                "agent_name": agent.name,
+                "owner_id": agent.owner_id,
+                "before": before,
+                "after": stored,
+            },
+        )
     await session.commit()
 
     logger.info(

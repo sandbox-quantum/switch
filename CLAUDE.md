@@ -48,7 +48,7 @@ uv sync --project core           # install/update Python dependencies
 
 # Local dev infrastructure (Docker Compose)
 just init-env                    # first-time setup — generate .env with random secrets
-just up                          # start the supporting stack (Postgres, Mattermost) in Docker
+just up                          # start the supporting stack (Postgres) in Docker
 just run                         # run switch-core locally (:8000)
 just down                        # stop the supporting stack
 

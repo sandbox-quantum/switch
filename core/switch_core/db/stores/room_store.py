@@ -7,6 +7,7 @@ from sqlalchemy import (
     ColumnElement,
     DateTime,
     Text,
+    and_,
     cast,
     delete,
     exists,
@@ -32,6 +33,7 @@ from switch_core.db.models import (
     ClientRoom,
     ExternalUser,
     ExternalUserClaim,
+    Message,
     Room,
     RoomAdmin,
     RoomGroup,
@@ -41,6 +43,7 @@ from switch_core.db.models import (
     room_agents,
 )
 from switch_core.db.stores.delivery_cursor_store import DeliveryCursorStore
+from switch_core.room_policy import PRIVATE_CHANNELS
 
 # Where a room's name came from, in its `metadata`. Both "channel" and
 # "created" follow the linked channel's renames:
@@ -354,6 +357,21 @@ class RoomStore:
         result = await session.execute(stmt.limit(limit))
         return [row[0] for row in result.all()]
 
+    async def count(self, session: AsyncSession, shown: ColumnElement[bool]) -> int:
+        """How many rooms the bound tenant has that are not archived and
+        `shown` (`readable_by`) admits, as the rooms list shows them."""
+        return (
+            await session.scalar(
+                select(sa_func.count())
+                .select_from(Room)
+                .where(
+                    Room.tenant_id == require_tenant_id(),
+                    Room.archived_at.is_(None),
+                    shown,
+                )
+            )
+        ) or 0
+
     async def get_all(
         self, session: AsyncSession, *, include_archived: bool = False
     ) -> list[Room]:
@@ -455,6 +473,27 @@ class RoomStore:
             select(Room.id).where(Room.id.in_(room_ids), involves(user_id))
         )
         return set(result.scalars().all())
+
+    async def last_message_at(
+        self, session: AsyncSession, room_ids: Collection[str]
+    ) -> dict[str, datetime]:
+        """When each of `room_ids` last had a message, from any platform; a
+        room with none is left out. One newest-row lookup per room on
+        `ix_messages_room_sent_at`, not a scan of its history."""
+        if not room_ids:
+            return {}
+        newest = (
+            select(Message.sent_at)
+            .where(Message.room_id == Room.id, Message.event_type == "m.room.message")
+            .order_by(Message.sent_at.desc())
+            .limit(1)
+            .correlate(Room)
+            .scalar_subquery()
+        )
+        result = await session.execute(
+            select(Room.id, newest).where(Room.id.in_(room_ids))
+        )
+        return {room_id: at for room_id, at in result.all() if at is not None}
 
     async def admin_room_ids(
         self, session: AsyncSession, user_id: str, room_ids: Collection[str]
@@ -1330,22 +1369,38 @@ class AttachedRooms(NamedTuple):
 
 
 def readable_by(user_id: str | None, *, is_admin: bool) -> ColumnElement[bool]:
-    """True for a `Room` row the user may read: publicly readable, or one they
-    take part in (`involves`). Every room, for a tenant admin; only public ones
-    for a reader with no user (an agent nobody owns), who takes part in none."""
+    """True for a `Room` row the user may read: open to the workspace
+    (`open_to_workspace`), or one they take part in (`involves`). Every room,
+    for a tenant admin; only open ones for a reader with no user (an agent
+    nobody owns), who takes part in none."""
     if is_admin:
         return true()
     if user_id is None:
-        return Room.read_visibility == "public"
-    return or_(Room.read_visibility == "public", involves(user_id))
+        return open_to_workspace()
+    return or_(open_to_workspace(), involves(user_id))
+
+
+def open_to_workspace() -> ColumnElement[bool]:
+    """True for a `Room` row people not in it may see: `room_policy.open_to_workspace`
+    as a query. Never NULL, so a room it does not hold for is never let in."""
+    return and_(
+        Room.read_visibility == "public",
+        or_(
+            and_(Room.channel_type.is_(None), Room.external_channel_id.is_(None)),
+            and_(
+                Room.channel_type.is_not(None),
+                Room.channel_type.not_in(PRIVATE_CHANNELS),
+            ),
+        ),
+    )
 
 
 def _visible_to_agent(reader_id: str | None, agent_id: str) -> ColumnElement[bool]:
     """True for a `Room` row an agent may see when its owner is not a
-    workspace admin: public, one the owner takes part in, or one the agent is
-    in. An agent with no owner sees public rooms and its own."""
+    workspace admin: open to the workspace, one the owner takes part in, or one
+    the agent is in. An agent with no owner sees open rooms and its own."""
     visible = [
-        Room.read_visibility == "public",
+        open_to_workspace(),
         exists().where(
             room_agents.c.room_id == Room.id,
             room_agents.c.agent_id == agent_id,

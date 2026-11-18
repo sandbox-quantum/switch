@@ -68,6 +68,12 @@ class _Lifecycle:
     def supports_private_channels(self, _platform: str) -> bool:
         return False
 
+    def typed_commands(self, bridge_type, connection_config):
+        return {}
+
+    def channel_creation_blocker(self, _platform: str, _config: object) -> None:
+        return None
+
 
 class _Installer:
     installs_by_claim = False

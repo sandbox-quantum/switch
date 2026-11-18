@@ -1,6 +1,5 @@
 import AccountCircleOutlined from "@mui/icons-material/AccountCircleOutlined";
 import AddOutlined from "@mui/icons-material/AddOutlined";
-import LockOutlined from "@mui/icons-material/LockOutlined";
 import LogoutOutlined from "@mui/icons-material/LogoutOutlined";
 import {
   Alert,
@@ -17,12 +16,11 @@ import {
   Typography,
 } from "@mui/material";
 import { memo, useState } from "react";
-import { NavLink, Link as RouterLink, useLocation } from "react-router";
+import { Link as RouterLink, useLocation } from "react-router";
 import type { MouseEvent } from "react";
 import { useAuth } from "../data/AuthContext";
 import CreateWorkspaceForm from "../pages/onboarding/CreateWorkspaceForm";
-import { type Layout, type RailItem as RailItemDefinition, railFor } from "../routes/routeTable";
-import ChangePasswordDialog from "./ChangePasswordDialog";
+import { type RailItem as RailItemDefinition, railFor } from "../routes/routeTable";
 import ThemeModeToggle from "./ThemeModeToggle";
 
 // The rail follows the window's height: at a laptop's it is sized so an
@@ -38,10 +36,13 @@ const LOGO = "clamp(24px, 2.6vh, 28px)";
 
 function RailItem({ item, active }: { item: RailItemDefinition; active: boolean }) {
   return (
+    // A plain link: NavLink would set aria-current from its own match, which
+    // misses the paths an item also stands for (`activeFor`).
     <Box
-      component={NavLink}
+      component={RouterLink}
       to={item.to}
       aria-current={active ? "page" : undefined}
+      aria-label={item.labelled ? undefined : item.label}
       sx={{
         display: "flex",
         flexDirection: "column",
@@ -49,9 +50,6 @@ function RailItem({ item, active }: { item: RailItemDefinition; active: boolean 
         gap: 0.25,
         textDecoration: "none",
         color: "text.primary",
-        opacity: active ? 1 : 0.75,
-        transition: "opacity 150ms",
-        "&:hover": { opacity: 1 },
         "&:focus-visible": { outline: "2px solid var(--sw-ring)", outlineOffset: 2, borderRadius: "16px" },
       }}
     >
@@ -75,41 +73,49 @@ function RailItem({ item, active }: { item: RailItemDefinition; active: boolean 
       >
         <item.icon sx={{ fontSize: ICON, strokeWidth: 1.5 }} />
       </Box>
-      <Typography
-        sx={{ fontSize: LABEL, lineHeight: 1, fontWeight: 500, letterSpacing: "-0.01em" }}
-      >
-        {item.label}
-      </Typography>
+      {item.labelled && (
+        <Typography
+          sx={{ fontSize: LABEL, lineHeight: 1, fontWeight: 500, letterSpacing: "-0.01em" }}
+        >
+          {item.label}
+        </Typography>
+      )}
     </Box>
   );
 }
 
-export default memo(function NavRail({ layout }: { layout: Layout }) {
-  const location = useLocation();
-  const { user, session, isOperator, capabilities, logout, logoutEverywhere, switchTo } =
-    useAuth();
-  const [anchor, setAnchor] = useState<HTMLElement | null>(null);
-  const [passwordDialogOpen, setPasswordDialogOpen] = useState(false);
-  const [createOpen, setCreateOpen] = useState(false);
-  const [switchError, setSwitchError] = useState<string | null>(null);
+/** What the account button shows: the initials of the first and last words
+ * of the person's name, or the first letter of their email when the name
+ * gives none. */
+export function accountInitials(user: { name: string; email: string } | null): string {
+  const words = (user?.name ?? "").split(/\s+/).filter((word) => /^\p{L}/u.test(word));
+  const picked = words.length > 1 ? [words[0], words[words.length - 1]] : words;
+  const initials = picked.map((word) => Array.from(word)[0]).join("");
+  return (initials === "" ? (user?.email ?? "?").charAt(0) : initials).toLocaleUpperCase();
+}
 
-  const switchWorkspace = async (tenantId: string) => {
+export default memo(function NavRail() {
+  const location = useLocation();
+  const { user, session, isOperator, capabilities, logout, logoutEverywhere } = useAuth();
+  const [anchor, setAnchor] = useState<HTMLElement | null>(null);
+  const [createOpen, setCreateOpen] = useState(false);
+  // What the menu last failed to do: signing out.
+  const [menuError, setMenuError] = useState<string | null>(null);
+
+  // A sign-out that works leaves the dashboard; one that fails says so.
+  const signOut = async (action: () => Promise<void>, failure: string) => {
     setAnchor(null);
     try {
-      await switchTo(tenantId);
+      await action();
     } catch (err) {
-      setSwitchError(err instanceof Error ? err.message : "Could not switch workspace");
+      setMenuError(`${failure}: ${err instanceof Error ? err.message : String(err)}`);
     }
   };
 
-  const items = railFor(layout, capabilities);
+  const items = railFor(capabilities);
   const isActive = (item: RailItemDefinition) =>
     item.activeFor.some((prefix) => location.pathname.startsWith(prefix));
-  const current = session?.tenant ?? null;
-  // The new layout switches workspace from the top bar's breadcrumb.
-  const others =
-    layout === "v2" ? [] : (session?.tenants ?? []).filter((t) => t.id !== current?.id);
-  const initial = (user?.email ?? "?").charAt(0).toUpperCase();
+  const initials = accountInitials(user);
 
   return (
     <Stack
@@ -123,7 +129,7 @@ export default memo(function NavRail({ layout }: { layout: Layout }) {
         color: "text.primary",
       }}
     >
-      <Tooltip title="Switch Gateway" placement="right">
+      <Tooltip title="Switch" placement="right">
         {/* Two assets rather than one recoloured mark: the swap is done in CSS
             off the colour-scheme attribute so there is no flash on first paint,
             and a future coloured logo drops in without rework. The file names
@@ -219,7 +225,7 @@ export default memo(function NavRail({ layout }: { layout: Layout }) {
             "&:focus-visible": { outline: "2px solid var(--sw-ring)", outlineOffset: 2 },
           }}
         >
-          {initial}
+          {initials}
         </Box>
       </Stack>
 
@@ -242,36 +248,15 @@ export default memo(function NavRail({ layout }: { layout: Layout }) {
           )}
         </Box>
         <Divider sx={{ my: 0.5 }} />
-        {layout === "v2" ? (
-          <MenuItem
-            component={RouterLink}
-            to="/settings/account"
-            onClick={() => setAnchor(null)}
-            sx={{ gap: 1 }}
-          >
-            <AccountCircleOutlined sx={{ fontSize: 16 }} />
-            Your account
-          </MenuItem>
-        ) : (
-          <Box sx={{ px: 1.5, pt: 0.5, pb: 0.25 }}>
-            <Typography variant="caption" sx={{ color: "text.secondary" }}>
-              Workspace
-            </Typography>
-            <Typography variant="body2" sx={{ fontWeight: 500 }} noWrap>
-              {current?.name}
-            </Typography>
-          </Box>
-        )}
-        {others.map((tenant) => (
-          <MenuItem
-            key={tenant.id}
-            onClick={() => switchWorkspace(tenant.id)}
-          >
-            <Typography variant="body2" noWrap>
-              Switch to {tenant.name}
-            </Typography>
-          </MenuItem>
-        ))}
+        <MenuItem
+          component={RouterLink}
+          to="/settings/account"
+          onClick={() => setAnchor(null)}
+          sx={{ gap: 1 }}
+        >
+          <AccountCircleOutlined sx={{ fontSize: 16 }} />
+          Your account
+        </MenuItem>
         {session?.can_create_workspace && (
           <MenuItem
             onClick={() => {
@@ -298,21 +283,14 @@ export default memo(function NavRail({ layout }: { layout: Layout }) {
           <ThemeModeToggle />
         </Box>
         <Divider sx={{ my: 0.5 }} />
-        <MenuItem
-          onClick={() => {
-            setAnchor(null);
-            setPasswordDialogOpen(true);
-          }}
-          sx={{ gap: 1 }}
-        >
-          <LockOutlined sx={{ fontSize: 16 }} />
-          Change password
-        </MenuItem>
-        <MenuItem onClick={logout} sx={{ gap: 1 }}>
+        <MenuItem onClick={() => signOut(logout, "Couldn't sign out")} sx={{ gap: 1 }}>
           <LogoutOutlined sx={{ fontSize: 16 }} />
           Sign out
         </MenuItem>
-        <MenuItem onClick={logoutEverywhere} sx={{ gap: 1 }}>
+        <MenuItem
+          onClick={() => signOut(logoutEverywhere, "Couldn't sign out of every device")}
+          sx={{ gap: 1 }}
+        >
           <LogoutOutlined sx={{ fontSize: 16 }} />
           Sign out of all devices
         </MenuItem>
@@ -326,19 +304,14 @@ export default memo(function NavRail({ layout }: { layout: Layout }) {
       </Dialog>
 
       <Snackbar
-        open={switchError !== null}
-        onClose={() => setSwitchError(null)}
+        open={menuError !== null}
+        onClose={() => setMenuError(null)}
         anchorOrigin={{ vertical: "bottom", horizontal: "left" }}
       >
-        <Alert severity="error" onClose={() => setSwitchError(null)}>
-          {switchError}
+        <Alert severity="error" onClose={() => setMenuError(null)}>
+          {menuError}
         </Alert>
       </Snackbar>
-
-      <ChangePasswordDialog
-        open={passwordDialogOpen}
-        onClose={() => setPasswordDialogOpen(false)}
-      />
     </Stack>
   );
 });

@@ -1,5 +1,6 @@
 import { observer } from 'mobx-react-lite';
 import { useEffect, useState } from 'react';
+import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { Button } from '@renderer/lib/ui/button';
@@ -8,12 +9,14 @@ import { DisclosureRow } from '@renderer/lib/ui/disclosure-row';
 import { Field, FieldGroup, FieldLabel } from '@renderer/lib/ui/field';
 import { Input } from '@renderer/lib/ui/input';
 import { cn } from '@renderer/utils/utils';
-import type {
-  ClearTrustSettingsResult,
-  FetchTrustSettingsResult,
-  TrustSettings,
-  UpdateTrustSettingsResult,
+import {
+  type ClearTrustSettingsResult,
+  type FetchTrustSettingsResult,
+  type TrustSettings,
+  type UpdateTrustSettingsResult,
 } from '@shared/core/switch-servers/switch-servers';
+import { openServerPage } from './open-server-page';
+import { organizationGuardrailsWay } from './organization-guardrails';
 import { switchServersStore } from './switch-servers-store';
 
 type FormState = {
@@ -43,8 +46,12 @@ function recoverableResultText(result: { kind: string; message?: string }): stri
 }
 
 /**
- * Switch Trust's one server-global guardrails settings, in Admin under
- * Server. Here until the web gateway has a page for them; then this goes.
+ * Switch Trust's one server-global guardrails settings, in Settings under
+ * Guardrails, for a server that still has them. A newer server has each
+ * organization connect its own policy in the dashboard, and answers the read
+ * with where to go instead. This shows that, with a way to the organization's
+ * guardrails for an operator who is also one of its admins, and why there is
+ * none for one who isn't (`organizationGuardrailsWay`).
  *
  * Admin-only (a deployment operator, not a workspace admin) — one policy
  * covers the whole deployment, not a workspace, so `switchServersStore`'s
@@ -68,6 +75,7 @@ export const GuardrailsSection = observer(function GuardrailsSection({
   const [settings, setSettings] = useState<TrustSettings | null>(null);
   const [form, setForm] = useState<FormState | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [moved, setMoved] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [confirmingOff, setConfirmingOff] = useState(false);
@@ -80,6 +88,7 @@ export const GuardrailsSection = observer(function GuardrailsSection({
     setSettings(null);
     setForm(null);
     setLoadError(null);
+    setMoved(null);
     setConfirmingOff(false);
     rpc.switchServers.getTrustSettings(serverId).then(
       (result: FetchTrustSettingsResult) => {
@@ -87,6 +96,8 @@ export const GuardrailsSection = observer(function GuardrailsSection({
         if (result.kind === 'loaded') {
           setSettings(result.settings);
           setForm(formFor(result.settings));
+        } else if (result.kind === 'moved') {
+          setMoved(result.message);
         } else {
           setLoadError(recoverableResultText(result));
         }
@@ -147,9 +158,32 @@ export const GuardrailsSection = observer(function GuardrailsSection({
 
   const formValid = form !== null && form.endpoint.trim() !== '';
 
+  const server = switchServersStore.serverById(serverId);
+  const guardrailsWay = server
+    ? organizationGuardrailsWay(server, workspacesStore.onServerInScope(serverId))
+    : null;
+
   return (
     <div className={className}>
       {loadError && <p className="text-xs text-destructive">{loadError}</p>}
+
+      {moved && (
+        <div className="flex flex-col items-start gap-2">
+          <p className="text-xs text-foreground-muted">{moved}</p>
+          {guardrailsWay?.kind === 'open' && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => void openServerPage(serverId, guardrailsWay.url)}
+            >
+              Open organization guardrails
+            </Button>
+          )}
+          {guardrailsWay?.kind === 'not-an-admin' && (
+            <p className="text-xs text-foreground-muted">{guardrailsWay.text}</p>
+          )}
+        </div>
+      )}
 
       {form && settings && (
         <>

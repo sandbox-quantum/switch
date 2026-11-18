@@ -80,6 +80,7 @@ resources:
     name: "{team} - Design Review"
     description: "Design critique and feedback room for {team}. Share work-in-progress for structured review."
     bridge: "{bridge}"
+    channel_type: channel_private
     agents: [design_critic, content_reviewer]
     users:
       - {if: "{bridge}", value: ["{$creator}"]}

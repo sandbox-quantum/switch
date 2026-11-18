@@ -2,14 +2,14 @@ import type { ReactNode } from "react";
 import { Route } from "react-router";
 import type { SettingsArea } from "../data/settingsLanding";
 import { Guarded, RedirectTo } from "./Guarded";
-import { type AppRoute, type Layout, routesFor } from "./routeTable";
+import { type AppRoute, ROUTES } from "./routeTable";
 import { SettingsIndex, SettingsLayout } from "./SettingsLayout";
 
 function routePath(path: string): { index: true } | { path: string } {
   return path === "/" ? { index: true } : { path: path.slice(1) };
 }
 
-function routeElement(route: AppRoute, layout: Layout): ReactNode {
+function routeElement(route: AppRoute): ReactNode {
   const key = `${route.kind}:${route.path}`;
   switch (route.kind) {
     case "page":
@@ -25,7 +25,7 @@ function routeElement(route: AppRoute, layout: Layout): ReactNode {
         <Route
           key={key}
           {...routePath(route.path)}
-          element={<SettingsIndex area={route.area} layout={layout} />}
+          element={<SettingsIndex area={route.area} />}
         />
       );
     case "redirect":
@@ -33,23 +33,23 @@ function routeElement(route: AppRoute, layout: Layout): ReactNode {
   }
 }
 
-/** The signed-in dashboard's routes for `layout`, from the route table. A
- * settings area's pages share its layout route, which draws the area's menu. */
-export function renderRoutes(layout: Layout): ReactNode[] {
+/** The signed-in dashboard's routes, from the route table. A settings area's
+ * pages share its layout route, which draws the area's menu. */
+export function renderRoutes(): ReactNode[] {
   const top: ReactNode[] = [];
   const byArea = new Map<SettingsArea, ReactNode[]>();
-  for (const route of routesFor(layout)) {
+  for (const route of ROUTES) {
     if (route.kind === "page" && route.area !== undefined) {
       const pages = byArea.get(route.area) ?? [];
-      pages.push(routeElement(route, layout));
+      pages.push(routeElement(route));
       byArea.set(route.area, pages);
     } else {
-      top.push(routeElement(route, layout));
+      top.push(routeElement(route));
     }
   }
   for (const [area, pages] of byArea) {
     top.push(
-      <Route key={`area-layout:${area}`} element={<SettingsLayout area={area} layout={layout} />}>
+      <Route key={`area-layout:${area}`} element={<SettingsLayout area={area} />}>
         {pages}
       </Route>,
     );

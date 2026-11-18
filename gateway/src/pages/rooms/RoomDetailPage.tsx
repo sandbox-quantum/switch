@@ -51,6 +51,7 @@ import {
 } from "../../data/api";
 import { useAgents, useBridgeUsers, useRoom, useRoomAgentCandidates } from "../../data/hooks";
 import { useAuth } from "../../data/AuthContext";
+import { mayBeInAnotherWorkspace } from "../../data/workspaceLink";
 import { AccessSelect } from "../../components/AccessControls";
 import type { AccessLevel } from "../../data/visibility";
 import {
@@ -70,6 +71,12 @@ import ExportRoomYamlDialog from "./ExportRoomYamlDialog";
 import type { RoomsNotice } from "./RoomsPage";
 import { RoomAccessChip } from "./RoomAccessChip";
 import {
+  ROOM_STANDING_LABELS,
+  type RoomViewer,
+  roomStanding,
+  roomStandingText,
+} from "./roomStanding";
+import {
   ROOM_ACCESS_HELPERS,
   ROOM_ACCESS_LEVELS,
   ROOM_ACCESS_OPTION_LABELS,
@@ -87,11 +94,11 @@ import {
 export default function RoomDetailPage() {
   const { roomId } = useParams<{ roomId: string }>();
   const navigate = useNavigate();
-  const { canAdminTenant, session } = useAuth();
+  const { canAdminTenant, capabilities, session } = useAuth();
   // Who is looking, to offer taking out their own agent and unlinking their
   // own resources: the server allows those by ownership alone.
   const viewerId = session?.user.id ?? null;
-  const { data: room, loading, error, refetch } = useRoom(roomId);
+  const { data: room, loading, error, errorStatus, refetch } = useRoom(roomId);
   const [exportOpen, setExportOpen] = useState(false);
 
   if (loading) {
@@ -110,6 +117,11 @@ export default function RoomDetailPage() {
         </Button>
         <Alert severity="error" sx={{ mt: 2 }}>
           {error ?? "Room not found"}
+          {mayBeInAnotherWorkspace(errorStatus) !== null && (
+            <Box component="span" sx={{ display: "block", mt: 0.5 }}>
+              {mayBeInAnotherWorkspace(errorStatus)}
+            </Box>
+          )}
         </Alert>
       </Box>
     );
@@ -121,10 +133,10 @@ export default function RoomDetailPage() {
   return (
     <Box>
       <Stack direction="row" alignItems="center" spacing={1} mb={2}>
-        <IconButton onClick={() => navigate("/rooms")} size="small" aria-label="Back">
+        <IconButton onClick={() => navigate("/rooms")} size="small" aria-label="Back to rooms">
           <ArrowBack />
         </IconButton>
-        <Typography variant="h5" sx={{ flexGrow: 1 }}>
+        <Typography variant="h5" sx={{ flexGrow: 1, minWidth: 0, overflowWrap: "anywhere" }}>
           {room.name}
         </Typography>
         {room.archived && (
@@ -136,13 +148,28 @@ export default function RoomDetailPage() {
         {room.bridge_display_name && (
           <Chip label={room.bridge_display_name} size="small" />
         )}
-        <Button variant="outlined" size="small" onClick={() => setExportOpen(true)}>
+        <Button
+          variant="outlined"
+          size="small"
+          onClick={() => setExportOpen(true)}
+          sx={{ flexShrink: 0 }}
+        >
           Export to YAML
         </Button>
       </Stack>
 
       <Stack spacing={4}>
-        <RoomInfoSection room={room} />
+        <RoomInfoSection
+          room={room}
+          viewer={{
+            id: viewerId,
+            administersOrganization: capabilities.administersOrganization,
+            isOperator: capabilities.isOperator,
+            adminMember:
+              session?.tenants.some((t) => t.id === session.tenant?.id && t.role === "admin") ??
+              false,
+          }}
+        />
         <Divider />
         <RoomGroupSection
           room={room}
@@ -269,7 +296,8 @@ const BRIDGED_ROOM_ACCESS_HELPERS: Partial<Record<AccessLevel, string>> = Object
   ]),
 );
 
-function RoomInfoSection({ room }: { room: RoomDetail }) {
+function RoomInfoSection({ room, viewer }: { room: RoomDetail; viewer: RoomViewer }) {
+  const standing = roomStanding(room, viewer);
   return (
     <Stack spacing={1}>
       <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
@@ -277,6 +305,11 @@ function RoomInfoSection({ room }: { room: RoomDetail }) {
       </Typography>
       <Stack direction="row" spacing={2} flexWrap="wrap" alignItems="center">
         <RoomAccessChip room={room} />
+        <InfoChip
+          label="Owner"
+          value={ownerLabel(room)}
+          mono={room.owner_id !== null && room.owner_name === null}
+        />
         {room.channel_type && (
           <InfoChip
             label="Channel type"
@@ -293,8 +326,18 @@ function RoomInfoSection({ room }: { room: RoomDetail }) {
           />
         )}
       </Stack>
+      <Typography variant="body2" color="text.secondary">
+        <strong>Your access:</strong> {ROOM_STANDING_LABELS[standing]}.{" "}
+        {roomStandingText(room, standing)}
+      </Typography>
     </Stack>
   );
+}
+
+/** An owner with no name shows by id, as the rooms list shows them. */
+function ownerLabel(room: RoomDetail): string {
+  if (room.owner_id === null) return "No owner";
+  return room.owner_name ?? room.owner_id;
 }
 
 function InfoChip({
@@ -688,11 +731,7 @@ function EditableFieldsSection({
       <Typography variant="overline" sx={{ color: "text.secondary", display: "block" }}>
         Settings
       </Typography>
-      {!canWrite && (
-        <Alert severity="info">
-          Only this room's owner, its room admins and workspace admins can change these settings.
-        </Alert>
-      )}
+      {!canWrite && <Alert severity="info">{settingsNotice(room)}</Alert>}
       {error && <Alert severity="error">{error}</Alert>}
       <TextField
         label="Name"
@@ -750,6 +789,15 @@ function EditableFieldsSection({
   );
 }
 
+/** Who may change the settings, naming the owner as Switch Console does. */
+function settingsNotice(room: RoomDetail): string {
+  if (room.owner_id === null) {
+    return "This room has no owner, so only its room admins and workspace admins can change these settings.";
+  }
+  const owner = room.owner_name ?? "this room's owner";
+  return `Only ${owner}, a room admin or a workspace admin can change these settings.`;
+}
+
 // ── Participants ─────────────────────────────────────────────────────────────
 
 function ParticipantsSection({
@@ -763,9 +811,13 @@ function ParticipantsSection({
   viewerId: string | null;
   onChanged: () => void;
 }) {
-  const { data: allAgents, loading: agentsLoading } = useAgents();
+  const { data: allAgents, loading: agentsLoading, error: agentsError } = useAgents();
   // Only the agents the server's invite rule lets the viewer bring in.
-  const { data: candidates, loading: candidatesLoading } = useRoomAgentCandidates(room.id);
+  const {
+    data: candidates,
+    loading: candidatesLoading,
+    error: candidatesError,
+  } = useRoomAgentCandidates(room.id);
   const [addUserOpen, setAddUserOpen] = useState(false);
   const [addAgentOpen, setAddAgentOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -895,6 +947,11 @@ function ParticipantsSection({
         Participants
       </Typography>
       {error && <Alert severity="error">{error}</Alert>}
+      {agentsError && (
+        <Alert severity="error">
+          Couldn't load the agents, so those in the room show by id: {agentsError}
+        </Alert>
+      )}
 
       <Box>
         <Typography variant="body2" gutterBottom>
@@ -943,6 +1000,7 @@ function ParticipantsSection({
               submitLabel="Add"
               options={addableAgentOptions}
               loading={agentsLoading || candidatesLoading}
+              loadError={agentsError ?? candidatesError}
               subToggleCount={(id) => childCountByParent.get(id) ?? 0}
               subToggleLabel={(n) => `Also add ${n} subagent(s)`}
               onClose={() => setAddAgentOpen(false)}
@@ -1033,7 +1091,7 @@ function BridgeUserPicker({
   onClose: () => void;
   onSubmit: (names: string[]) => Promise<void>;
 }) {
-  const { data: bridgeUsers, loading } = useBridgeUsers(bridgeId);
+  const { data: bridgeUsers, loading, error } = useBridgeUsers(bridgeId);
   const options = useMemo<PickerOption[]>(
     () =>
       (bridgeUsers ?? [])
@@ -1054,6 +1112,7 @@ function BridgeUserPicker({
       submitLabel="Add"
       options={options}
       loading={loading}
+      loadError={error}
       onClose={onClose}
       onSubmit={onSubmit}
     />

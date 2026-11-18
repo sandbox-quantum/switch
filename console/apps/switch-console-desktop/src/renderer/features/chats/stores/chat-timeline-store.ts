@@ -357,10 +357,7 @@ export class ChatTimeline {
     if (refused.length) {
       runInAction(() => {
         send.state = 'failed';
-        send.error =
-          refused.length === 1
-            ? `${refused[0]!.file.name} could not be attached: ${refused[0]!.error}`
-            : `${refused.length} files could not be attached.`;
+        send.error = null;
       });
       return;
     }

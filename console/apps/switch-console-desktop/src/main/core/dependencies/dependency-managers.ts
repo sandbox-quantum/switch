@@ -1,3 +1,4 @@
+import { homedir } from 'node:os';
 import { HostDependencyManager, type DependencyId } from '@switch-console/core/deps/runtime';
 import { clearResolvedPathCache } from '@main/core/agent-runtime/impl/resolve-agent-executable';
 import { LocalExecutionContext } from '@main/core/execution-context/local-execution-context';
@@ -34,6 +35,7 @@ export const localDependencyManager = new HostDependencyManager(new LocalExecuti
   logger: log,
   dependencies: DEPENDENCIES,
   getDependencyDescriptor,
+  homeDir: homedir(),
 });
 wireDesktopBridges(localDependencyManager, undefined);
 

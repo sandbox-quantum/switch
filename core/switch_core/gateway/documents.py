@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -69,6 +70,9 @@ def _to_detail(
         created_by_agent_id=doc.created_by_agent_id,
         created_by_agent_name=created_by_agent_name,
         created_at=str(doc.created_at),
+        # Every route that returns a document's detail returns it whole: one
+        # the caller has opened, or that a room they may read shares.
+        can_read=True,
         **_capabilities(reader, doc),
     )
 
@@ -77,6 +81,7 @@ def _to_summary(
     doc: Document,
     reader: Principal,
     *,
+    readable: bool,
     owner_name: str | None = None,
     attached_rooms_count: int = 0,
     hidden_rooms_count: int,
@@ -91,7 +96,7 @@ def _to_summary(
         write_visibility=doc.write_visibility,
         name=doc.name,
         description=doc.description,
-        instructions=doc.instructions,
+        instructions=doc.instructions if readable else None,
         attached_rooms_count=attached_rooms_count,
         hidden_rooms_count=hidden_rooms_count,
         packages=packages or [],
@@ -100,6 +105,7 @@ def _to_summary(
         created_by_agent_id=doc.created_by_agent_id,
         created_by_agent_name=created_by_agent_name,
         created_at=str(doc.created_at),
+        can_read=readable,
         **_capabilities(reader, doc),
     )
 
@@ -111,20 +117,10 @@ def _capabilities(reader: Principal, doc: Document) -> dict[str, Any]:
     library = doc.room_id is None
     manage = library and can_manage(reader, doc.owner_id)
     return {
-        # The library's own rule, whatever the scope: its read route asks it.
-        "can_read": can(reader, "read", doc),
         "can_edit": library and can(reader, "write", doc),
         "can_manage": manage,
         "can_transfer": manage,
     }
-
-
-def _room_can_read(reader: Principal, doc: Document) -> bool:
-    """`can_read` on a room's own routes, whose caller may already read the
-    room: a room's own document opens through the room for everyone there,
-    whoever wrote it. An attached library document keeps the library's rule,
-    since what it gates is opening the document's own page."""
-    return doc.room_id is not None or can(reader, "read", doc)
 
 
 def _can_remove(
@@ -154,7 +150,10 @@ async def _enrich_summaries(
     user_store: UserStore,
     agent_store: AgentStore,
     reader: Principal,
+    readable: Callable[[Document], bool],
 ) -> list[DocumentSummary]:
+    """`docs` as `reader` is shown them, with each one's instructions where
+    `readable` says so and withheld where it does not."""
     if not docs:
         return []
     counts = await room_counts(
@@ -179,6 +178,7 @@ async def _enrich_summaries(
         _to_summary(
             d,
             reader,
+            readable=readable(d),
             owner_name=owners.get(d.owner_id) if d.owner_id else None,
             attached_rooms_count=counts[d.id].attached,
             hidden_rooms_count=counts[d.id].hidden,
@@ -231,14 +231,18 @@ async def list_documents(
     user: Annotated[User, Depends(get_current_user)],
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> list[DocumentSummary]:
-    docs = await resource_service.list_documents_for_user(session, user.id)
+    docs = await resource_service.list_documents_shown_to(
+        session, user.id, is_admin=is_admin
+    )
+    reader = Principal(user.id, is_admin)
     return await _enrich_summaries(
         session,
         docs,
         resource_service,
         user_store,
         agent_store,
-        Principal(user.id, is_admin),
+        reader,
+        lambda doc: can(reader, "read", doc),
     )
 
 
@@ -287,7 +291,7 @@ async def get_document(
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> DocumentDetail:
     try:
-        doc = await resource_service.get_document_for_user(
+        doc = await resource_service.open_document(
             session, document_id, user.id, is_admin=is_admin
         )
     except ValueError as e:
@@ -414,7 +418,7 @@ async def list_rooms_for_document(
     is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
 ) -> list[ResourceRoom]:
     try:
-        resource = await resource_service.get_document_for_user(
+        resource = await resource_service.open_document(
             session, document_id, user.id, is_admin=is_admin
         )
     except ValueError as e:
@@ -450,12 +454,19 @@ async def list_room_documents(
     where = await room_admins.standing(session, room_store, room.id, user.id)
     principal = Principal(user.id, is_admin)
     docs = await resource_service.list_room_documents(session, room_id)
+    # Attaching shares: whoever may read the room reads what is in it.
     summaries = await _enrich_summaries(
-        session, docs, resource_service, user_store, agent_store, principal
+        session,
+        docs,
+        resource_service,
+        user_store,
+        agent_store,
+        principal,
+        lambda _: True,
     )
     return [
         RoomDocumentSummary(
-            **{**summary.model_dump(), "can_read": _room_can_read(principal, doc)},
+            **summary.model_dump(),
             can_remove=_can_remove(principal, room, doc, where=where),
         )
         for summary, doc in zip(summaries, docs, strict=True)
@@ -554,7 +565,8 @@ async def get_room_document(
 ) -> RoomDocumentDetail:
     """Fetch a document by id within the context of a room. Accepts both
     room-scoped documents (read-only) and globally-attached documents. Room
-    read access is required and, once granted, implies access to its docs."""
+    read access is required and, once granted, implies access to its docs:
+    attaching one shares it with whoever may read the room."""
     room = await require_room_access(
         session, room_store, room_id, user, "read", is_admin
     )
@@ -570,6 +582,6 @@ async def get_room_document(
     )
     where = await room_admins.standing(session, room_store, room.id, user.id)
     return RoomDocumentDetail(
-        **{**detail.model_dump(), "can_read": _room_can_read(principal, doc)},
+        **detail.model_dump(),
         can_remove=_can_remove(principal, room, doc, where=where),
     )

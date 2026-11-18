@@ -29,11 +29,13 @@ from switch_core.addressing import (
 )
 from switch_core.agent_display_name import normalise_display_name
 from switch_core.agent_icon import normalise_icon_url, refuse_third_party_avatar
+from switch_core.authz import Principal, can_manage
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.bridges.agent.protocol.statuses import agent_statuses_by_room
 from switch_core.db.models import (
     Agent,
     AgentSession,
+    AgentSessionActivityItem,
     Client,
     ExternalUser,
     Room,
@@ -44,6 +46,7 @@ from switch_core.db.stores.agent_session_store import AgentSessionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
 from switch_core.db.stores.room_store import RoomStore
+from switch_core.db.stores.session_activity_store import TURN_ITEM_ID
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.known_agents import known_agent
 from switch_core.gateway.schemas import (
@@ -57,6 +60,36 @@ from switch_core.gateway.schemas import (
     AgentToolSummary,
     NamedEntry,
 )
+
+# How an agent is set up on its owner's machine: its options, which hold the
+# directory its sessions run in, and its OAuth client. Shown to its owner and
+# the workspace's admins; anyone else may still find the agent, invite it and
+# talk to it, and has no use for them.
+OWNER_ONLY_FIELDS = ("known_agent_options", "oauth_client_id")
+
+
+def shown_to[S: (AgentSummary, AgentDetail)](viewer: Principal, agent: S) -> S:
+    """`agent`, a summary or a detail, as `viewer` is shown it: whole if they
+    may manage it (`can_manage`), else without `OWNER_ONLY_FIELDS` and, for a
+    detail, without the device a session runs on. A detail's children are
+    each shown by the same rule."""
+    if isinstance(agent, AgentDetail):
+        children = [shown_to(viewer, child) for child in agent.children]
+        if can_manage(viewer, agent.owner_id):
+            return agent.model_copy(update={"children": children})
+        sessions = [
+            row.model_copy(update={"controller_id": None}) for row in agent.sessions
+        ]
+        return agent.model_copy(
+            update={
+                **dict.fromkeys(OWNER_ONLY_FIELDS),
+                "sessions": sessions,
+                "children": children,
+            }
+        )
+    if can_manage(viewer, agent.owner_id):
+        return agent
+    return agent.model_copy(update=dict.fromkeys(OWNER_ONLY_FIELDS))
 
 
 class AgentOptionsNotEditable(Exception):
@@ -133,6 +166,7 @@ def agent_summary(
         known_agent_options=known_agent_options
         if isinstance(known_agent_options, dict)
         else None,
+        mid_turn_delivery="queue" if agent.mid_turn_delivery == "queue" else "steer",
         addressing_policy=(
             AddressingPolicy.model_validate(agent.addressing_policy)
             if isinstance(agent.addressing_policy, dict)
@@ -222,8 +256,8 @@ async def assemble_agent_detail(
     )
 
     # Rooms the viewer may not read (outside `visible_room_ids`) are never
-    # named to them: they are left out of the agent's rooms, and a session in
-    # one carries no room name.
+    # named to them: they are left out of the agent's rooms, and so is a
+    # session in one.
     rooms = await room_store.get_rooms_for_agent(
         session, agent.id, include_archived=True
     )
@@ -238,6 +272,19 @@ async def assemble_agent_detail(
     room_roles = await room_role_store.agent_room_roles(
         session, agent.id, room_ids, live_connection_ids
     )
+    answered_in = set(
+        (
+            await session.execute(
+                select(AgentSessionActivityItem.room_id)
+                .where(
+                    AgentSessionActivityItem.agent_id == agent.id,
+                    AgentSessionActivityItem.item_id == TURN_ITEM_ID,
+                    AgentSessionActivityItem.room_id.in_(room_ids),
+                )
+                .distinct()
+            )
+        ).scalars()
+    )
     memberships = [
         AgentRoomMembership(
             room_id=room.id,
@@ -245,6 +292,7 @@ async def assemble_agent_detail(
             archived=room.archived_at is not None,
             status=statuses[room.id][agent.id].value,
             room_role=room_roles.get(room.id),
+            answered_here=room.id in answered_in,
         )
         for room in rooms
     ]
@@ -268,6 +316,8 @@ async def assemble_agent_detail(
     now = datetime.now(UTC)
     sessions: list[AgentSessionDetail] = []
     for row in session_rows:
+        if row.room_id is not None and row.room_id not in visible_room_ids:
+            continue
         sessions.append(
             AgentSessionDetail(
                 room_id=row.room_id,
@@ -292,7 +342,9 @@ async def assemble_agent_detail(
         # session, not none.
         conn_rooms: list[str | None] = list(sorted(conn.rooms)) or [None]
         for conn_room in conn_rooms:
-            if conn_room in listed_rooms:
+            if conn_room in listed_rooms or (
+                conn_room is not None and conn_room not in visible_room_ids
+            ):
                 continue
             listed_rooms.add(conn_room)
             sessions.append(
@@ -528,6 +580,7 @@ class AgentProfileUpdate:
         display_name: str | None,
         icon_url: str | None,
         addressing: str | None,
+        mid_turn_delivery: str | None,
         third_party_avatars: bool,
     ) -> AgentProfileUpdate:
         """None leaves a field as it is; an empty `display_name` or `icon_url`
@@ -547,4 +600,10 @@ class AgentProfileUpdate:
             )
         if addressing is not None:
             columns["addressing_policy"] = addressing_policy_for(addressing)
+        if mid_turn_delivery is not None:
+            if mid_turn_delivery not in ("steer", "queue"):
+                raise ValueError(
+                    f'mid_turn_delivery must be "steer" or "queue", not {mid_turn_delivery!r}'
+                )
+            columns["mid_turn_delivery"] = mid_turn_delivery
         return cls(columns=columns)

@@ -1,0 +1,54 @@
+name: Provider installer URLs
+
+# Fetches every installer URL an agent provider's install command pipes into a
+# shell (curl | sh, irm | iex) and fails if one serves a web page instead of a
+# script. Vendors move installers without notice, and the old address usually
+# keeps answering 200 with HTML, which the shell then tries to run. This needs
+# the network and third-party sites, so it is not a PR check: it runs nightly,
+# on PRs that touch the provider plugins, and on demand.
+
+on:
+  schedule:
+    - cron: '17 4 * * *'
+  pull_request:
+    paths:
+      - 'console/packages/plugins/src/agents/impl/**'
+      - '.github/workflows/install-urls.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Installer URLs serve scripts
+    runs-on: ubuntu-26.04
+    defaults:
+      run:
+        working-directory: console
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 11.5.3
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: console/.nvmrc
+          cache: pnpm
+          cache-dependency-path: console/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build workspace packages
+        run: pnpm -r --filter './packages/**' run build
+
+      - name: Check installer URLs
+        env:
+          SWITCH_CHECK_INSTALL_URLS: '1'
+        run: pnpm --filter @switch-console/plugins exec vitest run src/agents/impl/install-urls.test.ts

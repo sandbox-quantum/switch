@@ -215,6 +215,9 @@ class RoomDetailDescriptor(BaseModel):
     bridge_id: str | None
     bridge_display_name: str | None
     external_channel_id: str | None
+    # An https link that opens the room's channel on its app, or None (no
+    # channel, the bridge is down, or the app gives no web link).
+    channel_url: str | None
     # The group this room belongs to (navigation layer), or null if standalone.
     # `group_path` is the human-readable ancestry, e.g. "Parent / Child".
     group_id: str | None
@@ -285,6 +288,9 @@ class MessagePayload(BaseModel):
     # arrived: "admin" or "member". None for an agent, the platform,
     # or a person no Switch user has claimed.
     sender_role: str | None = None
+    # The receiving agent's setting for messages sent while it works: "steer"
+    # into the running turn, or "queue" behind it.
+    mid_turn_delivery: Literal["steer", "queue"] = "steer"
     # What Switch has to tell the agent before this message, such as that
     # its template has a new revision it was not brought fully up to; told
     # with every message until the agent reads about it. None for nothing.

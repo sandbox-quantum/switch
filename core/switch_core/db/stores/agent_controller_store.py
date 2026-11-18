@@ -116,6 +116,23 @@ class AgentControllerStore:
         )
         return result.scalar_one_or_none()
 
+    async def locked(
+        self, session: AsyncSession, tenant_id: str, controller_id: str
+    ) -> AgentController | None:
+        """The controller, its row locked until the caller's transaction ends,
+        and read afresh: two changes to it take turns, and the second sees
+        what the first left."""
+        result = await session.execute(
+            select(AgentController)
+            .where(
+                AgentController.tenant_id == tenant_id,
+                AgentController.id == controller_id,
+            )
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        return result.scalar_one_or_none()
+
     async def get_by_api_key(
         self, session: AsyncSession, tenant_id: str, api_key_id: str
     ) -> AgentController | None:
@@ -136,6 +153,17 @@ class AgentControllerStore:
                 AgentController.tenant_id == tenant_id,
                 AgentController.owner_id == owner_id,
             )
+            .order_by(AgentController.created_at, AgentController.id)
+        )
+        return list(result.scalars().all())
+
+    async def list_for_tenant(
+        self, session: AsyncSession, tenant_id: str
+    ) -> list[AgentController]:
+        """Every controller in the workspace, whoever owns it."""
+        result = await session.execute(
+            select(AgentController)
+            .where(AgentController.tenant_id == tenant_id)
             .order_by(AgentController.created_at, AgentController.id)
         )
         return list(result.scalars().all())

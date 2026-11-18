@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Check, ChevronsUpDown, Plus, Search, Server, UserPlus } from 'lucide-react';
+import { Check, ChevronsUpDown, ExternalLink, Plus, Search, Server, UserPlus } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { Fragment, useEffect, useState } from 'react';
 import { ChatsOfflineNote } from '@renderer/features/chats/components/chats-offline-note';
@@ -21,6 +21,7 @@ import {
   usePendingInvitations,
 } from '@renderer/features/workspaces/pending-invitations';
 import { WorkspaceAvatar } from '@renderer/features/workspaces/workspace-avatar';
+import { workspaceDisplayName } from '@renderer/features/workspaces/workspace-title';
 import {
   workspaceCreationKey,
   workspacesStore,
@@ -30,7 +31,7 @@ import { useToast } from '@renderer/lib/hooks/use-toast';
 import { rpc } from '@renderer/lib/ipc';
 import { useNavigate } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
-import { SwitchConsoleMark } from '@renderer/lib/switch-console-mark';
+import { openExternalUrl } from '@renderer/lib/open-external';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -45,11 +46,11 @@ import { cn } from '@renderer/utils/utils';
 import { runsOnThisComputer, type SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import type { JoinableWorkspace, PendingInvitation } from '@shared/core/workspaces/invitations';
 import {
-  administersWorkspace,
   type Workspace,
   type WorkspaceUnavailability,
   workspaceUnavailability,
 } from '@shared/core/workspaces/workspaces';
+import { SWITCH_CONSOLE_REPO_URL } from '@shared/urls';
 import { localServerStore } from './local-server-store';
 import { ManagedServerDot } from './managed-server-dot';
 import { remoteServerStore } from './remote-server-store';
@@ -66,6 +67,7 @@ import {
 } from './server-presentation';
 import { switchServersStore } from './switch-servers-store';
 import { type SwitchCloudAvailability, useSwitchCloud } from './use-switch-cloud';
+import { administersWorkspaceById } from './workspace-admin';
 
 /**
  * A server this Console does not run, said only when something is wrong with
@@ -175,7 +177,6 @@ const NoServerYet = observer(function NoServerYet() {
 /** One row per server, as the sidebar had before workspaces. */
 const ServerMenu = observer(function ServerMenu({ activeServer }: { activeServer: SwitchServer }) {
   const store = switchServersStore;
-  const { navigate } = useNavigate();
   const showAddServerModal = useShowModal('addServerModal');
   const ActiveIcon = serverIcon(activeServer);
 
@@ -230,11 +231,13 @@ const ServerMenu = observer(function ServerMenu({ activeServer }: { activeServer
             Add server
           </DropdownMenuItem>
           <DropdownMenuSeparator />
-          {/* The welcome screen is what the app opens with before any server
-              exists; once one does, this is how it stays reachable. */}
-          <DropdownMenuItem onClick={() => navigate('home')}>
-            <SwitchConsoleMark size={16} />
-            About Switch
+          <DropdownMenuItem
+            onClick={() =>
+              openExternalUrl(SWITCH_CONSOLE_REPO_URL, 'Could not open the repository')
+            }
+          >
+            <ExternalLink className="size-4" />
+            Switch on GitHub
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
@@ -341,7 +344,6 @@ const WorkspaceMenu = observer(function WorkspaceMenu({
   activeServer: SwitchServer;
 }) {
   const store = switchServersStore;
-  const { navigate } = useNavigate();
   const showAddServerModal = useShowModal('addServerModal');
   const [query, setQuery] = useState('');
 
@@ -349,6 +351,10 @@ const WorkspaceMenu = observer(function WorkspaceMenu({
     active.tenantId === null &&
     serverAvailability(activeServer.id) === 'available' &&
     workspacesStore.hasNoMembership(activeServer.id);
+  const activeName = workspaceDisplayName(active, activeServer);
+  // Named after its server, the line under it says where the server runs instead.
+  const serverLine =
+    activeName === activeServer.name ? serverPlacementLabel(activeServer) : activeServer.name;
   const anyMatch =
     query.trim() === '' ||
     store.servers.some(
@@ -367,13 +373,16 @@ const WorkspaceMenu = observer(function WorkspaceMenu({
               aria-label="Switch workspace"
               className="flex w-full items-center gap-[10px] rounded-[9px] px-2 py-1.5 text-left hover:bg-[var(--sel-soft)] data-[popup-open]:bg-[var(--sel-soft)]"
             >
-              <WorkspaceAvatar name={active.name} size="md" active />
+              <WorkspaceAvatar name={activeName} size="md" active />
               <span className="min-w-0 flex-1">
-                <span className="block truncate text-sm font-medium text-foreground">
-                  {noWorkspaceYet ? 'No workspace yet' : active.name}
+                <span
+                  className="block truncate text-sm font-medium text-foreground"
+                  title={noWorkspaceYet ? undefined : activeName}
+                >
+                  {noWorkspaceYet ? 'No workspace yet' : activeName}
                 </span>
                 <span className="flex items-center gap-1.5 text-xs text-foreground-muted">
-                  <span className="truncate">{activeServer.name}</span>
+                  {serverLine && <span className="truncate">{serverLine}</span>}
                   {activeServer.managed ? (
                     <ManagedServerDot server={activeServer} size={6} />
                   ) : (
@@ -408,11 +417,14 @@ const WorkspaceMenu = observer(function WorkspaceMenu({
             <Server className="size-4" />
             Add server…
           </DropdownMenuItem>
-          {/* The welcome screen is what the app opens with before any server
-              exists; once one does, this is how it stays reachable. */}
-          <DropdownMenuItem className={ACTION_ROW} onClick={() => navigate('home')}>
-            <SwitchConsoleMark size={16} />
-            About Switch
+          <DropdownMenuItem
+            className={ACTION_ROW}
+            onClick={() =>
+              openExternalUrl(SWITCH_CONSOLE_REPO_URL, 'Could not open the repository')
+            }
+          >
+            <ExternalLink className="size-4" />
+            Switch on GitHub
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
@@ -874,7 +886,7 @@ const WorkspaceMenuItem = observer(function WorkspaceMenuItem({
   const canInvite =
     !dormant &&
     unavailable === null &&
-    administersWorkspace(workspace) &&
+    administersWorkspaceById(workspace.id) &&
     !runsOnThisComputer(server);
 
   return (

@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   ServiceAgent,
   ServiceConnection,
@@ -8,12 +8,12 @@ import type {
   ServiceInWorkspace,
 } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
-import { serviceConnection } from "../../test/serviceConnection";
+import { pastedConnector, serviceConnection } from "../../test/serviceConnection";
 import ConnectorPage from "./ConnectorPage";
 
 vi.mock("../../data/AuthContext", () => ({ useAuth: vi.fn() }));
 
-function signedIn({ admin = false, orgAdmin = false } = {}) {
+function signedIn({ admin = false, orgAdmin = false, operator = false, connectorApps = false } = {}) {
   vi.mocked(useAuth).mockReturnValue({
     session: {
       user: { id: "me", name: "Ada", email: "ada@example.test", is_operator: false },
@@ -22,7 +22,8 @@ function signedIn({ admin = false, orgAdmin = false } = {}) {
     capabilities: {
       administersWorkspace: admin,
       administersOrganization: orgAdmin,
-      features: { gateway_v2: true },
+      isOperator: operator,
+      canManageConnectorApps: connectorApps,
     },
     isOperator: false,
   } as unknown as ReturnType<typeof useAuth>);
@@ -56,6 +57,14 @@ interface Call {
   body: unknown;
 }
 
+/** A reply other than 200, for the routes that need one. */
+class Reply {
+  constructor(
+    readonly status: number,
+    readonly body: unknown,
+  ) {}
+}
+
 function answer(routes: Record<string, unknown>): Call[] {
   const calls: Call[] = [];
   vi.stubGlobal(
@@ -67,7 +76,10 @@ function answer(routes: Record<string, unknown>): Call[] {
       const key = `${method} ${path}`;
       if (!(key in routes))
         return new Response(JSON.stringify({ detail: `unmocked ${key}` }), { status: 404 });
-      return new Response(JSON.stringify(routes[key]), { status: 200 });
+      const route = routes[key];
+      const reply = typeof route === "function" ? route() : route;
+      if (reply instanceof Reply) return new Response(JSON.stringify(reply.body), { status: reply.status });
+      return new Response(JSON.stringify(reply), { status: 200 });
     }),
   );
   return calls;
@@ -81,6 +93,7 @@ function server(
 ) {
   return answer({
     "GET /service-connections": { connections: [connection] },
+    "GET /agents": [],
     [`GET /service-connections/${connection.slug}/agents`]: agents,
     ...(workspace ? { [`GET /service-connections/${connection.slug}/workspace`]: workspace } : {}),
     ...extra,
@@ -92,11 +105,23 @@ function Where() {
   return <output data-testid="where">{location.pathname}</output>;
 }
 
-function renderPage(slug = "example", state: unknown = null) {
+function Query() {
+  return <output data-testid="query">{useLocation().search}</output>;
+}
+
+function renderPage(slug = "example", state: unknown = null, search = "") {
   return render(
-    <MemoryRouter initialEntries={[{ pathname: `/connectors/${slug}`, state }]}>
+    <MemoryRouter initialEntries={[{ pathname: `/connectors/${slug}`, search, state }]}>
       <Routes>
-        <Route path="/connectors/:connectorId" element={<ConnectorPage />} />
+        <Route
+          path="/connectors/:connectorId"
+          element={
+            <>
+              <ConnectorPage />
+              <Query />
+            </>
+          }
+        />
         <Route path="*" element={<Where />} />
       </Routes>
     </MemoryRouter>,
@@ -164,9 +189,9 @@ describe("a connector's page", () => {
     renderPage("datadog");
 
     fireEvent.click(await screen.findByRole("button", { name: "Add keys" }));
-    const dialog = await screen.findByRole("dialog");
+    const dialog = await screen.findByRole("dialog", { name: "Connect Datadog" });
     fireEvent.change(within(dialog).getByLabelText("API key"), { target: { value: "dd-key" } });
-    fireEvent.click(within(dialog).getByRole("button", { name: "Add keys" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Connect" }));
 
     await waitFor(() =>
       expect(calls).toContainEqual({
@@ -175,6 +200,7 @@ describe("a connector's page", () => {
         body: { fields: { api_key: "dd-key", site: "datadoghq.com" } },
       }),
     );
+    expect(await screen.findByText("Connected Datadog.")).toBeTruthy();
   });
 
   it("says the organization turned it off, and only its admins can change that", async () => {
@@ -196,7 +222,7 @@ describe("a connector's page", () => {
     expect(screen.queryByText("Connect from Switch Console")).toBeNull();
   });
 
-  it("says a workspace admin turned it off, and who can turn it back on", async () => {
+  it("says a workspace admin turned it off, who can turn it back on, and where it is set", async () => {
     signedIn();
     server(serviceConnection({ workspace_enabled: false, decided_by: "workspace" }));
     renderPage();
@@ -205,6 +231,93 @@ describe("a connector's page", () => {
       await screen.findByText(/Switched off in Acme by a workspace admin.*A workspace admin can turn it on/),
     ).toBeTruthy();
     expect(screen.queryByRole("link", { name: "Workspace settings" })).toBeNull();
+    expect(screen.getByRole("link", { name: "Settings › Connectors" })).toHaveProperty("pathname", "/settings/connectors");
+  });
+
+  it("greys the way to connect one that is off here, saying why on it", async () => {
+    signedIn();
+    server(serviceConnection({ web_sign_in: true, workspace_enabled: false, decided_by: "workspace" }));
+    renderPage();
+
+    const connect = (await screen.findByRole("button", { name: "Connect" })) as HTMLButtonElement;
+    expect(connect.disabled).toBe(true);
+    expect(connect.parentElement?.getAttribute("aria-label")).toMatch(/^Switched off in Acme by a workspace admin/);
+    expect(screen.getByText("Off in Acme")).toBeTruthy();
+
+    cleanup();
+    server(serviceConnection({ auth_type: "api_key", connectable: false, unavailable_reason: "Example can't be connected here." }));
+    renderPage();
+    const keys = (await screen.findByRole("button", { name: "Add keys" })) as HTMLButtonElement;
+    expect(keys.disabled).toBe(true);
+    expect(keys.parentElement?.getAttribute("aria-label")).toBe("Example can't be connected here.");
+  });
+
+  it("says a connector not built yet is coming, not off, and claims nothing of how it signs in", async () => {
+    signedIn({ admin: true });
+    server(serviceConnection({ enabled: false, workspace_enabled: false, decided_by: "workspace" }));
+    renderPage();
+
+    expect(await screen.findByText("Coming soon")).toBeTruthy();
+    expect(screen.queryByText(/A workspace admin can turn it on/)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Connect" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Workspace settings" })).toBeNull();
+    expect(screen.queryByText("Sign-in")).toBeNull();
+    expect(screen.queryByText("Agent access lasts")).toBeNull();
+  });
+
+  it("lets a workspace admin turn it on from here, then reads the page again", async () => {
+    signedIn({ admin: true });
+    let on = false;
+    const calls = answer({
+      "GET /service-connections": () => ({
+        connections: [serviceConnection({ workspace_enabled: on, decided_by: "workspace" })],
+      }),
+      "GET /service-connections/example/agents": [],
+      "GET /service-connections/example/workspace": { people: [], agents: [] },
+      "PUT /workspace/services/example": () => {
+        on = true;
+        return { warning: null };
+      },
+    });
+    renderPage();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Turn on" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Turn on" })).toBeNull());
+    expect(calls).toContainEqual({ method: "PUT", path: "/workspace/services/example", body: { enabled: true } });
+    expect(screen.queryByText(/Switched off in Acme/)).toBeNull();
+  });
+
+  it("shows why turning it on was refused", async () => {
+    signedIn({ admin: true });
+    server(serviceConnection({ workspace_enabled: false, decided_by: "workspace" }), [], { people: [], agents: [] }, {
+      "PUT /workspace/services/example": new Reply(409, { detail: "Your organization locked it off." }),
+    });
+    renderPage();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Turn on" }));
+    expect(await screen.findByText("Your organization locked it off.")).toBeTruthy();
+  });
+
+  it("sends whoever sets up the connector apps to set up one that isn't, and tells everyone else who can", async () => {
+    const unset = serviceConnection({
+      connectable: false,
+      unavailable_code: "app_not_set_up",
+      unavailable_reason: "Switch's Example app isn't set up. Whoever runs Switch can set it up.",
+    });
+    signedIn({ connectorApps: true });
+    server(unset);
+    renderPage();
+
+    const setUp = await screen.findByRole("link", { name: "Set up" });
+    expect(setUp).toHaveProperty("pathname", "/settings/org/connector-apps");
+    expect(setUp).toHaveProperty("search", "?set_up=example");
+    cleanup();
+
+    signedIn();
+    server(unset);
+    renderPage();
+    expect(await screen.findByText(/Whoever runs Switch can set it up/)).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "Set up" })).toBeNull();
   });
 
   it("shows a member their own agents, and adds one", async () => {
@@ -320,12 +433,15 @@ describe("a connector's page", () => {
           { agent_id: "b1", name: "bobs-agent", owner_id: "u2", owner_name: "Bob", grant: grant(), addressing_open: true },
         ],
       },
-      { "DELETE /service-connections/example/people/u2": { warning: null } },
+      {
+        "DELETE /service-connections/example/people/u2": { warning: null },
+        "GET /agents": [{ id: "b1", connector_type: "Codex CLI" }],
+      },
     );
     renderPage();
 
     const card = await screen.findByTestId("connector-agent-b1");
-    expect(within(card).getByText("Bob")).toBeTruthy();
+    expect(within(card).getByText("Codex CLI · Bob")).toBeTruthy();
     // Others can have Bob's agent act as Bob: the admin is told, in Bob's name.
     expect(within(card).getByText("Others can address it; it would act as Bob.")).toBeTruthy();
     // Nobody grants on someone else's connector, admins included.
@@ -334,6 +450,7 @@ describe("a connector's page", () => {
     expect(within(people).queryByText("Ada")).toBeNull();
     const bob = within(people).getByTestId("connected-u2");
     expect(within(bob).getByText("Connected 2026-11-03 · 2 agents using it")).toBeTruthy();
+    expect(within(bob).queryByText("Suspended")).toBeNull();
     fireEvent.click(within(bob).getByRole("button", { name: "Revoke" }));
     const dialog = await screen.findByRole("dialog");
     expect(within(dialog).getByText("Revoke Bob's Example access?")).toBeTruthy();
@@ -344,6 +461,20 @@ describe("a connector's page", () => {
         "DELETE /service-connections/example/people/u2",
       ),
     );
+  });
+
+  it("marks everyone's connection suspended while the workspace has it off", async () => {
+    signedIn({ admin: true });
+    server(serviceConnection({ workspace_enabled: false, decided_by: "workspace" }), [], {
+      people: [
+        { user_id: "u2", name: "Bob", status: "active", connected_at: "2026-11-03T09:00:00Z", agents: 0, can_revoke: true },
+      ],
+      agents: [],
+    });
+    renderPage();
+
+    const bob = await screen.findByTestId("connected-u2");
+    expect(within(bob).getByText("Suspended")).toBeTruthy();
   });
 
   it("counts the repositories of someone else's GitHub grant rather than listing their numbers", async () => {
@@ -376,6 +507,7 @@ describe("a connector's page", () => {
     signedIn({ admin: true });
     answer({
       "GET /service-connections": { connections: [serviceConnection({ status: "active", consent: "write" })] },
+      "GET /agents": [],
       "GET /service-connections/example/agents": [],
     });
     renderPage();
@@ -386,11 +518,15 @@ describe("a connector's page", () => {
     expect(screen.queryByRole("region", { name: "Connected in Acme" })).toBeNull();
   });
 
-  it("disconnects after asking", async () => {
+  it("disconnects after asking, counting the agents that lose it", async () => {
     signedIn();
     const calls = server(
       serviceConnection({ status: "active", consent: "read", can_revoke: true }),
-      [],
+      [
+        agent({ agent_id: "a1", granted: true, grant: grant() }),
+        agent({ agent_id: "a2", name: "planner", granted: true, grant: grant() }),
+        agent({ agent_id: "a3", name: "idle" }),
+      ],
       null,
       { "DELETE /service-connections/example": { warning: null } },
     );
@@ -398,6 +534,7 @@ describe("a connector's page", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Disconnect" }));
     const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText(/^All 2 agents you granted access lose it immediately/)).toBeTruthy();
     fireEvent.click(within(dialog).getByRole("button", { name: "Disconnect" }));
 
     await waitFor(() =>
@@ -408,9 +545,9 @@ describe("a connector's page", () => {
   it("goes back to the page that opened it", async () => {
     signedIn();
     server(serviceConnection());
-    renderPage("example", { back: { label: "Connectors and apps", to: "/settings/org/connectors" } });
+    renderPage("example", { back: { label: "Connectors", to: "/settings/org/connectors" } });
 
-    fireEvent.click(await screen.findByRole("button", { name: "Connectors and apps" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Connectors" }));
 
     await waitFor(() =>
       expect(screen.getByTestId("where").textContent).toBe("/settings/org/connectors"),
@@ -423,5 +560,305 @@ describe("a connector's page", () => {
     renderPage("nowhere");
 
     expect(await screen.findByText("There is no connector named nowhere.")).toBeTruthy();
+  });
+});
+
+describe("connecting from a connector's page", () => {
+  const originalLocation = window.location;
+  const assign = vi.fn();
+
+  beforeEach(() => {
+    Object.defineProperty(window, "location", { configurable: true, writable: true, value: { ...originalLocation, assign } });
+  });
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+    assign.mockClear();
+    Object.defineProperty(window, "location", { configurable: true, writable: true, value: originalLocation });
+  });
+
+  it("leaves for a sign-in that comes back here", async () => {
+    signedIn();
+    const calls = server(serviceConnection({ web_sign_in: true }), [], null, {
+      "POST /service-connections/example/flows/web": { id: "flow-1", url: "https://switch.example.test/authorize?state=flow-1" },
+    });
+    renderPage();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Connect" }));
+    await waitFor(() => expect(assign).toHaveBeenCalledWith("https://switch.example.test/authorize?state=flow-1"));
+    expect(calls.map((call) => `${call.method} ${call.path}`)).toContain("POST /service-connections/example/flows/web");
+    expect(screen.queryByText("Connect from Switch Console")).toBeNull();
+  });
+
+  it("signs in to GitHub through its own App's flow", async () => {
+    signedIn();
+    const calls = server(serviceConnection({ slug: "github", name: "GitHub", web_sign_in: true }), [], null, {
+      "POST /provider-connections/github/flows/web": { id: "flow-2", url: "https://switch.example.test/gh?state=flow-2" },
+    });
+    renderPage("github");
+
+    fireEvent.click(await screen.findByRole("button", { name: "Connect" }));
+    await waitFor(() => expect(assign).toHaveBeenCalledWith("https://switch.example.test/gh?state=flow-2"));
+    expect(calls.map((call) => `${call.method} ${call.path}`)).toContain("POST /provider-connections/github/flows/web");
+  });
+
+  it("offers a fresh sign-in when the connection needs one", async () => {
+    signedIn();
+    server(serviceConnection({ web_sign_in: true, status: "needs_reauthorization", can_revoke: true }), [], null, {
+      "POST /service-connections/example/flows/web": { id: "flow-9", url: "https://switch.example.test/authorize?state=flow-9" },
+    });
+    renderPage();
+
+    expect(await screen.findByText("It needs a fresh sign-in before agents can use it again.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Reconnect" }));
+    await waitFor(() => expect(assign).toHaveBeenCalledWith("https://switch.example.test/authorize?state=flow-9"));
+  });
+
+  it("says it connected on the way back, then forgets the sign-in", async () => {
+    signedIn();
+    const calls = server(serviceConnection({ web_sign_in: true }), [], null, {
+      "GET /service-connections/example/flows/flow-1": {
+        status: "connected",
+        account: "ada@example.test",
+        error: null,
+        warning: null,
+      },
+      "DELETE /service-connections/example/flows/flow-1": {},
+    });
+    renderPage("example", null, "?sign_in=flow-1");
+
+    expect(await screen.findByText("Connected to Example as ada@example.test.")).toBeTruthy();
+    await waitFor(() =>
+      expect(calls.map((call) => `${call.method} ${call.path}`)).toContain(
+        "DELETE /service-connections/example/flows/flow-1",
+      ),
+    );
+    await waitFor(() => expect(screen.getByTestId("query").textContent).toBe(""));
+  });
+
+  it("says why a sign-in failed on the way back", async () => {
+    signedIn();
+    server(serviceConnection({ web_sign_in: true }), [], null, {
+      "GET /service-connections/example/flows/flow-1": {
+        status: "failed",
+        account: null,
+        error: "This Example account is already linked to another Switch user in this workspace. Remove that link first.",
+        warning: null,
+      },
+      "DELETE /service-connections/example/flows/flow-1": {},
+    });
+    renderPage("example", null, "?sign_in=flow-1");
+
+    expect(await screen.findByText(/already linked to another Switch user/)).toBeTruthy();
+  });
+
+  it("says a sign-in that never came back didn't finish, and one that expired has", async () => {
+    signedIn();
+    server(serviceConnection({ web_sign_in: true }), [], null, {
+      "GET /service-connections/example/flows/flow-1": { status: "pending", account: null, error: null, warning: null },
+      "DELETE /service-connections/example/flows/flow-1": {},
+    });
+    renderPage("example", null, "?sign_in=flow-1");
+    expect(await screen.findByText("The Example sign-in didn't finish. Connect again.")).toBeTruthy();
+
+    cleanup();
+    server(serviceConnection({ web_sign_in: true }), [], null, {
+      "GET /service-connections/example/flows/flow-2": new Reply(410, { detail: "Sign-in was interrupted." }),
+    });
+    renderPage("example", null, "?sign_in=flow-2");
+    expect(await screen.findByText("That Example sign-in has expired. Connect again.")).toBeTruthy();
+  });
+
+  it("keeps Back leading to the page that opened it across the vendor's sign-in", async () => {
+    signedIn();
+    server(serviceConnection({ web_sign_in: true }), [], null, {
+      "POST /service-connections/example/flows/web": { id: "flow-1", url: "https://switch.example.test/authorize?state=flow-1" },
+      "GET /service-connections/example/flows/flow-1": {
+        status: "connected",
+        account: "ada@example.test",
+        error: null,
+        warning: null,
+      },
+      "DELETE /service-connections/example/flows/flow-1": {},
+    });
+    renderPage("example", { back: { label: "planner", to: "/agents/a1" } });
+    fireEvent.click(await screen.findByRole("button", { name: "Connect" }));
+    await waitFor(() => expect(assign).toHaveBeenCalled());
+    cleanup();
+
+    // The vendor sends the browser back by a fresh load, with no history state.
+    renderPage("example", null, "?sign_in=flow-1");
+    expect(await screen.findByText("Connected to Example as ada@example.test.")).toBeTruthy();
+    await waitFor(() => expect(screen.getByTestId("query").textContent).toBe(""));
+    fireEvent.click(screen.getByRole("button", { name: "planner" }));
+    await waitFor(() => expect(screen.getByTestId("where").textContent).toBe("/agents/a1"));
+  });
+
+  it("doesn't take the Back kept for another connector's sign-in", async () => {
+    signedIn();
+    window.sessionStorage.setItem(
+      "switch.connectorBackAfterSignIn",
+      JSON.stringify({ service: "other", back: { label: "planner", to: "/agents/a1" }, at: Date.now() }),
+    );
+    server(serviceConnection({ web_sign_in: true }), [], null, {
+      "GET /service-connections/example/flows/flow-1": { status: "connected", account: null, error: null, warning: null },
+      "DELETE /service-connections/example/flows/flow-1": {},
+    });
+    renderPage("example", null, "?sign_in=flow-1");
+
+    expect(await screen.findByRole("button", { name: "Connectors" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "planner" })).toBeNull();
+  });
+
+  it("reads GitHub's outcome from its own flow", async () => {
+    signedIn();
+    server(serviceConnection({ slug: "github", name: "GitHub", web_sign_in: true }), [], null, {
+      "GET /provider-connections/github/flows/flow-3": { status: "connected", login: "octocat", error: null, warning: null },
+      "DELETE /provider-connections/github/flows/flow-3": {},
+    });
+    renderPage("github", null, "?sign_in=flow-3");
+
+    expect(await screen.findByText("Connected to GitHub as octocat.")).toBeTruthy();
+  });
+});
+
+describe("connecting by pasting a token in place of a sign-in", () => {
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  it("picks the site and pastes a token, checked before it is stored", async () => {
+    signedIn();
+    const calls = server(pastedConnector(), [], null, {
+      "PUT /service-connections/datadog/paste": { warning: null, external_identity: "ada@example.test" },
+    });
+    renderPage("datadog");
+
+    fireEvent.click(await screen.findByRole("button", { name: "Connect" }));
+    expect(screen.queryByText("Connect from Switch Console")).toBeNull();
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText(/To sign in with your account instead, connect it from Switch Console/)).toBeTruthy();
+    expect(within(dialog).getByText(/Expires on the date you set in Datadog\. Reaches what your token allows\./)).toBeTruthy();
+    fireEvent.mouseDown(within(dialog).getByRole("combobox", { name: "Datadog site" }));
+    fireEvent.click(await screen.findByRole("option", { name: "datadoghq.eu" }));
+    const connect = within(dialog).getByRole("button", { name: "Connect" });
+    expect((connect as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(within(dialog).getByLabelText("Personal access token"), { target: { value: " ddpat_example " } });
+    fireEvent.click(connect);
+
+    await waitFor(() =>
+      expect(calls).toContainEqual({
+        method: "PUT",
+        path: "/service-connections/datadog/paste",
+        body: { method: "token", fields: { pat: "ddpat_example" }, choices: { site: "datadoghq.eu" } },
+      }),
+    );
+    expect(await screen.findByText("Connected Datadog.")).toBeTruthy();
+  });
+
+  it("pastes keys instead where the server takes them", async () => {
+    signedIn();
+    const calls = server(pastedConnector(), [], null, {
+      "PUT /service-connections/datadog/paste": { warning: null, external_identity: "org" },
+    });
+    renderPage("datadog");
+
+    fireEvent.click(await screen.findByRole("button", { name: "Connect" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "API and application keys" }));
+    expect(within(dialog).getByText(/Never expires; only Datadog can revoke it\./)).toBeTruthy();
+    fireEvent.change(within(dialog).getByLabelText("API key"), { target: { value: "dd-api" } });
+    fireEvent.change(within(dialog).getByLabelText("Application key"), { target: { value: "dd-app" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Connect" }));
+
+    await waitFor(() =>
+      expect(calls).toContainEqual({
+        method: "PUT",
+        path: "/service-connections/datadog/paste",
+        body: {
+          method: "keys",
+          fields: { api_key: "dd-api", application_key: "dd-app" },
+          choices: { site: "datadoghq.com" },
+        },
+      }),
+    );
+  });
+
+  it("says why the vendor refused what was pasted, in the dialog", async () => {
+    signedIn();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const path = String(input).replace(/^\/gateway/, "").split("?")[0];
+        if ((init?.method ?? "GET") === "PUT")
+          return new Response(JSON.stringify({ detail: "Datadog refused the token." }), { status: 400 });
+        if (path === "/service-connections") return new Response(JSON.stringify({ connections: [pastedConnector()] }));
+        return new Response(JSON.stringify([]));
+      }),
+    );
+    renderPage("datadog");
+
+    fireEvent.click(await screen.findByRole("button", { name: "Connect" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.change(within(dialog).getByLabelText("Personal access token"), { target: { value: "bad" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Connect" }));
+    expect(await within(dialog).findByText("Datadog refused the token.")).toBeTruthy();
+  });
+
+  it("replaces keys the server no longer takes with a token", async () => {
+    signedIn();
+    const tokenOnly = pastedConnector().paste.filter((way) => way.method === "token");
+    server(
+      pastedConnector({
+        paste: tokenOnly,
+        status: "active",
+        can_revoke: true,
+        method: "keys",
+        choices: { site: "datadoghq.com" },
+        access_note: "Reaches what your keys allow.",
+      }),
+    );
+    renderPage("datadog");
+
+    fireEvent.click(await screen.findByRole("button", { name: "Replace token" }));
+    expect(await screen.findByRole("dialog", { name: "Replace your Datadog token" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Replace keys" })).toBeNull();
+  });
+
+  it("replaces a token the vendor refused, at the site it was for", async () => {
+    signedIn();
+    const calls = server(
+      pastedConnector({
+        status: "needs_reauthorization",
+        can_revoke: true,
+        method: "token",
+        choices: { site: "datadoghq.eu" },
+        external_identity: "ada@example.test",
+        access_note: "Reaches what your token allows.",
+        reconnect_code: "token_refused",
+        reconnect_reason: "Datadog refused your token. Paste a new one.",
+      }),
+      [],
+      null,
+      { "PUT /service-connections/datadog/paste": { warning: null, external_identity: "ada@example.test" } },
+    );
+    renderPage("datadog");
+
+    expect(await screen.findByText("Connected as ada@example.test · Reaches what your token allows.")).toBeTruthy();
+    expect(screen.getByText("Datadog refused your token. Paste a new one.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Replace token" }));
+    const dialog = await screen.findByRole("dialog", { name: "Replace your Datadog token" });
+    expect(within(dialog).queryByText(/connect it from Switch Console/)).toBeNull();
+    fireEvent.change(within(dialog).getByLabelText("Personal access token"), { target: { value: "ddpat_new" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Replace token" }));
+    await waitFor(() =>
+      expect(calls).toContainEqual({
+        method: "PUT",
+        path: "/service-connections/datadog/paste",
+        body: { method: "token", fields: { pat: "ddpat_new" }, choices: { site: "datadoghq.eu" } },
+      }),
+    );
+    expect(await screen.findByText("Datadog is reconnected.")).toBeTruthy();
   });
 });

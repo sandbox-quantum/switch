@@ -12,9 +12,14 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@renderer/lib/ui/dialog';
-import type { LinkCode, LinkedIdentity } from '@shared/core/switch-servers/switch-servers';
+import {
+  DEFAULT_DIRECTORY_SEARCH_HINT,
+  type LinkCode,
+  type LinkedIdentity,
+} from '@shared/core/switch-servers/switch-servers';
 import { AccountLinkConfirmation, type AccountLinkTarget } from './account-link-confirmation';
 import { BridgeIdentitySearch } from './bridge-identity-search';
+import { accountName } from './link-accounts-prose';
 import { linkedIdentityOn } from './messaging-apps-warning';
 import { useMyIdentities } from './use-my-identities';
 
@@ -29,6 +34,9 @@ type ClaimIdentityModalArgs = {
    * before links had to be confirmed — rather than on the search. A fresh code
    * is asked for on open, since the server keeps none to show again. */
   confirm?: AccountLinkTarget;
+  /** The code the claim behind `confirm` came back with, shown rather than
+   * replaced by a new one (which would send the account a second prompt). */
+  confirmCode?: LinkCode | null;
 };
 
 type Props = BaseModalProps<{ identity: LinkedIdentity }> & ClaimIdentityModalArgs;
@@ -54,6 +62,7 @@ export const ClaimIdentityModal = observer(function ClaimIdentityModal({
   workspaceId,
   bridgeId,
   confirm,
+  confirmCode,
   onSuccess,
   onClose,
 }: Props) {
@@ -65,7 +74,7 @@ export const ClaimIdentityModal = observer(function ClaimIdentityModal({
   const [waiting, setWaiting] = useState<{
     target: AccountLinkTarget;
     code: LinkCode | null;
-  } | null>(confirm ? { target: confirm, code: null } : null);
+  } | null>(confirm ? { target: confirm, code: confirmCode ?? null } : null);
 
   const bridgesQuery = useQuery({
     queryKey: ['remote-bridges', workspaceId],
@@ -140,7 +149,7 @@ export const ClaimIdentityModal = observer(function ClaimIdentityModal({
               <Info className="mt-0.5 size-3.5 shrink-0 text-foreground-muted" />
               <span>
                 You are already linked to{' '}
-                <span className="font-medium">{alreadyLinked.externalUsername}</span> on{' '}
+                <span className="font-medium">{accountName(alreadyLinked)}</span> on{' '}
                 {alreadyLinked.bridgeDisplayName}. Linking another account here keeps that one too —
                 search for it to unlink it, or use that app&apos;s row on the server page.
               </span>
@@ -153,6 +162,9 @@ export const ClaimIdentityModal = observer(function ClaimIdentityModal({
             bridgeDisplayName={bridgeDisplayName}
             platform={bridgePlatformLabel(selectedBridge?.type ?? '')}
             directorySearchSupported={selectedBridge?.directorySearchSupported ?? true}
+            directorySearchHint={
+              selectedBridge?.directorySearchHint ?? DEFAULT_DIRECTORY_SEARCH_HINT
+            }
             autoFocus
             onClaimed={(identity) => onSuccess({ identity })}
             onConfirmationNeeded={(target, code) => setWaiting({ target, code })}

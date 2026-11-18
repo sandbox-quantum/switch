@@ -15,7 +15,7 @@ describe('suggestAgentDefaults', () => {
     expect(name.startsWith('codex.my-repo')).toBe(true);
     expect(name).not.toContain('claude-code');
     expect(name).toMatch(AGENT_NAME_PATTERN);
-    expect(description).toBe('Codex running in My Repo');
+    expect(description).toBe('OpenAI Codex running in My Repo');
   });
 
   it('slugifies a dotfile-style directory into a valid name part', () => {

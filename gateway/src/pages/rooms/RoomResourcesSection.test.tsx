@@ -27,6 +27,10 @@ function returns<T>(data: T) {
   return { data, loading: false, error: null, refetch: vi.fn() };
 }
 
+function fails(error: string) {
+  return { data: null, loading: false, error, refetch: vi.fn() };
+}
+
 // The server says, per document, whether the viewer may remove it: unlink it
 // if attached, delete it if room-scoped.
 function roomDocuments({ canRemove }: { canRemove: boolean }) {
@@ -158,5 +162,29 @@ describe("RoomResourcesSection", () => {
 
     fireEvent.click(within(dialog).getByRole("button", { name: "Delete document" }));
     await waitFor(() => expect(api.detachDocumentFromRoom).toHaveBeenCalledWith("r1", "d2"));
+  });
+
+  it("says a list could not be loaded, rather than that nothing is attached", () => {
+    vi.mocked(hooks.useRoomPackages).mockReturnValue(fails("500 Internal Server Error") as never);
+    vi.mocked(hooks.useRoomReferences).mockReturnValue(fails("Room not found") as never);
+    vi.mocked(hooks.useRoomDocuments).mockReturnValue(fails("Not allowed") as never);
+    render(<RoomResourcesSection roomId="r1" viewerId={null} canAttach inRoom canUnlink />);
+
+    screen.getByText("Couldn't load the packages: 500 Internal Server Error");
+    screen.getByText("Couldn't load the references: Room not found");
+    screen.getByText("Couldn't load the documents: Not allowed");
+    expect(screen.queryByText("No packages attached.")).toBeNull();
+    expect(screen.queryByText("No references attached.")).toBeNull();
+    expect(screen.queryByText("No documents attached.")).toBeNull();
+  });
+
+  it("says what can be attached could not be loaded, rather than offering nothing", async () => {
+    vi.mocked(hooks.usePackages).mockReturnValue(fails("503 Service Unavailable") as never);
+    render(<RoomResourcesSection roomId="r1" viewerId={null} canAttach inRoom canUnlink />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Attach package" }));
+
+    await screen.findByText("Couldn't load what to choose from: 503 Service Unavailable");
+    expect(screen.queryByText("Nothing to choose from.")).toBeNull();
   });
 });

@@ -17,6 +17,9 @@ import {
   withoutManaged,
 } from '@renderer/features/managed-agents/use-managed-agents';
 import { refreshSidebarRoomState } from '@renderer/features/sidebar/sidebar-tree-data';
+import { expectedBuddyName } from '@renderer/features/switch-buddy/buddy-identity';
+import { useBuddyPending } from '@renderer/features/switch-buddy/buddy-pending';
+import { buddyPerson } from '@renderer/features/switch-buddy/buddy-person';
 import { AgentConnectionIndicator } from '@renderer/features/switch-rooms/connection-health';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { failureText } from '@renderer/lib/errors/describe-failure';
@@ -26,6 +29,7 @@ import { rpc } from '@renderer/lib/ipc';
 import { useNavigate, useParams } from '@renderer/lib/layout/navigation-provider';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { useAgentIconUrl } from '@renderer/lib/stores/use-workspace-agents';
+import { Badge } from '@renderer/lib/ui/badge';
 import { Button } from '@renderer/lib/ui/button';
 import {
   DropdownMenu,
@@ -36,8 +40,10 @@ import {
 } from '@renderer/lib/ui/dropdown-menu';
 import { SearchInput } from '@renderer/lib/ui/search-input';
 import type { Agent } from '@shared/core/agents/agents';
+import { BUDDY_ICON_URL } from '@shared/core/agents/switch-buddy';
 import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
 import { providerDisplayName } from '@shared/core/providers/agent-provider-registry';
+import { homeRedirect } from './home-target';
 import { isFrozenServer } from './managed-server-state';
 import { matchesNameFilter } from './name-filter';
 import { openServerPage } from './open-server-page';
@@ -67,18 +73,22 @@ const ServerAgentsPanel = observer(function ServerAgentsPanel() {
 
   const machines = useCloudMachines(serverId);
   const managed = useManagedAgents(serverId);
+  const buddyPending = useBuddyPending(serverId);
+  const buddyName = expectedBuddyName(buddyPerson(serverId));
   const [filter, setFilter] = useState('');
   const allAgents = withoutManaged(agentsStore.agentsOnServer(serverId), managed.data);
   const agents = allAgents.filter((agent) => matchesNameFilter([agent.name], filter));
   const managedAgents = (managed.data ?? []).filter((agent) =>
     matchesNameFilter([managedAgentLabel(agent), agent.name], filter)
   );
-  const any = allAgents.length > 0 || (managed.data?.length ?? 0) > 0;
+  const showBuddy = buddyPending && matchesNameFilter([buddyName], filter);
+  const any = buddyPending || allAgents.length > 0 || (managed.data?.length ?? 0) > 0;
 
   return (
     <ServerPage
       width={880}
       title="Your Agents"
+      term="agent"
       description={`Your agents created and registered on ${server?.name ?? 'this server'}.`}
     >
       {machines.data
@@ -108,7 +118,7 @@ const ServerAgentsPanel = observer(function ServerAgentsPanel() {
           aria-label="Filter agents by name"
         />
       )}
-      {any && agents.length === 0 && managedAgents.length === 0 && (
+      {any && !showBuddy && agents.length === 0 && managedAgents.length === 0 && (
         <p className="mb-3 py-2 text-sm text-foreground-muted">
           No agent here matches “{filter.trim()}”.
         </p>
@@ -122,6 +132,7 @@ const ServerAgentsPanel = observer(function ServerAgentsPanel() {
         >
           <Plus className="size-5" />
         </button>
+        {showBuddy && <PendingBuddyCard serverId={serverId} name={buddyName} />}
         {agents.map((agent) => (
           <AgentCard key={agent.id} agent={agent} serverId={serverId} />
         ))}
@@ -137,6 +148,31 @@ const ServerAgentsPanel = observer(function ServerAgentsPanel() {
     </ServerPage>
   );
 });
+
+/** A setup entry for switch-buddy, matching the sidebar before the agent exists. */
+function PendingBuddyCard({ serverId, name }: { serverId: string; name: string }) {
+  const { navigate } = useNavigate();
+  return (
+    <div className="flex min-h-[184px] flex-col rounded-[11px] bg-[var(--surface-2)] p-[14px]">
+      <div className="flex flex-1 items-center justify-center py-1 opacity-60 grayscale">
+        <AgentAvatar name={name} iconUrl={BUDDY_ICON_URL} serverId={serverId} size={66} />
+      </div>
+      <div className="flex min-w-0 items-center gap-1.5">
+        <span className="truncate text-sm font-medium text-foreground">{name}</span>
+        <Badge variant="secondary">Not set up</Badge>
+      </div>
+      <div className="text-xs text-foreground-muted">Connect an AI provider</div>
+      <Button
+        size="sm"
+        className="mt-2 w-full"
+        aria-label={`Set up ${name}`}
+        onClick={() => navigate('switchBuddy', { serverId })}
+      >
+        Set up
+      </Button>
+    </div>
+  );
+}
 
 /** A managed agent Console has no row for, as its server lists it. */
 function ManagedAgentCard({ agent }: { agent: ManagedAgentView }) {
@@ -198,7 +234,9 @@ const AgentCard = observer(function AgentCard({
   const iconUrl = useAgentIconUrl(agent.workspaceId, agent.switchAgentId);
 
   const gatewayUrl =
-    agent.switchAgentId && switchRoomsStore.gatewayAgentUrl(serverId, agent.switchAgentId);
+    agent.workspaceId &&
+    agent.switchAgentId &&
+    switchRoomsStore.gatewayAgentUrl(agent.workspaceId, agent.switchAgentId);
 
   return (
     <div className="group relative flex min-h-[184px] flex-col rounded-[11px] bg-[var(--surface-2)] transition-colors hover:bg-[var(--fill)]">
@@ -306,7 +344,7 @@ export const serverAgentsView = {
       typeof params === 'object' && params !== null
         ? (params as { serverId?: unknown }).serverId
         : undefined;
-    if (typeof serverId !== 'string') return { ok: false, redirect: 'home' };
+    if (typeof serverId !== 'string') return homeRedirect();
     return { ok: true };
   },
 } satisfies ViewDefinition<{ serverId: string }>;

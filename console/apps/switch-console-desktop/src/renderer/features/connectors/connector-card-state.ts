@@ -1,4 +1,5 @@
 import type { ConnectionCatalogEntry } from '@shared/core/switch-servers/connection-catalog';
+import type { ConnectorAppsPage } from '@shared/core/switch-servers/dashboard-pages';
 
 export type ConnectorCardKind =
   | 'coming_soon'
@@ -10,16 +11,78 @@ export type ConnectorCardKind =
   | 'connect';
 
 /**
- * What the person looking may fix: the server's operator sets up the apps
- * connectors sign in through; a workspace admin, or the operator, turns a
- * service on for the workspace.
+ * What the person looking may fix: whoever {@link connectorAppSetUp} names
+ * sets up the apps connectors sign in through; a workspace admin, or the
+ * operator, turns a service on for the workspace.
  */
 export type ConnectorViewer = {
   operator: boolean;
   administers: boolean;
   /** The server runs on this computer, so its own GitHub sign-in is at hand. */
   onThisComputer: boolean;
+  appSetUp: ConnectorAppSetUp;
 };
+
+/**
+ * Who sets up a connector's app. `viewer`: the person looking, in Console's
+ * Admin › Apps or on a dashboard page. `organization-admin`: an admin of
+ * their organization, on that dashboard page, because the server said the
+ * person looking may not and its one organization's admins set the apps up.
+ * `operator`: whoever runs the server. `command`: whoever runs the server,
+ * with its command, because the server said the person looking may not and
+ * the apps are not set up in its dashboard.
+ */
+export type ConnectorAppSetUp =
+  | { by: 'viewer'; at: 'settings' | ConnectorAppsPage }
+  | { by: 'organization-admin'; at: AnsweredAppsPage }
+  | { by: 'operator' }
+  | { by: 'command' };
+
+/** The dashboard pages for connector apps on a server that says who sets them up. */
+type AnsweredAppsPage = Exclude<ConnectorAppsPage, 'platform'>;
+
+/**
+ * {@link ConnectorAppSetUp} for the person looking. A server with a
+ * dashboard says who may (`canManage`): its operator, or the admin of its one
+ * organization, in either layout of the dashboard. To anyone else it says
+ * whether its organization's admins set the apps up in the dashboard
+ * (`inDashboard`) or the operator does with the command. Where it does not
+ * say, or there is no dashboard (which leaves Admin › Apps), only the
+ * operator may, and anyone else is told what they were before the server
+ * could say.
+ */
+export function connectorAppSetUp({
+  operator,
+  servesDashboard,
+  gatewayV2,
+  canManage,
+  inDashboard,
+}: {
+  operator: boolean;
+  servesDashboard: boolean;
+  gatewayV2: boolean;
+  /** The server's `can_manage_connector_apps`; null where it does not say. */
+  canManage: boolean | null;
+  /** The server's `connector_apps_in_dashboard`; null where it does not say. */
+  inDashboard: boolean | null;
+}): ConnectorAppSetUp {
+  const operatorOnly = (at: 'settings' | ConnectorAppsPage): ConnectorAppSetUp =>
+    operator ? { by: 'viewer', at } : { by: 'operator' };
+  if (!servesDashboard) return operatorOnly('settings');
+  if (canManage === null) return operatorOnly(gatewayV2 ? 'platform' : 'old-layout');
+  const at: AnsweredAppsPage = gatewayV2 ? 'organization-settings' : 'old-layout';
+  if (canManage) return { by: 'viewer', at };
+  if (inDashboard === true) return { by: 'organization-admin', at };
+  if (inDashboard === false) return { by: 'command' };
+  return gatewayV2 ? { by: 'command' } : { by: 'operator' };
+}
+
+/** Where an organization's admin sets the apps up, in words for the person sent to them. */
+const ORGANIZATION_ADMIN_SETS_UP = {
+  'organization-settings':
+    'An admin of your organization sets it up in Organization settings › Connector apps.',
+  'old-layout': 'An admin of your organization sets it up in the dashboard, under Connectors.',
+} as const satisfies Record<AnsweredAppsPage, string>;
 
 /** The one fix a card or profile offers: set the app up, or turn it on for the workspace. */
 export type ConnectorFix = 'set_up' | 'turn_on';
@@ -40,6 +103,48 @@ export const FIX_LABEL = {
   turn_on: 'Turn on',
 } as const satisfies Record<ConnectorFix, string>;
 
+/** A service whose app is not set up, as {@link ConnectorAppSetUp} says who sets it up. */
+function appNotSetUpState(
+  entry: ConnectionCatalogEntry,
+  setUp: ConnectorAppSetUp
+): ConnectorCardState {
+  switch (setUp.by) {
+    case 'viewer':
+      return {
+        kind: 'needs_setup',
+        label: 'Needs setup',
+        detail: `Set up its app once, and everyone on this server can connect ${entry.name}.`,
+        tone: 'muted',
+        fix: 'set_up',
+      };
+    case 'organization-admin':
+      return {
+        kind: 'unavailable',
+        label: 'Unavailable',
+        detail: ORGANIZATION_ADMIN_SETS_UP[setUp.at],
+        tone: 'muted',
+        fix: null,
+      };
+    case 'command':
+      return {
+        kind: 'unavailable',
+        label: 'Unavailable',
+        detail:
+          'Whoever runs your Switch server sets up its app with the switch-connector-apps command, where Switch runs.',
+        tone: 'muted',
+        fix: null,
+      };
+    case 'operator':
+      return {
+        kind: 'unavailable',
+        label: 'Unavailable',
+        detail: 'Ask whoever runs your Switch server to set it up.',
+        tone: 'muted',
+        fix: null,
+      };
+  }
+}
+
 /**
  * Why a service can't be used here, as the person looking acts on it. The
  * server's code decides it, never its wording: a server that sends no code
@@ -53,19 +158,7 @@ function unavailableState(
   const unavailable = { kind: 'unavailable', label: 'Unavailable', tone: 'muted' } as const;
   switch (entry.unavailable_code) {
     case 'app_not_set_up':
-      return viewer.operator
-        ? {
-            kind: 'needs_setup',
-            label: 'Needs setup',
-            detail: `Set up its app once, and everyone on this server can connect ${entry.name}.`,
-            tone: 'muted',
-            fix: 'set_up',
-          }
-        : {
-            ...unavailable,
-            detail: 'Ask whoever runs your Switch server to set it up.',
-            fix: null,
-          };
+      return appNotSetUpState(entry, viewer.appSetUp);
     case 'needs_https':
       return {
         ...unavailable,
@@ -90,7 +183,8 @@ function unavailableState(
 
 /**
  * The one state a connector's card shows. When several apply, the first of
- * these wins: not built yet, not usable on this server, switched off in this
+ * these wins: not built yet, not usable on this server (except an app that is
+ * not set up yet waits on the workspace's switch first), switched off in this
  * workspace, needing a fresh sign-in, connected, and otherwise ready to
  * connect. A server without the workspace switch sends no
  * `workspace_enabled`, which reads as on. Where the person looking can fix
@@ -103,7 +197,9 @@ export function connectorCardState(
 ): ConnectorCardState {
   if (entry.status === 'coming_soon')
     return { kind: 'coming_soon', label: 'Coming soon', detail: null, tone: 'muted', fix: null };
-  if (entry.unavailable_reason !== null)
+  const setUpLater =
+    entry.unavailable_code === 'app_not_set_up' && entry.workspace_enabled === false;
+  if (entry.unavailable_reason !== null && !setUpLater)
     return unavailableState(entry, entry.unavailable_reason, viewer);
   if (entry.workspace_enabled === false)
     return entry.organization_locked

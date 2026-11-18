@@ -6,18 +6,24 @@ section stands on its own: read the one you were pointed at, then act.
 
 ## Telegram private channel
 
-Bots can't create chats on Telegram. They make a group with the bot and send
-`/invite_agent @<agent-name>` and `/invite_agent @<your-name>` in it (the bot
-sees only commands and replies to its messages, due to privacy mode). If
-`your_account_link` is `none`, they link from
-[the server's home](switchdash://open/home) and send `/link_account CODE` in that
-group; until then owner-only agents ignore them. Then they reply to the bot's
-message, mentioning the agent's name.
+Bots can't create chats on Telegram. They make a group with the bot. With the
+bot's Group Privacy on (BotFather's default) it sees only commands and replies to
+its own messages; they can turn it off in BotFather (`/setprivacy`, Disable)
+before adding the bot, or, if it is already in, remove it and add it back or make
+it an admin. Linking comes first: if `your_account_link` is `none`, they link from
+[Messaging apps in Settings](switchdash://open/settings?tab=messaging-apps) and send `/link_account CODE` to
+the bot, in its private chat or in that group, since `/invite_agent` is refused
+and owner-only agents ignore them until then. Then they send
+`/invite_agent @<agent-name>` and `/invite_agent @<your-name>` in it, and talk to
+an agent by mentioning its name or replying to its message. Only where the
+bridge has said in that group that it can see just the messages that tag it do
+they need to reply to the bot's message: Telegram delivers nothing else there.
+Don't say it otherwise.
 
 ## Teams private channel
 
 If the connection has a default team and `can_create_channels`, make it like any
-other chat app's private channel: `create_room` with the chat's `bridge_id`,
+other messaging app's private channel: `create_room` with the chat's `bridge_id`,
 `channel_type` "channel_private", `read_visibility` and `write_visibility`
 "private", their username in `user_names`. Otherwise they add the Switch app to a
 chat or channel and send `!invite-agent @<agent-name>` and
@@ -56,7 +62,8 @@ them pick.
 
 | Page | Link |
 |---|---|
-| This server's own settings, when their Switch Console runs it: start, stop, restart, update, the Mattermost beside it | `switchdash://open/server` |
+| The server's home: the workspace at a glance (not where accounts or guardrails are) | `switchdash://open/home` |
+| This server's own settings, when their Switch Console runs it: start, stop, restart, update | `switchdash://open/server` |
 | Every room | `switchdash://open/rooms` |
 | A room | `switchdash://open/room/<room-id>` |
 | Templates (`tab=agent`, `room` or `group`) | `switchdash://open/templates` |
@@ -68,14 +75,12 @@ them pick.
 - A room's id comes from `list_rooms`, a template's from `list_templates` (only
   templates saved on the server have a page).
 
-## Server settings and bundled Mattermost
+## Server settings
 
-Starting, stopping, restarting or updating the server, and turning the bundled
-Mattermost on or off: `switchdash://open/server`. Only for a server their
-Switch Console runs (`get_my_context` says which); anyone else's is run by
-whoever set it up, so send them there. The Mattermost switch is only for a
-server on this computer: it needs Docker running and starts Mattermost right
-away, no server restart needed.
+Starting, stopping, restarting or updating the server:
+`switchdash://open/server`. Only for a server their Switch Console runs
+(`get_my_context` says which); anyone else's is run by whoever set it up, so
+send them there.
 
 ## Their own messaging app
 
@@ -83,14 +88,14 @@ When `messaging_apps.how_to_add` is `own_app`, they create an app on the platfor
 
 - **Slack:** Switch Console walks them through it. Link
   [Connect a messaging app](switchdash://open/messaging-apps/connect) and tell
-  them to choose "Use your own app instead", then Slack, and follow the steps.
+  them to pick Slack under Messaging app and follow the steps.
   The app comes pre-filled, the tokens are checked as they paste them, and the
   workspace is filled in for them.
 - **Other platforms:** fetch the platform's page in the docs,
   `https://docs.switchagents.ai/switch-rooms/deploy/messaging-apps/<platform>.md`
   (`microsoft-teams` for Teams), and walk them through
-  it in order. Then link the same page and tell them to choose "Use your own
-  app instead" and paste the values.
+  it in order. Then link the same page and tell them to pick the platform under
+  Messaging app and paste the values.
 - Never ask them to paste a token into this chat.
 
 ## Linking their chat account
@@ -98,15 +103,15 @@ When `messaging_apps.how_to_add` is `own_app`, they create an app on the platfor
 Read `your_account_link` for the app:
 
 - `none`: agents that answer only their owner won't recognise them there. Link
-  [the server's home](switchdash://open/home), where Messaging apps lets them
-  link their account.
+  [Messaging apps in Settings](switchdash://open/settings?tab=messaging-apps),
+  where they link their account.
 - `pending`: waiting for the account to confirm it, so it doesn't count yet
   (they started linking, or an admin required confirming an older link). Switch
   Console showed them a code to post from that account (for example
   `!link-account 7KQ2-M9XD`); tell them to post it, or get a new one from
-  [the server's home](switchdash://open/home) if it expired.
+  [Messaging apps in Settings](switchdash://open/settings?tab=messaging-apps) if it expired.
 - `unverified`: it works, but was linked before links needed confirming. Suggest
-  confirming it from [the server's home](switchdash://open/home), which gives
+  confirming it from [Messaging apps in Settings](switchdash://open/settings?tab=messaging-apps), which gives
   them a code to post from that account.
 - `verified`: nothing to do.
 
@@ -124,7 +129,7 @@ person is left out.
   `get_my_context` (`messaging_apps.connected`, matched to the room's `bridge_id` by `id`).
   When the list is empty their account is not linked there yet, or the link is still
   waiting for its code (see `your_account_link`): ask for their username on that app, and link
-  [the server's home](switchdash://open/home) so they can link it.
+  [Messaging apps in Settings](switchdash://open/settings?tab=messaging-apps) so they can link it.
 - **Anyone else:** ask for their username on that app, or the e-mail address they use
   there. Never guess one from a first name.
 - **Check the result.** `add_users_to_room` returns `unresolved` (who it could not add);
@@ -152,6 +157,37 @@ Confluence (Atlassian), GitHub, Google (Gmail, Drive, Calendar) and the like.
   exists.
 - **Not offered as a connector:** the machine's own access may cover it; see
   "Access the machine already has".
+
+## Onboarding connectors
+
+The connectors to offer after the work question, best first. Offer only those
+`get_my_context` lists for the workspace, and leave out any already connected.
+
+| Their answer | Connectors |
+|---|---|
+| Engineering | GitHub, Linear, Google Workspace |
+| Product | Linear, Notion, Google Workspace |
+| Design | Canva, Notion, Google Workspace |
+| Sales | Salesforce, Google Workspace |
+| Marketing | Google Workspace, Canva, Notion |
+| Other, or skipped | Google Workspace, GitHub |
+
+Never suggest a service Switch has no connector for (Figma, HubSpot): say the
+machine's own access may cover it (§ "Access the machine already has").
+
+## Room templates by work
+
+The official room templates to offer for a new room, best first, by id. Offer
+only those `list_templates` lists: a workspace admin may have removed some.
+
+| Their answer | Room templates |
+|---|---|
+| Engineering | official:sprint-room, official:code-review-room, official:incident-war-room |
+| Product | official:product-trio-room, official:user-research-lab, official:launch-war-room |
+| Design | official:design-review-studio, official:user-research-lab, official:brand-messaging-room |
+| Sales | official:deal-room, official:pipeline-review-room, official:sales-enablement-room |
+| Marketing | official:campaign-war-room, official:content-pipeline, official:launch-war-room |
+| Other, or skipped | official:product-trio-room, official:launch-war-room, official:okr-tracker |
 
 ## Access the machine already has
 
@@ -195,7 +231,7 @@ It changes the advice:
 
 - **Switch Cloud:** messaging apps usually have the official app, and their
   agents can run on a cloud machine or their computer.
-- **A server Switch Console runs:** it comes with a built-in chat app. Their
+- **A server Switch Console runs:** it comes with a built-in messaging app. Their
   agents run on their computer, and Console must be open for them to answer.
   Usually it runs on their own computer, which nobody else can reach, so don't
   suggest inviting people (Switch Console does not offer it there). If they ask, say so; to work with others they need a

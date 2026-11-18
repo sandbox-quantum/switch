@@ -131,6 +131,7 @@ resources:
     name: "Launch - {launch}"
     description: "Launch coordination for {launch}, targeting {date}. Cross-functional alignment across product, marketing, eng, and sales."
     bridge: "{bridge}"
+    channel_type: channel_private
     agents: [launch_coordinator, comms_writer, analytics_tracker]
     users:
       - {if: "{bridge}", value: ["{$creator}"]}

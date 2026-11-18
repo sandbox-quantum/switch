@@ -267,6 +267,10 @@ async function buildHarness(
   });
   undo.add(`agent ${witness.name} (${witness.id})`, deleteByName(witness.name));
 
+  // Creating the room invites the witness, which the server refuses for an
+  // agent the inviter may not address.
+  await switchClient.openAddressing(witness.id);
+
   // Registration is what mints the bots; wait for them so the room has them
   // as members and a later `@name` mention has something to resolve to.
   const bot = await mattermost.waitForBotUser(agent.name, 60_000);
