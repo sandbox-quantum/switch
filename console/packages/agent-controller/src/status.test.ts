@@ -331,6 +331,24 @@ describe('ProviderStatuses', () => {
     expect(changes).toBe(PROVIDERS + 1);
     expect(statuses.snapshot().find((s) => s.provider === 'claude')?.auth).toBe('missing');
   });
+
+  it('says where each checked CLI was found, for the recheck log', async () => {
+    const locator = new FakeLocator();
+    locator.missing.add('cursor');
+    const statuses = new ProviderStatuses({
+      locator,
+      runtime: new FakeRuntime(),
+      sealed: null,
+      probeCwd: '/tmp',
+      now: () => NOW,
+      log: silentLogger,
+      onChange: () => {},
+    });
+    expect(statuses.locations()).toEqual({});
+    await statuses.check('codex');
+    await statuses.check('cursor');
+    expect(statuses.locations()).toEqual({ codex: '/usr/bin/codex', cursor: 'not found' });
+  });
 });
 
 describe('ProviderStatuses trying a login with a test prompt', () => {
