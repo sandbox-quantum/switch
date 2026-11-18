@@ -112,8 +112,8 @@ HOSTED_CLOUD_FILES = "hosted_cloud_files"
 ORGANIZATION_CONNECTOR_APPS = "organization_connector_apps"
 
 # The dashboard's settings-areas layout (Home, Templates and Connectors on
-# the rail, Workspace and Organization settings, a Platform area), which was
-# built behind this flag and is now the dashboard's only layout. Always on:
+# the rail, Workspace and Organization settings), which was built behind this
+# flag and is now the dashboard's only layout. Always on:
 # see ALWAYS_ON_FEATURE_FLAGS.
 GATEWAY_V2 = "gateway_v2"
 

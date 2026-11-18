@@ -224,7 +224,7 @@ function AccountCard({
         backgroundColor: tokenVar("widget"),
       }}
     >
-      <Box sx={{ flex: 1, minWidth: 0 }}>
+      <Box sx={{ flex: "1 1 320px", minWidth: 0 }}>
         <Typography variant="body2" sx={{ fontWeight: 500 }}>
           {title}
         </Typography>
@@ -235,7 +235,7 @@ function AccountCard({
       <Stack
         direction="row"
         flexWrap="wrap"
-        sx={{ gap: 1, minWidth: 0, "& > *": { whiteSpace: "nowrap" } }}
+        sx={{ gap: 1, flexShrink: 0, maxWidth: "100%", "& > *": { whiteSpace: "nowrap" } }}
       >
         {children}
       </Stack>

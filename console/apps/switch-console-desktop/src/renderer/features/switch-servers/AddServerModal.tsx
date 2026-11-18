@@ -378,7 +378,7 @@ export const ChooseStep = observer(function ChooseStep({
           icon={<Cloud className="size-5" />}
           title="Connect to Switch Cloud"
           badge="Coming soon"
-          description="We’ll run the server for you. Not open yet."
+          description="Managed hosting for your Switch server and agents. Coming soon - self-host to get started today."
           disabled
         />
       </div>

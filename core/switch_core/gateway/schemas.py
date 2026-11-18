@@ -155,13 +155,18 @@ class RoomAutoRoute(BaseModel):
     the same one `!auto-route` sets; `available` whether it can act in the
     room (the server's flag and the workspace's decision backend), with
     `reason` saying why not and who can fix it; `fallback_agent` the id of
-    the room's triage agent, if any, and `fallback_agent_name` its name."""
+    the room's triage agent, if any, and `fallback_agent_name` its name;
+    `assigned_agent` and `assigned_agent_name` the room's assigned agent,
+    which gets every message first, so auto-route cannot be turned on, and
+    does not act, while it is set."""
 
     on: bool
     available: bool
     reason: str | None
     fallback_agent: str | None
     fallback_agent_name: str | None
+    assigned_agent: str | None
+    assigned_agent_name: str | None
 
 
 class RoomAutoRouteRequest(BaseModel):
@@ -460,6 +465,13 @@ class AgentRoomMembership(BaseModel):
     # Whether the agent has had a turn in this room: someone addressed it there
     # and one of its sessions took the message up.
     answered_here: bool
+
+
+class AgentRooms(BaseModel):
+    """One agent's rooms, as `GET /agents/{agent_id}` lists them in `rooms`."""
+
+    agent_id: str
+    rooms: list[AgentRoomMembership]
 
 
 class AgentSessionDetail(BaseModel):
@@ -1072,6 +1084,13 @@ class ExternalUserSummary(BaseModel):
     # When Switch first saw this account, so a client waiting for someone to
     # say hello to the bot can tell a new arrival from the people it knew.
     first_seen_at: str
+    # How to name the person, as the platform's adapter names them, and
+    # whether `external_username` is a handle of theirs. False where Switch
+    # made the handle up (a Telegram account with no username): show
+    # `display_name` alone, never `@external_username`. Left at the username
+    # where the bridge is not running to ask.
+    display_name: str | None = None
+    has_handle: bool = True
     # Everyone who has claimed this platform account. A list, not one user:
     # claiming is not exclusive, so an account shared by several Switch users
     # satisfies an owner rule for any of them.

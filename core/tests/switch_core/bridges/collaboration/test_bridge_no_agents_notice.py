@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
+from switch_core.bridges.collaboration import collaboration_core
 from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
 from switch_core.bridges.collaboration.discord.adapter import (
     DiscordAdapter,
@@ -73,7 +74,7 @@ def _fake_bridge(  # noqa: ANN202
     async def _adopt_existing_room(channel_id: str) -> tuple[str, str] | None:
         return None
 
-    return SimpleNamespace(
+    bridge = SimpleNamespace(
         _adapter=_Adapter(),
         _room_service=_RoomService(),
         _resolve_agents_for_channel=_resolve_agents_for_channel,
@@ -87,7 +88,15 @@ def _fake_bridge(  # noqa: ANN202
         _bridge_display_name="Switch",
         _bridge_id="bridge-1",
         notices=notices,
+        soon=[],
     )
+    bridge._post_no_agents_notice = lambda channel_id: (
+        CollaborationCore._post_no_agents_notice(bridge, channel_id)
+    )
+    bridge._no_agents_notice_soon = lambda room_id, channel_id: bridge.soon.append(
+        (room_id, channel_id)
+    )
+    return bridge
 
 
 async def test_agentless_auto_create_posts_notice() -> None:
@@ -233,3 +242,54 @@ async def test_a_room_made_by_an_invite_does_not_say_it_has_no_agents() -> None:
     )
 
     assert bridge.notices == []
+
+
+async def test_a_channel_the_app_was_just_added_to_waits_before_saying_it_has_no_agents() -> (
+    None
+):
+    """Telegram's one-tap add invites an agent with the add, and the join
+    arrives first: the notice waits rather than greeting the group wrongly."""
+    bridge = _fake_bridge(agent_ids=[])
+
+    await CollaborationCore._create_room_for_channel(
+        bridge,
+        channel_id="C0BGC39BFSR",
+        channel_type="channel_public",
+        channel_name="general",
+        app_joined=True,
+    )
+
+    assert bridge.notices == []
+    assert bridge.soon == [("room-uuid", "C0BGC39BFSR")]
+
+
+async def _waited(agent_ids: list[str]) -> list[tuple[str, str, str | None]]:
+    bridge = _fake_bridge(agent_ids=[])
+
+    class _Rooms:
+        async def get_agent_ids(self, session: object, room_id: str) -> list[str]:
+            return agent_ids
+
+    class _Session:
+        async def __aenter__(self) -> _Session:
+            return self
+
+        async def __aexit__(self, *exc: object) -> None:
+            return None
+
+    bridge._room_store = _Rooms()
+    bridge._bridge_tenant_id = "tenant-1"
+    bridge._session_factory = lambda: _Session()
+    await CollaborationCore._run_no_agents_notice(bridge, "room-uuid", "C1")
+    return bridge.notices
+
+
+async def test_the_wait_ends_quietly_when_an_agent_arrived(monkeypatch) -> None:
+    monkeypatch.setattr(collaboration_core, "NO_AGENTS_NOTICE_GRACE_SECONDS", 0)
+    assert await _waited(["agent-1"]) == []
+
+
+async def test_the_wait_ends_with_the_notice_when_none_did(monkeypatch) -> None:
+    monkeypatch.setattr(collaboration_core, "NO_AGENTS_NOTICE_GRACE_SECONDS", 0)
+    notices = await _waited([])
+    assert len(notices) == 1 and notices[0][2] == "no_agents"

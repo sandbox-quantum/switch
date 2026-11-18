@@ -13,7 +13,8 @@ import type { ReactNode } from "react";
  * 320px, the actions drop to their own line below it rather than wrapping
  * into it, clipping, or being pushed off the page. The actions are never
  * wider than the header: several wrap among themselves, onto as many lines as
- * the width needs, and each one stays on a single line of its own.
+ * the width needs, and each one stays on a single line of its own. They sit
+ * at the top of the row, their own height, however tall the text beside them.
  */
 export default function PageHeader({
   title,
@@ -27,7 +28,7 @@ export default function PageHeader({
   sx?: SxProps<Theme>;
 }) {
   return (
-    <Stack direction="row" flexWrap="wrap" sx={{ gap: 2, ...sx }}>
+    <Stack direction="row" flexWrap="wrap" sx={{ gap: 2, alignItems: "flex-start", ...sx }}>
       <Box sx={{ flex: "1 1 320px", minWidth: 0 }}>
         {title}
         {description}

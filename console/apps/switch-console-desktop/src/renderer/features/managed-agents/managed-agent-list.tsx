@@ -70,6 +70,11 @@ const ManagedAgentRow = observer(function ManagedAgentRow({ agent }: { agent: Ma
   const state = managedAgentState(agent);
   const thisComputer = useRunsOnThisComputer(agent);
   const machineDown = agent.machine !== null && agent.machine.state !== 'online';
+  const machineLabel = agent.machine
+    ? machineDown
+      ? `${agent.machine.name} is ${agent.machine.state}. The agent resumes when it reconnects.`
+      : `Runs on ${agent.machine.name}${agent.definition.directory ? ` · ${agent.definition.directory}` : ''}`
+    : 'It has no machine to run on.';
   const providerName = isValidProviderId(provider) ? getProvider(provider)?.name : null;
   return (
     <SidebarAgentRow
@@ -92,26 +97,36 @@ const ManagedAgentRow = observer(function ManagedAgentRow({ agent }: { agent: Ma
       marks={
         !thisComputer && (
           <Tooltip>
-            <TooltipTrigger>
-              {agent.machine && isCloudMachine(agent.machine) ? (
-                machineDown ? (
-                  <CloudOff className="h-3.5 w-3.5 shrink-0 text-foreground-destructive" />
-                ) : (
-                  <Cloud className="h-3.5 w-3.5 shrink-0 text-foreground-muted" />
-                )
-              ) : machineDown || !agent.machine ? (
-                <ServerOff className="h-3.5 w-3.5 shrink-0 text-foreground-destructive" />
-              ) : (
-                <Server className="h-3.5 w-3.5 shrink-0 text-foreground-muted" />
-              )}
-            </TooltipTrigger>
-            <TooltipContent>
-              {agent.machine
-                ? machineDown
-                  ? `${agent.machine.name} is ${agent.machine.state}. The agent resumes when it reconnects.`
-                  : `Runs on ${agent.machine.name}${agent.definition.directory ? ` · ${agent.definition.directory}` : ''}`
-                : 'It has no machine to run on.'}
-            </TooltipContent>
+            <TooltipTrigger
+              render={
+                <span role="img" aria-label={machineLabel} className="flex shrink-0 items-center">
+                  {agent.machine && isCloudMachine(agent.machine) ? (
+                    machineDown ? (
+                      <CloudOff
+                        aria-hidden="true"
+                        className="h-3.5 w-3.5 shrink-0 text-foreground-destructive"
+                      />
+                    ) : (
+                      <Cloud
+                        aria-hidden="true"
+                        className="h-3.5 w-3.5 shrink-0 text-foreground-muted"
+                      />
+                    )
+                  ) : machineDown || !agent.machine ? (
+                    <ServerOff
+                      aria-hidden="true"
+                      className="h-3.5 w-3.5 shrink-0 text-foreground-destructive"
+                    />
+                  ) : (
+                    <Server
+                      aria-hidden="true"
+                      className="h-3.5 w-3.5 shrink-0 text-foreground-muted"
+                    />
+                  )}
+                </span>
+              }
+            />
+            <TooltipContent>{machineLabel}</TooltipContent>
           </Tooltip>
         )
       }
