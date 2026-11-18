@@ -169,3 +169,29 @@ def test_followups_set_is_generated():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     assert (EVAL / "scenarios_followups.json").read_text() == before
+
+
+@pytest.mark.parametrize(
+    ("backend", "header", "var"),
+    [
+        ("anthropic", "X-Decision-Anthropic-Key", "ANTHROPIC_API_KEY"),
+        ("gemini_decision", "X-Decision-Gemini-Key", "GEMINI_DECISION_API_KEY"),
+    ],
+)
+def test_backend_override_sends_only_its_own_key(backend, header, var):
+    env = {"ANTHROPIC_API_KEY": "a-key", "GEMINI_DECISION_API_KEY": "g-key"}
+    headers = eval_module.request_headers(backend, None, env)
+    assert headers["X-Decision-Backend"] == backend
+    assert headers[header] == env[var]
+    assert len([h for h in headers if h.endswith("-Key")]) == 1
+
+
+def test_gemini_override_without_a_local_key_relies_on_the_service_key():
+    headers = eval_module.request_headers(
+        "gemini_decision", "gemini-decision-1", {"DECISION_SERVICE_TOKEN": "t"}
+    )
+    assert headers == {
+        "Authorization": "Bearer t",
+        "X-Decision-Backend": "gemini_decision",
+        "X-Decision-Model": "gemini-decision-1",
+    }

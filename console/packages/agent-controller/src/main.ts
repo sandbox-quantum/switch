@@ -31,6 +31,7 @@ import {
 } from './api';
 import { type ControllerExit, DEFAULT_TIMING, runController } from './controller';
 import { DetachedRuntime } from './detached-runtime';
+import { readDeviceId, SYSTEM_SOURCES } from './device-id';
 import { formatChecks, runDoctor } from './doctor';
 import { readEnvFile } from './env-file';
 import { ConfigurationError, UsageError } from './errors';
@@ -289,6 +290,7 @@ async function enrollCommand(args: string[]): Promise<number> {
     // Provider logins given to this machine are sealed to this key; only the
     // machine holds the private half.
     const keys = generateSealingKeyPair();
+    const deviceId = await readDeviceId(SYSTEM_SOURCES, dataDir);
     const enrolled = await enroll(fetch, server, {
       proof: { kind: 'enrollment_code', code: values.code },
       public_key: { alg: 'X25519', key: keys.publicKey },
@@ -298,6 +300,7 @@ async function enrollCommand(args: string[]): Promise<number> {
         ...(description !== undefined ? { description } : {}),
         platform: contractPlatform(),
         version: VERSION,
+        ...(deviceId === null ? {} : { device_id: deviceId }),
       },
     });
     await secrets.set(CONTROLLER_CREDENTIAL, enrolled.credential);
@@ -310,7 +313,7 @@ async function enrollCommand(args: string[]): Promise<number> {
       enrolledAt: new Date().toISOString(),
     });
     process.stdout.write(
-      `Enrolled as controller ${enrolled.controller_id} ("${name}") on ${server}.\nData: ${dataDir}\nRun it as a service: switch-agent-controller install-service${values['data-dir'] ? ` --data-dir ${dataDir}` : ''}\nor in this terminal: switch-agent-controller run${values['data-dir'] ? ` --data-dir ${dataDir}` : ''}\n`
+      `${enrolled.adopted ? `Enrolled as controller ${enrolled.controller_id} on ${server}, which this machine was before; its agents stay on it.` : `Enrolled as controller ${enrolled.controller_id} ("${name}") on ${server}.`}\nData: ${dataDir}\nRun it as a service: switch-agent-controller install-service${values['data-dir'] ? ` --data-dir ${dataDir}` : ''}\nor in this terminal: switch-agent-controller run${values['data-dir'] ? ` --data-dir ${dataDir}` : ''}\n`
     );
     const warning = secrets.startupWarning();
     if (warning) process.stderr.write(`Warning: ${warning}\n`);
@@ -512,6 +515,9 @@ async function runCommand(args: string[]): Promise<number> {
       'updated-by-console': { type: 'boolean' },
       'no-self-update': { type: 'boolean' },
       'provider-seed': { type: 'string' },
+      // The data folder the device id names, where it is not `--data-dir`:
+      // Switch Console's own, holding one data directory per server.
+      'device-root': { type: 'string' },
     },
     strict: true,
   });
@@ -704,6 +710,7 @@ async function runCommand(args: string[]): Promise<number> {
         // no directory works in a folder of its own there.
         workspacesFor: separateUsers ? () => unitAgentRoot(separateUsers) : serverWorkspacesDir,
         version: VERSION,
+        deviceId: await readDeviceId(SYSTEM_SOURCES, values['device-root'] ?? dataDir),
         updatedBy,
         selfUpdate,
         supervised,
@@ -1246,6 +1253,20 @@ export async function main(argv: string[]): Promise<number> {
       case '--protocol':
         process.stdout.write(`${PROTOCOL_VERSION}\n`);
         return 0;
+      // For Switch Console, which enrolls this computer itself and names its
+      // own data folder: an empty line when the machine id cannot be read.
+      case '--device-id': {
+        const { values } = parseArgs({
+          args: rest,
+          options: { 'device-root': { type: 'string' } },
+          strict: true,
+        });
+        if (!values['device-root']) throw new UsageError('--device-id needs --device-root.');
+        process.stdout.write(
+          `${(await readDeviceId(SYSTEM_SOURCES, values['device-root'])) ?? ''}\n`
+        );
+        return 0;
+      }
       default:
         throw new UsageError(`Unknown command '${command}'.`);
     }
