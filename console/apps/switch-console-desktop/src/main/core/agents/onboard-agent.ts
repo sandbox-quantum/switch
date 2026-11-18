@@ -14,7 +14,7 @@ import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import { withWorkspaceSession } from '@main/core/workspaces/workspace-session';
 import { requireWorkspaceForServer } from '@main/core/workspaces/workspaces-store';
 import { log } from '@main/lib/logger';
-import { NEW_AGENT_PERMISSIONS } from '@shared/core/agents/agents';
+import { newAgentPermissions } from '@shared/core/agents/agents';
 import type {
   OnboardAgentError,
   OnboardAgentParams,
@@ -220,8 +220,8 @@ export async function onboardAgent(params: OnboardAgentParams): Promise<OnboardA
     switchAgentId: switchAgent.agentId,
     apiEndpoint: switchAgent.apiEndpoint,
     workspaceId: targetWorkspace.id,
-    autoApprove: params.autoApprove ?? NEW_AGENT_PERMISSIONS.autoApprove,
-    autoMode: params.autoMode ?? NEW_AGENT_PERMISSIONS.autoMode,
+    autoApprove: params.autoApprove ?? newAgentPermissions(params.providerId).autoApprove,
+    autoMode: params.autoMode ?? newAgentPermissions(params.providerId).autoMode,
   });
 
   // Mirror the agent's credentials into its provider-neutral per-agent file
