@@ -282,6 +282,7 @@ def _config() -> SimpleNamespace:
         gateway_tenant_choice_enabled=False,
         gateway_password_login_enabled=True,
         gateway_signup_open=True,
+        gateway_signup_mode="default_tenant",
         gateway_signup_max_per_hour=100,
         gateway_signup_refused_header=None,
         gateway_admin_email="admin@example.invalid",
