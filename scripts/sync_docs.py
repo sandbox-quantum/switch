@@ -332,6 +332,22 @@ def stale_files(committed: Path, fresh: Path) -> list[str]:
     ]
 
 
+def replace_snapshot(dest: Path, fresh: Path, backup: Path) -> None:
+    if not dest.exists():
+        fresh.rename(dest)
+        return
+    if not dest.is_dir():
+        raise NotADirectoryError(dest)
+
+    dest.rename(backup)
+    try:
+        fresh.rename(dest)
+    except BaseException:
+        backup.rename(dest)
+        raise
+    shutil.rmtree(backup)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -357,24 +373,36 @@ def main() -> int:
     with tempfile.TemporaryDirectory() as tmp:
         source = resolve_source(args.source, Path(tmp) / "docs")
         if args.check:
-            fresh = Path(tmp) / "fresh"
+            staging = Path(tmp) / "rendered"
+            staging.mkdir()
+        else:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            staging = Path(tempfile.mkdtemp(prefix=".sync-docs-", dir=dest.parent))
+
+        backup = staging / "previous"
+        try:
+            fresh = staging / "fresh"
             fresh.mkdir()
             written, missing = render(source, fresh)
-            changed = stale_files(dest, fresh)
-        else:
-            if dest.exists():
-                shutil.rmtree(dest)
-            dest.mkdir(parents=True)
-            written, missing = render(source, dest)
+            if missing:
+                print(
+                    f"Listed in navigation but absent from the source: {', '.join(missing)}",
+                    file=sys.stderr,
+                )
+                return 1
+            if args.check:
+                changed = stale_files(dest, fresh)
+            else:
+                replace_snapshot(dest, fresh, backup)
+        finally:
+            if backup.exists():
+                print(f"Previous snapshot retained at {backup}", file=sys.stderr)
+            else:
+                shutil.rmtree(staging)
 
-    if missing:
-        print(
-            f"Listed in navigation but absent from the source: {', '.join(missing)}",
-            file=sys.stderr,
-        )
     if not args.check:
         print(f"Wrote {written} pages to {where}")
-        return 1 if missing else 0
+        return 0
     if changed:
         print(
             f"{where} is older than the published docs; run `just sync-docs`. "
@@ -384,7 +412,7 @@ def main() -> int:
         print("\n".join(changed), file=sys.stderr)
         return 1
     print(f"{where} matches the published docs ({written} pages)")
-    return 1 if missing else 0
+    return 0
 
 
 if __name__ == "__main__":
