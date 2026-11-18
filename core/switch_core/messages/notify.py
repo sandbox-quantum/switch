@@ -190,18 +190,14 @@ class MessageListener:
     # ── The listening connection ──────────────────────────────────────────────
 
     async def _listen_forever(self) -> None:
-        attempt = 0
+        delay = RECONNECT_BACKOFF_BASE
         while self._running:
             try:
                 await self._listen_once()
-                attempt = 0
+                delay = RECONNECT_BACKOFF_BASE
             except asyncio.CancelledError:
                 raise
             except Exception:
-                attempt += 1
-                delay = min(
-                    RECONNECT_BACKOFF_BASE * 2 ** (attempt - 1), RECONNECT_BACKOFF_CAP
-                )
                 logger.error(
                     "Message listener lost its connection; retrying in %.1fs",
                     delay,
@@ -209,6 +205,7 @@ class MessageListener:
                 )
                 self.connected.clear()
                 await asyncio.sleep(delay)
+                delay = min(delay * 2, RECONNECT_BACKOFF_CAP)
 
     async def _listen_once(self) -> None:
         engine = self._engine_factory()
