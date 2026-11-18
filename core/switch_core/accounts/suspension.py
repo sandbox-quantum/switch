@@ -52,6 +52,7 @@ from typing import TYPE_CHECKING, Literal, Protocol, cast
 from sqlalchemy import select
 
 from switch_core.db.audit import (
+    PLATFORM_OPERATOR_COMMAND,
     AuditAction,
     ServerAuditAction,
     record_audit_event,
@@ -132,6 +133,12 @@ class Suspender:
 
     user_id: str | None
     role: SuspenderRole
+
+
+def _by_command(by: Suspender) -> dict[str, bool]:
+    """Marks an audit event of a suspension the operator's command line made,
+    which names no actor."""
+    return {PLATFORM_OPERATOR_COMMAND: True} if by.user_id is None else {}
 
 
 class SuspensionRefused(Exception):
@@ -373,7 +380,7 @@ async def suspend_agent(
         action=AuditAction.AGENT_SUSPENDED,
         target_type="agent",
         target_id=agent.id,
-        details={"reason": reason, "by_role": by.role},
+        details={"reason": reason, "by_role": by.role, **_by_command(by)},
     )
     return changes
 
@@ -417,6 +424,7 @@ async def unsuspend_agent(
         details={
             **previous,
             "still_suspended_with_owner": agent.suspended_at is not None,
+            **_by_command(by),
         },
     )
     return changes
@@ -476,7 +484,7 @@ async def suspend_user(
                     action=ServerAuditAction.USER_SUSPENDED,
                     target_type="user",
                     target_id=user_id,
-                    details={"reason": reason, "by_role": by.role},
+                    details={"reason": reason, "by_role": by.role, **_by_command(by)},
                 )
             # Its agents are suspended as the account now is, by whoever made
             # its suspension, which a re-run did not change.
@@ -539,6 +547,7 @@ async def suspend_user(
                         "reason": cascade_reason,
                         "by_role": cascade.role,
                         "agents_suspended": here.agents.get(tenant_id, []),
+                        **_by_command(by),
                     },
                 )
             await session.commit()
@@ -584,7 +593,7 @@ async def unsuspend_user(
                 action=ServerAuditAction.USER_UNSUSPENDED,
                 target_type="user",
                 target_id=user_id,
-                details=previous,
+                details={**previous, **_by_command(by)},
             )
             await session.commit()
 
@@ -620,7 +629,11 @@ async def unsuspend_user(
                 action=AuditAction.USER_UNSUSPENDED,
                 target_type="user",
                 target_id=user_id,
-                details={**previous, "agents_unsuspended": [a.id for a in agents]},
+                details={
+                    **previous,
+                    "agents_unsuspended": [a.id for a in agents],
+                    **_by_command(by),
+                },
             )
             await session.commit()
         changes = changes.merge(here)

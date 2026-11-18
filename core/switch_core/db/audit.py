@@ -27,8 +27,8 @@ from switch_core.db.models import (
 
 # Set, to true, in the details of every audit event a platform operator's
 # server command records (`switch-accounts`, `switch-connector-apps`,
-# `switch-promote-org-admin`): no account is behind the change, so the event
-# names no actor.
+# `switch-promote-org-admin`, `switch-suspend`): no account is behind the
+# change, so the event names no actor.
 PLATFORM_OPERATOR_COMMAND = "platform_operator_command"
 
 
