@@ -1,27 +1,43 @@
 import { motion, useReducedMotion } from 'motion/react';
 import { type ReactNode, useState } from 'react';
 
+/** Which of a chat's first messages slide in as it opens. */
+export type ChatEntrance = {
+  /** The agent's first message, whenever it appears. */
+  firstAgent: boolean;
+  /** Your own first message, as you sent it from elsewhere (Home). */
+  firstOwn: boolean;
+};
+
+export const NO_ENTRANCE: ChatEntrance = { firstAgent: false, firstOwn: false };
+
 /**
  * Chats opened from somewhere else (the end of onboarding, Home) that should
- * bring in the agent's first message rather than draw it at once. Asked for
+ * bring in their first messages rather than draw them at once. Asked for
  * before the chat opens, taken by the chat that opens.
  */
-const introduced = new Set<string>();
+const introduced = new Map<string, ChatEntrance>();
 
-/** The chat `roomId` opens next with its agent's first message sliding in. */
-export function introduceFirstAgentMessage(roomId: string): void {
-  introduced.add(roomId);
+/**
+ * The chat `roomId` opens next with the agent's first message sliding in, and
+ * with `own` your first message too.
+ */
+export function introduceChat(roomId: string, opening: 'agent' | 'own-and-agent'): void {
+  introduced.set(roomId, { firstAgent: true, firstOwn: opening === 'own-and-agent' });
 }
 
 /**
- * Whether this chat was asked to bring in its agent's first message: read once
- * as the chat opens, so reopening it later draws it at once. False with
- * reduced motion.
+ * What this chat was asked to bring in: read once as the chat opens, so
+ * reopening it later draws everything at once. Nothing with reduced motion.
  */
-export function useChatEntrance(roomId: string): boolean {
+export function useChatEntrance(roomId: string): ChatEntrance {
   const reduced = useReducedMotion() ?? false;
-  const [asked] = useState(() => introduced.delete(roomId));
-  return asked && !reduced;
+  const [asked] = useState(() => {
+    const entrance = introduced.get(roomId) ?? NO_ENTRANCE;
+    introduced.delete(roomId);
+    return entrance;
+  });
+  return reduced ? NO_ENTRANCE : asked;
 }
 
 /** Each item after the first in a group starts this much later than the one before. */

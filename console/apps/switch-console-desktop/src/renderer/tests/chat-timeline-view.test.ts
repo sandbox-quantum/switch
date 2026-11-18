@@ -1,6 +1,7 @@
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
+import { type ChatEntrance, NO_ENTRANCE } from '@renderer/features/chats/chat-entrance';
 import { ChatTimelineView } from '@renderer/features/chats/components/chat-timeline';
 import {
   ChatTimeline,
@@ -53,7 +54,7 @@ describe('ChatTimelineView', () => {
         people: [],
         activities: [],
         onReply: () => {},
-        firstAgentEntrance: false,
+        entrance: NO_ENTRANCE,
       })
     );
     expect(html).not.toContain('items-end');
@@ -82,7 +83,7 @@ describe('ChatTimelineView thread replies', () => {
         people: [],
         activities: [],
         onReply: () => {},
-        firstAgentEntrance: false,
+        entrance: NO_ENTRANCE,
       })
     );
     for (const [name, body] of [
@@ -120,7 +121,7 @@ describe('ChatTimelineView mentions', () => {
         people: [{ userId: 'u2', name: 'cc' }],
         activities: [],
         onReply: () => {},
-        firstAgentEntrance: false,
+        entrance: NO_ENTRANCE,
       })
     );
   };
@@ -150,7 +151,7 @@ describe('ChatTimelineView mentions of people no longer in the chat', () => {
         people: [{ userId: 'u9', name: 'Carol Gone' }],
         activities: [],
         onReply: () => {},
-        firstAgentEntrance: false,
+        entrance: NO_ENTRANCE,
       })
     );
     expect(html).toContain('data-mention="person"');
@@ -188,7 +189,7 @@ describe('ChatTimelineView mentions from the server’s spans', () => {
         people: [{ userId: 'u1', name: 'Bob Member' }],
         activities: [],
         onReply: () => {},
-        firstAgentEntrance: false,
+        entrance: NO_ENTRANCE,
       })
     );
     expect([...html.matchAll(/data-mention="(\w+)"[^>]*>@Bob Member</g)].map((m) => m[1])).toEqual([
@@ -209,7 +210,7 @@ describe('ChatTimelineView kickoffs', () => {
         people: [],
         activities: [],
         onReply: () => {},
-        firstAgentEntrance: false,
+        entrance: NO_ENTRANCE,
       })
     );
 
@@ -254,7 +255,9 @@ describe('ChatTimelineView kickoffs', () => {
   });
 });
 
-describe('ChatTimelineView first agent message', () => {
+describe('ChatTimelineView first messages on a hand-off', () => {
+  const HIDDEN = /style="opacity:0;transform:translateY\(12px\)"/g;
+
   function agentMessage(seq: number): ChatMessage {
     return {
       ...message(seq, '', 'switch-buddy'),
@@ -269,11 +272,7 @@ describe('ChatTimelineView first agent message', () => {
     };
   }
 
-  function render(firstAgentEntrance: boolean): string {
-    const timeline = new ChatTimeline('room-1', api);
-    timeline.apply(message(1, 'me', 'Alice'));
-    timeline.apply(agentMessage(2));
-    timeline.apply(agentMessage(3));
+  function render(timeline: ChatTimeline, entrance: ChatEntrance): string {
     return renderToStaticMarkup(
       createElement(ChatTimelineView, {
         serverId: 's',
@@ -282,20 +281,52 @@ describe('ChatTimelineView first agent message', () => {
         people: [],
         activities: [],
         onReply: () => {},
-        firstAgentEntrance,
+        entrance,
       })
     );
   }
 
-  it('starts hidden below its place when the chat opens from a hand-off, and only that one', () => {
-    const html = render(true);
-    const hidden = html.match(/style="opacity:0;transform:translateY\(12px\)"/g) ?? [];
-    expect(hidden).toHaveLength(1);
-    expect(html.indexOf('opacity:0')).toBeLessThan(html.indexOf('agent says 2'));
+  function conversation(): ChatTimeline {
+    const timeline = new ChatTimeline('room-1', api);
+    timeline.apply(message(1, 'me', 'Alice'));
+    timeline.apply(agentMessage(2));
+    timeline.apply(agentMessage(3));
+    return timeline;
+  }
+
+  it('starts the agent’s first message hidden below its place, and only that one', () => {
+    const html = render(conversation(), { firstAgent: true, firstOwn: false });
+    expect(html.match(HIDDEN)).toHaveLength(1);
     expect(html.indexOf('opacity:0')).toBeGreaterThan(html.indexOf('body 1'));
+    expect(html.indexOf('opacity:0')).toBeLessThan(html.indexOf('agent says 2'));
   });
 
-  it('is drawn in place otherwise', () => {
-    expect(render(false)).not.toContain('opacity:0');
+  it('brings in your first message too when you sent it from Home', () => {
+    const html = render(conversation(), { firstAgent: true, firstOwn: true });
+    expect(html.match(HIDDEN)).toHaveLength(2);
+    expect(html.indexOf('opacity:0')).toBeLessThan(html.indexOf('body 1'));
+  });
+
+  it('brings in your first message while it is still being sent', () => {
+    const timeline = new ChatTimeline('room-1', {
+      send: () => new Promise(() => {}),
+      newId: () => 'req-1',
+    } as unknown as TimelineApi);
+    timeline.send({
+      body: 'from Home',
+      threadRootId: null,
+      mentionAgentIds: [],
+      mentionUserIds: [],
+      mentionSpans: [],
+      files: [],
+      requestId: null,
+    });
+    const html = render(timeline, { firstAgent: true, firstOwn: true });
+    expect(html.match(HIDDEN)).toHaveLength(1);
+    expect(html.indexOf('opacity:0')).toBeLessThan(html.indexOf('from Home'));
+  });
+
+  it('draws everything in place otherwise', () => {
+    expect(render(conversation(), NO_ENTRANCE)).not.toContain('opacity:0');
   });
 });

@@ -183,12 +183,12 @@ export const ChatPanel = observer(function ChatPanel({
                 people={people.known}
                 activities={activities}
                 onReply={setReplyTo}
-                firstAgentEntrance={entrance}
+                entrance={entrance}
               />
             )}
             {/* Under the first message, it comes in just after it. */}
             {timeline.loaded && (
-              <Entrance play={entrance} order={1}>
+              <Entrance play={entrance.firstAgent} order={1}>
                 {afterMessages}
               </Entrance>
             )}

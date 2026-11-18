@@ -1,4 +1,4 @@
-import { introduceFirstAgentMessage } from '@renderer/features/chats/chat-entrance';
+import { introduceChat } from '@renderer/features/chats/chat-entrance';
 import { focusComposerWhenOpened } from '@renderer/features/chats/components/chat-composer';
 import { chatsStore, chatTitler } from '@renderer/features/chats/stores/chats';
 import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
@@ -90,7 +90,7 @@ export async function openBuddyChat(
   try {
     roomId = (await buddyChat(serverId, agent)).roomId;
     focusComposerWhenOpened(roomId);
-    if (entrance === 'slide-in') introduceFirstAgentMessage(roomId);
+    if (entrance === 'slide-in') introduceChat(roomId, 'agent');
   } catch (cause) {
     toast({
       title: 'Could not open the chat with switch-buddy',
@@ -143,8 +143,8 @@ export async function askBuddy(
   });
   void chatTitler.sent(serverId, roomId, text);
   focusComposerWhenOpened(roomId);
-  // Your message is there at once; the buddy's answer slides in when it comes.
-  introduceFirstAgentMessage(roomId);
+  // Your message slides in as the chat opens, and the buddy's answer when it comes.
+  introduceChat(roomId, 'own-and-agent');
   appState.navigation.navigate('managedAgent', {
     serverId,
     agentId: agent.agentId,
