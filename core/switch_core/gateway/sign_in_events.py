@@ -7,9 +7,9 @@ written to the log only (`SecuritySignal.SIGN_IN_FAILED`): the account it
 names is whatever the caller typed, and a row per attempt would let anyone
 grow an append-only table at will.
 
-`client_ip` is the address the connection came from as uvicorn reports it.
-Behind a proxy that is the proxy's unless uvicorn trusts it to forward the
-client's (`FORWARDED_ALLOW_IPS`).
+`client_ip` is the client as uvicorn resolves it: the connection's address,
+or `X-Forwarded-For` when the connection comes from `FORWARDED_ALLOW_IPS`
+(`main.uvicorn_config`).
 """
 
 from __future__ import annotations

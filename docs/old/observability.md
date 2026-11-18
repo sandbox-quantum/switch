@@ -253,9 +253,14 @@ each:
   never the text it found. The check runs before the message's transaction
   opens, and while Switch Trust is down every message is `errored`.
 
-`client_ip` is the address uvicorn reports. Behind a load balancer or ingress
-that is the proxy's own address unless uvicorn is told to trust the proxy's
-`X-Forwarded-For` (`FORWARDED_ALLOW_IPS`), which no deployment here sets yet.
+`client_ip`, like the address in the access log, is the request's client
+as uvicorn resolves it. switch-core believes `X-Forwarded-For` only from the
+addresses in `FORWARDED_ALLOW_IPS` (the Helm value
+`switchCore.forwardedAllowIps`), which defaults to `127.0.0.1`. Behind a load
+balancer or ingress, set it to that proxy's source address range (IPs or
+CIDRs, comma-separated); left at the default, every request reports the
+proxy's own address. Never `*`: then any caller can name any address. The
+chart refuses it, and the server warns at startup if it is set.
 
 The logger is held at INFO whatever `SWITCH_LOG_LEVEL` says, so turning
 switch-core's own lines down does not silence it. Filter on the logger name

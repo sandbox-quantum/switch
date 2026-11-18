@@ -979,6 +979,12 @@ this one. Drop it once the oldest supported image reads ID_SERVER_NAME. */}}
 {{- end }}
 - name: GATEWAY_COOKIE_SECURE
   value: {{ .Values.switchCore.cookieSecure | quote }}
+{{- $forwardedAllowIps := .Values.switchCore.forwardedAllowIps | default "127.0.0.1" }}
+{{- if has "*" (splitList "," (nospace $forwardedAllowIps)) }}
+{{- fail "switchCore.forwardedAllowIps must not be \"*\": it would let any caller forge its client address. Name the ingress or load balancer's source CIDR(s)." }}
+{{- end }}
+- name: FORWARDED_ALLOW_IPS
+  value: {{ $forwardedAllowIps | quote }}
 - name: SWITCH_LOG_LEVEL
   value: {{ .Values.switchCore.logLevel | default "INFO" | quote }}
 - name: LOG_FORMAT

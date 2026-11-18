@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 from sqlalchemy.pool import NullPool
+from starlette.types import ASGIApp
 from uvicorn.main import STARTUP_FAILURE
 
 from switch_core.accounts.organization_purge import OrganizationPurge
@@ -284,6 +285,29 @@ _CONNECTION_SWEEP_INTERVAL = 2.0
 # regardless. Anything with a deadline of its own must fit inside it — see
 # `observability.logs.SHUTDOWN_FLUSH_SECONDS`.
 _FORCED_EXIT_GRACE_SECONDS = 3.0
+
+
+def uvicorn_config(app: ASGIApp, config: SwitchConfig) -> uvicorn.Config:
+    """How the server listens. A request's client address is taken from
+    `X-Forwarded-For` only when it comes from `FORWARDED_ALLOW_IPS`, the
+    ingress in front of this server; the access log, sign-in events and the
+    refusal breaker all read the address this resolves."""
+    trusted = [entry.strip() for entry in config.forwarded_allow_ips.split(",")]
+    if "*" in trusted:
+        logger.warning(
+            "FORWARDED_ALLOW_IPS is '*': every caller's X-Forwarded-For is "
+            "believed, so client addresses in the access log and security "
+            "events can be forged. Set it to the ingress's address range."
+        )
+    return uvicorn.Config(
+        app,
+        host=config.server_host,
+        port=config.server_port,
+        log_level="info",
+        log_config=None,
+        proxy_headers=True,
+        forwarded_allow_ips=config.forwarded_allow_ips,
+    )
 
 
 class _Server(uvicorn.Server):
@@ -1861,13 +1885,7 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
     # deployment with an install date.
     await telemetry.report_installed()
 
-    server_config = uvicorn.Config(
-        agent_bridge_app,
-        host=config.server_host,
-        port=config.server_port,
-        log_level="info",
-        log_config=None,
-    )
+    server_config = uvicorn_config(agent_bridge_app, config)
     server = _Server(server_config)
 
     loop = asyncio.get_event_loop()

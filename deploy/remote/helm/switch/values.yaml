@@ -367,6 +367,15 @@ switchCore:
   # gateway is served over HTTPS (ALB / Tailscale); keep false only for plain-HTTP
   # local dev.
   cookieSecure: true
+  # Who may tell switch-core a request's real client address, through
+  # X-Forwarded-For: comma-separated IPs or CIDRs, which must be the source
+  # address range of the ingress or load balancer in front of switch-core
+  # (e.g. the VPC or pod CIDR an ALB or ingress controller connects from).
+  # A request from anywhere else keeps its own connection address. The
+  # access log, sign-in events and the refusal breaker report the address
+  # this resolves; left at 127.0.0.1 behind an ingress, they all report the
+  # ingress. "*" is refused: it would let any caller forge its address.
+  forwardedAllowIps: "127.0.0.1"
   # Allow email+password self sign-up on the gateway login page. Takes effect
   # only while signup.mode is default_tenant, where a new account joins the
   # deployment's one pre-existing workspace.
