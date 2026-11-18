@@ -186,6 +186,15 @@ does, and there is no polling tool to call.
   admin or a workspace admin may turn it on or off, from the room or from its toggle in
   Switch Console or on the gateway's room page.
 
+  Two exceptions skip the decision service. In an auto-route room with only
+  one agent and one person, every untagged message from that person reaches
+  that agent, in the channel and in threads: its line says it came to you
+  because you are the only agent in this room and they are the only person.
+  A second person or agent ends that. And an assigned agent and auto-route
+  can't both be on: `!assign-agent` in an auto-route room assigns the agent
+  and turns auto-route off, saying so, and `!auto-route on` is refused while
+  an agent is assigned, until `!unassign-agent`.
+
   Which decision service a room uses is its workspace's choice, made by a
   workspace admin in Switch Console → Settings → Message routing: the server's
   own default, the workspace's self-hosted endpoint, Claude Haiku, or none.
