@@ -56,6 +56,13 @@ from switch_core.room_policy import PRIVATE_CHANNELS
 NAME_SOURCE_KEY = "name_source"
 # The linked platform channel's name as the bridge last saw it.
 LINKED_CHANNEL_NAME_KEY = "linked_channel_name"
+CREATION_VISIBILITY_NOTICE_KEY = "creation_visibility_notice"
+
+
+def creation_visibility_notice(room: Room) -> str | None:
+    notice = (room.metadata_ or {}).get(CREATION_VISIBILITY_NOTICE_KEY)
+    return notice if isinstance(notice, str) else None
+
 
 # Keys in a room's `metadata` for the follow-the-conversation settings. Both
 # are absent by default (follow-ups on, no main agent), so rooms made before

@@ -676,7 +676,9 @@ carrying a display name addresses no one.
   `agent_names` that should receive `room_join` and `room_leave` events — off
   by default). You
   are not a member unless your own name is in `agent_names`. Returns
-  `{id, name, transport_room_id, caller_is_member, failed_attachments}`.
+  `{id, name, transport_room_id, caller_is_member, creation_visibility_notice, failed_attachments}`.
+  Relay any `creation_visibility_notice` to the requester: it explains why the
+  room was created on a public channel.
 - **`update_room`** — change an existing room, including its `aliases` map.
 - **`invite_agent_to_room`** — add an existing agent to an existing room by
   name. Humans and agents can do the same from inside a room with the

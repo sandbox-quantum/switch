@@ -769,6 +769,13 @@ async def test_no_choice_and_no_linked_account_makes_a_public_room_and_says_why(
     (note,) = result.failed_attachments
     assert note["id"] == PUBLIC_NO_LINKED_ACCOUNT
     assert "Link your account to make it private" in note["error"]
+    async with session_factory() as session:
+        room = await session.get(Room, result.room.id)
+        assert room is not None
+        assert room.metadata_["creation_visibility_notice"] == (
+            f"This room was created on a public {adapter.platform_name} channel "
+            "because its creator did not have a linked account at the time."
+        )
 
 
 @pytest.mark.parametrize(

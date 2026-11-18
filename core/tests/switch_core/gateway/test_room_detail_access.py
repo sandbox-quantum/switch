@@ -115,6 +115,31 @@ class TestRoomDetailOwner:
             assert detail.owner_id == owner.id
             assert detail.owner_name == "owner"
 
+    async def test_remembers_why_a_room_was_created_public(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            owner = await _add_user(session, name="owner")
+            room = await _add_room(
+                session, name="r1", owner_id=owner.id, read_visibility="public"
+            )
+            notice = "Made public: you have no messaging account linked."
+            room.metadata_ = {"creation_visibility_notice": notice}
+            await session.commit()
+
+            detail = await get_room(
+                room.id,
+                session,
+                _ROOM_STORE,
+                CollaborationBridgeStore(),
+                ExternalUserStore(),
+                _protocol(),
+                _NO_DECISIONS,
+                owner,
+                False,
+            )
+            assert detail.creation_visibility_notice == notice
+
 
 class TestDetailMatchesList:
     """A room's detail carries every field of its list entry with the same

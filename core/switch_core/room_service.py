@@ -61,6 +61,7 @@ from switch_core.db.stores.collaboration_bridge_store import CollaborationBridge
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_role_store import validate_role_name
 from switch_core.db.stores.room_store import (
+    CREATION_VISIBILITY_NOTICE_KEY,
     LINKED_CHANNEL_NAME_KEY,
     NAME_SOURCE_KEY,
     RoomStore,
@@ -995,6 +996,7 @@ class RoomService:
         # Never for a template's room: a template run shows no choice before it
         # creates the room, so it is refused and the creator links an account.
         fallback: dict[str, Any] | None = None
+        visibility_notice: str | None = None
         if (
             not chose
             and not config.from_template
@@ -1012,6 +1014,10 @@ class RoomService:
             except PrivateChannelOwnerMissing:
                 platform = collaboration_core.adapter.platform_name
                 channel_type = "channel_public"
+                visibility_notice = (
+                    f"This room was created on a public {platform} channel because "
+                    "its creator did not have a linked account at the time."
+                )
                 fallback = {
                     "kind": "visibility",
                     "id": PUBLIC_NO_LINKED_ACCOUNT,
@@ -1132,6 +1138,11 @@ class RoomService:
                 # Nothing else on the row can answer this afterwards.
                 metadata_={
                     "created_by_kind": config.created_by_kind,
+                    **(
+                        {CREATION_VISIBILITY_NOTICE_KEY: visibility_notice}
+                        if visibility_notice is not None
+                        else {}
+                    ),
                     **(
                         {"chat_operation_id": config.chat_operation_id}
                         if config.chat_operation_id is not None

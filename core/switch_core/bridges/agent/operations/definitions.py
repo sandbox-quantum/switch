@@ -59,6 +59,7 @@ from switch_core.bridges.agent.protocol.types import IntegrationProfile, TrustFe
 from switch_core.clients.agent_admin import DELETE_CONFIRM_SECONDS
 from switch_core.db.models import CollaborationBridge, User, require_tenant_id
 from switch_core.db.session_scope import shared_tenant_session
+from switch_core.db.stores.room_store import creation_visibility_notice
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.feature_flags import SWITCH_BUDDY
 from switch_core.names import refuse_hidden_characters
@@ -1067,7 +1068,9 @@ async def create_room(
 
     Returns:
         `{"id", "name", "matrix_room_id", "caller_is_member",
-        "failed_attachments": [...]}`.
+        "creation_visibility_notice", "failed_attachments": [...]}`.
+        Tell the requester any `creation_visibility_notice`: it explains
+        why their room was created on a public channel.
         `failed_attachments` is empty on full success; otherwise it lists
         `{kind, id, error}` for each attachment that could not be applied
         after the room was created (race-time failures only; predictable
@@ -1112,6 +1115,7 @@ async def create_room(
         # Deprecated alias, carried for the connector compatibility window.
         "matrix_room_id": result.room.transport_room_id,
         "caller_is_member": caller_is_member,
+        "creation_visibility_notice": creation_visibility_notice(result.room),
         "failed_attachments": result.failed_attachments,
     }
 
