@@ -4636,6 +4636,12 @@ version of their own to them without also giving them a release of their own.
 ### [0.41.0] - 2026-11-17
 
 #### Added
+- **switch-buddy's first message slides in.** At the end of onboarding its
+  welcome fades in as it rises into place, and the "Where does your team
+  chat?" cards follow just after. From Home, the message you sent comes in
+  the same way, and its first answer when it arrives. Only those first
+  messages move, and only on the way in from onboarding or Home: reopening
+  the chat draws them at once, as does reduced motion.
 - **Group chats.** Create a group chat from New room, open it in the room
   view, and manage its agents and people from its Configuration tab. Offered
   only where the server has them on (`group_chats`), which this release does by
