@@ -1021,13 +1021,14 @@ does not manage agents, so say so rather than looking for another way.
   does not refuses them, naming the feature flag they need), and
   optionally `model`, `advanced_config` (e.g. `{"effort": "high"}`; keys from
   `get_advanced_config`), `instructions`, `directory`, `auto_mode` (on by
-  default: the provider's automatic review runs safe actions and asks before
-  risky ones), `auto_approve` (bypass: skips every permission check and
-  overrides `auto_mode`; off by default and unsafe, so set it only when the
-  person asks), `display_name`, `icon_url`, and `start=false` to create it
-  stopped. Leave
-  `directory` null and Switch fills in the machine's own workspace for the
-  agent, which the machine makes; any other directory must already exist
+  default where the provider supports automatic review), `auto_approve` (bypass:
+  skips permission checks and overrides `auto_mode`). New Cursor agents default
+  to bypass on and auto mode off because Cursor's ACP interface has no automatic
+  review; disclose that in the proposal. Respect an explicit request for approvals
+  by setting both false. Other providers default to bypass off; enable it only
+  when the person asks. Optional fields also include `display_name`, `icon_url`,
+  and `start=false` to create it stopped. Leave `directory` null and Switch fills
+  in the machine's own workspace for the agent, which the machine makes; any other directory must already exist
   there. Change it later with `update_agent_detail`.
 - **`list_managed_agents`** — your owner's managed agents, with the machine
   each runs on, what your owner wants (`desired_state`) and what the machine

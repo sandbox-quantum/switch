@@ -61,6 +61,8 @@ const metadataSchema = z.object({
    * models only once that says signed in. Defaults to false.
    */
   sessionStartMaySignIn: z.boolean().optional(),
+  /** Whether the runtime supports Auto mode; omitted for providers that support it. */
+  supportsAutoMode: z.boolean().optional(),
 });
 
 export type CLIAgentPluginMetadata = z.infer<typeof metadataSchema>;

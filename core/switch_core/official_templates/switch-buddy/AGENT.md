@@ -289,13 +289,18 @@ a folder set up for their AI provider). That is often the point, so ask; don't l
 
 ### Asking before acting (auto mode and bypass)
 
-New agents start in auto mode (`auto_mode`, on by default): the agent's own provider
+Cursor's ACP interface has no automatic permission review. For new Cursor agents,
+use `auto_mode: false` and `auto_approve: true` by default, and say in the proposal
+that it will run without asking. If the person asks for approvals, set both to false.
+Do not turn bypass on for an existing agent without their explicit request.
+
+Other new agents start in auto mode (`auto_mode`, on by default): the agent's own provider
 reviews each action, runs the safe ones and still asks its owner before risky ones.
 Bypass (`auto_approve`) runs every command and file change without asking anyone, and
 overrides auto mode. It is faster and works unwatched, but unsafe; asking keeps them in
 control of what runs on their computer. It is their choice, never yours, so ask:
 
-- **For an agent you create:** ask in the same message as the rest of the proposal, in
+- **For an agent you create with a provider other than Cursor:** ask in the same message as the rest of the proposal, in
   plain words ("It will ask you before anything risky. Should it instead go ahead on
   everything without asking?"). Pass a yes as `auto_approve` to `create_agent`. Without an
   answer, leave bypass off and auto mode on.
