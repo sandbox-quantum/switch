@@ -131,31 +131,33 @@ export const OpenInMenu: React.FC<OpenInMenuProps> = ({
     >
       <TooltipProvider delay={0}>
         <Tooltip>
-          <TooltipTrigger className="flex min-w-0 flex-1">
-            <button
-              type="button"
-              className={cn(
-                'group flex items-center w-full border-r border-border rounded-r-none px-2 text-xs transition-colors hover:bg-background-1 hover:text-foreground min-w-0',
-                borderless && 'border-none  pr-1'
-              )}
-              onClick={() => {
-                if (!buttonAppId) return;
-                void triggerOpenIn(buttonAppId);
-              }}
-              disabled={!buttonAppId || loading}
-              aria-label={buttonAppLabel ? `Open in ${buttonAppLabel}` : 'Open'}
-            >
-              {buttonAppId && icons[buttonAppId] && (
-                <img
-                  src={icons[buttonAppId]}
-                  alt={labels[buttonAppId] || buttonAppId}
-                  className={`size-3.5 rounded ${
-                    getAppById(buttonAppId)?.invertInDark ? 'emdark:invert' : ''
-                  }`}
-                />
-              )}
-            </button>
-          </TooltipTrigger>
+          <TooltipTrigger
+            render={
+              <button
+                type="button"
+                className={cn(
+                  'group flex flex-1 items-center w-full border-r border-border rounded-r-none px-2 text-xs transition-colors hover:bg-background-1 hover:text-foreground min-w-0',
+                  borderless && 'border-none  pr-1'
+                )}
+                onClick={() => {
+                  if (!buttonAppId) return;
+                  void triggerOpenIn(buttonAppId);
+                }}
+                disabled={!buttonAppId || loading}
+                aria-label={buttonAppLabel ? `Open in ${buttonAppLabel}` : 'Open'}
+              >
+                {buttonAppId && icons[buttonAppId] && (
+                  <img
+                    src={icons[buttonAppId]}
+                    alt={labels[buttonAppId] || buttonAppId}
+                    className={`size-3.5 rounded ${
+                      getAppById(buttonAppId)?.invertInDark ? 'emdark:invert' : ''
+                    }`}
+                  />
+                )}
+              </button>
+            }
+          />
           <TooltipContent side="bottom">
             <div className="flex flex-col gap-1">
               <span>Open in {buttonAppLabel || 'editor'}</span>

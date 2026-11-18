@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useThirdPartyAvatarsEnabled } from '@renderer/lib/stores/use-avatar-settings';
 import { isThirdPartyAvatarUrl, randomAgentAvatarUrl } from '@shared/core/agents/agent-avatar';
 import { AGENT_NAME_PATTERN, slugifyAgentNamePart } from '@shared/core/agents/agent-slug';
-import { NEW_AGENT_PERMISSIONS } from '@shared/core/agents/agents';
+import { NEW_AGENT_PERMISSIONS, newAgentPermissions } from '@shared/core/agents/agents';
 import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
 import { defaultAgentPolicy } from '@shared/core/switch-servers/owner-policy';
 import type { AddressingPolicy } from '@shared/core/switch-servers/switch-servers';
@@ -56,7 +56,7 @@ export function displayNameFromName(value: string): string {
  * local agent, one for a remote one — and switching between them swapped which
  * was on screen, so the name and description the user had typed vanished.
  */
-export function useConfigureAgentForm(serverId: string | null) {
+export function useConfigureAgentForm(serverId: string | null, providerId: string | null) {
   const [agentName, setAgentNameFolded] = useState('');
   // What was typed, before the identifier folded it to lowercase. The slug
   // offer hands this back as the display name, so the capitals in a typed
@@ -75,8 +75,13 @@ export function useConfigureAgentForm(serverId: string | null) {
   // with none runs on its provider's defaults, and the description stands in
   // where a provider needs a prompt.
   const [instructions, setInstructions] = useState('');
-  const [autoApprove, setAutoApprove] = useState<boolean>(NEW_AGENT_PERMISSIONS.autoApprove);
-  const [autoMode, setAutoMode] = useState<boolean>(NEW_AGENT_PERMISSIONS.autoMode);
+  const defaults = providerId === null ? NEW_AGENT_PERMISSIONS : newAgentPermissions(providerId);
+  const [autoApprove, setAutoApprove] = useState<boolean>(defaults.autoApprove);
+  const [autoMode, setAutoMode] = useState<boolean>(defaults.autoMode);
+  useEffect(() => {
+    setAutoApprove(defaults.autoApprove);
+    setAutoMode(defaults.autoMode);
+  }, [defaults.autoApprove, defaults.autoMode]);
   // Scoped addressing policy (CHOO-1585). null = open; a new agent starts on
   // the default, its owner and the owner's agents. Applied via a follow-up PUT
   // after creation.
@@ -166,6 +171,7 @@ export function useConfigureAgentForm(serverId: string | null) {
     setDescription,
     instructions,
     setInstructions,
+    supportsAutoMode: defaults.autoMode,
     autoApprove,
     setAutoApprove,
     autoMode,

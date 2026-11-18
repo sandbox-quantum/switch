@@ -307,13 +307,19 @@ it('authenticates a legacy antigravity-acp install once before creating the sess
 });
 it('picks the session mode among the modes agy advertises', () => {
   const agy = {
-    availableModes: [{ id: 'default' }, { id: 'accept-edits' }, { id: 'plan' }],
+    availableModes: [{ id: 'default' }, { id: 'accept-edits' }, { id: 'auto' }, { id: 'plan' }],
   };
   expect(antigravityAcp.sessionMode?.('approval-required', agy)).toBe('default');
   expect(antigravityAcp.sessionMode?.('auto-accept-edits', agy)).toBe('accept-edits');
-  expect(antigravityAcp.sessionMode?.('auto', agy)).toBe('accept-edits');
+  expect(antigravityAcp.sessionMode?.('auto', agy)).toBe('auto');
   // Full access is the adapter approving every request, in agy's default mode.
   expect(antigravityAcp.sessionMode?.('full-access', agy)).toBe('default');
+});
+it('falls back to accept-edits when auto mode is unavailable', () => {
+  const agyWithoutAuto = {
+    availableModes: [{ id: 'default' }, { id: 'accept-edits' }, { id: 'plan' }],
+  };
+  expect(antigravityAcp.sessionMode?.('auto', agyWithoutAuto)).toBe('accept-edits');
 });
 it('keeps the legacy runtime’s auto-edit and yolo modes', () => {
   const legacy = { availableModes: [{ id: 'default' }, { id: 'auto_edit' }, { id: 'yolo' }] };
@@ -679,6 +685,56 @@ it('keeps approval for Switch metadata when Switch was not registered by the ses
     },
   });
   expect(events.filter((e) => e.type === 'request.opened')).toHaveLength(1);
+});
+
+it('recognizes MCP servers from tool name when _meta is absent', () => {
+  const servers = new Set(['switch', 'echo', 'a', 'a_b']);
+  expect(
+    antigravityAcp.mcpServerOf?.(
+      { toolCallId: 'call_1', name: 'mcp_switch_post_message' } as any,
+      servers
+    )
+  ).toBe('switch');
+  expect(
+    antigravityAcp.mcpServerOf?.({ toolCallId: 'call_2', name: 'mcp_echo_send' } as any, servers)
+  ).toBe('echo');
+  expect(
+    antigravityAcp.mcpServerOf?.({ toolCallId: 'call_3', name: 'regular_tool' } as any, servers)
+  ).toBeUndefined();
+  expect(
+    antigravityAcp.mcpServerOf?.(
+      { toolCallId: 'call_4', name: 'mcp_unregistered_tool' } as any,
+      servers
+    )
+  ).toBeUndefined();
+  // Longest prefix wins when server names overlap
+  expect(
+    antigravityAcp.mcpServerOf?.({ toolCallId: 'call_5', name: 'mcp_a_b_tool' } as any, servers)
+  ).toBe('a_b');
+});
+
+it('auto-approves Switch MCP calls using tool name when _meta is absent', async () => {
+  const { adapter, events, server } = await setup();
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'connect' });
+  server.send({
+    id: 95,
+    method: 'session/request_permission',
+    params: {
+      sessionId: 'native',
+      toolCall: {
+        toolCallId: 'call_new',
+        name: 'mcp_switch_connect_to_room',
+        kind: 'other',
+        title: 'Run mcp_switch_connect_to_room',
+      },
+      options: [{ optionId: 'once', name: 'Allow once', kind: 'allow_once' }],
+    },
+  });
+  await flush();
+  expect(server.received.find((m) => m.id === 95)?.result).toEqual({
+    outcome: { outcome: 'selected', optionId: 'once' },
+  });
+  expect(events.filter((e) => e.type === 'request.opened')).toHaveLength(0);
 });
 
 const httpSwitch = {

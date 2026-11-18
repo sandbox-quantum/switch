@@ -79,12 +79,31 @@ describe('provider logins handed to an agent host', () => {
     );
   });
 
-  it('takes a Vertex AI login handed over only for Claude, and only a valid one', () => {
+  it('signs Antigravity in through Vertex AI with the credential file, and blanks a Gemini API key', () => {
+    const vertex = {
+      ...login,
+      provider: 'antigravity' as const,
+      kind: 'vertex' as const,
+      credential: vertexCredentialFixture(),
+    };
+    expect(providerLoginEnvironment('/root', vertex)).toEqual({
+      AGY_ADC_AUTH: 'true',
+      GOOGLE_CLOUD_PROJECT: 'acme-ai',
+      GOOGLE_CLOUD_QUOTA_PROJECT: 'acme-ai',
+      GOOGLE_CLOUD_LOCATION: 'global',
+      GOOGLE_APPLICATION_CREDENTIALS: join('/root', 'provider-home', 'google-credentials.json'),
+      GEMINI_API_KEY: '',
+    });
+  });
+
+  it('takes a Vertex AI login handed over only for Claude or Antigravity, and only a valid one', () => {
     const vertex = { ...login, kind: 'vertex' as const, credential: vertexCredentialFixture() };
     expect(hostedCredentialSchema.parse(vertex)).toEqual(vertex);
-    expect(hostedCredentialSchema.safeParse({ ...vertex, provider: 'antigravity' }).success).toBe(
-      false
-    );
+    expect(hostedCredentialSchema.parse({ ...vertex, provider: 'antigravity' })).toEqual({
+      ...vertex,
+      provider: 'antigravity',
+    });
+    expect(hostedCredentialSchema.safeParse({ ...vertex, provider: 'codex' }).success).toBe(false);
     expect(
       hostedCredentialSchema.safeParse({
         ...vertex,

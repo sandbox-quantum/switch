@@ -106,16 +106,19 @@ export function settleTurnsByNotices(
 }
 
 /**
- * When a turn's first step happened, or null before it has one. Switch stores
- * a step when the host reports it, which can be well after the step. The host
- * stamps a step with its own clock, at its latest revision, so that time can
- * be late too. The earliest of both holds up against either.
+ * When a step happened. Switch stores a step when the host reports it, which
+ * can be well after the step. The host stamps a step with its own clock, at
+ * its latest revision, so that time can be late too. The earlier of both
+ * holds up against either.
  */
+function stepAt(item: ChatActivityItem): number {
+  return Math.min(Date.parse(item.occurredAt), Date.parse(item.createdAt));
+}
+
+/** When a turn's first step happened, or null before it has one. */
 function firstStepAt(turn: TurnActivity): number | null {
   if (turn.items.length === 0) return null;
-  return Math.min(
-    ...turn.items.flatMap((item) => [Date.parse(item.occurredAt), Date.parse(item.createdAt)])
-  );
+  return Math.min(...turn.items.map(stepAt));
 }
 
 /** One of the agent's own messages in the room, not a host notice or a control acknowledgement. */
@@ -204,22 +207,62 @@ export function placeTurns(
   return placed;
 }
 
-/** The latest own reply after a turn's work-log anchor, stopping at its next turn. */
-export function latestTurnReply(
+/** One part of a turn's work log, and the message it shows under. */
+export type TurnPart = {
+  anchorId: string;
+  /** The part's steps. Only the last part carries the turn's state (still
+   * thinking, how it ended) and its requests; an earlier one is finished steps. */
+  turn: TurnActivity;
+  /** Whether the turn's reasoning shows with this part. */
+  reasoning: boolean;
+};
+
+/**
+ * A turn's work log, split around the agent's own messages of that turn, so
+ * it reads in the order the agent worked: the steps from before its first
+ * message show where the turn shows (`anchorId`), and the steps after each
+ * message show under that message, by when each happened. A tool call that
+ * asked a question so lands beside the question's card (`placeRequests`).
+ * The turn's state shows after its latest message, as a running turn's always
+ * did, and its reasoning with the steps it led to: the first part, or, while
+ * it runs, the last.
+ */
+export function splitTurn(
   messages: readonly ChatMessage[],
   agentId: string,
   bound: ReadonlyMap<string, TurnActivity>,
-  anchorId: string
-): string {
+  anchorId: string,
+  turn: TurnActivity
+): TurnPart[] {
   const start = messages.findIndex((each) => each.messageId === anchorId);
-  if (start === -1) return anchorId;
-  let anchor = anchorId;
-  for (let next = start + 1; next < messages.length; next++) {
+  const replies: ChatMessage[] = [];
+  for (let next = start + 1; start !== -1 && next < messages.length; next++) {
     const each = messages[next];
-    if (bound.has(each.messageId)) break;
-    if (isAgentReply(each, agentId)) anchor = each.messageId;
+    // The agent's next turn starts here; what follows is that turn's.
+    if (bound.has(each.messageId) && bound.get(each.messageId) !== turn) break;
+    if (isAgentReply(each, agentId)) replies.push(each);
   }
-  return anchor;
+  // `steps[0]` comes before the first reply, `steps[n]` after the nth.
+  const steps: ChatActivityItem[][] = replies.map(() => []);
+  steps.push([]);
+  for (const item of turn.items) {
+    const at = stepAt(item);
+    steps[replies.findLastIndex((reply) => Date.parse(reply.sentAt) <= at) + 1].push(item);
+  }
+  const running = turn.status === 'queued' || turn.status === 'running';
+  const last = replies.length;
+  const parts: TurnPart[] = [];
+  steps.forEach((items, index) => {
+    const reasoning = running ? index === last : index === 0;
+    if (index !== last && items.length === 0 && !reasoning) return;
+    parts.push({
+      anchorId: index === 0 ? anchorId : replies[index - 1].messageId,
+      turn:
+        index === last ? { ...turn, items } : { ...turn, items, status: 'completed', requests: [] },
+      reasoning,
+    });
+  });
+  return parts;
 }
 
 /**

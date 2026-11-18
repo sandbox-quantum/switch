@@ -52,10 +52,10 @@ export async function windowsRegistryPath(
   env: NodeJS.ProcessEnv,
   query: RegQuery = regQuery(env)
 ): Promise<string | null> {
+  const outputs = await Promise.all(REGISTRY_PATH_KEYS.map(query));
   const parts: string[] = [];
   let readAny = false;
-  for (const key of REGISTRY_PATH_KEYS) {
-    const output = await query(key);
+  for (const output of outputs) {
     if (output === null) continue;
     readAny = true;
     const value = parseRegQueryPath(output);

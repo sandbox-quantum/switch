@@ -384,6 +384,13 @@ export interface RoomAutoRoute {
   fallback_agent: string | null;
   /** That agent's name, for display. Absent on servers that predate it. */
   fallback_agent_name?: string | null;
+  /**
+   * The room's assigned agent (`!assign-agent`), which gets every message
+   * first: auto-route can't be turned on while it is set. Absent on servers
+   * that predate it.
+   */
+  assigned_agent?: string | null;
+  assigned_agent_name?: string | null;
 }
 
 export interface SetRoomAutoRouteInput {
