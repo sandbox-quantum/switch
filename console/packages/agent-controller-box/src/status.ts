@@ -900,6 +900,8 @@ export class StatusCollector {
       disk?: () => Promise<{ free: number; total: number } | null>;
       /** Where agents with no directory of their own work, reported so the server can name it. */
       workspacesDir: string;
+      /** Which machine, OS account and data folder this is (`readDeviceId`), or null when unknown. */
+      deviceId: string | null;
       version: string;
       updatedBy: UpdatedBy;
       now: () => number;
@@ -1060,6 +1062,7 @@ export class StatusCollector {
         ...boxCountsOf(this.deps.boxCounts?.() ?? null),
         ...(this.deps.operatorExec ? { operator_exec: true } : {}),
         ...(meminfo ? { mem_anon_bytes: meminfo.anon, mem_cached_bytes: meminfo.cached } : {}),
+        ...(this.deps.deviceId === null ? {} : { device_id: this.deps.deviceId }),
       },
       providers: this.deps.providers.snapshot(),
       tools: await this.deps.tools(),

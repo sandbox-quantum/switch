@@ -5,12 +5,12 @@ upstream's `agent-controller`, `agent-providers` and `switch-agent-runtime`. Onl
 They are private workspace packages: nothing outside the three depends on them, and the public registry is never
 asked for them.
 
-Upstream's packages beside them stay byte for byte as upstream main `483d32234`, so the desktop app and v1 cloud
+Upstream's packages beside them stay byte for byte as upstream main `9704ba133`, so the desktop app and v1 cloud
 machines run upstream's code whatever the hosted switch says. `switch-agent-runtime-box/src/upstream-packages.test.ts`
 fails on any change to those four packages (`agent-controller`, `agent-providers`, `switch-agent-runtime`,
 `shared`), and on any package outside the box ones depending on a box package.
 
-The box copies are synced to upstream `483d32234`, the same commit `upstream-packages.json` pins. Move the pin
+The box copies are synced to upstream `9704ba133`, the same commit `upstream-packages.json` pins. Move the pin
 only together with a port of upstream's changes into the box copies, never on its own.
 
 ## What the box versions change
@@ -61,6 +61,10 @@ Where the box keeps its own rule over upstream's:
 23. A recorded process id that answers EPERM is neither alive nor gone (`process-alive.ts`). Upstream reads it as
     gone, but on a box the controller and the agents run as different users, so a live agent host answers EPERM too.
     Listing sessions counts it as alive, as before. (`process-alive.ts`, `session-list.ts`)
+24. A box sends no device id, at enrolment or in its status (`boxDeviceId`). Upstream's lets Switch give a
+    re-enrolling controller the device it was before, with its agents; a box enrols again only after it was revoked
+    or lost its controller, where that could give back a paused or deleted machine's agents, so hosted agents v2's
+    own re-enrolment stays the only path. `device-id.ts` is kept as upstream's. (`main.ts`)
 
 Plus the box features themselves: the split box (launcher, credential gateway, sealed logins), the box valve and
 memory guard, resting and parking, the live status file, and the sign-in-after-wake and control-port fixes.
@@ -74,7 +78,7 @@ memory guard, resting and parking, the live status file, and the sign-in-after-w
   box can't be rolled back to upstream's packages without clearing them.
 - Upstream fixes to the four upstream packages reach these copies only when they are synced by hand. Each rebase
   lists upstream's changes to those packages since the last sync. The last syncs took upstream from `0f7f96732` to
-  `1a0d5002f`, then to `cc661e536`, then to `9a63077d7`, then to `35b791558`, then to `48f6758e0`, then to `268f12b89`, then to `483d32234`.
+  `1a0d5002f`, then to `cc661e536`, then to `9a63077d7`, then to `35b791558`, then to `48f6758e0`, then to `268f12b89`, then to `483d32234`, then to `9704ba133`.
 - Each provider's own variables in the controller's environment reach every agent (`PROVIDER_ENV_VARS`), so a box's
   controller environment must hold only what is meant for its agents.
 - The provider README is upstream's, so it still describes the providers the box leaves out.

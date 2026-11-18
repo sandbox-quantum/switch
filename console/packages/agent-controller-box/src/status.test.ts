@@ -1128,6 +1128,7 @@ describe('StatusCollector', () => {
         dataDir: dir,
         ...(disk ? { disk } : {}),
         workspacesDir: join(dir, 'workspaces'),
+        deviceId: null,
         version: '0.1.0',
         updatedBy: 'self',
         now: () => NOW,
@@ -1180,6 +1181,7 @@ describe('StatusCollector', () => {
         attached: () => true,
         dataDir: dir,
         workspacesDir: join(dir, 'workspaces'),
+        deviceId: null,
         version: '0.1.0',
         updatedBy: 'self',
         now: () => NOW,
@@ -1245,6 +1247,7 @@ describe('StatusCollector', () => {
       boxCounts: () => ({ guardStops: 3, valveParks: null }),
       dataDir: dir,
       workspacesDir: join(dir, 'workspaces'),
+      deviceId: 'd'.repeat(64),
       version: '0.1.0',
       updatedBy: 'self',
       now: () => clock,
@@ -1295,6 +1298,7 @@ describe('StatusCollector', () => {
     expect(awakeSeen).toEqual([['agent-1', 2]]);
     expect(agentsSeen).toEqual([['agent-1']]);
     expect(first.machine.workspaces_dir).toBe(join(dir, 'workspaces'));
+    expect(first.machine.device_id).toBe('d'.repeat(64));
     expect(first.machine.disk_total_bytes).toBeGreaterThan(0);
 
     clock += 1000;
@@ -1640,6 +1644,7 @@ describe('a resting agent', () => {
         streamCarries: () => true,
         dataDir: dir,
         workspacesDir: join(dir, 'workspaces'),
+        deviceId: null,
         version: '0.1.0',
         updatedBy: 'self',
         now: () => NOW,

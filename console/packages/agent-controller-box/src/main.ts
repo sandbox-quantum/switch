@@ -298,6 +298,20 @@ async function openState(dataDirFlag: string | undefined) {
   };
 }
 
+/**
+ * A box never sends a device id, whatever its image holds (`device-id.ts` is
+ * kept as upstream's, unused here). Upstream's id lets Switch hand a
+ * re-enrolling controller the device it was before, with its agents. A box
+ * stays the same device across restarts and sleep through the credential on
+ * its volume, and enrols again only after it was revoked (exit 3) or lost its
+ * controller (exit 6): adopting the earlier device then could give back a
+ * paused or deleted machine's agents past hosted agents v2's own
+ * re-enrolment, and every box would read near-identical inputs anyway.
+ */
+export function boxDeviceId(): null {
+  return null;
+}
+
 async function enrollCommand(args: string[]): Promise<number> {
   const { values } = parseArgs({
     args,
@@ -332,6 +346,7 @@ async function enrollCommand(args: string[]): Promise<number> {
     // Provider logins given to this machine are sealed to this key; only the
     // machine holds the private half.
     const keys = generateSealingKeyPair();
+    const deviceId = boxDeviceId();
     const enrolled = await enroll(fetch, server, {
       proof: { kind: 'enrollment_code', code: values.code },
       public_key: { alg: 'X25519', key: keys.publicKey },
@@ -341,6 +356,7 @@ async function enrollCommand(args: string[]): Promise<number> {
         ...(description !== undefined ? { description } : {}),
         platform: contractPlatform(),
         version: VERSION,
+        ...(deviceId === null ? {} : { device_id: deviceId }),
       },
     });
     await secrets.set(CONTROLLER_CREDENTIAL, enrolled.credential);
@@ -353,7 +369,7 @@ async function enrollCommand(args: string[]): Promise<number> {
       enrolledAt: new Date().toISOString(),
     });
     process.stdout.write(
-      `Enrolled as controller ${enrolled.controller_id} ("${name}") on ${server}.\nData: ${dataDir}\nRun it as a service: switch-agent-controller install-service${values['data-dir'] ? ` --data-dir ${dataDir}` : ''}\nor in this terminal: switch-agent-controller run${values['data-dir'] ? ` --data-dir ${dataDir}` : ''}\n`
+      `${enrolled.adopted ? `Enrolled as controller ${enrolled.controller_id} on ${server}, which this machine was before; its agents stay on it.` : `Enrolled as controller ${enrolled.controller_id} ("${name}") on ${server}.`}\nData: ${dataDir}\nRun it as a service: switch-agent-controller install-service${values['data-dir'] ? ` --data-dir ${dataDir}` : ''}\nor in this terminal: switch-agent-controller run${values['data-dir'] ? ` --data-dir ${dataDir}` : ''}\n`
     );
     const warning = secrets.startupWarning();
     if (warning) process.stderr.write(`Warning: ${warning}\n`);
@@ -564,6 +580,9 @@ async function runCommand(args: string[]): Promise<number> {
       // Split test boxes: the template marks the box, and only then may operator exec be on.
       'test-box': { type: 'boolean' },
       'operator-exec': { type: 'boolean' },
+      // The data folder the device id names, where it is not `--data-dir`:
+      // Switch Console's own, holding one data directory per server.
+      'device-root': { type: 'string' },
     },
     strict: true,
   });
@@ -875,6 +894,7 @@ async function runCommand(args: string[]): Promise<number> {
             ? () => resolve(values['agents-workspaces']!)
             : serverWorkspacesDir,
         version: VERSION,
+        deviceId: boxDeviceId(),
         updatedBy,
         selfUpdate,
         supervised,
@@ -1534,6 +1554,18 @@ export async function main(argv: string[]): Promise<number> {
       case '--protocol':
         process.stdout.write(`${PROTOCOL_VERSION}\n`);
         return 0;
+      // For Switch Console, which enrolls this computer itself and names its
+      // own data folder: an empty line when the machine id cannot be read.
+      case '--device-id': {
+        const { values } = parseArgs({
+          args: rest,
+          options: { 'device-root': { type: 'string' } },
+          strict: true,
+        });
+        if (!values['device-root']) throw new UsageError('--device-id needs --device-root.');
+        process.stdout.write(`${boxDeviceId() ?? ''}\n`);
+        return 0;
+      }
       default:
         throw new UsageError(`Unknown command '${command}'.`);
     }

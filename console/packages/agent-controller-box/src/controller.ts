@@ -256,6 +256,8 @@ export type ControllerDeps = {
   /** Where agents' working directories go when their definition names none, for a server. */
   workspacesFor: (server: string) => string;
   version: string;
+  /** Which machine, OS account and data folder this is (`readDeviceId`), or null when unknown. */
+  deviceId: string | null;
   /** Who moves it onto another release, as its status reports to Switch. */
   updatedBy: UpdatedBy;
   /**
@@ -915,6 +917,7 @@ export async function runController(
     dataDir: deps.dataDir,
     ...(agentsDisk ? { disk: () => agentsDisk.reading() } : {}),
     workspacesDir: workspaces,
+    deviceId: deps.deviceId,
     version: deps.version,
     updatedBy: deps.updatedBy,
     now: deps.now,
