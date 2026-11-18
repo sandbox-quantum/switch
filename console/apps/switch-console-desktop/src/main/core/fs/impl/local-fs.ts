@@ -1,5 +1,13 @@
-import { createReadStream, promises as fs, statSync, type Stats } from 'node:fs';
-import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path';
+import {
+  createReadStream,
+  lstatSync,
+  promises as fs,
+  readlinkSync,
+  realpathSync,
+  statSync,
+  type Stats,
+} from 'node:fs';
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { createInterface } from 'node:readline';
 import parcelWatcher from '@parcel/watcher';
 import { glob } from 'glob';
@@ -162,6 +170,23 @@ export class LocalFileSystem implements FileSystemProvider {
   }
 
   /**
+   * Check if a target path is inside base directory
+   */
+  private isPathInside(target: string, base: string): boolean {
+    const normalizedTarget = process.platform === 'win32' ? target.toLowerCase() : target;
+    const normalizedBase = process.platform === 'win32' ? base.toLowerCase() : base;
+    const baseWithSep = normalizedBase.endsWith(sep) ? normalizedBase : normalizedBase + sep;
+    const targetWithSep = normalizedTarget.endsWith(sep)
+      ? normalizedTarget
+      : normalizedTarget + sep;
+    if (normalizedTarget === normalizedBase || targetWithSep.startsWith(baseWithSep)) {
+      return true;
+    }
+    const rel = relative(base, target);
+    return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
+  }
+
+  /**
    * Resolve and validate a relative path, ensuring it doesn't escape the location root
    */
   private resolvePath(relPath: string): string {
@@ -181,7 +206,100 @@ export class LocalFileSystem implements FileSystemProvider {
       );
     }
 
+    // Security: ensure symbolic links do not escape the root path
+    let realRoot: string;
+    try {
+      realRoot = realpathSync(this.rootPath);
+    } catch {
+      // If rootPath does not exist on disk, no symlinks within it can exist
+      return fullPath;
+    }
+
+    // Fast path: if the target path exists, resolve it directly with realpathSync
+    try {
+      const realFullPath = realpathSync(fullPath);
+      if (!this.isPathInside(realFullPath, realRoot)) {
+        throw new FileSystemError(
+          `Path traversal detected: ${relPath}`,
+          FileSystemErrorCodes.PATH_ESCAPE,
+          relPath
+        );
+      }
+      return fullPath;
+    } catch (err: unknown) {
+      if (err instanceof FileSystemError) {
+        throw err;
+      }
+      // If realpathSync failed because the target or an intermediate component
+      // doesn't exist, fall through to the ancestor-based check below.
+    }
+
+    // Fallback: fullPath doesn't exist yet (e.g. a write()/mkdir() target) or
+    // ends in a dangling symlink, so realpathSync can't resolve it directly.
+    // Walk up to the deepest ancestor that exists on disk — lstat, not
+    // stat/exists, so a dangling symlink still counts and can't be skipped
+    // past — then resolve that single node. Everything below it is
+    // guaranteed not to exist yet, so it can't itself be a symlink.
+    let ancestor = fullPath;
+    while (true) {
+      try {
+        lstatSync(ancestor);
+        break;
+      } catch {
+        ancestor = dirname(ancestor);
+      }
+    }
+
+    const resolvedAncestor = this.resolveSymlinkChain(ancestor);
+    if (!this.isPathInside(resolvedAncestor, realRoot)) {
+      throw new FileSystemError(
+        `Path traversal detected: ${relPath}`,
+        FileSystemErrorCodes.PATH_ESCAPE,
+        relPath
+      );
+    }
+
     return fullPath;
+  }
+
+  /**
+   * Resolve a path that exists on disk (lstat succeeds) to its real,
+   * symlink-free form. realpathSync resolves any chain of live symlinks in
+   * one call; the manual walk below only runs when the chain is dangling (its
+   * final target doesn't exist) or cyclic, neither of which realpathSync can
+   * resolve past.
+   */
+  private resolveSymlinkChain(path: string): string {
+    try {
+      return realpathSync(path);
+    } catch {
+      // Fall through to manual resolution below.
+    }
+
+    let current = path;
+    const seen = new Set<string>();
+    while (true) {
+      let stat: Stats;
+      try {
+        stat = lstatSync(current);
+      } catch {
+        // The previous hop pointed at something that doesn't exist; that's
+        // as far as the chain goes.
+        return current;
+      }
+      if (!stat.isSymbolicLink()) {
+        return current;
+      }
+      if (seen.has(current) || seen.size > 40) {
+        throw new FileSystemError(
+          `Path traversal detected: symlink loop at ${path}`,
+          FileSystemErrorCodes.PATH_ESCAPE,
+          path
+        );
+      }
+      seen.add(current);
+      current = resolve(dirname(current), readlinkSync(current));
+    }
   }
 
   /**
