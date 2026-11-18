@@ -150,14 +150,18 @@ class TestRoomRosterAuthz:
     ) -> None:
         svc = _service(session_factory)
         victim = await _make_user(session_factory, "victim")
-        victim_agent = await _register(svc, "victim-agent", victim)
+        member = await _make_user(session_factory, "member")
+        victim_agent = await _register(svc, "victim-agent", member)
         room_id = await _make_public_room(
             session_factory, owner_id=victim, member_agent_ids=[victim_agent]
         )
 
         async with session_factory() as session:
-            room = await svc._require_room_roster_change(session, victim_agent, room_id)
+            room, manages = await svc._require_room_roster_change(
+                session, victim_agent, room_id
+            )
             assert room.id == room_id
+            assert not manages
 
     async def test_owner_non_member_can_change_roster(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -172,10 +176,11 @@ class TestRoomRosterAuthz:
 
         async with session_factory() as session:
             # Same owner, different (non-member) agent still passes via ownership.
-            room = await svc._require_room_roster_change(
+            room, manages = await svc._require_room_roster_change(
                 session, owner_other_agent, room_id
             )
             assert room.id == room_id
+            assert manages
 
     async def test_admin_non_member_can_change_roster(
         self, session_factory: async_sessionmaker[AsyncSession]
@@ -190,8 +195,11 @@ class TestRoomRosterAuthz:
         )
 
         async with session_factory() as session:
-            room = await svc._require_room_roster_change(session, admin_agent, room_id)
+            room, manages = await svc._require_room_roster_change(
+                session, admin_agent, room_id
+            )
             assert room.id == room_id
+            assert manages
 
 
 class _UntouchedRoomService:

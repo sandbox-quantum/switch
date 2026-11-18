@@ -9,6 +9,7 @@ import uuid
 import pytest
 from sqlalchemy import select
 
+from switch_core.bridges.agent.protocol.agent_core import AgentCore
 from switch_core.chats.views import chat_summary
 from switch_core.db.models import (
     Client,
@@ -20,7 +21,10 @@ from switch_core.db.models import (
     User,
 )
 from switch_core.db.session_scope import tenant_session
+from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.collaboration_bridge_store import CollaborationBridgeStore
+from switch_core.db.stores.room_store import RoomStore
+from switch_core.db.stores.user_store import UserStore
 from switch_core.room_service import RoomCreateConfig
 from tests.switch_core.gateway.conftest import _Harness
 
@@ -68,6 +72,49 @@ async def test_a_room_with_no_bridge_takes_its_people_and_creator(
     # carol has no role in the workspace, so her name resolves to nobody.
     assert not await _in_room(chats, created.room.id, chats.carol)
     assert sorted(f["id"] for f in created.failed_attachments) == ["carol", "nobody"]
+
+
+@pytest.mark.parametrize("actor", ["owner", "workspace-admin"])
+async def test_agent_invites_into_an_unbridged_room_only_for_a_manager(
+    chats: _Harness,
+    actor: str,
+) -> None:
+    owner_agent = await chats.agent("owner-helper", owner=chats.alice)
+    member_agent = await chats.agent("member-helper", owner=chats.bob)
+    created = await chats.room_service.create_room(
+        RoomCreateConfig(
+            name="plans",
+            description="d",
+            agent_ids=[owner_agent.id, member_agent.id],
+            created_by=chats.alice.id,
+            owner_id=chats.alice.id,
+        )
+    )
+    room = created.room
+    assert room.bridge_id is None
+
+    protocol = object.__new__(AgentCore)
+    protocol.session_factory = chats.factory  # type: ignore[attr-defined]
+    protocol.agent_store = AgentStore()  # type: ignore[attr-defined]
+    protocol.room_store = RoomStore()  # type: ignore[attr-defined]
+    protocol.user_store = UserStore()  # type: ignore[attr-defined]
+    protocol.room_service = chats.room_service
+
+    with pytest.raises(PermissionError, match="owner or a workspace admin"):
+        await protocol.add_users_to_room(member_agent.id, room.id, [chats.bob.name])
+    assert not await _in_room(chats, room.id, chats.bob)
+
+    caller = (
+        owner_agent
+        if actor == "owner"
+        else await chats.agent("admin-helper", owner=chats.admin)
+    )
+    unresolved = await protocol.add_users_to_room(
+        caller.id, room.id, [chats.bob.email.upper(), chats.carol.name, "unknown"]
+    )
+    assert unresolved == [chats.carol.name, "unknown"]
+    assert await _listed(chats, room.id, chats.bob)
+    assert not await _in_room(chats, room.id, chats.carol)
 
 
 async def test_a_room_of_people_alone_is_a_chat_they_can_open(
