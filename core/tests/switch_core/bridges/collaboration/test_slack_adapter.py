@@ -63,6 +63,29 @@ def _capture_commands(adapter: SlackAdapter) -> list[InboundCommand]:
     return captured
 
 
+async def test_inbound_timestamp_is_deduplicated_within_its_channel() -> None:
+    adapter = _adapter()
+    captured = _capture_messages(adapter)
+    adapter._channel_name_cache["C456"] = "another-channel"
+    adapter._user_cache["U123"] = SlackUser(name="sender", display_name="Sender")
+    first: dict[str, object] = {
+        "channel": "C123",
+        "channel_type": "channel",
+        "user": "U123",
+        "ts": "1234.000001",
+        "text": "first",
+    }
+    second = {**first, "channel": "C456", "text": "second"}
+
+    for event in (first, second, first, second):
+        await adapter._handle_message_event(event)
+
+    assert [(message.channel_id, message.content) for message in captured] == [
+        ("C123", "first"),
+        ("C456", "second"),
+    ]
+
+
 class _FakeWebClient:
     """Captures chat_postMessage / chat_delete kwargs and returns canned ts."""
 
