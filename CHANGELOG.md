@@ -52,6 +52,8 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+### [0.32.1] - 2026-11-18
+
 #### Added
 - **A computer enrolled again keeps its device and agents.** A controller
   enrolling from a machine, OS account and data folder its owner already has
@@ -86,6 +88,13 @@ version of their own to them without also giving them a release of their own.
   refresh of its sidebar, so one open window with a few dozen agents could
   take every connection in the pool for a moment. It now asks only about the
   agent's own rooms, and the agent tools that describe an agent do the same.
+
+#### Changed
+- **Auto-route (preview — behind a feature flag, off by default).** A room's
+  assigned agent and auto-route are now mutually exclusive, and an auto-route
+  room with a single agent delivers an untagged message straight to it when a
+  single person is present. The decision service also gains a **Gemini** backend
+  option alongside the existing ones.
 
 ### [0.32.0] - 2026-11-17
 
