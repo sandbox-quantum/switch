@@ -22,6 +22,7 @@ from switch_core.gateway.auth_routes import router
 from switch_core.keys import Keyring
 from switch_core.logging_context import structured_fields
 from switch_core.security_events import LOGGER_NAME as SECURITY_LOGGER_NAME
+from tests.switch_core.gateway.login_limit_defaults import LOGIN_LIMIT_DEFAULTS
 
 _SECRET = "unit-test-jwt-key-unit-test-jwt-key-unit-test"  # gitleaks:allow
 _KEYRING = Keyring.parse("test:" + _SECRET, legacy_secret=None)
@@ -46,6 +47,7 @@ def _app(session_factory: async_sessionmaker[AsyncSession]) -> FastAPI:
         gateway_cookie_secure=False,
         gateway_password_login_enabled=True,
         gateway_tenant_choice_enabled=False,
+        **LOGIN_LIMIT_DEFAULTS,
     )
     return app
 
