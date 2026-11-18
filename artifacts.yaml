@@ -60,13 +60,13 @@
 artifacts:
   switch-core:
     description: The backend service, and the gateway API it serves.
-    version: 0.32.0
+    version: 0.32.1
     declared_in: core/pyproject.toml
     published_as: switch-core
 
   switch-console:
     description: The desktop app.
-    version: 0.41.0
+    version: 0.41.1
     declared_in: console/apps/switch-console-desktop/package.json
     # Which switch-core release this app build bundles and pulls for
     # local-server mode. DELIBERATELY NOT switch-core's version above.
@@ -78,14 +78,14 @@ artifacts:
     # main. This moves only when Switch Console is ready to bundle that release —
     # in lockstep with the bundled compose.
     pins:
-      switch-core: 0.32.0
+      switch-core: 0.32.1
     # What the canary build bundles instead, so a switch-core pre-release can be
     # tried on canary without moving stable. Never older than the stable pin
     # (`just artifacts` refuses it). When a stable switch-core release ships,
     # move `pins` to it; drop the canary pin back to it too unless a newer
     # pre-release is being tried.
     canary_pins:
-      switch-core: 0.32.0
+      switch-core: 0.32.1
 
   agent-runtime:
     description: >-
@@ -269,12 +269,16 @@ contracts:
     # Revision 6 adds a template's `use_case` to the bodies that create and
     # change one (`TemplateCreateRequest`, `TemplateUpdateRequest`).
     #
+    # Revision 7 adds `device_id` to Switch Console enrolling this computer
+    # (`ConsoleControllerRequest`): which machine, OS account and data folder
+    # it is, so an enrollment on a device the person already has takes it over.
+    #
     # A strict request body changing is the change most easily missed, so
     # core/tests/switch_core/gateway/test_gateway_api_revision.py fails until
     # it is recorded against a raised `speaks`.
     artifacts:
-      switch-core: { speaks: 6, accepts: 2 }
-      switch-console: { speaks: 6, accepts: 1 }
+      switch-core: { speaks: 7, accepts: 2 }
+      switch-console: { speaks: 7, accepts: 1 }
 
   stack-compose:
     description: >-

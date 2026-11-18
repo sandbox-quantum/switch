@@ -21,6 +21,7 @@ function machine(providers: OwnedMachine['providers']): OwnedMachine {
     cloud: false,
     workspacesDir: null,
     os: 'linux',
+    lastSeenAt: null,
     local: { kind: 'this-computer' },
   };
 }
