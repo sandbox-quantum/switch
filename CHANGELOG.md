@@ -75,8 +75,9 @@ version of their own to them without also giving them a release of their own.
   address runs at most `GATEWAY_REQUESTS_PER_CALLER` (8) at once. A request
   past either waits its turn for up to 3 seconds, then is answered 429 (its
   caller's) or 503 (the process's), with `Retry-After`. A read (GET or HEAD)
-  runs each statement under `GATEWAY_READ_STATEMENT_TIMEOUT` (10s) and is
-  answered 503 when one runs past it. Requests turned away are counted in
+  runs each statement under `GATEWAY_READ_STATEMENT_TIMEOUT` (10s), apart
+  from the sign-in and connection callbacks, which write; any request a
+  statement timeout stops is answered 503. Requests turned away are counted in
   `switch.http.gateway_turned_away`, on the dashboard beside the other
   refusals.
 

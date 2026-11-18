@@ -5,17 +5,22 @@ gateway, so a request runs exactly as long as a test holds it."""
 from __future__ import annotations
 
 import asyncio
+import importlib
+import pkgutil
 import secrets
 from datetime import UTC, datetime
 from typing import Any
 
 import httpx
 import pytest
+from fastapi import APIRouter, Depends, FastAPI
+from fastapi.routing import APIRoute
 from starlette.types import Receive, Scope, Send
 
+import switch_core.gateway
 from switch_core.db.statement_timeout import current_statement_timeout
 from switch_core.gateway import admission
-from switch_core.gateway.admission import GatewayAdmission, _Line
+from switch_core.gateway.admission import GatewayAdmission, _Line, writes_on_get
 from switch_core.gateway.auth import create_jwt
 from switch_core.keys import Keyring
 
@@ -270,19 +275,18 @@ class _Cancelled(Exception):
     sqlstate = "57014"
 
 
-async def test_a_read_stopped_by_its_timeout_is_answered_503_and_a_write_is_not() -> (
-    None
-):
+async def test_a_request_a_statement_timeout_stopped_is_answered_503() -> None:
     gateway = _Gateway()
     timed_out = _Cancelled("canceling statement due to statement timeout")
     gateway.raise_on["/slow"] = timed_out
     app = _admission(gateway)
     async with _client(app, _session("ada")) as client:
         read = await client.get("/slow")
-        with pytest.raises(_Cancelled):
-            await client.post("/slow")
+        # A write runs without the read timeout, but one Postgres stopped all
+        # the same (a callback, or a limit set on the role) is no 500 either.
+        write = await client.post("/slow")
 
-    assert read.status_code == 503
+    assert (read.status_code, write.status_code) == (503, 503)
     assert "took longer than Switch allows" in read.json()["detail"]
     assert app._callers == {} and app._process.idle
 
@@ -311,3 +315,67 @@ async def test_a_turn_handed_to_a_request_that_went_away_passes_to_the_next() ->
         await leaving
     line.give_back()
     assert line.idle
+
+
+# GET routes that write (`writes_on_get`).
+
+
+async def test_a_get_route_that_writes_runs_without_the_read_timeout() -> None:
+    seen: dict[str, str | None] = {}
+
+    async def a_session() -> None:
+        # Stands for the route's own dependencies, such as its database
+        # session: they run after the marker, before any transaction begins.
+        seen["dependency"] = current_statement_timeout()
+
+    api = FastAPI()
+
+    @api.get("/callback", dependencies=[Depends(writes_on_get)])
+    async def callback(_: None = Depends(a_session)) -> dict[str, str | None]:
+        return {"limit": current_statement_timeout()}
+
+    @api.get("/rooms")
+    async def rooms() -> dict[str, str | None]:
+        return {"limit": current_statement_timeout()}
+
+    app = _admission(api)  # type: ignore[arg-type]
+    async with _client(app, _session("ada")) as client:
+        callback_answer = (await client.get("/callback")).json()
+        read_answer = (await client.get("/rooms")).json()
+
+    assert seen["dependency"] is None
+    assert callback_answer == {"limit": None}
+    assert read_answer == {"limit": "10s"}
+    # Lifted for that request only.
+    assert current_statement_timeout() is None
+
+
+def _gateway_routes() -> list[APIRoute]:
+    routes: list[APIRoute] = []
+    for module in pkgutil.walk_packages(
+        switch_core.gateway.__path__, switch_core.gateway.__name__ + "."
+    ):
+        for value in vars(importlib.import_module(module.name)).values():
+            if isinstance(value, APIRouter):
+                routes += [r for r in value.routes if isinstance(r, APIRoute)]
+    return routes
+
+
+def test_every_gateway_callback_is_marked_as_a_get_that_writes() -> None:
+    """A sign-in provider sends the browser back to a callback with a GET, and
+    the callback stores the sign-in or connection: under the read timeout it
+    could be stopped part way. A new callback without the marker fails here."""
+    callbacks = [
+        r
+        for r in _gateway_routes()
+        if "GET" in r.methods and r.path.rstrip("/").endswith("/callback")
+    ]
+    assert {r.path for r in callbacks} >= {
+        "/auth/oidc/callback",
+        "/auth/workos/callback",
+        "/service-connections/{service}/flows/callback",
+        "/provider-connections/github/callback",
+    }
+    for route in callbacks:
+        marked = [d.call for d in route.dependant.dependencies]
+        assert writes_on_get in marked, route.path
