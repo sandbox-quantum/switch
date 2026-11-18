@@ -56,7 +56,8 @@ switch-core talks only to this contract; the backend behind it is configuration.
   "model_server_status", "confidence_threshold", "min_lead", "backends_available"}`, or
   `503 {"detail"}` when the default backend's model server is down.
   `backends_available` is `["default", "anthropic"]`, plus `"bedrock"` when
-  `DECISION_BEDROCK_ENABLED=1`. It never needs a token.
+  `DECISION_BEDROCK_ENABLED=1` and `"gemini_decision"` when
+  `GEMINI_DECISION_API_KEY` is set. It never needs a token.
 - **`POST /decide`** takes `room` (`name`, `instructions`), `message` (`sender`,
   `text`, `thread_id`), `agents` (`name`, `description`, `role`), `thread`,
   `recent` and an optional `confidence_threshold`. It returns
@@ -73,7 +74,7 @@ gets the message when its confidence is at least the threshold
 (`DECISION_CONFIDENCE_THRESHOLD`, or the request's `confidence_threshold`).
 
 With `DECISION_MIN_LEAD` set, a backend that scores every option (`systemone`,
-`llamacpp`) uses the lead rule instead: the top option wins when it leads the
+`llamacpp`, `gemini_decision`) uses the lead rule instead: the top option wins when it leads the
 next option, another agent or "none", by at least that much, and "none" on top
 reaches nobody. A request that sends its own `confidence_threshold` (a
 workspace that set one) keeps the threshold rule, and so do backends that rate
@@ -133,11 +134,15 @@ Why: auto-route rooms skip switch-core's thread follow-up rule, and a short repl
   - `X-Decision-Backend`: `default` (or absent) for the configured backend;
     `anthropic`, which needs `X-Decision-Anthropic-Key`; or `bedrock`, refused
     unless `DECISION_BEDROCK_ENABLED=1` (it spends the service's own AWS
-    credentials).
+    credentials); or `gemini_decision`, which takes `X-Decision-Gemini-Key`
+    or, without it, the service's `GEMINI_DECISION_API_KEY` (refused when
+    neither is there).
   - `X-Decision-Anthropic-Key`: the Anthropic key for this request. Clients
     are cached by a SHA-256 of the key.
-  - `X-Decision-Model`: the model for `anthropic` (default `claude-haiku-5-5`)
-    or `bedrock` (default `DECISION_BEDROCK_MODEL`).
+  - `X-Decision-Gemini-Key`: the Google API key for this request.
+  - `X-Decision-Model`: the model for `anthropic` (default `claude-haiku-5-5`),
+    `bedrock` (default `DECISION_BEDROCK_MODEL`) or `gemini_decision`
+    (default `DECISION_GEMINI_MODEL`).
 - **Logs:** one line per decision: backend, model, number of candidates,
   choice, confidence, threshold, pick and latency, the rule, the lead and
   whether the conversation context was used (`context=`), plus
@@ -157,8 +162,8 @@ before) and `error_kind`, one of a fixed set. switch-core counts failures by
 | `model_server_timeout` | connected, but no answer within `DECISION_TIMEOUT_S` (read timeout, `504`, Bedrock `ModelTimeoutException`) |
 | `model_server_error` | the server answered with an error (`5xx`, `400`), or with something that is not a decision (not JSON, no pick, no option letter) |
 | `model_unavailable` | the model is not there yet or at all: llama.cpp `503` while loading, Ollama `404` for a model not pulled, Anthropic `404`/`529`, Bedrock `ResourceNotFoundException`/`ModelNotReadyException` |
-| `credentials_missing` | no `ANTHROPIC_API_KEY` for the `anthropic` backend, or no AWS credentials for Bedrock |
-| `backend_refused` | the server refused the call: `401`/`403` (a wrong `MODEL_SERVER_TOKEN` or key), `429`, Bedrock access denied or throttled, or the model declined to answer (a refusal or guardrail) |
+| `credentials_missing` | no `ANTHROPIC_API_KEY` for the `anthropic` backend, no Google key for `gemini_decision`, or no AWS credentials for Bedrock |
+| `backend_refused` | the server refused the call: `401`/`403` (a wrong `MODEL_SERVER_TOKEN` or key), `429`, Bedrock access denied or throttled, the model declined to answer (a refusal or guardrail), or Google's `400` for a key it won't take or an input it blocked (`safety`, `blocklist`, ...) |
 
 An answer that names an agent who is not a candidate is not a failure: it is
 `200` with `agent: null`.
@@ -171,6 +176,7 @@ An answer that names an agent who is not a candidate is not a failure: it is
 | `systemone` | a SystemOne-API server: Strands Decider (the chart's default, `DECISION_MODEL=strands-decider-E4B`) or Clef-flash | `clef-flash` |
 | `anthropic` | Claude Haiku on the Anthropic API, forced to call a pick tool; thinking off | `claude-haiku-5-5` |
 | `bedrock` | a model on Amazon Bedrock through Converse, forced to call the same tool | `us.anthropic.claude-haiku-5-5-v1:0` |
+| `gemini_decision` | Google's Decisions API: one `choice` question over the agents and a `nobody` option, with the routing rules and the room state as plain text; every option is scored, so the lead rule applies. The reason is empty | `gemini-decision-1` |
 | `ollama` | an Ollama model forced into JSON, kept for comparison | `qwen3.5:9b` |
 
 ## Settings
@@ -193,6 +199,9 @@ An answer that names an agent who is not a candidate is not a failure: it is
 | `DECISION_BEDROCK_MODEL` | `us.anthropic.claude-haiku-5-5-v1:0` | Bedrock model or inference profile |
 | `AWS_REGION`, `AWS_PROFILE` | `us-east-1`, unset | standard AWS credential chain |
 | `ANTHROPIC_API_KEY` | unset | service-wide key when `DECISION_BACKEND=anthropic` |
+| `GEMINI_DECISION_API_KEY` | unset | Google API key for `gemini_decision`; required (startup fails without it) when `DECISION_BACKEND=gemini_decision`. Never logged |
+| `DECISION_GEMINI_MODEL` | `gemini-decision-1` | the Decisions API model |
+| `GEMINI_DECISION_URL` | `https://generativelanguage.googleapis.com/v1beta/decisions` | the Decisions API endpoint |
 | `PORT` | `8230` | the image's listen port |
 | `LOG_FORMAT` | `text` | `json` for one JSON object per line, in switch-core's layout |
 | `LOG_LEVEL` | `INFO` | the root level |
@@ -386,6 +395,9 @@ uv run python eval/eval.py --all --url http://localhost:8230
 uv run python eval/eval.py --url http://localhost:8230 --file eval/scenarios_followups.json
 # through the Haiku override (reads ANTHROPIC_API_KEY)
 uv run python eval/eval.py --all --url http://localhost:8230 --backend anthropic
+# through the Gemini Decisions override (sends GEMINI_DECISION_API_KEY when set,
+# else the service uses its own)
+uv run python eval/eval.py --all --url http://localhost:8230 --backend gemini_decision
 ```
 
 `DECISION_SERVICE_TOKEN` is sent when set. For each set it prints every pick, then four counts:

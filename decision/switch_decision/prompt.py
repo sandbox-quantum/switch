@@ -308,3 +308,49 @@ def letter_messages(
         {"role": "system", "content": letter_system(req, history_limit)},
         {"role": "user", "content": user},
     ], options
+
+
+# Google's Decisions API (gemini-decision-1) answers one choice question about a
+# plain-text input. It never sees the question key, so the instructions carry the
+# whole question, and every option gets a description. The "nobody" option has a
+# word for a key, not a catch-all like "none_of_the_above": option keys may be
+# sorted alphabetically.
+GEMINI_NOBODY = "nobody"
+
+GEMINI_NOBODY_CRITERION = f"Nobody. {NONE_CRITERION}"
+
+
+def gemini_nobody_key(agent_names: list[str], preferred: str = GEMINI_NOBODY) -> str:
+    """The nobody option's key: `preferred`, unless an agent has that name."""
+    key = preferred
+    while key in agent_names:
+        key += "_"
+    return key
+
+
+def gemini_input(req: DecideRequest, history_limit: int) -> str:
+    """The routing rules (without the answer format, which the API fixes) and
+    the room's state, as one text."""
+    rules = system_prompt(req, history_limit).split("\n\nGive a short reason first")[0]
+    return f"{rules}\n\n{build_state(req, history_limit)}"
+
+
+def gemini_decision_request(
+    req: DecideRequest, model: str, history_limit: int, nobody_key: str
+) -> dict:
+    criteria = {
+        a.name: f"{a.name}: {a.description}" + (f" (role: {a.role})" if a.role else "")
+        for a in req.agents
+    }
+    criteria[nobody_key] = GEMINI_NOBODY_CRITERION
+    return {
+        "model": model,
+        "input": gemini_input(req, history_limit),
+        "questions": {
+            SPEAKER_QUESTION: {
+                "type": "choice",
+                "instructions": speaker_instructions(req, history_limit),
+                "criteria": criteria,
+            }
+        },
+    }
