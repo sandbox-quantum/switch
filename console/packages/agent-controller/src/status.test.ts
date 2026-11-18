@@ -824,6 +824,7 @@ describe('StatusCollector', () => {
       attached: () => true,
       dataDir: dir,
       workspacesDir: join(dir, 'workspaces'),
+      deviceId: 'd'.repeat(64),
       version: '0.1.0',
       updatedBy: 'self',
       now: () => clock,
@@ -857,6 +858,7 @@ describe('StatusCollector', () => {
     expect(first.agents[0]!.directory).toBeNull();
     expect(first.machine.sessions_running).toBe(2);
     expect(first.machine.workspaces_dir).toBe(join(dir, 'workspaces'));
+    expect(first.machine.device_id).toBe('d'.repeat(64));
     expect(first.machine.disk_total_bytes).toBeGreaterThan(0);
 
     clock += 1000;

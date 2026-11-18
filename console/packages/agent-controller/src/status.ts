@@ -661,6 +661,8 @@ export class StatusCollector {
       dataDir: string;
       /** Where agents with no directory of their own work, reported so the server can name it. */
       workspacesDir: string;
+      /** Which machine and OS account this is (`readDeviceId`), or null when unknown. */
+      deviceId: string | null;
       version: string;
       updatedBy: UpdatedBy;
       now: () => number;
@@ -731,6 +733,7 @@ export class StatusCollector {
         // v1 enforces no session limit; 0 says so rather than inventing one.
         sessions_max: 0,
         workspaces_dir: this.deps.workspacesDir,
+        ...(this.deps.deviceId === null ? {} : { device_id: this.deps.deviceId }),
       },
       providers: this.deps.providers.snapshot(),
       tools: await this.deps.tools(),
