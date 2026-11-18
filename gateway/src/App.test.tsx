@@ -7,7 +7,7 @@ import { AuthProvider } from "./data/AuthContext";
 import { gatewayFetch } from "./data/gatewayFetch";
 import type { FeatureFlagKey } from "./data/featureFlags";
 import { clearPendingInvite, storePendingInvite } from "./data/sessionState";
-import { keepLinkForSignIn } from "./data/workspaceLink";
+import { OPERATOR_ELSEWHERE, keepLinkForSignIn } from "./data/workspaceLink";
 
 const acme: TenantMembership = {
   id: "t1",
@@ -469,7 +469,7 @@ describe("the layout", () => {
       ]);
     });
 
-    it("gives a workspace admin Usage & budget, and Devices and Connectors where they run", async () => {
+    it("gives a workspace admin Devices and Connectors where they run", async () => {
       mockFetch(
         signedInAs("workspace_admin", {
           flags: ["agent_management", "service_connections"],
@@ -483,7 +483,6 @@ describe("the layout", () => {
         "Connectors",
         "API keys",
         "Guardrails",
-        "Usage & budget",
         "Devices",
         "Your account",
       ]);
@@ -518,15 +517,16 @@ describe("the layout", () => {
       expect(within(menu).getAllByRole("separator")).toHaveLength(1);
     });
 
-    it("keeps Usage & budget at its own URL, inside the area", async () => {
+    it("sends Usage & budget, which is off, to the area", async () => {
       mockFetch(signedInAs("workspace_admin"));
       renderAt("/usage");
-      expect(await menuLabels("Settings")).toContain("Usage & budget");
+      await landsOn("/settings/general");
+      expect(await menuLabels("Settings")).not.toContain("Usage & budget");
     });
 
     it("refuses a settings page named in the URL, and says why", async () => {
       mockFetch(signedInAs("member"));
-      renderAt("/usage");
+      renderAt("/settings/general/private-channel-rooms");
       expect(await screen.findByText("Only this workspace's admins can open this page.")).toBeTruthy();
     });
 
@@ -666,7 +666,7 @@ describe("the layout", () => {
       renderAt("/settings/org/connector-apps");
       const labels = await menuLabels("Organization settings");
       expect(labels.indexOf("Connector apps")).toBe(labels.indexOf("Connectors") + 1);
-      expect(await screen.findByRole("heading", { name: "Connectors" })).toBeTruthy();
+      expect(await screen.findByRole("heading", { name: "Connector apps" })).toBeTruthy();
     });
 
     it("opens from a workspace in no organization for whoever may set them up", async () => {
@@ -683,7 +683,7 @@ describe("the layout", () => {
       renderAt("/settings/org");
       await landsOn("/settings/org/connector-apps");
       expect(await menuLabels("Organization settings")).toEqual(["Connector apps"]);
-      expect(await screen.findByRole("heading", { name: "Connectors" })).toBeTruthy();
+      expect(await screen.findByRole("heading", { name: "Connector apps" })).toBeTruthy();
       cleanup();
 
       mockFetch(routes);
@@ -1159,13 +1159,13 @@ describe("a page that falls behind the server", () => {
   it("follows a change of role when the tab comes back", async () => {
     mockFetch(signedInAs("member"));
     renderAt("/settings/general");
-    expect(await menuLabels("Settings")).not.toContain("Usage & budget");
+    expect(await menuLabels("Settings")).not.toContain("Organization settings");
 
-    mockFetch(signedInAs("workspace_admin"));
+    mockFetch(signedInAs("org_admin"));
     comeBackToTheTab();
 
     await waitFor(async () =>
-      expect(await menuLabels("Settings")).toContain("Usage & budget"),
+      expect(await menuLabels("Settings")).toContain("Organization settings"),
     );
     expect(reload).not.toHaveBeenCalled();
   });
@@ -1216,9 +1216,9 @@ describe("what the server's answers say about the session", () => {
   });
 
   it("reads the session again when the server refuses something, and follows a change of role", async () => {
-    mockFetch(signedInAs("workspace_admin"));
+    mockFetch(signedInAs("org_admin"));
     renderAt("/settings/general");
-    expect(await menuLabels("Settings")).toContain("Usage & budget");
+    expect(await menuLabels("Settings")).toContain("Organization settings");
 
     mockFetch({
       ...signedInAs("member"),
@@ -1226,7 +1226,9 @@ describe("what the server's answers say about the session", () => {
     });
     await gatewayFetch("/gateway/tenants/t1/invitations", { method: "POST" });
 
-    await waitFor(async () => expect(await menuLabels("Settings")).not.toContain("Usage & budget"));
+    await waitFor(async () =>
+      expect(await menuLabels("Settings")).not.toContain("Organization settings"),
+    );
     expect(reload).not.toHaveBeenCalled();
   });
 
@@ -1351,9 +1353,10 @@ describe("a link naming a workspace", () => {
   it("does not switch to a workspace the session is not in, and says so", async () => {
     mockFetch(signedInAs("operator"));
     renderAt("/rooms?workspace=t9");
+    // The operator is also told where they act on someone else's.
     expect(
       await screen.findByText(
-        "The link you followed is for a workspace you aren't in, so this is Acme.",
+        `The link you followed is for a workspace you aren't in, so this is Acme. ${OPERATOR_ELSEWHERE}`,
       ),
     ).toBeTruthy();
     await landsOn("/rooms");

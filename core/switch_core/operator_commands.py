@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import sys
 import uuid
 from collections.abc import AsyncIterator, Callable, Coroutine
 from contextlib import asynccontextmanager
@@ -42,6 +43,14 @@ from switch_core.tenant_context import no_tenant
 class CommandRefused(Exception):
     """The command can't do what it was asked; the message says why, for the
     operator."""
+
+
+def print_refusal(refused: CommandRefused) -> None:
+    """Say on standard error why the command refused, after everything it
+    has printed so far: standard output is buffered when it isn't a
+    terminal, and would otherwise come out after this line."""
+    sys.stdout.flush()
+    print(f"Refused: {refused}", file=sys.stderr)
 
 
 @asynccontextmanager

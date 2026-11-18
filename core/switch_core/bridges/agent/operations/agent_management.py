@@ -31,6 +31,7 @@ from switch_core.bridges.agent.protocol.agent_management import (
     NewManagedAgent,
 )
 from switch_core.db.models import User, require_tenant_id
+from switch_core.providers.registry import agent_provider
 from switch_core.tenant_context import current_tenant_id
 
 AGENT_MANAGEMENT_OPERATIONS = "agent_management"
@@ -240,8 +241,8 @@ async def create_agent(
     advanced_config: dict[str, Any] | None = None,
     instructions: str = "",
     directory: str | None = None,
-    auto_mode: bool = True,
-    auto_approve: bool = False,
+    auto_mode: bool | None = None,
+    auto_approve: bool | None = None,
     display_name: str | None = None,
     icon_url: str | None = None,
     start: bool = True,
@@ -282,13 +283,13 @@ async def create_agent(
             when the machine has reported where it keeps workspaces, and the
             machine makes the directory if it is missing. Any other directory
             must already exist there.
-        auto_mode: Auto mode, on by default: the provider's own automatic
-            review lets safe actions run without asking and still asks a
-            person before risky ones. Leave it on unless the person asks for
-            every action to be approved.
-        auto_approve: Bypass mode: the agent runs every tool without any
-            permission check, and this overrides `auto_mode`. Unsafe; set it
-            only when the person explicitly asks for bypass.
+        auto_mode: The provider's automatic review, on by default where supported.
+            Cursor's ACP interface does not support it, so Cursor defaults to false.
+            False requests manual approval when auto_approve is also false.
+        auto_approve: Bypass permissions: runs tools without approval. Defaults to
+            true for Cursor, which has no Auto mode over ACP, and false for other
+            providers. Disclose this in a Cursor agent's proposal. An explicit false
+            keeps bypass off; an explicit auto_mode=false also keeps it off by default.
         display_name: A human label shown next to `name`, or null for none.
         icon_url: An https link to the agent's icon, or null for the icon
             its name generates, the same one Switch Console offers first. A
@@ -318,8 +319,14 @@ async def create_agent(
             advanced_config={} if advanced_config is None else advanced_config,
             instructions=instructions,
             directory=directory,
-            auto_mode=auto_mode,
-            auto_approve=auto_approve,
+            auto_mode=agent_provider(provider).supports_auto_mode
+            if auto_mode is None
+            else auto_mode,
+            auto_approve=(
+                not agent_provider(provider).supports_auto_mode and auto_mode is None
+            )
+            if auto_approve is None
+            else auto_approve,
             isolation="shared",
             start=start,
         ),

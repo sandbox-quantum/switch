@@ -138,6 +138,35 @@ describe("RoomAutoRouteSection", () => {
     expect(toggle().disabled).toBe(false);
   });
 
+  it("cannot be turned on while an agent is assigned, and says how to unassign it", () => {
+    mockServer(() => routed(OFF));
+    render(
+      <RoomAutoRouteSection
+        room={room}
+        autoRoute={{ ...OFF, assigned_agent: "a-1", assigned_agent_name: "helper" }}
+        canWrite
+      />,
+    );
+
+    expect(toggle().disabled).toBe(true);
+    expect(screen.getByText(/Every message goes to helper/)).toBeTruthy();
+    expect(screen.getByText("!unassign-agent")).toBeTruthy();
+  });
+
+  it("can be turned off in a room that has both, and says auto-route is not acting", () => {
+    mockServer(() => routed(OFF));
+    render(
+      <RoomAutoRouteSection
+        room={room}
+        autoRoute={{ ...OFF, on: true, assigned_agent: "a-1", assigned_agent_name: "helper" }}
+        canWrite
+      />,
+    );
+
+    expect(toggle().disabled).toBe(false);
+    expect(screen.getByText(/on but not acting/)).toBeTruthy();
+  });
+
   it("lets someone who may write to the room, such as a room admin, turn it on", async () => {
     const calls = mockServer((body) => routed({ ...OFF, on: body.on as boolean }));
     render(<RoomAutoRouteSection room={room} autoRoute={OFF} canWrite />);

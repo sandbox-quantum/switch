@@ -55,7 +55,6 @@ import RoomScopedDocumentView from "../pages/rooms/RoomScopedDocumentView";
 import RoomsGraphPage from "../pages/rooms/RoomsGraphPage";
 import RoomsPage from "../pages/rooms/RoomsPage";
 import TemplatesPage from "../pages/templates/TemplatesPage";
-import UsagePage from "../pages/usage/UsagePage";
 import PrivateChannelRoomsPage from "../pages/workspace/PrivateChannelRoomsPage";
 import WorkspaceConnectorsPage from "../pages/workspace/WorkspaceConnectorsPage";
 import WorkspaceGeneralPage from "../pages/workspace/WorkspaceGeneralPage";
@@ -215,8 +214,7 @@ export const ROUTES: readonly AppRoute[] = [
   redirect("/platform/users", "/settings/org/users"),
   redirect("/platform/connectors", "/settings/org/connector-apps"),
 
-  // Workspace settings. `/usage` keeps its URL until Usage & budget is
-  // rebuilt, and sits here in the meantime.
+  // Workspace settings.
   areaIndex("/settings", "workspace"),
   settingsPage("/settings/general", "workspace", "General", everyone, <WorkspaceGeneralPage />),
   // Opened from General's "Public rooms on private channels" warning.
@@ -241,7 +239,8 @@ export const ROUTES: readonly AppRoute[] = [
   ),
   settingsPage("/settings/api-keys", "workspace", "API keys", everyone, <ApiKeysPage />),
   settingsPage("/settings/guardrails", "workspace", "Guardrails", everyone, <WorkspaceGuardrailsPage />),
-  settingsPage("/usage", "workspace", "Usage & budget", workspaceAdmins, <UsagePage />),
+  // Usage & budget (pages/usage) is off until it is offered.
+  redirect("/usage", "/settings"),
   settingsPage("/settings/devices", "workspace", "Devices", agentManagement, <DevicesPage />),
   personalSettingsPage("/settings/account", "Your account", everyone, <AccountPage />),
 

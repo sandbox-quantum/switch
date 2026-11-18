@@ -111,7 +111,7 @@ export function ConnectAiPanel({
     showModal('buddySetupModal', {
       serverId,
       workspaceId,
-      onSuccess: (agent) => void openBuddyChat(serverId, agent),
+      onSuccess: (agent) => void openBuddyChat(serverId, agent, 'slide-in'),
     });
   };
 

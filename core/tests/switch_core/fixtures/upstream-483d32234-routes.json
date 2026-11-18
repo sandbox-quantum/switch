@@ -1,5 +1,5 @@
 {
- "source": "upstream main 268f12b89: every (method, path) the gateway app (with agent management mounted) and the agent bridge app (with the controller router) serve, walked from app.routes",
+ "source": "upstream main 483d32234: every (method, path) the gateway app (with agent management mounted) and the agent bridge app (with the controller router) serve, walked from app.routes",
  "gateway": [
   [
    "DELETE",
@@ -204,6 +204,10 @@
   [
    "GET",
    "/agents/known-types"
+  ],
+  [
+   "GET",
+   "/agents/rooms"
   ],
   [
    "GET",

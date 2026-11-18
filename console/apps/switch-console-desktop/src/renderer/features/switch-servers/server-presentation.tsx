@@ -78,33 +78,6 @@ export function serverDrift(server: SwitchServer): SwitchVersionDrift | null {
   return localServerStore.drift;
 }
 
-const AVATAR_SIZE = {
-  sm: 'size-6 text-xs',
-  md: 'size-[26px] text-xs',
-  lg: 'size-9 rounded-lg text-lg',
-} as const;
-
-export function ServerAvatar({
-  server,
-  size,
-}: {
-  server: SwitchServer;
-  size: keyof typeof AVATAR_SIZE;
-}) {
-  const initial = server.name.trim().charAt(0).toUpperCase() || '?';
-  return (
-    <span
-      aria-hidden
-      className={cn(
-        'flex shrink-0 items-center justify-center rounded-lg bg-[var(--accent-solid)] font-semibold text-white',
-        AVATAR_SIZE[size]
-      )}
-    >
-      {initial}
-    </span>
-  );
-}
-
 /**
  * Whether this server can be reached right now. Amber would read as "warming
  * up"; neither signed-out nor unreachable is transitional, so both are red and

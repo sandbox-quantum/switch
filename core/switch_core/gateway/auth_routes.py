@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.accounts.account_reset import AccountReset
 from switch_core.accounts.deletion import (
     AccountDeletion,
+    AccountDeletionIncomplete,
     AccountDeletionRefused,
     Workspace,
 )
@@ -739,6 +740,9 @@ async def delete_my_account(
         changes = await deletion.delete(session, user, workspaces, actor_id=user.id)
     except AccountDeletionRefused as refused:
         raise HTTPException(status_code=409, detail=str(refused)) from None
+    except AccountDeletionIncomplete as incomplete:
+        await _tell_admins_of_incomplete_deletion(session, notices, incomplete)
+        raise
     background.add_task(notices.send_all, changes)
     response.delete_cookie("switch_auth", path="/")
     return {"ok": True}
@@ -810,9 +814,25 @@ async def reset_test_account(
         changes = await reset.reset(session, user, workspaces)
     except AccountDeletionRefused as refused:
         raise HTTPException(status_code=409, detail=str(refused)) from None
+    except AccountDeletionIncomplete as incomplete:
+        await _tell_admins_of_incomplete_deletion(session, notices, incomplete)
+        raise
     background.add_task(notices.send_all, changes)
     response.delete_cookie("switch_auth", path="/")
     return {"ok": True}
+
+
+async def _tell_admins_of_incomplete_deletion(
+    session: AsyncSession,
+    notices: OrganizationAdminNotices,
+    incomplete: AccountDeletionIncomplete,
+) -> None:
+    """E-mail the admins of the organizations a failed deletion already took
+    the person's admin role from, before the failure becomes the response:
+    an error response runs no background task. The request's transaction is
+    rolled back first, so none is held while the relay is talked to."""
+    await session.rollback()
+    await notices.send_all(incomplete.admin_changes)
 
 
 async def _confirmed_user(
