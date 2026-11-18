@@ -1578,6 +1578,14 @@ def _activity_title(
     return title
 
 
+def running_step(items: list[Item], turn: TurnUpsert) -> str | None:
+    """ "Running: <step>" (or "Last: <step>" between calls) for a running turn,
+    as the plan's header names it; None once the turn has ended or before its
+    first call."""
+    running = _running(items, turn)
+    return running[1] if running else None
+
+
 def _running(drawn: list[Item], turn: TurnUpsert) -> tuple[int, str] | None:
     """Where the live step is and what to call it, or nothing for an ended turn.
 
