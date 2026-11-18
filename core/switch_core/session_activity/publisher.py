@@ -1224,12 +1224,13 @@ class AgentSessionActivityPublisher:
                 if error_summary and self._adapter.separate_attention_slot
                 else None
             )
-            # Who the turn answers, for a live message addressed to someone.
-            # Only a first publication opens one, so only that asks.
+            # Who the turn answers, for a live message addressed to someone and
+            # a work thread's agent session. Only a first publication opens
+            # either, so only that asks. Asked as if at the channel root: in a
+            # thread, `notification_recipient` answers nobody on Slack, since a
+            # mention there is not needed, and here it is the person who is.
             answering = (
-                await self._recipient(
-                    db, room_id, target.agent, view.row, target.thread_ref
-                )
+                await self._recipient(db, room_id, target.agent, view.row, None)
                 if post is None
                 else None
             )

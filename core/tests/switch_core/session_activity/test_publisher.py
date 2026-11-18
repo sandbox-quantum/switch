@@ -1568,3 +1568,27 @@ async def test_a_root_asked_card_goes_to_the_channel_root_with_work_threads(
     )
     [card] = [d for d in work_platform.drawn if isinstance(d.content, RequestCard)]
     assert card.thread_ref is None
+
+
+async def test_the_asker_is_handed_to_the_stream_and_the_work_session(
+    service, work_publisher, work_platform, bridged, monkeypatch
+):
+    """Who the turn answers is asked for as at the channel root: in a thread,
+    the mention rule answers nobody on Slack, which left the agent session
+    opened for the bot and the stream with nobody to address."""
+    asked = AsyncMock(return_value="UASKER")
+    monkeypatch.setattr(publisher_module, "notification_recipient", asked)
+    initiators: list[str | None] = []
+    opened = work_platform.open_work_message
+
+    async def open_work_message(channel_id, agent_name, text, initiator):
+        initiators.append(initiator)
+        return await opened(channel_id, agent_name, text, initiator)
+
+    work_platform.open_work_message = open_work_message  # type: ignore[method-assign]
+    await _turn(service, bridged.room_id, "running", 1)
+    await _tool(service, bridged.room_id, "in-progress", 1)
+    await work_platform.wait_until(lambda: len(_turns(work_platform)) == 1)
+    assert initiators == ["UASKER"]
+    assert _turns(work_platform)[0].content.recipient_external_id == "UASKER"
+    assert all(call.kwargs["thread_id"] is None for call in asked.call_args_list)
