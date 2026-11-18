@@ -708,7 +708,11 @@ def test_gemini_request_is_one_choice_question_over_the_agents_and_nobody():
 
 
 def test_gemini_request_carries_the_conversation_rule_mid_exchange():
-    from switch_decision.prompt import CONVERSATION_RULE, gemini_decision_request
+    from switch_decision.prompt import (
+        CONVERSATION_RULE,
+        SYSTEM_CONVERSATION_RULE,
+        gemini_decision_request,
+    )
 
     req = _req(
         message=Incoming(sender="sara", text="yes"),
@@ -724,7 +728,7 @@ def test_gemini_request_carries_the_conversation_rule_mid_exchange():
         ],
     )
     body = gemini_decision_request(req, "gemini-decision-1", 30, "nobody")
-    assert CONVERSATION_RULE in body["input"]
+    assert SYSTEM_CONVERSATION_RULE in body["input"]
     assert CONVERSATION_RULE in body["questions"][SPEAKER_QUESTION]["instructions"]
 
 

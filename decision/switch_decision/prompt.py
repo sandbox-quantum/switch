@@ -49,6 +49,21 @@ CONVERSATION_RULE = (
     "answers or names another person."
 )
 
+# The same rule as the system prompt (Haiku, Bedrock, Ollama) and Gemini's input
+# state it, spelling out that a reply to another person is for nobody: Gemini
+# otherwise gave a colleague's short reply in an agent's thread to that agent.
+# Strands' instructions and the llama.cpp letter prompt keep CONVERSATION_RULE,
+# because with this wording Strands missed real continuations.
+SYSTEM_CONVERSATION_RULE = (
+    "A message right after an agent answered or addressed the sender, in a thread "
+    "or in the room, continues that conversation and is for that agent, even when "
+    'it is short ("continue", "yes", "go ahead", "merged", "you here?"). That holds '
+    "only when the agent's message was to the sender. A message that replies to "
+    "another person is for nobody, even right after an agent spoke or in an agent's "
+    "thread: an answer to a question another person asked, a response to what "
+    "another person just said, or a message that names another person."
+)
+
 
 def _back_and_forth(
     messages: list[Message], sender: str, agents: set[str]
@@ -169,10 +184,10 @@ _SYSTEM_RULES, _SYSTEM_FORMAT = SYSTEM.split("\n\nGive a short reason first")
 
 
 def system_prompt(req: DecideRequest, history_limit: int) -> str:
-    """SYSTEM, with the conversation rule when the sender is mid-exchange."""
+    """SYSTEM, with SYSTEM_CONVERSATION_RULE when the sender is mid-exchange."""
     if not conversation_state(req, history_limit):
         return SYSTEM
-    return f"{_SYSTEM_RULES}\n{CONVERSATION_RULE}\n\nGive a short reason first{_SYSTEM_FORMAT}"
+    return f"{_SYSTEM_RULES}\n{SYSTEM_CONVERSATION_RULE}\n\nGive a short reason first{_SYSTEM_FORMAT}"
 
 
 def build_messages(req: DecideRequest, history_limit: int) -> list[dict[str, str]]:

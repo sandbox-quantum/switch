@@ -107,7 +107,9 @@ Conversation state:
 - The message just before this one is from manager, to nora.
 ```
 
-The model's instructions also gain one sentence: a message right after an agent answered or addressed the sender continues that conversation and is for that agent, even when it is short, unless it answers or names another person. Strands gets it in its instructions; the other backends get it in the system prompt.
+The model's instructions also gain a rule: a message right after an agent answered or addressed the sender continues that conversation and is for that agent, even when it is short, unless it answers or names another person. Strands gets it as one sentence in its instructions. The system prompt (Haiku, Bedrock, Ollama) and Gemini's input spell it out further: it holds only when the agent's message was to the sender, and a reply to another person (an answer to their question, a response to what they just said, a message naming them) is for nobody, even right after an agent spoke or in an agent's thread.
+
+Why the two wordings: Gemini gave a colleague's short reply in an agent's thread ("yeah", "yes let's do that") to that agent, getting 1 of the 8 such cases in `scenarios_followups` right. Spelled out, it gets 6 of 8 with a lead of 0.10 and 8 of 8 (up from 5) with a 0.8 threshold, with no other change on the synthetic sets and none for the worse on the clear-label real decisions. Haiku got the same or better. Strands with the longer wording missed real continuations it had delivered, so its instructions keep the one sentence.
 
 When none of these holds, the request is exactly as it was without this context. The decide log line ends with `context=exchange` or `context=none`.
 
