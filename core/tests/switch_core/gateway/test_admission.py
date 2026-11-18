@@ -15,7 +15,7 @@ from starlette.types import Receive, Scope, Send
 
 from switch_core.db.statement_timeout import current_statement_timeout
 from switch_core.gateway import admission
-from switch_core.gateway.admission import GatewayAdmission, _Line
+from switch_core.gateway.admission import GatewayAdmission, _Turns
 from switch_core.gateway.auth import create_jwt
 from switch_core.keys import Keyring
 
@@ -59,12 +59,17 @@ _CONTROLLER_TOKEN = "controller-" + secrets.token_hex(8)
 
 
 def _admission(
-    gateway: _Gateway, *, limit: int = 10, per_caller: int = 2
+    gateway: _Gateway,
+    *,
+    limit: int = 10,
+    per_caller: int = 2,
+    caller_burst: int | None = None,
 ) -> GatewayAdmission:
     return GatewayAdmission(
         gateway,  # type: ignore[arg-type]
         limit=limit,
         per_caller=per_caller,
+        caller_burst=caller_burst,
         read_timeout="10s",
         keyring=_KEYRING,
         controller_token=_CONTROLLER_TOKEN,
@@ -251,8 +256,8 @@ async def test_callers_with_nothing_running_are_forgotten() -> None:
         async with _client(app, _session(name)) as client:
             assert (await client.get("/rooms")).status_code == 200
 
-    assert app._callers == {}
-    assert app._process.idle
+    assert app._turns.running == {}
+    assert app._turns.idle
 
 
 async def test_reads_run_under_the_statement_timeout_and_writes_do_not() -> None:
@@ -284,7 +289,7 @@ async def test_a_read_stopped_by_its_timeout_is_answered_503_and_a_write_is_not(
 
     assert read.status_code == 503
     assert "took longer than Switch allows" in read.json()["detail"]
-    assert app._callers == {} and app._process.idle
+    assert app._turns.idle
 
 
 async def test_any_other_error_still_reaches_the_server() -> None:
@@ -297,17 +302,81 @@ async def test_any_other_error_still_reaches_the_server() -> None:
 
 
 async def test_a_turn_handed_to_a_request_that_went_away_passes_to_the_next() -> None:
-    line = _Line(1)
-    assert await line.take(1.0)
-    leaving = asyncio.create_task(line.take(1.0))
-    staying = asyncio.create_task(line.take(1.0))
+    turns = _Turns(limit=1, share=1, burst=1)
+    assert await turns.take("ada", 1.0)
+    leaving = asyncio.create_task(turns.take("bob", 1.0))
+    staying = asyncio.create_task(turns.take("cy", 1.0))
     await asyncio.sleep(0.01)
     leaving.cancel()
     await asyncio.sleep(0.01)
-    line.give_back()
+    turns.give_back("ada")
 
     assert await staying
     with pytest.raises(asyncio.CancelledError):
         await leaving
-    line.give_back()
-    assert line.idle
+    turns.give_back("cy")
+    assert turns.idle
+
+
+# Sharing turns past a caller's share (`caller_burst`).
+
+
+async def test_a_caller_alone_runs_past_its_share_up_to_its_burst() -> None:
+    gateway = _Gateway()
+    app = _admission(gateway, limit=10, per_caller=2, caller_burst=4)
+    async with _client(app, _session("ada")) as ada:
+        held = [asyncio.create_task(ada.get(f"/hold/{i}")) for i in range(5)]
+        await _until(lambda: len(gateway.started) == 4)
+        await asyncio.sleep(0.05)
+        # Four run with nobody else waiting; the fifth waits for one of them.
+        assert len(gateway.started) == 4
+        gateway.release.set()
+        answers = await asyncio.gather(*held)
+
+    assert [a.status_code for a in answers] == [200] * 5
+
+
+async def test_a_caller_that_arrives_goes_ahead_of_one_past_its_share() -> None:
+    turns = _Turns(limit=3, share=1, burst=3)
+    for _ in range(3):
+        assert await turns.take("ada", 0)
+    # The process is full: ada's fourth and then bob's first both wait.
+    ada_more = asyncio.create_task(turns.take("ada", 1.0))
+    await asyncio.sleep(0.01)
+    bob = asyncio.create_task(turns.take("bob", 1.0))
+    await asyncio.sleep(0.01)
+
+    turns.give_back("ada")
+
+    # The turn goes to bob, who had none running, though ada asked first.
+    assert await bob
+    assert not ada_more.done()
+    # And ada, past her share with bob running, now waits for a free turn only.
+    turns.give_back("ada")
+    assert await ada_more
+    assert turns.running == {"ada": 2, "bob": 1}
+
+
+async def test_a_caller_past_its_share_never_keeps_another_from_a_free_turn() -> None:
+    turns = _Turns(limit=10, share=1, burst=5)
+    assert await turns.take("ada", 0)
+    assert await turns.take("ada", 0)  # alone: past her share, within burst
+    # Free turns are left, so bob runs at once.
+    assert await turns.take("bob", 0)
+    # With nobody waiting ada may still go on bursting.
+    assert await turns.take("ada", 0)
+    assert turns.running == {"ada": 3, "bob": 1}
+
+
+async def test_a_caller_never_runs_past_its_burst() -> None:
+    gateway = _Gateway()
+    app = _admission(gateway, limit=10, per_caller=1, caller_burst=2)
+    async with _client(app, _session("ada")) as ada:
+        held = [asyncio.create_task(ada.get(f"/hold/{i}")) for i in range(2)]
+        await _until(lambda: len(gateway.started) == 2)
+        refused = await ada.get("/more")
+        gateway.release.set()
+        await asyncio.gather(*held)
+
+    # Turned away as her own, not the process's: 8 turns were still free.
+    assert refused.status_code == 429

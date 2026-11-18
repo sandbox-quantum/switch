@@ -52,6 +52,14 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Changed
+- **A caller alone on the server is no longer held to its share of the
+  gateway.** While nobody else is waiting, one signed-in person, token or
+  address may run up to `GATEWAY_CALLER_BURST_SHARE` (0.5) of a process's
+  gateway requests at once, rather than `GATEWAY_REQUESTS_PER_CALLER` (8).
+  A turn that comes free goes to the waiting caller with the fewest running,
+  so someone who just arrived goes ahead of a caller already running many.
+
 #### Added
 - **`GET /gateway/agents/rooms` lists the rooms of up to 100 agents in one
   request** (`agent_id`, repeated), each as `GET /gateway/agents/{agent_id}`
