@@ -355,8 +355,14 @@ class ManagementService:
 
         A device running now has a process of its own on that data folder,
         which is left to it: the new one is a device of its own. The rows are
-        locked until the caller commits."""
-        if same_device is None:
+        locked until the caller commits.
+
+        With hosted agents v2 on, a Switch Cloud machine's controller (kind
+        `ec2`, every v2 box's) is never taken over, whatever device id is
+        sent: a box enrolls again only after its controller was revoked or
+        lost, and v2's own path (`_move_placed`, under the box's revocation
+        and removal rules) is the only one that moves its agents."""
+        if same_device is None or (process_hosted_v2() and kind == "ec2"):
             return None
         twins = await self.controllers.lock_same_device(
             session,
