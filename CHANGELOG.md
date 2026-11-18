@@ -52,6 +52,21 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Added
+- **`GET /gateway/agents/rooms` lists the rooms of up to 100 agents in one
+  request** (`agent_id`, repeated), each as `GET /gateway/agents/{agent_id}`
+  lists them, in the same few statements however many agents are asked
+  about. An id with no agent behind it is left out.
+
+#### Fixed
+- **Reading an agent no longer reads every room in the workspace.**
+  `GET /gateway/agents/{agent_id}` loaded every room its reader may see, to
+  learn which of the agent's rooms to name, and held a database connection
+  while it did. Switch Console reads each of its agents this way on every
+  refresh of its sidebar, so one open window with a few dozen agents could
+  take every connection in the pool for a moment. It now asks only about the
+  agent's own rooms, and the agent tools that describe an agent do the same.
+
 ### [0.32.0] - 2026-11-17
 
 #### Added
@@ -4593,6 +4608,12 @@ version of their own to them without also giving them a release of their own.
 ## switch-console
 
 ### [Unreleased]
+
+#### Fixed
+- **The sidebar reads a workspace's agents' rooms in one request**, rather
+  than one request per agent on every refresh (every 20 seconds while the
+  window is open, and whenever it is focused). On a server from before that
+  request it still asks for one agent at a time.
 
 ### [0.41.0] - 2026-11-17
 
