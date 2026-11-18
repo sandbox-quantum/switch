@@ -1,6 +1,6 @@
 import { type FeatureFlagState, type FeatureFlags, featureFlagsFrom } from "./featureFlags";
 import { LONG_REQUEST_TIMEOUT_MS, gatewayFetch } from "./gatewayFetch";
-import { BULK_ROOMS_MAX, inChunks } from "./inBatches";
+import { BULK_ROOMS_MAX, ROOM_USERS_MAX, inChunks } from "./inBatches";
 
 const BASE = "/gateway";
 
@@ -706,13 +706,22 @@ export async function setRoomAutoRoute(
   return jsonRequest<RoomAutoRoute>(`/rooms/${roomId}/auto-route`, "PUT", input);
 }
 
+// One request per `ROOM_USERS_MAX` people, one after another; the room as
+// the last one left it.
 export async function addRoomUsers(
   roomId: string,
   userNames: string[],
 ): Promise<RoomDetail> {
-  return jsonRequest<RoomDetail>(`/rooms/${roomId}/users`, "POST", {
-    user_names: userNames,
+  const [first = [], ...rest] = inChunks(userNames, ROOM_USERS_MAX);
+  let room = await jsonRequest<RoomDetail>(`/rooms/${roomId}/users`, "POST", {
+    user_names: first,
   });
+  for (const chunk of rest) {
+    room = await jsonRequest<RoomDetail>(`/rooms/${roomId}/users`, "POST", {
+      user_names: chunk,
+    });
+  }
+  return room;
 }
 
 /** Delete the room. Its platform channel is kept unless `retireChannel`
@@ -2387,7 +2396,7 @@ export interface AskPlatformResult {
   remaining: number;
 }
 
-/** The most rooms one apply changes. */
+/** The most rooms one apply changes; the server refuses more. */
 export const MAKE_PRIVATE_MAX = 200;
 
 /** How many rooms the review page would list. One query; no platform. */
@@ -2421,15 +2430,22 @@ export async function previewPrivateChannelRooms(
   return result.rooms;
 }
 
+// One request per `MAKE_PRIVATE_MAX` rooms, one after another.
 export async function makeRoomsPrivate(
   tenantId: string,
   roomIds: string[],
 ): Promise<MakeRoomsPrivateResult> {
-  return jsonRequest<MakeRoomsPrivateResult>(
-    `/tenants/${encodeURIComponent(tenantId)}/private-channel-rooms/make-private`,
-    "POST",
-    { room_ids: roomIds },
-  );
+  const done: MakeRoomsPrivateResult = { changed: [], skipped: [] };
+  for (const chunk of inChunks(roomIds, MAKE_PRIVATE_MAX)) {
+    const result = await jsonRequest<MakeRoomsPrivateResult>(
+      `/tenants/${encodeURIComponent(tenantId)}/private-channel-rooms/make-private`,
+      "POST",
+      { room_ids: chunk },
+    );
+    done.changed.push(...result.changed);
+    done.skipped.push(...result.skipped);
+  }
+  return done;
 }
 
 // ── Erasing a person ───────────────────────────────────────────────────────

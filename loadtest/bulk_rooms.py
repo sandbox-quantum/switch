@@ -94,14 +94,23 @@ async def reset(conn, tenant, prefix, run_id):
 
 
 async def clear(conn, tenant, prefix, run_id):
-    name = "load % (not connected)" if run_id == "*" else bridge_name(run_id)
+    # A run's own bridge by its exact name: in a LIKE pattern the `_` a run id
+    # may hold matches any character, which would take another run's too.
     async with conn.transaction():
-        bridges = await conn.fetch(
-            "select id, client_id from collaboration_bridges "
-            "where tenant_id = $1 and display_name like $2 and status = 'inactive'",
-            tenant,
-            name,
-        )
+        if run_id == "*":
+            bridges = await conn.fetch(
+                "select id, client_id from collaboration_bridges "
+                "where tenant_id = $1 and status = 'inactive' "
+                "and display_name like 'load % (not connected)'",
+                tenant,
+            )
+        else:
+            bridges = await conn.fetch(
+                "select id, client_id from collaboration_bridges "
+                "where tenant_id = $1 and status = 'inactive' and display_name = $2",
+                tenant,
+                bridge_name(run_id),
+            )
         ids = [b["id"] for b in bridges]
         status = await conn.execute(
             "update rooms set bridge_id = null, external_channel_id = null, channel_type = null "

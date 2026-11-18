@@ -2,6 +2,10 @@
 // (`BULK_ROOMS_MAX` in core's gateway schemas).
 export const BULK_ROOMS_MAX = 200;
 
+// The most people one request may add to a room (`ROOM_USERS_MAX` in core's
+// gateway schemas).
+export const ROOM_USERS_MAX = 200;
+
 // How many requests one action keeps in flight when it makes one per item:
 // each holds a database connection on the server while it runs.
 export const REQUESTS_AT_ONCE = 4;
