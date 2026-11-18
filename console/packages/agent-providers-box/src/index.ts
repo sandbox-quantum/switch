@@ -164,7 +164,9 @@ export {
   googleCredentialsSchema,
   parseGoogleCredentials,
   parseVertexLogin,
+  signsInThroughVertex,
   VERTEX_CREDENTIALS_FILE,
+  VERTEX_PROVIDERS_ONLY,
   type VertexLogin,
   vertexLoginCredential,
   vertexLoginSchema,
@@ -217,7 +219,13 @@ export { CONTROL_FILE, ControlClient, SidecarConnectionClosedError } from './hos
 export { macEquals, PUSH_KEY_BYTES, takenMac, ticketMac } from './host/push-key';
 export { hostSessions, hostSessionsByAgent, LIST_SCRIPT } from './host/session-list';
 export { JournalUnavailableError, replayJournal } from './host/journal-snapshot';
+export { loadNodeSqlite } from './node-sqlite';
 export { openCodeConsoleCredentialSchema } from './opencode/console-credential';
+export {
+  opencodeDataHome,
+  opencodeV1DatabaseEnv,
+  opencodeV1DatabasePath,
+} from './opencode/v1-database';
 export {
   BoxValve,
   type BoxValveStatus,

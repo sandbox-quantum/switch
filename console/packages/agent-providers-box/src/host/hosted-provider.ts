@@ -4,19 +4,19 @@ import { lstat, mkdir, open, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { AGY_LOGIN, isLegacyAntigravityRuntime } from '../antigravity/runtime';
 import { refreshCodexAuthentication } from '../codex/home';
-import { parseVertexLogin, VERTEX_CREDENTIALS_FILE } from '../vertex-login';
+import {
+  parseVertexLogin,
+  signsInThroughVertex,
+  VERTEX_CREDENTIALS_FILE,
+  VERTEX_PROVIDERS_ONLY,
+  VERTEX_VARIABLES,
+  vertexEnvironment,
+} from '../vertex-login';
 import { importOpenCodeConsole } from './opencode-console';
 import type { HostedCredential } from './provider-login';
 import { replaceFile } from './replace-file';
 
 export type { HostedCredential } from './provider-login';
-
-const VERTEX_VARIABLES = [
-  'CLAUDE_CODE_USE_VERTEX',
-  'ANTHROPIC_VERTEX_PROJECT_ID',
-  'CLOUD_ML_REGION',
-  'GOOGLE_APPLICATION_CREDENTIALS',
-];
 
 /**
  * Sets the variables `credential` signs in with in `env`, removing the others
@@ -39,15 +39,19 @@ export function applyHostedProvider(
     throw new Error(
       'The provider was disconnected. Reconnect it in Console before resuming this session.'
     );
-  if (credential.provider === 'claude') for (const key of VERTEX_VARIABLES) delete env[key];
+  if (signsInThroughVertex(credential.provider))
+    for (const key of VERTEX_VARIABLES[credential.provider]) delete env[key];
   if (credential.kind === 'vertex') {
-    if (credential.provider !== 'claude')
-      throw new Error('Only Claude signs in through Vertex AI.');
-    const login = parseVertexLogin(credential.credential);
-    env.CLAUDE_CODE_USE_VERTEX = '1';
-    env.ANTHROPIC_VERTEX_PROJECT_ID = login.project;
-    env.CLOUD_ML_REGION = login.region;
-    env.GOOGLE_APPLICATION_CREDENTIALS = join(root, VERTEX_CREDENTIALS_FILE);
+    if (!signsInThroughVertex(credential.provider)) throw new Error(VERTEX_PROVIDERS_ONLY);
+    if (credential.provider === 'antigravity') delete env.GEMINI_API_KEY;
+    Object.assign(
+      env,
+      vertexEnvironment(
+        credential.provider,
+        parseVertexLogin(credential.credential),
+        join(root, VERTEX_CREDENTIALS_FILE)
+      )
+    );
     return;
   }
   if (credential.kind === 'auth-json') return;
@@ -151,6 +155,11 @@ export async function materializeHostedProvider(
   applyHostedProvider(env, credential, root);
   if (credential.status !== 'connected') return;
   if (credential.kind === 'vertex') {
+    // The retired Antigravity ACP runtime signs in only through its own profile.
+    if (credential.provider === 'antigravity' && isLegacyAntigravityRuntime(binaryPath))
+      throw new Error(
+        "Antigravity signs in through Vertex AI only with Google's agy CLI. Install it on the execution machine and select it in provider setup."
+      );
     await writeAuthentication(
       root,
       VERTEX_CREDENTIALS_FILE,

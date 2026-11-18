@@ -1263,6 +1263,10 @@ export async function runController(
     // A recheck is asked for by someone setting up or fixing a login, so
     // each login is tried for real, not only reported as there.
     await providers.checkAll({ verify: true });
+    deps.log.info('Rechecked providers', {
+      path: process.env.PATH,
+      found: providers.locations(),
+    });
     await reporter?.sendFresh();
     // Agents waiting on a provider can start now.
     void reconcileLocally();
