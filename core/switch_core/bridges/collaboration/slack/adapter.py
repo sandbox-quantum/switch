@@ -600,6 +600,19 @@ _SLACK_BOT_ID = re.compile(r"^B[A-Z0-9]+$")
 _SLACK_BOT_ACCOUNT = "This is a Slack app's or bot's account, which isn't one person's."
 
 
+#: What a work message (`!work-threads`) says while its turn runs. Its author
+#: is the agent, so the agent's name is already beside it.
+WORKING_NOTE = "Working on it…"
+
+
+def _work_note(text: str) -> dict[str, Any]:
+    """A work message's one block: a line of small italic text."""
+    return {
+        "type": "context",
+        "elements": [{"type": "mrkdwn", "text": f"_{escape_mrkdwn(text)}_"}],
+    }
+
+
 class SlackAdapter(PlatformAdapter):
     display_name: ClassVar[str] = "Slack"
     # Slack apps cannot delete a channel outside Enterprise Grid's admin API.
@@ -1760,12 +1773,12 @@ class SlackAdapter(PlatformAdapter):
         text: str,
         initiator_external_id: str | None,
     ) -> str:
-        """A divider at the channel root, and the agent session on its thread.
+        """A one-line note at the channel root, and the agent session on its thread.
 
-        The divider is the whole of what the channel shows: a thin line with
-        the turn's replies under it. `text` is what a notification and a
-        screen reader get instead, since a message with blocks shows them and
-        not its text.
+        The channel shows "Working on it…" under the agent's name, with the
+        turn's replies under it; the steps are in that thread. `text` is what a
+        notification and a screen reader get instead, since a message with
+        blocks shows them and not its text, so it names the agent.
 
         The session is opened here, before the stream, so it names the asker
         as its initiator: one the stream opens takes the message's author, the
@@ -1783,7 +1796,7 @@ class SlackAdapter(PlatformAdapter):
             result = await client.chat_postMessage(
                 channel=channel_id,
                 text=text,
-                blocks=[{"type": "divider"}],
+                blocks=[_work_note(WORKING_NOTE)],
                 username=agent.field_label,
                 icon_url=icon_url,
                 unfurl_links=False,
@@ -1822,11 +1835,13 @@ class SlackAdapter(PlatformAdapter):
     async def settle_work_message(
         self, channel_id: str, agent_name: str, message_ref: str, summary: str
     ) -> None:
-        """Edit the divider into the line the turn ended on, and end the session.
+        """Edit the note into the line the turn ended on, and end the session.
 
-        An edit, so it notifies nobody. The session goes `active` rather than
-        `closed`: it is over for now, and `closed` says the agent will not
-        answer there again.
+        An edit, so it notifies nobody. The session is renamed to match, since
+        its title is also the thread's header and would otherwise go on saying
+        the agent is working; then it goes `active` rather than `closed`: it
+        is over for now, and `closed` says the agent will not answer there
+        again.
         """
         client = self._web_client
         if client is None:
@@ -1834,47 +1849,58 @@ class SlackAdapter(PlatformAdapter):
         _, ts = self._parse_message_ref(message_ref)
         if not ts:
             return
-        text = escape_mrkdwn(summary)
         try:
             await client.chat_update(
                 channel=channel_id,
                 ts=ts,
-                text=text,
-                blocks=[
-                    {"type": "context", "elements": [{"type": "mrkdwn", "text": text}]}
-                ],
+                text=summary,
+                blocks=[_work_note(summary)],
             )
         except SlackApiError as error:
             logger.warning(
-                "Could not write the summary into work message %s (%s); it stays "
-                "a divider over its steps.",
+                "Could not write %r into work message %s (%s); it still says the "
+                "agent is working.",
+                summary,
                 message_ref,
                 error.response.get("error"),
             )
+        agent = await self.agent_rendering(agent_name)
+        await self._session_call(
+            "agents.sessions.rename",
+            {
+                "channel_id": channel_id,
+                "thread_ts": ts,
+                "title": f"{agent.field_label} · {summary}"[:200],
+            },
+        )
         await self._set_session_status(
             {"channel_id": channel_id, "thread_ts": ts, "status": "active"}
         )
 
     async def _set_session_status(self, arguments: dict[str, Any]) -> None:
-        """`agents.sessions.setStatus`, which nothing waits on.
+        await self._session_call("agents.sessions.setStatus", arguments)
+
+    async def _session_call(self, method: str, arguments: dict[str, Any]) -> None:
+        """An agent-session call, which nothing waits on.
 
         A workspace without agent sessions, or an app without their scopes,
         refuses it; the work message and its stream are unaffected, so that is
-        logged once per reason rather than on every turn.
+        logged once per method and reason rather than on every turn.
         """
         client = self._web_client
         if client is None:
             return
         try:
-            await client.api_call("agents.sessions.setStatus", json=arguments)
+            await client.api_call(method, json=arguments)
         except SlackApiError as error:
-            code = str(error.response.get("error"))
+            code = f"{method}:{error.response.get('error')}"
             if code not in self._session_refusals_logged:
                 self._session_refusals_logged.add(code)
                 logger.warning(
-                    "Slack refused agents.sessions.setStatus (%s); work threads "
-                    "still work, but show no agent session.",
-                    code,
+                    "Slack refused %s (%s); work threads still work, but the "
+                    "agent session may not show what the turn is doing.",
+                    method,
+                    error.response.get("error"),
                 )
 
     def _register_stream(self, message_ref: str, stream: _ActivityStream) -> None:
