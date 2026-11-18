@@ -150,7 +150,7 @@ class ControllerDescription(_ControllerBody):
     )
     platform: Platform
     version: str
-    # Which machine and OS account it runs on (`management/device_identity.py`);
+    # Which machine, OS account and data folder it runs from (`management/device_identity.py`);
     # absent from a controller that cannot tell, or is older than this field.
     device_id: str | None = Field(default=None, pattern=DEVICE_ID_PATTERN)
 
@@ -201,7 +201,7 @@ class MachineStatus(_StatusBody):
     # The absolute directory the controller makes agents' workspaces in. A
     # controller older than this field does not send it.
     workspaces_dir: str | None = None
-    # Which machine and OS account it runs on (`management/device_identity.py`),
+    # Which machine, OS account and data folder it runs from (`management/device_identity.py`),
     # kept as the controller's `device_hash` and not in its stored status.
     # Checked where it is used, not here: a malformed one must not cost the
     # rest of the report.

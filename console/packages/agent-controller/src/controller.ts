@@ -113,7 +113,7 @@ export type ControllerDeps = {
   /** Where agents' working directories go when their definition names none, for a server. */
   workspacesFor: (server: string) => string;
   version: string;
-  /** Which machine and OS account this is (`readDeviceId`), or null when unknown. */
+  /** Which machine, OS account and data folder this is (`readDeviceId`), or null when unknown. */
   deviceId: string | null;
   /** Who moves it onto another release, as its status reports to Switch. */
   updatedBy: UpdatedBy;

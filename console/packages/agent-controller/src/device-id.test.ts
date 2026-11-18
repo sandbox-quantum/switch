@@ -26,27 +26,45 @@ function sources(overrides: Partial<DeviceIdSources>): DeviceIdSources {
   };
 }
 
+const ROOT = '/Users/ada/Library/Application Support/switchdash';
+
 const mac = (overrides: Partial<DeviceIdSources> = {}) =>
   sources({ platform: 'darwin', output: async () => MAC_IOREG, ...overrides });
 
 describe('readDeviceId', () => {
   it('names a Mac by its hardware UUID and OS account, the same each time', async () => {
-    const first = await readDeviceId(mac());
+    const first = await readDeviceId(mac(), ROOT);
     expect(first).toMatch(/^[0-9a-f]{64}$/);
-    expect(await readDeviceId(mac())).toBe(first);
+    expect(await readDeviceId(mac(), ROOT)).toBe(first);
     // A Mac's host name changes with the network it is on; the id does not.
-    expect(await readDeviceId(mac({ hostname: () => 'Adas-MacBook.local' }))).toBe(first);
+    expect(await readDeviceId(mac({ hostname: () => 'Adas-MacBook.local' }), ROOT)).toBe(first);
     // Another account on the same Mac is another device: its agents' files are elsewhere.
-    expect(await readDeviceId(mac({ username: () => 'grace' }))).not.toBe(first);
+    expect(await readDeviceId(mac({ username: () => 'grace' }), ROOT)).not.toBe(first);
+  });
+
+  it('names each data folder a device of its own, as a second install beside the first is', async () => {
+    const installed = await readDeviceId(mac(), ROOT);
+    // A reinstall, or the folder wiped and set up again, is the same folder.
+    expect(await readDeviceId(mac(), `${ROOT}/`)).toBe(installed);
+    // A Mac's file system ignores case in a path.
+    expect(await readDeviceId(mac(), ROOT.toUpperCase())).toBe(installed);
+    expect(
+      await readDeviceId(mac(), '/Users/ada/Library/Application Support/switchdash-dev')
+    ).not.toBe(installed);
+    // Linux's does not.
+    const linux = sources({ read: async () => 'b08dfa6083e7567a1921a715000001fb' });
+    expect(await readDeviceId(linux, '/home/ada/.switch')).not.toBe(
+      await readDeviceId(linux, '/home/ada/.SWITCH')
+    );
   });
 
   it('reads Windows’s machine GUID, with the host name, since a cloned image shares the GUID', async () => {
     const windows = (hostname: string) =>
       sources({ platform: 'win32', output: async () => WINDOWS_REG, hostname: () => hostname });
-    const first = await readDeviceId(windows('DESK-1'));
+    const first = await readDeviceId(windows('DESK-1'), ROOT);
     expect(first).toMatch(/^[0-9a-f]{64}$/);
-    expect(await readDeviceId(windows('desk-1'))).toBe(first);
-    expect(await readDeviceId(windows('DESK-2'))).not.toBe(first);
+    expect(await readDeviceId(windows('desk-1'), ROOT)).toBe(first);
+    expect(await readDeviceId(windows('DESK-2'), ROOT)).not.toBe(first);
   });
 
   it('reads Linux’s machine id, falling back to D-Bus’s, and skips an image’s blank one', async () => {
@@ -59,33 +77,39 @@ describe('readDeviceId', () => {
         },
       });
     const etc = await readDeviceId(
-      files({ '/etc/machine-id': 'b08dfa6083e7567a1921a715000001fb\n' })
+      files({ '/etc/machine-id': 'b08dfa6083e7567a1921a715000001fb\n' }),
+      ROOT
     );
     expect(etc).toMatch(/^[0-9a-f]{64}$/);
     expect(
-      await readDeviceId(files({ '/var/lib/dbus/machine-id': 'b08dfa6083e7567a1921a715000001fb' }))
+      await readDeviceId(
+        files({ '/var/lib/dbus/machine-id': 'b08dfa6083e7567a1921a715000001fb' }),
+        ROOT
+      )
     ).toBe(etc);
     expect(
       await readDeviceId(
         files({
           '/etc/machine-id': '00000000000000000000000000000000\n',
           '/var/lib/dbus/machine-id': 'b08dfa6083e7567a1921a715000001fb',
-        })
+        }),
+        ROOT
       )
     ).toBe(etc);
-    expect(await readDeviceId(files({ '/etc/machine-id': '\n' }))).toBeNull();
+    expect(await readDeviceId(files({ '/etc/machine-id': '\n' }), ROOT)).toBeNull();
   });
 
   it('is null where the id or the account cannot be read, so the machine enrolls as a new device', async () => {
-    expect(await readDeviceId(sources({}))).toBeNull();
-    expect(await readDeviceId(mac({ output: async () => 'no uuid here' }))).toBeNull();
+    expect(await readDeviceId(sources({}), ROOT)).toBeNull();
+    expect(await readDeviceId(mac({ output: async () => 'no uuid here' }), ROOT)).toBeNull();
     expect(
       await readDeviceId(
         mac({
           output: async () => {
             throw new Error('ioreg: not found');
           },
-        })
+        }),
+        ROOT
       )
     ).toBeNull();
     expect(
@@ -94,9 +118,10 @@ describe('readDeviceId', () => {
           username: () => {
             throw new Error('no passwd entry');
           },
-        })
+        }),
+        ROOT
       )
     ).toBeNull();
-    expect(await readDeviceId(sources({ platform: 'freebsd' }))).toBeNull();
+    expect(await readDeviceId(sources({ platform: 'freebsd' }), ROOT)).toBeNull();
   });
 });

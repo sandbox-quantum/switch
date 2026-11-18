@@ -60,6 +60,7 @@ from switch_core.db.models import (
     AgentControllerOperation,
     ApiKey,
     MachineWorkspace,
+    ServiceTokenIssuance,
     require_tenant_id,
 )
 from switch_core.db.models import AgentDefinition as AgentDefinitionRow
@@ -71,6 +72,7 @@ from switch_core.db.stores.agent_definition_store import AgentDefinitionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.hosted_machine_store import CloudMachineStore
+from switch_core.db.stores.service_connection_store import ServiceConnectionStore
 from switch_core.db.stores.switch_core_process_store import SwitchCoreProcessStore
 from switch_core.db.stores.template_install_store import TemplateInstallStore
 from switch_core.gateway.cloud_controllers import (
@@ -252,7 +254,7 @@ class ManagementService:
         public_key: PublicKey | None,
     ) -> Enrolled:
         """Create a controller and its credential, or take over the owner's
-        device on the same machine and account (`_device_to_take_over`), and
+        device on the same machine, account and data folder (`_device_to_take_over`), and
         commit."""
         tenant_id = require_tenant_id()
         await self._refuse_archived(session, tenant_id)
@@ -310,15 +312,15 @@ class ManagementService:
         kind: str,
         same_device: str | None,
     ) -> AgentController | None:
-        """The owner's device in the workspace on the machine and account
-        `same_device` names, which a controller enrolling there takes over: not
-        revoked, not running, and not enrolled or taken over in the last
-        `TAKE_OVER_GRACE` without having reported since; the one seen last.
+        """The owner's device in the workspace on the machine, account and
+        data folder `same_device` names, which a controller enrolling there
+        takes over: not revoked, not running, and not enrolled or taken over
+        in the last `TAKE_OVER_GRACE` without having reported since; the one
+        seen last.
 
-        A device running now is another controller on the same machine and
-        account (two Switch Consoles, each with its own data), and is left to
-        it: the new one is a device of its own. The rows are locked until the
-        caller commits."""
+        A device running now has a process of its own on that data folder,
+        which is left to it: the new one is a device of its own. The rows are
+        locked until the caller commits."""
         if same_device is None:
             return None
         twins = await self.controllers.lock_same_device(
@@ -359,7 +361,8 @@ class ManagementService:
         on it: a new credential, the old one deleted, and the key its provider
         logins are sealed to, or none until it registers one. What was given or
         asked of the process that held it goes with that process: the logins
-        sealed to its key, and its open operations. The device keeps its id,
+        sealed to its key, its open operations, and the service tokens issued to
+        it, queued for revocation. The device keeps its id,
         name, description and agents. The caller commits.
 
         An access token the old process still holds names the old credential,
@@ -391,6 +394,15 @@ class ManagementService:
         )
         await self.controllers.delete_sealed_logins(
             session, tenant_id, controller.id, None
+        )
+        # Its service tokens are the old process's too. Nothing else queues
+        # them, as the device keeps its grants, owner and agents; the route
+        # revokes them at the vendor once this commits.
+        await ServiceConnectionStore().queue_revocation(
+            session,
+            ServiceTokenIssuance.principal == "controller",
+            ServiceTokenIssuance.controller_id == controller.id,
+            ServiceTokenIssuance.revoke_requested.is_(False),
         )
         logger.info(
             "Agent controller %s (%s) of user %s was taken over by a controller "
@@ -454,7 +466,7 @@ class ManagementService:
         public_key: PublicKey | None,
     ) -> Enrolled:
         """Spend an enrollment code on a new controller, or on taking over the
-        owner's device on the same machine and account
+        owner's device on the same machine, account and data folder
         (`_device_to_take_over`); a Switch Cloud machine's controller never
         does, as its machine names its device. The session must be bound to
         the tenant the code resolved to."""

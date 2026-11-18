@@ -190,7 +190,7 @@ async def enroll_controller(
     broker: Annotated[ServiceBroker, Depends(get_service_broker)],
 ) -> dict[str, str | bool]:
     """Spend an enrollment code. `adopted`: the controller took over its
-    owner's device on the same machine and account, which keeps its id and
+    owner's device on the same machine, account and data folder, which keeps its id and
     agents, rather than adding another (`Management.enroll`)."""
     tenant_id = await authenticator.tenant_of_secret(body.proof.code)
     if tenant_id is None:

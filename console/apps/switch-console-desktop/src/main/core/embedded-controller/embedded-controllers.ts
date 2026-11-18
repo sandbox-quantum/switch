@@ -51,17 +51,22 @@ async function controllerVersion(bundle: string): Promise<string> {
 const controllerLog = log.child({ component: 'embedded-agent-controller' });
 
 /**
- * This machine and OS account as the controller names them (`--device-id`),
- * so the server takes over the device this computer already is rather than
- * adding another. Null when it cannot tell, and this computer enrolls as a new
- * device, as it always did; a controller that fails to say is logged.
+ * This machine, OS account and Console data folder (`root`) as the controller
+ * names them (`--device-id`), so the server takes over the device this
+ * Console already was here rather than adding another. Null when it cannot
+ * tell, and this computer enrolls as a new device, as it always did; a
+ * controller that fails to say is logged.
  */
-async function controllerDeviceId(bundle: string): Promise<string | null> {
+async function controllerDeviceId(bundle: string, root: string): Promise<string | null> {
   try {
-    const { stdout } = await execute(process.execPath, [bundle, '--device-id'], {
-      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
-      timeout: 15_000,
-    });
+    const { stdout } = await execute(
+      process.execPath,
+      [bundle, '--device-id', '--device-root', root],
+      {
+        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+        timeout: 15_000,
+      }
+    );
     const id = stdout.trim();
     if (/^[0-9a-f]{64}$/.test(id)) return id;
     if (id)
@@ -155,6 +160,9 @@ export const embeddedControllerService = new EmbeddedControllerService({
   },
   controllerVersion,
   controllerDeviceId,
+  // This Console's own data folder: one device per Console, wherever its
+  // per-server controller data lives inside it.
+  deviceRoot: () => app.getPath('userData'),
   spawn: (command, args, options) => spawn(command, args, options),
   execPath: process.execPath,
   env: () => process.env,

@@ -82,8 +82,13 @@ export type EmbeddedControllerDeps = {
   bundles: { controller: () => string; sharedHost: () => string };
   /** The controller bundle's own version (`--version`), which also proves it runs here. */
   controllerVersion: (bundle: string) => Promise<string>;
-  /** This machine and OS account as the controller names them (`--device-id`); null when unknown. */
-  controllerDeviceId: (bundle: string) => Promise<string | null>;
+  /**
+   * This machine, OS account and data folder `root` as the controller names
+   * them (`--device-id`); null when unknown.
+   */
+  controllerDeviceId: (bundle: string, root: string) => Promise<string | null>;
+  /** The data folder the device id names, the same at enrollment and at every run. */
+  deviceRoot: () => string;
   spawn: SpawnController;
   /** The binary the controller runs on: Electron's, as Node. */
   execPath: string;
@@ -248,7 +253,7 @@ export class EmbeddedControllerService {
         const bundle = this.deps.bundles.controller();
         this.deps.bundles.sharedHost();
         const version = await this.deps.controllerVersion(bundle);
-        const deviceId = await this.deps.controllerDeviceId(bundle);
+        const deviceId = await this.deps.controllerDeviceId(bundle, this.deps.deviceRoot());
         const machine = this.deps.machine();
         const enrolled = await this.deps.management.enroll(workspaceId, {
           name: machine.name,
@@ -518,6 +523,8 @@ export class EmbeddedControllerService {
         '--credential-stdin',
         '--shared-host-bundle',
         this.deps.bundles.sharedHost(),
+        '--device-root',
+        this.deps.deviceRoot(),
         ...providerSeedArgs(this.deps.providerSeed()),
       ],
       env: {

@@ -1,9 +1,11 @@
-"""Which machine and OS account a controller runs on, as Switch keeps it.
+"""Which install a controller runs from, as Switch keeps it.
 
-A controller derives a device id from its machine's own id and the OS account
-it runs as (`device-id.ts` in `@switch-console/agent-controller`): a SHA-256,
-the same each time it is read on that machine and account, and different on
-any other. It sends it when it enrolls and with every status report.
+A controller derives a device id from its machine's own id, the OS account it
+runs as and its data folder (`device-id.ts` in
+`@switch-console/agent-controller`): a SHA-256, the same each time it is read
+for that install, a reinstall or a wiped data folder included, and different
+for any other, a second install on the same account included. It sends it
+when it enrolls and with every status report.
 
 Switch stores `device_hash(owner_id, device_id)` rather than the id itself, so
 the column cannot link two people's controllers to one machine: the same

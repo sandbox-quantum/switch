@@ -81,6 +81,7 @@ function service(overrides: Partial<EmbeddedControllerDeps> = {}): EmbeddedContr
     },
     controllerVersion: async () => '0.1.0',
     controllerDeviceId: async () => DEVICE_ID,
+    deviceRoot: () => '/user-data',
     spawn: spawned.spawn,
     execPath: '/app/electron',
     env: () => ({ PATH: '/usr/bin', HOME: '/home/someone' }),
@@ -208,6 +209,8 @@ describe('EmbeddedControllerService', () => {
       '--credential-stdin',
       '--shared-host-bundle',
       '/app/dist-sidecar/shared-host.mjs',
+      '--device-root',
+      '/user-data',
     ]);
     expect(call.env).toEqual({
       PATH: '/usr/bin',
@@ -248,6 +251,15 @@ describe('EmbeddedControllerService', () => {
     await enabled();
     expect(storedRecord()).toMatchObject({ kind: 'enrolled', controllerId: 'controller-before' });
     expect(calls[0]!.args).toContain('controller-before');
+  });
+
+  it('names this Console’s data folder in its device id, as every run does', async () => {
+    const controllerDeviceId = vi.fn(async () => DEVICE_ID);
+    await enabled({ controllerDeviceId });
+    expect(controllerDeviceId).toHaveBeenCalledWith(
+      '/app/dist-sidecar/agent-controller.mjs',
+      '/user-data'
+    );
   });
 
   it('enrolls with no device id when the controller cannot tell which computer this is', async () => {

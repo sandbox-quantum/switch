@@ -661,7 +661,7 @@ export class StatusCollector {
       dataDir: string;
       /** Where agents with no directory of their own work, reported so the server can name it. */
       workspacesDir: string;
-      /** Which machine and OS account this is (`readDeviceId`), or null when unknown. */
+      /** Which machine, OS account and data folder this is (`readDeviceId`), or null when unknown. */
       deviceId: string | null;
       version: string;
       updatedBy: UpdatedBy;

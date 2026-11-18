@@ -1,11 +1,11 @@
 """A controller enrolling on a device its owner already has, end to end.
 
-Switch Console set up afresh on the same computer (a reinstall, a new data
-directory) or a headless controller enrolled again on the same machine says
-which machine and OS account it is (`device_id`). A device of its owner's on
-the same one that is not running is taken over, agents and all, rather than
-another of the same name added beside it; one running now is another
-controller's, and is left to it.
+Switch Console set up afresh (a reinstall, its data folder wiped) or a
+headless controller enrolled again says which machine, OS account and data
+folder it is (`device_id`). A device of its owner's on the same one that is
+not running is taken over, agents and all, rather than another of the same
+name added beside it; one running now is another process's, and is left to
+it.
 """
 
 from __future__ import annotations
@@ -24,11 +24,13 @@ from switch_core.db.models import (
     AgentController,
     AgentControllerOperation,
     SealedProviderLogin,
+    ServiceTokenIssuance,
     User,
 )
 from switch_core.db.session_scope import tenant_session
 from switch_core.management import tokens
 from switch_core.management.device_identity import device_hash
+from switch_core.management.schemas import ControllerDescription, Platform
 from tests.switch_core.management.harness import (
     TOKEN_SECRET,
     EnrolledController,
@@ -84,6 +86,29 @@ async def _row(harness: Harness, controller_id: str) -> AgentController:
         row = await session.get(AgentController, controller_id)
     assert row is not None
     return row
+
+
+def _issued(
+    owner: User, agent_id: str, controller_id: str, tag: str
+) -> ServiceTokenIssuance:
+    """A live service token issued to `controller_id` for `agent_id`."""
+    now = datetime.now(UTC)
+    return ServiceTokenIssuance(
+        grant_id="grant-1",
+        agent_id=agent_id,
+        owner_id=owner.id,
+        service="github",
+        principal="controller",
+        controller_id=controller_id,
+        permissions={},
+        resources={},
+        expires_at=now + timedelta(hours=1),
+        token_sha256=tag.ljust(64, "0"),
+        encrypted_token="not-a-ciphertext",
+        revoke_requested=False,
+        attempts=0,
+        created_at=now,
+    )
 
 
 async def _settle(harness: Harness) -> None:
@@ -243,6 +268,48 @@ class TestTakingOverADevice:
         assert logins == []
         assert operations, "the restart made an operation"
         assert all(operation.state == "cancelled" for operation in operations)
+
+    async def test_the_old_processs_service_tokens_are_queued_for_revocation(
+        self, harness: Harness
+    ) -> None:
+        """Nothing else would queue them: the device keeps its grants, owner
+        and agents, which is what the periodic pass looks at."""
+        owner = await add_member(harness.session_factory, "ada")
+        async with harness.client() as client:
+            before = await enroll_console(harness, client, owner, device_id=DEVICE)
+            agent_id = await place_agent(client, before, name="buddy")
+            await _offline(harness, before)
+        async with tenant_session(harness.session_factory, TENANT_ZERO_ID) as session:
+            session.add_all(
+                [
+                    _issued(owner, agent_id, before.controller_id, "theirs"),
+                    _issued(owner, agent_id, "another-device", "kept"),
+                ]
+            )
+            await session.commit()
+
+        # Through the service alone, so no sweep of the broker's runs after it.
+        async with tenant_session(harness.session_factory, TENANT_ZERO_ID) as session:
+            enrolled = await harness.management.service.create_controller(
+                session,
+                owner_id=owner.id,
+                description=ControllerDescription(
+                    kind="console",
+                    name="laptop",
+                    platform=Platform(**platform()),
+                    version="0.2.0",
+                    device_id=DEVICE,
+                ),
+                public_key=None,
+            )
+        async with tenant_session(harness.session_factory, TENANT_ZERO_ID) as session:
+            queued = {
+                issued.token_sha256.rstrip("0"): issued.revoke_requested
+                for issued in await session.scalars(select(ServiceTokenIssuance))
+            }
+
+        assert enrolled.adopted
+        assert queued == {"theirs": True, "kept": False}
 
 
 class TestWhatIsLeftAlone:

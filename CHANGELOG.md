@@ -54,14 +54,17 @@ version of their own to them without also giving them a release of their own.
 
 #### Added
 - **A computer enrolled again keeps its device and agents.** A controller
-  enrolling on a machine and OS account its owner already has a device for
-  in the workspace (Switch Console set up again after a reinstall or with a
-  fresh data folder, or a headless controller enrolled again) takes that
-  device over when it isn't running: same id, name and agents, with a new
-  credential. Before, it was added as another device of the same name, and
-  its agents stayed on the old one. A device running at that moment is
-  another controller on the same machine and is left alone, as is a device
-  enrolled or taken over in the last minute that hasn't reported since.
+  enrolling from a machine, OS account and data folder its owner already has
+  a device for in the workspace (Switch Console set up again after a
+  reinstall or with its data folder wiped, or a headless controller enrolled
+  again) takes that device over when it isn't running: same id, name and
+  agents, with a new credential and its old service tokens revoked. Before,
+  it was added as another device of the same name, and its agents stayed on
+  the old one. A second install on the same account with a data folder of
+  its own (a development build beside Switch Console, say) is a device of
+  its own, so the two don't take a device from each other. A device running
+  at that moment is left alone, as is a device enrolled or taken over in the
+  last minute that hasn't reported since.
   Switch Cloud machines never are. Enrollment (`POST
   /gateway/management/controllers` and `POST
   /v1/management/controllers/enroll`) and status reports take an optional
@@ -4660,10 +4663,12 @@ version of their own to them without also giving them a release of their own.
 
 #### Added
 - **This computer keeps its agents when Switch Console is set up again on
-  it.** Console tells the server which computer and OS account it runs on
-  when it turns on managed agents, so a reinstall or a fresh data folder
-  takes over the device this computer already was, agents included, instead
-  of adding another of the same name. It needs a server that takes it
+  it.** Console tells the server which computer, OS account and data folder
+  it runs from when it turns on managed agents, so a reinstall, or its data
+  folder wiped and set up again, takes over the device this Console already
+  was, agents included, instead of adding another of the same name. A
+  Console with a data folder of its own beside it (a development build, a
+  second profile) stays a device of its own. It needs a server that takes it
   (`gateway-api` 7); an older one adds a device as before. In the Move
   dialog, devices that share a name now say when each was last seen.
 - **switch-buddy's first message slides in.** At the end of onboarding its
@@ -7284,15 +7289,18 @@ tags; see RELEASING.md.
 ### [Unreleased]
 
 #### Added
-- **Says which machine and OS account it runs on.** Enrolling, and every
-  status report, carry `device_id`: a SHA-256 of the platform's machine id
-  (a Mac's hardware UUID, Windows's MachineGuid, Linux's machine-id) and the
-  OS user name, with the host name on Linux and Windows, where a cloned
-  image can share a machine id. A server that keeps it takes over the
-  device the machine already was rather than adding another, and the
-  enroll output says so. A container whose host name changes each time it
-  starts still enrolls as a new device each time. `--device-id` prints it, for Switch Console, which
-  enrolls its computer itself. Left out wherever it can't be read.
+- **Says which machine, OS account and data folder it runs from.**
+  Enrolling, and every status report, carry `device_id`: a SHA-256 of the
+  platform's machine id (a Mac's hardware UUID, Windows's MachineGuid,
+  Linux's machine-id), the OS user name and the data directory (or
+  `--device-root`, which Switch Console passes as its own data folder), with
+  the host name on Linux and Windows, where a cloned image can share a
+  machine id. A server that keeps it takes over the device that install
+  already was rather than adding another, and the enroll output says so. A
+  container whose host name changes each time it starts still enrolls as a
+  new device each time. `--device-id --device-root <folder>` prints it, for
+  Switch Console, which enrolls its computer itself. Left out wherever it
+  can't be read.
 - **Signs Antigravity in through Vertex AI.** A Vertex AI login given for
   Antigravity is taken, its Google credential written to the agent's own
   `provider-home/google-credentials.json`, and `agy` run with `AGY_ADC_AUTH`,

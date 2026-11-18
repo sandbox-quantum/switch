@@ -54,6 +54,8 @@ describe('main', () => {
     );
     expect(await main([])).toBe(EXIT_CONFIGURATION);
     expect(await main(['--help'])).toBe(EXIT_OK);
+    expect(await main(['--device-id'])).toBe(EXIT_CONFIGURATION);
+    expect(lastLine()).toBe('switch-agent-controller: --device-id needs --device-root.');
   });
 
   it('enrolls with the name and description it is given', async () => {

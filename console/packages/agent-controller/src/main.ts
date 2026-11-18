@@ -290,7 +290,7 @@ async function enrollCommand(args: string[]): Promise<number> {
     // Provider logins given to this machine are sealed to this key; only the
     // machine holds the private half.
     const keys = generateSealingKeyPair();
-    const deviceId = await readDeviceId(SYSTEM_SOURCES);
+    const deviceId = await readDeviceId(SYSTEM_SOURCES, dataDir);
     const enrolled = await enroll(fetch, server, {
       proof: { kind: 'enrollment_code', code: values.code },
       public_key: { alg: 'X25519', key: keys.publicKey },
@@ -515,6 +515,9 @@ async function runCommand(args: string[]): Promise<number> {
       'updated-by-console': { type: 'boolean' },
       'no-self-update': { type: 'boolean' },
       'provider-seed': { type: 'string' },
+      // The data folder the device id names, where it is not `--data-dir`:
+      // Switch Console's own, holding one data directory per server.
+      'device-root': { type: 'string' },
     },
     strict: true,
   });
@@ -707,7 +710,7 @@ async function runCommand(args: string[]): Promise<number> {
         // no directory works in a folder of its own there.
         workspacesFor: separateUsers ? () => unitAgentRoot(separateUsers) : serverWorkspacesDir,
         version: VERSION,
-        deviceId: await readDeviceId(SYSTEM_SOURCES),
+        deviceId: await readDeviceId(SYSTEM_SOURCES, values['device-root'] ?? dataDir),
         updatedBy,
         selfUpdate,
         supervised,
@@ -1250,11 +1253,20 @@ export async function main(argv: string[]): Promise<number> {
       case '--protocol':
         process.stdout.write(`${PROTOCOL_VERSION}\n`);
         return 0;
-      // For Switch Console, which enrolls this computer itself: an empty line
-      // when the machine id cannot be read.
-      case '--device-id':
-        process.stdout.write(`${(await readDeviceId(SYSTEM_SOURCES)) ?? ''}\n`);
+      // For Switch Console, which enrolls this computer itself and names its
+      // own data folder: an empty line when the machine id cannot be read.
+      case '--device-id': {
+        const { values } = parseArgs({
+          args: rest,
+          options: { 'device-root': { type: 'string' } },
+          strict: true,
+        });
+        if (!values['device-root']) throw new UsageError('--device-id needs --device-root.');
+        process.stdout.write(
+          `${(await readDeviceId(SYSTEM_SOURCES, values['device-root'])) ?? ''}\n`
+        );
         return 0;
+      }
       default:
         throw new UsageError(`Unknown command '${command}'.`);
     }

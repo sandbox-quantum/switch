@@ -270,8 +270,8 @@ contracts:
     # change one (`TemplateCreateRequest`, `TemplateUpdateRequest`).
     #
     # Revision 7 adds `device_id` to Switch Console enrolling this computer
-    # (`ConsoleControllerRequest`): which machine and OS account it is, so an
-    # enrollment on a device the person already has takes it over.
+    # (`ConsoleControllerRequest`): which machine, OS account and data folder
+    # it is, so an enrollment on a device the person already has takes it over.
     #
     # A strict request body changing is the change most easily missed, so
     # core/tests/switch_core/gateway/test_gateway_api_revision.py fails until

@@ -173,7 +173,7 @@ async def enroll_console(
     broker: Broker,
 ) -> dict[str, str | bool]:
     """Enroll the caller's Switch Console as a controller. `adopted`: it took
-    over the caller's device on the same machine and account, which keeps its
+    over the caller's device on the same machine, account and data folder, which keeps its
     id and agents, rather than adding another (`Management.create_controller`)."""
     enrolled = await management.create_controller(
         session,

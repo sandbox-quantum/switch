@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { hostname, userInfo } from 'node:os';
+import { resolve } from 'node:path';
 import { promisify } from 'node:util';
 
 const run = promisify(execFile);
@@ -67,26 +68,34 @@ async function machineId(sources: DeviceIdSources): Promise<string | null> {
 }
 
 /**
- * This machine and OS account as one opaque id, the same each time it is
- * read. Switch matches a controller enrolling again on the same machine to the
- * device it already was, so that device's agents stay put across a reinstall
- * or a fresh data directory.
+ * This machine, OS account and data folder as one opaque id, the same each
+ * time it is read. Switch matches a controller enrolling again with it to the
+ * device it already was, so that device's agents stay put across a reinstall,
+ * or a data folder wiped and set up again.
  *
- * A SHA-256 of the platform's machine id with the OS user name: an agent's
- * files live in that user's home, so two accounts on one computer are two
- * devices. On Linux and Windows the host name goes in too, since a cloned disk
+ * A SHA-256 of the platform's machine id, the OS user name and the data
+ * folder `root`. An agent's files live in that user's home, so two accounts
+ * on one computer are two devices; and two installs on one account with data
+ * folders of their own (a Switch Console and a development build beside it)
+ * are two devices too, rather than each taking the other's device whenever
+ * it starts. On Linux and Windows the host name goes in too, since a cloned disk
  * or image carries the machine id it was cloned from; a Mac's hardware UUID
  * belongs to the hardware. So a container given a new host name each time it
  * starts is a new device each time, as before: better than one clone taking
  * over another machine's device and its agents. Null when any of it cannot be read, and the
  * controller enrolls as a new device, as it always did.
  */
-export async function readDeviceId(sources: DeviceIdSources): Promise<string | null> {
+export async function readDeviceId(sources: DeviceIdSources, root: string): Promise<string | null> {
   let parts: string[];
   try {
     const id = await machineId(sources);
     if (id === null) return null;
-    parts = ['switch-device-v1', sources.platform, id.toLowerCase(), sources.username()];
+    // A Mac's and Windows's own file systems ignore case in a path.
+    const folder =
+      sources.platform === 'darwin' || sources.platform === 'win32'
+        ? resolve(root).toLowerCase()
+        : resolve(root);
+    parts = ['switch-device-v1', sources.platform, id.toLowerCase(), sources.username(), folder];
     if (sources.platform !== 'darwin') parts.push(sources.hostname().toLowerCase());
   } catch {
     return null;

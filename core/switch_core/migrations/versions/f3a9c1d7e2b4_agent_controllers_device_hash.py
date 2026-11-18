@@ -1,6 +1,6 @@
-"""agent_controllers.device_hash: which machine and account a controller runs on
+"""agent_controllers.device_hash: which machine, account and data folder a controller runs from
 
-A controller enrolling again on a machine and OS account its owner already
+A controller enrolling again on a machine, OS account and data folder its owner already
 has a device for (a reinstall, a fresh data directory) takes that device over
 when it is not running, agents and all, instead of adding another of the same
 name. The column holds the SHA-256 of the owner's id and the device id the

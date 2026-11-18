@@ -4697,8 +4697,8 @@ class AgentController(TenantScoped, Base):
     ignored. `assignment_revision` bumps on every change to the set of agents
     the controller should run, and is what its ETag carries.
 
-    `device_hash` says which machine and OS account the controller runs on:
-    the SHA-256 of its owner's id and the device id the controller derives
+    `device_hash` says which machine, OS account and data folder the controller
+    runs from: the SHA-256 of its owner's id and the device id it derives
     (`management/device_identity.py`), so the stored value is no use for
     linking two people's controllers to one machine. A controller enrolling
     with the hash of one of its owner's devices that is not running takes that
