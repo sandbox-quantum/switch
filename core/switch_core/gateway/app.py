@@ -254,6 +254,10 @@ def create_gateway_app(
         per_caller=config.gateway_requests_per_caller,
         read_timeout=config.gateway_read_statement_timeout,
         keyring=config.keyring,
+        # The only bearer token a gateway route takes (`hosted_controller.py`).
+        controller_token=app.state.hosted_controller_settings.token.get_secret_value()
+        if app.state.hosted_controller_settings
+        else None,
     )
 
     app.add_exception_handler(RequestValidationError, validation_error_response)

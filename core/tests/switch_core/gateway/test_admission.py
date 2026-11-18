@@ -55,6 +55,9 @@ class _Gateway:
         await send({"type": "http.response.body", "body": body})
 
 
+_CONTROLLER_TOKEN = "controller-" + secrets.token_hex(8)
+
+
 def _admission(
     gateway: _Gateway, *, limit: int = 10, per_caller: int = 2
 ) -> GatewayAdmission:
@@ -64,6 +67,7 @@ def _admission(
         per_caller=per_caller,
         read_timeout="10s",
         keyring=_KEYRING,
+        controller_token=_CONTROLLER_TOKEN,
     )
 
 
@@ -199,6 +203,44 @@ async def test_a_session_is_counted_against_its_person_and_a_forged_one_is_not()
 
     assert same_person.status_code == 429
     assert not_ada.status_code == 200
+
+
+async def test_a_new_bearer_token_each_request_still_waits_in_its_address_line() -> (
+    None
+):
+    gateway = _Gateway()
+    app = _admission(gateway, per_caller=1)
+    async with _client(app) as client:
+
+        def bearer() -> dict[str, str]:
+            return {"authorization": f"Bearer {secrets.token_hex(16)}"}
+
+        held = asyncio.create_task(client.get("/hold", headers=bearer()))
+        await _until(lambda: gateway.started == ["/hold"])
+        # A token no gateway route takes names nobody, however new it is.
+        second = await client.get("/auth/login", headers=bearer())
+        gateway.release.set()
+        await held
+
+    assert second.status_code == 429
+
+
+async def test_the_cloud_controllers_token_runs_in_a_line_of_its_own() -> None:
+    gateway = _Gateway()
+    app = _admission(gateway, per_caller=1)
+    async with _client(app) as client:
+        held = asyncio.create_task(
+            client.get("/hold", headers={"authorization": "Bearer guess"})
+        )
+        await _until(lambda: gateway.started == ["/hold"])
+        controller = await client.get(
+            "/hosted-controller/machines",
+            headers={"authorization": f"Bearer {_CONTROLLER_TOKEN}"},
+        )
+        gateway.release.set()
+        await held
+
+    assert controller.status_code == 200
 
 
 async def test_callers_with_nothing_running_are_forgotten() -> None:

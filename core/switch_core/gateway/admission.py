@@ -24,7 +24,10 @@ the database on purpose, and its client gave up long before. Writes run
 without one: some do a workspace's worth of work in one statement.
 
 The caller is the person a session cookie names, once its signature checks
-out, or a bearer token, hashed, or else the address the request came from.
+out, or the cloud controller when its bearer token is the one configured, or
+else the address the request came from. No other gateway route takes a
+bearer token, so any other one is counted against its address: a client that
+sends a new random token with every request still waits in one line.
 Behind a proxy every request without a valid session comes from the proxy's
 address and they share one line. That only slows sign-ins on this process:
 the requests of signed-in people run in lines of their own. The state is this
@@ -37,6 +40,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import secrets
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -49,7 +53,6 @@ from switch_core.gateway.auth import session_subject
 from switch_core.keys import Keyring
 from switch_core.observability.catalogue import GATEWAY_TURNED_AWAY
 from switch_core.observability.metrics import metrics
-from switch_core.refusal_breaker import bearer_caller
 
 logger = logging.getLogger(__name__)
 
@@ -133,12 +136,16 @@ class GatewayAdmission:
         per_caller: int,
         read_timeout: str,
         keyring: Keyring,
+        controller_token: str | None = None,
     ) -> None:
         self.app = app
         self.limit = limit
         self.per_caller = per_caller
         self.read_timeout = read_timeout
         self._keyring = keyring
+        self._controller_auth = (
+            f"Bearer {controller_token}".encode() if controller_token else None
+        )
         self._process = _Line(limit)
         self._callers: dict[str, _Line] = {}
         self._named: dict[str, float] = {}
@@ -150,9 +157,12 @@ class GatewayAdmission:
             subject = session_subject(token, self._keyring)
             if subject is not None:
                 return f"user:{subject}"
-        bearer = bearer_caller(scope)
-        if bearer is not None:
-            return f"token:{bearer}"
+        if self._controller_auth is not None:
+            for name, value in scope.get("headers", []):
+                if name == b"authorization" and secrets.compare_digest(
+                    value, self._controller_auth
+                ):
+                    return "cloud-controller"
         client = scope.get("client")
         return f"address:{client[0] if client else 'unknown'}"
 
