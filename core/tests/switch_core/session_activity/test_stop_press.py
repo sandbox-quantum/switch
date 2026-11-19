@@ -32,9 +32,15 @@ STATUS_POST = "1700000000.0005"
 class Publisher:
     def __init__(self, target: StopTarget | None) -> None:
         self.target = target
+        self.stoppers: list[tuple[str, str, str]] = []
 
     async def stop_target(self, channel_id: str, ref: str) -> StopTarget | None:
         return self.target if ref == STATUS_POST else None
+
+    async def record_stopper(
+        self, channel_id: str, ref: str, turn_id: str, name: str
+    ) -> None:
+        self.stoppers.append((ref, turn_id, name))
 
 
 class Platform:
@@ -229,3 +235,22 @@ async def test_slacks_own_stop_leaves_a_later_turn_running(service, people, room
     await bridge._handle_inbound_interaction(_session_stop())
     assert conn.session_commands == []
     assert "TURN_NOT_RUNNING" in platform.told[0]
+
+
+async def test_who_stopped_the_turn_is_remembered_for_its_ending(service, people, room):
+    registry = AgentConnectionRegistry()
+    _watching(registry)
+    bridge, _platform = _bridge(service, registry, _target(room), people.owner)
+    await bridge._handle_inbound_interaction(_press())
+    publisher = bridge._activity_publisher
+    assert publisher.stoppers == [(STATUS_POST, "turn-1", "person")]  # type: ignore[union-attr]
+
+
+async def test_a_refused_stop_remembers_nobody(service, people, room):
+    registry = AgentConnectionRegistry()
+    _watching(registry)
+    bridge, _platform = _bridge(
+        service, registry, _target(room, "turn-2"), people.owner
+    )
+    await bridge._handle_inbound_interaction(_press("turn-1"))
+    assert bridge._activity_publisher.stoppers == []  # type: ignore[union-attr]

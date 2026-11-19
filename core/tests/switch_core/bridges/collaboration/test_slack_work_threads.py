@@ -19,7 +19,10 @@ from switch_core.bridges.collaboration.adapter import (
     TurnActivity,
 )
 from switch_core.bridges.collaboration.own_app_setup import SLACK_BOT_EVENTS
-from switch_core.bridges.collaboration.session.renderers import SESSION_STOP_ACTION
+from switch_core.bridges.collaboration.session.renderers import (
+    SESSION_STOP_ACTION,
+    turn_state,
+)
 from switch_core.bridges.collaboration.slack.adapter import (
     SlackAdapter,
     SlackConnectionConfig,
@@ -645,3 +648,47 @@ async def test_a_turn_without_a_session_always_keeps_switchs_own_stop() -> None:
         None,
     )
     assert _has_own_stop(client.posted[-1]["blocks"])
+
+
+# ── Who stopped it ───────────────────────────────────────────────────────────
+
+
+def test_an_interrupted_turn_names_who_stopped_it() -> None:
+    line = turn_state(
+        [],
+        _turn("interrupted"),
+        tool_detail=True,
+        elapsed_seconds=7,
+        stopped_by="Simon",
+    )
+    assert line == "Stopped by Simon. Worked for 7s."
+
+
+def test_an_interruption_nobody_pressed_keeps_its_own_words() -> None:
+    line = turn_state([], _turn("interrupted"), tool_detail=True, elapsed_seconds=7)
+    assert line.startswith("Turn interrupted.")
+
+
+def test_a_name_never_changes_how_a_finished_turn_reads() -> None:
+    line = turn_state(
+        [], _turn("completed"), tool_detail=True, elapsed_seconds=7, stopped_by="Simon"
+    )
+    assert line == "Worked for 7s."
+
+
+async def test_the_plan_header_says_who_stopped_the_turn() -> None:
+    client = FakeWebClient()
+    adapter = _adapter(client)
+    await adapter.post_rich(
+        CHANNEL,
+        "Agent",
+        TurnActivity(
+            [_done_tool()],
+            _turn("interrupted"),
+            elapsed_seconds=7,
+            stopped_by="Simon",
+        ),
+        None,
+    )
+    [plan] = [b for b in client.posted[-1]["blocks"] if b["type"] == "plan"]
+    assert plan["title"].startswith("Stopped by Simon. Worked for 7s.")

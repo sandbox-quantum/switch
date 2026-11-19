@@ -2127,7 +2127,10 @@ class SlackAdapter(PlatformAdapter):
             )
             return False
         drawn = render_activity_plan(
-            content.items, content.turn, elapsed_seconds=content.elapsed_seconds
+            content.items,
+            content.turn,
+            elapsed_seconds=content.elapsed_seconds,
+            stopped_by=content.stopped_by,
         )
         plans = [block for block in drawn.blocks if block.get("type") == "plan"]
         if len(plans) != 1:
@@ -2361,6 +2364,7 @@ class SlackAdapter(PlatformAdapter):
             content.turn,
             elapsed_seconds=content.elapsed_seconds,
             interrupt_turn_id=content.interrupt_turn_id,
+            stopped_by=content.stopped_by,
         )
         blocks = drawn.blocks
         spent = drawn.spent_control
@@ -2491,6 +2495,7 @@ class SlackAdapter(PlatformAdapter):
                     content.turn,
                     elapsed_seconds=content.elapsed_seconds,
                     interrupt_turn_id=content.interrupt_turn_id,
+                    stopped_by=content.stopped_by,
                 )
                 if not content.status_only
                 else render_activity(

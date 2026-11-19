@@ -2845,6 +2845,13 @@ class CollaborationCore:
                 "The agent was not stopped: its controller is not connected to Switch."
             )
             return
+        # Remembered for the turn's ending, which then says who stopped it.
+        await publisher.record_stopper(
+            interaction.channel_id,
+            interaction.message_ref,
+            turn_id,
+            interaction.sender_display_name or interaction.sender_name,
+        )
         await tell(
             "Switch has asked the agent to stop its current work. The activity "
             "message will say when it has."
