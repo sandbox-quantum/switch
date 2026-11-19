@@ -3,6 +3,7 @@ import { motion } from 'motion/react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useManagedAgents } from '@renderer/features/managed-agents/use-managed-agents';
 import { AgentIcon } from '@renderer/lib/components/agent-icon';
+import { TermInfo } from '@renderer/lib/components/term-info';
 import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { Button } from '@renderer/lib/ui/button';
 import { Spinner } from '@renderer/lib/ui/spinner';
@@ -233,8 +234,12 @@ export function StartChoices({
       aria-labelledby="buddy-start-heading"
       className="flex max-w-full flex-col gap-3 rounded-2xl bg-foreground/[0.04] p-3 emdark:bg-background-2/60"
     >
-      <h2 id="buddy-start-heading" className="px-1 text-sm font-medium text-foreground">
+      <h2
+        id="buddy-start-heading"
+        className="flex items-center gap-1.5 px-1 text-sm font-medium text-foreground"
+      >
         Pick an AI provider to get started
+        <TermInfo term="provider" />
       </h2>
       <motion.div
         key={shown}

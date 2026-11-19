@@ -31,6 +31,7 @@ function signedInAs(role: Role) {
     can_create_workspace: false,
     can_add_workspace: false,
     invite_email_enabled: false,
+    can_manage_connector_apps: false,
   };
   vi.mocked(useAuth).mockReturnValue({
     session,
@@ -109,6 +110,14 @@ describe("OverviewPage", () => {
   afterEach(() => {
     cleanup();
     vi.unstubAllGlobals();
+  });
+
+  it("is titled Home", async () => {
+    signedInAs("member");
+    answer(WORKSPACE);
+    renderPage();
+    expect(screen.getByRole("heading", { name: "Home" })).toBeTruthy();
+    await counts();
   });
 
   it("shows a workspace admin the workspace's totals", async () => {

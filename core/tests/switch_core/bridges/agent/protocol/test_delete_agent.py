@@ -79,10 +79,13 @@ class TestDeleteAgentInARoom:
 
         told: list[tuple[str, str, list[str]]] = []
 
-        async def room_agents_changed(tenant_id: str, changed_room_id: str) -> None:
-            async with session_factory() as session:
-                remaining = await RoomStore().get_agent_ids(session, changed_room_id)
-            told.append((tenant_id, changed_room_id, remaining))
+        async def room_agents_changed(tenant_id: str, changed: list[str]) -> None:
+            for changed_room_id in changed:
+                async with session_factory() as session:
+                    remaining = await RoomStore().get_agent_ids(
+                        session, changed_room_id
+                    )
+                told.append((tenant_id, changed_room_id, remaining))
 
         svc.set_room_agents_listener(room_agents_changed)
         await svc.delete_agent(agent_id=agent_id)

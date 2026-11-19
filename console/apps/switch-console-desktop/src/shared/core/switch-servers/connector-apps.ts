@@ -149,3 +149,17 @@ export type SaveConnectorAppResult =
       field: ConnectorAppField | null;
       checks: ConnectorAppCheck[];
     };
+
+/**
+ * Who sets up the server's connector apps, as its session answers for the
+ * signed-in account. Each is null from a server that does not say.
+ */
+export type ConnectorAppManagement = {
+  /** `can_manage_connector_apps`: whether this account may set them up, as
+   * the server's operator, or an admin of its only organization. */
+  canManage: boolean | null;
+  /** `connector_apps_in_dashboard`: whether they are set up in the web
+   * dashboard, by the admins of the server's one organization, rather than
+   * with the `switch-connector-apps` command, as on a server with several. */
+  inDashboard: boolean | null;
+};

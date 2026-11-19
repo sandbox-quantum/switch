@@ -37,6 +37,9 @@ vi.mock('@main/core/telemetry/telemetry-service', () => ({
   trackEvent: telemetryMocks.trackEvent,
 }));
 
+const clearDashboardWindowSession = vi.hoisted(() => vi.fn());
+vi.mock('./dashboard-window-sessions', () => ({ clearDashboardWindowSession }));
+
 // Imported after the mocks so the module binds to the mocked db + secrets store.
 const {
   addServer,
@@ -65,6 +68,7 @@ describe('servers-store: rename & delete', () => {
     fixture.sqlite.pragma('foreign_keys = OFF');
     secretMocks.deleteSecret.mockReset();
     telemetryMocks.trackEvent.mockReset();
+    clearDashboardWindowSession.mockReset();
   });
 
   afterEach(() => {
@@ -441,6 +445,18 @@ describe('servers-store: rename & delete', () => {
       expect(telemetryMocks.trackEvent).toHaveBeenCalledWith('server_removed', {
         server_kind: 'remote_managed',
       });
+    });
+
+    it('clears the session the server’s old dashboard window kept', async () => {
+      await fixture.db.insert(switchServers).values({
+        id: 'srv-ext',
+        name: 'External',
+        url: 'https://switch.example.com',
+      });
+
+      await removeServer('srv-ext');
+
+      expect(clearDashboardWindowSession).toHaveBeenCalledExactlyOnceWith('srv-ext');
     });
 
     it('reports nothing for a server that was already gone', async () => {

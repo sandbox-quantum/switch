@@ -1,6 +1,6 @@
 import { Alert } from "@mui/material";
 
-/** What both layouts' organization Users say above the table: why the
+/** What organization Users says above the table: why the
  * platform operator sees nothing, or may only make an admin; and, where the
  * members come from the organization's account settings (a directory such as
  * WorkOS), what changing them here does. */

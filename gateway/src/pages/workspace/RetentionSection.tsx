@@ -33,7 +33,9 @@ const CUSTOM = "custom";
 type Mode = "forever" | "window";
 
 export function describeRetention(days: number | null): string {
-  if (days === null) return "Messages are kept forever.";
+  if (days === null) {
+    return "No retention policy is set, so Switch keeps every message and the files attached to it.";
+  }
   return `Messages older than ${days} ${days === 1 ? "day" : "days"} are deleted.`;
 }
 

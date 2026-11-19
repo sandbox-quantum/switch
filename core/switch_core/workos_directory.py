@@ -78,6 +78,11 @@ SIGN_IN_FIRST = (
 # shared organization can be.
 MEMBER_ROLE_IN_WORKOS = "viewer"
 
+# The WorkOS roles Switch expects; any other is logged.
+_KNOWN_WORKOS_ROLES = frozenset(
+    {ORGANIZATION_ADMIN_ROLE, MEMBER_ROLE_IN_WORKOS, "admin", "editor"}
+)
+
 
 def customer_id_of(organization: dict[str, Any]) -> str | None:
     """The customer a WorkOS organization says it belongs to, or None if it
@@ -92,6 +97,21 @@ def switch_role(workos_role: str) -> str:
     here, since Switch adds no role of its own to a shared environment."""
     return (
         ORGANIZATION_ADMIN_ROLE if workos_role == ORGANIZATION_ADMIN_ROLE else "member"
+    )
+
+
+def _report_unrecognized_role(
+    membership_id: str | None, workos_organization_id: str, workos_role: str
+) -> None:
+    """Log a role Switch has no name for, so it can be found and corrected."""
+    if workos_role in _KNOWN_WORKOS_ROLES:
+        return
+    logger.warning(
+        "WorkOS membership %s of organization %s has role %r, "
+        "which Switch does not recognize; it is treated as a Member.",
+        membership_id,
+        workos_organization_id,
+        workos_role,
     )
 
 
@@ -231,6 +251,7 @@ class WorkOSDirectory:
             slug = role.get("slug") if isinstance(role, dict) else None
             if not isinstance(organization_id, str) or not isinstance(slug, str):
                 raise _unreadable("a membership")
+            _report_unrecognized_role(membership.get("id"), organization_id, slug)
             memberships.append(
                 DirectoryMembership(
                     workos_organization_id=organization_id, role=switch_role(slug)
@@ -244,7 +265,11 @@ class WorkOSDirectory:
         """Switch's role for WorkOS user `subject`'s active membership of
         `workos_organization_id`, or None if they hold none."""
         membership = await self._active_membership(subject, workos_organization_id)
-        return None if membership is None else switch_role(membership[1])
+        if membership is None:
+            return None
+        membership_id, workos_role = membership
+        _report_unrecognized_role(membership_id, workos_organization_id, workos_role)
+        return switch_role(workos_role)
 
     async def _active_membership(
         self, subject: str, workos_organization_id: str

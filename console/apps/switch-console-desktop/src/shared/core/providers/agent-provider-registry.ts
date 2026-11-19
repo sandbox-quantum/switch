@@ -21,10 +21,14 @@ export type AgentProviderDefinition = {
   docUrl: string;
   /** What to tell someone to install, where the product name alone would be ambiguous. */
   cliLabel: string;
+  /** The bare product name, without the vendor `name` may carry: "Codex". */
+  shortName: string;
   /** The command a person runs on the execution machine to sign the CLI in. */
   loginCommand: string;
   /** The Switch gateway's known-agent type, sent when an agent registers. */
   knownAgentType: string;
+  /** Whether the provider runtime can review tool calls automatically. */
+  supportsAutoMode: boolean;
 };
 
 type Catalogue = {
@@ -107,6 +111,10 @@ export function offeredAgentProviders(flags: FeatureFlags): readonly AgentProvid
 
 export function getProvider(id: string): AgentProviderDefinition | undefined {
   return loaded().byId.get(id);
+}
+
+export function providerSupportsAutoMode(id: string): boolean {
+  return getProvider(id)?.supportsAutoMode === true;
 }
 
 /** A registered provider's definition; throws for an id the catalogue does not have. */

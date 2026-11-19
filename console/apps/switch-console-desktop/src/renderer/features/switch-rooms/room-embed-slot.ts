@@ -5,16 +5,16 @@ import type { RoomTab } from './room-tab-store';
  * A box where a room's conversation is drawn: on a page other than the room
  * view, or the part of the room view beside its side panel. `fallback` is the
  * tab the box's page opens on until one is picked; without it, the box opens on
- * the conversation only when its platform can be drawn inline.
+ * the conversation only when the room has one.
  */
 export type RoomEmbedSlot = { roomId: string; element: HTMLElement; fallback?: RoomTab };
 
 /**
  * Where `RoomEmbedLayer` draws a room when a page shows one inside itself, as
- * an agent's page does beside its own column. The layer cannot be rendered
- * there — moving a `<webview>` reloads it — so the page marks out a box and the
- * layer is laid over it. A box left behind by a page that has since gone is
- * never taken: only the element that claimed the slot can release it.
+ * an agent's page does beside its own column. The layer is mounted above the
+ * view switch, so the page marks out a box and the layer is laid over it. A
+ * box left behind by a page that has since gone is never taken: only the
+ * element that claimed the slot can release it.
  */
 export class RoomEmbedSlotStore {
   slot: RoomEmbedSlot | null = null;

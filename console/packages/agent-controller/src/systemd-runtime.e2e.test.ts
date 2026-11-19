@@ -145,8 +145,10 @@ describe.skipIf(!dataDir)('agents as users of their own, under systemd', () => {
         dataDir: dataDir!,
         workspacesFor: () => join(dataDir!, 'workspaces'),
         version: '0.1.0',
+        deviceId: null,
         updatedBy: 'self',
         selfUpdate: null,
+        supervised: false,
         now: Date.now,
         random: () => 0,
         timing: {

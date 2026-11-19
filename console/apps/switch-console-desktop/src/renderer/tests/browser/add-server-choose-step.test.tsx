@@ -1,13 +1,12 @@
 /**
- * The add-server chooser's Switch Cloud choice: offered while the Cloud is not
- * one of the servers yet, and not once it is.
+ * The add-server chooser's Switch Cloud choice: listed last as coming soon,
+ * and not choosable, even in a build that knows where the Cloud is.
  */
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { SwitchServer } from '@shared/core/switch-servers/switch-servers';
 
-const state = vi.hoisted(() => ({ servers: [] as SwitchServer[] }));
+const connectToSwitchCloud = vi.hoisted(() => vi.fn());
 
 vi.hoisted(() => {
   window.electronAPI ??= {
@@ -23,10 +22,8 @@ vi.mock('@renderer/features/switch-servers/use-switch-cloud', () => ({
 
 vi.mock('@renderer/features/switch-servers/switch-servers-store', () => ({
   switchServersStore: {
-    get servers() {
-      return state.servers;
-    },
-    connectToSwitchCloud: vi.fn(),
+    servers: [],
+    connectToSwitchCloud,
   },
 }));
 
@@ -43,21 +40,7 @@ afterEach(async () => {
   root = null;
 });
 
-function server(url: string): SwitchServer {
-  return {
-    id: url,
-    name: url,
-    url,
-    dashboardUrl: null,
-    managed: false,
-    managementKind: null,
-    sshHost: null,
-    createdAt: '',
-    updatedAt: '',
-  };
-}
-
-async function render(): Promise<string> {
+async function render(): Promise<HTMLDivElement> {
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
@@ -66,29 +49,50 @@ async function render(): Promise<string> {
     root!.render(
       // Drawn as a page, the way first run draws it, so it needs no dialog.
       <WizardChromeProvider chrome="page" exit={null}>
-        <ChooseStep
-          onLocal={noop}
-          onRemoteHost={noop}
-          onExternal={noop}
-          onCloud={noop}
-          onClose={noop}
-        />
+        <ChooseStep onLocal={noop} onRemoteHost={noop} onExternal={noop} onClose={noop} />
       </WizardChromeProvider>
     )
   );
-  return document.body.textContent ?? '';
+  return container;
+}
+
+/** The chooser's cards, in the order they are drawn: every button but Cancel. */
+function cards(el: HTMLElement): HTMLButtonElement[] {
+  return [...el.querySelectorAll<HTMLButtonElement>('button')].filter(
+    (b) => b.textContent?.trim() !== 'Cancel'
+  );
 }
 
 describe('the Switch Cloud choice', () => {
-  it('is offered while Switch Cloud is not one of your servers', async () => {
-    state.servers = [server('https://other.example.invalid')];
-    expect(await render()).toContain('Connect to Switch Cloud');
+  it('is listed last, as coming soon and disabled', async () => {
+    const el = await render();
+
+    const all = cards(el);
+    expect(all.map((b) => b.textContent)).toEqual([
+      expect.stringContaining('Run a server on this computer'),
+      expect.stringContaining('Run or join a server on a remote host'),
+      expect.stringContaining('Connect to an existing server'),
+      expect.stringContaining('Switch Cloud'),
+    ]);
+    const cloud = all.at(-1)!;
+    expect(cloud.textContent).toContain('Coming soon');
+    expect(cloud.disabled).toBe(true);
+    expect(cloud.getAttribute('aria-disabled')).toBe('true');
   });
 
-  it('is not offered once Switch Cloud is already added', async () => {
-    state.servers = [server('https://cloud.example.invalid')];
-    const text = await render();
-    expect(text).not.toContain('Connect to Switch Cloud');
-    expect(text).toContain('Connect to an existing server');
+  it('cannot be clicked or focused, and never connects', async () => {
+    const el = await render();
+    const cloud = cards(el).at(-1)!;
+
+    await act(async () => cloud.click());
+    cloud.focus();
+
+    expect(document.activeElement).not.toBe(cloud);
+    expect(connectToSwitchCloud).not.toHaveBeenCalled();
+  });
+
+  it('leaves the other choices choosable', async () => {
+    const el = await render();
+    for (const card of cards(el).slice(0, -1)) expect(card.disabled).toBe(false);
   });
 });

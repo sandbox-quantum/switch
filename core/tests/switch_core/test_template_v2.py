@@ -257,3 +257,43 @@ def test_an_existing_room_left_out_is_refused():
             providers=frozenset(provider_ids()),
         )
     assert {p.code for p in e.value.problems} == {"input_missing"}
+
+
+@pytest.mark.parametrize(
+    ("written", "expected"),
+    [
+        ("", (False, True)),
+        ("    auto_approve: false\n", (False, False)),
+        ("    auto_mode: false\n", (False, False)),
+    ],
+)
+def test_cursor_defaults_to_bypass_but_honors_manual_approval(written, expected):
+    template = (
+        """version: 2
+resources:
+  helper:
+    type: agent
+    name: helper
+    instructions: Help.
+    provider: cursor
+    machine: laptop
+    directory: /srv/helper
+"""
+        + written
+    )
+    machines = [
+        {
+            **MACHINES[0],
+            "providers": [{"provider": "cursor", "installed": True, "auth": "ok"}],
+        }
+    ]
+    plan = plan_template(
+        template,
+        {},
+        {},
+        builtins={},
+        machines=machines,
+        providers=frozenset(provider_ids()),
+    )
+    (agent,) = plan.new_agents
+    assert (agent.auto_mode, agent.auto_approve) == expected

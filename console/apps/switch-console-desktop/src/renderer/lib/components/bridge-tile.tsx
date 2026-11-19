@@ -5,8 +5,13 @@ import { cn } from '@renderer/utils/utils';
 import type { LinkedIdentity, RemoteBridge } from '@shared/core/switch-servers/switch-servers';
 
 /** The claimed account as a handle. Platforms differ on whether the username
- * they report already carries the sigil, so add one only when it is missing. */
+ * they report already carries the sigil, so add one only when it is missing.
+ * A handle Switch made up for someone the platform gave none is not theirs,
+ * so their name is shown instead. */
 export function handleOf(identity: LinkedIdentity): string {
+  if (identity.hasHandle === false && identity.externalDisplayName) {
+    return identity.externalDisplayName;
+  }
   const username = identity.externalUsername;
   return username.startsWith('@') ? username : `@${username}`;
 }

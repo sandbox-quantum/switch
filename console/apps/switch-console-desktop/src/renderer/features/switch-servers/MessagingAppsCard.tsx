@@ -4,7 +4,6 @@ import {
   Clock,
   Copy,
   ExternalLink,
-  Info,
   Key,
   KeyRound,
   Link2,
@@ -43,12 +42,7 @@ import {
   DropdownMenuTrigger,
 } from '@renderer/lib/ui/dropdown-menu';
 import { Spinner } from '@renderer/lib/ui/spinner';
-import { Tooltip, TooltipContent, TooltipTrigger } from '@renderer/lib/ui/tooltip';
 import { log } from '@renderer/utils/logger';
-import {
-  ambiguousBundledBridgeMessage,
-  bundledMattermostBridge,
-} from '@shared/core/switch-servers/bundled-bridge';
 import type {
   LinkedIdentity,
   PendingIdentity,
@@ -56,7 +50,7 @@ import type {
 } from '@shared/core/switch-servers/switch-servers';
 import { bridgeTypesQueryKey, fetchBridgeTypes } from './bridge-platforms-loader';
 import { ConnectedChatsList } from './ConnectedChatsList';
-import { accountHandle, linkRequestFailureText } from './link-accounts-prose';
+import { accountName, linkRequestFailureText } from './link-accounts-prose';
 import { orderBridges } from './messaging-apps-order';
 import {
   hasUnlinkedMessagingApp,
@@ -89,41 +83,12 @@ import { administersWorkspaceInScope } from './workspace-admin';
  * signed-in user administering the workspace, because the endpoint is; linking an account is
  * not, because claiming an identity is something every user does for themselves.
  */
-/** Why a server has messaging apps at all: the agents registered here become
- * reachable in them. Linking is deliberately not explained here — it has its
- * own hover on the rows and the warning that are actually about it, and saying
- * both on the heading made the section's purpose the smaller half of a wall of
- * text. */
-const MESSAGING_APPS_PURPOSE =
-  'Connecting a messaging app puts this server’s agents in it, so you can talk to them where you already work.';
-
-/** Shown beside a row that has no linked account, and beside the card-level
- * warning, so the consequence is one hover away from the thing warning about
- * it rather than only in the section heading. */
-const NO_ACCOUNT_EXPLANATION =
-  'Switch cannot tell which account in this app is you. Agents set to answer only their owner will not recognise you here, and messages from you read as if from a stranger.';
-
-/** Beside a link made before links had to be confirmed. */
-const NOT_CONFIRMED_EXPLANATION =
-  'This link was made before Switch asked accounts to confirm them. It still works. Confirm it by posting a one-time code from the account.';
-
-/** Beside a link waiting for its code, which is not a link yet. */
-const WAITING_EXPLANATION =
-  'This account is not linked until a one-time code is posted from it. Until then your agents do not recognise you here.';
-
 export const MessagingAppsCard = observer(function MessagingAppsCard({
   serverId,
   className,
-  personal = false,
 }: {
   serverId: string;
   className?: string;
-  /**
-   * Only your own accounts in each app, for Settings: linking and unlinking
-   * them. The workspace's side — connecting an app, its token, its defaults —
-   * is for its admins, in Admin and the workspace settings.
-   */
-  personal?: boolean;
 }) {
   const queryClient = useQueryClient();
   const showConnectMessagingApp = useShowModal('connectMessagingAppModal');
@@ -132,14 +97,12 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
   const showConnectChat = useShowModal('connectChatModal');
   const showRequireLinkConfirmation = useShowModal('requireLinkConfirmationModal');
   const workspaceId = workspacesStore.idOnServerInScope(serverId);
-  const administers = administersWorkspaceInScope(serverId);
-  const isAdmin = administers && !personal;
+  // Everyone links their own accounts here; the workspace's side (connecting
+  // an app, its token, its defaults) is for its admins.
+  const isAdmin = administersWorkspaceInScope(serverId);
   const flags = useFeatureFlags(serverId);
   // With chats on, Switch Console's own chats and rooms need no messaging app.
   const chatsWithoutApp = flags.agent_chats || flags.group_chats;
-  // Only a stack Switch Console runs has a chat whose credentials it generated and
-  // can therefore show; anyone else's Mattermost is their own to hand out.
-  const isManaged = !!switchServersStore.servers.find((s) => s.id === serverId)?.managed;
 
   const bridgesQuery = useQuery({
     queryKey: ['remote-bridges', workspaceId],
@@ -148,23 +111,6 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
   });
 
   const bridges = useMemo(() => orderBridges(bridgesQuery.data ?? []), [bridgesQuery.data]);
-  // Only the bundled Mattermost has those generated credentials; a Mattermost
-  // the user connected themselves beside it does not.
-  const bundledChoice = useMemo(
-    () => (isManaged ? bundledMattermostBridge(bridges) : null),
-    [isManaged, bridges]
-  );
-  const bundledBridgeId = bundledChoice?.kind === 'bundled' ? bundledChoice.bridge.id : null;
-  const ambiguousBundledIds =
-    bundledChoice?.kind === 'ambiguous' ? bundledChoice.bridgeIds.join(',') : null;
-  useEffect(() => {
-    if (ambiguousBundledIds !== null) {
-      log.warn(
-        `Not showing the bundled Mattermost sign-in. ${ambiguousBundledBridgeMessage(ambiguousBundledIds.split(','))}`,
-        { serverId }
-      );
-    }
-  }, [ambiguousBundledIds, serverId]);
 
   // Which platforms the signed-in user may connect another chat on. Asked only
   // once there is a connection whose chats arrive that way, which also keeps
@@ -308,30 +254,8 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
 
   return (
     <div className={className}>
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
-          <h3 className="text-sm font-medium text-foreground">Messaging apps</h3>
-          {/* What the section is for, in the order the two facts matter:
-              connecting puts the agents somewhere people already are, and
-              linking is what lets those agents tell who is talking to them.
-              It used to be the "Your account" column's header tooltip; with
-              the columns gone it belongs to the heading. */}
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <span
-                  tabIndex={0}
-                  aria-label={MESSAGING_APPS_PURPOSE}
-                  className="inline-flex text-foreground-muted"
-                >
-                  <Info className="size-3.5" />
-                </span>
-              }
-            />
-            <TooltipContent className="max-w-xs">{MESSAGING_APPS_PURPOSE}</TooltipContent>
-          </Tooltip>
-          {bridgesQuery.isLoading && <Spinner className="size-3.5" />}
-        </div>
+      <div className="flex items-center justify-end gap-3 empty:hidden">
+        {bridgesQuery.isLoading && <Spinner className="size-3.5" />}
         {isAdmin && (
           <Button
             size="sm"
@@ -391,12 +315,10 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
       ) : bridges.length === 0 && !bridgesQuery.isLoading ? (
         <p className="mt-3 text-xs text-foreground-muted">
           {chatsWithoutApp
-            ? `No messaging app is connected. They are optional: chats and rooms in Switch Console work without one. ${isAdmin ? 'Connect one to also reach your agents from Slack, Discord and others.' : administers ? 'Connect one from Admin to also reach your agents from Slack, Discord and others.' : 'An admin of this workspace can connect one to reach your agents from Slack, Discord and others.'}`
+            ? `No messaging app is connected. They are optional: chats and rooms in Switch Console work without one. ${isAdmin ? 'Connect one to also reach your agents from Slack, Discord and others.' : 'An admin of this workspace can connect one to reach your agents from Slack, Discord and others.'}`
             : isAdmin
               ? 'No messaging app is connected, so rooms created here would be unreachable. Connect one to get started.'
-              : administers
-                ? 'No messaging app is connected. Connect one from Admin.'
-                : 'No messaging app is connected. An admin of this workspace can connect one.'}
+              : 'No messaging app is connected. An admin of this workspace can connect one.'}
         </p>
       ) : (
         <div className="mt-2 flex flex-col">
@@ -404,7 +326,6 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
             <Fragment key={bridge.id}>
               <MessagingAppRow
                 workspaceId={workspaceId}
-                serverId={serverId}
                 bridge={bridge}
                 /* Nothing is drawn in the identity column until the list
                     arrives: "not linked" and "not known yet" look identical,
@@ -427,9 +348,7 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
                       }
                     : null
                 }
-                showBundledSignIn={bridge.id === bundledBridgeId}
                 isAdmin={isAdmin}
-                personal={personal}
                 savingChannelCreation={savingBridgeId === bridge.id}
                 onToggleChannelCreation={(enabled) =>
                   void handleToggleChannelCreation(bridge, enabled)
@@ -515,22 +434,19 @@ export const MessagingAppsCard = observer(function MessagingAppsCard({
  * Only Link stays outside the menu: an app you have not claimed an account on
  * has exactly one thing worth doing to it, and burying that is what would make
  * the row's warning unactionable. Everything else — changing or dropping the
- * account, requiring older links be confirmed, channel creation, the bundled
- * chat's credentials, opening the app, replacing its token, disconnecting it —
+ * account, requiring older links be confirmed, channel creation, opening the
+ * app, replacing its token, disconnecting it —
  * is in the menu.
  */
 export function MessagingAppRow({
   workspaceId,
-  serverId,
   bridge,
   identities,
   pending,
   currentUserId,
   onReleased,
   olderLinks,
-  showBundledSignIn,
   isAdmin,
-  personal = false,
   savingChannelCreation,
   onToggleChannelCreation,
   onConnectChat,
@@ -540,8 +456,6 @@ export function MessagingAppRow({
   /** Null while this install has not resolved the server's workspace; the
    *  identity actions are the only thing that needs it, and they wait. */
   workspaceId: string | null;
-  /** Only for the bundled chat's sign-in, which is about the gateway. */
-  serverId: string;
   bridge: RemoteBridge;
   /** Accounts linked to the user in this workspace, or null while unknown. */
   identities: LinkedIdentity[] | null;
@@ -552,10 +466,7 @@ export function MessagingAppRow({
   /** Set for an admin when the app has links made before links had to be
    *  confirmed: how many, and how to stop trusting them. */
   olderLinks: { count: number; onRequireConfirmation: () => void } | null;
-  showBundledSignIn: boolean;
   isAdmin: boolean;
-  /** Only your own side of the app, as Settings shows it: no workspace settings in the menu. */
-  personal?: boolean;
   savingChannelCreation: boolean;
   onToggleChannelCreation: (enabled: boolean) => void;
   /** Set on a connection whose chats are connected one at a time, for a user
@@ -566,7 +477,6 @@ export function MessagingAppRow({
   onDisconnect: () => void;
 }) {
   const showClaimIdentity = useShowModal('claimIdentityModal');
-  const showBundledChatSignIn = useShowModal('bundledChatSignInModal');
   const showTeamsPlacement = useShowModal('teamsPlacementModal');
   const [releasing, setReleasing] = useState(false);
   const [releaseError, setReleaseError] = useState<string | null>(null);
@@ -669,17 +579,14 @@ export function MessagingAppRow({
     }
   };
 
-  // What it costs not to be linked, and — where the app has no directory to
-  // search — how to become linkable at all. The second half is not obvious and
-  // is the reason nothing offered to link on the way in.
+  // Where the app has no directory to search, how to become linkable at all:
+  // not obvious, and the reason nothing offered to link on the way in.
   const orderingNote = identityLinkOrderingNote({
     displayName: bridge.displayName,
     directorySearchSupported: bridge.directorySearchSupported,
   });
-  const noAccountHelp =
-    orderingNote === null ? NO_ACCOUNT_EXPLANATION : `${NO_ACCOUNT_EXPLANATION} ${orderingNote}`;
 
-  // Why the switch cannot be moved, when it cannot. Said in a tooltip rather
+  // Why the switch cannot be moved, when it cannot. Said in a line rather
   // than left to a greyed control, because "off" and "this platform cannot do
   // it at all" are different claims and look identical otherwise.
   const channelsLockedReason = !bridge.channelCreationSupported
@@ -716,62 +623,27 @@ export function MessagingAppRow({
           {identities === null ? null : identity !== null ? (
             <span className="flex min-w-0 items-center gap-1.5">
               <span className="truncate font-mono text-xs text-foreground-muted">
-                {accountHandle(identity.externalUsername)}
+                {accountName(identity)}
               </span>
-              {!identity.verified && (
-                <Tooltip>
-                  <TooltipTrigger
-                    render={
-                      <span tabIndex={0} aria-label={NOT_CONFIRMED_EXPLANATION}>
-                        <Badge variant="secondary">Not confirmed</Badge>
-                      </span>
-                    }
-                  />
-                  <TooltipContent className="max-w-xs">{NOT_CONFIRMED_EXPLANATION}</TooltipContent>
-                </Tooltip>
-              )}
+              {!identity.verified && <Badge variant="secondary">Not confirmed</Badge>}
             </span>
           ) : waiting !== null ? (
             <span className="flex min-w-0 items-center gap-1 text-xs text-foreground-muted">
               <Clock className="size-3 shrink-0" />
               <span className="truncate">
-                <span className="font-mono">{accountHandle(waiting.externalUsername)}</span> ·
-                Waiting for confirmation
+                <span className="font-mono">{accountName(waiting)}</span> · Waiting for confirmation
               </span>
-              <Tooltip>
-                <TooltipTrigger
-                  render={
-                    <span
-                      tabIndex={0}
-                      aria-label={WAITING_EXPLANATION}
-                      className="inline-flex text-foreground-muted"
-                    >
-                      <Info className="size-3" />
-                    </span>
-                  }
-                />
-                <TooltipContent className="max-w-xs">{WAITING_EXPLANATION}</TooltipContent>
-              </Tooltip>
             </span>
           ) : (
-            <span className="flex items-center gap-1 text-xs text-amber-600 dark:text-amber-500">
-              <TriangleAlert className="size-3 shrink-0" />
-              No account linked
-              <Tooltip>
-                <TooltipTrigger
-                  render={
-                    <span
-                      tabIndex={0}
-                      aria-label={noAccountHelp}
-                      className="inline-flex text-foreground-muted"
-                    >
-                      <Info className="size-3" />
-                    </span>
-                  }
-                />
-                <TooltipContent className="max-w-xs">{noAccountHelp}</TooltipContent>
-              </Tooltip>
-            </span>
+            <>
+              <span className="flex items-center gap-1 text-xs text-amber-600 dark:text-amber-500">
+                <TriangleAlert className="size-3 shrink-0" />
+                No account linked
+              </span>
+              {orderingNote !== null && (
+                <p className="text-xs text-foreground-muted">{orderingNote}</p>
+              )}
+            </>
           )}
           {releaseError !== null && (
             <p className="mt-0.5 text-xs text-destructive">{releaseError}</p>
@@ -836,13 +708,13 @@ export function MessagingAppRow({
             {identity !== null && (
               <DropdownMenuItem onClick={() => void release(identity.id)}>
                 <Unlink className="size-4" />
-                Unlink {accountHandle(identity.externalUsername)}
+                Unlink {accountName(identity)}
               </DropdownMenuItem>
             )}
             {waiting !== null && (
               <DropdownMenuItem onClick={() => void cancelRequest(waiting.id)}>
                 <X className="size-4" />
-                Cancel link to {accountHandle(waiting.externalUsername)}
+                Cancel link to {accountName(waiting)}
               </DropdownMenuItem>
             )}
             {olderLinks !== null && (
@@ -862,7 +734,7 @@ export function MessagingAppRow({
               </>
             )}
 
-            {!personal && (
+            {isAdmin && (
               <>
                 <DropdownMenuSeparator />
                 {/* "Off" and "this platform has no such thing" are different claims,
@@ -872,7 +744,7 @@ export function MessagingAppRow({
                 {bridge.channelCreationSupported ? (
                   <DropdownMenuCheckboxItem
                     checked={bridge.canCreateChannels}
-                    disabled={!isAdmin || savingChannelCreation}
+                    disabled={savingChannelCreation}
                     onCheckedChange={(next) => onToggleChannelCreation(next)}
                   >
                     Create channels on {platform}
@@ -885,7 +757,7 @@ export function MessagingAppRow({
                 )}
               </>
             )}
-            {!personal && bridge.receivesWebhooks && (
+            {isAdmin && bridge.receivesWebhooks && (
               <>
                 <DropdownMenuSeparator />
                 {/* The address the platform delivers this connection's events
@@ -905,17 +777,7 @@ export function MessagingAppRow({
               </>
             )}
 
-            {(showBundledSignIn || bridge.homeUrl) && <DropdownMenuSeparator />}
-            {showBundledSignIn && (
-              <DropdownMenuItem
-                onClick={() =>
-                  showBundledChatSignIn({ serverId, bridgeDisplayName: bridge.displayName })
-                }
-              >
-                <KeyRound className="size-4" />
-                Sign-in details…
-              </DropdownMenuItem>
-            )}
+            {bridge.homeUrl && <DropdownMenuSeparator />}
             {/* Offered only when the link resolves — an older server, or a bridge
               that is down, reports none. */}
             {bridge.homeUrl && (
@@ -924,10 +786,7 @@ export function MessagingAppRow({
                   // Through the channel opener, so Slack and Discord open in
                   // their app when it is installed rather than the browser.
                   void reportOpenAttempt(
-                    rpc.switchRooms.openRoomChannel({
-                      serverId,
-                      channelUrl: bridge.homeUrl as string,
-                    }),
+                    rpc.switchRooms.openRoomChannel({ channelUrl: bridge.homeUrl as string }),
                     `Could not open ${platform}`,
                     bridge.homeUrl as string
                   )

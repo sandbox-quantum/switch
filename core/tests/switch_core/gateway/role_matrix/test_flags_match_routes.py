@@ -127,7 +127,10 @@ CHECKS: dict[str, Check] = {
             ),
         ],
         # A list may name a private item to whoever may read what holds it;
-        # its `can_read` says whether its own page opens for them.
+        # its `can_read` says whether it came whole, and so whether its own
+        # page opens for them. A room shares what is attached to it, and a
+        # package what its owner put in it of theirs; someone else's private
+        # item in a package is withheld, even from the package's owner.
         **{
             f"a private {kind} in a {holder}": [
                 Check(
@@ -154,6 +157,20 @@ CHECKS: dict[str, Check] = {
                 ),
                 ("reference", "room", "rooms", "readable_room", "shown_reference"),
                 ("document", "room", "rooms", "readable_room", "shown_document"),
+                (
+                    "reference",
+                    "package of someone else's",
+                    "packages",
+                    "foreign_package",
+                    "foreign_packaged_reference",
+                ),
+                (
+                    "document",
+                    "package of someone else's",
+                    "packages",
+                    "foreign_package",
+                    "foreign_packaged_document",
+                ),
             )
         },
         "a template": [
@@ -303,6 +320,15 @@ CHECKS: dict[str, Check] = {
                 ),
             ),
             Check(
+                "can_widen_addressing",
+                _get(f"{G}/agents/{{restricted_agent}}"),
+                _act(
+                    "PUT",
+                    f"{G}/agents/{{restricted_agent}}/addressing-policy",
+                    {"policy": None},
+                ),
+            ),
+            Check(
                 "can_edit_options",
                 AGENT,
                 _act("PATCH", f"{G}/agents/{{agent}}/options", {"options": {}}),
@@ -402,14 +428,15 @@ CHECKS: dict[str, Check] = {
                     {"role": "member"},
                 ),
                 match=("user_id", "self_id"),
-                later=frozenset({409}),  # The last organization admin stays.
+                refused=REFUSED | {409},  # The last organization admin stays.
             ),
             Check(
                 "can_remove",
                 ORG_MEMBERS,
                 _act("DELETE", f"{G}/organizations/current/members/{{self_id}}"),
                 match=("user_id", "self_id"),
-                later=frozenset({409}),  # The last one, or still in a workspace.
+                refused=REFUSED | {409},  # The last organization admin stays.
+                later=frozenset({409}),  # Still in a workspace.
             ),
         ],
         "the workspace": [
@@ -723,12 +750,11 @@ CHECKS: dict[str, Check] = {
                 within="connections",
             ),
         ],
-        "an account": [
+        "the session": [
             Check(
-                "can_delete",
-                _get(f"{G}/users"),
-                _act("DELETE", f"{G}/users/{{user_target}}"),
-                match=("id", "user_target"),
+                "can_manage_connector_apps",
+                _get(f"{G}/auth/session"),
+                _act("GET", f"{G}/connector-apps"),
             ),
         ],
     }.items()
@@ -780,6 +806,11 @@ async def test_a_flag_says_what_its_route_does(
                 found = _claim(found, people.ids[Persona.OWNER])
             flag = bool(found[check.flag])
             told[flag] += 1
+            if check.flag == "can_read" and (found["instructions"] is not None) != flag:
+                wrong.append(
+                    f"{persona.value}: can_read is {flag}, but what is in it "
+                    f"{'did not come' if flag else 'came'} with it"
+                )
             act = await world.fill(check.act)
             answered = await http.request(
                 act.method,

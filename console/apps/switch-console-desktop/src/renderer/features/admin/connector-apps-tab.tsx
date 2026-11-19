@@ -44,7 +44,7 @@ export function useConnectorAppDialogs(serverId: string, publicUrl: string | nul
       ...base,
       onSuccess: (message: string) => {
         done(message);
-        navigate('admin', { serverId, section: 'apps', app: app.slug });
+        navigate('settings', { tab: 'connector-apps', app: app.slug });
       },
     };
     switch (action) {

@@ -114,8 +114,11 @@ async function render() {
   );
 }
 
+/** Every button but the heading's explanation of what a provider is. */
 function buttons(): string[] {
-  return [...container!.querySelectorAll('button')].map((b) => b.textContent ?? '');
+  return [...container!.querySelectorAll('button')]
+    .filter((b) => !b.closest('h2'))
+    .map((b) => b.textContent ?? '');
 }
 
 describe('MeetBuddyPage', () => {
@@ -145,7 +148,7 @@ describe('MeetBuddyPage', () => {
   it("goes by Console's own early check until this computer reports", async () => {
     state.early = [ready('codex'), signedOut('claude')];
     await render();
-    expect(buttons()).toEqual(['CodexSigned in locally', 'use other providers']);
+    expect(buttons()).toEqual(['OpenAI CodexSigned in locally', 'use other providers']);
   });
 
   it('starts a provider chosen before this computer is ready, once it is', async () => {

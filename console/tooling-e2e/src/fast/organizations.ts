@@ -4,24 +4,26 @@ import type { FastScenario } from './scenario.ts';
 
 /**
  * Anyone signed in creates an organization, and its admin adds workspaces to
- * it: a new user, in the default workspace, creates an organization and lands
- * in its first workspace, renames it, adds a second, and sees both, the first
- * by its new name, in an organization listed beside those they were already
- * in, with nothing left for its admin to fix, no Switch Trust policy
- * connected, and each new workspace counted with its one user and no agents.
+ * it: someone who just signed up, which puts them in the default workspace,
+ * creates an organization and lands in its first workspace, renames it, adds
+ * a second, and sees both, the first by its new name, in an organization
+ * listed beside those they were already in, with nothing left for its admin
+ * to fix, no Switch Trust policy connected, and each new workspace counted
+ * with its one user and no agents.
  * It archives the second and restores it, and may not archive the one it is
  * in. It renames the organization and the second workspace from the
  * organization, invites the member to the second, makes them its admin and
  * removes them again. A plain member of the default workspace may not add one
  * there, rename it, or read its organization's guardrails.
  *
- * Users and workspaces cannot be deleted, so this runs only on a stack thrown
- * away after the run.
+ * Its accounts, organization and workspaces are left behind, so this runs
+ * only on a stack thrown away after the run.
  */
 export const organizations: FastScenario = {
   header: {
     id: 'organizations',
     covers: [
+      'POST /gateway/auth/signup',
       'GET /gateway/organizations',
       'POST /gateway/organizations',
       'GET /gateway/organizations/current',
@@ -50,25 +52,21 @@ export const organizations: FastScenario = {
   },
   async run({ names, switchClient }) {
     const password = `e2e-${names.runId}-${crypto.randomUUID()}`;
-    const founderEmail = `${names.name('founder')}@e2e.invalid`;
-    const memberEmail = `${names.name('member')}@e2e.invalid`;
-    await switchClient.createUser({
-      name: 'E2E founder',
-      email: founderEmail,
+    // Signing up joins the default workspace, and so its organization.
+    const { client: founder } = await switchClient.signUp({
+      email: `${names.name('founder')}@e2e.invalid`,
       password,
-      role: 'user',
+      displayName: 'E2E founder',
     });
-    await switchClient.createUser({
-      name: 'E2E member',
-      email: memberEmail,
+    const { client: member } = await switchClient.signUp({
+      email: `${names.name('member')}@e2e.invalid`,
       password,
-      role: 'user',
+      displayName: 'E2E member',
     });
-    const founder = switchClient.as(founderEmail, password);
-    const member = switchClient.as(memberEmail, password);
-    // Signing in joins the default workspace, and so its organization.
     const defaultWorkspace = await founder.tenantId();
-    await member.tenantId();
+    expect(await member.tenantId(), 'both signed up into the same workspace').toBe(
+      defaultWorkspace
+    );
     // The default workspace's organization is listed too, if it has one.
     const before = await founder.organizations();
 
