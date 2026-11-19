@@ -648,7 +648,10 @@ async def test_a_purge_with_a_box_machine_finishes_once_its_box_is_at_zero(
         revision = wanted.revision
     async with session_factory() as session:
         await observe(
-            machine_id, Observation(state="stopped", revision=revision), session
+            machine_id,
+            Observation(state="stopped", revision=revision),
+            session,
+            session_factory,
         )
 
     second = await purge.run(await purge.plan(organization_id), "TICKET-4")

@@ -537,7 +537,10 @@ async def _report_stopped(
         revision = machine.revision
     async with factory() as session:
         await observe(
-            machine_id, Observation(state="stopped", revision=revision), session
+            machine_id,
+            Observation(state="stopped", revision=revision),
+            session,
+            factory,
         )
 
 

@@ -35,6 +35,7 @@ from switch_core.db.stores.hosted_machine_store import (
     await_reconnect,
     bump_revision,
     idle_sleeping,
+    workspace_on,
     workspaces_on,
 )
 from switch_core.gateway.dependencies import current_telemetry
@@ -403,40 +404,120 @@ async def record_controller_status(
     machine.heartbeat_at = now
     if isinstance(sessions, int) and sessions > 0:
         machine.active_at = now
-    if (
+    if v2 and machine.backend == "box":
+        # This controller has reported at this revision: the scaler's
+        # `running`, if it comes second, makes the box ready on its own.
+        machine.heartbeat[REPORTED_KEY] = {
+            "revision": machine.revision,
+            "controller_id": controller_id,
+            "tenant_id": workspace.tenant_id,
+        }
+    await ready_if_both_signals(session, machine, now, reported_now=True)
+
+
+# Where the heartbeat keeps the last controller report seen at the machine's
+# revision (hosted agents v2 boxes only): its revision, controller and workspace.
+REPORTED_KEY = "reported"
+
+
+async def ready_if_both_signals(
+    session: AsyncSession,
+    machine: CloudMachine,
+    now: datetime,
+    *,
+    reported_now: bool,
+    factory: async_sessionmaker[AsyncSession] | None = None,
+) -> bool:
+    """Make a machine ready once both signals are in for it at its current
+    revision: the scaler's `running` (`running_observed_at`, cleared by every
+    revision bump) and a status report from its controller. The one place the
+    decision is made, whichever signal comes second, so the two orders can't
+    drift. Returns whether it became ready; the caller holds the machine's
+    lock and commits.
+
+    `reported_now` is the report path: an authenticated report from the
+    machine's own controller is being recorded. Otherwise (the scaler's
+    `running`; hosted agents v2 boxes only, since with v2 off only a report
+    makes a machine ready, as before v2) the report must already be in:
+    recorded at this revision, by the controller that is still that
+    workspace's controller on this machine, and not revoked since (read with
+    that workspace bound, through `factory`)."""
+    if not (
         machine.state == "provisioning"
         and machine.desired_state == "running"
         and machine.running_observed_at is not None
     ):
-        machine.state = "ready"
-        machine.error = None
-        machine.error_code = None
-        machine.updated_at = now
-        # New until it has first been ready, however many revisions that took
-        # (a retry after a failed start included). Only the first is timed,
-        # since nothing records when a later start began.
-        new_machine = machine.first_ready_at is None
-        provisioning_seconds = None
-        if new_machine:
-            machine.first_ready_at = now
-            # Clamped: the start is the database's clock, so a fast first
-            # report can read a hair negative.
-            asked_for = await _provisioning_started(session, machine)
-            provisioning_seconds = max((now - asked_for).total_seconds(), 0.0)
-        emit_after_commit(
-            session,
-            current_telemetry(),
-            "cloud_machine_ready",
-            {
-                "new_machine": new_machine,
-                "provisioning_seconds": provisioning_seconds,
-            },
+        return False
+    if not reported_now and not (
+        process_hosted_v2()
+        and machine.backend == "box"
+        and factory is not None
+        and await _reported_by_live_controller(factory, machine)
+    ):
+        return False
+    machine.state = "ready"
+    machine.error = None
+    machine.error_code = None
+    machine.updated_at = now
+    # New until it has first been ready, however many revisions that took
+    # (a retry after a failed start included). Only the first is timed,
+    # since nothing records when a later start began.
+    new_machine = machine.first_ready_at is None
+    provisioning_seconds = None
+    if new_machine:
+        machine.first_ready_at = now
+        # Clamped: the start is the database's clock, so a fast first
+        # report can read a hair negative.
+        asked_for = await _provisioning_started(session, machine)
+        provisioning_seconds = max((now - asked_for).total_seconds(), 0.0)
+    emit_after_commit(
+        session,
+        current_telemetry(),
+        "cloud_machine_ready",
+        {
+            "new_machine": new_machine,
+            "provisioning_seconds": provisioning_seconds,
+        },
+    )
+    record_machine_event(
+        session, "ready", "new" if new_machine else "restart", machine.backend
+    )
+    if provisioning_seconds is not None:
+        record_provisioned(provisioning_seconds, machine.backend)
+    return True
+
+
+async def _reported_by_live_controller(
+    factory: async_sessionmaker[AsyncSession], machine: CloudMachine
+) -> bool:
+    """Whether the report the heartbeat recorded is one at the machine's
+    current revision, by the controller still serving that workspace on this
+    machine, and unrevoked."""
+    reported = (machine.heartbeat or {}).get(REPORTED_KEY)
+    if not isinstance(reported, dict) or reported.get("revision") != machine.revision:
+        return False
+    controller_id = reported.get("controller_id")
+    tenant_id = reported.get("tenant_id")
+    if not isinstance(controller_id, str) or not isinstance(tenant_id, str):
+        return False
+    async with tenant_session(factory, tenant_id) as scoped:
+        row = await workspace_on(scoped, machine.id)
+        controller = (
+            None
+            if row is None or row.controller_id != controller_id
+            else await scoped.scalar(
+                select(AgentController).where(
+                    AgentController.tenant_id == tenant_id,
+                    AgentController.id == controller_id,
+                )
+            )
         )
-        record_machine_event(
-            session, "ready", "new" if new_machine else "restart", machine.backend
-        )
-        if provisioning_seconds is not None:
-            record_provisioned(provisioning_seconds, machine.backend)
+        await scoped.commit()
+    return (
+        controller is not None
+        and controller.revoked_at is None
+        and controller.api_key_id is not None
+    )
 
 
 async def wake_controller_machine(

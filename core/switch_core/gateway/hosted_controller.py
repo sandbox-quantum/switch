@@ -41,6 +41,7 @@ from switch_core.gateway.cloud_controllers import (
     controller_reports,
     enrollment_code,
     live_controller,
+    ready_if_both_signals,
 )
 from switch_core.gateway.dependencies import (
     current_telemetry,
@@ -773,6 +774,7 @@ async def observe(
     machine_id: str,
     body: Observation,
     session: Annotated[AsyncSession, Depends(controller_session)],
+    factory: Annotated[async_sessionmaker[AsyncSession], Depends(get_session_factory)],
 ) -> dict:
     reconciler_heard()
     machine = await _locked_machine(session, machine_id)
@@ -865,6 +867,11 @@ async def observe(
             machine.state = "provisioning"
             if machine.running_observed_at is None:
                 machine.running_observed_at = now
+            # A v2 box whose controller already reported at this revision
+            # is ready now, not at its next report.
+            await ready_if_both_signals(
+                session, machine, now, reported_now=False, factory=factory
+            )
     elif body.state == "provisioning":
         if machine.state != "ready":
             machine.state = "provisioning"
