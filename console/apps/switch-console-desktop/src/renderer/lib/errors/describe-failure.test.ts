@@ -149,6 +149,17 @@ describe('describeFailure', () => {
     ).toEqual({ headline: message, detail: null });
   });
 
+  it("leads with a /chats refusal's own message, which says what to change", () => {
+    const message =
+      "Discord would not create channel #switch-buddy-ada (403, code 50013: Missing Permissions). The Switch bot's role on this Discord server is missing the Manage Channels permission. In Discord, open Server Settings, then Roles, select the bot's role and turn on Manage Channels, or re-invite the bot with the permissions in the Connect Discord docs.";
+    expect(
+      describeFailure(
+        rpcError('ChatApiError', message, { apiCode: 'CHAT_NOT_CREATED' }),
+        'Switch did not answer.'
+      )
+    ).toEqual({ headline: message, detail: null });
+  });
+
   it('passes a refusal to remove a machine running moved agents straight through', () => {
     const message =
       'build-box runs builder as managed agents for this Console, so it cannot be removed yet. Delete those agents first.';

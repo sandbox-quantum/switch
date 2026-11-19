@@ -447,7 +447,7 @@ class AgentCore:
     install_service: MessagingInstallService | None = None
     # Told (tenant_id, room_id) for each room a deleted agent was in, after it
     # is gone, so whatever follows rooms' agents can catch up at once.
-    _room_agents_listener: Callable[[str, str], Awaitable[None]] | None = None
+    _room_agents_listener: Callable[[str, list[str]], Awaitable[None]] | None = None
     # Told (tenant_id, agent_id) after an agent's icon or display name changes,
     # so whatever shows them can refresh.
     _agent_profile_listener: Callable[[str, str], Awaitable[None]] | None = None
@@ -899,7 +899,7 @@ class AgentCore:
         self._agent_removal_listener = listener
 
     def set_room_agents_listener(
-        self, listener: Callable[[str, str], Awaitable[None]]
+        self, listener: Callable[[str, list[str]], Awaitable[None]]
     ) -> None:
         self._room_agents_listener = listener
 
@@ -1520,8 +1520,7 @@ class AgentCore:
         # client told cannot open another.
         await self.connections.agent_deleted(resolved_id)
         if self._room_agents_listener is not None:
-            for room_id in room_ids:
-                await self._room_agents_listener(tenant_id, room_id)
+            await self._room_agents_listener(tenant_id, room_ids)
 
         emit_safely(self.telemetry, "agent_deleted", removed)
         return AgentDeletionResult(bridge_failures=bridge_failures)
