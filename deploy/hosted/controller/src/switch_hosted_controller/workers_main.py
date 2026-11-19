@@ -287,6 +287,8 @@ class Workers:
         # and when the next check is due (backing off after a failed one).
         self._seen: dict[str, tuple[Any, Any]] = {}
         self._observed: dict[str, str] = {}
+        self._map_read = False  # whether this round's box map read succeeded (box_missing needs it)
+        self._reported_missing: dict[str, int] = {}
         self._check_wait = CHECK_S
         self._next_check = 0.0
         self._interval = MAX_INTERVAL_S
@@ -327,6 +329,7 @@ class Workers:
             return "failed"
 
     def _reload(self) -> None:
+        self._map_read = False
         try:
             boxes = self._box_map() if callable(self._box_map) else self._load(self._box_map)
         except Exception as exc:  # an API error, OSError, or ScalerConfigError (a ValueError)
@@ -338,6 +341,7 @@ class Workers:
             )
             raise WorkersConfigError("box map unreadable") from None
         self._replace(self.boxes, boxes)
+        self._map_read = True
 
     @staticmethod
     def _replace(target: MutableMapping[str, str], boxes: Mapping[str, str]) -> None:
@@ -354,6 +358,9 @@ class Workers:
             codes=self.codes,
             watch=self.watch,
             box_facts=self.box_facts,
+            map_read=self._map_read,
+            reported_missing=self._reported_missing,
+            still_unmapped=self._still_unmapped_once_per_pass(),
         )
         self._scaled = sum(1 for step in steps if step.action)
         self._observed.update({step.machine_id: step.observed for step in steps})
@@ -456,6 +463,27 @@ class Workers:
             self._guard("fast scaler", lambda: self._fast_pass(listed, targets))
         return FAST_S if self.starting(time.monotonic()) else CHECK_S
 
+    def _still_unmapped_once_per_pass(self) -> Callable[[str], bool]:
+        """For box_missing: the box map read again (one `get`), at most once per pass and only when a machine
+        looks missing, after Core's list was read. A machine in it isn't missing (it was made since the round's
+        read, and the map is updated in place); a failed read reports nothing."""
+        fresh: dict[str, dict[str, str] | None] = {}
+
+        def still_unmapped(machine_id: str) -> bool:
+            if "map" not in fresh:
+                try:
+                    fresh["map"] = (
+                        self._box_map() if callable(self._box_map) else self._load(self._box_map)
+                    )
+                except Exception as exc:
+                    logger.warning("Box map re-read failed (%s); not reporting missing.", _why(exc))
+                    fresh["map"] = None
+                if fresh["map"] is not None:
+                    self._replace(self.boxes, fresh["map"])
+            return fresh["map"] is not None and machine_id not in fresh["map"]
+
+        return still_unmapped
+
     def _fast_pass(self, listed: list[dict[str, Any]], targets: set[str]) -> None:
         steps = reconcile_once(
             self.core,
@@ -466,6 +494,7 @@ class Workers:
             listed=listed,
             only=targets,
             last_observed=self._observed,
+            reported_missing=self._reported_missing,
         )
         acted = sum(1 for step in steps if step.action)
         if acted:

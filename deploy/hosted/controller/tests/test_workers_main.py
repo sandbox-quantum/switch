@@ -1007,3 +1007,182 @@ def test_a_check_reads_core_once_however_many_boxes_are_starting() -> None:
     kube.reads.clear()
     workers.fast_tick(time_now())
     assert reads["n"] == 1 and sorted(kube.reads) == [NS1, NS2]
+
+
+# ── box_missing: a box Core counts as made, and wants running, that isn't there ──
+
+from urllib.error import HTTPError  # noqa: E402
+
+
+class MissingKube(SlowKube):
+    """`box` StatefulSets that 404 (gone) or fail otherwise, by namespace."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.gone: set[str] = set()
+        self.broken: set[str] = set()
+
+    def scale(self, namespace: str) -> tuple[int, int]:
+        if namespace in self.gone:
+            raise HTTPError("u", 404, "Not Found", None, None)  # type: ignore[arg-type]
+        if namespace in self.broken:
+            raise HTTPError("u", 503, "Unavailable", None, None)  # type: ignore[arg-type]
+        return super().scale(namespace)
+
+
+def _expected(machine_id: str, desired: str = "running", revision: int = 3) -> dict[str, Any]:
+    return {
+        "machine_id": machine_id,
+        "desired_state": desired,
+        "revision": revision,
+        "box_expected": True,
+    }
+
+
+def _missing_reports(core: FakeCore) -> list[tuple[str, dict[str, Any]]]:
+    return [(m, o) for m, o in core.observed if o.get("error_code") == "box_missing"]
+
+
+def test_a_box_not_in_the_map_is_reported_missing_once_per_revision(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    core = FakeCore([_expected(M1)])
+    workers = Workers(core, MissingKube(), lambda: {}, SCALER)
+    with caplog.at_level(logging.WARNING):
+        workers.run_round()
+        workers.run_round()
+    assert _missing_reports(core) == [(M1, {"state": "error", "error_code": "box_missing"})]
+    core.listed = [_expected(M1, revision=4)]  # Core re-asked: a new revision may be reported again
+    workers.run_round()
+    assert len(_missing_reports(core)) == 2
+    assert "its box is missing (not in the box map)" in caplog.text
+
+
+def test_a_404_on_the_box_is_missing_and_any_other_error_is_a_failed_step() -> None:
+    kube = MissingKube()
+    kube.gone.add(NS1)
+    kube.broken.add(NS2)
+    core = FakeCore([_expected(M1), _expected(M2)])
+    workers = Workers(core, kube, lambda: {M1: NS1, M2: NS2}, SCALER)
+    outcome = workers.run_round()
+    assert _missing_reports(core) == [(M1, {"state": "error", "error_code": "box_missing"})]
+    assert outcome["scaler"] == "failed"  # M2's 503 failed its step, and wasn't called missing
+    assert workers.starting(time_now()) == set()  # no fast passes for a missing box
+
+
+def test_no_missing_report_after_a_failed_map_read() -> None:
+    answers: list[Any] = [
+        {M1: NS1},
+        {M1: NS1},
+        RuntimeError("API down"),
+    ]  # read, re-read, then failing
+
+    def read() -> dict[str, str]:
+        answer = answers.pop(0) if len(answers) > 1 else answers[0]
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    core = FakeCore([_expected(M1), _expected(M2)])
+    kube = MissingKube()
+    kube.replicas[NS1] = kube.ready[NS1] = 1
+    workers = Workers(core, kube, read, SCALER)
+    workers.run_round()  # M2 not in a map read fine: missing
+    assert [m for m, _ in _missing_reports(core)] == [M2]
+    core.listed = [_expected(M1), _expected(M2, revision=4)]
+    workers.run_round()  # the read failed: the kept map never counts
+    assert [m for m, _ in _missing_reports(core)] == [M2]
+    # And a first read that fails, with an empty map, reports nothing.
+    core2 = FakeCore([_expected(M1)])
+    Workers(
+        core2, MissingKube(), lambda: (_ for _ in ()).throw(RuntimeError("x")), SCALER
+    ).run_round()
+    assert _missing_reports(core2) == []
+
+
+def test_never_missing_unless_core_expects_the_box_and_wants_it_running() -> None:
+    kube = MissingKube()
+    kube.gone.add(NS1)
+    for listed in (
+        [_running(M1)],  # no box_expected: a Core with v2 off, or a box not yet made
+        [_expected(M1, desired="stopped")],
+        [_expected(M1, desired="retained")],
+        [{**_expected(M1), "box_expected": False}],
+    ):
+        core = FakeCore(listed)
+        Workers(core, kube, lambda: {}, SCALER).run_round()
+        Workers(core, kube, lambda: {M1: NS1}, SCALER).run_round()
+        assert _missing_reports(core) == [], listed
+    # Not expected and 404: the step fails as before, without the code.
+    core = FakeCore([_running(M1)])
+    assert Workers(core, kube, lambda: {M1: NS1}, SCALER).run_round()["scaler"] == "failed"
+
+
+def test_a_box_that_comes_back_is_reported_anew_if_lost_again() -> None:
+    kube = MissingKube()
+    kube.gone.add(NS1)
+    core = FakeCore([_expected(M1)])
+    workers = Workers(core, kube, lambda: {M1: NS1}, SCALER)
+    workers.run_round()
+    kube.gone.clear()
+    kube.replicas[NS1] = kube.ready[NS1] = 1
+    workers.run_round()
+    kube.gone.add(NS1)
+    workers.run_round()
+    assert len(_missing_reports(core)) == 2
+
+
+def test_the_core_client_sends_box_missing_only_as_asked() -> None:
+    sent: list[dict[str, Any]] = []
+    api = box_scaler.CoreApi("https://core.example.invalid", TOKEN)
+    api._call = lambda path, body=None: sent.append(body)  # type: ignore[method-assign,assignment,misc,return-value]
+    api.observe(M1, "error", 3, "x", error_code="box_missing")
+    api.observe(M1, "error", 3, "x")
+    api.observe(M1, "running", 3)
+    assert [b["error_code"] for b in sent] == ["box_missing", "machine_needs_attention", None]
+
+
+def test_a_box_made_between_the_map_read_and_cores_list_is_not_missing() -> None:
+    """QA's race: the operator writes the map entry, then reports done. The round's map read misses M2, Core's
+    list (read after) already expects it, and the re-read has it: nothing is reported, and the map is updated."""
+    reads: list[dict[str, str]] = [{M1: NS1}, {M1: NS1, M2: NS2}]
+
+    def read() -> dict[str, str]:
+        return reads.pop(0) if len(reads) > 1 else reads[0]
+
+    kube = MissingKube()
+    kube.replicas[NS1] = kube.ready[NS1] = 1
+    core = FakeCore([_expected(M1), _expected(M2)])
+    workers = Workers(core, kube, read, SCALER)
+    workers.run_round()
+    assert _missing_reports(core) == []
+    assert workers.boxes == {M1: NS1, M2: NS2}
+
+
+def test_the_map_is_re_read_once_per_pass_and_a_failed_re_read_reports_nothing() -> None:
+    calls = {"n": 0}
+
+    def read() -> dict[str, str]:
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise RuntimeError("API down")
+        return {}
+
+    core = FakeCore([_expected(M1), _expected(M2)])
+    workers = Workers(core, MissingKube(), read, SCALER)
+    workers.run_round()  # read 1 ok, re-read (2) fails: nothing reported, and only one re-read for both
+    assert calls["n"] == 2 and _missing_reports(core) == []
+    workers.run_round()  # read 3, re-read 4: both confirmed missing
+    assert calls["n"] == 4 and sorted(m for m, _ in _missing_reports(core)) == [M1, M2]
+    workers.run_round()  # already reported at this revision: no re-read needed
+    assert calls["n"] == 5
+
+
+def test_missing_reports_are_remembered_only_for_machines_core_lists_now() -> None:
+    core = FakeCore([_expected(M1), _expected(M2)])
+    workers = Workers(core, MissingKube(), lambda: {}, SCALER)
+    workers.run_round()
+    assert set(workers._reported_missing) == {M1, M2}
+    core.listed = [_expected(M1)]
+    workers.run_round()
+    assert set(workers._reported_missing) == {M1}
