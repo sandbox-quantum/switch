@@ -36,9 +36,12 @@ import {
   createBuddy,
   giveMachineLogin,
   loginOutcome,
+  needsWaking,
   startOver,
+  wakeCloudMachine,
   welcomeChat,
 } from "./onboarding";
+import { forgetGetStartedVisit } from "./CloudWarmUp";
 import { ProviderIcon } from "./ProviderIcon";
 import { type CloudSnapshot, deviceReady, useCloudDevice } from "./useCloudDevice";
 
@@ -84,7 +87,8 @@ type Page =
  * here, in this page's memory alone, until then.
  */
 export default function GetStartedPage() {
-  const { user } = useAuth();
+  const { user, session, logout } = useAuth();
+  const tenantId = session?.tenant?.id ?? null;
   const navigate = useNavigate();
   const { snapshot, error, refresh } = useCloudDevice();
   const [page, setPage] = useState<Page>({ kind: "meet" });
@@ -138,7 +142,9 @@ export default function GetStartedPage() {
               controller: snapshot?.controller ?? null,
               machine: snapshot?.machine ?? null,
             });
-            refresh();
+            // Signed out, so signing in again goes through getting started from the top.
+            if (user && tenantId) forgetGetStartedVisit(user.id, tenantId);
+            await logout();
           }}
         />
       ) : page.kind === "provider" ? (
@@ -614,10 +620,9 @@ function SettingUpPage({
 
   // A device that is asleep, or that its owner stopped, is started again.
   useEffect(() => {
-    if (!machine || woken.current || machine.stopped_by_admin) return;
-    if (machine.desired_state !== "stopped" && !machine.sleeping) return;
+    if (!machine || woken.current || !needsWaking(machine)) return;
     woken.current = true;
-    cloudMachineLifecycle(machine.machine_id, "start", machine.revision)
+    wakeCloudMachine(machine)
       .then(() => refresh())
       .catch((caught: unknown) => setError(message(caught, "Switch Cloud could not be started.")));
   }, [machine, refresh]);

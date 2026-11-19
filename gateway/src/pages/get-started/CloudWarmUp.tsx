@@ -3,7 +3,7 @@ import { useLocation, useNavigate } from "react-router";
 import { useAuth } from "../../data/AuthContext";
 import { AGENT_MANAGEMENT, GATEWAY_ONBOARDING } from "../../data/featureFlags";
 import { fetchManagedAgents } from "../../data/management";
-import { ensureCloudMachine, fetchHostedMachines } from "./onboarding";
+import { ensureCloudMachine, fetchHostedMachines, wakeCloudMachine } from "./onboarding";
 import { GET_STARTED } from "./paths";
 
 /** Remembers, per person and workspace, that the dashboard already sent them to Get started once. */
@@ -13,6 +13,17 @@ function sentKey(userId: string, tenantId: string): string {
 
 /** Warmed in this tab already, so a page change does not ask again. */
 const warmed = new Set<string>();
+
+/**
+ * Forgets that this person was sent to Get started in this workspace, so the
+ * next time they arrive (after Start over signs them out) it runs as on a
+ * first visit: the device warmed, and Get started opened.
+ */
+export function forgetGetStartedVisit(userId: string, tenantId: string): void {
+  const key = sentKey(userId, tenantId);
+  localStorage.removeItem(key);
+  warmed.delete(key);
+}
 
 /**
  * Starts the person's cloud device as soon as they are in a workspace that
@@ -39,14 +50,23 @@ export default function CloudWarmUp() {
         const hosted = await fetchHostedMachines();
         if (!hosted.available && hosted.machines.length === 0) return;
         // One that cannot be had now is said on Get started, which asks again.
-        if (hosted.machines.length === 0)
-          await ensureCloudMachine().catch((caught: unknown) =>
-            console.warn("Your cloud device could not be started ahead of time:", caught),
-          );
+        const machine =
+          hosted.machines[0] ??
+          (await ensureCloudMachine().catch((caught: unknown) => {
+            console.warn("Your cloud device could not be started ahead of time:", caught);
+            return null;
+          }));
         if (localStorage.getItem(key) !== null) return;
         const agents = await fetchManagedAgents();
         localStorage.setItem(key, new Date().toISOString());
-        if (agents.length === 0 && window.location.pathname !== GET_STARTED) navigate(GET_STARTED);
+        if (agents.length > 0) return;
+        // A first visit, or one after Start over: a device that is asleep or
+        // stopped is started now, as signing in starts a new one.
+        if (machine !== null)
+          await wakeCloudMachine(machine).catch((caught: unknown) =>
+            console.warn("Your cloud device could not be started ahead of time:", caught),
+          );
+        if (window.location.pathname !== GET_STARTED) navigate(GET_STARTED);
       } catch (caught) {
         warmed.delete(key);
         console.warn("Whether to open Get started could not be read:", caught);

@@ -5,8 +5,13 @@ import type { CloudMachine, Controller, ManagedAgent } from "../../data/manageme
 import GetStartedPage from "./GetStartedPage";
 import type { CloudSnapshot } from "./useCloudDevice";
 
+const auth = vi.hoisted(() => ({ logout: vi.fn() }));
 vi.mock("../../data/AuthContext", () => ({
-  useAuth: () => ({ user: { id: "me", name: "Ada Lovelace", email: "ada@example.com" } }),
+  useAuth: () => ({
+    user: { id: "me", name: "Ada Lovelace", email: "ada@example.com" },
+    session: { tenant: { id: "t1" } },
+    logout: auth.logout,
+  }),
 }));
 
 // The opening scene is Console's, tested there.
@@ -274,10 +279,11 @@ describe("GetStartedPage", () => {
     });
   });
 
-  it("starts getting started over on a test server, once confirmed", async () => {
+  it("starts getting started over on a test server, once confirmed, and signs out", async () => {
     api.fetchAuthConfig.mockResolvedValue({ test_account_reset_enabled: true });
     device.snapshot = snapshot({ agents: [buddy], controller: controller("ok") });
     onboarding.startOver.mockResolvedValue(undefined);
+    localStorage.setItem("switch.get-started.sent:me:t1", "2026-01-01");
     renderPage();
     fireEvent.click(await screen.findByRole("button", { name: "Start over" }));
     fireEvent.click(screen.getByRole("button", { name: "Yes, start over" }));
@@ -288,7 +294,9 @@ describe("GetStartedPage", () => {
         machine: expect.objectContaining({ machine_id: "m1" }),
       }),
     );
-    expect(device.refresh).toHaveBeenCalled();
+    await waitFor(() => expect(auth.logout).toHaveBeenCalled());
+    // The next sign-in opens Get started again, as a first visit does.
+    expect(localStorage.getItem("switch.get-started.sent:me:t1")).toBeNull();
   });
 
   it("offers no start over outside test servers", async () => {

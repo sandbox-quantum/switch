@@ -63,6 +63,17 @@ export function ensureCloudMachine(): Promise<CloudMachine> {
   return call<CloudMachine>("/hosted-machines/ensure", { method: "POST" });
 }
 
+/** Whether `machine` is asleep, or stopped by its owner, and so is started again for getting started. */
+export function needsWaking(machine: CloudMachine): boolean {
+  return !machine.stopped_by_admin && (machine.desired_state === "stopped" || machine.sleeping);
+}
+
+/** Starts the device again when it is asleep or its owner stopped it; otherwise does nothing. */
+export async function wakeCloudMachine(machine: CloudMachine): Promise<void> {
+  if (needsWaking(machine))
+    await cloudMachineLifecycle(machine.machine_id, "start", machine.revision);
+}
+
 /** The providers the getting-started page can give a machine a login for, from what is pasted or picked here. */
 export const WEB_PROVIDERS = [
   {
@@ -247,7 +258,7 @@ export async function createBuddy(input: {
  * Puts getting started back to its first page, for testing it again with the
  * same account on a test server: switch-buddy is deleted, every AI login given
  * to the cloud device is taken back, and the device is stopped, so the next
- * run starts it again.
+ * run starts it again from signing in.
  */
 export async function startOver(input: {
   buddyId: string | null;

@@ -17,6 +17,7 @@ vi.mock("../../data/management", () => management);
 const onboarding = vi.hoisted(() => ({
   fetchHostedMachines: vi.fn(),
   ensureCloudMachine: vi.fn(),
+  wakeCloudMachine: vi.fn(),
 }));
 vi.mock("./onboarding", () => onboarding);
 
@@ -41,7 +42,8 @@ beforeEach(() => {
   vi.resetModules();
   localStorage.clear();
   onboarding.fetchHostedMachines.mockResolvedValue({ available: true, machines: [] });
-  onboarding.ensureCloudMachine.mockResolvedValue({});
+  onboarding.ensureCloudMachine.mockResolvedValue({ machine_id: "m-new" });
+  onboarding.wakeCloudMachine.mockResolvedValue(undefined);
   management.fetchManagedAgents.mockResolvedValue([]);
 });
 
@@ -79,6 +81,34 @@ describe("CloudWarmUp", () => {
     expect(onboarding.ensureCloudMachine).not.toHaveBeenCalled();
     expect(management.fetchManagedAgents).not.toHaveBeenCalled();
     expect(screen.getByTestId("where").textContent).toBe("/rooms");
+  });
+
+  it("starts a stopped device again on a first visit, as signing in starts a new one", async () => {
+    const stopped = { machine_id: "m1", desired_state: "stopped" };
+    onboarding.fetchHostedMachines.mockResolvedValue({ available: true, machines: [stopped] });
+    await renderAt("/rooms");
+    await waitFor(() => expect(screen.getByTestId("where").textContent).toBe("/get-started"));
+    expect(onboarding.wakeCloudMachine).toHaveBeenCalledWith(stopped);
+    expect(onboarding.ensureCloudMachine).not.toHaveBeenCalled();
+  });
+
+  it("leaves the device of someone who already has agents as it is", async () => {
+    onboarding.fetchHostedMachines.mockResolvedValue({
+      available: true,
+      machines: [{ machine_id: "m1", desired_state: "stopped" }],
+    });
+    management.fetchManagedAgents.mockResolvedValue([{ agent_id: "a1" }]);
+    await renderAt("/rooms");
+    await waitFor(() => expect(management.fetchManagedAgents).toHaveBeenCalled());
+    expect(onboarding.wakeCloudMachine).not.toHaveBeenCalled();
+  });
+
+  it("runs as a first visit again once the visit is forgotten (Start over)", async () => {
+    localStorage.setItem("switch.get-started.sent:me:t1", "2026-01-01");
+    const { forgetGetStartedVisit } = await import("./CloudWarmUp");
+    forgetGetStartedVisit("me", "t1");
+    await renderAt("/rooms");
+    await waitFor(() => expect(screen.getByTestId("where").textContent).toBe("/get-started"));
   });
 
   it("sends nobody twice", async () => {

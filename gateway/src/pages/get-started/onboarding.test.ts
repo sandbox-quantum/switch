@@ -1,7 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CloudMachine, Controller } from "../../data/management";
 import { answerFetch } from "../../test/answerFetch";
-import { createBuddy, loginOutcome, readyProvider, startOver, welcomeChat } from "./onboarding";
+import {
+  createBuddy,
+  loginOutcome,
+  needsWaking,
+  readyProvider,
+  startOver,
+  welcomeChat,
+} from "./onboarding";
 
 const client = vi.hoisted(() => ({ listChats: vi.fn(), createChat: vi.fn() }));
 vi.mock("../chats/webChatClient", () => ({ webChatsClient: client }));
@@ -134,6 +141,17 @@ describe("createBuddy", () => {
     await expect(createBuddy({ controllerId: "c1", provider: "claude", person })).rejects.toThrow(
       "Sign in to Claude first.",
     );
+  });
+});
+
+describe("needsWaking", () => {
+  it("is a device asleep or stopped by its owner, never one an admin stopped", () => {
+    const machine = (overrides: Partial<CloudMachine>) =>
+      ({ desired_state: "running", sleeping: false, stopped_by_admin: false, ...overrides }) as CloudMachine;
+    expect(needsWaking(machine({}))).toBe(false);
+    expect(needsWaking(machine({ sleeping: true }))).toBe(true);
+    expect(needsWaking(machine({ desired_state: "stopped" }))).toBe(true);
+    expect(needsWaking(machine({ desired_state: "stopped", stopped_by_admin: true }))).toBe(false);
   });
 });
 
