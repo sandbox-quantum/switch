@@ -369,6 +369,8 @@ def test_the_hosted_board_carries_placeholders_not_a_deployment() -> None:
     assert defaults == {
         "service": "REPLACE-WITH-SERVICE",
         "flint_env": "REPLACE-WITH-ENV",
+        # Every release, as on the main dashboard, whose charts these are.
+        "version": "*",
     }
     text = json.dumps(board)
     assert '"id"' not in text

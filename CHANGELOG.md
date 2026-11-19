@@ -80,6 +80,20 @@ version of their own to them without also giving them a release of their own.
   lists them, in the same few statements however many agents are asked
   about. An id with no agent behind it is left out.
 
+#### Changed
+- **Decision metrics name the model that answered.** `switch.decision.requests`,
+  `failures`, `backend_errors`, `duration`, `model_time` and `confidence`
+  carry `model` beside `backend`: the model the server's decision service
+  answered with (for example `gemini-decision-1` or `claude-haiku-5-5`), so a
+  change of model behind the server default can be compared before and after.
+  A decision with no answer is `unknown`, a workspace's own endpoint is
+  `workspace_endpoint` (its model name is never kept), and a name that isn't
+  plain, or past the first eight a process sees, is `other`. `backend` is
+  unchanged, so existing queries keep working. The core health dashboard in
+  `deploy/observability/` groups its decision panels by model, marks 0.80 on
+  the confidence panel, compares models side by side, and gains the release
+  comparison panels and the `version` and `baseline` pickers.
+
 #### Fixed
 - **Reading an agent no longer reads every room in the workspace.**
   `GET /gateway/agents/{agent_id}` loaded every room its reader may see, to
