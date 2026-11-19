@@ -25,6 +25,7 @@ import {
   type PackageMemberRemoveResult,
 } from "../../data/api";
 import { LockedMark, OpensMark } from "../../components/RowAccess";
+import { REQUESTS_AT_ONCE, settleAtMost } from "../../data/inBatches";
 import { useLoad } from "../workspace/useLoad";
 import { privateRoomsLabel } from "./privateRooms";
 import { referenceTypeLabel } from "./ReferencesTab";
@@ -53,7 +54,7 @@ interface Removing {
  * refused. Throws the reasons for the refused ones, for the picker to show,
  * once `refetch` has shown the ones that went in. */
 async function addEach(ids: string[], add: (id: string) => Promise<unknown>, refetch: () => Promise<void>) {
-  const results = await Promise.allSettled(ids.map(add));
+  const results = await settleAtMost(ids, add, REQUESTS_AT_ONCE);
   // Awaited, so the picker no longer offers what went in by the time it
   // shows the reasons for the rest.
   await refetch();
