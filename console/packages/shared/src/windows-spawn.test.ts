@@ -34,12 +34,22 @@ describe('escapeCmdExeCommand', () => {
       'C:\\Program^ Files^ ^(x86^)\\npm.cmd'
     );
   });
+
+  it('caret-escapes newline and carriage return in a program path', () => {
+    expect(escapeCmdExeCommand('C:\\app\nname.cmd')).toBe('C:\\app^\nname.cmd');
+    expect(escapeCmdExeCommand('C:\\app\r\nname.cmd')).toBe('C:\\app^\r^\nname.cmd');
+  });
 });
 
 describe('escapeCmdExeArgument', () => {
   it('quotes, then caret-escapes twice for the batch file’s own pass', () => {
     expect(escapeCmdExeArgument('a&b')).toBe('^^^"a^^^&b^^^"');
     expect(escapeCmdExeArgument('100%')).toBe('^^^"100^^^%^^^"');
+  });
+
+  it('caret-escapes newline and carriage return characters', () => {
+    expect(escapeCmdExeArgument('test\ncalc.exe')).toBe('^^^"test^^^\ncalc.exe^^^"');
+    expect(escapeCmdExeArgument('test\r\ncalc.exe')).toBe('^^^"test^^^\r^^^\ncalc.exe^^^"');
   });
 
   it('escapes an embedded quote and the backslashes before it for the C runtime', () => {
@@ -140,5 +150,24 @@ describe('resolveExecFileSpawn', () => {
 
     expect(spawn.command).toBe('C:\\Windows\\System32\\cmd.exe');
     expect(spawn.args[3]).toBe('"D:\\tools\\claude.cmd ^^^"--version^^^""');
+  });
+
+  it('escapes newlines in batch arguments to prevent command injection', () => {
+    const spawn = resolveExecFileSpawn({
+      command: 'npm',
+      args: ['test\ncalc.exe'],
+      platform: 'win32',
+      env: WINDOWS_ENV,
+      fileExists: existsIn(['C:\\Program Files\\nodejs\\npm.cmd']),
+    });
+
+    expect(spawn.command).toBe('C:\\Windows\\System32\\cmd.exe');
+    expect(spawn.args).toEqual([
+      '/d',
+      '/s',
+      '/c',
+      '"C:\\Program^ Files\\nodejs\\npm.CMD ^^^"test^^^\ncalc.exe^^^""',
+    ]);
+    expect(spawn.windowsVerbatimArguments).toBe(true);
   });
 });
