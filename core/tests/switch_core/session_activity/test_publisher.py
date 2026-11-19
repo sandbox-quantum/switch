@@ -1481,21 +1481,30 @@ async def _tool(service, room_id, status, revision, **overrides):
     )
 
 
+async def _tool_drawn(platform: RecordingPlatform) -> None:
+    """Until the turn has been drawn with its first call in it."""
+    await platform.wait_until(
+        lambda: any(drawn.content.items for drawn in _turns(platform))
+    )
+
+
 async def test_a_root_asked_turn_works_in_a_thread_under_its_own_message(
     service, work_publisher, work_platform, bridged, session_factory
 ):
-    """Nothing is posted until the first step; then the work message, the turn
-    in its thread, and at the end the summary written into the work message."""
+    """The work message as the turn starts, the turn in its thread, and with
+    no answer, the line the turn ended on written into the work message."""
     platform = work_platform
     await _turn(service, bridged.room_id, "running", 1)
-    await asyncio.sleep(0.5)
-    assert platform.drawn == [], "no work message for a turn with no steps yet"
+    await platform.wait_until(lambda: len(_turns(platform)) == 1)
+    assert platform.drawn[0].call == "open_work_message", (
+        "the work message goes up as the turn starts, ahead of anything the agent posts"
+    )
 
     await _tool(service, bridged.room_id, "in-progress", 1)
-    await platform.wait_until(lambda: len(_turns(platform)) == 1)
+    await _tool_drawn(platform)
     [opened] = platform.of("open_work_message")
     assert opened.thread_ref is None, "the work message is at the channel root"
-    [first] = _turns(platform)
+    first = _turns(platform)[0]
     assert first.call == "post_rich"
     assert first.thread_ref == opened.ref
 
@@ -1517,22 +1526,51 @@ async def test_a_root_asked_turn_works_in_a_thread_under_its_own_message(
     assert post.thread_ref == opened.ref
 
 
-async def test_a_turn_that_just_answers_posts_no_work_message(
-    service, work_publisher, work_platform, bridged
+async def test_a_turn_with_nothing_to_show_removes_its_work_message(
+    service, work_publisher, work_platform, bridged, session_factory
 ):
+    """Only Switch's own room tools: talking, not work. No plan, no line."""
     await _turn(service, bridged.room_id, "running", 1)
     await _step(
         service,
         bridged.room_id,
-        item_id="said-1",
-        kind="assistant-message",
+        item_id="post-1",
+        kind="tool-activity",
         status="completed",
         revision=1,
-        text="Here you go",
+        title="mcp__switch__post_message",
     )
+    await _answer(session_factory, bridged)
     await _turn(service, bridged.room_id, "completed", 3)
-    await asyncio.sleep(0.8)
-    assert work_platform.drawn == []
+    await work_platform.wait_until(lambda: bool(work_platform.of("remove_work_thread")))
+    [opened] = work_platform.of("open_work_message")
+    assert work_platform.of("remove_work_thread")[0].ref == opened.ref
+    assert work_platform.of("attach_activity") == []
+    assert work_platform.of("settle_work_message") == []
+    post = await _turn_post(session_factory)
+    assert post.folded_into == opened.ref
+
+
+async def test_room_tools_are_left_out_of_the_plan_and_its_count(
+    service, work_publisher, work_platform, bridged, session_factory
+):
+    await _worked(service, bridged.room_id)
+    await _tool(service, bridged.room_id, "completed", 2)
+    await _step(
+        service,
+        bridged.room_id,
+        item_id="read-1",
+        kind="tool-activity",
+        status="completed",
+        revision=1,
+        title="mcp__switch__read_context",
+    )
+    await _turn(service, bridged.room_id, "completed", 5)
+    await work_platform.wait_until(
+        lambda: bool(work_platform.of("settle_work_message"))
+    )
+    [settled] = work_platform.of("settle_work_message")
+    assert settled.content.endswith(" 1 tool call."), settled.content
 
 
 async def test_a_root_asked_turn_that_failed_is_shown_without_steps(
@@ -1542,7 +1580,7 @@ async def test_a_root_asked_turn_that_failed_is_shown_without_steps(
     await _turn(service, bridged.room_id, "error", 2)
     await work_platform.wait_until(lambda: bool(work_platform.of("open_work_message")))
     [opened] = work_platform.of("open_work_message")
-    await work_platform.wait_until(lambda: len(_turns(work_platform)) == 1)
+    await work_platform.wait_until(lambda: len(_turns(work_platform)) >= 1)
     assert _turns(work_platform)[0].thread_ref == opened.ref
     await work_platform.wait_until(
         lambda: bool(work_platform.of("settle_work_message"))
@@ -1703,9 +1741,9 @@ async def test_an_answered_turn_folds_its_plan_into_the_answer(
     go: the answer is the one message the turn leaves."""
     platform = work_platform
     await _worked(service, bridged.room_id)
-    await platform.wait_until(lambda: len(_turns(platform)) == 1)
+    await _tool_drawn(platform)
     [opened] = platform.of("open_work_message")
-    [first] = _turns(platform)
+    first = _turns(platform)[0]
     answer = await _answer(session_factory, bridged)
     await _tool(service, bridged.room_id, "completed", 2)
     await _turn(service, bridged.room_id, "completed", 5)
@@ -1726,7 +1764,7 @@ async def test_an_answer_not_posted_yet_is_waited_for(
 ):
     platform = work_platform
     await _worked(service, bridged.room_id)
-    await platform.wait_until(lambda: len(_turns(platform)) == 1)
+    await _tool_drawn(platform)
     answer = await _answer(session_factory, bridged, mapped=False)
     await _turn(service, bridged.room_id, "completed", 5)
     await asyncio.sleep(1.5)
@@ -1742,7 +1780,7 @@ async def test_a_card_for_an_answer_keeps_the_work_message(
 ):
     platform = work_platform
     await _worked(service, bridged.room_id)
-    await platform.wait_until(lambda: len(_turns(platform)) == 1)
+    await _tool_drawn(platform)
     await _answer(
         session_factory,
         bridged,
@@ -1760,7 +1798,7 @@ async def test_a_refused_attach_keeps_the_work_message(
     platform = work_platform
     platform.attach_refused = True
     await _worked(service, bridged.room_id)
-    await platform.wait_until(lambda: len(_turns(platform)) == 1)
+    await _tool_drawn(platform)
     await _answer(session_factory, bridged)
     await _turn(service, bridged.room_id, "completed", 5)
     await platform.wait_until(lambda: bool(platform.of("settle_work_message")))
@@ -1774,7 +1812,7 @@ async def test_a_refused_delete_keeps_the_work_message_with_its_ending(
     platform = work_platform
     platform.remove_refused = True
     await _worked(service, bridged.room_id)
-    await platform.wait_until(lambda: len(_turns(platform)) == 1)
+    await _tool_drawn(platform)
     await _answer(session_factory, bridged)
     await _turn(service, bridged.room_id, "completed", 5)
     await platform.wait_until(lambda: bool(platform.of("settle_work_message")))
@@ -1789,7 +1827,7 @@ async def test_an_interrupted_turn_keeps_the_work_message_even_with_an_answer(
 ):
     platform = work_platform
     await _worked(service, bridged.room_id)
-    await platform.wait_until(lambda: len(_turns(platform)) == 1)
+    await _tool_drawn(platform)
     await _answer(session_factory, bridged)
     await _turn(service, bridged.room_id, "interrupted", 5)
     await platform.wait_until(lambda: bool(platform.of("settle_work_message")))
@@ -1802,8 +1840,8 @@ async def test_a_turn_carried_on_in_a_new_stream_is_drawn_there_and_removes_both
 ):
     platform = work_platform
     await _worked(service, bridged.room_id)
-    await platform.wait_until(lambda: len(_turns(platform)) == 1)
-    [first] = _turns(platform)
+    await _tool_drawn(platform)
+    first = _turns(platform)[0]
     platform.move_next_update = True
     await _tool(service, bridged.room_id, "completed", 2)
     await platform.wait_until(lambda: len(_turns(platform)) == 2)
@@ -1826,7 +1864,7 @@ async def test_the_answer_is_the_agents_last_message_since_the_turn_began(
     """An answer split across messages: the plan goes under the last part."""
     platform = work_platform
     await _worked(service, bridged.room_id)
-    await platform.wait_until(lambda: len(_turns(platform)) == 1)
+    await _tool_drawn(platform)
     await _answer(session_factory, bridged, body="Part one")
     last = await _answer(session_factory, bridged, body="Part two")
     await _turn(service, bridged.room_id, "completed", 5)

@@ -70,7 +70,10 @@ from switch_core.bridges.collaboration.session.renderers import (
     RUNNING_CLOCK_SECONDS,
     turn_state,
 )
-from switch_core.bridges.collaboration.session.renderers.subagents import is_tool_call
+from switch_core.bridges.collaboration.session.renderers.subagents import (
+    is_tool_call,
+    work_items,
+)
 from switch_core.db.models import (
     Agent,
     AgentSessionActivityItem,
@@ -1308,9 +1311,7 @@ class AgentSessionActivityPublisher:
             await self._marks(key, unposted, view, target, waiting_behind=bool(unended))
             drawn_in: _Target | None = target
             if await self._works_in_own_thread(target, view.row):
-                drawn_in = await self._work_thread(
-                    key, view, target, answering, error_summary
-                )
+                drawn_in = await self._work_thread(key, view, target, answering)
             if drawn_in is None:
                 post = None
             else:
@@ -1372,27 +1373,21 @@ class AgentSessionActivityPublisher:
         view: TurnView,
         target: _Target,
         answering: str | None,
-        error_summary: str | None,
     ) -> _Target | None:
         """Where a turn with a work thread is drawn, posting its message if due.
 
-        None while there is nothing to show: a turn that has made no tool call
-        posts no work message, so an agent that just answers adds nothing to
-        the channel but its answer. A turn that went wrong is shown anyway,
-        since how it ended is worth seeing.
+        The work message goes up as the turn starts, before the agent has said
+        or done anything, so it comes before whatever the agent posts first.
+        Not while the turn is queued, when nothing is happening yet. A turn
+        that turns out to have nothing to show has it deleted when it ends.
 
         The work message is remembered per turn in this process until the
-        turn's own message is stored, which records it as the thread. A
-        refusal posts nothing more and leaves the turn to the usual retries,
-        drawn where it would have been without a work thread.
+        turn's own message is stored, which records it. A refusal leaves the
+        turn drawn in the asker's thread, as without a work thread.
         """
         work_ref = self._work_messages.get(key)
         if work_ref is None:
-            went_wrong = bool(error_summary) or view.turn.status in (
-                "error",
-                "interrupted",
-            )
-            if not went_wrong and not any(is_tool_call(item) for item in view.items):
+            if view.turn.status == "queued":
                 return None
             try:
                 work_ref = await self._adapter.open_work_message(
@@ -1436,8 +1431,22 @@ class AgentSessionActivityPublisher:
         """
         work_ref = post.work_message_ref
         assert work_ref is not None
+        # Calls to Switch's own room tools are talking, not work: a turn made
+        # only of those has nothing to show, and they are left out of the plan
+        # and its count.
+        worked = work_items(view.items)
+        content = replace(content, items=worked)
+        streams = [*(post.earlier_post_ids or []), post.external_post_id]
         folded: str | None = None
-        if view.turn.status == "completed":
+        removed = False
+        if view.turn.status == "completed" and not any(
+            is_tool_call(item) for item in worked
+        ):
+            self._answer_waits.pop(key, None)
+            removed = await self._adapter.remove_work_thread(
+                target.channel_id, work_ref, streams
+            )
+        elif view.turn.status == "completed":
             answer = await self._turn_answer(view, target)
             if answer is _NOT_YET:
                 waited = self._answer_waits.get(key, 0)
@@ -1450,14 +1459,14 @@ class AgentSessionActivityPublisher:
             if isinstance(answer, _Answer) and await self._adapter.attach_activity(
                 target.channel_id, answer.ref, answer.text, content
             ):
-                streams = [*(post.earlier_post_ids or []), post.external_post_id]
-                if await self._adapter.remove_work_thread(
+                removed = await self._adapter.remove_work_thread(
                     target.channel_id, work_ref, streams
-                ):
+                )
+                if removed:
                     folded = answer.ref
-        if folded is None:
+        if not removed:
             summary = turn_state(
-                view.items,
+                worked,
                 view.turn,
                 tool_detail=True,
                 elapsed_seconds=content.elapsed_seconds,
@@ -1483,9 +1492,9 @@ class AgentSessionActivityPublisher:
             )
             if stored is not None:
                 stored.work_finished_at = func.now()
-                stored.folded_into = folded
+                stored.folded_into = folded or (work_ref if removed else None)
         post.work_finished_at = datetime.now(UTC)
-        post.folded_into = folded
+        post.folded_into = folded or (work_ref if removed else None)
         self._work_messages.pop(key, None)
 
     async def _turn_answer(
