@@ -24,6 +24,7 @@ import DataTable, {
   TableEmptyState,
 } from "../../components/DataTable";
 import PageBanner from "../../components/PageBanner";
+import PageHeader from "../../components/PageHeader";
 import RowActionsMenu, { type RowAction } from "../../components/RowActionsMenu";
 import SuccessSnackbar from "../../components/SuccessSnackbar";
 import { TransferOwnershipDialog } from "../../components/TransferOwnershipSection";
@@ -427,15 +428,16 @@ function AgentList({
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 0 }}>
-      <Stack direction="row" spacing={2} sx={{ alignItems: "flex-start", justifyContent: "space-between", mb: 3 }}>
-        <Box sx={{ minWidth: 0 }}>
-          <Typography variant="h5">Agents</Typography>
+      <PageHeader
+        sx={{ mb: 3 }}
+        title={<Typography variant="h5">Agents</Typography>}
+        description={
           <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
             {yours ? `The agents you own in ${workspace}.` : `Agents in ${workspace}.`}
           </Typography>
-        </Box>
-        {addButton}
-      </Stack>
+        }
+        actions={addButton}
+      />
 
       {data !== null && error !== null && (
         <Box sx={{ mb: 2 }}>

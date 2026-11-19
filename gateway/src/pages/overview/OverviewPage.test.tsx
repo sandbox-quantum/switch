@@ -31,6 +31,7 @@ function signedInAs(role: Role) {
     can_create_workspace: false,
     can_add_workspace: false,
     invite_email_enabled: false,
+    can_manage_connector_apps: false,
   };
   vi.mocked(useAuth).mockReturnValue({
     session,

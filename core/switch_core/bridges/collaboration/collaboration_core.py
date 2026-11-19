@@ -7,7 +7,14 @@ import logging
 import re
 import time
 import uuid
-from collections.abc import Awaitable, Callable, Collection, Iterator, Mapping
+from collections.abc import (
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Collection,
+    Iterator,
+    Mapping,
+)
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -212,13 +219,34 @@ class _PendingOutboundGroup:
 _LOBBY_HELLO = (
     "👋 Hello! Switch has seen your account. Go back to Switch Console to "
     "finish linking it. Agents don't answer here: add one to a group and "
-    "@-mention it there."
+    "reply to its messages there."
 )
 
 _LOBBY_DEPRECATION_NOTICE = (
     "👋 This isn't where you talk to agents — direct messages to the Switch "
     "app aren't routed to anyone. Head to a channel and @-mention an agent "
     "there to start collaborating."
+)
+
+
+# How long a channel the app was just added to waits before saying it has no
+# agents: long enough for an invite sent with the add to arrive.
+NO_AGENTS_NOTICE_GRACE_SECONDS = 10.0
+
+# How many membership events (joins and leaves, `_MEMBERSHIP_EVENTS`) one
+# bridge handles at once. Each holds database sessions while it is handled,
+# and a platform sends hundreds together: a user group added to a channel is
+# one join per person. Messages, commands and button presses are never held
+# behind them.
+MEMBERSHIP_EVENTS_AT_ONCE = 8
+_MEMBERSHIP_EVENTS = frozenset(
+    {"agent_joined", "user_joined", "user_left", "app_joined"}
+)
+
+# Set while a membership event is handled, so one handled from inside another
+# does not wait for a slot its caller already holds.
+_HANDLING_MEMBERSHIP: ContextVar[bool] = ContextVar(
+    "handling_membership", default=False
 )
 
 
@@ -435,6 +463,12 @@ class CollaborationCore:
         # Lining rooms up with their channels' member lists: one pass over
         # every room at start, and one per channel the app is added to.
         self._member_sync_tasks: set[asyncio.Task[None]] = set()
+        # The channels waiting for that run, whether every live room's is
+        # (`_sync_members_soon(None)`), and whether the run is going.
+        self._member_sync_pending: dict[str, None] = {}
+        self._member_sync_everything = False
+        self._member_sync_running = False
+        self._membership_slots = asyncio.Semaphore(MEMBERSHIP_EVENTS_AT_ONCE)
         # Removals Switch asked the platform for, by (channel, person): who
         # asked, and when. The platform's own leave event for one names that
         # person as the remover, as Switch's call would have.
@@ -531,6 +565,21 @@ class CollaborationCore:
             (time.perf_counter() - started) * 1000.0,
         )
 
+    @contextlib.asynccontextmanager
+    async def _inbound_slot(self, kind: str) -> AsyncIterator[None]:
+        """One of the bridge's `MEMBERSHIP_EVENTS_AT_ONCE` slots for a
+        membership event; none for any other kind, or for a membership event
+        handled from inside another's."""
+        if kind not in _MEMBERSHIP_EVENTS or _HANDLING_MEMBERSHIP.get():
+            yield
+            return
+        async with self._membership_slots:
+            token = _HANDLING_MEMBERSHIP.set(True)
+            try:
+                yield
+            finally:
+                _HANDLING_MEMBERSHIP.reset(token)
+
     def _traced(
         self, kind: str, handler: Callable[[_InboundEventT], Awaitable[object]]
     ) -> Callable[[_InboundEventT], Awaitable[None]]:
@@ -575,34 +624,35 @@ class CollaborationCore:
                         "event": kind,
                     },
                 )
-                room_ids = self._channel_to_room.get(event.channel_id)
-                tenant_id = (
-                    self._bridge_tenant_id
-                    if room_ids is None
-                    else await self._room_tenant(room_ids[0])
-                )
-                # `room_ids` is (Switch room id, transport room id); the log
-                # field is the first. None until the mapping exists, which is
-                # the honest reading for a channel whose room the handler is
-                # about to create.
-                room_id = room_ids[0] if room_ids else None
-                with tenant_scope(tenant_id), log_context(room_id=room_id):
-                    try:
-                        await handler(event)
-                    except Exception:
-                        # Counted here and re-raised unchanged: whoever handles
-                        # it above still does. An inbound handler that fails is
-                        # a message a person sent and nobody received, which is
-                        # invisible from the platform's side.
-                        metrics().increment(
-                            BRIDGE_ERRORS,
-                            {
-                                "bridge": "collaboration",
-                                "platform": self._bridge_type,
-                                "direction": "inbound",
-                            },
-                        )
-                        raise
+                async with self._inbound_slot(kind):
+                    room_ids = self._channel_to_room.get(event.channel_id)
+                    tenant_id = (
+                        self._bridge_tenant_id
+                        if room_ids is None
+                        else await self._room_tenant(room_ids[0])
+                    )
+                    # `room_ids` is (Switch room id, transport room id); the log
+                    # field is the first. None until the mapping exists, which is
+                    # the honest reading for a channel whose room the handler is
+                    # about to create.
+                    room_id = room_ids[0] if room_ids else None
+                    with tenant_scope(tenant_id), log_context(room_id=room_id):
+                        try:
+                            await handler(event)
+                        except Exception:
+                            # Counted here and re-raised unchanged: whoever handles
+                            # it above still does. An inbound handler that fails is
+                            # a message a person sent and nobody received, which is
+                            # invisible from the platform's side.
+                            metrics().increment(
+                                BRIDGE_ERRORS,
+                                {
+                                    "bridge": "collaboration",
+                                    "platform": self._bridge_type,
+                                    "direction": "inbound",
+                                },
+                            )
+                            raise
 
         return traced
 
@@ -1037,6 +1087,9 @@ class CollaborationCore:
     #: Seconds between channels in one pass, so a start over many rooms does
     #: not crowd out the bot's other calls to its platform.
     MEMBER_SYNC_PAUSE = 2.0
+    #: Seconds a pass waits to read the bridge's channels again after a read
+    #: failed.
+    MEMBER_SYNC_RETRY = 30.0
 
     def _resync_members_requested(self, channel_ids: list[str]) -> None:
         """The adapter saw something change who is in these channels (a
@@ -1047,37 +1100,60 @@ class CollaborationCore:
 
     def _sync_members_soon(self, channel_ids: list[str] | None) -> None:
         """Line rooms up with their channels' members in the background: the
-        channels given, or every live room's when None. Nothing waits on it;
-        `stop` cancels it."""
-        task = asyncio.create_task(self._run_member_sync(channel_ids))
+        channels given, or every live room's when None. One run per bridge
+        works through them one channel at a time, the channels given ahead of
+        what is left of a pass over every room, so the app added to a hundred
+        channels at once syncs them one after another, not a hundred runs side
+        by side, and a channel it was just added to is not left waiting behind
+        a whole pass. Nothing waits on it; `stop` cancels it."""
+        if channel_ids is None:
+            self._member_sync_everything = True
+        else:
+            self._member_sync_pending.update(dict.fromkeys(channel_ids))
+        if self._member_sync_running:
+            return
+        self._member_sync_running = True
+        task = asyncio.create_task(self._run_member_sync())
         self._member_sync_tasks.add(task)
         task.add_done_callback(self._member_sync_tasks.discard)
 
-    async def _run_member_sync(self, channel_ids: list[str] | None) -> None:
+    async def _run_member_sync(self) -> None:
         """Wrapper for the background member sync; see `_run_agent_identities`
         for why it exists and unbinds the tenant. One channel failing does not
         stop the rest."""
         with no_tenant():
             try:
-                if channel_ids is None:
-                    async with tenant_session(
-                        self._session_factory, self._bridge_tenant_id
-                    ) as session:
-                        rooms = await self._room_store.get_by_bridge(
-                            session, self._bridge_id
-                        )
-                    channel_ids = sorted(
-                        {
-                            room.external_channel_id
-                            for room in rooms
-                            if room.external_channel_id and room.archived_at is None
-                        }
-                    )
-                for index, channel_id in enumerate(channel_ids):
-                    if index:
+                rest: list[str] = []
+                paused = False
+                while True:
+                    if self._member_sync_pending:
+                        channel_id = next(iter(self._member_sync_pending))
+                        del self._member_sync_pending[channel_id]
+                        if channel_id in rest:
+                            rest.remove(channel_id)
+                    elif self._member_sync_everything:
+                        try:
+                            rest = await self._live_channel_ids()
+                        except Exception:
+                            logger.exception(
+                                "Could not read which %s channels to line up with "
+                                "their rooms; trying again in %.0fs",
+                                self._bridge_type,
+                                self.MEMBER_SYNC_RETRY,
+                            )
+                            await asyncio.sleep(self.MEMBER_SYNC_RETRY)
+                            continue
+                        self._member_sync_everything = False
+                        continue
+                    elif rest:
+                        channel_id = rest.pop(0)
+                    else:
+                        return
+                    if paused:
                         # Spread over time: each channel is platform calls the
                         # bot's replies are waiting behind.
                         await asyncio.sleep(self.MEMBER_SYNC_PAUSE)
+                    paused = True
                     try:
                         await self.sync_channel_members(channel_id)
                     except asyncio.CancelledError:
@@ -1093,6 +1169,22 @@ class CollaborationCore:
                     "%s member sync cancelled before finishing", self._bridge_type
                 )
                 raise
+            finally:
+                self._member_sync_running = False
+
+    async def _live_channel_ids(self) -> list[str]:
+        """The channels of the bridge's rooms that are not archived."""
+        async with tenant_session(
+            self._session_factory, self._bridge_tenant_id
+        ) as session:
+            rooms = await self._room_store.get_by_bridge(session, self._bridge_id)
+        return sorted(
+            {
+                room.external_channel_id
+                for room in rooms
+                if room.external_channel_id and room.archived_at is None
+            }
+        )
 
     async def sync_channel_members(self, channel_id: str) -> None:
         """Make a channel's room hold the people its platform says are in it.
@@ -1984,7 +2076,12 @@ class CollaborationCore:
             # every agent in it. Start is how a person first says hello there.
             await self._adapter.admin_message(
                 cmd.channel_id,
-                _LOBBY_HELLO if cmd.command == "start" else _LOBBY_DEPRECATION_NOTICE,
+                # Where there is no directory (Telegram) the hello's advice
+                # is the one that works: an @-mention alone does not reach a
+                # bot with Group Privacy on, a reply to an agent's message does.
+                _LOBBY_HELLO
+                if cmd.command == "start" or not self._adapter.supports_directory_search
+                else _LOBBY_DEPRECATION_NOTICE,
                 cmd.root_id or cmd.message_ref,
             )
             return
@@ -2194,6 +2291,7 @@ class CollaborationCore:
                 channel_type=join.channel_type,
                 channel_name=join.channel_name,
                 added_by_external_user_id=join.added_by_external_user_id,
+                app_joined=True,
             )
 
     async def _handle_channel_migrated(self, old_id: str, new_id: str) -> None:
@@ -2293,6 +2391,7 @@ class CollaborationCore:
         channel_name: str | None = None,
         added_by_external_user_id: str | None = None,
         inviting_an_agent: bool = False,
+        app_joined: bool = False,
     ) -> tuple[str, str] | None:
         # Callers hold the per-channel lock. Guard against provisioning a
         # duplicate room for a channel that is already (or is being) bridged:
@@ -2392,21 +2491,55 @@ class CollaborationCore:
             logger.warning(
                 "Auto-created room %s for channel %s has no agents", room.id, channel_id
             )
-            await self._adapter.admin_message(
-                channel_id,
-                _no_agents_notice(
-                    self._adapter.slash_invite_hint(),
-                    replies_and_commands_only=await self._adapter.sees_only_replies_and_commands(
-                        channel_id
-                    ),
-                ),
-                message_type=AdminMessageType.NO_AGENTS,
-            )
+            if app_joined:
+                # The app is often added by a link that invites an agent in the
+                # same breath (Telegram's startgroup), and the join arrives
+                # first: wait, and say nothing if the agent has come.
+                self._no_agents_notice_soon(room.id, channel_id)
+            else:
+                await self._post_no_agents_notice(channel_id)
 
         # Whoever is already in the channel is in the room from the start,
         # not only once they speak.
         self._sync_members_soon([channel_id])
         return (room.id, room.transport_room_id)
+
+    async def _post_no_agents_notice(self, channel_id: str) -> None:
+        await self._adapter.admin_message(
+            channel_id,
+            _no_agents_notice(
+                self._adapter.slash_invite_hint(),
+                replies_and_commands_only=await self._adapter.sees_only_replies_and_commands(
+                    channel_id
+                ),
+            ),
+            message_type=AdminMessageType.NO_AGENTS,
+        )
+
+    def _no_agents_notice_soon(self, room_id: str, channel_id: str) -> None:
+        """Post the no-agents notice after a grace, unless an agent came.
+
+        Kept with the member syncs so `stop` cancels it the same way."""
+        task = asyncio.create_task(self._run_no_agents_notice(room_id, channel_id))
+        self._member_sync_tasks.add(task)
+        task.add_done_callback(self._member_sync_tasks.discard)
+
+    async def _run_no_agents_notice(self, room_id: str, channel_id: str) -> None:
+        with no_tenant():
+            try:
+                await asyncio.sleep(NO_AGENTS_NOTICE_GRACE_SECONDS)
+                async with tenant_session(
+                    self._session_factory, self._bridge_tenant_id
+                ) as session:
+                    if await self._room_store.get_agent_ids(session, room_id):
+                        return
+                await self._post_no_agents_notice(channel_id)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception(
+                    "Could not post the no-agents notice in channel %s", channel_id
+                )
 
     async def _resolve_agents_for_channel(
         self, channel_id: str, channel_type: ChannelType

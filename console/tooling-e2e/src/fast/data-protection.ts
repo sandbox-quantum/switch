@@ -1,12 +1,5 @@
 import { expect } from "vitest";
-import {
-  SwitchHttpError,
-  errorDetail,
-  sleep,
-  type SwitchClient,
-} from "../clients/switch-client.ts";
-import type { NameScope } from "../core/run.ts";
-import type { Fixtures } from "../fixtures/fixtures.ts";
+import { SwitchHttpError, errorDetail, sleep } from "../clients/switch-client.ts";
 import type { FastScenario } from "./scenario.ts";
 
 const ERASURE_DEADLINE_MS = 60_000;
@@ -20,28 +13,6 @@ async function status(call: () => Promise<unknown>): Promise<[number, string]> {
     throw error;
   }
   return [200, ""];
-}
-
-/**
- * A plain user in the harness admin's workspace, signed in, with their
- * account deleted afterwards. Deleting an account takes the deployment
- * operator, so the scenarios using this run only on a throwaway stack.
- */
-async function colleague(
-  role: string,
-  names: NameScope,
-  switchClient: SwitchClient,
-  fixtures: Fixtures,
-): Promise<{ id: string; name: string; email: string; password: string; client: SwitchClient }> {
-  const password = `e2e-${names.runId}-${crypto.randomUUID()}`;
-  const name = names.name(role);
-  const email = `${name}@e2e.invalid`;
-  const { id, client } = await switchClient.createMember({ name, email, password, role: "user" });
-  fixtures.defer(`the account ${email}`, async () => {
-    const [code, detail] = await status(() => switchClient.deleteUser(id));
-    if (code !== 200 && code !== 404) throw new Error(`${code}: ${detail}`);
-  });
-  return { id, name, email, password, client };
 }
 
 /**
@@ -69,24 +40,20 @@ export const retentionWindow: FastScenario = {
     requires: [],
   },
   async run({ names, switchClient, fixtures }) {
-    const member = await colleague("member", names, switchClient, fixtures);
+    const member = await fixtures.account("member");
     const defaultWorkspace = await switchClient.tenantId();
     const [memberSets] = await status(() =>
       member.client.setRetention(defaultWorkspace, 3650),
     );
     expect(memberSets, "a plain member setting a retention window").toBe(403);
 
-    const makerPassword = `e2e-${names.runId}-${crypto.randomUUID()}`;
-    const makerEmail = `${names.name("keeper")}@e2e.invalid`;
-    // A deployment operator, so they can make a workspace. Its account stays
-    // on the throwaway stack.
-    await switchClient.createUser({
-      name: "E2E retention keeper",
-      email: makerEmail,
-      password: makerPassword,
-      role: "admin",
+    // Someone who signed up makes a workspace of their own, within the
+    // allowance every account has. Their account stays on the throwaway stack.
+    const { client: maker } = await switchClient.signUp({
+      email: `${names.name("keeper")}@e2e.invalid`,
+      password: `e2e-${names.runId}-${crypto.randomUUID()}`,
+      displayName: "E2E retention keeper",
     });
-    const maker = switchClient.as(makerEmail, makerPassword);
     const spaceName = names.name("kept");
     const spaceId = await maker.createTenant(spaceName);
     fixtures.defer(`the workspace ${spaceName}`, async () => {
@@ -149,7 +116,7 @@ export const memberErasure: FastScenario = {
   },
   async run({ names, switchClient, fixtures }) {
     const agent = await fixtures.agent("listener");
-    const person = await colleague("talker", names, switchClient, fixtures);
+    const person = await fixtures.account("talker");
     const tenantId = await switchClient.tenantId();
 
     const roomId = await person.client.createDirectChat(agent.id);
@@ -210,49 +177,35 @@ export const memberErasure: FastScenario = {
 };
 
 /**
- * Signing out of every device. A person signed in twice ends all their
- * sessions from one: both cookies stop working, and signing in again works.
- * The deployment operator does the same for someone else; a plain member may
- * not.
+ * Signing out of every device. A person signed in on two devices ends all
+ * their sessions from one: both cookies stop working, someone else's session
+ * does not, and signing in again works.
  */
 export const endSessions: FastScenario = {
   header: {
     id: "end-sessions",
-    covers: [
-      "POST /gateway/auth/sessions/revoke",
-      "POST /gateway/users/{user_id}/sessions/revoke",
-    ],
+    covers: ["POST /gateway/auth/signup", "POST /gateway/auth/sessions/revoke"],
     lane: "fast",
     environments: ["ephemeral"],
     owner: "platform",
     requires: [],
   },
-  async run({ names, switchClient, fixtures }) {
-    const person = await colleague("traveller", names, switchClient, fixtures);
+  async run({ switchClient, fixtures }) {
+    const person = await fixtures.account("traveller");
     const laptop = person.client;
     const phone = switchClient.as(person.email, person.password);
     await phone.tenantId();
+    const other = await fixtures.account("bystander");
+    await other.client.tenantId();
 
     await laptop.endMySessions();
     const [laptopAfter] = await status(() => laptop.tenantId());
     expect(laptopAfter, "the session that ended them all").toBe(401);
     const [phoneAfter] = await status(() => phone.tenantId());
     expect(phoneAfter, "the other device's session").toBe(401);
-    const again = switchClient.as(person.email, person.password);
-    await again.tenantId();
-
-    const other = await colleague("bystander", names, switchClient, fixtures);
-    const [notOperator] = await status(() => again.endUserSessions(other.id));
-    expect(notOperator, "a plain member ending someone's sessions").toBe(403);
-    await other.client.tenantId();
-
-    await switchClient.endUserSessions(person.id);
-    const [revoked] = await status(() => again.tenantId());
-    expect(revoked, "a session the operator ended").toBe(401);
     const [stillIn] = await status(() => other.client.tenantId());
     expect(stillIn, "someone else's session, untouched").toBe(200);
-
-    const [nobody] = await status(() => switchClient.endUserSessions(crypto.randomUUID()));
-    expect(nobody, "ending the sessions of no such user").toBe(404);
+    const again = switchClient.as(person.email, person.password);
+    await again.tenantId();
   },
 };

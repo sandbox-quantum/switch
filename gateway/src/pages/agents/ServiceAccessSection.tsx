@@ -92,7 +92,6 @@ export default function ServiceAccessSection({
   const [notice, setNotice] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const [busy, setBusy] = useState(false);
-  const { isOperator } = useAuth();
 
   // Whether the grants could be read: they cannot for someone else's agent,
   // whose grants are its owner's business, and the section then hides.
@@ -258,7 +257,6 @@ export default function ServiceAccessSection({
               agentName={agent.name}
               busy={busy}
               canTurnOn={canGrant}
-              canSetUp={isOperator}
               onTurnOn={() =>
                 void act(() => setServiceGrant(agent.id, service.slug, { access: null, resources: {} }))
               }
@@ -268,8 +266,7 @@ export default function ServiceAccessSection({
 
         {grants && canGrant && githubBlocked !== null && (
           <Typography variant="body2" color="text.secondary">
-            {githubBlocked}
-            {isOperator && githubService?.server_setup_needed && <SetUpLink />}
+            {githubService && <BlockedReason reason={githubBlocked} service={githubService} />}
           </Typography>
         )}
         {grants && canGrant && githubBlocked === null && (editing || !githubGrant) && (
@@ -346,11 +343,47 @@ export function readOnlyReasonFor(
   return services.find((service) => service.slug === slug)?.read_only_reason ?? null;
 }
 
-/** The operator's way from a service that is not set up to where it is set
- * up: their server-wide connector apps, under Platform. */
-function SetUpLink() {
+export const BY_COMMAND = "It's set up with the switch-connector-apps command, where Switch runs.";
+
+/** Whom to ask, on a deployment whose connector apps its organization's
+ * admins set up in the dashboard. */
+export const BY_ORGANIZATION_ADMIN =
+  "An admin of your organization sets it up in Organization settings › Connector apps.";
+
+/** What the server's reason for a service waiting on its connector app
+ * becomes on a deployment whose one organization's admins set the apps up:
+ * its own names whoever runs Switch. */
+export function setUpByOrganizationAdmin(name: string): string {
+  return `${name}'s connector app isn't set up here yet. ${BY_ORGANIZATION_ADMIN}`;
+}
+
+/** Why a service can't be granted and, for one waiting on its connector
+ * app, what to do about it: whoever may set up the deployment's connector
+ * apps is led to them, in Organization settings. Anyone else is told who
+ * sets it up: an admin of their organization while it is the deployment's
+ * only one, in place of the server's reason; or else, as on a server that
+ * does not say which, whoever runs Switch, with its command. */
+function BlockedReason({ reason, service }: { reason: string; service: ServiceConnection }) {
+  const { capabilities } = useAuth();
+  if (!service.server_setup_needed) return <>{reason}</>;
+  if (capabilities.canManageConnectorApps)
+    return (
+      <>
+        {reason}
+        <SetUpLink to="/settings/org/connector-apps" />
+      </>
+    );
+  if (capabilities.connectorAppsInDashboard) return <>{setUpByOrganizationAdmin(service.name)}</>;
   return (
-    <Button component={RouterLink} to="/platform/connectors" size="small" sx={{ ml: 1 }}>
+    <>
+      {reason} <span>{BY_COMMAND}</span>
+    </>
+  );
+}
+
+function SetUpLink({ to }: { to: string }) {
+  return (
+    <Button component={RouterLink} to={to} size="small" sx={{ ml: 1 }}>
       Set up
     </Button>
   );
@@ -383,7 +416,6 @@ function OnOffGrant({
   agentName,
   busy,
   canTurnOn,
-  canSetUp,
   onTurnOn,
   onTurnOff,
 }: {
@@ -392,7 +424,6 @@ function OnOffGrant({
   agentName: string;
   busy: boolean;
   canTurnOn: boolean;
-  canSetUp: boolean;
   onTurnOn: () => void;
   onTurnOff: () => void;
 }) {
@@ -428,8 +459,7 @@ function OnOffGrant({
       )}
       {blocked && (
         <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-          {blocked}
-          {canSetUp && service.server_setup_needed && <SetUpLink />}
+          <BlockedReason reason={blocked} service={service} />
         </Typography>
       )}
       {!grant && !connected && !blocked && (

@@ -15,6 +15,7 @@ import { rememberBridgePlatforms } from '@main/core/telemetry/bridge-platform';
 import { assertedTenant } from '@main/core/workspaces/asserted-tenant';
 import { type CloudMachine, cloudMachineSchema } from '@shared/core/cloud-agents/cloud-agents';
 import type { RemoteFeatureFlag } from '@shared/core/feature-flags/feature-flags';
+import type { RemoteDevices } from '@shared/core/managed-agents/machine-enrollment';
 import type {
   AdvancedConfigField,
   ManagedAgentTemplate,
@@ -39,6 +40,7 @@ import {
   type ConnectorApp,
   type ConnectorAppCheckResult,
   type ConnectorAppImpact,
+  type ConnectorAppManagement,
   type ConnectorApps,
   type SaveConnectorAppInput,
   type SaveConnectorAppResult,
@@ -1423,12 +1425,42 @@ export async function fetchWorkspaceCreation(server: SwitchServer): Promise<Work
   };
 }
 
-function optionalFlag(
+/**
+ * Who sets up the deployment's connector apps, from the session: whether the
+ * signed-in account may (its operator, or an `org_admin` of its organization
+ * when it has exactly one), and whether they are set up in the dashboard at
+ * all (exactly one organization) or with the server's command.
+ *
+ * Each is null on a server from before it said (no session route, or no
+ * field), where only the operator may.
+ */
+export async function fetchConnectorAppManagement(
+  server: SwitchServer
+): Promise<ConnectorAppManagement> {
+  let res: Response;
+  try {
+    res = await gatewayFetch(server, '/auth/session', { authenticated: true });
+  } catch (cause) {
+    if (cause instanceof GatewayError && cause.status === 404)
+      return { canManage: null, inDashboard: null };
+    throw cause;
+  }
+  const json = (await res.json()) as {
+    can_manage_connector_apps?: unknown;
+    connector_apps_in_dashboard?: unknown;
+  };
+  return {
+    canManage: optionalFlag(server, json, 'can_manage_connector_apps', null),
+    inDashboard: optionalFlag(server, json, 'connector_apps_in_dashboard', null),
+  };
+}
+
+function optionalFlag<Absent extends boolean | null>(
   server: SwitchServer,
   json: Record<string, unknown>,
   field: string,
-  absent: boolean
-): boolean {
+  absent: Absent
+): boolean | Absent {
   const value = json[field];
   if (value === undefined) return absent;
   if (typeof value !== 'boolean') {
@@ -1584,6 +1616,26 @@ export async function agentExistsOnServer(server: SwitchServer, agentId: string)
   }
 }
 
+type AgentRoomJson = {
+  room_id: string;
+  room_name: string;
+  archived: boolean;
+  status: string;
+  room_role: string | null;
+  answered_here?: boolean;
+};
+
+function toRemoteAgentRoom(r: AgentRoomJson): RemoteAgentRoom {
+  return {
+    roomId: r.room_id,
+    roomName: r.room_name,
+    archived: r.archived,
+    status: r.status,
+    roomRole: r.room_role,
+    answeredHere: r.answered_here ?? false,
+  };
+}
+
 export async function fetchAgentRooms(
   server: SwitchServer,
   agentId: string
@@ -1591,24 +1643,42 @@ export async function fetchAgentRooms(
   const res = await gatewayFetch(server, `/agents/${encodeURIComponent(agentId)}`, {
     authenticated: true,
   });
-  const json = (await res.json()) as {
-    rooms?: Array<{
-      room_id: string;
-      room_name: string;
-      archived: boolean;
-      status: string;
-      room_role: string | null;
-      answered_here?: boolean;
-    }>;
-  };
-  return (json.rooms ?? []).map((r) => ({
-    roomId: r.room_id,
-    roomName: r.room_name,
-    archived: r.archived,
-    status: r.status,
-    roomRole: r.room_role,
-    answeredHere: r.answered_here ?? false,
-  }));
+  const json = (await res.json()) as { rooms?: AgentRoomJson[] };
+  return (json.rooms ?? []).map(toRemoteAgentRoom);
+}
+
+/** The most agents one `GET /agents/rooms` answers for; the server refuses more. */
+export const AGENT_ROOMS_PER_REQUEST = 100;
+
+/**
+ * Many agents' rooms, keyed by agent id, each as {@link fetchAgentRooms} reads
+ * one, asked {@link AGENT_ROOMS_PER_REQUEST} agents to a request
+ * (`GET /agents/rooms`). An agent the server does not have is left out.
+ *
+ * Null is a server from before the route, which answers for one agent at a
+ * time: on it a 404 says the route is missing, not that an agent is. Every
+ * other refusal is raised.
+ */
+export async function fetchRoomsOfAgents(
+  server: SwitchServer,
+  agentIds: readonly string[]
+): Promise<Record<string, RemoteAgentRoom[]> | null> {
+  const rooms: Record<string, RemoteAgentRoom[]> = {};
+  for (let start = 0; start < agentIds.length; start += AGENT_ROOMS_PER_REQUEST) {
+    const query = new URLSearchParams(
+      agentIds.slice(start, start + AGENT_ROOMS_PER_REQUEST).map((id) => ['agent_id', id])
+    );
+    let res: Response;
+    try {
+      res = await gatewayFetch(server, `/agents/rooms?${query}`, { authenticated: true });
+    } catch (cause) {
+      if (cause instanceof GatewayError && cause.status === 404) return null;
+      throw cause;
+    }
+    const json = (await res.json()) as { agent_id: string; rooms: AgentRoomJson[] }[];
+    for (const entry of json) rooms[entry.agent_id] = entry.rooms.map(toRemoteAgentRoom);
+  }
+  return rooms;
 }
 
 /**
@@ -2593,6 +2663,8 @@ type ExternalUserSummaryJson = {
   external_user_id: string;
   external_username: string;
   first_seen_at?: string;
+  display_name?: string | null;
+  has_handle?: boolean;
   claimed_by?: IdentityClaimantJson[];
   link_request?: { user_id: string; code: LinkCodeJson | null } | null;
 };
@@ -3801,6 +3873,9 @@ type RoomAutoRouteJson = {
   fallback_agent: string | null;
   /** Absent from a server that predates it. */
   fallback_agent_name?: string | null;
+  /** Absent from a server that predates it. */
+  assigned_agent?: string | null;
+  assigned_agent_name?: string | null;
 };
 
 function mapRoomAutoRoute(json: RoomAutoRouteJson): RoomAutoRoute {
@@ -3810,6 +3885,8 @@ function mapRoomAutoRoute(json: RoomAutoRouteJson): RoomAutoRoute {
     reason: json.reason,
     fallbackAgent: json.fallback_agent,
     fallbackAgentName: json.fallback_agent_name ?? null,
+    assignedAgent: json.assigned_agent ?? null,
+    assignedAgentName: json.assigned_agent_name ?? null,
   };
 }
 
@@ -4070,6 +4147,8 @@ export async function fetchBridgePeople(
         linkedUserIds: linked.map((claim) => claim.user_id),
         linkedName: linked[0]?.user_name ?? null,
         firstSeenAt: user.first_seen_at ?? null,
+        ...(user.display_name ? { displayName: user.display_name } : {}),
+        ...(user.has_handle === false ? { hasHandle: false } : {}),
       };
     })
     .sort((a, b) => a.username.localeCompare(b.username));
@@ -5216,26 +5295,44 @@ type ManagedAgentJson = {
  */
 export async function enrollConsoleController(
   server: SwitchServer,
-  body: { name: string; platform: ControllerPlatform; version: string }
-): Promise<{ controllerId: string; credential: string }> {
+  body: { name: string; platform: ControllerPlatform; version: string; deviceId: string | null }
+): Promise<{ controllerId: string; credential: string; adopted: boolean }> {
   const res = await managementFetch(server, '/controllers', {
     authenticated: true,
     method: 'POST',
-    body: { name: body.name, kind: 'console', platform: body.platform, version: body.version },
+    body: {
+      name: body.name,
+      kind: 'console',
+      platform: body.platform,
+      version: body.version,
+      ...(body.deviceId === null ? {} : { device_id: body.deviceId }),
+    },
   });
-  const json = (await res.json()) as { controller_id: string; credential: string };
-  return { controllerId: json.controller_id, credential: json.credential };
+  const json = (await res.json()) as {
+    controller_id: string;
+    credential: string;
+    adopted?: boolean;
+  };
+  return {
+    controllerId: json.controller_id,
+    credential: json.credential,
+    adopted: json.adopted === true,
+  };
 }
 
 /**
  * A one-time code a headless controller enrolls with
  * (`POST /gateway/management/enrollment-codes`): single use, valid for ten
  * minutes. A secret until it is spent. `serverUrl` is the agent bridge's public
- * origin as the server names it; null when it names none.
+ * origin as the server names it; null when it names none. `remoteDevices` is
+ * whether another device could enroll at all; null from a server too old to say.
  */
-export async function issueMachineEnrollment(
-  server: SwitchServer
-): Promise<{ code: string; expiresAt: string; serverUrl: string | null }> {
+export async function issueMachineEnrollment(server: SwitchServer): Promise<{
+  code: string;
+  expiresAt: string;
+  serverUrl: string | null;
+  remoteDevices: RemoteDevices | null;
+}> {
   const res = await managementFetch(server, '/enrollment-codes', {
     authenticated: true,
     method: 'POST',
@@ -5244,8 +5341,14 @@ export async function issueMachineEnrollment(
     code: string;
     expires_at: string;
     server_url: string | null;
+    remote_devices?: RemoteDevices;
   };
-  return { code: json.code, expiresAt: json.expires_at, serverUrl: json.server_url ?? null };
+  return {
+    code: json.code,
+    expiresAt: json.expires_at,
+    serverUrl: json.server_url ?? null,
+    remoteDevices: json.remote_devices ?? null,
+  };
 }
 
 /** Just the code of a fresh enrollment, for a controller Console enrolls itself. */

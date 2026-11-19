@@ -750,12 +750,11 @@ CHECKS: dict[str, Check] = {
                 within="connections",
             ),
         ],
-        "an account": [
+        "the session": [
             Check(
-                "can_delete",
-                _get(f"{G}/users"),
-                _act("DELETE", f"{G}/users/{{user_target}}"),
-                match=("id", "user_target"),
+                "can_manage_connector_apps",
+                _get(f"{G}/auth/session"),
+                _act("GET", f"{G}/connector-apps"),
             ),
         ],
     }.items()

@@ -9,7 +9,7 @@ Expand only: a release from before this revision neither reads nor writes the
 column, and a message it posts is recorded by its first part, as before.
 
 Revision ID: c4a1f7e2d9b6
-Revises: e2c7a94f1b38
+Revises: 368b45a3d82d
 Create Date: 2026-11-16 23:30:00.000000
 
 """
@@ -21,7 +21,7 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision: str = "c4a1f7e2d9b6"
-down_revision: str | None = "e2c7a94f1b38"
+down_revision: str | None = "368b45a3d82d"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 expand_only: bool = True

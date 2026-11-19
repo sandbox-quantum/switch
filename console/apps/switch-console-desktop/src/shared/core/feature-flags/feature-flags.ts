@@ -67,9 +67,10 @@ export function sameFeatureFlags(a: FeatureFlags, b: FeatureFlags): boolean {
  * What this build turns on before it has a server to ask.
  *
  * The first-run pages and the Switch Cloud choice are drawn before Console is
- * connected to anything, so no server's flags can decide them. A run from a
- * checkout and a canary have them on; a stable release has them off. Once
- * Console is connected, the server's own flags decide everything else.
+ * connected to anything, so no server's flags can decide them. Every build has
+ * the first-run pages on. The Switch Cloud choice is on in a run from a
+ * checkout and a canary, and off in a stable release. Once Console is
+ * connected, the server's own flags decide everything else.
  */
 export type BuildFeatureFlags = {
   /** The first-run pages. Without them a fresh install opens the app itself. */

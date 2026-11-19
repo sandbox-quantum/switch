@@ -97,7 +97,7 @@ export type ThisComputerReport = { serverId: string; providers: MachineProvider[
 /**
  * A provider login to give a machine: a key or token typed in, this
  * computer's own sign-in for the provider, read from its file, or (Claude
- * only) Google Vertex AI, with a service account key pasted or picked, or this
+ * and Antigravity) Google Vertex AI, with a service account key pasted or picked, or this
  * computer's Google application-default sign-in.
  */
 export type MachineLoginInput =
@@ -134,6 +134,8 @@ export type OwnedMachine = ManagedMachine & {
   workspacesDir: string | null;
   /** Its operating system as it enrolled (`macos`, `linux`, `windows`); null when not known. */
   os: string | null;
+  /** When it last reported its status; null when it never has. */
+  lastSeenAt: string | null;
   local: MachineLocal;
 };
 

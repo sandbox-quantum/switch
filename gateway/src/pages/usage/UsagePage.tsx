@@ -23,6 +23,7 @@ import {
 import type { GridColDef } from "@mui/x-data-grid";
 import { useCallback, useMemo, useState } from "react";
 import DataTable, { TableEmptyState } from "../../components/DataTable";
+import PageHeader from "../../components/PageHeader";
 import { type Budget, type CurrentTenant, type UsageTotal, deleteBudget } from "../../data/api";
 import { useBudgets, useCurrentTenant, useUsage } from "../../data/hooks";
 import { formatDateTime } from "../../theme/format";
@@ -177,26 +178,26 @@ function BudgetsSection({ tenantId }: { tenantId: string }) {
 
   return (
     <Box>
-      <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={2} mb={1}>
-        <Box>
+      <PageHeader
+        sx={{ mb: 1 }}
+        title={
           <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
             Budgets
           </Typography>
+        }
+        description={
           <Typography variant="body2" color="text.secondary">
             A budget is a soft limit. An agent that reaches one takes no new work until it
             resets, but work it already started finishes and can go past the limit. People are
             never stopped. No budget means no limit.
           </Typography>
-        </Box>
-        <Button
-          variant="contained"
-          startIcon={<AddCircleOutline />}
-          onClick={() => openEditor(null)}
-          sx={{ flexShrink: 0, whiteSpace: "nowrap" }}
-        >
-          Add budget
-        </Button>
-      </Stack>
+        }
+        actions={
+          <Button variant="contained" startIcon={<AddCircleOutline />} onClick={() => openEditor(null)}>
+            Add budget
+          </Button>
+        }
+      />
       {loading ? (
         <CircularProgress />
       ) : error ? (
@@ -312,30 +313,35 @@ function UsageSection({ tenantId }: { tenantId: string }) {
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", flexGrow: 1, minHeight: 320 }}>
-      <Stack direction="row" alignItems="center" justifyContent="space-between" mb={1}>
-        <Box>
+      <PageHeader
+        sx={{ mb: 1 }}
+        title={
           <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
             What was spent
           </Typography>
+        }
+        description={
           <Typography variant="body2" color="text.secondary">
             Counted in whole hours. Tokens appear only for sessions that report them.
           </Typography>
-        </Box>
-        <TextField
-          select
-          size="small"
-          value={windowHours}
-          onChange={(e) => setWindowHours(Number(e.target.value))}
-          slotProps={{ htmlInput: { "aria-label": "Period" } }}
-          sx={{ width: 200 }}
-        >
-          {WINDOWS.map((w) => (
-            <MenuItem key={w.hours} value={w.hours}>
-              {w.label}
-            </MenuItem>
-          ))}
-        </TextField>
-      </Stack>
+        }
+        actions={
+          <TextField
+            select
+            size="small"
+            value={windowHours}
+            onChange={(e) => setWindowHours(Number(e.target.value))}
+            slotProps={{ htmlInput: { "aria-label": "Period" } }}
+            sx={{ width: 200, flexShrink: 0 }}
+          >
+            {WINDOWS.map((w) => (
+              <MenuItem key={w.hours} value={w.hours}>
+                {w.label}
+              </MenuItem>
+            ))}
+          </TextField>
+        }
+      />
       {loading ? (
         <CircularProgress />
       ) : error ? (

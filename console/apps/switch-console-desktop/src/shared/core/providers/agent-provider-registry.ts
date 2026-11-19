@@ -27,6 +27,8 @@ export type AgentProviderDefinition = {
   loginCommand: string;
   /** The Switch gateway's known-agent type, sent when an agent registers. */
   knownAgentType: string;
+  /** Whether the provider runtime can review tool calls automatically. */
+  supportsAutoMode: boolean;
 };
 
 type Catalogue = {
@@ -109,6 +111,10 @@ export function offeredAgentProviders(flags: FeatureFlags): readonly AgentProvid
 
 export function getProvider(id: string): AgentProviderDefinition | undefined {
   return loaded().byId.get(id);
+}
+
+export function providerSupportsAutoMode(id: string): boolean {
+  return getProvider(id)?.supportsAutoMode === true;
 }
 
 /** A registered provider's definition; throws for an id the catalogue does not have. */

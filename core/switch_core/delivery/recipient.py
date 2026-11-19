@@ -2019,6 +2019,7 @@ _FOLLOW_UPS: dict[ConversationRoute, FollowUp] = {
     ConversationRoute.THREAD_FOLLOW_UP: "thread_follow_up",
     ConversationRoute.CHANNEL_FOLLOW_UP: "channel_follow_up",
     ConversationRoute.MAIN_AGENT: "main_agent",
+    ConversationRoute.ONE_TO_ONE: "one_to_one",
 }
 
 

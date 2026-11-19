@@ -4,7 +4,7 @@ Measures how much load switch-core carries in one environment, so the same run c
 
 A run signs in as the environment's admin, creates its own API key, agents and rooms, connects the agents over the agent WebSocket the way the agent runtime does, sends the planned traffic, and samples every switch-core pod and the database while it does. At the end it deletes what it created and writes a summary.
 
-It never restarts, scales or edits anything in Kubernetes. It only runs `kubectl get` (to find the pods, the deployed URLs and the admin login), `kubectl exec` (to run `pod_sampler.py` inside the pods) and, with `--via port-forward`, `kubectl port-forward`. That makes it safe on GitOps environments: ArgoCD has nothing to fight over. It refuses the pilot's namespace and hostnames, and anything with `prod` in the name.
+It never restarts, scales or edits anything in Kubernetes. It only runs `kubectl get` (to find the pods, the deployed URLs and the admin login), `kubectl exec` (to run `pod_sampler.py` inside the pods, and `bulk_rooms.py` for the `admin-bulk` scenario) and, with `--via port-forward`, `kubectl port-forward`. That makes it safe on GitOps environments: ArgoCD has nothing to fight over. It refuses the pilot's namespace and hostnames, and anything with `prod` in the name.
 
 ## Running it
 
@@ -23,6 +23,19 @@ At each step in `--steps`, the harness brings that many agents online and then r
 - `idle`: the agents stay connected and answer the server's pings, nothing else.
 - `steady`: messages at `--rate` per second, spread over the rooms, each posted by a member of the room. Receivers record the time from send to arrival, and a share of them (`--read-fraction`, 10% by default) follow a delivery with a `read_context` call, as a runtime catching up would.
 - `burst`: the steady traffic plus `--burst-size` messages packed into `--burst-window` seconds, every `--burst-every` seconds. `--hot-room` sends all the spikes to one room, to measure the per-room lock.
+
+### An admin's bulk change (`admin-bulk`)
+
+The other scenarios are agents' messages. `admin-bulk` is one admin's clicks: the steady traffic at `--rate`, and over it the workspace admin making `--bulk-rooms` rooms Private (400 by default) through the "Public rooms on private channels" page's route, then archiving and unarchiving them through the Rooms page's bulk action, `--bulk-batch` rooms a click (200, the server's cap on both). The first click comes `--bulk-at` seconds into the window (15) and each next one `--bulk-gap` seconds after the one before has answered (2), as an admin confirms one page after another.
+
+```sh
+uv run --project core python loadtest/run.py --namespace <namespace> \
+    --scenarios admin-bulk --steps 200 --rate 5 --bulk-rooms 400
+```
+
+Only rooms bound to a private channel can be made Private, and a load run's rooms are bound to none, so this scenario is the one place the harness writes to the database itself. `bulk_rooms.py`, run in a switch-core pod over `kubectl exec` with the pod's own database login and bound to the run's workspace, makes one bridge row of the run's own that stays inactive (no pod starts it, no messaging app is called), binds the run's bulk rooms to private channels of it, and makes them Public. Before each window it makes them Public and unarchived again; at the end, and on `--cleanup`, it unbinds them and deletes the bridge, and they are archived with the rest.
+
+`summary.md` gets an "Admin bulk change" table, one row a window: the clicks, the rooms changed, the slowest click, the database connections, and a verdict. A window fails on a click that failed or left rooms unchanged, on any error in the agents' traffic, or on an agents' send p99 over 2 s, and a failed window makes the run exit 1. The pool's own timeouts and a pod handing its bridges away happen inside switch-core, where the harness cannot see them: read `switch.db.pool.timeouts` and the pods' logs for the window.
 
 ### Keeping the agents between runs
 
@@ -86,4 +99,4 @@ The cleanup prints what it removed and what is still there; a non-zero exit mean
 uv run --project core pytest loadtest/
 ```
 
-These check that the same seed gives the same rooms and schedule, that a rate sweep plans one window per rate and knows when a window is broken, that the pilot and prod are refused, and how a night adds up, reports and cleans up after itself. They make no requests.
+These check that the same seed gives the same rooms and schedule, that an admin-bulk window clicks through its rooms in batches and passes or fails as it should, that a rate sweep plans one window per rate and knows when a window is broken, that the pilot and prod are refused, and how a night adds up, reports and cleans up after itself. They make no requests.

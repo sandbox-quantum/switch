@@ -264,8 +264,11 @@ class RoomService:
     # attributes. Telemetry is genuinely optional here; `emit_safely` treats
     # None as "report nothing".
     _telemetry: TelemetryService | None = None
-    _room_agents_listeners: tuple[Callable[[str, str], Awaitable[None]], ...] = ()
-    _room_listeners: tuple[Callable[[str, str, list[str]], None], ...] = ()
+    _room_agents_listeners: tuple[Callable[[str, list[str]], Awaitable[None]], ...] = ()
+    _room_listeners: tuple[
+        tuple[Callable[[str, str, list[str]], None], Callable[[str, list[str]], None]],
+        ...,
+    ] = ()
     _people_left_listeners: tuple[
         Callable[[str, str, list[str]], Awaitable[None]], ...
     ] = ()
@@ -299,18 +302,38 @@ class RoomService:
         # The shared delivery read; told when a room goes.
         self._room_cache = room_cache
 
-    def on_room_changed(self, listener: Callable[[str, str, list[str]], None]) -> None:
+    def on_room_changed(
+        self,
+        listener: Callable[[str, str, list[str]], None],
+        batch: Callable[[str, list[str]], None],
+    ) -> None:
         """Call `listener(tenant_id, room_id, [])` once a room is created,
-        archived or unarchived, or its agents change (`room_changes`). It must
-        not block."""
-        self._room_listeners = (*self._room_listeners, listener)
+        archived or unarchived, or its agents change (`room_changes`), and
+        `batch(tenant_id, room_ids)` once for many rooms that changed together
+        (`rooms_changed`). Neither may block.
+
+        `batch` reads the whole set in one session: a listener called once per
+        room of a large batch would ask for that many connections at once."""
+        self._room_listeners = (*self._room_listeners, (listener, batch))
 
     def room_changed(self, tenant_id: str, room_id: str) -> None:
-        for listener in self._room_listeners:
+        for listener, _ in self._room_listeners:
             try:
                 listener(tenant_id, room_id, [])
             except Exception:
                 logger.exception("Room listener failed for room %s", room_id)
+
+    def rooms_changed(self, tenant_id: str, room_ids: Collection[str]) -> None:
+        """`room_changed` for many rooms at once, such as a bulk change an
+        admin confirmed: each listener hears the whole set in one call."""
+        rooms = list(dict.fromkeys(room_ids))
+        if not rooms:
+            return
+        for _, batch in self._room_listeners:
+            try:
+                batch(tenant_id, rooms)
+            except Exception:
+                logger.exception("Room listener failed for %d rooms", len(rooms))
 
     def use_chats(self, chats: ChatService) -> None:
         """How people reach a room with no messaging app: their Switch Console
@@ -338,25 +361,29 @@ class RoomService:
         )
 
     def on_room_agents_changed(
-        self, listener: Callable[[str, str], Awaitable[None]]
+        self, listener: Callable[[str, list[str]], Awaitable[None]]
     ) -> None:
-        """Call `listener(tenant_id, room_id)` after a room's agents change."""
+        """Call `listener(tenant_id, room_ids)` after the agents of those
+        rooms change."""
         self._room_agents_listeners = (*self._room_agents_listeners, listener)
 
-    async def room_agents_changed(self, tenant_id: str, room_id: str) -> None:
-        """Tell the listeners a room's agents (or their owners) changed.
+    async def room_agents_changed(self, tenant_id: str, room_ids: list[str]) -> None:
+        """Tell the listeners the agents (or their owners) of these rooms
+        changed, once for all of them.
 
         The change itself is already committed, so a listener that fails is
         reported rather than raised; listeners re-read on their own schedule.
         """
+        if not room_ids:
+            return
         for listener in self._room_agents_listeners:
             try:
-                await listener(tenant_id, room_id)
+                await listener(tenant_id, room_ids)
             except Exception:
                 logger.exception(
-                    "Room-agents listener failed for room %s; it will catch up "
-                    "on its next re-read",
-                    room_id,
+                    "Room-agents listener failed for %d room(s); it will catch "
+                    "up on its next re-read",
+                    len(room_ids),
                 )
 
     async def _resolve_agent_ids(self, config: RoomCreateConfig) -> list[str]:
@@ -1351,7 +1378,7 @@ class RoomService:
         )
 
         if agent_ids:
-            await self.room_agents_changed(room.tenant_id, room.id)
+            await self.room_agents_changed(room.tenant_id, [room.id])
 
         failed_attachments = unreachable_users + await self._attach_after_creation(
             room.id, config
@@ -1608,7 +1635,7 @@ class RoomService:
                 )
 
         logger.info("Added %d agents to room %s", len(agent_ids), room_id)
-        await self.room_agents_changed(room.tenant_id, room.id)
+        await self.room_agents_changed(room.tenant_id, [room.id])
         self.room_changed(room.tenant_id, room.id)
 
         emit_safely(
@@ -1673,7 +1700,7 @@ class RoomService:
                 )
 
         logger.info("Removed %d agents from room %s", len(agent_ids), room_id)
-        await self.room_agents_changed(room.tenant_id, room.id)
+        await self.room_agents_changed(room.tenant_id, [room.id])
         self.room_changed(room.tenant_id, room.id)
 
         if removed:
@@ -1846,6 +1873,43 @@ class RoomService:
                 "console_chat": is_console_chat(room),
             },
         )
+
+    async def set_rooms_archived(
+        self, tenant_id: str, room_ids: Collection[str], archived: bool
+    ) -> list[str]:
+        """`set_room_archived` for many rooms of one tenant: one transaction
+        and one `rooms_changed` for them all, so archiving hundreds of rooms
+        holds one connection instead of asking for one per room. Returns the
+        rooms that changed; an id with no room is left out."""
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            rooms = list((await self._room_store.get_many(session, room_ids)).values())
+            await self._room_store.set_archived_many(
+                session, [room.id for room in rooms], archived
+            )
+            await session.commit()
+        changed = [room.id for room in rooms]
+        self.rooms_changed(tenant_id, changed)
+
+        if not archived or self._telemetry is None:
+            return changed
+        platforms: dict[str | None, str] = {}
+        for room in rooms:
+            # Read before the update, which does not touch these rows.
+            if room.archived_at is not None:
+                continue
+            if room.bridge_id not in platforms:
+                platforms[room.bridge_id] = await self._bridge_platform(room.bridge_id)
+            emit_safely(
+                self._telemetry,
+                "room_archived",
+                {
+                    "bridge_platform": platforms[room.bridge_id],
+                    "age_days": age_days(room.created_at),
+                    "was_ever_active": await self._was_ever_active(tenant_id, room.id),
+                    "console_chat": is_console_chat(room),
+                },
+            )
+        return changed
 
     async def _bridge_platform(self, bridge_id: str | None) -> str:
         """The platform a bridge id names, as the telemetry catalogue spells it.

@@ -185,13 +185,11 @@ export async function checkRail(ui: GatewayUi, persona: Persona): Promise<string
 const AREA_TITLE: Record<MatrixSettingsArea, string> = {
   workspace: 'Settings',
   organization: 'Organization settings',
-  platform: 'Platform',
 };
 
 const AREA_PATH: Record<MatrixSettingsArea, string> = {
   workspace: '/settings',
   organization: '/settings/org',
-  platform: '/platform',
 };
 
 /**
@@ -202,7 +200,7 @@ const AREA_PATH: Record<MatrixSettingsArea, string> = {
 export async function checkSettingsMenus(ui: GatewayUi, persona: Persona): Promise<string[]> {
   const wrong: string[] = [];
   const areaPaths = new Set(Object.values(AREA_PATH));
-  for (const area of ['workspace', 'organization', 'platform'] as const) {
+  for (const area of ['workspace', 'organization'] as const) {
     const expected = SETTINGS_MENUS[area][persona];
     if (expected === null) continue;
     await ui.open(AREA_PATH[area]);

@@ -102,6 +102,7 @@ const {
   fetchTenants,
   fetchWorkspaceCreation,
   fetchInviteEmailEnabled,
+  fetchConnectorAppManagement,
   createRoom,
   deleteBridge,
   deleteRoom,
@@ -3770,6 +3771,56 @@ describe('workspace invitations', () => {
     await expect(fetchWorkspaceCreation(SERVER)).rejects.toThrow(/can_add_workspace/);
   });
 
+  it('reads who sets up connector apps, and null where the server does not say', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({ can_manage_connector_apps: true, connector_apps_in_dashboard: true }) as never
+    );
+    await expect(fetchConnectorAppManagement(SERVER)).resolves.toEqual({
+      canManage: true,
+      inDashboard: true,
+    });
+    fetchMock.mockResolvedValue(
+      jsonResponse({
+        can_manage_connector_apps: false,
+        connector_apps_in_dashboard: false,
+      }) as never
+    );
+    await expect(fetchConnectorAppManagement(SERVER)).resolves.toEqual({
+      canManage: false,
+      inDashboard: false,
+    });
+
+    // A server from before it said whether the apps are set up in the dashboard.
+    fetchMock.mockResolvedValue(jsonResponse({ can_manage_connector_apps: false }) as never);
+    await expect(fetchConnectorAppManagement(SERVER)).resolves.toEqual({
+      canManage: false,
+      inDashboard: null,
+    });
+    fetchMock.mockResolvedValue(jsonResponse({ state: 'ready' }) as never);
+    await expect(fetchConnectorAppManagement(SERVER)).resolves.toEqual({
+      canManage: null,
+      inDashboard: null,
+    });
+    fetchMock.mockResolvedValue(errorResponse(404, '{"detail":"Not Found"}') as never);
+    await expect(fetchConnectorAppManagement(SERVER)).resolves.toEqual({
+      canManage: null,
+      inDashboard: null,
+    });
+  });
+
+  it('refuses an unreadable answer about setting up connector apps, and a failed read', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ can_manage_connector_apps: 'yes' }) as never);
+    await expect(fetchConnectorAppManagement(SERVER)).rejects.toThrow(/can_manage_connector_apps/);
+    fetchMock.mockResolvedValue(
+      jsonResponse({ can_manage_connector_apps: false, connector_apps_in_dashboard: 1 }) as never
+    );
+    await expect(fetchConnectorAppManagement(SERVER)).rejects.toThrow(
+      /connector_apps_in_dashboard/
+    );
+    fetchMock.mockResolvedValue(errorResponse(500, '{"detail":"boom"}') as never);
+    await expect(fetchConnectorAppManagement(SERVER)).rejects.toThrow();
+  });
+
   it('keeps the link when an older server says nothing about the e-mail', async () => {
     fetchMock.mockResolvedValue(jsonResponse({ ...ROW, token: 'tok-1' }) as never);
 
@@ -3815,8 +3866,13 @@ describe('agent management calls', () => {
       name: 'build-box',
       platform: { os: 'linux', arch: 'x64', os_version: '6.1.0' },
       version: '0.1.0',
+      deviceId: null,
     });
-    expect(enrolled).toEqual({ controllerId: 'controller-1', credential: 'swcc_placeholder' });
+    expect(enrolled).toEqual({
+      controllerId: 'controller-1',
+      credential: 'swcc_placeholder',
+      adopted: false,
+    });
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe('https://switch.example.com/gateway/management/controllers');
     expect(init.method).toBe('POST');
@@ -3826,6 +3882,25 @@ describe('agent management calls', () => {
       platform: { os: 'linux', arch: 'x64', os_version: '6.1.0' },
       version: '0.1.0',
     });
+  });
+
+  it('names this computer by its device id, and reads a takeover of the device it already was', async () => {
+    fetchMock.mockImplementation(async () =>
+      respond(201, { controller_id: 'controller-0', credential: 'swcc_placeholder', adopted: true })
+    );
+    const enrolled = await enrollConsoleController(SERVER, {
+      name: 'build-box',
+      platform: { os: 'linux', arch: 'x64', os_version: '6.1.0' },
+      version: '0.1.0',
+      deviceId: 'd'.repeat(64),
+    });
+    expect(enrolled).toEqual({
+      controllerId: 'controller-0',
+      credential: 'swcc_placeholder',
+      adopted: true,
+    });
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(JSON.parse(String(init.body))).toMatchObject({ device_id: 'd'.repeat(64) });
   });
 
   it('reads a bare 404 as a server without agent management, and an enveloped one as a refusal', async () => {

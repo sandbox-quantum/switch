@@ -137,6 +137,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# How many open chat streams of this process re-read at once after a wake.
+STREAM_READS_AT_ONCE = 16
+
 # Told the rooms whose part in a person's chats changed, or None for any.
 MembershipWatcher = Callable[[list[str] | None], None]
 
@@ -236,6 +239,14 @@ class ChatService:
         self._membership_watchers: dict[tuple[str, str], set[MembershipWatcher]] = {}
         self._agent_room_listeners: tuple[Callable[[str, list[str]], None], ...] = ()
         self._tasks: set[asyncio.Task[None]] = set()
+        # Held by an open chat stream while it re-reads after a wake
+        # (`gateway/chats.py`): a change to a room wakes the stream of
+        # everyone in it at once, and each re-read holds a session.
+        self.stream_reads = asyncio.Semaphore(STREAM_READS_AT_ONCE)
+        # Rooms whose people's streams are still to be woken, per tenant, and
+        # the one task per tenant waking them (`rooms_changed`).
+        self._changed_rooms: dict[str, dict[str, None]] = {}
+        self._room_wakers: dict[str, asyncio.Task[None]] = {}
         # Where a change to people's chats made here is announced to the
         # other processes, once wired (`use_signals`).
         self._signals: ChatSignals | None = None
@@ -570,11 +581,14 @@ class ChatService:
             tenant_id, [user_id], [room.id for room in [*to_join, *to_drop]]
         )
 
-    async def sync_room(self, tenant_id: str, room_id: str) -> None:
-        """`sync_owned_rooms` for everyone a change to this room's agents may
-        concern: the owners of its agents and the holders of owner grants.
-        The room's other members are told too, as gaining or losing its
-        agents can move it into or out of their list."""
+    async def sync_rooms(self, tenant_id: str, room_ids: list[str]) -> None:
+        """`sync_owned_rooms` for everyone a change to these rooms' agents may
+        concern: the owners of their agents and the holders of owner grants,
+        each once however many of the rooms concern them. The rooms' other
+        members are told too, as gaining or losing their agents can move a
+        room into or out of their list."""
+        if not room_ids:
+            return
         async with tenant_session(self.session_factory, tenant_id) as session:
             owners = set(
                 (
@@ -582,7 +596,7 @@ class ChatService:
                         select(Agent.owner_id)
                         .join(room_agents, room_agents.c.agent_id == Agent.id)
                         .where(
-                            room_agents.c.room_id == room_id,
+                            room_agents.c.room_id.in_(room_ids),
                             Agent.owner_id.is_not(None),
                         )
                     )
@@ -592,7 +606,7 @@ class ChatService:
                 (
                     await session.execute(
                         select(ChatOwnerGrant.user_id).where(
-                            ChatOwnerGrant.room_id == room_id
+                            ChatOwnerGrant.room_id.in_(room_ids)
                         )
                     )
                 ).scalars()
@@ -603,22 +617,31 @@ class ChatService:
                         select(Client.user_id)
                         .join(ClientRoom, ClientRoom.client_id == Client.id)
                         .where(
-                            ClientRoom.room_id == room_id,
+                            ClientRoom.room_id.in_(room_ids),
                             Client.type == MEMBER_CLIENT_TYPE,
                             Client.user_id.is_not(None),
                         )
                     )
                 ).scalars()
             )
+        # One person's sync failing leaves the others' to run and the rooms'
+        # members told; the first failure is raised after.
+        failure: Exception | None = None
         for user_id in sorted(
             user_id for user_id in owners | holders if user_id is not None
         ):
-            await self.sync_owned_rooms(tenant_id, user_id)
+            try:
+                await self.sync_owned_rooms(tenant_id, user_id)
+            except Exception as error:
+                logger.exception("Could not sync the chats of user %s", user_id)
+                failure = failure or error
         self._memberships_changed(
             tenant_id,
             sorted(user_id for user_id in members if user_id is not None),
-            [room_id],
+            room_ids,
         )
+        if failure is not None:
+            raise failure
 
     def on_agent_room_changed(self, listener: Callable[[str, list[str]], None]) -> None:
         """Call `listener(tenant_id, room_ids)` with every room an agent is in
@@ -629,34 +652,56 @@ class ChatService:
     def room_changed(self, tenant_id: str, room_id: str, client_ids: list[str]) -> None:
         """A room's own details changed (its name, say): wake the streams of
         the people in it, from a task of its own, so they re-send its summary."""
-        task = asyncio.create_task(self._room_details_changed(tenant_id, room_id))
+        self.rooms_changed(tenant_id, [room_id])
+
+    def rooms_changed(self, tenant_id: str, room_ids: list[str]) -> None:
+        """`room_changed` for many rooms at once.
+
+        One task per tenant reads the people of every room changed so far, in
+        one session and one query; rooms changed while it reads are read
+        together next. A burst of changes, one call per room or one call for
+        them all, holds one connection per tenant rather than one per room."""
+        if not room_ids:
+            return
+        self._changed_rooms.setdefault(tenant_id, {}).update(dict.fromkeys(room_ids))
+        if tenant_id in self._room_wakers:
+            return
+        task = asyncio.create_task(self._wake_changed_rooms(tenant_id))
+        self._room_wakers[tenant_id] = task
         self._tasks.add(task)
-        task.add_done_callback(self._task_done)
+        task.add_done_callback(self._tasks.discard)
 
-    def _task_done(self, task: asyncio.Task[None]) -> None:
-        self._tasks.discard(task)
-        if not task.cancelled() and task.exception() is not None:
-            logger.error(
-                "Could not wake the streams of a changed room's people; they "
-                "re-read it on their next recheck",
-                exc_info=task.exception(),
-            )
+    async def _wake_changed_rooms(self, tenant_id: str) -> None:
+        try:
+            while room_ids := list(self._changed_rooms.pop(tenant_id, {})):
+                try:
+                    await self._room_details_changed(tenant_id, room_ids)
+                except Exception:
+                    logger.error(
+                        "Could not wake the streams of the people of %d changed "
+                        "room(s); they re-read them on their next recheck",
+                        len(room_ids),
+                        exc_info=True,
+                    )
+        finally:
+            del self._room_wakers[tenant_id]
 
-    async def _room_details_changed(self, tenant_id: str, room_id: str) -> None:
+    async def _room_details_changed(self, tenant_id: str, room_ids: list[str]) -> None:
         async with tenant_session(self.session_factory, tenant_id) as session:
             user_ids = (
                 await session.execute(
                     select(Client.user_id)
+                    .distinct()
                     .join(ClientRoom, ClientRoom.client_id == Client.id)
                     .where(
-                        ClientRoom.room_id == room_id,
+                        ClientRoom.room_id.in_(room_ids),
                         Client.type == MEMBER_CLIENT_TYPE,
                         Client.user_id.is_not(None),
                     )
                 )
             ).scalars()
             members = sorted(user_id for user_id in user_ids if user_id is not None)
-        self._memberships_changed(tenant_id, members, [room_id])
+        self._memberships_changed(tenant_id, members, room_ids)
 
     async def agent_changed(self, tenant_id: str, agent_id: str) -> None:
         """Tell everyone who sees a room with this agent that it changed, and

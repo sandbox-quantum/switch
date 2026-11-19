@@ -23,6 +23,7 @@ export function signedInAs(role: "admin" | "member", features: FeatureFlags = AL
     can_create_workspace: false,
     can_add_workspace: false,
     invite_email_enabled: false,
+    can_manage_connector_apps: false,
   } as unknown as Session;
   vi.mocked(useAuth).mockReturnValue({
     session,

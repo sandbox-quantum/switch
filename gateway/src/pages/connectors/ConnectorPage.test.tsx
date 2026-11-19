@@ -13,7 +13,7 @@ import ConnectorPage from "./ConnectorPage";
 
 vi.mock("../../data/AuthContext", () => ({ useAuth: vi.fn() }));
 
-function signedIn({ admin = false, orgAdmin = false, operator = false } = {}) {
+function signedIn({ admin = false, orgAdmin = false, operator = false, connectorApps = false } = {}) {
   vi.mocked(useAuth).mockReturnValue({
     session: {
       user: { id: "me", name: "Ada", email: "ada@example.test", is_operator: false },
@@ -23,6 +23,7 @@ function signedIn({ admin = false, orgAdmin = false, operator = false } = {}) {
       administersWorkspace: admin,
       administersOrganization: orgAdmin,
       isOperator: operator,
+      canManageConnectorApps: connectorApps,
     },
     isOperator: false,
   } as unknown as ReturnType<typeof useAuth>);
@@ -297,17 +298,19 @@ describe("a connector's page", () => {
     expect(await screen.findByText("Your organization locked it off.")).toBeTruthy();
   });
 
-  it("sends the operator to set up an app that isn't, and tells everyone else who can", async () => {
+  it("sends whoever sets up the connector apps to set up one that isn't, and tells everyone else who can", async () => {
     const unset = serviceConnection({
       connectable: false,
       unavailable_code: "app_not_set_up",
       unavailable_reason: "Switch's Example app isn't set up. Whoever runs Switch can set it up.",
     });
-    signedIn({ operator: true });
+    signedIn({ connectorApps: true });
     server(unset);
     renderPage();
 
-    expect(await screen.findByRole("link", { name: "Set up" })).toHaveProperty("search", "?set_up=example");
+    const setUp = await screen.findByRole("link", { name: "Set up" });
+    expect(setUp).toHaveProperty("pathname", "/settings/org/connector-apps");
+    expect(setUp).toHaveProperty("search", "?set_up=example");
     cleanup();
 
     signedIn();

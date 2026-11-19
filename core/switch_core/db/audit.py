@@ -25,6 +25,12 @@ from switch_core.db.models import (
     ServerAuditEvent,
 )
 
+# Set, to true, in the details of every audit event a platform operator's
+# server command records (`switch-accounts`, `switch-connector-apps`,
+# `switch-promote-org-admin`): no account is behind the change, so the event
+# names no actor.
+PLATFORM_OPERATOR_COMMAND = "platform_operator_command"
+
 
 class AuditAction(StrEnum):
     TENANT_CREATED = "tenant.created"
@@ -154,9 +160,11 @@ class ServerAuditAction(StrEnum):
     CONNECTOR_APP_SAVED = "connector_app.saved"
     CONNECTOR_APP_IMPORTED = "connector_app.imported"
     CONNECTOR_APP_REMOVED = "connector_app.removed"
-    # The operator added an account from Platform › Users, in no workspace.
+    # An operator added an account, in no workspace (`switch-accounts create`).
     USER_CREATED = "user.created"
-    # The operator made another operator a regular account.
+    # An operator made an account a platform operator, or a platform operator
+    # a regular account (`switch-accounts grant-operator`, `revoke-operator`).
+    USER_PROMOTED = "user.promoted"
     USER_DEMOTED = "user.demoted"
     USER_DELETED = "user.deleted"
     USER_DELETION_REFUSED = "user.deletion_refused"

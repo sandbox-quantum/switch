@@ -33,6 +33,12 @@ function capabilitiesOf(persona: Persona): Capabilities {
     inOrganization: true,
     canDeleteWorkspace: persona === "workspaceAdmin",
     canManageDataProtection: persona === "workspaceAdmin",
+    // The harness's deployment has more than one organization (the server's
+    // default one and the scenario's), so the organization's admin may not set
+    // up the deployment's connector apps there, and the operator may: it
+    // enters Organization settings as the operator and finds Connector apps.
+    canManageConnectorApps: persona === "operator",
+    connectorAppsInDashboard: false,
     features,
   };
 }
@@ -80,7 +86,7 @@ describe("the role matrix", () => {
 
 describe.each(PERSONAS)("the settings menus for %s", (persona) => {
   const caps = capabilitiesOf(persona);
-  const areas: readonly SettingsArea[] = ["workspace", "organization", "platform"];
+  const areas: readonly SettingsArea[] = ["workspace", "organization"];
 
   it.each(areas)("match the matrix in the %s area", (area) => {
     const expected = SETTINGS_MENUS[area][persona];

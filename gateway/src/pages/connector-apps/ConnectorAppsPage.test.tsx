@@ -109,13 +109,13 @@ describe("ConnectorAppsPage", () => {
   });
 
   it("opens the setup of the app a link named, and only one that still needs setting up", async () => {
-    window.history.pushState({}, "", "/platform/connectors?set_up=google-workspace");
+    window.history.pushState({}, "", "/settings/org/connector-apps?set_up=google-workspace");
     serve(listOf(GITHUB, NONE_GOOGLE));
     render(<ConnectorAppsPage />);
     expect(await screen.findByRole("dialog")).toBeTruthy();
     cleanup();
 
-    window.history.pushState({}, "", "/platform/connectors?set_up=github");
+    window.history.pushState({}, "", "/settings/org/connector-apps?set_up=github");
     render(<ConnectorAppsPage />);
     expect(await screen.findByText("Ready")).toBeTruthy();
     expect(screen.queryByRole("dialog")).toBeNull();

@@ -385,7 +385,8 @@ class SwitchConfig(BaseSettings):
     # the two ways a person creates their own. The edge must therefore add it
     # only to requests it refuses, never set it to a "no" value for the rest.
     # Existing accounts sign in as before, and accounts that are not sign-ups
-    # (`POST /users`, the seeded admin, the bootstrap owner) are unaffected.
+    # (`switch-accounts create`, the seeded admin, the bootstrap owner) are
+    # unaffected.
     # Trusting the header's presence is safe, since a client that sends it
     # only refuses itself; its absence proves nothing, because the edge
     # decides where a request comes from and this server never checks. Unset
@@ -473,8 +474,8 @@ class SwitchConfig(BaseSettings):
     #   gateway_max_workspaces_per_user.
     #
     # Who may sign in at all is the IdP's decision, not this one: this only
-    # decides where a new account lands. Accounts an administrator creates
-    # (`POST /users`) always join that administrator's workspace.
+    # decides where a new account lands. Accounts the operator creates
+    # (`switch-accounts create`) join no workspace.
     gateway_signup_mode: Literal["default_tenant", "invite_only", "open"] = (
         "default_tenant"
     )

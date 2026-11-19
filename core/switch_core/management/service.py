@@ -27,7 +27,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.agent_icon import (
@@ -60,6 +60,7 @@ from switch_core.db.models import (
     AgentControllerOperation,
     ApiKey,
     MachineWorkspace,
+    ServiceTokenIssuance,
     require_tenant_id,
 )
 from switch_core.db.models import AgentDefinition as AgentDefinitionRow
@@ -71,6 +72,7 @@ from switch_core.db.stores.agent_definition_store import AgentDefinitionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.api_key_store import ApiKeyStore
 from switch_core.db.stores.hosted_machine_store import CloudMachineStore
+from switch_core.db.stores.service_connection_store import ServiceConnectionStore
 from switch_core.db.stores.switch_core_process_store import SwitchCoreProcessStore
 from switch_core.db.stores.template_install_store import TemplateInstallStore
 from switch_core.gateway.cloud_controllers import (
@@ -81,6 +83,7 @@ from switch_core.gateway.cloud_controllers import (
 from switch_core.gateway.known_agents import KnownAgent, provider_known_agent
 from switch_core.management import reason_codes, tokens
 from switch_core.management.bindings import binding_of
+from switch_core.management.device_identity import device_hash, is_device_id
 from switch_core.management.errors import ManagementError, not_found
 from switch_core.management.placement import (
     ControllerState,
@@ -127,6 +130,23 @@ V1_OPERATION_KINDS = frozenset(
 
 # What a Switch Cloud machine's controller is called, whatever enrolled it.
 CLOUD_MACHINE_NAME = "Switch Cloud"
+
+# How long a device just enrolled or taken over is left to the process that
+# did it, before another enrolling on the same device may take it over: long
+# enough for that process to start and report, so two enrolling at once do
+# not take it from each other.
+TAKE_OVER_GRACE = timedelta(minutes=1)
+
+
+@dataclass(frozen=True)
+class Enrolled:
+    """A controller enrolled, with the credential only its process holds.
+    `adopted`: an existing device of its owner's on the same machine and
+    account was taken over, agents and all, rather than a new one added."""
+
+    controller: AgentController
+    credential: str
+    adopted: bool
 
 
 @dataclass(frozen=True)
@@ -232,9 +252,28 @@ class ManagementService:
         owner_id: str,
         description: ControllerDescription,
         public_key: PublicKey | None,
-    ) -> tuple[AgentController, str]:
-        """Create a controller and its credential, and commit. Returns both."""
-        await self._refuse_archived(session, require_tenant_id())
+    ) -> Enrolled:
+        """Create a controller and its credential, or take over the owner's
+        device on the same machine, account and data folder (`_device_to_take_over`), and
+        commit."""
+        tenant_id = require_tenant_id()
+        await self._refuse_archived(session, tenant_id)
+        same_device = (
+            None
+            if description.device_id is None
+            else device_hash(owner_id, description.device_id)
+        )
+        twin = await self._device_to_take_over(
+            session, tenant_id, owner_id, description.kind, same_device
+        )
+        if twin is not None:
+            credential = await self._take_over(
+                session, tenant_id, twin, description, public_key
+            )
+            await session.commit()
+            self.signals.credential_replaced(twin.id)
+            self.user_changes.publish(tenant_id, owner_id, MACHINE, twin.id)
+            return Enrolled(twin, credential, adopted=True)
         key, credential = await self._new_hash_only_key(
             session,
             owner_id=owner_id,
@@ -251,6 +290,7 @@ class ManagementService:
             version=description.version,
             public_key=public_key.model_dump() if public_key is not None else None,
             api_key_id=key.id,
+            device_hash=same_device,
         )
         await session.commit()
         self.user_changes.publish(
@@ -262,7 +302,116 @@ class ManagementService:
             controller.kind,
             owner_id,
         )
-        return controller, credential
+        return Enrolled(controller, credential, adopted=False)
+
+    async def _device_to_take_over(
+        self,
+        session: AsyncSession,
+        tenant_id: str,
+        owner_id: str,
+        kind: str,
+        same_device: str | None,
+    ) -> AgentController | None:
+        """The owner's device in the workspace on the machine, account and
+        data folder `same_device` names, which a controller enrolling there
+        takes over: not revoked, not running, and not enrolled or taken over
+        in the last `TAKE_OVER_GRACE` without having reported since; the one
+        seen last.
+
+        A device running now has a process of its own on that data folder,
+        which is left to it: the new one is a device of its own. The rows are
+        locked until the caller commits."""
+        if same_device is None:
+            return None
+        twins = await self.controllers.lock_same_device(
+            session,
+            tenant_id,
+            owner_id=owner_id,
+            kind=kind,
+            device_hash=same_device,
+        )
+        if not twins:
+            return None
+        leases = await self.leases(session)
+        # The database's clock, as it stamped `updated_at`: the app's need not
+        # agree with it.
+        database_now = (await session.execute(select(func.now()))).scalar_one()
+        settled_before = database_now - TAKE_OVER_GRACE
+        idle = [
+            twin
+            for twin in twins
+            if self.state_of(twin, leases) != "online"
+            and not (twin.status is None and twin.updated_at > settled_before)
+        ]
+        return max(
+            idle,
+            key=lambda twin: (twin.last_seen_at or twin.created_at, twin.created_at),
+            default=None,
+        )
+
+    async def _take_over(
+        self,
+        session: AsyncSession,
+        tenant_id: str,
+        controller: AgentController,
+        description: ControllerDescription,
+        public_key: PublicKey | None,
+    ) -> str:
+        """Give a device (`_device_to_take_over`) to the controller enrolling
+        on it: a new credential, the old one deleted, and the key its provider
+        logins are sealed to, or none until it registers one. What was given or
+        asked of the process that held it goes with that process: the logins
+        sealed to its key, its open operations, and the service tokens issued to
+        it, queued for revocation. The device keeps its id,
+        name, description and agents. The caller commits.
+
+        An access token the old process still holds names the old credential,
+        and is refused from now (`ManagementAuthenticator.current`), so that
+        process cannot act for the device again. Once the caller has
+        committed, `ControllerSignals.credential_replaced` has every process
+        end any stream the old holder still has there; each drops its cached
+        answer for the controller too, as it does on the row's credential
+        changing."""
+        key, credential = await self._new_hash_only_key(
+            session,
+            owner_id=controller.owner_id,
+            key_type=CONTROLLER_KEY_TYPE,
+            label=f"controller {controller.name}",
+        )
+        old_key_id = controller.api_key_id
+        await self.controllers.take_over(
+            session,
+            controller,
+            api_key_id=key.id,
+            platform=description.platform.model_dump(),
+            version=description.version,
+            public_key=public_key.model_dump() if public_key is not None else None,
+        )
+        if old_key_id is not None:
+            await self.api_keys.delete(session, old_key_id)
+        await self.operations.cancel_open(
+            session, tenant_id, controller_id=controller.id, agent_id=None
+        )
+        await self.controllers.delete_sealed_logins(
+            session, tenant_id, controller.id, None
+        )
+        # Its service tokens are the old process's too. Nothing else queues
+        # them, as the device keeps its grants, owner and agents; the route
+        # revokes them at the vendor once this commits.
+        await ServiceConnectionStore().queue_revocation(
+            session,
+            ServiceTokenIssuance.principal == "controller",
+            ServiceTokenIssuance.controller_id == controller.id,
+            ServiceTokenIssuance.revoke_requested.is_(False),
+        )
+        logger.info(
+            "Agent controller %s (%s) of user %s was taken over by a controller "
+            "enrolling on the same device",
+            controller.id,
+            controller.kind,
+            controller.owner_id,
+        )
+        return credential
 
     async def issue_enrollment_code(
         self, session: AsyncSession, *, owner_id: str
@@ -315,9 +464,12 @@ class ManagementService:
         code: str,
         description: ControllerDescription,
         public_key: PublicKey | None,
-    ) -> tuple[AgentController, str]:
-        """Spend an enrollment code on a new controller. The session must be
-        bound to the tenant the code resolved to."""
+    ) -> Enrolled:
+        """Spend an enrollment code on a new controller, or on taking over the
+        owner's device on the same machine, account and data folder
+        (`_device_to_take_over`); a Switch Cloud machine's controller never
+        does, as its machine names its device. The session must be bound to
+        the tenant the code resolved to."""
         invalid = ManagementError(
             401,
             reason_codes.ENROLLMENT_CODE_INVALID,
@@ -351,25 +503,40 @@ class ManagementService:
             workspace is None or machine is None or machine.state == "deleted"
         ):
             raise invalid
-        controller_key, credential = await self._new_hash_only_key(
-            session,
-            owner_id=consumed.owner_id,
-            key_type=CONTROLLER_KEY_TYPE,
-            label=f"controller {description.name}",
+        same_device = (
+            None
+            if machine is not None or description.device_id is None
+            else device_hash(consumed.owner_id, description.device_id)
         )
-        controller = await self.controllers.create(
-            session,
-            owner_id=consumed.owner_id,
-            name=CLOUD_MACHINE_NAME if machine is not None else description.name,
-            description=description.description,
-            # A Switch Cloud machine's controller is the cloud's, whatever the
-            # program that enrolled says it is.
-            kind="ec2" if machine is not None else description.kind,
-            platform=description.platform.model_dump(),
-            version=description.version,
-            public_key=public_key.model_dump() if public_key is not None else None,
-            api_key_id=controller_key.id,
+        twin = await self._device_to_take_over(
+            session, tenant_id, consumed.owner_id, description.kind, same_device
         )
+        if twin is not None:
+            controller = twin
+            credential = await self._take_over(
+                session, tenant_id, twin, description, public_key
+            )
+        else:
+            controller_key, credential = await self._new_hash_only_key(
+                session,
+                owner_id=consumed.owner_id,
+                key_type=CONTROLLER_KEY_TYPE,
+                label=f"controller {description.name}",
+            )
+            controller = await self.controllers.create(
+                session,
+                owner_id=consumed.owner_id,
+                name=CLOUD_MACHINE_NAME if machine is not None else description.name,
+                description=description.description,
+                # A Switch Cloud machine's controller is the cloud's, whatever the
+                # program that enrolled says it is.
+                kind="ec2" if machine is not None else description.kind,
+                platform=description.platform.model_dump(),
+                version=description.version,
+                public_key=public_key.model_dump() if public_key is not None else None,
+                api_key_id=controller_key.id,
+                device_hash=same_device,
+            )
         await self.controllers.complete_enrollment(
             session, tenant_id, consumed.id, controller.id
         )
@@ -389,6 +556,8 @@ class ManagementService:
                     session, tenant_id, {replaced, controller.id}
                 )
         await session.commit()
+        if twin is not None:
+            self.signals.credential_replaced(twin.id)
         if replaced is not None and replaced != controller.id:
             self._announce_revoked(replaced)
             for row in moved:
@@ -409,7 +578,7 @@ class ManagementService:
             controller.kind,
             consumed.owner_id,
         )
-        return controller, credential
+        return Enrolled(controller, credential, adopted=twin is not None)
 
     async def exchange_token(
         self,
@@ -437,6 +606,7 @@ class ManagementService:
             controller_id=controller.id,
             tenant_id=tenant_id,
             owner_id=controller.owner_id,
+            key_id=key.id,
             now=self.now(),
         )
 
@@ -510,6 +680,17 @@ class ManagementService:
         controller = await self._principal_controller(session, principal)
         before = _status_signature(controller.status)
         new_status = report.model_dump(mode="json", exclude_unset=True)
+        # Kept as the device hash only, never in the status the device's
+        # owner and the workspace's admins are shown.
+        new_status["machine"].pop("device_id", None)
+        reported = report.machine.device_id
+        if reported is not None and not is_device_id(reported):
+            logger.warning(
+                "Controller %s reported a device id that is not one; keeping the "
+                "device it had",
+                principal.controller_id,
+            )
+            reported = None
         stored = await self.controllers.record_status(
             session,
             principal.tenant_id,
@@ -518,6 +699,11 @@ class ManagementService:
             status=new_status,
             version=report.controller.version,
             platform=report.machine.platform.model_dump(mode="json"),
+            device_hash=(
+                None
+                if reported is None or controller.kind == "ec2"
+                else device_hash(controller.owner_id, reported)
+            ),
             seen_at=self.now(),
         )
         if not stored:

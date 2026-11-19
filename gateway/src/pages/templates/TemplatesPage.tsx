@@ -23,6 +23,7 @@ import {
 import { type ReactNode, useState } from "react";
 import { useNavigate } from "react-router";
 import ConfirmDialog from "../../components/ConfirmDialog";
+import PageHeader from "../../components/PageHeader";
 import type { RowAction } from "../../components/RowActionsMenu";
 import { SCREEN_READER_ONLY } from "../../components/screenReaderOnly";
 import { useAuth } from "../../data/AuthContext";
@@ -170,21 +171,24 @@ export default function TemplatesPage() {
 
   return (
     <Box>
-      <Stack direction="row" sx={{ alignItems: "flex-start", justifyContent: "space-between", gap: 2, mb: 2 }}>
-        <Box sx={{ minWidth: 0 }}>
-          <Typography variant="h5">Templates</Typography>
+      <PageHeader
+        sx={{ mb: 2 }}
+        title={<Typography variant="h5">Templates</Typography>}
+        description={
           <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5, maxWidth: 680 }}>
             Templates create agents and rooms on this workspace. Pick one, fill in what it asks, and everything it
             describes is created in one go, or nothing is.
           </Typography>
-        </Box>
-        <CreateTemplateMenu
-          ways={ways}
-          onChoose={(way) =>
-            setDialog(way === "yaml" ? { kind: "create", draft: null } : { kind: "console", way })
-          }
-        />
-      </Stack>
+        }
+        actions={
+          <CreateTemplateMenu
+            ways={ways}
+            onChoose={(way) =>
+              setDialog(way === "yaml" ? { kind: "create", draft: null } : { kind: "console", way })
+            }
+          />
+        }
+      />
 
       <Tabs
         value={scope}

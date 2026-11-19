@@ -10,11 +10,10 @@ import type { FastScenario } from './scenario.ts';
  * they hold the role. The workspace roster shows each
  * person's organization role. Removing the colleague from the organization is
  * refused while they are still in its workspace, and goes through once they
- * are not. Only the harness admin, a platform operator, lists every
- * workspace.
+ * are not.
  *
- * Users cannot be deleted, so this runs only on a stack thrown away after
- * the run.
+ * The colleague's account is left behind, so this runs only on a stack
+ * thrown away after the run.
  */
 export const organizationMembers: FastScenario = {
   header: {
@@ -24,7 +23,6 @@ export const organizationMembers: FastScenario = {
       'PATCH /gateway/organizations/current/members/{user_id}',
       'DELETE /gateway/organizations/current/members/{user_id}',
       'GET /gateway/organizations/current/audit-events',
-      'GET /gateway/operator/workspaces',
       'GET /gateway/tenants/{tenant_id}/members',
       'GET /gateway/tenants/{tenant_id}/members/{user_id}/removal',
       'DELETE /gateway/tenants/{tenant_id}/members/{user_id}',
@@ -35,15 +33,15 @@ export const organizationMembers: FastScenario = {
     requires: [],
   },
   async run({ names, switchClient }) {
-    const password = `e2e-${names.runId}-${crypto.randomUUID()}`;
-    const email = `${names.name('colleague')}@e2e.invalid`;
-    // A member of the harness admin's workspace, and so of its organization.
-    const { id, client: colleague } = await switchClient.createMember({
-      name: 'E2E colleague',
-      email,
-      password,
-      role: 'user',
+    // Signing up joins the default workspace, and so its organization.
+    const { id, client: colleague } = await switchClient.signUp({
+      email: `${names.name('colleague')}@e2e.invalid`,
+      password: `e2e-${names.runId}-${crypto.randomUUID()}`,
+      displayName: 'E2E colleague',
     });
+    expect(await colleague.tenantId(), "signed up into the harness admin's workspace").toBe(
+      await switchClient.tenantId()
+    );
 
     const refused = async (): Promise<number> => {
       try {
@@ -95,11 +93,6 @@ export const organizationMembers: FastScenario = {
       roster.find((row) => row.user_id === id),
       'the colleague on the workspace roster'
     ).toMatchObject({ role: 'member', organization_role: 'member', via_organization: false });
-
-    const everyWorkspace = await switchClient.operatorWorkspaces();
-    expect(everyWorkspace.map((row) => row.id), 'the operator list').toContain(tenantId);
-    const [notOperator] = await status(() => colleague.operatorWorkspaces());
-    expect(notOperator, 'a non-operator listing every workspace').toBe(403);
 
     const [stillIn, why] = await status(() => switchClient.removeOrganizationMember(id));
     expect(stillIn, 'removing someone still in a workspace').toBe(409);
