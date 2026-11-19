@@ -153,7 +153,10 @@ describe('describeFailure', () => {
     const message =
       "Discord would not create channel #switch-buddy-ada (403, code 50013: Missing Permissions). The Switch bot's role on this Discord server is missing the Manage Channels permission. In Discord, open Server Settings, then Roles, select the bot's role and turn on Manage Channels, or re-invite the bot with the permissions in the Connect Discord docs.";
     expect(
-      describeFailure(rpcError('ChatApiError', message, { apiCode: 'CHAT_NOT_CREATED' }), 'Switch did not answer.')
+      describeFailure(
+        rpcError('ChatApiError', message, { apiCode: 'CHAT_NOT_CREATED' }),
+        'Switch did not answer.'
+      )
     ).toEqual({ headline: message, detail: null });
   });
 
