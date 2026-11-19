@@ -9,6 +9,7 @@ by id. Never the message, the sender's name, or the error's text.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from types import SimpleNamespace
 from typing import Any
@@ -65,6 +66,7 @@ async def test_a_failed_hand_in_logs_one_warning_with_ids_and_the_error_type_onl
         _channel_to_room={"chan-123": ("room-1", "!room:switch.local")},
         _bridge_tenant_id="tenant-1",
         _room_tenant=room_tenant,
+        _inbound_slot=lambda _kind: contextlib.nullcontext(),
     )
     traced = CollaborationCore._traced(bridge, "message", handler)  # type: ignore[arg-type]
 

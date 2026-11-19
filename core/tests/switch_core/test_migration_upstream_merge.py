@@ -46,7 +46,9 @@ from switch_core.db.schema_version import record_expand_only
 
 _CORE = Path(__file__).resolve().parents[2]
 _MIGRATION_DB = "migration_upstream_merge"
-_HEAD = "efd7dfbd0bb7"
+_HEAD = "cf7c33a238af"
+_TENTH_MERGE = "efd7dfbd0bb7"
+_ELEVENTH_MAIN_HEAD = "f3a9c1d7e2b4"
 _NINTH_MERGE = "651ee78b6cbc"
 _TENTH_MAIN_HEAD = "e5b2c8d4f1a7"
 _EIGHTH_MAIN_MERGE = "97c1c62e3ca3"
@@ -311,7 +313,10 @@ async def _missing(engine: AsyncEngine) -> list[str]:
 def test_there_is_exactly_one_head_and_it_is_the_merge() -> None:
     script = _script()
     assert script.get_heads() == [_HEAD]
-    tenth = script.get_revision(_HEAD)
+    eleventh = script.get_revision(_HEAD)
+    assert eleventh is not None
+    assert set(eleventh._all_down_revisions) == {_TENTH_MERGE, _ELEVENTH_MAIN_HEAD}
+    tenth = script.get_revision(_TENTH_MERGE)
     assert tenth is not None
     assert set(tenth._all_down_revisions) == {_NINTH_MERGE, _TENTH_MAIN_HEAD}
     head = script.get_revision(_NINTH_MERGE)
@@ -758,7 +763,8 @@ async def test_a_database_at_the_ninth_merge_runs_mains_seven_then_the_head(
     postgres_url: str,
 ) -> None:
     """At `651ee78b6cbc`: the next upgrade runs main's seven revisions, in
-    order, then the head, and nothing else."""
+    order, then the tenth merge and main's eleventh head, then the head, and
+    nothing else."""
     engine = await _engine(postgres_url)
     try:
         async with engine.begin() as connection:
@@ -767,7 +773,10 @@ async def test_a_database_at_the_ninth_merge_runs_mains_seven_then_the_head(
         ran: list[str] = []
         async with engine.begin() as connection:
             await connection.run_sync(_upgrade("head", ran))
-        assert ran == [*_MAIN_TENTH, _HEAD]
+        assert ran[: len(_MAIN_TENTH)] == list(_MAIN_TENTH)
+        assert set(ran[len(_MAIN_TENTH) : -1]) == {_TENTH_MERGE, _ELEVENTH_MAIN_HEAD}
+        assert ran[-1] == _HEAD
+        assert len(ran) == len(_MAIN_TENTH) + 3
         assert await _version(engine) == [_HEAD]
     finally:
         await engine.dispose()
