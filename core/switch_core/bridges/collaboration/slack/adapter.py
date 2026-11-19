@@ -610,6 +610,10 @@ _SLACK_BOT_ID = re.compile(r"^B[A-Z0-9]+$")
 _SLACK_BOT_ACCOUNT = "This is a Slack app's or bot's account, which isn't one person's."
 
 
+#: What `agents.sessions.setStatus` warns of when the app is not subscribed to
+#: `agent_session_stopped`, and Slack shows a spinner instead of its Stop button.
+_NO_STOP_SUBSCRIPTION = "missing_agent_session_stopped_event_subscription"
+
 #: What a work message (`!work-threads`) says while its turn runs. Its author
 #: is the agent, so the agent's name is already beside it.
 WORKING_NOTE = "Working…"
@@ -787,6 +791,8 @@ class SlackAdapter(PlatformAdapter):
         # one never seen through an inbound event.
         self._work_thread_channels: dict[str, bool] = {}
         self._session_refusals_logged: set[str] = set()
+        # Whether Slack shows its own Stop on a session (`native_stop_available`).
+        self._native_stop: bool | None = None
         # Work messages this process posted, and the line each now shows, so a
         # step change is edited into it once and an unchanged one not at all.
         self._work_notes: OrderedDict[str, str] = OrderedDict()
@@ -1293,6 +1299,7 @@ class SlackAdapter(PlatformAdapter):
         reader's expanded plan — alone. Everything else, and every thread a
         stream cannot be opened in, is an ordinary Block Kit post.
         """
+        content = self._own_stop_unless_native(content)
         await self._note_work_step(content, thread_root_id)
         if self._streamable(content, thread_root_id):
             assert isinstance(content, TurnActivity) and thread_root_id
@@ -1346,6 +1353,7 @@ class SlackAdapter(PlatformAdapter):
             raise RichContentThrottled(
                 retry_after=remaining, text="Waiting for Slack to allow updates."
             )
+        content = self._own_stop_unless_native(content)
         await self._note_work_step(content, thread_root_id)
         stream = self._streams.get(message_ref)
         if stream is not None and isinstance(content, TurnActivity):
@@ -2187,10 +2195,59 @@ class SlackAdapter(PlatformAdapter):
         return True
 
     async def _set_session_status(self, arguments: dict[str, Any]) -> None:
-        await self._session_call("agents.sessions.setStatus", arguments)
+        """`agents.sessions.setStatus`, learning from opening a session whether
+        Slack shows its own Stop button on it (`native_stop_available`)."""
+        answer = await self._session_call("agents.sessions.setStatus", arguments)
+        if arguments.get("status") != "processing":
+            return
+        if answer is None:
+            # Refused: no session, so no button of Slack's either.
+            self._native_stop = False
+            return
+        warnings = {
+            str(answer.get("warning") or ""),
+            *(
+                str(warning)
+                for warning in (answer.get("response_metadata") or {}).get(
+                    "warnings", []
+                )
+            ),
+        }
+        if any(_NO_STOP_SUBSCRIPTION in warning for warning in warnings):
+            if self._native_stop is not False:
+                logger.info(
+                    "This Slack app is not subscribed to agent_session_stopped, "
+                    "so agents' sessions show Switch's own Stop button rather "
+                    "than Slack's. Add the event to the app to use Slack's."
+                )
+            self._native_stop = False
+        else:
+            self._native_stop = True
 
-    async def _session_call(self, method: str, arguments: dict[str, Any]) -> None:
-        """An agent-session call, which nothing waits on.
+    def native_stop_available(self) -> bool | None:
+        """Whether Slack shows its own Stop button on an agent's session here:
+        the app is subscribed to `agent_session_stopped`. None until a session
+        has been opened to find out."""
+        return self._native_stop
+
+    def _own_stop_unless_native(self, content: RichContent) -> RichContent:
+        """A turn with an agent session leaves its own Stop button out where
+        Slack draws one on the session, so there are not two. Anywhere Slack
+        does not, or before it is known, the turn keeps Switch's."""
+        if (
+            isinstance(content, TurnActivity)
+            and content.has_session
+            and self._native_stop is True
+            and content.interrupt_turn_id is not None
+        ):
+            return replace(content, interrupt_turn_id=None)
+        return content
+
+    async def _session_call(
+        self, method: str, arguments: dict[str, Any]
+    ) -> Mapping[str, Any] | None:
+        """An agent-session call, which nothing waits on: its answer, or None
+        if Slack refused it.
 
         A workspace without agent sessions, or an app without their scopes,
         refuses it; the work message and its stream are unaffected, so that is
@@ -2198,9 +2255,13 @@ class SlackAdapter(PlatformAdapter):
         """
         client = self._web_client
         if client is None:
-            return
+            return None
         try:
-            await client.api_call(method, json=arguments)
+            answer = await client.api_call(method, json=arguments)
+            # The SDK's response holds the body in `.data`; a plain mapping is
+            # the body itself.
+            data = getattr(answer, "data", answer)
+            return data if isinstance(data, Mapping) else {}
         except SlackApiError as error:
             code = f"{method}:{error.response.get('error')}"
             if code not in self._session_refusals_logged:
@@ -2211,6 +2272,7 @@ class SlackAdapter(PlatformAdapter):
                     method,
                     error.response.get("error"),
                 )
+            return None
 
     def _register_stream(self, message_ref: str, stream: _ActivityStream) -> None:
         """Hold an open stream, forgetting the oldest if there is no room.

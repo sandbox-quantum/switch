@@ -1299,6 +1299,7 @@ class AgentSessionActivityPublisher:
             work_thread=post is not None
             and post.work_message_ref is not None
             and not _inline(post),
+            has_session=post is not None and post.work_message_ref is not None,
         )
         if post is not None and _inline(post):
             # Switch's own room tools are talking, not work: an inline status
@@ -1341,7 +1342,9 @@ class AgentSessionActivityPublisher:
                 unposted.thread_ref = drawn_in.thread_ref
                 if mode == "thread" and drawn_in is not target:
                     unposted.work_message_ref = drawn_in.thread_ref
-                    content = replace(content, work_thread=True)
+                    content = replace(content, work_thread=True, has_session=True)
+                elif mode == "inline":
+                    content = replace(content, has_session=True)
                 post = await self._begin_turn(
                     key,
                     view,
@@ -1360,6 +1363,15 @@ class AgentSessionActivityPublisher:
                         answering,
                         f"{target.agent_name} is working on this",
                     )
+                    if (
+                        content.interrupt_turn_id is not None
+                        and self._adapter.native_stop_available()
+                    ):
+                        # The message went up with Switch's Stop before the
+                        # session said Slack draws its own: draw it again
+                        # without, so there is one.
+                        drawn.status_state = None
+                        self._enqueue(key, _SOON)
             if post is not None or (view.ended and unposted.mark is None):
                 self._unposted.pop(key, None)
         else:

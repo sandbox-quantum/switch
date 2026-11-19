@@ -194,6 +194,9 @@ class TurnActivity:
     # this turn's activity under it. The adapter keeps that message's line up
     # to date and, where its stream closes, opens another in the same thread.
     work_thread: bool = False
+    # The turn has an agent session on the platform (`!work-threads`), which
+    # may carry the platform's own Stop button in place of Switch's.
+    has_session: bool = False
 
 
 @dataclass(frozen=True)
@@ -1836,6 +1839,11 @@ class PlatformAdapter(ABC):
     ) -> None:
         """Mark a message of the agent's as a turn in progress, for whoever
         asked, where the platform has such a thing. Nothing by default."""
+
+    def native_stop_available(self) -> bool | None:
+        """Whether the platform draws its own Stop on a turn's session, so the
+        turn's message need not carry Switch's. None until known."""
+        return None
 
     async def close_session(
         self, channel_id: str, agent_name: str, message_ref: str, summary: str
