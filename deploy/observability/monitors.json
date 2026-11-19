@@ -351,7 +351,7 @@
     "name": "[Switch REPLACE-WITH-ENV] decisions are failing",
     "type": "query alert",
     "query": "max(last_5m):moving_rollup(default_zero(sum:switch.decision.failures{service:REPLACE-WITH-SERVICE}.as_count()), 900, 'sum') / clamp_min(moving_rollup(default_zero(sum:switch.decision.requests{service:REPLACE-WITH-SERVICE}.as_count()), 900, 'sum'), 10) > 0.2",
-    "message": "{{#is_alert}}More than 20% of auto-route decisions in the last 15 minutes got no usable answer, counted against at least 10 decisions so that one or two failures in a quiet room don't fire. People's untagged messages reach nobody, or the triage agent, and rooms get an \"auto-route is unavailable\" notice.\n\n**Check:** decision failures by reason and backend errors by kind. `timeout` or `unreachable` on the server default points at the decision service; on `endpoint`, at one workspace's own endpoint. The decision record logged for each message names the room.\n\nDashboard: the decision routing section of \"Switch — core service health\".{{/is_alert}}{{#is_recovery}}Recovered: decisions are failing.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "message": "{{#is_warning}}More than 5% of auto-route decisions in the last 15 minutes got no usable answer. Most messages still route, but about one untagged message in twenty reaches nobody and its room gets an \"auto-route is unavailable\" notice. A slow model provider (decisions timing out) shows up here first.\n\n**Check:** the share of decisions that failed and timed out, then decision failures by reason. Dashboard: the decision routing section of \"Switch — core service health\".{{/is_warning}}{{#is_alert}}More than 20% of auto-route decisions in the last 15 minutes got no usable answer, counted against at least 10 decisions so that one or two failures in a quiet room don't fire. People's untagged messages reach nobody, or the triage agent, and rooms get an \"auto-route is unavailable\" notice.\n\n**Check:** decision failures by reason and backend errors by kind (by model; `unknown` is a decision with no answer). `timeout` or `unreachable` on the server default points at the decision service; on `endpoint`, at one workspace's own endpoint. The decision record logged for each message names the room.\n\nDashboard: the decision routing section of \"Switch — core service health\".{{/is_alert}}{{#is_recovery}}Recovered: decisions are failing.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
     "tags": [
       "service:REPLACE-WITH-SERVICE",
       "env:REPLACE-WITH-ENV",
@@ -365,7 +365,8 @@
       "require_full_window": false,
       "include_tags": true,
       "thresholds": {
-        "critical": 0.2
+        "critical": 0.2,
+        "warning": 0.05
       }
     },
     "priority": 2
@@ -443,7 +444,7 @@
     "name": "[Switch REPLACE-WITH-ENV] decisions are slow",
     "type": "query alert",
     "query": "avg(last_30m):p95:switch.decision.duration{service:REPLACE-WITH-SERVICE} > 120000",
-    "message": "{{#is_warning}}The slowest 5% of auto-route decisions took over 1.5 seconds, for 30 minutes. People wait longer for an answer to start; nothing is lost. A warning only: decisions have a target of under a second, so this tells you without paging.\n\n**Check:** decision duration beside model time, by backend. If model time is slow too, the model or its host is; if only duration is, the network or the backend's queue.\n\nDashboard: the decision routing section of \"Switch — core service health\".{{/is_warning}}{{#is_recovery}}Recovered: decisions are slow.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "message": "{{#is_warning}}The slowest 5% of auto-route decisions took over 1.5 seconds, for 30 minutes. People wait longer for an answer to start; nothing is lost. A warning only: decisions have a target of under a second, so this tells you without paging.\n\n**Check:** decision duration beside model time, by model. If model time is slow too, the model or its host is; if only duration is, the network or the backend's queue.\n\nDashboard: the decision routing section of \"Switch — core service health\".{{/is_warning}}{{#is_recovery}}Recovered: decisions are slow.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
     "tags": [
       "service:REPLACE-WITH-SERVICE",
       "env:REPLACE-WITH-ENV",
@@ -909,6 +910,52 @@
     "type": "query alert",
     "query": "sum(last_10m):default_zero(sum:switch.runtime.unhandled_exceptions{service:REPLACE-WITH-SERVICE}.as_count()) >= 10",
     "message": "{{#is_alert}}{{value}} exceptions nothing in Core handled in 10 minutes.\n\n**Check:** the counts by component and type on the dashboard, then the `runtime.unhandled_exception` log lines and the full stack uvicorn or asyncio logged beside each.{{/is_alert}}{{#is_recovery}}Recovered: unhandled exceptions are back to normal.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "tags": [
+      "service:REPLACE-WITH-SERVICE",
+      "env:REPLACE-WITH-ENV",
+      "team:switch",
+      "tier:now"
+    ],
+    "options": {
+      "notify_no_data": false,
+      "renotify_interval": 60,
+      "notify_audit": false,
+      "require_full_window": false,
+      "include_tags": true,
+      "thresholds": {
+        "critical": 10
+      }
+    },
+    "priority": 4
+  },
+  {
+    "name": "[Switch REPLACE-WITH-ENV] the gateway is turning people away",
+    "type": "query alert",
+    "query": "sum(last_10m):default_zero(sum:switch.http.gateway_turned_away{service:REPLACE-WITH-SERVICE,reason:process}.as_count()) >= 5",
+    "message": "{{#is_alert}}{{value}} gateway requests were answered 503 in 10 minutes because a pod already ran as many as its share of the database pool allows. People see \"Switch is busy right now\" in Switch Console and the web app.\n\n**Check:** the pool and the slowest routes on the dashboard: one slow query holding turns, or simply more load than the pods carry. Add a pod before raising `GATEWAY_POOL_SHARE`, which takes connections from the pod's own work.\n\nSignal board: open \"Switch signal\" in Datadog's dashboard list.{{/is_alert}}{{#is_recovery}}Recovered: the gateway is no longer turning people away.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "tags": [
+      "service:REPLACE-WITH-SERVICE",
+      "env:REPLACE-WITH-ENV",
+      "team:switch",
+      "tier:now"
+    ],
+    "options": {
+      "notify_no_data": false,
+      "renotify_interval": 60,
+      "notify_audit": false,
+      "require_full_window": false,
+      "include_tags": true,
+      "thresholds": {
+        "critical": 5
+      }
+    },
+    "priority": 2
+  },
+  {
+    "name": "[Switch REPLACE-WITH-ENV] one caller keeps hitting its share of the gateway",
+    "type": "query alert",
+    "query": "sum(last_30m):default_zero(sum:switch.http.gateway_turned_away{service:REPLACE-WITH-SERVICE,reason:caller}.as_count()) >= 10",
+    "message": "{{#is_alert}}{{value}} gateway requests were answered 429 in 30 minutes because their caller already had `GATEWAY_REQUESTS_PER_CALLER` running. The rest of the server is unaffected; that caller is waiting.\n\n**Check:** Core's logs name the caller once a minute (\"Turned away a request to ... from ...\"). A client sending many requests at once usually wants one batched request instead, as Switch Console's sidebar got in #1983. Raise the limit only if the requests can't be batched.\n\nSignal board: open \"Switch signal\" in Datadog's dashboard list.{{/is_alert}}{{#is_recovery}}Recovered: no caller is hitting its share of the gateway any more.{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
     "tags": [
       "service:REPLACE-WITH-SERVICE",
       "env:REPLACE-WITH-ENV",

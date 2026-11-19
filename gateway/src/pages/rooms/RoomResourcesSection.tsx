@@ -32,6 +32,7 @@ import {
   useRoomPackages,
   useRoomReferences,
 } from "../../data/hooks";
+import { REQUESTS_AT_ONCE, allAtMost } from "../../data/inBatches";
 import { LockedMark, OpensMark } from "../../components/RowAccess";
 
 interface Props {
@@ -183,7 +184,7 @@ function RoomReferences({
     setBusy(true);
     setError(null);
     try {
-      await Promise.all(ids.map((id) => attachReferenceToRoom(roomId, id)));
+      await allAtMost(ids, (id) => attachReferenceToRoom(roomId, id), REQUESTS_AT_ONCE);
       refetch();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to attach");
@@ -310,7 +311,7 @@ function RoomDocuments({
     setBusy(true);
     setError(null);
     try {
-      await Promise.all(ids.map((id) => attachDocumentToRoom(roomId, id)));
+      await allAtMost(ids, (id) => attachDocumentToRoom(roomId, id), REQUESTS_AT_ONCE);
       refetch();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to attach");
@@ -509,7 +510,7 @@ function RoomPackages({
     setBusy(true);
     setError(null);
     try {
-      await Promise.all(ids.map((id) => attachPackageToRoom(roomId, id)));
+      await allAtMost(ids, (id) => attachPackageToRoom(roomId, id), REQUESTS_AT_ONCE);
       refetch();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to attach");

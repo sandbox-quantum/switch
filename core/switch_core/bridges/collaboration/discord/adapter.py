@@ -310,6 +310,31 @@ def _channel_creation_refused(
     return BridgeOperationError(f"{prefix}.")
 
 
+def _private_chat_member_refused(
+    error: discord.HTTPException, channel_name: str, user_name: str
+) -> BridgeOperationError:
+    """What to raise when Discord made a private chat's channel but refused to
+    let its person see it. Like `_channel_creation_refused`, a
+    `BridgeOperationError` so the chat fails with the reason, not a bare 500."""
+    prefix = (
+        f"Discord would not add {user_name} to private channel #{channel_name} "
+        f"({error.status}, code {error.code}: {error.text or 'no message'})"
+    )
+    if error.code == _MISSING_PERMISSIONS_CODE:
+        return BridgeOperationError(
+            f"{prefix}. The Switch bot's role on this Discord server is missing "
+            "the Manage Roles permission, which Discord asks for to change who "
+            "can see a channel. In Discord, open Server Settings, then Roles, "
+            "select the bot's role and turn on Manage Roles."
+        )
+    if error.code == _UNKNOWN_MEMBER_CODE:
+        return BridgeOperationError(
+            f"{prefix}. {user_name} isn't a member of the Discord server this "
+            "connection names. Join that server, then try again."
+        )
+    return BridgeOperationError(f"{prefix}.")
+
+
 def _custom_id(token: str, position: int) -> str:
     return f"{_CUSTOM_ID_PREFIX}:{token}:{position}"
 
@@ -3376,14 +3401,35 @@ class DiscordAdapter(PlatformAdapter):
         # so no per-agent identity — and DM traffic maps to the deprecated
         # "lobby" flow. Mirror Slack instead: a private channel named after
         # the pair, visible only to the bridge and the user.
-        guild = await self._get_guild()
-        channel = await guild.create_text_channel(
-            name=self._sanitize_channel_name(f"{agent_name}-{user_name}"),
-            topic=f"Direct conversation between {user_name} and {agent_name}",
-            overwrites=self._private_channel_overwrites(guild),
-        )
-        member = await self._get_member(guild, user_external_id)
-        await channel.set_permissions(member, view_channel=True)
+        channel_name = self._sanitize_channel_name(f"{agent_name}-{user_name}")
+        try:
+            guild = await self._get_guild()
+            channel = await guild.create_text_channel(
+                name=channel_name,
+                topic=f"Direct conversation between {user_name} and {agent_name}",
+                overwrites=self._private_channel_overwrites(guild),
+            )
+        except discord.HTTPException as error:
+            raise _channel_creation_refused(error, channel_name) from error
+        try:
+            member = await self._get_member(guild, user_external_id)
+            await channel.set_permissions(member, view_channel=True)
+        except discord.HTTPException as error:
+            # The channel exists but its person can't see it, so nobody could
+            # use it: take it down again rather than leave it behind.
+            try:
+                await channel.delete(reason="Switch could not add the person to it")
+            except discord.HTTPException:
+                logger.warning(
+                    "Could not delete Discord channel %s after failing to add "
+                    "user %s to it",
+                    channel.id,
+                    user_external_id,
+                    exc_info=True,
+                )
+            raise _private_chat_member_refused(
+                error, channel_name, user_name
+            ) from error
         return str(channel.id)
 
     @staticmethod

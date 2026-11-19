@@ -47,6 +47,7 @@ const MACHINE: OwnedMachine = {
   cloud: true,
   workspacesDir: null,
   os: null,
+  lastSeenAt: null,
   local: null,
 };
 

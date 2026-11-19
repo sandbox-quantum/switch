@@ -59,6 +59,7 @@ import {
 } from '@shared/core/remote-hosts/remote-dir';
 import type { UiEntryPoint } from '@shared/core/telemetry/reporting';
 import { AgentAdvancedConfig } from './agent-advanced-config';
+import { isAgentNameTaken } from './agent-name-taken';
 import { AgentTypePicker } from './agent-type-picker';
 import { AgentIdentityFields, AgentSettingsSection } from './configure-agent-panel';
 import { LaunchProfileConfig } from './launch-profile-config';
@@ -117,6 +118,7 @@ export const NewAgentForm = observer(function NewAgentForm({
 }: NewAgentFormProps) {
   const queryClient = useQueryClient();
   const [submitState, setSubmitState] = useState<'idle' | 'creating'>('idle');
+  const [createdName, setCreatedName] = useState<string | null>(null);
   const { navigate } = useNavigate();
   const { setCloseGuard } = useModalContext();
   const showAddServerModal = useShowModal('addServerModal');
@@ -248,7 +250,13 @@ export const NewAgentForm = observer(function NewAgentForm({
     () => new Set((remoteAgents.data ?? []).map((a) => a.name)),
     [remoteAgents.data]
   );
-  const nameTaken = form.nameIsValid && takenNames.has(form.agentName);
+  const nameTaken = isAgentNameTaken({
+    name: form.agentName,
+    nameIsValid: form.nameIsValid,
+    takenNames,
+    creating: submitState === 'creating',
+    createdName,
+  });
 
   // A managed server is only reachable from certain run locations, so constrain
   // the picker to them: a remote-managed server from this computer or its own
@@ -610,6 +618,7 @@ export const NewAgentForm = observer(function NewAgentForm({
           return;
         }
         registered = true;
+        setCreatedName(form.agentName);
         // Always set: "Anyone" is no policy, and Switch creates an agent
         // owner-only.
         await rpc.workspaces.updateAddressingPolicy({
@@ -649,6 +658,7 @@ export const NewAgentForm = observer(function NewAgentForm({
         return;
       }
       registered = true;
+      setCreatedName(form.agentName);
       if (result.agent.switchAgentId && result.agent.workspaceId) {
         await rpc.workspaces.updateAddressingPolicy({
           workspaceId: result.agent.workspaceId,

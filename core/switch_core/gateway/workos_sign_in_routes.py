@@ -31,6 +31,7 @@ from switch_core.db.models import (
     require_tenant_id,
 )
 from switch_core.db.stores.user_store import UserStore
+from switch_core.gateway.admission import writes_on_get
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.dependencies import (
     get_config,
@@ -144,7 +145,7 @@ async def start_organization_sign_in(
     )
 
 
-@router.get("/auth/workos/callback")
+@router.get("/auth/workos/callback", dependencies=[Depends(writes_on_get)])
 async def finish_organization_sign_in(
     request: Request,
     code: str,

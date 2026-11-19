@@ -47,6 +47,7 @@ otlp_settings = load_otlp_settings()
 
 BACKEND_HEADER = "X-Decision-Backend"
 ANTHROPIC_KEY_HEADER = "X-Decision-Anthropic-Key"
+GEMINI_KEY_HEADER = "X-Decision-Gemini-Key"
 MODEL_HEADER = "X-Decision-Model"
 
 settings = load_settings()
@@ -131,12 +132,16 @@ app.add_middleware(RequestIdMiddleware)
 
 
 def backends_available(s: Settings) -> list[str]:
-    return ["default", "anthropic"] + (["bedrock"] if s.bedrock_enabled else [])
+    return (
+        ["default", "anthropic"]
+        + (["bedrock"] if s.bedrock_enabled else [])
+        + (["gemini_decision"] if s.gemini_decision_api_key else [])
+    )
 
 
 def resolve_backend(request: Request) -> tuple[Settings, str | None]:
     """The settings for this request (after any X-Decision-Backend override) and
-    the per-request Anthropic key, if any. Header values are never logged."""
+    the per-request Anthropic or Gemini key, if any. Header values are never logged."""
     name = (request.headers.get(BACKEND_HEADER) or "default").strip().lower()
     model = (request.headers.get(MODEL_HEADER) or "").strip() or None
     if name == "default":
@@ -158,6 +163,20 @@ def resolve_backend(request: Request) -> tuple[Settings, str | None]:
         return replace(
             settings, backend="bedrock", model=model or settings.bedrock_model
         ), None
+    if name == "gemini_decision":
+        # The request's own key, else the service's: setting
+        # GEMINI_DECISION_API_KEY is what makes the backend available.
+        gemini_key = (request.headers.get(GEMINI_KEY_HEADER) or "").strip() or None
+        if gemini_key is None and not settings.gemini_decision_api_key:
+            raise BackendUnavailable(
+                "the gemini_decision backend needs GEMINI_DECISION_API_KEY on the "
+                f"service or an {GEMINI_KEY_HEADER} header"
+            )
+        return replace(
+            settings,
+            backend="gemini_decision",
+            model=model or settings.gemini_decision_model,
+        ), gemini_key
     raise BackendUnavailable(
         f"unknown backend {name[:40]!r}; use one of {backends_available(settings)}"
     )
@@ -187,7 +206,7 @@ async def decide(req: DecideRequest, request: Request) -> DecideResponse:
         raise HTTPException(
             status_code=422, detail="agents must list at least one agent"
         )
-    used, anthropic_key = resolve_backend(request)
+    used, api_key = resolve_backend(request)
     threshold = (
         req.confidence_threshold
         if req.confidence_threshold is not None
@@ -196,7 +215,7 @@ async def decide(req: DecideRequest, request: Request) -> DecideResponse:
     candidates = len(req.agents)
     started = time.monotonic()
     try:
-        answer = await ask(_client(), used, req, anthropic_key)
+        answer = await ask(_client(), used, req, api_key)
     except InvalidChoiceError as exc:
         # The backend answered but named no candidate: route to nobody.
         latency_ms = int((time.monotonic() - started) * 1000)

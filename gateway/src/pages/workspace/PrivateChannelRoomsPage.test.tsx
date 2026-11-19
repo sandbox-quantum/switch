@@ -221,13 +221,19 @@ describe("PrivateChannelRoomsPage", () => {
     expect(screen.getByText(CAUTION_TEXT.channel_type_unknown)).toBeTruthy();
   });
 
-  it("refuses more than 200 rooms at once", async () => {
-    serve(Array.from({ length: 201 }, (_, i) => room({ room_id: `r${i}`, name: `room ${i}` })));
+  it("makes more than 200 rooms Private, 200 to a request", async () => {
+    const calls = serve(
+      Array.from({ length: 201 }, (_, i) => room({ room_id: `r${i}`, name: `room ${i}` })),
+    );
     show();
 
-    const button = await screen.findByRole("button", { name: "Make 201 rooms Private" });
-    expect((button as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.getByText(/Make at most 200 Private at a time/)).toBeTruthy();
+    fireEvent.click(await screen.findByRole("button", { name: "Make 201 rooms Private" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Make Private" }));
+
+    await screen.findByText("Made 201 rooms Private.");
+    const posts = calls.filter((c) => c.method === "POST");
+    expect(posts.map((c) => (c.body as { room_ids: string[] }).room_ids.length)).toEqual([200, 1]);
   });
 });
 

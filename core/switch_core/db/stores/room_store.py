@@ -1270,6 +1270,20 @@ class RoomStore:
             room.archived_at = None
         await session.flush()
 
+    async def set_archived_many(
+        self, session: AsyncSession, room_ids: Collection[str], archived: bool
+    ) -> None:
+        """`set_archived` for many rooms in one statement. An id with no room
+        changes nothing."""
+        if not room_ids:
+            return
+        await session.execute(
+            update(Room)
+            .where(any_of(Room.id, room_ids))
+            .values(archived_at=datetime.now(UTC) if archived else None)
+            .execution_options(synchronize_session=False)
+        )
+
     async def update_fields(
         self,
         session: AsyncSession,

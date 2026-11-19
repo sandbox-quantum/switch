@@ -11,6 +11,7 @@ to do.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Collection
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -122,9 +123,12 @@ class _Rooms:
     def __init__(self) -> None:
         self.archived: list[str] = []
 
-    async def set_room_archived(self, room_id: str, archived: bool) -> None:
+    async def set_rooms_archived(
+        self, tenant_id: str, room_ids: Collection[str], archived: bool
+    ) -> list[str]:
         assert archived
-        self.archived.append(room_id)
+        self.archived.extend(room_ids)
+        return list(room_ids)
 
 
 class _Clients:
