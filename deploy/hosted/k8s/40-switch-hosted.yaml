@@ -189,8 +189,6 @@ spec:
           value: "/etc/switch/core/token"
         - name: SWITCH_HOSTED_WORKERS_CORE_CA
           value: "/etc/switch/files/box-ca.crt"
-        - name: SWITCH_HOSTED_WORKERS_BOX_MAP
-          value: "/etc/switch/box-map"
         - name: SWITCH_SCALER_REPORT_EVICTIONS
           value: '1'
         - name: SWITCH_SCALER_REPORT_BOX_FACTS
@@ -241,9 +239,6 @@ spec:
         - mountPath: "/etc/switch/core"
           name: core
           readOnly: true
-        - mountPath: "/etc/switch/box-map"
-          name: box-map
-          readOnly: true
         - mountPath: "/var/run/secrets/kubernetes.io/serviceaccount"
           name: kube
           readOnly: true
@@ -277,10 +272,6 @@ spec:
         secret:
           defaultMode: 256
           secretName: switch-hosted-controller-core
-      - name: box-map
-        secret:
-          defaultMode: 288
-          secretName: box-map
       - name: kube
         projected:
           defaultMode: 288
@@ -345,8 +336,6 @@ spec:
           value: "/etc/switch/core/bearer"
         - name: SWITCH_HOSTED_WORKERS_CORE_CA
           value: "/etc/switch/files/box-ca.crt"
-        - name: SWITCH_HOSTED_WORKERS_BOX_MAP
-          value: "/etc/switch/box-map"
         image: __CONTROLLER_IMAGE__
         imagePullPolicy: IfNotPresent
         name: restart
@@ -371,9 +360,6 @@ spec:
           readOnly: true
         - mountPath: "/etc/switch/core"
           name: core
-          readOnly: true
-        - mountPath: "/etc/switch/box-map"
-          name: box-map
           readOnly: true
         - mountPath: "/var/run/secrets/kubernetes.io/serviceaccount"
           name: kube
@@ -408,10 +394,6 @@ spec:
         secret:
           defaultMode: 256
           secretName: switch-operator-actions-bearer
-      - name: box-map
-        secret:
-          defaultMode: 288
-          secretName: box-map
       - name: kube
         projected:
           defaultMode: 288

@@ -21,7 +21,7 @@ import logging
 import re
 import ssl
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -118,6 +118,32 @@ def _boxes_from_dir(path: Path) -> dict[str, str]:
             boxes[str(UUID(entry.name))] = namespace
         except ValueError:
             raise ScalerConfigError(f"not a machine id: {entry.name!r}") from None
+    if len(set(boxes.values())) != len(boxes):
+        raise ScalerConfigError("a namespace is listed more than once")
+    return boxes
+
+
+def boxes_from_secret(secret: Any) -> dict[str, str]:
+    """The `box-map` Secret as the API returns it (read by name): machine id to namespace, each value
+    base64-decoded strictly. Refused whole, as the mounted map is, if any entry is off. An empty map
+    is allowed: a new cluster has no boxes until the box operator makes the first."""
+    data = secret.get("data") if isinstance(secret, dict) else None
+    if data is None:
+        data = {}
+    if not isinstance(data, dict):
+        raise ScalerConfigError("the box map is not machine ids to namespaces")
+    boxes: dict[str, str] = {}
+    for key, value in data.items():
+        try:
+            namespace = base64.b64decode(str(value), validate=True).decode().strip()
+        except (ValueError, UnicodeDecodeError):
+            raise ScalerConfigError("a box map value is not valid base64 text") from None
+        if not NAMESPACE_RE.fullmatch(namespace):
+            raise ScalerConfigError("a box map entry is not a user box namespace")
+        try:
+            boxes[str(UUID(str(key)))] = namespace
+        except ValueError:
+            raise ScalerConfigError("a box map key is not a machine id") from None
     if len(set(boxes.values())) != len(boxes):
         raise ScalerConfigError("a namespace is listed more than once")
     return boxes
@@ -239,8 +265,17 @@ def reconcile_once(
     codes: RegistrationCodes | None = None,
     watch: EvictionWatch | None = None,
     box_facts: RestartCounter | None = None,
+    listed: list[dict[str, Any]] | None = None,
+    only: Collection[str] | None = None,
+    last_observed: dict[str, str] | None = None,
 ) -> list[Step]:
     """One pass over the machines Core lists that map to a box namespace.
+
+    The fast passes (`workers_main`) give three more: `listed`, Core's machine
+    list they already read, so it isn't read twice; `only`, the machine ids
+    to look at (the boxes starting or waking), every other box left to the
+    next full round; and `last_observed`, what each box was last reported as,
+    so a box whose state hasn't changed isn't reported again every 2 s.
 
     `waiting` remembers, across passes, since when each box has been wanted
     running but not ready. Past 3 minutes the box is reported to Core as an
@@ -269,13 +304,15 @@ def reconcile_once(
     """
     waiting = {} if waiting is None else waiting
     steps: list[Step] = []
-    listed = core.machines()
+    listed = core.machines() if listed is None else listed
     failed = 0
     for raw in listed:
         machine_id = str(raw.get("machine_id", ""))
         namespace = boxes.get(machine_id)
         if namespace is None:
             continue  # not one of ours
+        if only is not None and machine_id not in only:
+            continue  # a fast pass: this box waits for the next full round
         desired = raw.get("desired_state")
         revision = raw.get("revision")
         if desired not in (RUNNING, STOPPED, "retained", "deleted") or not isinstance(
@@ -351,9 +388,19 @@ def reconcile_once(
                 waiting.pop(machine_id, None)
                 if codes is not None and desired == RUNNING and observed == RUNNING:
                     codes.ready(machine_id, namespace)
-            _observe(
-                core, machine_id, observed, revision, error, evictions, facts, watch, box_facts
+            unchanged = (
+                last_observed is not None
+                and last_observed.get(machine_id) == observed
+                and error is None
+                and evictions is None
+                and not facts
             )
+            if not unchanged:
+                _observe(
+                    core, machine_id, observed, revision, error, evictions, facts, watch, box_facts
+                )
+            if last_observed is not None:
+                last_observed[machine_id] = observed
             steps.append(Step(machine_id, namespace, desired, replicas, ready, action, observed))
         except Exception as exc:
             failed += 1

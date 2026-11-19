@@ -108,6 +108,23 @@ Empty means deny: no box files and no logins, so squid lets nothing through unti
 `squid-boxes` and `squid-passwd` for each box. `egress-settings`' `{}` gives every box the default parts; per-box
 settings go in it later through the secret store, never in this file.
 
+**How fast a box gets egress.** egress-lists reads the box map and settings every 3 s and rewrites squid's files
+when they change. squid's wrapper checks its mounted files every 2 s: logins apply at once (a removed box loses its
+login within seconds, as squid re-checks a login every 10 s), and box files go live only after a clean
+`squid -k parse`. The mounts themselves lag by the kubelet's sync, so the system nodes' kubelet syncs about every
+5 s (the box-cluster module). If a box file fails the parse, squid keeps its last good files and logs, every
+minute while it lasts, `squid-reload: WARN box files failed squid -k parse; kept the last good config (files=N
+failing_for=Ns)`, with counts only. The monitor on that line pages if it lasts over 5 minutes: until it's fixed,
+new boxes get no egress.
+
+Every login change reloads squid (`squid -k reconfigure`, a HUP), so there's a reload on each box start and stop.
+A reconfigure re-reads the config and restarts the login helpers, but it doesn't close open connections: other
+boxes' tunnels carry on. QA's slot check "a reload doesn't drop other boxes' connections" is the proof of that on a
+real cluster.
+
+Until the system nodes' kubelet sync is shortened, the mounted files still lag about a minute, so squid sees a change
+that late however fast it checks. Start timings taken before that change understate this part.
+
 Then apply the filled folder in name order: `kubectl apply -f <folder>/` does that (`10-` to `71-`; the box
 PriorityClass and squid's NetworkPolicy are numbered `70-` and `71-`). The admission policies and NetworkPolicies are the safety rules: apply them
 unchanged. Have a second person review the filled folder before it's applied.

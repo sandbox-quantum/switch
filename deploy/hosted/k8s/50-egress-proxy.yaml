@@ -236,16 +236,18 @@ data:
     acl agents src __AGENTS_SUBNET__
     # never forward to private ranges or metadata, even for an allowed name
     acl private_dst dst 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16 100.64.0.0/10
-    # Per-box logins: the generator's hashes; a login means only that box's own list.
-    auth_param basic program /usr/lib/squid/basic_ncsa_auth /etc/squid/passwd/passwd
+    # Per-box logins: the generator's hashes; a login means only that box's own list. The wrapper (run.sh)
+    # copies them, and the box files, from the mounts to /run/squid-live: logins at once, box files, joined into one, after a clean parse.
+    auth_param basic program /usr/lib/squid/basic_ncsa_auth /run/squid-live/passwd
     auth_param basic realm switch-egress
     auth_param basic children 5 startup=1 idle=1
-    auth_param basic credentialsttl 5 minutes
+    # A login is re-checked every 10 s, so a removed one stops working within seconds.
+    auth_param basic credentialsttl 10 seconds
     acl has_login req_header Proxy-Authorization .
     http_access deny private_dst
     http_access deny !CONNECT
     http_access deny CONNECT !SSL_ports
-    include /etc/squid/boxes/*.conf
+    include /run/squid-live/boxes.conf
     http_access deny all
     cache deny all
     strip_query_terms on   # never log query strings (CONNECT tunnels only log host:port anyway)
@@ -277,25 +279,101 @@ apiVersion: v1
 data:
   run.sh: |
     #!/bin/sh
-    # squid's reload wrapper: reload on changed box files or hashes, only after a clean parse.
-    # It checksums the files; it never prints their content.
-    conf=/etc/squid/conf.d/squid.conf
-    sig() { find -L /etc/squid/boxes /etc/squid/passwd -type f ! -path '*/..*' 2>/dev/null | sort | xargs cat 2>/dev/null | cksum; }
-    squid -N -f "$conf" &
-    pid=$!
-    echo "squid-reload: squid started (pid $pid); watching the box files every 30 s"
-    trap 'kill -TERM "$pid" 2>/dev/null; wait "$pid"; exit 0' TERM INT
-    last=$(sig)
-    while kill -0 "$pid" 2>/dev/null; do
-      sleep 30 & wait $!
-      now=$(sig)
-      [ "$now" = "$last" ] && continue
-      if squid -k parse -f "$conf" >/dev/null 2>&1; then
-        kill -HUP "$pid" && echo "squid-reload: files changed, parse ok, reloaded"
+    # squid's reload wrapper. squid reads its box files and logins from $live, never from the mounts:
+    # - logins (squid-passwd) are copied there at once on any change, apart from the box files, and squid is
+    #   reloaded with its last good config, so a removed box loses its login within seconds even while
+    #   another box's file is bad;
+    # - box files (squid-boxes) are joined, in name order, into one staged file, which goes live only after a
+    #   clean `squid -k parse`, by a plain rename over the live file (rename(2): atomic, and the same with
+    #   GNU, BSD or busybox `mv`), so a bad file never replaces a good one. Started with a bad file, it keeps
+    #   the pod's last good file if it has one, and otherwise allows no box at all.
+    # It checks every $poll seconds, takes checksums and counts, and never prints a file's content.
+    set -u
+    conf=${SQUID_CONF:-/etc/squid/conf.d/squid.conf}
+    src_boxes=${SQUID_SRC_BOXES:-/etc/squid/boxes}
+    src_passwd=${SQUID_SRC_PASSWD:-/etc/squid/passwd}
+    live=${SQUID_LIVE:-/run/squid-live}
+    squid=${SQUID_BIN:-squid}
+    poll=${SQUID_POLL_S:-2}
+    warn_every=${SQUID_WARN_EVERY_S:-60}
+
+    files() { find -L "$1" -type f ! -path '*/..*' 2>/dev/null | sort; }
+    sig() { files "$1" | while IFS= read -r f; do cat "$f"; done 2>/dev/null | cksum; }
+    count() { files "$1" | wc -l | tr -d ' '; }
+
+    apply_logins() {
+      # A missing or unreadable file gives an empty one: no login works, so nothing is allowed.
+      cat "$src_passwd/passwd" > "$live/passwd.new" 2>/dev/null || : > "$live/passwd.new"
+      chmod 0400 "$live/passwd.new"
+      mv -f "$live/passwd.new" "$live/passwd"
+    }
+
+    # Joins the box files into the staged file, each ending its own line. With "base", only the fixed
+    # `_none.conf` (squid-boxes-base): no box allowed.
+    stage() {
+      if [ "${1:-}" = base ]; then
+        cat "$src_boxes/_none.conf" > "$live/boxes.conf.new" 2>/dev/null || : > "$live/boxes.conf.new"
       else
-        echo "squid-reload: ERROR files changed but squid -k parse failed; kept the running config"
+        files "$src_boxes" | while IFS= read -r f; do cat "$f" && echo || exit 1; done > "$live/boxes.conf.new"
       fi
-      last=$now
+    }
+
+    # squid's own parse, of its config with the include pointed at the staged file.
+    parses() {
+      sed "s#$live/boxes.conf#$live/boxes.conf.new#g" "$conf" > "$live/staged.conf" &&
+        "$squid" -k parse -f "$live/staged.conf" >/dev/null 2>&1
+    }
+
+    go_live() {
+      mv -f "$live/boxes.conf.new" "$live/boxes.conf"
+    }
+
+    warn() {
+      echo "squid-reload: WARN box files failed squid -k parse; kept the last good config (files=$(count "$src_boxes") failing_for=$(($(date +%s) - failing_since))s)"
+      warned=$(date +%s)
+    }
+
+    mkdir -p "$live"
+    # Checksums first, then the copies: a change made while copying is seen as a change on the next check.
+    last_logins=$(sig "$src_passwd")
+    last_boxes=$(sig "$src_boxes")
+    apply_logins
+    failing_since=""
+    warned=0
+    if stage && parses; then
+      go_live
+      echo "squid-reload: box files ok (files=$(count "$src_boxes"))"
+    else
+      failing_since=$(date +%s)
+      [ -f "$live/boxes.conf" ] || { stage base && go_live; }
+      warn
+    fi
+    "$squid" -N -f "$conf" &
+    pid=$!
+    echo "squid-reload: squid started (pid $pid); watching the logins and box files every ${poll} s"
+    trap 'kill -TERM "$pid" 2>/dev/null; wait "$pid"; exit 0' TERM INT
+    while kill -0 "$pid" 2>/dev/null; do
+      sleep "$poll" & wait $!
+      now=$(sig "$src_passwd")
+      if [ "$now" != "$last_logins" ]; then
+        apply_logins
+        kill -HUP "$pid" && echo "squid-reload: logins changed, applied and reloaded"
+        last_logins=$now
+      fi
+      now=$(sig "$src_boxes")
+      if [ "$now" != "$last_boxes" ]; then
+        if stage && parses; then
+          go_live
+          kill -HUP "$pid" && echo "squid-reload: box files changed, parse ok, reloaded (files=$(count "$src_boxes"))"
+          failing_since=""
+        else
+          [ -n "$failing_since" ] || failing_since=$(date +%s)
+          warn
+        fi
+        last_boxes=$now
+      elif [ -n "$failing_since" ] && [ $(($(date +%s) - warned)) -ge "$warn_every" ]; then
+        warn
+      fi
     done
     wait "$pid"; exit $?
 kind: ConfigMap

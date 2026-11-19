@@ -29,9 +29,26 @@ Where things come from (the Deployment):
   or fragment, and the controller token in the Secret file named by
   `SWITCH_HOSTED_WORKERS_CORE_TOKEN_FILE`, read on every call.
   `SWITCH_HOSTED_WORKERS_CORE_CA`, when set, is the only CA trusted for Core.
-- The box map: `SWITCH_HOSTED_WORKERS_BOX_MAP`, the `box-map` Secret mounted as
-  a folder, read with `load_boxes` every round. A map that fails to read keeps
-  the last good one.
+- The box map: the `box-map` Secret in `switch-hosted`, read through the API
+  by name every round (the account's `get` on that one name; no list or
+  watch), so a new box is seen at once rather than after the kubelet's sync.
+  A map that fails to read keeps the last good one. Outside the cluster
+  (`Workers` given a path), `SWITCH_HOSTED_WORKERS_BOX_MAP`, read with
+  `load_boxes`.
+
+Between full rounds, the scaler looks again quickly (`fast_tick`), so a box
+starts within seconds of Core wanting it:
+
+- Every `CHECK_S` (5 s), one read of Core's machine list, and nothing else.
+  A box whose desired state or revision changed gets a scaler pass at once.
+  A machine not in the map that changed makes the box map be read again
+  (one `get`), for a box the provisioner has just made.
+- While any box is starting or waking, a pass every `FAST_S` (2 s) for those
+  boxes only, up to the scaler's start limit (3 minutes). A box's state
+  is reported to Core only when it changes.
+- A failed check backs off, doubling up to the round interval.
+
+Evictions, the cluster report and restarts stay on the full round.
 
 Neither token nor the Core URL is ever logged: errors are logged by type (and
 HTTP status) only. Nothing is written to disk.
@@ -44,13 +61,21 @@ import os
 import signal
 import ssl
 import threading
+import time
 from collections.abc import Callable, Mapping, MutableMapping
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from .box_operator_main import SA_DIR, read_token
-from .box_scaler import CoreApi, KubeApi, load_boxes, reconcile_once
+from .box_operator_main import BOX_MAP_SECRET, HOME_NAMESPACE, SA_DIR, read_token
+from .box_scaler import (
+    START_LIMIT_S,
+    CoreApi,
+    KubeApi,
+    boxes_from_secret,
+    load_boxes,
+    reconcile_once,
+)
 from .cluster_watch import (
     ENV_BOX_FACTS,
     ENV_SWITCH,
@@ -74,6 +99,8 @@ SWITCHES = ("SCALER", "EVICTIONS", "CLUSTER_REPORT", "RESTART")
 ENV_REPORT_EVICTIONS = "SWITCH_SCALER_REPORT_EVICTIONS"
 DEFAULT_INTERVAL_S = 10.0
 MIN_INTERVAL_S, MAX_INTERVAL_S = 5.0, 300.0
+CHECK_S = 5.0  # between full rounds: one read of Core's machine list
+FAST_S = 2.0  # while a box is starting or waking: a pass for those boxes
 
 
 class WorkersConfigError(ValueError):
@@ -140,6 +167,12 @@ class InClusterKubeApi(KubeApi):
     def _call(self, method: str, path: str, body: dict | None = None, timeout: float = 20) -> dict:
         self._token = read_token(self._token_file)
         return super()._call(method, path, body, timeout)
+
+    def box_map(self) -> dict[str, str]:
+        """`box-map`, read by name: the account's `get` on that one Secret, never a list."""
+        return boxes_from_secret(
+            self._call("GET", f"/api/v1/namespaces/{HOME_NAMESPACE}/secrets/{BOX_MAP_SECRET}")
+        )
 
 
 class InClusterRestartKubeApi(RestartKubeApi):
@@ -236,7 +269,7 @@ class Workers:
         self,
         core: Any,
         kube: Any,
-        box_map: Path,
+        box_map: Path | Callable[[], dict[str, str]],
         env: Mapping[str, str],
         restart_core: Any = None,
         restart_kube: Any = None,
@@ -250,6 +283,13 @@ class Workers:
         self.boxes: dict[str, str] = {}
         self._waiting: dict[str, float] = {}
         self._scaled = 0
+        # The fast passes: what Core last listed for each machine, what each box was last reported as,
+        # and when the next check is due (backing off after a failed one).
+        self._seen: dict[str, tuple[Any, Any]] = {}
+        self._observed: dict[str, str] = {}
+        self._check_wait = CHECK_S
+        self._next_check = 0.0
+        self._interval = MAX_INTERVAL_S
         self.scaler = on["scaler"]
         # The same map object, updated in place each round, so the codes see the current boxes.
         self.codes = RegistrationCodes(core, kube, self.boxes) if self.scaler else None
@@ -288,10 +328,15 @@ class Workers:
 
     def _reload(self) -> None:
         try:
-            boxes = self._load(self._box_map)
-        except (OSError, ValueError) as exc:  # ScalerConfigError is a ValueError
+            boxes = self._box_map() if callable(self._box_map) else self._load(self._box_map)
+        except Exception as exc:  # an API error, OSError, or ScalerConfigError (a ValueError)
             # Its text can name a namespace, never a credential; logged by type all the same.
-            raise WorkersConfigError(f"box map unreadable ({type(exc).__name__})") from None
+            logger.warning(
+                "Box map unreadable (%s); keeping the last good one (%d boxes).",
+                _why(exc),
+                len(self.boxes),
+            )
+            raise WorkersConfigError("box map unreadable") from None
         self._replace(self.boxes, boxes)
 
     @staticmethod
@@ -311,6 +356,7 @@ class Workers:
             box_facts=self.box_facts,
         )
         self._scaled = sum(1 for step in steps if step.action)
+        self._observed.update({step.machine_id: step.observed for step in steps})
 
     def _look_at_the_rest(self) -> None:
         assert self.watch is not None
@@ -352,15 +398,101 @@ class Workers:
         )
         return outcome
 
-    def run(self, stop: threading.Event, interval: float) -> None:
+    # ---- the fast passes, between full rounds ----
+
+    def starting(self, now: float) -> set[str]:
+        """The boxes starting or waking, inside the start limit: the ones the 2 s passes look at."""
+        return {
+            machine_id
+            for machine_id, since in self._waiting.items()
+            if machine_id in self.boxes and now - since <= START_LIMIT_S
+        }
+
+    def _changed(self, listed: list[dict[str, Any]]) -> tuple[set[str], bool]:
+        """Which of our boxes Core changed since it was last seen, and whether a machine not in the
+        map changed (a box the provisioner may just have made). The first look only remembers."""
+        first = not self._seen
+        ours: set[str] = set()
+        unknown = False
+        listed_ids = {str(raw.get("machine_id", "")) for raw in listed}
+        for gone in set(self._seen) - listed_ids:  # only what Core lists now is remembered
+            del self._seen[gone]
+        for raw in listed:
+            machine_id = str(raw.get("machine_id", ""))
+            now_seen = (raw.get("desired_state"), raw.get("revision"))
+            before = self._seen.get(machine_id)
+            self._seen[machine_id] = now_seen
+            if first or before == now_seen:
+                continue
+            if machine_id in self.boxes:
+                ours.add(machine_id)
+            else:
+                unknown = True
+        return ours, unknown
+
+    def fast_tick(self, now: float) -> float:
+        """One quick look between full rounds; returns how long to wait before the next."""
+        if not self.scaler:
+            return self._interval
+        starting = self.starting(now)
+        if not starting and now < self._next_check:
+            return self._next_check - now
+        try:
+            listed = self.core.machines()
+        except Exception as exc:
+            self._check_wait = min(self._check_wait * 2, self._interval)
+            self._next_check = now + self._check_wait
+            logger.warning("Fast check failed (%s); next in %gs.", _why(exc), self._check_wait)
+            return self._check_wait
+        self._check_wait = CHECK_S
+        self._next_check = now + CHECK_S
+        changed, unknown = self._changed(listed)
+        if unknown:
+            before = set(self.boxes)
+            self._guard("box map", self._reload)
+            changed |= {m for m in self.boxes if m not in before}
+        targets = (changed | starting) & set(self.boxes)
+        if targets:
+            self._guard("fast scaler", lambda: self._fast_pass(listed, targets))
+        return FAST_S if self.starting(time.monotonic()) else CHECK_S
+
+    def _fast_pass(self, listed: list[dict[str, Any]], targets: set[str]) -> None:
+        steps = reconcile_once(
+            self.core,
+            self.kube,
+            self.boxes,
+            self._waiting,
+            codes=self.codes,
+            listed=listed,
+            only=targets,
+            last_observed=self._observed,
+        )
+        acted = sum(1 for step in steps if step.action)
+        if acted:
+            logger.info("Fast pass: boxes=%d scaled=%d", len(steps), acted)
+
+    def run(
+        self,
+        stop: threading.Event,
+        interval: float,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._interval = interval
+        next_round = clock()
         while not stop.is_set():
-            self.run_round()
-            stop.wait(interval)
+            now = clock()
+            if now >= next_round:
+                self.run_round()
+                next_round = clock() + interval
+                wait = FAST_S if self.starting(clock()) else CHECK_S
+            else:
+                wait = self.fast_tick(now)
+            stop.wait(max(0.0, min(wait, next_round - clock())))
 
 
 def build(env: Mapping[str, str], sa_dir: Path = SA_DIR) -> tuple[Workers, float]:
     """Everything from the environment and the mounts, refused whole if anything is wrong."""
-    for key in (ENV_CORE_URL, ENV_CORE_TOKEN_FILE, ENV_BOX_MAP):
+    for key in (ENV_CORE_URL, ENV_CORE_TOKEN_FILE):
         if not env.get(key, "").strip():
             raise WorkersConfigError(f"{key} is not set")
     interval = interval_from_env(env)
@@ -382,10 +514,13 @@ def build(env: Mapping[str, str], sa_dir: Path = SA_DIR) -> tuple[Workers, float
     if not sa_ca.is_file():
         raise WorkersConfigError("the service-account CA is not mounted")
     server = in_cluster_server(env)
+    kube = InClusterKubeApi(server, sa_token, str(sa_ca))
+    if env.get(ENV_BOX_MAP, "").strip():
+        logger.warning("%s is no longer read: the box map is read through the API.", ENV_BOX_MAP)
     workers = Workers(
         FreshCore(url, token_file, CoreApi, core_context),
-        InClusterKubeApi(server, sa_token, str(sa_ca)),
-        Path(env[ENV_BOX_MAP]),
+        kube,
+        kube.box_map,
         env,
         restart_core=FreshCore(url, token_file, RestartCoreApi, core_context),
         restart_kube=InClusterRestartKubeApi(server, sa_token, str(sa_ca)),

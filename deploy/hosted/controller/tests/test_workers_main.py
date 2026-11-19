@@ -529,7 +529,6 @@ def test_a_bad_mount_refuses_to_start_without_logging_it(
     stop = threading.Event()
     stop.set()
     changes = (
-        lambda env, sa: env.pop("SWITCH_HOSTED_WORKERS_BOX_MAP"),
         lambda env, sa: env.pop("KUBERNETES_SERVICE_HOST"),
         lambda env, sa: (sa / "token").unlink(),
         lambda env, sa: (sa / "ca.crt").unlink(),
@@ -678,3 +677,333 @@ def test_no_client_follows_a_redirect(tmp_path: Path) -> None:
     finally:
         server.shutdown()
     assert landed == []
+
+
+# ── The box map through the API (E1) ─────────────────────────────────────────
+
+import base64  # noqa: E402
+import time  # noqa: E402
+
+from switch_hosted_controller.box_scaler import (  # noqa: E402
+    START_LIMIT_S,
+    ScalerConfigError,
+    boxes_from_secret,
+)
+from switch_hosted_controller.workers_main import CHECK_S, FAST_S  # noqa: E402
+
+
+def _secret(boxes: dict[str, str]) -> dict[str, Any]:
+    return {
+        "metadata": {"name": "box-map", "resourceVersion": "7"},
+        "data": {k: base64.b64encode(v.encode()).decode() for k, v in boxes.items()},
+    }
+
+
+def test_the_box_map_secret_is_read_whole_or_refused_whole() -> None:
+    assert boxes_from_secret(_secret({M1: NS1, M2: NS2})) == {M1: NS1, M2: NS2}
+    assert boxes_from_secret({"metadata": {}}) == {}  # a new cluster: no boxes yet
+    assert boxes_from_secret({"data": None}) == {}
+    bad = (
+        {"data": {M1: "not base64!"}},
+        {"data": {M1: base64.b64encode(b"kube-system").decode()}},
+        {"data": {"not-a-uuid": base64.b64encode(NS1.encode()).decode()}},
+        _secret({M1: NS1, M2: NS1}),
+        {"data": ["a list"]},
+    )
+    for secret in bad:
+        with pytest.raises(ScalerConfigError) as refused:
+            boxes_from_secret(secret)
+        assert NS1 not in str(refused.value) and "kube-system" not in str(refused.value)
+
+
+def test_the_box_map_is_read_by_name_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(box_scaler.ssl, "create_default_context", lambda cafile=None: None)
+    api = InClusterKubeApi("https://10.100.0.1:443", _write(tmp_path / "t", "sa-token"), "ca")
+    calls: list[tuple[str, str]] = []
+
+    def call(method: str, path: str, body: Any = None, timeout: float = 20) -> dict:
+        calls.append((method, path))
+        return _secret({M1: NS1})
+
+    monkeypatch.setattr(api, "_call", call)
+    assert api.box_map() == {M1: NS1}
+    assert calls == [("GET", "/api/v1/namespaces/switch-hosted/secrets/box-map")]
+
+
+def test_an_api_error_keeps_the_last_good_box_map(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    answers: list[Any] = [
+        {M1: NS1},
+        RuntimeError("API down"),
+        ScalerConfigError(NS2),
+        {M1: NS1, M2: NS2},
+    ]
+
+    def read() -> dict[str, str]:
+        answer = answers.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    workers = Workers(FakeCore([_running(M1), _running(M2)]), FakeKube(), read, SCALER)
+    held = workers.boxes
+    assert workers.run_round()["box_map"] == "ok" and workers.boxes == {M1: NS1}
+    with caplog.at_level(logging.WARNING):
+        assert workers.run_round()["box_map"] == "failed"
+        assert workers.run_round()["box_map"] == "failed"
+    assert workers.boxes == {M1: NS1}  # the last good map, still in use
+    assert "keeping the last good one" in caplog.text and NS2 not in caplog.text
+    workers.run_round()
+    assert workers.boxes == {M1: NS1, M2: NS2} and workers.boxes is held  # updated in place
+
+
+def test_a_first_read_that_fails_touches_no_box(tmp_path: Path) -> None:
+    def read() -> dict[str, str]:
+        raise RuntimeError("API down")
+
+    kube = FakeKube()
+    kube.replicas[NS1] = 0
+    workers = Workers(FakeCore([_running(M1)]), kube, read, SCALER)
+    workers.run_round()
+    assert workers.boxes == {} and kube.order == []
+
+
+def test_the_mount_setting_is_no_longer_needed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setattr(box_scaler.ssl, "create_default_context", lambda cafile=None: None)
+    monkeypatch.setattr(restart_actions.ssl, "create_default_context", lambda cafile=None: None)
+    env, sa = _mounts(tmp_path)
+    with caplog.at_level(logging.WARNING):
+        workers, _ = build(env, sa)
+    assert callable(workers._box_map) and "no longer read" in caplog.text
+    env.pop("SWITCH_HOSTED_WORKERS_BOX_MAP")
+    workers, _ = build(env, sa)
+    assert workers._box_map == workers.kube.box_map
+
+
+# ── The fast passes between full rounds (E2) ─────────────────────────────────
+
+
+class SlowKube(FakeKube):
+    """A box that becomes ready only when told: scale reads are counted per namespace."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.ready: dict[str, int] = {}
+        self.reads: list[str] = []
+
+    def scale(self, namespace: str) -> tuple[int, int]:
+        self.reads.append(namespace)
+        return self.replicas.get(namespace, 0), self.ready.get(namespace, 0)
+
+
+def time_now() -> float:
+    return time.monotonic()
+
+
+def _stopped(machine_id: str, revision: int = 3) -> dict[str, Any]:
+    return {"machine_id": machine_id, "desired_state": "stopped", "revision": revision}
+
+
+def _fast(
+    boxes: dict[str, str],
+    listed: list[dict[str, Any]],
+    kube: FakeKube | None = None,
+    read: Any = None,
+) -> tuple[Workers, FakeCore, Any]:
+    core = FakeCore(listed)
+    kube = kube or SlowKube()
+    workers = Workers(core, kube, read or (lambda: dict(boxes)), SCALER)
+    workers._interval = 30.0
+    workers.run_round()
+    return workers, core, kube
+
+
+def test_a_wake_is_acted_on_at_the_next_check_not_the_next_round() -> None:
+    kube = SlowKube()
+    kube.replicas[NS1] = kube.replicas[NS2] = 0
+    workers, core, kube = _fast({M1: NS1, M2: NS2}, [_stopped(M1), _stopped(M2)], kube)
+    assert workers.fast_tick(100.0) == CHECK_S  # the first look only remembers
+    kube.reads.clear()
+    core.listed = [_running(M1), _stopped(M2)]  # Core wants M1 awake (revision 3, desired changed)
+    assert workers.fast_tick(105.0) == FAST_S  # it is starting now: 2 s passes
+    assert kube.replicas[NS1] == 1 and kube.order[-1] == "replicas=1"
+    assert kube.reads == [NS1]  # only the box that changed was read
+    assert core.observed[-1] == (M1, {"state": "provisioning"})
+
+
+def test_a_starting_box_gets_2s_passes_for_itself_only_and_is_reported_on_change() -> None:
+    kube = SlowKube()
+    kube.replicas[NS1], kube.replicas[NS2] = 0, 1
+    kube.ready[NS2] = 1
+    workers, core, kube = _fast({M1: NS1, M2: NS2}, [_running(M1), _running(M2)], kube)
+    # The full round started M1; it is waiting to be ready.
+    assert workers.starting(time_now()) == {M1}
+    reported = len(core.observed)
+    kube.reads.clear()
+    for tick in range(3):
+        assert workers.fast_tick(time_now()) == FAST_S
+    assert kube.reads == [NS1, NS1, NS1]  # never M2, whose box is running
+    assert len(core.observed) == reported  # still provisioning: nothing new to say
+    kube.ready[NS1] = 1
+    assert workers.fast_tick(time_now()) == CHECK_S
+    assert core.observed[-1] == (M1, {"state": "running"})
+    assert workers.starting(time_now()) == set()
+
+
+def test_the_fast_passes_end_at_the_start_limit() -> None:
+    kube = SlowKube()
+    kube.replicas[NS1] = 0
+    workers, core, kube = _fast({M1: NS1}, [_running(M1)], kube)
+    later = time_now() + START_LIMIT_S + 1
+    assert workers.starting(later) == set()
+    kube.reads.clear()
+    workers._next_check = later + 1  # no check due yet
+    assert workers.fast_tick(later) == pytest.approx(1.0)
+    assert (
+        kube.reads == []
+    )  # a box past the limit waits for the full round (which reports the error)
+
+
+def test_a_stop_is_acted_on_as_fast_as_a_wake() -> None:
+    kube = SlowKube()
+    kube.replicas[NS1] = kube.ready[NS1] = 1
+    workers, core, kube = _fast({M1: NS1}, [_running(M1)], kube)
+    workers.fast_tick(time_now())
+    core.listed = [_stopped(M1, revision=4)]
+    workers.fast_tick(time_now() + CHECK_S)
+    assert kube.replicas[NS1] == 0 and core.observed[-1] == (M1, {"state": "stopping"})
+
+
+def test_a_new_box_in_the_map_is_started_at_the_next_check() -> None:
+    boxes = {M1: NS1}
+    reads = {"n": 0}
+
+    def read() -> dict[str, str]:
+        reads["n"] += 1
+        return dict(boxes)
+
+    kube = SlowKube()
+    kube.replicas[NS1] = kube.ready[NS1] = 1
+    workers, core, kube = _fast({}, [_running(M1)], kube, read=read)
+    workers.fast_tick(time_now())
+    workers.fast_tick(time_now() + CHECK_S)
+    assert reads["n"] == 1  # nothing unknown changed: the map isn't read again
+    # The provisioner made M2's box (at 0) and Core now lists it, wanted running.
+    boxes[M2] = NS2
+    kube.replicas[NS2] = 0
+    core.listed = [_running(M1), _running(M2)]
+    assert workers.fast_tick(time_now() + 2 * CHECK_S) == FAST_S
+    assert reads["n"] == 2 and kube.replicas[NS2] == 1
+
+
+def test_an_existing_box_re_used_starts_at_the_next_check_without_reading_the_map() -> None:
+    """A re-used box (a retry or re-claim: the provisioner kept the box and its map entry) is already
+    in the map. Core wanting it running is a change to a box we know, so it starts at the next check,
+    and the box map isn't read again for it."""
+    reads = {"n": 0}
+
+    def read() -> dict[str, str]:
+        reads["n"] += 1
+        return {M1: NS1}
+
+    kube = SlowKube()
+    kube.replicas[NS1] = 0
+    workers, core, kube = _fast({}, [_stopped(M1, revision=1)], kube, read=read)
+    workers.fast_tick(time_now())
+    core.listed = [_running(M1) | {"revision": 2}]
+    assert workers.fast_tick(time_now() + CHECK_S) == FAST_S
+    assert kube.replicas[NS1] == 1 and reads["n"] == 1
+
+
+def test_a_failed_check_backs_off_to_the_round_interval_then_recovers(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    workers, core, kube = _fast({M1: NS1}, [_running(M1)])
+    workers._waiting.clear()
+    core.fail_machines = RuntimeError(TOKEN)
+    with caplog.at_level(logging.WARNING):
+        waits = [workers.fast_tick(t) for t in (0.0, 10.0, 30.0, 60.0, 90.0)]
+    assert waits == [10.0, 20.0, 30.0, 30.0, 30.0]
+    assert TOKEN not in caplog.text
+    core.fail_machines = None
+    assert workers.fast_tick(120.0) == CHECK_S
+
+
+def test_with_the_scaler_off_there_are_no_fast_checks() -> None:
+    core = FakeCore([_running(M1)])
+    workers = Workers(
+        core,
+        FakeKube(),
+        lambda: {M1: NS1},
+        SCALER_AND_EVICTIONS | {"SWITCH_HOSTED_WORKERS_SCALER": "0"},
+    )
+    workers._interval = 30.0
+    core.fail_machines = AssertionError("not called")
+    assert workers.fast_tick(0.0) == 30.0
+
+
+class FakeClockStop(threading.Event):
+    """`stop.wait` moves a fake clock on instead of sleeping, and stops after `until`."""
+
+    def __init__(self, until: float) -> None:
+        super().__init__()
+        self.now = 0.0
+        self.until = until
+        self.waits: list[float] = []
+
+    def clock(self) -> float:
+        return self.now
+
+    def wait(self, timeout: float | None = None) -> bool:
+        self.waits.append(timeout or 0.0)
+        self.now += timeout or 0.0
+        if self.now >= self.until:
+            self.set()
+        return self.is_set()
+
+
+def test_the_loop_runs_full_rounds_on_the_interval_and_checks_between() -> None:
+    core = FakeCore([_stopped(M1)])
+    workers = Workers(core, SlowKube(), lambda: {M1: NS1}, SCALER)
+    rounds: list[float] = []
+    real = workers.run_round
+    stop = FakeClockStop(until=61.0)
+
+    def counted() -> dict[str, str]:
+        rounds.append(stop.now)
+        return real()
+
+    workers.run_round = counted  # type: ignore[method-assign]
+    workers.run(stop, 30.0, clock=stop.clock)
+    assert rounds == [0.0, 30.0, 60.0]
+    assert max(stop.waits) <= CHECK_S and min(stop.waits) >= 0.0
+
+
+def test_only_machines_core_lists_now_are_remembered() -> None:
+    workers, core, kube = _fast({M1: NS1, M2: NS2}, [_running(M1), _running(M2)])
+    workers.fast_tick(time_now())
+    assert set(workers._seen) == {M1, M2}
+    core.listed = [_running(M1)]
+    workers.fast_tick(time_now() + CHECK_S)
+    assert set(workers._seen) == {M1}
+
+
+def test_a_check_reads_core_once_however_many_boxes_are_starting() -> None:
+    kube = SlowKube()
+    kube.replicas[NS1] = kube.replicas[NS2] = 0
+    workers, core, kube = _fast({M1: NS1, M2: NS2}, [_running(M1), _running(M2)], kube)
+    reads = {"n": 0}
+    real = core.machines
+
+    def counted() -> list[dict[str, Any]]:
+        reads["n"] += 1
+        return real()
+
+    core.machines = counted  # type: ignore[method-assign]
+    assert workers.starting(time_now()) == {M1, M2}
+    kube.reads.clear()
+    workers.fast_tick(time_now())
+    assert reads["n"] == 1 and sorted(kube.reads) == [NS1, NS2]
