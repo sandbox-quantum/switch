@@ -6,9 +6,11 @@
 #                            cpu.stat) and memory (memory.current), in MB.
 #   python - db [interval]   database-wide numbers, the same from any pod:
 #                            connections of the app's DB role by state (all
-#                            pods together), every connection to the database,
-#                            lock waits, and transactions per second. Connects
-#                            with the pod's own DB_* environment.
+#                            pods together, and checked out per client
+#                            address, which is per pod), every connection to
+#                            the database, lock waits, and transactions per
+#                            second. Connects with the pod's own DB_*
+#                            environment.
 #
 # asyncpg is for `db` mode; the switch-core image already has it.
 import asyncio
@@ -77,6 +79,16 @@ async def db(interval):
             "select xact_commit + xact_rollback from pg_stat_database where datname = $1",
             name,
         )
+        # Checked out of a pod's pool: running a statement, or inside a
+        # transaction its code has not finished. One client address per pod.
+        busy = await conn.fetch(
+            "select coalesce(client_addr::text, '?') a, count(*) n "
+            "from pg_stat_activity where usename = $1 and datname = $2 "
+            "and state in ('active', 'idle in transaction') "
+            "and pid <> pg_backend_pid() group by 1",
+            role,
+            name,
+        )
         app = {r["s"]: r["n"] for r in rows if r["app"]}
         out = {
             "ts": t,
@@ -86,6 +98,8 @@ async def db(interval):
             "app_total": sum(app.values()),
             "db_total": sum(r["n"] for r in rows),
             "lock_waits": sum(r["lw"] for r in rows),
+            "app_busy_by_client": {r["a"]: r["n"] for r in busy},
+            "app_busy_client_max": max((r["n"] for r in busy), default=0),
         }
         if last:
             out["xact_s"] = round((x - last[1]) / (t - last[0]), 1)

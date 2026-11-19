@@ -477,12 +477,12 @@ def _ownership_app(
         async with session_factory() as session:
             yield session
 
-    async def _sync_room(_tenant_id: str, _room_id: str) -> None:
+    async def _sync_rooms(_tenant_id: str, _room_ids: list[str]) -> None:
         pass
 
     app = FastAPI()
     app.include_router(ownership_router)
-    app.state.chat_service = SimpleNamespace(sync_room=_sync_room)
+    app.state.chat_service = SimpleNamespace(sync_rooms=_sync_rooms)
     overrides = app.dependency_overrides
     overrides[gw_deps.get_session] = _session_dep
     overrides[get_current_user] = lambda: caller
