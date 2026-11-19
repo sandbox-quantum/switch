@@ -77,6 +77,16 @@ version of their own to them without also giving them a release of their own.
   coarser confidences); a workspace's own threshold still holds for both. A
   workspace that chose its backend gets that backend alone. Off unless set.
 
+#### Changed
+- **A message in a busy chat no longer costs every member's Console stream a
+  database pass of its own at the same instant.** Chat stream passes hold at
+  most a quarter of the process's database pool at once, and a pass over that
+  waits holding no connection. The new rows of a room are read and rendered once
+  and handed to every stream its message woke, so each stream reads only what
+  its own person may see. A stream woken by its rooms passes at most every
+  200 ms, sending what came in meanwhile together. The activity stream's
+  reads share the same slots.
+
 #### Fixed
 - **The decision service's default Bedrock model is a valid id:**
   `us.anthropic.claude-haiku-5-5` (EU regions need
@@ -689,14 +699,6 @@ version of their own to them without also giving them a release of their own.
   you're left in with no workspace.**
 
 #### Changed
-- **A message in a busy chat no longer costs every member's Console stream a
-  database pass of its own at the same instant.** Chat stream passes hold at
-  most a quarter of the process's database pool at once, and a pass over that
-  waits holding no connection. The new rows of a room are read and rendered once
-  and handed to every stream its message woke, so each stream reads only what
-  its own person may see. A stream woken by its rooms passes at most every
-  200 ms, sending what came in meanwhile together. The activity stream's
-  reads share the same slots.
 - **The dashboard has one layout: the one built behind `gateway_v2`.**
   Home, Agents, Rooms, Templates, Connectors and Resources on the rail, and
   Workspace and Organization settings as their own areas, on every server. The earlier layout's
