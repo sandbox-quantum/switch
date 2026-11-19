@@ -7,6 +7,7 @@ import copy
 import json
 import logging
 from email.message import Message
+from pathlib import Path
 from urllib.error import HTTPError
 
 import pytest
@@ -1359,3 +1360,109 @@ def test_the_template_fields_have_their_earlier_shapes():
         "The box template's fields changed: boxes made before would be refused on re-use. Add the earlier shape to "
         "box_operator._earlier_templates, with a test that it is re-used, then update PINNED_TEMPLATE_FIELDS."
     )
+
+
+# ---- switch-ca after a CA renewal: earlier bundles, listed exactly ----
+
+CA_OLD = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"
+CA_BUNDLE = CA_OLD + "-----BEGIN CERTIFICATE-----\nMIIC\n-----END CERTIFICATE-----\n"
+CA_NEW = "-----BEGIN CERTIFICATE-----\nMIIC\n-----END CERTIFICATE-----\n"
+
+
+def _ca_cfg(ca, **over):  # type: ignore[no-untyped-def]
+    return config_from({**RAW_CONFIG, **over}, ca, SETTINGS)
+
+
+def test_a_box_made_before_a_ca_renewal_is_reused_when_its_bundle_is_listed(caplog):  # type: ignore[no-untyped-def]
+    """Made with the 2-cert bundle; the operator now has only the new CA, and lists the bundle as earlier: done,
+    nothing written, the box keeps its bundle, and the log names which earlier bundle, never its content."""
+    kube = FakeKube()
+    BoxOperator(FakeCore(), kube, _ca_cfg(CA_BUNDLE)).provision(action())
+    caplog.set_level("WARNING", logger="switch_hosted_controller.box_operator")
+    config = _ca_cfg(CA_NEW, earlier_box_cas=[CA_BUNDLE])
+    assert _again(kube, config) == ("done", NS, None)
+    assert kube.objects[("ConfigMap", NS, "switch-ca")]["data"] == {"ca.crt": CA_BUNDLE}
+    assert any(
+        "earlier CA bundle 1" in r.getMessage() and NS in r.getMessage() for r in caplog.records
+    )
+    assert "MIIB" not in caplog.text and "MIIC" not in caplog.text
+
+
+def test_a_box_made_before_a_ca_renewal_is_refused_when_its_bundle_isnt_listed():  # type: ignore[no-untyped-def]
+    kube = FakeKube()
+    BoxOperator(FakeCore(), kube, _ca_cfg(CA_BUNDLE)).provision(action())
+    assert _again(kube, _ca_cfg(CA_NEW))[0] == "failed"
+    assert (
+        _again(kube, _ca_cfg(CA_NEW, earlier_box_cas=[CA_OLD]))[0] == "failed"
+    )  # only exact bundles
+
+
+def test_todays_ca_is_reused_without_a_warning(caplog):  # type: ignore[no-untyped-def]
+    kube = FakeKube()
+    BoxOperator(FakeCore(), kube, _ca_cfg(CA_NEW, earlier_box_cas=[CA_BUNDLE])).provision(action())
+    caplog.set_level("WARNING", logger="switch_hosted_controller.box_operator")
+    assert _again(kube, _ca_cfg(CA_NEW, earlier_box_cas=[CA_BUNDLE])) == ("done", NS, None)
+    assert "earlier CA bundle" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        lambda cm: cm["data"].update({"extra.crt": CA_NEW}),  # a key beside ca.crt
+        lambda cm: cm["data"].update({"ca.crt": CA_BUNDLE + "\n"}),  # not exactly the bundle
+    ],
+)
+def test_a_switch_ca_with_anything_else_changed_is_refused(change):  # type: ignore[no-untyped-def]
+    kube = FakeKube()
+    BoxOperator(FakeCore(), kube, _ca_cfg(CA_BUNDLE)).provision(action())
+    change(kube.objects[("ConfigMap", NS, "switch-ca")])
+    assert _again(kube, _ca_cfg(CA_NEW, earlier_box_cas=[CA_BUNDLE]))[0] == "failed"
+
+
+@pytest.mark.parametrize(
+    "earlier",
+    [
+        "not a list",
+        [CA_NEW],  # the current one
+        [CA_BUNDLE, CA_BUNDLE],  # twice
+        [CA_OLD, CA_BUNDLE, CA_OLD + CA_OLD, CA_BUNDLE + CA_OLD, CA_OLD * 3],  # more than 4
+        ["-----BEGIN CERTIFICATE-----\nMIIB\n"],  # not a whole PEM
+        ["-----BEGIN PRIVATE KEY-----\nMIIB\n-----END PRIVATE KEY-----\n"],  # not a certificate
+        [CA_OLD + "trailing text"],
+        [CA_OLD * 2000],  # over 64 KB
+        [5],
+    ],
+)
+def test_earlier_box_cas_is_refused_whole_if_anything_is_off(earlier):  # type: ignore[no-untyped-def]
+    with pytest.raises(ConfigError) as refused:
+        _ca_cfg(CA_NEW, earlier_box_cas=earlier)
+    assert "MIIB" not in str(refused.value)
+
+
+def test_the_switch_ca_object_is_pinned():  # type: ignore[no-untyped-def]
+    """The pinned-content guard: an existing box's switch-ca is compared exactly, so any change to what the
+    operator writes there (a key, a label, how the bundle is built) refuses every box made before it on re-claim.
+    If this fails, list the earlier shape (as `_earlier_cas` does for bundles), with a test that it is re-used,
+    then update this pin."""
+    (ca,) = [
+        o
+        for _, o in box_objects(action(), _ca_cfg(CA_BUNDLE))
+        if o["metadata"]["name"] == "switch-ca"
+    ]
+    assert ca == {
+        "apiVersion": "v1",
+        "kind": "ConfigMap",
+        "metadata": {"name": "switch-ca", "namespace": NS},
+        "data": {"ca.crt": CA_BUNDLE},  # box-ca.crt exactly, nothing added or trimmed
+    }
+
+
+def test_the_documented_ca_change_loads_in_one_step():  # type: ignore[no-untyped-def]
+    """DEPLOY.md's order: the new box-ca.crt and the old bundle in earlier_box_cas, in one change. That loads; the
+    current bundle listed as earlier is refused, so the operator would not start (which is why it's one step)."""
+    config = _ca_cfg(CA_NEW, earlier_box_cas=[CA_BUNDLE])
+    assert config.ca_cert == CA_NEW and config.earlier_box_cas == (CA_BUNDLE,)
+    with pytest.raises(ConfigError):
+        _ca_cfg(CA_BUNDLE, earlier_box_cas=[CA_BUNDLE])
+    deploy = (Path(__file__).resolve().parents[2] / "DEPLOY.md").read_text()
+    assert "in one apply and one roll" in deploy and "Don't list the current bundle there" in deploy

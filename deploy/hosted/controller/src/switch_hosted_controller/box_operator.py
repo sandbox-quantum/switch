@@ -40,6 +40,11 @@ SIZE_RE = re.compile(r"[a-z0-9][a-z0-9.-]{0,31}")  # as Core checks it
 ZONE_RE = re.compile(r"[a-z]{2}-[a-z]+-[0-9][a-z]")
 DIGEST_IMAGE_RE = re.compile(r"[a-z0-9][a-z0-9./-]*(:[A-Za-z0-9._-]+)?@sha256:[0-9a-f]{64}")
 MAX_ALLOWED_IMAGES = 20
+MAX_EARLIER_BOX_CAS = 4
+MAX_BOX_CA_BYTES = 64 * 1024
+PEM_BUNDLE_RE = re.compile(
+    r"(-----BEGIN CERTIFICATE-----\n[A-Za-z0-9+/=\n]+-----END CERTIFICATE-----\n?)+", re.ASCII
+)
 
 MANAGED_BY = "switch-hosted"
 ENROL_SECRET = "switch-enrol"
@@ -121,6 +126,10 @@ class OperatorConfig:
     extra: Mapping[str, Any] = field(default_factory=dict)
     # The images an existing box may run: `image` plus the earlier digests still in use.
     allowed_images: frozenset[str] = frozenset()
+    # Earlier CA bundles an existing box's `switch-ca` may still hold, each exactly as the operator's `box-ca.crt`
+    # was then (a CA renewal changes the bundle). Without the earlier one listed, a renewal would make every box made
+    # before it "not ours" on re-claim.
+    earlier_box_cas: tuple[str, ...] = ()
 
     def image_allowed(self, image: Any) -> bool:
         return (
@@ -154,7 +163,7 @@ def config_from(raw: Any, ca_cert: str, managed_settings: str) -> OperatorConfig
         raise ConfigError("the configuration must be an object")
     known = {
         "server_ip", "server_url", "image", "storage_class", "proxy_host", "proxy_port", "zones", "sizes",
-        "ceiling", "default_size", "split", "allowed_images", "daily_calls",
+        "ceiling", "default_size", "split", "allowed_images", "daily_calls", "earlier_box_cas",
     }  # fmt: skip
     unknown = set(raw) - known
     if unknown:
@@ -244,6 +253,23 @@ def config_from(raw: Any, ca_cert: str, managed_settings: str) -> OperatorConfig
         raise ConfigError("split must be true or false")
     if not ca_cert.startswith("-----BEGIN CERTIFICATE-----"):
         raise ConfigError("the CA file must hold a PEM certificate")
+    earlier_cas = raw.get("earlier_box_cas", [])
+    if (
+        not isinstance(earlier_cas, list)
+        or len(earlier_cas) > MAX_EARLIER_BOX_CAS
+        or not all(
+            isinstance(c, str)
+            and len(c.encode()) <= MAX_BOX_CA_BYTES
+            and PEM_BUNDLE_RE.fullmatch(c) is not None
+            for c in earlier_cas
+        )
+        or len(set(earlier_cas)) != len(earlier_cas)
+        or ca_cert in earlier_cas
+    ):
+        raise ConfigError(
+            f"earlier_box_cas must be a list of at most {MAX_EARLIER_BOX_CAS} distinct PEM certificate bundles,"
+            " each exactly as box-ca.crt was, none the current one"
+        )
     if not managed_settings.lstrip().startswith("{"):
         raise ConfigError("the managed settings file must hold a JSON object")
     return OperatorConfig(
@@ -262,6 +288,7 @@ def config_from(raw: Any, ca_cert: str, managed_settings: str) -> OperatorConfig
         managed_settings=managed_settings,
         split=split,
         allowed_images=frozenset([image, *allowed_raw]),
+        earlier_box_cas=tuple(earlier_cas),
     )
 
 
@@ -917,6 +944,36 @@ def _containers(sts: Any) -> list[Any] | None:
     return containers if isinstance(containers, list) else None
 
 
+def _earlier_cas(wanted: dict, config: OperatorConfig) -> list[tuple[int | None, dict]]:
+    """The `switch-ca` ConfigMap as this would make it now (None), then with each listed earlier bundle (its
+    position in `earlier_box_cas`, from 1). Only those exact bundles: the content is never parsed or compared
+    loosely."""
+    shapes: list[tuple[int | None, dict]] = [(None, wanted)]
+    for n, bundle in enumerate(config.earlier_box_cas, start=1):
+        earlier = copy.deepcopy(wanted)
+        earlier["data"]["ca.crt"] = bundle
+        shapes.append((n, earlier))
+    return shapes
+
+
+def ca_matches(existing: dict, wanted: dict, config: OperatorConfig) -> bool:
+    """An existing `switch-ca` is this box's own when it holds exactly what this makes now, or exactly a listed
+    earlier bundle (a box made before a CA renewal). Nothing is written: such a box keeps the earlier bundle until
+    it is recreated, and its controller reads it only at start anyway. Logs which earlier bundle, never content."""
+    if isinstance(existing.get("data"), dict) and set(existing["data"]) != set(wanted["data"]):
+        return False  # one key, `ca.crt`, and nothing beside it
+    for n, shape in _earlier_cas(wanted, config):
+        if matches(existing, shape):
+            if n is not None:
+                logger.warning(
+                    "Re-used a box whose switch-ca holds earlier CA bundle %d of earlier_box_cas: namespace=%s",
+                    n,
+                    wanted["metadata"].get("namespace"),
+                )
+            return True
+    return False
+
+
 def _earlier_templates(spec: dict) -> list[tuple[str | None, dict]]:
     """`spec` as this would make it now (named None), then each shape an earlier template made, named, so a box made
     before an upgrade is still this box's own and is re-used rather than refused. Only these exact shapes, listed
@@ -1117,6 +1174,8 @@ class BoxOperator:
             ours = agents_disk_matches(existing, obj, self._config)
             if ours:
                 self._agents_disk = _pvc_storage(existing)
+        elif obj["kind"] == "ConfigMap" and obj["metadata"]["name"] == CA_CONFIGMAP:
+            ours = ca_matches(existing, obj, self._config)
         else:
             ours = matches(existing, obj)
         if not ours:

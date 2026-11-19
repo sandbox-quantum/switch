@@ -80,6 +80,22 @@ the box enforces the lower of the two.
 re-used and must be recreated**, as was already true before the cap: only today's template and the shapes it lists
 as earlier (`_earlier_templates`) count as a box's own.
 
+**Changing the box CA bundle (`box-ca.crt`) needs the old bundle listed in the same change.** Each box's
+`switch-ca` holds the bundle exactly as it was when the box was made, and re-claim compares it exactly. So change
+both together, in one apply and one roll: replace `box-ca.crt` (in `switch-box-operator-files`) with the new bundle,
+**and** add the old one, character for character, to `earlier_box_cas` in the operator config
+(`switch-box-operator-config`, at most 4 entries). Then roll the operator once, after both are applied: it reads both
+only at start. Don't list the current bundle there: the operator refuses a config whose `earlier_box_cas` holds the
+`box-ca.crt` it's started with, and won't start. Boxes made before the change are then re-used as they are, with a
+warning naming which earlier bundle. Nothing is rewritten: they keep the old bundle until they're recreated, and a
+running box's controller reads it only at start anyway (`NODE_EXTRA_CA_CERTS`). Without the entry, every earlier box
+fails on re-claim (`object_refused`) until it's recreated.
+List only an earlier bundle that still holds a **valid** CA, one that still verifies the server's current
+certificate. A box whose bundle holds only an expired or retired CA can't reach the server after a restart anyway, so
+re-using it would hand Core a box that never comes up. Leave such a bundle out, so those boxes are refused and
+recreated, and remove an entry once its CA expires. And list only a bundle whose CAs you'd still trust, never one
+holding a retired or compromised CA: a re-used box keeps trusting everything in its old bundle until it's recreated.
+
 It writes filled copies of `k8s/*.yaml`, `box/priorityclass-switch-box.yaml` and
 `egress/egress-proxy-networkpolicy.yaml` into the new folder, and refuses, writing nothing, if a value is malformed
 or any placeholder would be left. The folder must be outside this repo, so a filled copy is never committed, and
