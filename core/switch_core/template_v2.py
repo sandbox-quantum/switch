@@ -46,6 +46,8 @@ import yaml
 from switch_core.rooms_yaml import PLACEHOLDER_RE, ParamSpec, coerce_param, interpolate
 
 RESOURCE_TYPES = ("agent", "room", "group")
+# The most resources one template creates, each by the request that runs it.
+RESOURCES_MAX = 50
 
 # A reference to the name a resource is created under.
 _NAME_REF = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\.name\}")
@@ -175,6 +177,11 @@ def _resources(data: dict[str, Any]) -> dict[str, dict[str, Any]]:
     raw = data.get("resources")
     if not isinstance(raw, dict) or not raw:
         raise TemplateError("'resources' must map each resource's key to it.")
+    if len(raw) > RESOURCES_MAX:
+        raise TemplateError(
+            f"A template creates at most {RESOURCES_MAX} resources; this one "
+            f"lists {len(raw)}."
+        )
     out: dict[str, dict[str, Any]] = {}
     for key, spec in raw.items():
         if not isinstance(spec, dict):

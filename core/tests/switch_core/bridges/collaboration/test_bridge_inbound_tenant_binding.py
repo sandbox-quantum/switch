@@ -31,7 +31,10 @@ from typing import Any
 
 import pytest
 
-from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
+from switch_core.bridges.collaboration.collaboration_core import (
+    MEMBERSHIP_EVENTS_AT_ONCE,
+    CollaborationCore,
+)
 from switch_core.tenant_context import current_tenant_id, tenant_scope
 
 BRIDGE_TENANT = "tenant-bridge"
@@ -62,6 +65,7 @@ def _bridge() -> CollaborationCore:
     bridge._room_to_channel = {}
     bridge._room_tenants = {}
     bridge._session_factory = _ExplodingSessionFactory()  # type: ignore[assignment]
+    bridge._membership_slots = asyncio.Semaphore(MEMBERSHIP_EVENTS_AT_ONCE)
     return bridge
 
 
