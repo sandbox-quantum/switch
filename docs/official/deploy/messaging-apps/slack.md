@@ -115,7 +115,8 @@ Declaring the app an Agent blocks workspace guests from using it and turns every
                 "message.channels",
                 "message.groups",
                 "message.im",
-                "message.mpim"
+                "message.mpim",
+                "agent_session_stopped"
             ]
         },
         "interactivity": {
@@ -281,7 +282,7 @@ Under **OAuth & Permissions**, in **Bot Token Scopes**:
 
 ### Event subscriptions
 
-Subscribe the bot to `app_home_opened`, `message.channels`, `message.groups`, `message.im`, and `message.mpim`. With Socket Mode there's no request URL to supply. Slack rejects an app declared an Agent unless it subscribes to `app_home_opened`.
+Subscribe the bot to `app_home_opened`, `message.channels`, `message.groups`, `message.im`, `message.mpim`, and `agent_session_stopped`. With Socket Mode there's no request URL to supply. Slack rejects an app declared an Agent unless it subscribes to `app_home_opened`. `agent_session_stopped` is what turns Slack's own Stop button on an agent's work into one people can press; without it Slack shows a loading indicator instead.
 
 You don't need `app_mention`. Switch finds messages that tag the app in the `message.*` events it already receives.
 

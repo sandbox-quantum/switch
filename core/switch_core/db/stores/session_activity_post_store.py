@@ -177,7 +177,8 @@ class TurnStatusPostStore:
     async def at(
         self, session: AsyncSession, bridge_id: str, channel_id: str, ref: str
     ) -> TurnStatusPost | None:
-        """The turn a message of ours is showing: its own message, or its notice."""
+        """The turn a message of ours is showing: its own message, its notice,
+        or the work message (`!work-threads`) its session is on."""
         result = await session.execute(
             select(TurnStatusPost)
             .where(
@@ -186,6 +187,7 @@ class TurnStatusPostStore:
                 or_(
                     TurnStatusPost.external_post_id == ref,
                     TurnStatusPost.attention_post_id == ref,
+                    TurnStatusPost.work_message_ref == ref,
                 ),
             )
             .limit(1)

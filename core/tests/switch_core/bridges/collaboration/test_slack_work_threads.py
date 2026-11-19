@@ -18,9 +18,12 @@ from switch_core.bridges.collaboration.adapter import (
     RichContentThrottled,
     TurnActivity,
 )
+from switch_core.bridges.collaboration.own_app_setup import SLACK_BOT_EVENTS
+from switch_core.bridges.collaboration.session.renderers import SESSION_STOP_ACTION
 from switch_core.bridges.collaboration.slack.adapter import (
     SlackAdapter,
     SlackConnectionConfig,
+    SlackUser,
 )
 from switch_core.sessions.contract import Item, TurnUpsert
 
@@ -39,6 +42,10 @@ def _adapter(client: FakeWebClient) -> SlackAdapter:
     adapter._web_client = client  # type: ignore[assignment]
     adapter._team_id = "T123"
     return adapter
+
+
+async def _named(user_id: str) -> SlackUser:
+    return SlackUser(name="person", display_name="Person")
 
 
 def _sessions(client: FakeWebClient) -> list[dict[str, Any]]:
@@ -495,3 +502,65 @@ async def test_a_status_message_at_the_root_is_an_ordinary_post() -> None:
     [posted] = client.posted
     assert "thread_ts" not in posted or posted["thread_ts"] is None
     assert any(block["type"] == "plan" for block in posted["blocks"])
+
+
+# ── Slack's own Stop ─────────────────────────────────────────────────────────
+
+
+async def test_slacks_own_stop_is_a_stop_press_on_the_sessions_message() -> None:
+    client = FakeWebClient()
+    adapter = _adapter(client)
+    pressed: list[Any] = []
+
+    async def on_interaction(interaction: Any) -> None:
+        pressed.append(interaction)
+
+    adapter._on_interaction = on_interaction
+    adapter._resolve_user_name = _named  # type: ignore[method-assign]
+    await adapter.dispatch_event(
+        envelope_type="events_api",
+        payload={
+            "event": {
+                "type": "agent_session_stopped",
+                "channel": CHANNEL,
+                "thread_ts": "4.0",
+                "user": ASKER,
+                "streaming_message_ts": ["5.0"],
+            }
+        },
+    )
+    [press] = pressed
+    assert press.action_id == SESSION_STOP_ACTION
+    assert press.message_ref == f"{CHANNEL}:4.0"
+    assert press.sender_id == ASKER
+
+
+async def test_a_stream_someone_stopped_is_not_carried_on() -> None:
+    client = FakeWebClient()
+    adapter = _adapter(client)
+    work = await adapter.open_work_message(CHANNEL, "Agent", "working", ASKER)
+    first = await adapter.post_rich(CHANNEL, "Agent", _work([_tool()]), work)
+    client.append_error = "stopped_by_user"
+    moved = await adapter.update_rich(
+        CHANNEL, "Agent", first, _work([_done_tool(), _tool()]), work
+    )
+    assert moved is None
+    assert len(client.started) == 1
+
+
+async def test_after_slacks_stop_the_turn_does_not_open_another_stream() -> None:
+    client = FakeWebClient()
+    adapter = _adapter(client)
+    work = await adapter.open_work_message(CHANNEL, "Agent", "working", ASKER)
+    first = await adapter.post_rich(CHANNEL, "Agent", _work([_tool()]), work)
+    adapter._sessions_stopped[work] = None
+    client.append_error = "message_not_in_streaming_state"
+    moved = await adapter.update_rich(
+        CHANNEL, "Agent", first, _work([_done_tool(), _tool()]), work
+    )
+    assert moved is None
+    assert len(client.started) == 1
+
+
+def test_the_app_subscribes_to_slacks_stop() -> None:
+    assert "agent_session_stopped" in SLACK_BOT_EVENTS

@@ -297,6 +297,10 @@ def parse_answer_position(action_id: str) -> int | None:
 # press's own payload, because a platform hands an action id back unchanged and
 # the id is therefore the wrong place for something that changes per render.
 INTERRUPT_ACTION = "switch:turn-interrupt"
+# Slack's own stop button on an agent session (`agent_session_stopped`). It
+# names no turn, only the message the session is on: what it stops is the turn
+# that message shows, if that turn is still the one running.
+SESSION_STOP_ACTION = "switch:session-stop"
 
 # What it stops is the agent's current work, which on a queued turn's message is
 # not that message's turn. "Stop" alone would read as stopping this one, and

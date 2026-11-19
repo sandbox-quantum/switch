@@ -65,7 +65,10 @@ from switch_core.bridges.collaboration.models import (
     PrivateNoticeDelivery,
     RetireOutcome,
 )
-from switch_core.bridges.collaboration.session.renderers import position_action
+from switch_core.bridges.collaboration.session.renderers import (
+    SESSION_STOP_ACTION,
+    position_action,
+)
 from switch_core.bridges.collaboration.session.renderers.slack import (
     STREAM_SLOTS,
     SlackMessage,
@@ -419,8 +422,11 @@ class _StreamClosed(RichContentFailed):
     Its own type so that `update_rich` can draw the turn as an ordinary edit
     in the same call, rather than leaving the message as Slack left it until
     the turn next changes. To every other caller it is the `RichContentFailed`
-    it inherits from.
+    it inherits from. `code` is Slack's reason, which says whether the stream
+    ran out of time or someone stopped it.
     """
+
+    code: str | None = None
 
 
 class _StreamNotClosed(RichContentFailed):
@@ -784,6 +790,9 @@ class SlackAdapter(PlatformAdapter):
         # Work messages this process posted, and the line each now shows, so a
         # step change is edited into it once and an unchanged one not at all.
         self._work_notes: OrderedDict[str, str] = OrderedDict()
+        # Session messages someone pressed Slack's own Stop on, whose turn must
+        # not carry on in a new stream while the stop reaches the agent.
+        self._sessions_stopped: OrderedDict[str, None] = OrderedDict()
         self._last_user_message_ts: dict[str, str] = {}
         # The message a card button was pressed on, by message ref, as each
         # press in flight carried it, held while the press is handled.
@@ -1342,9 +1351,15 @@ class SlackAdapter(PlatformAdapter):
         if stream is not None and isinstance(content, TurnActivity):
             try:
                 await self._extend_stream(stream, message_ref, content)
-            except _StreamClosed:
-                reopened = await self._reopen_work_stream(
-                    channel_id, agent_name, content, thread_root_id
+            except _StreamClosed as closed:
+                # Only a stream that ran out of time carries on: one a person
+                # stopped stays stopped.
+                reopened = (
+                    await self._reopen_work_stream(
+                        channel_id, agent_name, content, thread_root_id
+                    )
+                    if closed.code == "message_not_in_streaming_state"
+                    else None
                 )
                 if reopened is not None:
                     return reopened
@@ -1413,6 +1428,7 @@ class SlackAdapter(PlatformAdapter):
             not content.work_thread
             or content.turn.status in TURN_ENDED
             or thread_root_id is None
+            or thread_root_id in self._sessions_stopped
             or not self._team_id
             or not self._stream_recipient(content, thread_root_id)
         ):
@@ -2388,9 +2404,11 @@ class SlackAdapter(PlatformAdapter):
                 message_ref,
                 code,
             )
-            raise _StreamClosed(
+            closed = _StreamClosed(
                 f"Slack closed the activity stream {message_ref}: {code}", text=text
-            ) from error
+            )
+            closed.code = str(code)
+            raise closed from error
         throttled = self._throttled(error, text)
         if throttled is not None:
             raise throttled from error
@@ -4563,6 +4581,58 @@ class SlackAdapter(PlatformAdapter):
             await self._handle_member_left_channel(event)
         elif event_type == "subteam_updated":
             await self._handle_subteam_updated(event.get("subteam") or {})
+        elif event_type == "agent_session_stopped":
+            await self._handle_session_stopped(event)
+
+    async def _handle_session_stopped(self, event: dict[str, Any]) -> None:
+        """Someone pressed Slack's own Stop on an agent session.
+
+        The session is on a message of the agent's (`open_session`), named by
+        `thread_ts`. It goes on as a press of Switch's own Stop on that
+        message would, so the same check of who may stop the agent applies,
+        and the same answer reaches whoever pressed it. Slack leaves the
+        session `processing` until the app moves it; the turn's ending does
+        that once the agent has stopped.
+        """
+        if self._on_interaction is None:
+            return
+        user_id = str(event.get("user", ""))
+        channel_id = str(event.get("channel", ""))
+        thread_ts = str(event.get("thread_ts", ""))
+        if not user_id or not channel_id or not thread_ts:
+            logger.warning(
+                "Slack agent_session_stopped without a user, channel or thread; "
+                "skipping."
+            )
+            return
+        message_ref = f"{channel_id}:{thread_ts}"
+        self._sessions_stopped[message_ref] = None
+        if len(self._sessions_stopped) > _MAX_OPEN_STREAMS:
+            self._sessions_stopped.popitem(last=False)
+        user = await self._resolve_user_name(user_id)
+        try:
+            await self._on_interaction(
+                InboundInteraction(
+                    channel_id=channel_id,
+                    sender_id=user_id,
+                    sender_name=user.name,
+                    sender_display_name=user.display_name,
+                    action_id=SESSION_STOP_ACTION,
+                    value="",
+                    message_ref=message_ref,
+                    thread_ref=None,
+                )
+            )
+        except Exception as error:
+            logger.error(
+                "Could not act on Slack's Stop pressed by %s in %s: %s",
+                user_id,
+                channel_id,
+                _failure_without_message(error),
+            )
+            await self.tell_actor(
+                channel_id, user_id, user.name, None, COULD_NOT_PROCESS
+            )
 
     async def _handle_interactive(self, payload: dict[str, Any]) -> None:
         """Someone operated a Block Kit control on one of our messages.

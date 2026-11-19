@@ -30,8 +30,16 @@ SLACK_CREATE_APP = "https://api.slack.com/apps"
 #: What the app is called in Slack; Slack allows 35 characters.
 SLACK_APP_NAME = "Agent Switch"
 
-#: The message events Switch reads, in every kind of conversation the bot is in.
-SLACK_BOT_EVENTS = ("message.channels", "message.groups", "message.im", "message.mpim")
+#: The message events Switch reads, in every kind of conversation the bot is in,
+#: and `agent_session_stopped`: someone pressed Slack's own Stop on an agent's
+#: session. Without it Slack shows a loading indicator nobody can press.
+SLACK_BOT_EVENTS = (
+    "message.channels",
+    "message.groups",
+    "message.im",
+    "message.mpim",
+    "agent_session_stopped",
+)
 
 #: Slack refuses a slash command description longer than this.
 _SLACK_DESCRIPTION_MAX = 100
