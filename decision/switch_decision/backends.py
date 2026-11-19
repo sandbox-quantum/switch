@@ -312,8 +312,11 @@ async def ask_bedrock(settings: Settings, req: DecideRequest) -> ModelAnswer:
     options = [a.name for a in req.agents] + [NONE]
     where = f"Bedrock {settings.model} in {settings.aws_region}"
     try:
+        request = bedrock_request(req, settings)
+        # The client is made in the thread too: the first one resolves AWS
+        # credentials, which can block on the network.
         body = await asyncio.to_thread(
-            bedrock_client(settings).converse, **bedrock_request(req, settings)
+            lambda: bedrock_client(settings).converse(**request)
         )
     except (BotoCoreError, ClientError) as exc:
         code = (

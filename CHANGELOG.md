@@ -66,6 +66,23 @@ version of their own to them without also giving them a release of their own.
   `switch.http.gateway_turned_away`, on the dashboard beside the other
   refusals.
 
+#### Added
+- **The decision service can race a fallback backend.** With
+  `DECISION_FALLBACK_BACKEND=bedrock`, a decision on the service's default
+  backend that has no answer after `DECISION_FALLBACK_AFTER_S` (2 s), or that
+  failed, also asks Claude Haiku on Amazon Bedrock, and the first answer
+  wins. The answer names the model that gave it, so switch-core's `model`
+  attribute shows which one decided. The fallback's answer can be held to a
+  threshold of its own (`DECISION_FALLBACK_CONFIDENCE_THRESHOLD`, for Haiku's
+  coarser confidences); a workspace's own threshold still holds for both. A
+  workspace that chose its backend gets that backend alone. Off unless set.
+
+#### Fixed
+- **The decision service's default Bedrock model is a valid id:**
+  `us.anthropic.claude-haiku-5-5` (EU regions need
+  `eu.anthropic.claude-haiku-5-5` in `DECISION_BEDROCK_MODEL`). The old
+  default was refused by Bedrock as an invalid model identifier.
+
 ### [0.32.1] - 2026-11-18
 
 #### Added
