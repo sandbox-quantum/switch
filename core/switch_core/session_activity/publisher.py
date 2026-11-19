@@ -1300,6 +1300,7 @@ class AgentSessionActivityPublisher:
             and post.work_message_ref is not None
             and not _inline(post),
             has_session=post is not None and post.work_message_ref is not None,
+            stopped_by=post.stopped_by if post is not None else None,
         )
         if post is not None and _inline(post):
             # Switch's own room tools are talking, not work: an inline status
@@ -1511,6 +1512,7 @@ class AgentSessionActivityPublisher:
                         view.turn,
                         tool_detail=True,
                         elapsed_seconds=content.elapsed_seconds,
+                        stopped_by=post.stopped_by,
                     ),
                 )
             await self._work_finished(post, work_ref if removed else None)
@@ -1544,6 +1546,7 @@ class AgentSessionActivityPublisher:
                 view.turn,
                 tool_detail=True,
                 elapsed_seconds=content.elapsed_seconds,
+                stopped_by=post.stopped_by,
             )
             try:
                 await self._adapter.settle_work_message(
@@ -2286,6 +2289,21 @@ class AgentSessionActivityPublisher:
             elapsed_seconds=view.elapsed_seconds(now),
             read_at=now,
         )
+
+    async def record_stopper(
+        self, channel_id: str, ref: str, turn_id: str, name: str
+    ) -> None:
+        """Remember who asked to stop the turn the message at `ref` shows, so
+        its ending says "Stopped by <name>.". Kept only if the turn did end
+        interrupted: the name is drawn for an interrupted turn and no other.
+        """
+        async with tenant_session(self._sessions, self._tenant_id) as db, db.begin():
+            post = await self._turn_posts.at(db, self._bridge_id, channel_id, ref)
+            if post is None or post.turn_id != turn_id:
+                return
+            post.stopped_by = name
+            key: _Key = ("turn", post.agent_id, post.session_id, post.turn_id)
+        self._enqueue(key, _SOON)
 
     async def stop_target(self, channel_id: str, ref: str) -> StopTarget | None:
         """What a Stop control on the message at `ref` would stop, or None."""

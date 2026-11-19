@@ -1207,6 +1207,7 @@ def render_activity_plan(
     *,
     elapsed_seconds: float | None = None,
     interrupt_turn_id: str | None = None,
+    stopped_by: str | None = None,
 ) -> SlackMessage:
     """A turn's activity as one plan block: the header, and the steps behind it.
 
@@ -1237,7 +1238,11 @@ def render_activity_plan(
     shown = [item for item in items if in_activity_log(item)]
     kept = shown[len(shown) - _MAX_SECTION_ITEMS :]
     title = _activity_title(
-        items, turn, elapsed_seconds=elapsed_seconds, omitted=len(shown) - len(kept)
+        items,
+        turn,
+        elapsed_seconds=elapsed_seconds,
+        omitted=len(shown) - len(kept),
+        stopped_by=stopped_by,
     )
     blocks: list[dict[str, Any]] = [
         {
@@ -1291,6 +1296,7 @@ def render_activity_stream(
     *,
     elapsed_seconds: float | None = None,
     interrupt_turn_id: str | None = None,
+    stopped_by: str | None = None,
 ) -> StreamedActivity:
     """The same turn as `render_activity_plan`, shaped for `chat.appendStream`.
 
@@ -1316,7 +1322,13 @@ def render_activity_stream(
     blocks = _step_blocks(
         [_settled(_plan_task(item), item, turn) for item in shown],
         _running(shown, turn),
-        turn_state(items, turn, tool_detail=True, elapsed_seconds=elapsed_seconds),
+        turn_state(
+            items,
+            turn,
+            tool_detail=True,
+            elapsed_seconds=elapsed_seconds,
+            stopped_by=stopped_by,
+        ),
         turn.status not in TURN_ENDED,
     )
     _fit_details(blocks, _MAX_STREAM_BYTES)
@@ -1554,6 +1566,7 @@ def _activity_title(
     *,
     elapsed_seconds: float | None = None,
     omitted: int = 0,
+    stopped_by: str | None = None,
 ) -> str:
     """The one line a reader gets with the plan collapsed.
 
@@ -1568,7 +1581,13 @@ def _activity_title(
     the only part of a collapsed block, so a cut nobody is told about is a cut
     nobody can see.
     """
-    title = turn_state(items, turn, tool_detail=True, elapsed_seconds=elapsed_seconds)
+    title = turn_state(
+        items,
+        turn,
+        tool_detail=True,
+        elapsed_seconds=elapsed_seconds,
+        stopped_by=stopped_by,
+    )
     running = _running(items, turn)
     if running:
         title += f" · {running[1]}"

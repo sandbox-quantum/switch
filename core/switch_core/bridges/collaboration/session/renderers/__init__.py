@@ -60,8 +60,13 @@ def turn_state(
     tool_detail: bool,
     elapsed_seconds: float | None = None,
     running_clock: Literal["minutes", "exact"] = "minutes",
+    stopped_by: str | None = None,
 ) -> str:
     """Where a turn got to, and what it left behind if it stopped.
+
+    `stopped_by` names who pressed Stop on an interrupted turn, where the
+    caller knows: "Stopped by Simon." in place of "Turn interrupted.", which
+    an interruption from anywhere else keeps.
 
     A turn that ends while a tool call is still open leaves that call marked
     in progress for good. What ended the call is whatever the host last said
@@ -97,6 +102,8 @@ def turn_state(
     through every change of the first minute, reading as a card that stopped.
     """
     state = TURN_STATE[turn.status]
+    if turn.status == "interrupted" and stopped_by:
+        state = f"Stopped by {stopped_by}."
     if turn.status == "queued" and any(
         item.kind == "user-message" and item.delivery == "queued" for item in items
     ):

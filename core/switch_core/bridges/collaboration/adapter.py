@@ -200,6 +200,9 @@ class TurnActivity:
     # The turn has an agent session on the platform (`!work-threads`), which
     # may carry the platform's own Stop button in place of Switch's.
     has_session: bool = False
+    # Who pressed Stop on this turn, as the platform names them, so an
+    # interrupted turn says "Stopped by <name>." rather than "Turn interrupted.".
+    stopped_by: str | None = None
 
 
 @dataclass(frozen=True)

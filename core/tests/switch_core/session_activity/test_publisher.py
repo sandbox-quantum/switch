@@ -2061,3 +2061,34 @@ async def test_an_inline_message_is_redrawn_without_its_stop_where_slack_has_one
     assert (first.call, again.call) == ("post_rich", "update_rich")
     assert again.ref == first.ref
     assert again.content.has_session
+
+
+async def test_a_turn_someone_stopped_says_who_in_its_ending(
+    service, work_publisher, work_platform, bridged, session_factory
+):
+    await _worked(service, bridged.room_id)
+    await _tool_drawn(work_platform)
+    [opened] = work_platform.of("open_work_message")
+    await work_publisher.record_stopper(
+        bridged.channel_id, opened.ref, "turn-1", "Simon Flack"
+    )
+    await _turn(service, bridged.room_id, "interrupted", 5)
+    await work_platform.wait_until(
+        lambda: bool(work_platform.of("settle_work_message"))
+    )
+    [settled] = work_platform.of("settle_work_message")
+    assert settled.content.startswith("Stopped by Simon Flack. Worked for ")
+    assert _turns(work_platform)[-1].content.stopped_by == "Simon Flack"
+    assert (await _turn_post(session_factory)).stopped_by == "Simon Flack"
+
+
+async def test_a_stopper_for_another_turn_is_not_kept(
+    service, work_publisher, work_platform, bridged, session_factory
+):
+    await _worked(service, bridged.room_id)
+    await _tool_drawn(work_platform)
+    [opened] = work_platform.of("open_work_message")
+    await work_publisher.record_stopper(
+        bridged.channel_id, opened.ref, "turn-0", "Simon Flack"
+    )
+    assert (await _turn_post(session_factory)).stopped_by is None

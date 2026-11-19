@@ -4449,6 +4449,9 @@ class TurnStatusPost(TenantScoped, Base):
         DateTime(timezone=True), nullable=True
     )
     folded_into: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Who pressed Stop on the turn, as the platform shows them; its ending
+    # says "Stopped by <name>.".
+    stopped_by: Mapped[str | None] = mapped_column(Text, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),

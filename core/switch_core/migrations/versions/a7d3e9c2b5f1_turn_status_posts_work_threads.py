@@ -9,7 +9,8 @@ find them after a restart, to attach the plan to the answer and remove them.
 `work_finished_at` says that ending has run, and `folded_into` is set when the
 work thread was removed (to the answer the plan went under, or to the work
 message for a turn with nothing to show), so nothing draws into messages that
-are gone.
+are gone. `stopped_by` names whoever pressed Stop on the turn, which its
+ending says.
 
 Expand only: a release from before this revision neither reads nor writes the
 columns, and draws every turn in the asker's thread as before.
@@ -50,9 +51,14 @@ def upgrade() -> None:
         "turn_status_posts",
         sa.Column("folded_into", sa.Text(), nullable=True),
     )
+    op.add_column(
+        "turn_status_posts",
+        sa.Column("stopped_by", sa.Text(), nullable=True),
+    )
 
 
 def downgrade() -> None:
+    op.drop_column("turn_status_posts", "stopped_by")
     op.drop_column("turn_status_posts", "folded_into")
     op.drop_column("turn_status_posts", "work_finished_at")
     op.drop_column("turn_status_posts", "earlier_post_ids")
