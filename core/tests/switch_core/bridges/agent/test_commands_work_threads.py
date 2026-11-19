@@ -103,7 +103,7 @@ async def test_on_then_off_is_a_room_setting_change(
     await _run(host, " OFF ")
     assert "Work threads are **off**" in posted[-1]
     async with session_factory() as session:
-        assert not await store.work_threads_on(session, room_id)
+        assert not await store.work_threads_mode(session, room_id)
         room = await store.get(session, room_id)
         assert room is not None
         assert room.metadata_ == {"created_by_kind": "user"}
@@ -122,7 +122,7 @@ async def test_a_refused_change_changes_nothing(
     await _run(host, "on")
     assert "Only the room's owner" in posted[-1]
     async with session_factory() as session:
-        assert not await RoomStore().work_threads_on(session, room_id)
+        assert not await RoomStore().work_threads_mode(session, room_id)
 
 
 async def test_anything_else_shows_usage(
@@ -131,5 +131,25 @@ async def test_anything_else_shows_usage(
     room_id = await _room(session_factory)
     host, posted = _host(session_factory, room_id)
     await _run(host, "maybe")
-    assert posted[-1].startswith("Usage: `!work-threads on`")
+    assert posted[-1].startswith("Usage: `!work-threads on`, `!work-threads inline`")
     assert allowed == []
+
+
+async def test_inline_is_a_setting_of_its_own(
+    session_factory: async_sessionmaker[AsyncSession], allowed: list[str]
+) -> None:
+    room_id = await _room(session_factory)
+    host, posted = _host(session_factory, room_id)
+    store = RoomStore()
+
+    await _run(host, "inline")
+    assert "Work threads are **inline**" in posted[-1]
+    async with session_factory() as session:
+        assert await store.work_threads_mode(session, room_id) == "inline"
+        room = await store.get(session, room_id)
+        assert room is not None
+        assert room.metadata_[WORK_THREADS_ON_KEY] == "inline"
+
+    await _run(host, "on")
+    async with session_factory() as session:
+        assert await store.work_threads_mode(session, room_id) == "thread"

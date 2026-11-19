@@ -1923,21 +1923,10 @@ class SlackAdapter(PlatformAdapter):
             raise RichContentFailed(
                 f"Slack posted a work message in {channel_id} with no ts.", text=text
             )
-        arguments: dict[str, Any] = {
-            "channel_id": channel_id,
-            "thread_ts": str(ts),
-            "status": "processing",
-            "title": text[:200],
-            "username": agent.field_label,
-        }
-        if icon_url:
-            arguments["icon_url"] = icon_url
-        if initiator_external_id and re.fullmatch(
-            r"[UW][A-Z0-9]+", initiator_external_id
-        ):
-            arguments["initiator_user_id"] = initiator_external_id
-        await self._set_session_status(arguments)
         work_ref = f"{channel_id}:{ts}"
+        await self.open_session(
+            channel_id, agent_name, work_ref, initiator_external_id, text
+        )
         self._work_notes[work_ref] = WORKING_NOTE
         if len(self._work_notes) > _MAX_OPEN_STREAMS:
             self._work_notes.popitem(last=False)
@@ -1948,11 +1937,8 @@ class SlackAdapter(PlatformAdapter):
     ) -> None:
         """Edit the note into the line the turn ended on, and end the session.
 
-        An edit, so it notifies nobody. The session is renamed to match, since
-        its title is also the thread's header and would otherwise go on saying
-        the agent is working; then it goes `active` rather than `closed`: it
-        is over for now, and `closed` says the agent will not answer there
-        again.
+        An edit, so it notifies nobody. The session is renamed to match and
+        set active (`close_session`).
         """
         self._work_notes.pop(message_ref, None)
         client = self._web_client
@@ -1976,6 +1962,57 @@ class SlackAdapter(PlatformAdapter):
                 message_ref,
                 error.response.get("error"),
             )
+        await self.close_session(channel_id, agent_name, message_ref, summary)
+
+    async def open_session(
+        self,
+        channel_id: str,
+        agent_name: str,
+        message_ref: str,
+        initiator_external_id: str | None,
+        title: str,
+    ) -> None:
+        """An agent session on a message of the agent's, for whoever asked.
+
+        "<agent> is working" shows under the message while its thread is
+        empty, and the turn is listed in the asker's Agents & tools. Naming
+        the asker as initiator is the point: a session the app opens without
+        one, or that a stream opens, takes the bot and is listed for nobody.
+        Best effort; the turn is drawn either way.
+        """
+        _, ts = self._parse_message_ref(message_ref)
+        if not ts:
+            return
+        agent = await self.agent_rendering(agent_name)
+        arguments: dict[str, Any] = {
+            "channel_id": channel_id,
+            "thread_ts": ts,
+            "status": "processing",
+            "title": title[:200],
+            "username": agent.field_label,
+        }
+        icon_url = slack_icon_argument(agent.icon_url, agent_name)
+        if icon_url:
+            arguments["icon_url"] = icon_url
+        if initiator_external_id and re.fullmatch(
+            r"[UW][A-Z0-9]+", initiator_external_id
+        ):
+            arguments["initiator_user_id"] = initiator_external_id
+        await self._set_session_status(arguments)
+
+    async def close_session(
+        self, channel_id: str, agent_name: str, message_ref: str, summary: str
+    ) -> None:
+        """Rename a turn's session to the line it ended on, and set it active.
+
+        Its title is also the thread's header, which would otherwise go on
+        saying the agent is working. `active` rather than `closed`: the work
+        is over for now, and `closed` says the agent will not answer there
+        again.
+        """
+        _, ts = self._parse_message_ref(message_ref)
+        if not ts:
+            return
         agent = await self.agent_rendering(agent_name)
         await self._session_call(
             "agents.sessions.rename",

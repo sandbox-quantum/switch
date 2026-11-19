@@ -1892,3 +1892,135 @@ async def test_a_restart_finishes_a_work_thread_whose_ending_had_not_run(
     finally:
         await second.stop()
     assert (await _turn_post(session_factory)).work_finished_at is not None
+
+
+# ── Inline (`!work-threads inline`) ──────────────────────────────────────────
+
+
+@dataclass
+class InlinePlatform(WorkThreadPlatform):
+    async def open_session(
+        self,
+        channel_id: str,
+        agent_name: str,
+        message_ref: str,
+        initiator_external_id: str | None,
+        title: str,
+    ) -> None:
+        self.drawn.append(
+            Drawn("open_session", channel_id, message_ref, None, initiator_external_id)
+        )
+
+    async def close_session(
+        self, channel_id: str, agent_name: str, message_ref: str, summary: str
+    ) -> None:
+        self.drawn.append(
+            Drawn("close_session", channel_id, message_ref, None, summary)
+        )
+
+
+@pytest.fixture
+async def inline_platform(session_factory, bridged) -> InlinePlatform:
+    async with session_factory() as db, db.begin():
+        room = await db.get(Room, bridged.room_id)
+        assert room is not None
+        room.metadata_ = {**(room.metadata_ or {}), WORK_THREADS_ON_KEY: "inline"}
+    return InlinePlatform()
+
+
+@pytest.fixture
+async def inline_publisher(
+    session_factory, bridged, listener, inline_platform, online, monkeypatch
+) -> AsyncIterator[AgentSessionActivityPublisher]:
+    monkeypatch.setattr(
+        publisher_module, "notification_recipient", AsyncMock(return_value="UASKER")
+    )
+    publisher = _publisher(session_factory, bridged, listener, inline_platform, online)
+    publisher.start()
+    try:
+        yield publisher
+    finally:
+        await publisher.stop()
+
+
+async def test_an_inline_turn_is_one_message_at_the_root_kept_at_the_end(
+    service, inline_publisher, inline_platform, bridged, session_factory
+):
+    platform = inline_platform
+    await _turn(service, bridged.room_id, "running", 1)
+    await platform.wait_until(lambda: bool(platform.of("open_session")))
+    [first] = _turns(platform)
+    assert (first.call, first.thread_ref) == ("post_rich", None)
+    assert first.content.interrupt_turn_id == "turn-1", "it carries the Stop button"
+    [session] = platform.of("open_session")
+    assert (session.ref, session.content) == (first.ref, "UASKER")
+    assert platform.of("open_work_message") == []
+
+    await _tool(service, bridged.room_id, "in-progress", 1)
+    await _step(
+        service,
+        bridged.room_id,
+        item_id="post-1",
+        kind="tool-activity",
+        status="completed",
+        revision=1,
+        title="mcp__switch__post_message",
+    )
+    await _tool(service, bridged.room_id, "completed", 2)
+    await _answer(session_factory, bridged)
+    await _turn(service, bridged.room_id, "completed", 5)
+    await platform.wait_until(lambda: bool(platform.of("close_session")))
+    last = _turns(platform)[-1]
+    assert (last.call, last.ref, last.thread_ref) == ("update_rich", first.ref, None)
+    assert [item.item_id for item in last.content.items] == ["tool-1"], (
+        "room tools are not work"
+    )
+    [closed] = platform.of("close_session")
+    assert closed.ref == first.ref
+    assert closed.content.endswith(" 1 tool call.")
+    assert platform.of("remove_work_thread") == []
+    assert platform.of("attach_activity") == [], "the message is the record"
+    post = await _turn_post(session_factory)
+    assert post.work_finished_at is not None
+    assert post.folded_into is None
+
+
+async def test_an_inline_turn_that_only_talked_deletes_its_message(
+    service, inline_publisher, inline_platform, bridged, session_factory
+):
+    platform = inline_platform
+    await _turn(service, bridged.room_id, "running", 1)
+    await platform.wait_until(lambda: bool(platform.of("open_session")))
+    [first] = _turns(platform)
+    await _step(
+        service,
+        bridged.room_id,
+        item_id="post-1",
+        kind="tool-activity",
+        status="completed",
+        revision=1,
+        title="mcp__switch__post_message",
+    )
+    await _turn(service, bridged.room_id, "completed", 3)
+    await platform.wait_until(lambda: bool(platform.of("remove_work_thread")))
+    [removed] = platform.of("remove_work_thread")
+    assert (removed.ref, removed.content) == (first.ref, [])
+    assert platform.of("close_session") == []
+    assert (await _turn_post(session_factory)).folded_into == first.ref
+
+
+async def test_an_inline_turn_asked_in_a_thread_keeps_its_work_there(
+    service, inline_publisher, inline_platform, bridged
+):
+    await _step(
+        service,
+        bridged.room_id,
+        item_id="turn",
+        kind="turn",
+        status="running",
+        revision=1,
+        message_id="sw_reply",
+    )
+    await inline_platform.wait_until(lambda: len(_turns(inline_platform)) >= 1)
+    assert _turns(inline_platform)[0].thread_ref == ASKED_POST
+    assert inline_platform.of("open_session") == []

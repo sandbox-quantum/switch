@@ -450,3 +450,48 @@ async def test_room_tools_are_not_counted_as_steps() -> None:
     assert _notes(client, work) == [], "talking in the room is not a step"
     await adapter.update_rich(CHANNEL, "Agent", ref, _work([post, _tool()]), work)
     assert _notes(client, work) == ["Working… · step 1"]
+
+
+# ── Inline ───────────────────────────────────────────────────────────────────
+
+
+async def test_a_session_opens_on_a_status_message_for_the_asker() -> None:
+    client = FakeWebClient()
+    adapter = _adapter(client)
+    await adapter.open_session(
+        CHANNEL, "Agent", f"{CHANNEL}:4.0", ASKER, "Agent is working on this"
+    )
+    [session] = _sessions(client)
+    assert session["thread_ts"] == "4.0"
+    assert session["status"] == "processing"
+    assert session["initiator_user_id"] == ASKER
+    assert session["title"] == "Agent is working on this"
+    assert client.posted == [] and client.updated == []
+
+
+async def test_closing_a_session_renames_it_and_sets_it_active() -> None:
+    client = FakeWebClient()
+    adapter = _adapter(client)
+    await adapter.close_session(CHANNEL, "Agent", f"{CHANNEL}:4.0", "Turn interrupted.")
+    assert [method for method, _ in client.api_calls] == [
+        "agents.sessions.rename",
+        "agents.sessions.setStatus",
+    ]
+    assert client.api_calls[0][1]["json"]["title"] == "Agent · Turn interrupted."
+    assert client.updated == [], "the message itself is left as last drawn"
+
+
+async def test_a_status_message_at_the_root_is_an_ordinary_post() -> None:
+    """Slack refuses a stream at the top of an ordinary channel."""
+    client = FakeWebClient()
+    adapter = _adapter(client)
+    await adapter.post_rich(
+        CHANNEL,
+        "Agent",
+        TurnActivity([_tool()], _turn(), recipient_external_id=ASKER),
+        None,
+    )
+    assert client.started == []
+    [posted] = client.posted
+    assert "thread_ts" not in posted or posted["thread_ts"] is None
+    assert any(block["type"] == "plan" for block in posted["blocks"])

@@ -1,7 +1,7 @@
 from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import NamedTuple
+from typing import Literal, NamedTuple
 
 from sqlalchemy import (
     ColumnElement,
@@ -73,11 +73,16 @@ AUTO_ROUTE_FALLBACK_KEY = "auto_route_fallback_agent"
 # When Switch last told the room auto-route is unavailable, so it says so at
 # most once an hour however many processes and restarts there are.
 DECISION_NOTICE_AT_KEY = "decision_notice_at"
-# `!work-threads on`: on Slack, a turn answering a question asked at the top
-# of the channel does its work in a thread under a message of the agent's own,
-# which nobody follows, so the turn ending does not bring the asker's thread
-# back as unread. Absent by default, so turns thread under the question.
+# `!work-threads`: on Slack, where a turn answering a question asked at the top
+# of the channel draws its activity, so the turn ending does not bring the
+# asker's thread back as unread. `true` (`!work-threads on`): in a thread under
+# a message of the agent's own, which nobody follows. `"inline"`: in one
+# message of the agent's at the channel root, edited as the turn goes. Absent
+# by default, so turns thread under the question.
 WORK_THREADS_ON_KEY = "work_threads_on"
+WORK_THREADS_INLINE = "inline"
+
+WorkThreadsMode = Literal["thread", "inline"]
 
 
 def follow_ups_enabled_in(metadata: dict | None) -> bool:
@@ -96,9 +101,15 @@ def auto_route_on_in(metadata: dict | None) -> bool:
     return (metadata or {}).get(AUTO_ROUTE_ON_KEY) is True
 
 
-def work_threads_on_in(metadata: dict | None) -> bool:
-    """Whether a room's metadata turns work threads on (`!work-threads on`)."""
-    return (metadata or {}).get(WORK_THREADS_ON_KEY) is True
+def work_threads_mode_in(metadata: dict | None) -> WorkThreadsMode | None:
+    """How a room's metadata draws turns asked at the channel root
+    (`!work-threads`), or None for the asker's thread as usual."""
+    value = (metadata or {}).get(WORK_THREADS_ON_KEY)
+    if value is True:
+        return "thread"
+    if value == WORK_THREADS_INLINE:
+        return "inline"
+    return None
 
 
 def auto_route_fallback_in(metadata: dict | None) -> str | None:
@@ -150,21 +161,24 @@ class RoomStore:
             session, room_id, FOLLOW_UPS_OFF_KEY, None if enabled else True
         )
 
-    async def work_threads_on(self, session: AsyncSession, room_id: str) -> bool:
-        """Whether the room's `!work-threads` setting is on. Off unless set."""
+    async def work_threads_mode(
+        self, session: AsyncSession, room_id: str
+    ) -> WorkThreadsMode | None:
+        """The room's `!work-threads` setting. None (off) unless set."""
         room = await session.get(Room, room_id)
         if room is None:
-            return False
-        return work_threads_on_in(room.metadata_)
+            return None
+        return work_threads_mode_in(room.metadata_)
 
-    async def set_work_threads_on(
-        self, session: AsyncSession, room_id: str, on: bool
+    async def set_work_threads_mode(
+        self, session: AsyncSession, room_id: str, mode: WorkThreadsMode | None
     ) -> None:
-        """Turn work threads on or off for a room. Raises ValueError for a room
-        that does not exist."""
-        await self._set_metadata_key(
-            session, room_id, WORK_THREADS_ON_KEY, True if on else None
+        """Set a room's `!work-threads` setting, None for off. Raises
+        ValueError for a room that does not exist."""
+        value: object = (
+            True if mode == "thread" else WORK_THREADS_INLINE if mode else None
         )
+        await self._set_metadata_key(session, room_id, WORK_THREADS_ON_KEY, value)
 
     async def main_agent_id(self, session: AsyncSession, room_id: str) -> str | None:
         """The room's main agent (`!assign-agent`), or None."""
