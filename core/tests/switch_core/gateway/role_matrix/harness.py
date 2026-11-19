@@ -18,6 +18,7 @@ import asyncio
 import contextlib
 import importlib.util
 import json
+import secrets
 import tempfile
 import uuid
 from dataclasses import dataclass
@@ -72,6 +73,8 @@ from switch_core.db.stores.switch_core_process_store import SwitchCoreProcessSto
 from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
+from switch_core.decision.client import DynamicDecisionClient
+from switch_core.decision.settings import DecisionAvailability
 from switch_core.feature_flags import KNOWN_FEATURE_FLAGS
 from switch_core.gateway.app import create_gateway_app
 from switch_core.gateway.auth import create_jwt
@@ -82,10 +85,12 @@ from switch_core.management.wiring import (
     mount_gateway_routes,
 )
 from switch_core.organization_directory import LocalDirectory
+from switch_core.outbound import OutboundPolicy
 from switch_core.process_lease import ProcessLease
 from switch_core.providers.github import GitHubConnections, GitHubReach
 from switch_core.signals import SignalBus
 from switch_core.tenant_context import tenant_scope
+from switch_core.transport.observer import IgnoreParticipantMessages
 from switch_core.user_changes import LocalUserChanges, SignalUserChanges
 from tests.switch_core.connections.fake_vendor import FakeVendor
 from tests.switch_core.connections.github_seed import github_broker
@@ -235,8 +240,25 @@ class _Bridges:
     def supports_channel_creation(self, bridge_type: str) -> bool:
         return True
 
+    def supports_private_channels(self, bridge_type: str) -> bool:
+        return True
+
+    def typed_commands(self, bridge_type, connection_config):
+        return {}
+
+    def channel_creation_blocker(
+        self, bridge_type: str, connection_config: object
+    ) -> str | None:
+        return None
+
+    def adds_creator_to_public_channel(self, bridge_type: str) -> bool:
+        return True
+
     def supports_directory_search(self, bridge_type: str) -> bool:
         return True
+
+    def directory_search_hint(self, bridge_id: str, bridge_type: str) -> str:
+        return "Your name or handle"
 
     def receives_webhooks(self, bridge_type: str) -> bool:
         return False
@@ -288,6 +310,7 @@ def _management(
         status_interval_seconds=STATUS_INTERVAL,
         server_url=SERVER_URL,
         third_party_avatars=True,
+        feature_flags=settings.feature_flags,
         controller_release=None,
         session_factory=session_factory,
         presence=protocol.connections.controllers,
@@ -308,6 +331,11 @@ def config() -> SwitchConfig:
     return SURFACE._config(frozenset(KNOWN_FEATURE_FLAGS))  # type: ignore[no-any-return]
 
 
+async def _trust_connection_check(**_: Any) -> Any:
+    """Switch Trust, asked to check a policy an organization connects."""
+    raise Reached("trust_connection_check")
+
+
 def build_gateway(session_factory: async_sessionmaker[AsyncSession]) -> FastAPI:
     """The gateway as `main.py` builds it; `client` mounts it at `/gateway`,
     as `main.py` does."""
@@ -320,6 +348,8 @@ def build_gateway(session_factory: async_sessionmaker[AsyncSession]) -> FastAPI:
         listener=_FakeListener(),
         activity=_FakeActivityListener(),
         connections=protocol.connections,
+        message_observer=IgnoreParticipantMessages(),
+        telemetry=None,
     )
     resource_service = ResourceService(
         reference_store=ReferenceStore(),
@@ -361,6 +391,7 @@ def build_gateway(session_factory: async_sessionmaker[AsyncSession]) -> FastAPI:
             ConnectorApps, "connector_apps", github_app=lambda: None
         ),
         config=settings,
+        trust_connection_check=_trust_connection_check,  # type: ignore[arg-type]
     )
     management = _management(session_factory, protocol, settings)
     init_management_dependencies(
@@ -378,12 +409,31 @@ def build_gateway(session_factory: async_sessionmaker[AsyncSession]) -> FastAPI:
         _store=OrganizationAppCredentialStore(settings.keyring),
     )
     gateway.state.controller_revoker = management.service
+    gateway.state.workspace_archive = Fake("workspace_archive")
+    # Auto-route's decision client, asking nothing: the decision settings
+    # routes read and save the workspace's row, and Test meets a service that
+    # is down.
+    gateway.state.decision_client = DynamicDecisionClient(
+        session_factory=session_factory,
+        availability=DecisionAvailability.from_config(settings),
+        keyring=settings.keyring,
+        client=httpx.AsyncClient(transport=httpx.MockTransport(_decision_down)),
+        guarded_client=httpx.AsyncClient(transport=httpx.MockTransport(_decision_down)),
+        outbound_policy=OutboundPolicy.parse(""),
+        timeout_seconds=1.0,
+        telemetry=None,
+        cache_seconds=0,
+    )
     gateway.state.github_connections = _github()
     # The clients the room and chat services think are running: `World` adds
     # each agent it makes, as a running client would announce itself.
     gateway.state.matrix_lifecycle = lifecycle
     gateway.add_exception_handler(Reached, reached_response)
     return gateway
+
+
+def _decision_down(_request: httpx.Request) -> httpx.Response:
+    return httpx.Response(503)
 
 
 def _github() -> GitHubConnections:
@@ -445,6 +495,7 @@ class People:
             TENANT,
             session_version=0,
             auth_time=datetime.now(UTC),
+            session_id=secrets.token_urlsafe(16),
         )
         return {"cookie": f"switch_auth={token}"}
 

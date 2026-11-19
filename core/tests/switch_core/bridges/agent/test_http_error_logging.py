@@ -69,28 +69,31 @@ async def _records(
 @pytest.mark.parametrize(
     ("status", "level"),
     [
-        (400, logging.WARNING),
-        (404, logging.WARNING),
+        (400, logging.INFO),
+        (404, logging.INFO),
         (500, logging.ERROR),
         (503, logging.ERROR),
     ],
 )
-async def test_a_refused_request_logs_a_warning_and_a_server_failure_an_error(
+async def test_a_refused_request_logs_info_and_a_server_failure_an_error(
     caplog: pytest.LogCaptureFixture, status: int, level: int
 ) -> None:
     records = await _records(caplog, "GET", f"/refused/{status}")
     assert [r.levelno for r in records] == [level]
-    assert (
-        f"→ {status}: post_message does not accept: room_id" in records[0].getMessage()
-    )
+    message = records[0].getMessage()
+    # The method, the route template and the status: never the raw path,
+    # which carries ids, nor the refusal's detail text.
+    assert message == f"GET /refused/{{status}} → {status}"
+    assert f"/refused/{status}" not in message
+    assert "post_message does not accept" not in message
 
 
 @pytest.mark.asyncio
-async def test_a_request_that_fails_validation_logs_a_warning(
+async def test_a_request_that_fails_validation_logs_info(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     records = await _records(caplog, "POST", "/typed")
-    assert [r.levelno for r in records] == [logging.WARNING]
+    assert [r.levelno for r in records] == [logging.INFO]
     assert "→ 422 validation" in records[0].getMessage()
 
 

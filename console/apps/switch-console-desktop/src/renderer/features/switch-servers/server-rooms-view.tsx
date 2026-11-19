@@ -20,6 +20,7 @@ import { Button } from '@renderer/lib/ui/button';
 import { SearchInput } from '@renderer/lib/ui/search-input';
 import { SegmentedControl } from '@renderer/lib/ui/segmented-control';
 import type { RemoteRoomSummary } from '@shared/core/switch-servers/switch-servers';
+import { homeRedirect } from './home-target';
 import { AppMark, RoomCard } from './room-card';
 import { allReadableRooms, isConsoleGroupChatSummary, withConsoleGroupChats } from './room-filters';
 import {
@@ -107,12 +108,14 @@ const ServerRoomsPanel = observer(function ServerRoomsPanel() {
 
   const toCard = (room: RemoteRoomSummary): RoomCardData => {
     const card = roomCard(room, { id: viewerId, listedIds });
-    // A chat's people are its members, which the chat list knows.
-    const chat = room.isConsoleChat
-      ? (chatsStore.chats.get(room.id) ?? chatsStore.archived.get(room.id))
-      : undefined;
-    // An older server reports no members as 0, which is not known rather than none.
-    return chat ? { ...card, peopleCount: chat.memberCount > 0 ? chat.memberCount : null } : card;
+    // On a server from before room lists counted a chat's members, the chat
+    // list knows them. A chat made a channel on an app keeps the server's
+    // count, of the app's accounts, as the gateway shows it.
+    const chat =
+      room.isConsoleChat && card.peopleCount === null
+        ? (chatsStore.chats.get(room.id) ?? chatsStore.archived.get(room.id))
+        : undefined;
+    return chat && chat.memberCount > 0 ? { ...card, peopleCount: chat.memberCount } : card;
   };
   const activeCards = all.map(toCard);
   const archivedCards = [
@@ -145,7 +148,7 @@ const ServerRoomsPanel = observer(function ServerRoomsPanel() {
       );
     const room = archivedSummary(card);
     return room !== undefined && workspaceId !== null
-      ? switchRoomsStore.roomPermissions(workspaceId, room).canWrite
+      ? switchRoomsStore.roomPermissions(workspaceId, room).canArchive
       : false;
   };
   async function setArchived(card: RoomCardData) {
@@ -182,11 +185,8 @@ const ServerRoomsPanel = observer(function ServerRoomsPanel() {
     <ServerPage
       width={LIST_PAGE_WIDTH}
       title="Rooms"
-      description={
-        scope === 'mine'
-          ? 'Rooms you own, take part in, or have an agent in.'
-          : `Every room on ${server?.name ?? 'this server'} you can see.`
-      }
+      term="room"
+      description="Rooms are spaces where humans and agents collaborate with shared context."
       action={
         <Button
           size="sm"
@@ -339,7 +339,7 @@ export const serverRoomsView = {
       typeof params === 'object' && params !== null
         ? (params as { serverId?: unknown }).serverId
         : undefined;
-    if (typeof serverId !== 'string') return { ok: false, redirect: 'home' };
+    if (typeof serverId !== 'string') return homeRedirect();
     return { ok: true };
   },
 } satisfies ViewDefinition<{ serverId: string }>;

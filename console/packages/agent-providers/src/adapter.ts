@@ -133,10 +133,15 @@ export interface ProviderSendTurnInput {
   sessionId: string;
   /** Caller-chosen id; the adapter echoes it in turn events for this turn. */
   turnId: string;
+  /** A steer must not be delivered into any other turn. */
+  expectedTurnId?: string;
   text: string;
   attachments?: TurnAttachment[];
   model?: ModelSelection;
 }
+
+/** The provider confirms no message was sent, so the host may safely queue it. */
+export class SteerNotSentError extends Error {}
 
 export interface ProviderTurnStartResult {
   turnId: string;
@@ -160,6 +165,18 @@ export interface ConversationHistoryItem {
   status: 'completed' | 'failed';
   title: string;
   text: string;
+}
+
+/**
+ * What a session advertises for a message sent mid-turn: `steer` when its
+ * provider can take one into the running turn, `queue` otherwise. Whether a
+ * given message may steer is decided per message, so this follows the
+ * provider alone.
+ */
+export function sessionInput(
+  capabilities: Pick<ProviderCapabilities, 'steering'>
+): 'steer' | 'queue' {
+  return capabilities.steering ? 'steer' : 'queue';
 }
 
 export interface ProviderCapabilities {

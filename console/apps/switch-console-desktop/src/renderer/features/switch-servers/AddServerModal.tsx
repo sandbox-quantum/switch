@@ -4,7 +4,6 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { NewAgentForm } from '@renderer/features/locations/components/add-agent-modal/new-agent-form';
 import { HostReachabilityNotice } from '@renderer/features/remote-hosts/host-reachability-notice';
 import { UsageDataToggle } from '@renderer/features/telemetry/usage-data-line';
-import { describeFailure } from '@renderer/lib/errors/describe-failure';
 import { toast } from '@renderer/lib/hooks/use-toast';
 import { useFeatureFlags } from '@renderer/lib/hooks/useFeatureFlags';
 import { rpc } from '@renderer/lib/ipc';
@@ -29,7 +28,6 @@ import type {
 import {
   type ServerApiUrlPropagation,
   type SwitchServer,
-  urlOrigin,
 } from '@shared/core/switch-servers/switch-servers';
 import { ConnectionsStep } from './connections-step';
 import { DOCKER_RECHECK_MS, recheckDocker } from './docker-recheck';
@@ -46,7 +44,6 @@ import {
 } from './server-sign-in';
 import { affectedSentence } from './shared-consoles';
 import { switchServersStore } from './switch-servers-store';
-import { useSwitchCloud } from './use-switch-cloud';
 
 /**
  * Turn a server-address cascade into a user-facing toast: confirm how many
@@ -218,22 +215,6 @@ export const AddServerModal = observer(function AddServerModal(props: Props) {
    * whatever was behind it left no sign anything had happened. A path that
    * cannot name the server it made lands nowhere rather than guessing.
    */
-  /**
-   * Switch Cloud has no form: its address is the build's. So it goes straight
-   * from the chooser to signing in, and that step's Back returns to the
-   * chooser rather than to a connect-by-URL form it never passed through. An
-   * account already signed in goes on to setting up its cloud agents.
-   */
-  const enterCloud = async (server: SwitchServer) => {
-    const next: Step = switchServersStore.isConnected(server.id)
-      ? await stepAfterCloudSignIn(server.id)
-      : 'signIn';
-    setConnected(server);
-    setChoice('cloud');
-    setStep(next);
-    report('add_server_step', { step: next, choice: 'cloud', first_run: false });
-  };
-
   const finish = (serverId: string | null) => {
     if (serverId) {
       void switchServersStore.setActive(serverId);
@@ -248,7 +229,6 @@ export const AddServerModal = observer(function AddServerModal(props: Props) {
         onLocal={() => goToStep('local')}
         onRemoteHost={() => goToStep('remoteHost')}
         onExternal={() => goToStep('external')}
-        onCloud={enterCloud}
         onClose={props.onClose}
       />
     );
@@ -348,40 +328,22 @@ export const AddServerModal = observer(function AddServerModal(props: Props) {
 // Step 1 — choose where the server lives
 // ---------------------------------------------------------------------------
 
+/**
+ * Where the new server lives. Switch Cloud is listed last as coming soon,
+ * disabled, whatever the build has been told about it: it is not open yet, so
+ * nothing here starts its path.
+ */
 export const ChooseStep = observer(function ChooseStep({
   onLocal,
   onRemoteHost,
   onExternal,
-  onCloud,
   onClose,
 }: {
   onLocal: () => void;
   onRemoteHost: () => void;
   onExternal: () => void;
-  onCloud: (server: SwitchServer) => void;
   onClose: () => void;
 }) {
-  const cloud = useSwitchCloud();
-  // Switch Cloud is one server: once it is added, its workspaces are in the
-  // switcher, and offering to add it again would only lead back to it.
-  const cloudAdded =
-    cloud.kind === 'open' &&
-    switchServersStore.servers.some((server) => urlOrigin(server.url) === urlOrigin(cloud.url));
-  const [cloudAttempt, setCloudAttempt] = useState<{ connecting: boolean; error: string | null }>({
-    connecting: false,
-    error: null,
-  });
-  const connectToCloud = () => {
-    setCloudAttempt({ connecting: true, error: null });
-    switchServersStore.connectToSwitchCloud().then(onCloud, (cause) => {
-      const failure = describeFailure(cause, 'Could not connect to Switch Cloud.');
-      setCloudAttempt({
-        connecting: false,
-        error: failure.detail ? `${failure.headline} ${failure.detail}` : failure.headline,
-      });
-    });
-  };
-
   return (
     <WizardFrame
       title="Add a Switch server"
@@ -394,37 +356,6 @@ export const ChooseStep = observer(function ChooseStep({
       }
     >
       <div className="grid gap-3">
-        {/* Offered only when this build knows where the Cloud is. A failed read
-            is shown rather than dropped, since it means the build is broken. */}
-        {cloud.kind === 'open' && !cloudAdded && (
-          <ChoiceCard
-            icon={
-              cloudAttempt.connecting ? (
-                <Spinner className="size-5" />
-              ) : (
-                <Cloud className="size-5" />
-              )
-            }
-            title="Connect to Switch Cloud"
-            description={`Sign in to the Switch we run for you at ${new URL(cloud.url).host}.`}
-            onClick={connectToCloud}
-            disabled={cloudAttempt.connecting}
-          />
-        )}
-        {cloudAttempt.error && (
-          <Alert variant="destructive">
-            <TriangleAlert className="size-4" />
-            <AlertTitle>Could not connect to Switch Cloud</AlertTitle>
-            <AlertDescription>{cloudAttempt.error}</AlertDescription>
-          </Alert>
-        )}
-        {cloud.kind === 'failed' && (
-          <Alert variant="destructive">
-            <TriangleAlert className="size-4" />
-            <AlertTitle>{cloud.headline}</AlertTitle>
-            {cloud.detail && <AlertDescription>{cloud.detail}</AlertDescription>}
-          </Alert>
-        )}
         <ChoiceCard
           icon={<Laptop className="size-5" />}
           title="Run a server on this computer"
@@ -443,6 +374,13 @@ export const ChooseStep = observer(function ChooseStep({
           description="Point Switch Console at a Switch server someone else runs, by its address."
           onClick={onExternal}
         />
+        <ChoiceCard
+          icon={<Cloud className="size-5" />}
+          title="Connect to Switch Cloud"
+          badge="Coming soon"
+          description="Managed hosting for your Switch server and agents. Coming soon - self-host to get started today."
+          disabled
+        />
       </div>
     </WizardFrame>
   );
@@ -452,14 +390,18 @@ export function ChoiceCard({
   icon,
   title,
   description,
+  badge,
   onClick,
   disabled = false,
 }: {
   icon: React.ReactNode;
   title: string;
   description: string;
-  onClick: () => void;
-  /** While the choice is already being acted on. */
+  /** A short note beside the title, such as "Coming soon". */
+  badge?: string;
+  /** Absent for a choice that cannot be made. */
+  onClick?: () => void;
+  /** While the choice is already being acted on, or when it is not open. */
   disabled?: boolean;
 }) {
   return (
@@ -467,11 +409,19 @@ export function ChoiceCard({
       type="button"
       onClick={onClick}
       disabled={disabled}
+      aria-disabled={disabled || undefined}
       className="bg-card hover:border-border-hover flex items-start gap-3 rounded-lg border border-border p-4 text-left hover:bg-background-tertiary-2 disabled:pointer-events-none disabled:opacity-60"
     >
       <span className="mt-0.5 text-foreground-muted">{icon}</span>
       <span className="space-y-1">
-        <span className="block text-sm font-medium text-foreground">{title}</span>
+        <span className="flex items-center gap-2">
+          <span className="text-sm font-medium text-foreground">{title}</span>
+          {badge && (
+            <span className="rounded-full border border-border px-2 py-0.5 text-[11px] text-foreground-muted">
+              {badge}
+            </span>
+          )}
+        </span>
         <span className="block text-xs text-foreground-muted">{description}</span>
       </span>
     </button>
@@ -529,7 +479,7 @@ export const LocalSetupStep = observer(function LocalSetupStep({
   const dockerUnavailable = docker && !docker.available ? docker : null;
   const idle = !running && !starting;
   // A server set up on Docker before native mode existed still needs Docker to
-  // start; a native one (every new install) needs it only for Mattermost.
+  // start; a native one (every new install) does not.
   const native = store.runtime === 'native';
   const needsDocker = store.runtime === 'docker';
   const canStart = running || (store.runtime !== null && (!needsDocker || dockerReady));
@@ -604,8 +554,7 @@ export const LocalSetupStep = observer(function LocalSetupStep({
             <p className="text-xs font-medium text-foreground-muted">Starting will:</p>
             <ul className="space-y-1.5 text-xs text-foreground-muted">
               <SetupStepItem>Set up PostgreSQL and the Switch server</SetupStepItem>
-              <SetupStepItem>Run them in the background on this computer</SetupStepItem>
-              <SetupStepItem>{mattermostStep(docker, store.mattermost)}</SetupStepItem>
+              <SetupStepItem>Run them on this computer while Switch Console is open</SetupStepItem>
               <SetupStepItem>
                 Register it as your active server, ready to onboard an agent
               </SetupStepItem>
@@ -618,7 +567,7 @@ export const LocalSetupStep = observer(function LocalSetupStep({
             <p className="text-xs font-medium text-foreground-muted">Starting will:</p>
             <ul className="space-y-1.5 text-xs text-foreground-muted">
               <SetupStepItem>Pull the Switch images from GHCR if needed</SetupStepItem>
-              <SetupStepItem>Run Postgres, Mattermost and Switch in Docker</SetupStepItem>
+              <SetupStepItem>Run Postgres and Switch in Docker</SetupStepItem>
               <SetupStepItem>
                 Register it as your active server, ready to onboard an agent
               </SetupStepItem>
@@ -720,23 +669,6 @@ function StartOver({ disabled, onConfirm }: { disabled: boolean; onConfirm: () =
       </div>
     </div>
   );
-}
-
-/**
- * What starting does about Mattermost beside a server that otherwise needs no
- * Docker. Mattermost only ships as a container image, so it runs wherever
- * Docker answers, unless it was turned off for this server, and the list says
- * which, so chat being there or not is never a surprise.
- */
-function mattermostStep(
-  docker: { available: true } | { available: false; detail: string } | null,
-  enabled: boolean
-): string {
-  if (docker === null) return 'Run Mattermost for team chat if Docker is available';
-  if (!docker.available)
-    return 'Skip Mattermost for team chat, which needs Docker. You can connect a messaging app later';
-  if (!enabled) return 'Skip Mattermost, which is turned off for this server';
-  return 'Run Mattermost in Docker for team chat, downloading its image the first time';
 }
 
 /**

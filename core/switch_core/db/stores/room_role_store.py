@@ -19,6 +19,7 @@ from sqlalchemy import delete, false, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 
+from switch_core.db.id_lists import any_of
 from switch_core.db.models import RoleLease, RoomRole
 from switch_core.room_wide_mention import reject_reserved_mention_name
 
@@ -295,26 +296,28 @@ class RoomRoleStore:
         )
         return {agent_id: name for agent_id, name in result.all()}
 
-    async def agent_room_roles(
+    async def room_roles_of_agents(
         self,
         session: AsyncSession,
-        agent_id: str,
+        agent_ids: Collection[str],
         room_ids: Collection[str],
         live_connection_ids: Collection[str],
-    ) -> dict[str, str]:
-        """`agent_room_role` for many rooms in one query: the role name the
-        agent live-holds in each, keyed by room id. A room where it holds
-        none has no key."""
-        if not room_ids:
+    ) -> dict[tuple[str, str], str]:
+        """`agent_room_role` for many agents and rooms in one query: the role
+        name each agent live-holds in each room, keyed by `(agent id, room
+        id)`. A pair with no role has no key."""
+        if not agent_ids or not room_ids:
             return {}
         result = await session.execute(
-            select(RoleLease.room_id, RoomRole.name)
+            select(RoleLease.agent_id, RoleLease.room_id, RoomRole.name)
             .join(RoleLease, RoleLease.role_id == RoomRole.id)
-            .where(RoleLease.room_id.in_(room_ids))
-            .where(RoleLease.agent_id == agent_id)
+            .where(any_of(RoleLease.room_id, room_ids))
+            .where(any_of(RoleLease.agent_id, agent_ids))
             .where(self._live(live_connection_ids))
         )
-        return {room_id: name for room_id, name in result.all()}
+        return {
+            (agent_id, room_id): name for agent_id, room_id, name in result.tuples()
+        }
 
     async def acquire_lease(
         self,

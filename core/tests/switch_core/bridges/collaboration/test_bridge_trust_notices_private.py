@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import OrderedDict
 from types import SimpleNamespace
 from typing import Any
 
@@ -380,6 +381,7 @@ async def test_mattermost_notice_is_an_ephemeral_post_for_the_sender() -> None:
     adapter._main_loop = asyncio.get_running_loop()
     adapter._admin_driver = driver  # type: ignore[assignment]
     adapter._gateway_public_url = None
+    adapter._thread_roots = OrderedDict()
 
     await adapter.notify_privately(
         channel_id="chan-1",

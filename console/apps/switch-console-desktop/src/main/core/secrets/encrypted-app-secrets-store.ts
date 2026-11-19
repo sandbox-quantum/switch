@@ -30,6 +30,12 @@ export class UndecryptableSecretError extends Error {
   }
 }
 
+const LINUX_KEYRING_HINT =
+  'Run a Secret Service such as gnome-keyring with an unlocked "login" keyring, then restart ' +
+  'Switch Console. If a Secret Service is already running (common under window managers such ' +
+  'as Hyprland, Sway or i3), start Switch Console with --password-store=gnome-libsecret. ' +
+  'Under KDE, start it with --password-store=kwallet5 or kwallet6.';
+
 export class EncryptedAppSecretsStore {
   constructor(
     private readonly db = appDb,
@@ -105,7 +111,11 @@ export class EncryptedAppSecretsStore {
 
   private assertSecureStorageAvailable(): void {
     if (!this.safeStorageApi.isEncryptionAvailable()) {
-      throw new Error('Secure secret storage is unavailable on this system.');
+      throw new Error(
+        this.platform === 'linux'
+          ? `Secure secret storage is unavailable on this system. ${LINUX_KEYRING_HINT}`
+          : 'Secure secret storage is unavailable on this system.'
+      );
     }
 
     if (this.platform !== 'linux') {
@@ -115,7 +125,7 @@ export class EncryptedAppSecretsStore {
     const backend = this.safeStorageApi.getSelectedStorageBackend?.();
     if (backend === 'basic_text') {
       throw new Error(
-        'Secure secret storage is unavailable: Linux safeStorage backend is basic_text.'
+        `Secure secret storage is unavailable: no system keyring was found, so secrets would be stored unencrypted. ${LINUX_KEYRING_HINT}`
       );
     }
   }

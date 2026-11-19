@@ -2,8 +2,9 @@ name: E2E
 
 # The one definition of an end-to-end run: a lane of console/tooling-e2e on a
 # throwaway stack built from this checkout. Called by pr-ci.yml (the fast lane,
-# on every PR) and by e2e-scheduled.yml (the provider lane after each merge and
-# nightly), and dispatchable by hand.
+# on every PR, and the browser lane on gateway and server PRs) and by
+# e2e-scheduled.yml (the provider lane after each merge and nightly, and every
+# lane on a release tag), and dispatchable by hand.
 #
 #   lane         fast      provider-free scenarios over plain HTTP
 #                provider  real agent sessions on a headless agent controller
@@ -66,7 +67,7 @@ permissions:
 jobs:
   run:
     name: ${{ inputs.lane }} lane
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 45
     environment: ${{ (inputs.lane == 'provider' || inputs.lane == 'agentic') && 'e2e-provider' || '' }}
     outputs:

@@ -59,6 +59,7 @@ import {
 } from '@shared/core/remote-hosts/remote-dir';
 import type { UiEntryPoint } from '@shared/core/telemetry/reporting';
 import { AgentAdvancedConfig } from './agent-advanced-config';
+import { isAgentNameTaken } from './agent-name-taken';
 import { AgentTypePicker } from './agent-type-picker';
 import { AgentIdentityFields, AgentSettingsSection } from './configure-agent-panel';
 import { LaunchProfileConfig } from './launch-profile-config';
@@ -89,7 +90,7 @@ export type NewAgentFormProps = {
   onBack: (() => void) | null;
   entryPoint: UiEntryPoint;
   serverId: string | null;
-  /** Where the agent runs at first: this computer, Switch cloud, or one of the server's machines. */
+  /** Where the agent runs at first: this computer, Switch Cloud, or one of the server's machines. */
   initialRunLocation: 'local' | 'cloud' | MachineRunLocation;
 };
 
@@ -117,6 +118,7 @@ export const NewAgentForm = observer(function NewAgentForm({
 }: NewAgentFormProps) {
   const queryClient = useQueryClient();
   const [submitState, setSubmitState] = useState<'idle' | 'creating'>('idle');
+  const [createdName, setCreatedName] = useState<string | null>(null);
   const { navigate } = useNavigate();
   const { setCloseGuard } = useModalContext();
   const showAddServerModal = useShowModal('addServerModal');
@@ -146,7 +148,7 @@ export const NewAgentForm = observer(function NewAgentForm({
   // Ahead of `pickState.serverId`, which only catches up a tick later (see the
   // effect below) — the icon form needs the server as early as possible so its
   // own privacy check has the least time to run against a stale answer.
-  const form = useConfigureAgentForm(selectedServerId);
+  const form = useConfigureAgentForm(selectedServerId, pickState.providerId ?? null);
   // Running in the cloud is offered where the server's flag offers it, and can
   // be chosen only where the server says this workspace can claim a machine:
   // its cloud machine list is null where it cannot, and undefined until read.
@@ -156,12 +158,12 @@ export const NewAgentForm = observer(function NewAgentForm({
   const cloudAvailable = cloudOffered && Array.isArray(cloudMachines.data);
   const cloudNotSetUp = cloudOffered && cloudMachines.data === null;
   // A sleeping machine is not listed as a machine of its own, so the Switch
-  // cloud entry says it is there: choosing it wakes it.
+  // Cloud entry says it is there: choosing it wakes it.
   const cloudAsleep =
     Array.isArray(cloudMachines.data) &&
     cloudMachines.data.some((machine) => isMachineAsleep(machine, Date.now()));
   const isCloudRun = runHost === 'cloud';
-  // Why the form moved off Switch cloud by itself, said under the picker.
+  // Why the form moved off Switch Cloud by itself, said under the picker.
   const [cloudFallback, setCloudFallback] = useState<string | null>(null);
 
   // On a server with agent management the server lists where agents can run:
@@ -183,7 +185,7 @@ export const NewAgentForm = observer(function NewAgentForm({
   });
   const serverMachines = askForMachines ? (machinesQuery.data ?? null) : null;
   const management = serverMachines !== null;
-  // Choosing Switch cloud claims the owner's cloud machine and starts it. Once
+  // Choosing Switch Cloud claims the owner's cloud machine and starts it. Once
   // its agent controller has enrolled and is online, the agent is placed on it
   // like on any machine.
   const cloudMachineQuery = useQuery({
@@ -198,7 +200,7 @@ export const NewAgentForm = observer(function NewAgentForm({
         (candidate) => candidate.id === cloudMachineQuery.data?.controller_id
       ) ?? null)
     : null;
-  // An online cloud machine is listed as a machine of its own; the Switch cloud
+  // An online cloud machine is listed as a machine of its own; the Switch Cloud
   // entry is what claims or starts one.
   const cloudMachineListed = !!serverMachines?.some(
     (candidate) => candidate.cloud && candidate.state === 'online'
@@ -212,7 +214,7 @@ export const NewAgentForm = observer(function NewAgentForm({
   // The trigger has to say the host's name, not the value behind it: the value
   // for this machine is the sentinel "local", which is not what it is called.
   const runLocationLabel = isCloudRun
-    ? 'Switch cloud'
+    ? 'Switch Cloud'
     : isMachineRun
       ? serverMachine
         ? machineLabel(serverMachine)
@@ -248,7 +250,13 @@ export const NewAgentForm = observer(function NewAgentForm({
     () => new Set((remoteAgents.data ?? []).map((a) => a.name)),
     [remoteAgents.data]
   );
-  const nameTaken = form.nameIsValid && takenNames.has(form.agentName);
+  const nameTaken = isAgentNameTaken({
+    name: form.agentName,
+    nameIsValid: form.nameIsValid,
+    takenNames,
+    creating: submitState === 'creating',
+    createdName,
+  });
 
   // A managed server is only reachable from certain run locations, so constrain
   // the picker to them: a remote-managed server from this computer or its own
@@ -280,7 +288,7 @@ export const NewAgentForm = observer(function NewAgentForm({
     }
   }, [allowedHosts, runHost]);
 
-  // Switch cloud was chosen (or preset) on a server that turns out not to run
+  // Switch Cloud was chosen (or preset) on a server that turns out not to run
   // cloud machines: run here instead, and say why rather than leave the form
   // unable to add the agent.
   useEffect(() => {
@@ -600,7 +608,7 @@ export const NewAgentForm = observer(function NewAgentForm({
           dir: trimmedRemoteDir || null,
           model: managedSettingsRef.current.model,
           advancedConfig: managedSettingsRef.current.advancedConfig,
-          // A Switch cloud machine runs every agent as a user of its own.
+          // A Switch Cloud machine runs every agent as a user of its own.
           isolation: serverMachine.cloud ? 'isolated' : 'shared',
         });
         if (created.kind !== 'created') {
@@ -610,6 +618,7 @@ export const NewAgentForm = observer(function NewAgentForm({
           return;
         }
         registered = true;
+        setCreatedName(form.agentName);
         // Always set: "Anyone" is no policy, and Switch creates an agent
         // owner-only.
         await rpc.workspaces.updateAddressingPolicy({
@@ -649,6 +658,7 @@ export const NewAgentForm = observer(function NewAgentForm({
         return;
       }
       registered = true;
+      setCreatedName(form.agentName);
       if (result.agent.switchAgentId && result.agent.workspaceId) {
         await rpc.workspaces.updateAddressingPolicy({
           workspaceId: result.agent.workspaceId,
@@ -805,7 +815,7 @@ export const NewAgentForm = observer(function NewAgentForm({
               {cloudOffered && !cloudMachineListed && (
                 <SelectItem value="cloud" disabled={!cloudAvailable}>
                   <Cloud className="size-4 text-foreground-muted" />
-                  <span className="flex-1">Switch cloud</span>
+                  <span className="flex-1">Switch Cloud</span>
                   <span className="text-xs text-foreground-muted">
                     {cloudAvailable
                       ? cloudAsleep

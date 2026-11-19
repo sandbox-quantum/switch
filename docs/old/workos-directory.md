@@ -10,7 +10,10 @@ off by default; this page says what works today and what does not yet.
 
 - `ORGANIZATION_DIRECTORY=workos`
 - `WORKOS_API_KEY`: an API key of the WorkOS environment (`WORKOS_API_URL`
-  defaults to `https://api.workos.com`).
+  defaults to `https://api.workos.com`). With changes made from Switch (below),
+  create it under the AuthKit application in `WORKOS_CLIENT_ID`: WorkOS
+  exchanges an application's sign-ins only with that application's own key,
+  and the same key reads organizations, memberships, users and events.
 - The gateway's OIDC sign-in (`GATEWAY_OIDC_*`, see
   [`GATEWAY_OIDC_SETUP.md`](GATEWAY_OIDC_SETUP.md)) set up against an AuthKit
   application of the same environment. The sign-in's subject is the person's
@@ -21,6 +24,13 @@ off by default; this page says what works today and what does not yet.
 - `GATEWAY_SIGNUP_MODE=invite_only`. Organizations cannot be created in WorkOS
   from Switch yet, so nobody but the operator creates one; the server refuses
   to start with any other mode.
+
+With the Helm chart (`deploy/remote/helm/switch`), set
+`switchCore.organizationDirectory.mode: workos` and `secrets.workosApiKey`
+(or `WORKOS_API_KEY` in `secrets.existingSecret`), next to `switchCore.oidc`
+and `switchCore.signup.mode: invite_only`; the settings for changes made from
+Switch (below) are under `switchCore.organizationDirectory` too. The render
+fails on a combination the server would refuse.
 
 ## Linking
 
@@ -60,6 +70,16 @@ Both are recorded in the organization's audit log. If WorkOS cannot be read,
 or Switch's rows cannot be written, the sign-in goes ahead with Switch's rows
 as they were, and the failure is logged. A sign-in never takes anything away;
 the mirror does.
+
+## Roles
+
+Switch reads the WorkOS role `org_admin` as Org Admin and every other role as
+Member, so an environment needs a role with that slug for anyone to be an Org
+Admin.
+
+It expects the other roles to be `admin`, `editor` or `viewer`. A membership
+with any other role is still a Member, so nobody loses access over a role name,
+but Switch logs it at `warning`, with the WorkOS membership and organization.
 
 ## The mirror
 
@@ -149,7 +169,10 @@ in as, or to another organization, is refused. Switch's own checks still run
 first; the service may refuse by its own rules, and its reason is shown. If
 the token runs out after a demotion or removal has already taken away the
 person's workspace access, the dashboard says so before sending the admin to
-sign in again to finish. A platform operator restoring an Org Admin can't
+sign in again to finish. If the service refuses a token that has not run
+out, it is not set up to accept this AuthKit application's tokens: Switch
+answers 503, says to make the change in the account settings, and logs an
+error, rather than sending the admin to sign in again. A platform operator restoring an Org Admin can't
 sign in there: unless WorkOS already has that person as `org_admin`, they are
 told to have someone made one in the organization's account settings.
 

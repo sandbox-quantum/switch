@@ -1,12 +1,14 @@
 import {
   clearTrustSettings,
   fetchTrustSettings,
+  fetchWorkspaceGuardrails,
   GatewayError,
   updateTrustSettings,
 } from '@main/core/switch-servers/gateway-client';
 import type {
   ClearTrustSettingsResult,
   FetchTrustSettingsResult,
+  FetchWorkspaceGuardrailsResult,
   SwitchServer,
   UpdateTrustSettingsParams,
   UpdateTrustSettingsResult,
@@ -16,7 +18,8 @@ import type {
  * Load Switch Trust's one server-global settings row, mapping recoverable
  * gateway failures the same way the write paths below do — a non-operator
  * gets `forbidden` rather than a thrown error, so the settings page can say
- * why rather than showing a generic failure banner.
+ * why rather than showing a generic failure banner. A server where each
+ * organization sets its own answers 410, which is `moved`.
  */
 export async function fetchTrustSettingsFromServer(
   server: SwitchServer
@@ -24,8 +27,35 @@ export async function fetchTrustSettingsFromServer(
   try {
     return { kind: 'loaded', settings: await fetchTrustSettings(server) };
   } catch (cause) {
+    if (cause instanceof GatewayError && cause.kind === 'http' && cause.status === 410) {
+      return { kind: 'moved', message: cause.detail ?? cause.message };
+    }
     const result = recoverableResult(cause);
     if (result) return result;
+    throw cause;
+  }
+}
+
+/**
+ * Load the policy that checks the selected workspace's messages, which
+ * anyone in it may read. A server from before each organization set its own
+ * has no such route, which is `unsupported`.
+ */
+export async function fetchWorkspaceGuardrailsFromServer(
+  server: SwitchServer
+): Promise<FetchWorkspaceGuardrailsResult> {
+  try {
+    return { kind: 'loaded', guardrails: await fetchWorkspaceGuardrails(server) };
+  } catch (cause) {
+    if (cause instanceof GatewayError && cause.kind === 'http' && cause.status === 404) {
+      return { kind: 'unsupported' };
+    }
+    if (cause instanceof GatewayError && cause.kind === 'unauthorized') {
+      return { kind: 'unauthenticated' };
+    }
+    if (cause instanceof GatewayError && cause.kind === 'network') {
+      return { kind: 'error', message: cause.message };
+    }
     throw cause;
   }
 }

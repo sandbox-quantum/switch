@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { machineWorkspaceFor } from '@renderer/features/managed-agents/managed-agent-state';
-import { InfoTooltip } from '@renderer/features/settings/components/InfoTooltip';
+import { InfoTooltip } from '@renderer/lib/components/info-tooltip';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { Field } from '@renderer/lib/ui/field';

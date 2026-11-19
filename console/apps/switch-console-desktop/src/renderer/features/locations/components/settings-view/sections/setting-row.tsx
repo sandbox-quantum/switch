@@ -1,4 +1,4 @@
-import { InfoTooltip } from '@renderer/features/settings/components/InfoTooltip';
+import { InfoTooltip } from '@renderer/lib/components/info-tooltip';
 import { Field, FieldDescription, FieldTitle } from '@renderer/lib/ui/field';
 
 /**

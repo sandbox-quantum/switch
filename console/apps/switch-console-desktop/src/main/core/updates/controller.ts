@@ -1,16 +1,17 @@
 import { app } from 'electron';
 import { appService } from '@main/core/app/service';
-import type { TelemetryUpdateTrigger } from '@main/core/telemetry/events';
+import { updateTriggerOf } from '@main/core/telemetry/narrow';
 import { updateService } from '@main/core/updates/update-service';
 import { IS_CANARY } from '@shared/app-identity';
+import type { UpdateTrigger } from '@shared/core/telemetry/reporting';
 import { createRPCController } from '@shared/lib/ipc/rpc';
 import { manualDownloadUrl } from './manual-download';
 import { formatUpdaterError } from './utils';
 
 export const updateController = createRPCController({
-  check: async (trigger: TelemetryUpdateTrigger = 'user') => {
+  check: async (trigger: UpdateTrigger) => {
     try {
-      const result = await updateService.checkForUpdates(trigger);
+      const result = await updateService.checkForUpdates(updateTriggerOf(trigger));
       return { success: true, result: result ?? null };
     } catch (error) {
       return { success: false, error: formatUpdaterError(error) };

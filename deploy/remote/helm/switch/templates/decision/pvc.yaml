@@ -1,0 +1,18 @@
+{{- if and .Values.decision.enabled .Values.decision.modelServer.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "switch.decisionHost" . }}-weights
+  labels:
+    {{- include "switch.labels" . | nindent 4 }}
+    {{- include "switch.decisionSelectorLabels" . | nindent 4 }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- with (.Values.decision.persistence.storageClass | default .Values.global.storageClass) }}
+  storageClassName: {{ . }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.decision.persistence.size }}
+{{- end }}

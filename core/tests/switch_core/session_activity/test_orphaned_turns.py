@@ -16,7 +16,12 @@ from switch_core.db.models import (
     SwitchCoreProcess,
 )
 from switch_core.session_activity.maintenance import end_orphaned_turns_once
-from switch_core.session_activity.service import ORPHANED_TURN_TEXT
+from switch_core.session_activity.service import (
+    ORPHANED_TURN_TEXT,
+    Question,
+    QuestionOption,
+)
+from switch_core.sessions.contract import ORPHANED_SUBAGENT_TEXT
 
 from .conftest import AGENT, make_room
 
@@ -90,6 +95,40 @@ async def test_an_offline_agents_quiet_turn_is_ended(service, session_factory) -
     assert (await _status(service, "done"))[0] == "completed"
 
 
+async def test_a_turn_waiting_on_an_answer_is_not_ended(
+    service, session_factory
+) -> None:
+    """Quiet because nobody has answered yet, not because the host went away."""
+    await _turn(service, "asking", "running")
+    await service.open_approval(
+        AGENT,
+        "asking",
+        request_id="req-1",
+        turn_id="turn-1",
+        kind="questions",
+        title="Create it?",
+        detail=None,
+        options=[],
+        questions=[
+            Question(
+                id="q",
+                title="Confirm",
+                prompt="",
+                options=[QuestionOption("yes", "Create it", None)],
+                multi_select=False,
+                allow_custom_answer=False,
+            )
+        ],
+        room_id=None,
+        thread_id=None,
+        expires_at=None,
+    )
+    await _quiet(session_factory, "asking")
+
+    await end_orphaned_turns_once(session_factory)
+    assert (await _status(service, "asking"))[0] == "running"
+
+
 async def test_a_connected_agent_keeps_a_turn_its_session_is_still_on(
     service, session_factory
 ) -> None:
@@ -123,3 +162,132 @@ async def test_a_connected_agents_dead_session_has_its_turn_ended(
 
     await end_orphaned_turns_once(session_factory)
     assert (await _status(service, "faulted"))[0] == "interrupted"
+
+
+async def _place_on_closed_connection(session_factory, session_id: str) -> None:
+    """The session placed over a connection that has since closed, as when its
+    agent is stopped; the process holding it is still up, so the placement
+    stays for routing."""
+    connection_id = await _connect(session_factory)
+    async with session_factory() as db, db.begin():
+        room_id = await make_room(db, member=AGENT)
+        db.add(
+            AgentSessionPlacement(
+                agent_id=AGENT,
+                session_id=session_id,
+                room_id=room_id,
+                connection_id=connection_id,
+            )
+        )
+        await db.execute(
+            update(AgentConnectionRecord)
+            .where(AgentConnectionRecord.id == connection_id)
+            .values(closed_at=datetime.now(UTC), close_reason="closed")
+        )
+
+
+async def test_a_stopped_agents_turn_is_ended_though_its_placement_stays(
+    service, session_factory
+) -> None:
+    await _place_on_closed_connection(session_factory, "stopped")
+    await _turn(service, "stopped", "running")
+    await _quiet(session_factory, "stopped", minutes=15)
+
+    await end_orphaned_turns_once(session_factory)
+    assert await _status(service, "stopped") == (
+        "interrupted",
+        4,
+        ORPHANED_TURN_TEXT,
+    )
+
+
+async def test_a_closed_placement_of_a_still_connected_agent_waits_the_longer_window(
+    service, session_factory
+) -> None:
+    await _place_on_closed_connection(session_factory, "stopped")
+    await _connect(session_factory)
+    await _turn(service, "stopped", "running")
+    await _quiet(session_factory, "stopped", minutes=15)
+
+    await end_orphaned_turns_once(session_factory)
+    assert (await _status(service, "stopped"))[0] == "running"
+
+    await _quiet(session_factory, "stopped", minutes=40)
+    await end_orphaned_turns_once(session_factory)
+    assert (await _status(service, "stopped"))[0] == "interrupted"
+
+
+async def _child(service, session_id: str) -> None:
+    await service.report_item(
+        AGENT,
+        session_id,
+        turn_id="turn-1",
+        item_id="child",
+        kind="tool-activity",
+        subagent=True,
+        revision=1,
+        status="in-progress",
+        title="Research the API",
+        text="",
+        command_id=None,
+        room_id=None,
+        thread_id=None,
+        message_id=None,
+        occurred_at=datetime.now(UTC),
+        usage=[],
+    )
+
+
+async def _child_status(service, session_id: str) -> tuple[str, int, str]:
+    rows = await service.turn_items(AGENT, session_id, "turn-1")
+    [row] = [row for row in rows if row.item_id == "child"]
+    return row.status, row.revision, row.text
+
+
+async def test_a_subagent_whose_session_went_away_is_settled_unconfirmed(
+    service, session_factory
+) -> None:
+    """A background subagent outlives its completed turn; once its session is
+    gone, Switch settles it so the card stops saying it is running."""
+    await _turn(service, "gone", "completed")
+    await _child(service, "gone")
+    await _quiet(session_factory, "gone")
+
+    await end_orphaned_turns_once(session_factory)
+    assert await _child_status(service, "gone") == (
+        "failed",
+        2,
+        ORPHANED_SUBAGENT_TEXT,
+    )
+    assert (await _status_of_turn(service, "gone"))[0] == "completed"
+
+
+async def test_a_subagent_of_a_live_or_moving_session_keeps_running(
+    service, session_factory
+) -> None:
+    connection_id = await _connect(session_factory)
+    async with session_factory() as db, db.begin():
+        room_id = await make_room(db, member=AGENT)
+        db.add(
+            AgentSessionPlacement(
+                agent_id=AGENT,
+                session_id="placed",
+                room_id=room_id,
+                connection_id=connection_id,
+            )
+        )
+    for session_id in ("placed", "recent"):
+        await _turn(service, session_id, "completed")
+        await _child(service, session_id)
+    await _quiet(session_factory, "placed")
+    await _quiet(session_factory, "recent", minutes=20)
+
+    await end_orphaned_turns_once(session_factory)
+    assert (await _child_status(service, "placed"))[0] == "in-progress"
+    assert (await _child_status(service, "recent"))[0] == "in-progress"
+
+
+async def _status_of_turn(service, session_id: str) -> tuple[str, int, str]:
+    rows = await service.turn_items(AGENT, session_id, "turn-1")
+    [row] = [row for row in rows if row.item_id == "turn"]
+    return row.status, row.revision, row.text

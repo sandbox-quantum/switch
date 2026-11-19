@@ -820,3 +820,26 @@ async def test_a_reachable_recipient_is_named_and_told_nothing_about_linking() -
     message = _posts(adapter).created[0]["message"]
     assert "@owner" in message
     assert "notified no one" not in message
+
+
+async def test_child_progress_is_posted_and_updated_on_the_same_mattermost_card() -> (
+    None
+):
+    adapter = _adapter("worker")
+    child = _item(
+        kind="tool-activity",
+        subagent=True,
+        status="in-progress",
+        title="Reviewer: Check changes",
+    )
+    ref = await adapter.post_rich(
+        "chan-1", "worker", TurnActivity([child], _turn("running"))
+    )
+    assert "Reviewer: Check changes — running" in _posts(adapter).stored[ref]["message"]
+    child = child.model_copy(update={"revision": 2, "status": "failed"})
+    await adapter.update_rich(
+        "chan-1", "worker", ref, TurnActivity([child], _turn("completed")), None
+    )
+    assert "Reviewer: Check changes — failed" in _posts(adapter).stored[ref]["message"]
+    assert "— running" not in _posts(adapter).stored[ref]["message"]
+    assert len(_posts(adapter).created) == 1

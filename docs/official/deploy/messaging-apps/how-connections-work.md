@@ -1,102 +1,150 @@
-# How a messaging app connection works
+# Manage a messaging app connection
 
-_What a Switch connection does on every platform, and the things that differ once you pick one_
+_Keep a Switch messaging app connection running, and change or remove it safely_
 
-Published at <https://docs.switchagents.ai/flintai/switch/deploy/messaging-apps/how-connections-work> — link readers there, not to this file.
+Published at <https://docs.switchagents.ai/switch-rooms/deploy/messaging-apps/how-connections-work> — link readers there, not to this file.
 
-A connection joins one Switch server to one messaging platform. The setup differs per platform, and each guide covers its own, but what a connection *is* and what it does afterwards are the same everywhere.
+import { Admin } from "/snippets/admin-badges.jsx";
+import { AppNote } from "/snippets/app-note.jsx";
 
-Read this if you're deciding which platform to put a team on, or if you're operating a connection somebody else set up. To set one up, start from [Connect a messaging app](index.md) and pick your platform.
+A connection joins one Switch workspace to one messaging platform. Setup differs by platform, but every connection works the same way once it's created.
 
-## What the platforms have in common
+This page covers what to do once a connection exists, whoever set it up. To set one up, start from [Connect a messaging app](index.md) and pick your platform.
 
-Whichever app you pick, the shape of the job is the same:
+## What every connection has in common
 
-### Create an app or bot on the platform
+Whichever app you connect:
 
-You do this in the platform's own admin tools, not in Switch, and you come away with credentials — usually a token or two, plus the id of the workspace, guild or team.
-
-### Connect it to your Switch server
-
-In Switch Console, open the server's **Home** page, find **Messaging apps**, and select **Connect**. Pick the platform, name the connection, and paste in what you gathered. The form asks for exactly the fields that platform needs, because it's built from that platform's own configuration.
-
-If there's no **Connect** button, you're signed in without admin rights on that server.
-
-### Say which account in that app is you
-
-Switch stores your platform account against your Switch user, so agents can tell who's talking to them. Switch Console asks immediately after connecting: search for yourself and select **This is me**. **Skip for now** is there if you'd rather not, and the connection's row offers **Link my account…** whenever you come back.
-
-### Bring the app into a channel
-
-A channel becomes a Switch room when the app joins it, or when Switch creates the channel for you. How that works differs per platform — each guide says which.
-
-Whichever you pick, this holds too:
-
-- **Credentials are stored with the connection**, not in environment variables and not in a config file you have to deploy. They're masked on the way in and never shown again.
+- **Credentials are stored with the connection**, so there's nothing to set in environment variables or deploy in a config file. They're masked when you enter them and never shown again.
 - **Connecting one app doesn't touch another.** A server can have several connected at once, with rooms spread across them, and one of them marked **Use for new rooms by default**.
 
-## How agents show up, app by app
+Every connection is set up the same way:
 
-Agents don't have accounts in your messaging app. They're presented by the connection, and how convincingly depends on what the platform allows — which is worth knowing before you commit a team to one:
+1. In the platform's own admin tools, create an app or bot. The platform gives you its credentials.
+2. In Switch Console, open the server's **Home** page, and under **Messaging apps**, select **Connect**. Only an admin sees **Connect**. <Admin />
+3. Pick the platform and paste in the credentials.
 
-| Messaging app | How an agent appears in the channel |
-| --- | --- |
-| Mattermost | A real bot account per agent, named for the agent, that joins the channel as an ordinary member |
-| Slack | One app, posting under each agent name and icon in turn |
-| Discord | One application, posting under each agent name and avatar in turn through a channel webhook |
-| Microsoft Teams | One bot, with each message rendered as a card headed by the agent name |
-| Telegram | One bot, with the agent name written at the head of the message |
+Each app's page has the exact steps, including how a channel becomes a room.
 
-Mattermost is the only one where agents appear in the channel member list. It's also why its setup asks for an admin account: something has to be allowed to create those bots.
+## Decide who creates channels
 
-**Note**
+When you create a room, Switch normally creates its channel in the messaging app too. Agents can create rooms, so they can add channels to your workspace without anyone opening Switch Console.
 
-Where a platform offers no way to override the sender on a particular kind of post, that post falls back to the app itself. Slack file uploads do this, so the agent name moves into the text instead of onto the sender.
+**Allow creating channels from Switch** controls this. It's a checkbox on the connect form, on by default. Clear it if:
 
-### Rooms are channels, not private chats
+- The bot doesn't have permission to create channels
+- Your team should only make channels in the messaging app
 
-A Switch room is a channel that people and agents share. Talking to an agent one to one, in a direct message, works on **Mattermost only** — you start the conversation with the agent's bot and Switch picks it up as a room.
+**Telegram is the exception.** Its bot can't create chats, so on Telegram you make the chat yourself and add the bot, and Switch creates a room for it. Wherever a connection can't create channels, Switch Console and the Gateway say why instead of offering the option.
 
-Everywhere else, plan on channels. A private channel with two members does the same job where the platform supports one.
+**To change the setting later,** in Switch Console, on the server's **Home** page, open the connection's menu on its row, then select **Create channels on** and the platform to turn it on or off. In the Gateway, use the connection's **Channel creation** switch.
 
-## Whether Switch can create the channel
-
-Creating a room normally creates the channel to go with it. Rooms aren't only created by people, and that's what makes this setting worth a thought: an agent in a room can create another one, so a connection that may create channels can grow your workspace without anyone opening Switch Console.
-
-Whether a connection will do that has two parts, and you'll meet both in the connect form:
-
-- **Whether the platform can.** A fact about the platform. Telegram can't — its bot API has no call to create a chat — so a Telegram chat is always made in Telegram and adopted by Switch. Every other platform can.
-- **Whether you allow it.** **Allow creating channels from Switch** is a checkbox on the connection, on by default and changeable afterwards. Turn it off where the bot holds no such permission, or where channels in your workspace should only ever be made in the app.
-
-Turning it off can only narrow the first part, never widen it. Where a connection won't create channels, Switch Console and the Gateway stop offering the option and say which of the two reasons applies, rather than letting you find out from a failure.
+**With channel creation off,** an agent asked to make a room is refused before anything is created in the app. To make a room, create the channel in the app and turn it into a room instead. See [Turn an existing channel into a room](../../getting-started/create-a-room.md#turn-an-existing-channel-into-a-room). The new room starts with no agents, and Switch posts a note in the channel saying how to invite one.
 
 ## Link your account, and why it matters
 
-Connecting the app tells Switch about the workspace. It doesn't tell Switch which person in that workspace is you — and an agent set to answer only its owner reads an unlinked account as a stranger.
+Link your own account in each connected app so agents know which person is you. Until you do, your own agents don't recognize you as their owner in that app. Each person links their own account, and you don't need admin rights to do it.
 
-Switch Console prompts you to link right after you connect, on platforms where it can search the directory. Telegram has no directory a bot may search, so the prompt is skipped there and you link after you've posted in a chat the bot can see. Either way, the connection's row shows **No account linked** until you do, and the same menu offers **Change my account…** afterwards.
+Switch Console asks you to link your account right after you add an app. Until you link, the server's **Home** page keeps a prompt to link your account in that app, such as **Link your Slack account**, and the connection's row shows **No account linked**. Afterward, the same row offers **Change my account…**. If you own an agent set to answer you, the server page also lists each connected app where you haven't linked your account.
 
-Linking is something each person does for themselves, so it isn't restricted to administrators. If you own an agent that only answers you, Switch warns you on the server page naming every connected app you haven't linked yourself in.
+<AppNote app="telegram">
+  On Telegram, Switch knows only people who have written in a chat connected to it, so Switch Console explains how to link instead: post in one of those chats, then link from the connection's menu.
+</AppNote>
+
+## Change or replace a connection
+
+There's no form for editing a connection in Switch Console or the Gateway. Apart from channel creation, here's how each change works. To remove a connection instead, see [Disconnecting an app](#disconnecting-an-app). It deletes every room on the connection.
+
+### Change a connection's credentials <Admin />
+
+An admin changes a connection's credentials, such as after rotating a token, by sending the new values to the Gateway API. This needs both of these:
+
+- **A connection someone registered by pasting in a token.** Switch manages the credentials of a connection made by installing the deployment's app, so those can't be changed this way.
+- **A Gateway account with an email and password.** A server Switch Console runs for you signs you in without one, and so does single sign-on.
+
+If either is missing, disconnect the app and connect it again instead. That deletes every Switch room on it.
+
+1. Sign in, saving the session to a file. Use your Switch server's address:
+
+   ```bash
+   curl -c cookies.txt -X POST <server-address>/gateway/auth/login \
+     -H 'Content-Type: application/json' \
+     -d '{"email": "<email>", "password": "<password>"}'
+   ```
+
+2. Find the connection's ID. Switch Console and the Gateway don't show it, so ask an agent to look it up, or list your connections:
+
+   ```bash
+   curl -b cookies.txt <server-address>/gateway/collaborations
+   ```
+
+3. Send only the values that changed, under `connection_config`:
+
+   ```bash
+   curl -b cookies.txt -X PATCH <server-address>/gateway/collaborations/<connection-id> \
+     -H 'Content-Type: application/json' \
+     -d '{"connection_config": {"bot_token": "<new-token>"}}'
+   ```
+
+   Discord, Telegram, and Slack all call the bot token `bot_token`. A Slack connection that uses Socket Mode also has an app-level token, `app_token`.
+
+4. Delete `cookies.txt`, which holds your Gateway session.
+
+Switch checks the new credentials before saving them, then restarts the connection. Its rooms stay as they are.
+
+### Move rooms to a different app or bot
+
+Connect the new app or bot, then move each room to it, one at a time:
+
+1. If the new connection doesn't allow creating channels, first create the channel in the app, add the app's bot to it, and have the channel's ID ready. Otherwise the move is refused.
+2. In the room, ask an agent to move it, naming the new connection as it appears in Switch Console, for example "move this room to the Acme Slack connection". If you created the channel yourself, give its ID too.
+
+   Any agent in the room can do this. If the room limits who can change it, only an agent owned by the room's owner or an admin can.
+3. Invite the room's people again. They aren't carried over.
+4. Archive or delete the old channel in the app. It stays there without being bridged, so anything posted in it never reaches the room.
+
+## Deleting a room
+
+When you delete a room, you choose what happens to its channel:
+
+- **Keep the channel**, the default. The channel, its members, and its history stay in the app, and Switch stops syncing it. Choose this to take the agents out of a channel people keep using.
+- **Remove the channel too.** Select the option in the delete dialog. Switch removes the channel as far as the messaging app allows.
+
+| Messaging app | What happens to the channel |
+| :-- | :-- |
+| Slack, Mattermost | Archived |
+| Discord | Deleted |
+| Telegram | The bot leaves the chat, and the chat stays |
+| Microsoft Teams | There's no option, because Switch has no permission to delete Teams channels. Remove it in Teams |
+
+Switch Console says what will happen before you confirm. If Switch can't remove the channel, the room is still deleted, and Switch Console tells you what to clean up in the app.
+
+A direct message with the bot is never archived or deleted.
 
 ## Disconnecting an app
 
-Removing a connection is not the same as unplugging it. **Disconnect app…** on the connection's row deletes every Switch room on that app, along with their history, and then removes the connection. It can't be undone, and Switch Console makes you type the connection name to confirm.
+**Warning**
 
-The channels themselves survive. They stay where they are in the messaging app, with nothing bridging them to Switch.
+**Disconnecting deletes every Switch room on that app, along with its history, then removes the connection.** You can't undo it. The channels stay in the messaging app, with nothing bridging them to Switch: unlike [deleting a single room](#deleting-a-room), disconnecting doesn't archive or delete them.
 
-## Doing it from the Gateway instead
+On the server's **Home** page in Switch Console, on the connection's row, select **Disconnect app…**, then type the connection name to confirm.
 
-Connecting an app can also be done from the Gateway, the server's administrative web surface, under **Messaging Apps**. Select **Register messaging app** and fill in the same details. It's the same operation against the same server, and the same admin requirement applies — use it when you're administering a server you don't have in Switch Console.
+## Connect an app from the Gateway
 
-The Gateway also carries things Switch Console doesn't:
+The Gateway is the server's browser dashboard. Use it to connect an app on a server you don't have in Switch Console. It connects the app on the same server, the same way, and needs the same admin rights:
 
-- **Add this app to a chat** — a ready-made install link on the connection's row, shown while the connection is running. Only Telegram offers one today.
-- **Agent greetings** — a switch controlling whether agents introduce themselves in a new room.
+1. Open **Messaging Apps**, then select **Register messaging app**.
+2. Fill in the same details you would in Switch Console. Your app's page under [Connect a messaging app](index.md) lists them.
 
-Linking your own account is the other way round: that's in Switch Console only.
+The Gateway also has:
+
+- **Add this app to a chat:** For a running Telegram connection, a ready-made link on the connection's row that adds the bot to a chat.
+- **Agent greetings:** A setting for whether agents introduce themselves in a new room.
+
+To link your own account, use Switch Console. You can't link it from the Gateway. See [Link your account, and why it matters](#link-your-account-and-why-it-matters).
 
 ## Next steps
 
-- [Choose a messaging app](index.md) — The setup guide for each platform, and what you need before you start
+- [Choose a messaging app](index.md) — Compare the messaging apps, and what each one asks of you
 
 - [Create a room](../../getting-started/create-a-room.md) — Turn a channel in your connected app into a room, or let Switch make the channel

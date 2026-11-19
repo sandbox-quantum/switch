@@ -86,6 +86,19 @@ HTTP_REQUEST_DURATION = _spec(
     "route",
     "method",
 )
+# A gateway request answered at once, without being served, because its caller
+# (`caller`, 429) or the process (`process`, 503) had as many requests running
+# as it may for longer than the request could wait (`gateway/admission.py`).
+GATEWAY_TURNED_AWAY = _spec(
+    "switch.http.gateway_turned_away",
+    "sum",
+    "{request}",
+    "Gateway requests answered at once without being served, because their "
+    "caller (`caller`) or the process (`process`) had as many running as it "
+    "may for longer than they could wait.",
+    "reason",
+)
+
 # A caller that kept repeating a refused request, answered 429 from memory
 # (`refusal_breaker.py`). `route` is the template of the route that refused it.
 HTTP_REFUSALS_THROTTLED = _spec(
@@ -387,6 +400,16 @@ BRIDGES_RUNNING = _spec(
     "bridge",
     "platform",
 )
+BRIDGES_CRASHED = _spec(
+    "switch.bridges.crashed",
+    "gauge",
+    "{bridge}",
+    "1 for each configured collaboration bridge whose task has died, by "
+    "platform and the bridge's display name; 0 once it runs again. The bridges "
+    "health check says that one is down, this says which.",
+    "platform",
+    "bridge_name",
+)
 BRIDGE_CALL_DURATION = _spec(
     "switch.bridge.call.duration",
     "histogram",
@@ -461,11 +484,9 @@ AGENT_BUFFER_SCAN_DURATION = _spec(
     "operation",
     bounds=(0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 25.0, 100.0),
 )
-# `reason` is from a fixed set the refusal sites choose. `transport_removed` is
+# `reason` is from a fixed set the refusal sites choose: `transport_removed` is
 # a client still asking for the retired event stream, the one way to see old
-# clients that never manage to connect at all. Nothing sends it while the event
-# stream is kept for its compatibility window; it is kept here for the release
-# that removes the stream, when it starts firing again.
+# clients that never manage to connect at all.
 AGENT_CONNECTIONS_REFUSED = _spec(
     "switch.agent.connections_refused",
     "sum",
@@ -497,6 +518,24 @@ AGENT_CONNECTIONS_EXPIRED = _spec(
     "alone cannot show.",
 )
 
+# Agent controller connections, by what happened to one: `opened` (a fresh
+# open on this process), `adopted` (a socket attaching here to a connection
+# another process opened), `taken_over` (closed here because a newer
+# connection replaced it through another process), and `closed` with the
+# close code as `reason` (heartbeat_lapsed, taken_over, ...). These were
+# info log lines, hundreds of thousands a day on pilot while controllers
+# reconnected every few seconds; a rate is what says that is happening.
+CONTROLLER_CONNECTIONS = _spec(
+    "switch.controllers.connections",
+    "sum",
+    "{connection}",
+    "Agent controller connection events, by event: opened, adopted, "
+    "taken_over, closed (with the close code as reason). A steady rate "
+    "against a flat count of controllers is reconnect churn.",
+    "event",
+    "reason",
+)
+
 # Every stream open, by what it was. `reattach` is a live connection whose
 # socket came back; `after_lapse` and `after_close` are a connection id this
 # process closed recently, coming back; `fresh` is one this process has never
@@ -513,18 +552,16 @@ AGENT_CONNECTIONS_OPENED = _spec(
 # ── Agents and clients ───────────────────────────────────────────────────────
 # `client` is the declared artifact when the registry knows the name, else
 # `other` or `unknown`. Never the declared version: the client chooses it.
-# `transport` is `websocket`, `sse` (an old client on the event stream, kept
-# for a compatibility window that ends when this stays at zero), `detached`
-# (the stream dropped, and the connection waits out its heartbeat window), or
-# `controller` (run by an agent controller, on that controller's connection).
+# `transport` is `websocket`, `detached` (the stream dropped, and the
+# connection waits out its heartbeat window), or `controller` (run by an
+# agent controller, on that controller's connection).
 AGENTS_CONNECTED = _spec(
     "switch.agents.connected",
     "gauge",
     "{agent}",
-    "Agents holding a live protocol connection, by transport (websocket, sse, "
-    "detached, controller) and client. An agent connected more than one way counts once "
-    "under each, so summing across the attributes can exceed the number of "
-    "agents.",
+    "Agents holding a live protocol connection, by transport and client. An "
+    "agent connected more than one way counts once under each, so summing "
+    "across the attributes can exceed the number of agents.",
     "transport",
     "client",
 )
@@ -624,6 +661,150 @@ RUNTIME_GC_PAUSE = _spec(
     bounds=(0.1, 0.5, 1.0, 5.0, 10.0, 25.0, 50.0, 100.0, 250.0, 500.0, 1000.0),
 )
 
+# ── Decision routing ─────────────────────────────────────────────────────────
+# Auto-route asks a decision backend which agent, if any, should answer a
+# person's untagged message (`decision/client.py`, `delivery/router.py`).
+# `backend` is the kind of backend that was asked — `server_default`,
+# `endpoint`, `haiku_anthropic`, `haiku_bedrock` or `machine` — never which
+# endpoint, workspace or machine: those are per tenant and live in the decision
+# record the router logs for each message. `model` is the model that answered,
+# as the server's own decision service names it (`gemini-decision-1`,
+# `claude-haiku-5-5`, ...): a workspace's own endpoint is `workspace_endpoint`
+# whatever it says, a decision with no answer is `unknown`, and a name that is
+# not plain, or past the few a process keeps, is `other`
+# (`decision.client.MAX_MODEL_LABELS`). `backend` says who was asked, `model`
+# what answered: the server default is one backend whichever model it runs.
+DECISION_LATENCY_BOUNDS_MS: tuple[float, ...] = (
+    25.0,
+    50.0,
+    100.0,
+    200.0,
+    300.0,
+    500.0,
+    750.0,
+    1000.0,
+    1500.0,
+    2000.0,
+    3000.0,
+    5000.0,
+    10000.0,
+    30000.0,
+    120000.0,
+)
+DECISION_REQUESTS = _spec(
+    "switch.decision.requests",
+    "sum",
+    "{decision}",
+    "Decisions asked of a backend, by backend and outcome: `agent` (it picked "
+    "one), `none` (it picked nobody, or its pick fell below the threshold) or "
+    "`failed` (no usable answer). `model` is the model that answered.",
+    "backend",
+    "model",
+    "outcome",
+)
+DECISION_FAILURES = _spec(
+    "switch.decision.failures",
+    "sum",
+    "{failure}",
+    "Decisions that got no usable answer, by backend and reason (`timeout`, "
+    "`unreachable`, `error_status`, `bad_answer`, `key_unreadable`, "
+    "`endpoint_refused`). `model` is `unknown` unless an answer came back.",
+    "backend",
+    "model",
+    "reason",
+)
+# What a failed answer said went wrong behind the service, from the fixed
+# `error_kind` the decision service sends. Anything else, including an
+# endpoint that sends none, is `unknown`: the body is never read.
+DECISION_BACKEND_ERRORS = _spec(
+    "switch.decision.backend_errors",
+    "sum",
+    "{error}",
+    "Failed answers by what the backend said went wrong behind it: the model "
+    "server unreachable, timing out or erroring, the model not loaded, "
+    "credentials missing, the upstream refusing, or `unknown`. No answer came "
+    "back, so `model` is `unknown` (or `workspace_endpoint`).",
+    "backend",
+    "model",
+    "kind",
+)
+DECISION_DURATION = _spec(
+    "switch.decision.duration",
+    "histogram",
+    "ms",
+    "Wall time of one decision request, measured by Switch around the whole "
+    "request, failures included. Compare with switch.decision.model_time: the "
+    "gap is the network and the backend's queue.",
+    "backend",
+    "model",
+    bounds=DECISION_LATENCY_BOUNDS_MS,
+)
+DECISION_MODEL_TIME = _spec(
+    "switch.decision.model_time",
+    "histogram",
+    "ms",
+    "How long the backend says its model took for an answered decision. "
+    "Missing for an endpoint that does not say.",
+    "backend",
+    "model",
+    bounds=DECISION_LATENCY_BOUNDS_MS,
+)
+DECISION_CONFIDENCE = _spec(
+    "switch.decision.confidence",
+    "histogram",
+    "1",
+    "The backend's confidence in each answered decision, 0 to 1, for setting "
+    "the threshold: how many answers fall just under it.",
+    "backend",
+    "model",
+    bounds=(0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0),
+)
+# One per undecided message, however it ended — the one place every path meets
+# (`MessageRouter._record_settled`). A message decided twice, after a lease
+# lapsed or a restart, is counted once per attempt that settled it.
+DECISION_SETTLED = _spec(
+    "switch.decision.settled",
+    "sum",
+    "{message}",
+    "Undecided messages by how they ended: `delivered`, `nobody_chosen`, "
+    "`nobody_failed`, `triage`, `dropped_not_member`, `dropped_not_allowed`, "
+    "`expired`, `settled_elsewhere` or `unavailable`.",
+    "outcome",
+)
+DECISION_WAIT = _spec(
+    "switch.decision.wait",
+    "histogram",
+    "ms",
+    "Time from a person's message to it being settled, queueing included: "
+    "what the person waited for an answer to start.",
+    "outcome",
+    bounds=DECISION_LATENCY_BOUNDS_MS,
+)
+# Sampled from the database by the decision sweep (`decision/pending_gauge.py`).
+# Every replica reports the same server-wide value, so read these with max.
+DECISION_PENDING = _spec(
+    "switch.decision.pending",
+    "gauge",
+    "{message}",
+    "Messages waiting for a decision, across the server. Every replica reports "
+    "the same value: read with max, not sum.",
+)
+DECISION_PENDING_OLDEST_AGE = _spec(
+    "switch.decision.pending.oldest_age",
+    "gauge",
+    "s",
+    "Age of the oldest message waiting for a decision. Messages past the "
+    "pending limit (two minutes by default) are dropped as expired. Read with "
+    "max.",
+)
+DECISION_NOTICES = _spec(
+    "switch.decision.notices",
+    "sum",
+    "{notice}",
+    '"Auto-route is unavailable" notices posted to rooms (at most one an hour '
+    "per room).",
+)
+
 # ── Health ───────────────────────────────────────────────────────────────────
 # One series per dependency, so a dashboard shows which one broke.
 HEALTH_CHECK = _spec(
@@ -634,12 +815,217 @@ HEALTH_CHECK = _spec(
     "check",
 )
 
+# ── Hosted agents ────────────────────────────────────────────────────────────
+# Read from what cloud machines' controllers already send Core (their status
+# reports) and from the hosted controller service's calls. Only cloud machines
+# count, never a laptop or an SSH host. No id of any kind is an attribute, and
+# every value is a word from a fixed set mapped in `observability/hosted.py`,
+# never a report's text. The gauges are reported by one process only, the one
+# holding the hosted metrics advisory lock, so several Core processes don't
+# each report every machine. `backend` is the kind of cloud machine: `vm` for
+# every machine this server makes today.
+HOSTED_AGENTS = _spec(
+    "switch.hosted.agents",
+    "gauge",
+    "{agent}",
+    "Agents on cloud machines, by the process state and session state each "
+    "machine last reported. Reports older than 3 minutes are left out. A v1 "
+    "machine reports no session state, so its `session` is always `none`.",
+    "process",
+    "session",
+    "backend",
+)
+HOSTED_AGENTS_STOPPED = _spec(
+    "switch.hosted.agents_stopped",
+    "gauge",
+    "{agent}",
+    "Agents on cloud machines that are crashed or failed, by reason: "
+    "`out_of_memory`, `crash_loop`, and any other reason `other`.",
+    "reason",
+    "backend",
+)
+HOSTED_SESSIONS = _spec(
+    "switch.hosted.sessions",
+    "gauge",
+    "{session}",
+    "Sessions on cloud machines: `running` now, and the `max` the machines "
+    "allow. Running over max is how full the machines are.",
+    "kind",
+    "backend",
+)
+HOSTED_BOX_MEMORY_USED = _spec(
+    "switch.hosted.box_memory_used",
+    "histogram",
+    "%",
+    "How full a cloud machine's memory was, per status report: 100 × (total − "
+    "available) ÷ total, once per machine report (a machine serving several "
+    "workspaces counts once). The max and p95 show the fullest machines.",
+    "backend",
+    bounds=(25.0, 50.0, 60.0, 70.0, 75.0, 80.0, 85.0, 90.0, 92.0, 95.0, 98.0),
+)
+HOSTED_BOXES_REPORTING = _spec(
+    "switch.hosted.boxes_reporting",
+    "gauge",
+    "{machine}",
+    "Cloud machines that should be running and sent a status report in the "
+    "last 3 minutes. Below switch.hosted.boxes_expected means a machine has "
+    "gone silent.",
+    "backend",
+)
+HOSTED_BOXES_EXPECTED = _spec(
+    "switch.hosted.boxes_expected",
+    "gauge",
+    "{machine}",
+    "Cloud machines that should be running: ready, and wanted running. A "
+    "machine stopped by its owner or for idleness is not expected.",
+    "backend",
+)
+HOSTED_MACHINE_EVENTS = _spec(
+    "switch.hosted.machine_events",
+    "sum",
+    "{event}",
+    "Cloud machine changes, as committed: `requested`, `ready`, `failed`, "
+    "`woken` and `stopped`, at the points where product telemetry reports "
+    "the same change. `reason` is a fixed word (the claim's change, the "
+    "failure, what woke it, why it stopped, or `new` and `restart` for "
+    "ready).",
+    "event",
+    "reason",
+    "backend",
+)
+HOSTED_RECONCILER_SILENCE = _spec(
+    "switch.hosted.reconciler_silence",
+    "gauge",
+    "s",
+    "Seconds since this Core process last heard from the hosted controller "
+    "service (its machine list poll or an observation), counted from the "
+    "process's start until it first hears. Each process reports its own: the "
+    "minimum over pods is how long the reconciler has been silent.",
+)
+HOSTED_PROVIDER_LOGIN_PROBLEMS = _spec(
+    "switch.hosted.provider_login_problems",
+    "gauge",
+    "{provider}",
+    "AI providers installed on cloud machines whose login is `missing` or "
+    "`expired`, by provider (a fixed list, otherwise `other`), so agents on "
+    "them can't run. Reports older than 3 minutes are left out.",
+    "provider",
+    "reason",
+    "backend",
+)
+HOSTED_PROVISION_SECONDS = _spec(
+    "switch.hosted.provision_seconds",
+    "histogram",
+    "s",
+    "How long a new cloud machine took from its claim to its first status "
+    "report. Starts after the first aren't timed.",
+    "backend",
+    bounds=(60.0, 120.0, 180.0, 240.0, 300.0, 420.0, 600.0, 900.0, 1200.0, 1800.0),
+)
+HOSTED_DISK_USED = _spec(
+    "switch.hosted.disk_used",
+    "histogram",
+    "%",
+    "How full a cloud machine's disk was, per status report (once per "
+    "machine): 100 × (total − free) ÷ total. The max and p95 show the fullest "
+    "machines.",
+    "backend",
+    bounds=(25.0, 50.0, 60.0, 70.0, 75.0, 80.0, 85.0, 90.0, 92.0, 95.0, 98.0),
+)
+OBSERVABILITY_SAMPLE_FAILURES = _spec(
+    "switch.observability.sample_failures",
+    "sum",
+    "{failure}",
+    "Samples a background metrics sampler couldn't take, by its fixed name. "
+    "Its own warning never reaches Datadog (the observability package's logs "
+    "are kept out of the export), so this is what shows a broken sampler.",
+    "sampler",
+)
+HOSTED_CLOUD_ERRORS = _spec(
+    "switch.hosted.cloud_errors",
+    "sum",
+    "{error}",
+    "Cloud calls the hosted controller service saw fail, by call "
+    "(`launch`, `start`, `stop`, `terminate`, `volume`, `describe` or `other`) "
+    "and kind (`capacity`, `throttled`, `permission` or `other`). Never the "
+    "cloud's own code or message.",
+    "call",
+    "kind",
+    "backend",
+)
+HOSTED_CONTROLLER_ERRORS = _spec(
+    "switch.hosted.controller_errors",
+    "sum",
+    "{error}",
+    "Errors the hosted controller service hit while it kept running, by kind "
+    "(`cloud`, `core_api`, `state` or `other`), as it reports them to Core.",
+    "kind",
+)
+HOSTED_CONTROLLER_RESTARTS = _spec(
+    "switch.hosted.controller_restarts",
+    "sum",
+    "{restart}",
+    "Agent controllers on cloud machines that restarted: a status report "
+    "naming a new start time for the same controller.",
+    "backend",
+)
+AUTH_SIGN_IN_FAILURES = _spec(
+    "switch.auth.sign_in_failures",
+    "sum",
+    "{failure}",
+    "Password sign-ins refused for a wrong password or an unknown email. No "
+    "attributes: never the email, the account or the caller's address.",
+)
+# `limit` is `email` or `client_address`, the sign-in limit that locked
+# (`gateway/login_limits.py`). Email lock-outs coming steadily with no
+# address lock-outs beside them are someone keeping one person out on
+# purpose, which the per-email lock lets anyone who knows the email do.
+AUTH_SIGN_IN_LOCKOUTS = _spec(
+    "switch.auth.sign_in_lockouts",
+    "sum",
+    "{lockout}",
+    "Password sign-in lock-outs, by the limit that locked: `email` (failures "
+    "with one email address, whether or not an account has it) or "
+    "`client_address` (failures from one client address). Counted when the "
+    "failed attempt that reached the limit is refused, never the email, the "
+    "account or the address.",
+    "limit",
+)
+CONTROLLER_CREDENTIAL_REFUSALS = _spec(
+    "switch.controller.credential_refusals",
+    "sum",
+    "{refusal}",
+    "Controller credentials refused with a 401, by reason code and kind of "
+    "route (`agent`, `management`, `controller`, `hosted_controller` or "
+    "`other`), never the path or any part of the credential.",
+    "reason",
+    "route",
+)
+
+# ── Unhandled exceptions ────────────────────────────────────────────────────
+# Recorded by `switch_core.runtime_errors`. `component` is `http`, `websocket`
+# or `task`; `type` is a common exception class by name (a fixed list), or
+# `other`.
+RUNTIME_UNHANDLED_EXCEPTIONS = _spec(
+    "switch.runtime.unhandled_exceptions",
+    "sum",
+    "{exception}",
+    "Exceptions nothing in Core handled, by where they escaped (`http`, "
+    "`websocket` or a background `task`) and the nearest common exception "
+    "class, by name, from a fixed list (anything else `other`). Each "
+    "also writes one `runtime.unhandled_exception` log line beside the full "
+    "stack the server already logs.",
+    "component",
+    "type",
+)
+
 CATALOGUE: dict[str, MetricSpec] = {
     spec.name: spec
     for spec in (
         HTTP_REQUESTS,
         HTTP_REQUEST_DURATION,
         HTTP_REFUSALS_THROTTLED,
+        GATEWAY_TURNED_AWAY,
         DB_POOL_IN_USE,
         DB_POOL_SIZE,
         DB_POOL_OVERFLOW,
@@ -667,6 +1053,7 @@ CATALOGUE: dict[str, MetricSpec] = {
         BRIDGE_EVENTS_OUT,
         BRIDGE_ERRORS,
         BRIDGES_RUNNING,
+        BRIDGES_CRASHED,
         BRIDGE_CALL_DURATION,
         BRIDGE_THROTTLE_HELD,
         MESSAGING_EVENTS_IGNORED,
@@ -677,6 +1064,7 @@ CATALOGUE: dict[str, MetricSpec] = {
         AGENT_CONNECTIONS_EXPIRED,
         AGENT_OPENS_DEFERRED,
         AGENT_CONNECTIONS_OPENED,
+        CONTROLLER_CONNECTIONS,
         AGENTS_CONNECTED,
         CONSUMERS_RUNNING,
         SERVICE_TOKEN_REQUESTS,
@@ -688,6 +1076,36 @@ CATALOGUE: dict[str, MetricSpec] = {
         RUNTIME_STARTS,
         RUNTIME_GC_COLLECTIONS,
         RUNTIME_GC_PAUSE,
+        DECISION_REQUESTS,
+        DECISION_FAILURES,
+        DECISION_BACKEND_ERRORS,
+        DECISION_DURATION,
+        DECISION_MODEL_TIME,
+        DECISION_CONFIDENCE,
+        DECISION_SETTLED,
+        DECISION_WAIT,
+        DECISION_PENDING,
+        DECISION_PENDING_OLDEST_AGE,
+        DECISION_NOTICES,
         HEALTH_CHECK,
+        HOSTED_AGENTS,
+        HOSTED_AGENTS_STOPPED,
+        HOSTED_SESSIONS,
+        HOSTED_BOX_MEMORY_USED,
+        HOSTED_BOXES_REPORTING,
+        HOSTED_BOXES_EXPECTED,
+        HOSTED_MACHINE_EVENTS,
+        HOSTED_RECONCILER_SILENCE,
+        HOSTED_PROVIDER_LOGIN_PROBLEMS,
+        HOSTED_PROVISION_SECONDS,
+        HOSTED_DISK_USED,
+        OBSERVABILITY_SAMPLE_FAILURES,
+        HOSTED_CLOUD_ERRORS,
+        HOSTED_CONTROLLER_ERRORS,
+        HOSTED_CONTROLLER_RESTARTS,
+        AUTH_SIGN_IN_FAILURES,
+        AUTH_SIGN_IN_LOCKOUTS,
+        CONTROLLER_CREDENTIAL_REFUSALS,
+        RUNTIME_UNHANDLED_EXCEPTIONS,
     )
 }

@@ -41,6 +41,7 @@ if TYPE_CHECKING:
 
 BRIDGE_CHANGED_SIGNAL = "bridge.changed"
 BRIDGE_ROOMS_CHANGED_SIGNAL = "bridge.rooms_changed"
+BRIDGE_RESTARTED_SIGNAL = "bridge.restarted"
 BRIDGE_FOR_HOLDER_SIGNAL = "bridge.for_holder"
 
 # A relayed request as `PendingWork` keeps it: the bridge, then the request's
@@ -55,10 +56,14 @@ class BridgeSignals:
         self._bus = bus
         self._owed = bus.pending_work("bridges", lifecycle.reconcile_bridge)
         self._rooms_owed = bus.pending_work("bridge-rooms", lifecycle.reload_rooms)
+        self._restarts_owed = bus.pending_work(
+            "bridge-restarts", lifecycle.restarted_elsewhere
+        )
         self._lifecycle = lifecycle
         self._relayed = bus.pending_work("bridge-for-holder", self._receive_relayed)
         bus.handle(BRIDGE_CHANGED_SIGNAL, self._on_changed)
         bus.handle(BRIDGE_ROOMS_CHANGED_SIGNAL, self._on_rooms_changed)
+        bus.handle(BRIDGE_RESTARTED_SIGNAL, self._on_restarted)
         bus.handle(BRIDGE_FOR_HOLDER_SIGNAL, self._on_for_holder)
         bus.on_resync(lifecycle.reconcile_all)
         bus.on_recheck(lifecycle.reconcile_all)
@@ -70,6 +75,11 @@ class BridgeSignals:
         """The bridge's row changed and has committed: every other process
         re-reads it. This one has already applied the change itself."""
         self._bus.publish(BRIDGE_CHANGED_SIGNAL, bridge_id=bridge_id)
+
+    def restarted(self, bridge_id: str) -> None:
+        """The bridge was restarted here: every other process tries its copy
+        again if it is not running, even one refused before."""
+        self._bus.publish(BRIDGE_RESTARTED_SIGNAL, bridge_id=bridge_id)
 
     def rooms_changed(self, bridge_id: str) -> None:
         """A room was bridged to the bridge or unbridged from it, and that has
@@ -92,6 +102,9 @@ class BridgeSignals:
 
     def _on_changed(self, signal: dict[str, Any]) -> None:
         self._owed.add(signal["bridge_id"])
+
+    def _on_restarted(self, signal: dict[str, Any]) -> None:
+        self._restarts_owed.add(signal["bridge_id"])
 
     def _on_rooms_changed(self, signal: dict[str, Any]) -> None:
         self._rooms_owed.add(signal["bridge_id"])

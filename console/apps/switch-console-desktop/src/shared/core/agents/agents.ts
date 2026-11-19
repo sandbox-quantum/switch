@@ -1,5 +1,8 @@
 import type { AgentProviderConfig } from '@shared/core/agents/agent-provider-config';
-import type { AgentProviderId } from '@shared/core/providers/agent-provider-registry';
+import {
+  requireProvider,
+  type AgentProviderId,
+} from '@shared/core/providers/agent-provider-registry';
 
 /**
  * A Switch agent: an agent identity bound to a single provider, living at a
@@ -29,11 +32,11 @@ export type Agent = {
   status: string | null;
   /** When true, Switch Console launches this agent's CLI with its auto-approve /
    * "bypass permissions" flag, skipping every permission check. Wins over
-   * `autoMode`. Off for new agents; editable per agent. */
+   * `autoMode`. New-agent defaults depend on the provider. */
   autoApprove: boolean;
   /** When true, sessions run in the provider's own auto mode: safe actions run
-   * without asking, risky ones still ask. On for new agents, off for agents
-   * that predate it; editable per agent. */
+   * without asking, risky ones still ask. Available only when the provider
+   * supports automatic review; editable per agent. */
   autoMode: boolean;
   /** The agent's owner on the Switch server, set when the agent was loaded from
    * another install. Null for agents this Console created. */
@@ -66,6 +69,12 @@ export type CreateAgentParams = {
   providerConfig?: AgentProviderConfig | null;
 };
 
-/** The permission settings a new agent starts with, wherever it runs: the
- * provider's auto mode on, bypass off. */
+/** Defaults for providers with automatic review. */
 export const NEW_AGENT_PERMISSIONS = { autoApprove: false, autoMode: true } as const;
+
+/** New agents use the provider's automatic review when available, otherwise bypass. */
+export function newAgentPermissions(providerId: AgentProviderId) {
+  return requireProvider(providerId).supportsAutoMode
+    ? NEW_AGENT_PERMISSIONS
+    : { autoApprove: true, autoMode: false };
+}

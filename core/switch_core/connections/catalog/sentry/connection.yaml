@@ -1,0 +1,78 @@
+slug: sentry
+name: Sentry
+category: Observability
+description: Look up Sentry issues, events, stack traces and releases, and change issues, projects and teams, as you, for up to an hour after each sign-in.
+enabled: true
+publisher: Sentry
+links:
+  documentation: https://docs.sentry.io/product/sentry-mcp/
+  support: https://sentry.io/support/
+  privacy: https://sentry.io/privacy/
+adapter: oauth
+auth:
+  type: oauth
+  # A refresh hands out a new refresh token, which replaces the old one (the
+  # server runs Cloudflare's OAuth provider). Measured: a refresh after the
+  # first token expired succeeded with no new sign-in.
+  refresh: rotating
+  oauth:
+    # Sentry's MCP server offers dynamic registration, PKCE S256 and token
+    # revocation, so Core registers its client and nothing is set up on the
+    # server. Sentry.io only: a self-hosted Sentry needs the local MCP server.
+    registration: dynamic
+    # Sign-ins come back to Switch Console, so a server without a public
+    # address can connect Sentry too. The ports are Atlassian's.
+    redirect: [loopback]
+    loopback_ports: [39231, 39232, 39233, 39234, 39235]
+    revocation_discovered: true
+  # An MCP token works only with Sentry's MCP server: sentry.io/api/0/
+  # answers it 401, and the token answer names nobody, so the account is
+  # read from the server's own whoami tool (read-only, no arguments).
+  identity:
+    mcp_tool: whoami
+    account_id: user.id
+    label: user.email
+# Agents have Sentry for up to an hour after each sign-in. The first access
+# token lives 3600 s, as measured. Sentry's MCP server never refreshes
+# upstream: its tokenExchangeCallback re-issues a refreshed token with the
+# remaining lifetime of the person's 30-day Sentry token, which outlives this
+# cap. The broker refreshes a pass-through token 15 minutes before it expires
+# (PASS_THROUGH_REFRESH_BEFORE), so a request after about minute 45 renews it,
+# and the broker withholds the renewed token. A token that an agent already
+# holds works until it expires. The broker hands out the renewed token only
+# in its last hour (about day 30).
+# The pass-through cap stays at 7 days at most: a grant turned off would
+# otherwise leave an agent's copy valid for weeks.
+token:
+  kind: pass_through
+  max_lifetime: 3600
+  note: "Agents can use Sentry for up to an hour after each sign-in. For another hour, disconnect and connect again, then turn Sentry on again for each agent."
+mcp:
+  servers:
+    - { name: sentry, url: "https://mcp.sentry.dev/mcp" }
+access:
+  # One level, read and write. Sentry grants these four scopes to every
+  # sign-in, whatever the person picks on its consent screen, so its scopes
+  # cannot make a connection read-only. Switch asks for the write scopes,
+  # every connection is granted the write level, and Console labels it
+  # "Read and write". What the person picks on Sentry's consent screen
+  # limits the tools:
+  # "Inspect Issues & Events" alone gives read-only tools, and Seer,
+  # "Triage Issues" and "Manage Projects & Teams" add their own. Sentry
+  # remembers the choice for the next sign-in. project:write and team:write
+  # let tools change projects and teams, and event:write lets them triage
+  # issues. Not asked for: alerts:write or any admin scope. project:write
+  # still lets tools create, change and delete alert rules
+  # (ProjectAlertRulePermission in getsentry/sentry
+  # src/sentry/api/bases/project.py). Without an admin scope, Sentry refuses
+  # to delete projects and teams.
+  #
+  # `read` and `write` are the same on purpose. Every entry must have a read
+  # level (the loader requires it, for connectors whose scopes can be
+  # read-only). Sentry has no read-only scopes, so `read` repeats the write
+  # scopes and is never used: a Sentry connection is always "Read and write".
+  read:
+    scopes: [org:read, project:write, team:write, event:write]
+  write:
+    scopes: [org:read, project:write, team:write, event:write]
+tools: { mode: pass_through }

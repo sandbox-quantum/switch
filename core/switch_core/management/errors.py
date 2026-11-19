@@ -17,6 +17,7 @@ from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
 
 from switch_core.management import reason_codes
+from switch_core.observability.hosted import record_credential_refusal, route_kind
 
 
 class ManagementError(Exception):
@@ -61,6 +62,15 @@ class ManagementRoute(APIRoute):
             try:
                 return await handler(request)
             except ManagementError as exc:
+                if exc.status_code == 401:
+                    # A refused credential, counted by its code and kind of
+                    # route only: `controller` on the controller routes (a
+                    # bearer token, as the agent routes count it), else
+                    # `management` (token exchange, enrolment, the gateway's).
+                    kind = route_kind(request.url.path)
+                    record_credential_refusal(
+                        exc.code, "controller" if kind == "controller" else "management"
+                    )
                 return JSONResponse(exc.body(), status_code=exc.status_code)
             except RequestValidationError as exc:
                 return JSONResponse(

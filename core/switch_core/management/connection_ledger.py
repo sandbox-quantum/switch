@@ -188,7 +188,7 @@ class ControllerConnectionLedger:
             resume_cursors=transition.resume_cursors,
         )
         if not written:
-            logger.info(
+            logger.debug(
                 "Controller %s connection %s went (%s), but its row names a newer "
                 "connection or another process; left as it is",
                 transition.controller_id,

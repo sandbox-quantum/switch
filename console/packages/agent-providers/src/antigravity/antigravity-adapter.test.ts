@@ -1,5 +1,6 @@
 import type * as fs from 'node:fs/promises';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { elicitationAnswer, elicitationQuestions } from '../acp/elicitation';
 import { FakeAppServer } from '../codex/fake-app-server';
 import type { ProviderRuntimeEvent } from '../events';
 
@@ -60,8 +61,7 @@ vi.mock('node:child_process', () => ({
     return server;
   },
 }));
-const { antigravityAcp, createAntigravityAdapter, elicitationAnswer, elicitationQuestions } =
-  await import('./antigravity-adapter');
+const { antigravityAcp, createAntigravityAdapter } = await import('./antigravity-adapter');
 beforeEach(() => {
   servers.length = 0;
   spawned.length = 0;
@@ -307,13 +307,19 @@ it('authenticates a legacy antigravity-acp install once before creating the sess
 });
 it('picks the session mode among the modes agy advertises', () => {
   const agy = {
-    availableModes: [{ id: 'default' }, { id: 'accept-edits' }, { id: 'plan' }],
+    availableModes: [{ id: 'default' }, { id: 'accept-edits' }, { id: 'auto' }, { id: 'plan' }],
   };
   expect(antigravityAcp.sessionMode?.('approval-required', agy)).toBe('default');
   expect(antigravityAcp.sessionMode?.('auto-accept-edits', agy)).toBe('accept-edits');
-  expect(antigravityAcp.sessionMode?.('auto', agy)).toBe('accept-edits');
+  expect(antigravityAcp.sessionMode?.('auto', agy)).toBe('auto');
   // Full access is the adapter approving every request, in agy's default mode.
   expect(antigravityAcp.sessionMode?.('full-access', agy)).toBe('default');
+});
+it('falls back to accept-edits when auto mode is unavailable', () => {
+  const agyWithoutAuto = {
+    availableModes: [{ id: 'default' }, { id: 'accept-edits' }, { id: 'plan' }],
+  };
+  expect(antigravityAcp.sessionMode?.('auto', agyWithoutAuto)).toBe('accept-edits');
 });
 it('keeps the legacy runtime’s auto-edit and yolo modes', () => {
   const legacy = { availableModes: [{ id: 'default' }, { id: 'auto_edit' }, { id: 'yolo' }] };
@@ -681,6 +687,56 @@ it('keeps approval for Switch metadata when Switch was not registered by the ses
   expect(events.filter((e) => e.type === 'request.opened')).toHaveLength(1);
 });
 
+it('recognizes MCP servers from tool name when _meta is absent', () => {
+  const servers = new Set(['switch', 'echo', 'a', 'a_b']);
+  expect(
+    antigravityAcp.mcpServerOf?.(
+      { toolCallId: 'call_1', name: 'mcp_switch_post_message' } as any,
+      servers
+    )
+  ).toBe('switch');
+  expect(
+    antigravityAcp.mcpServerOf?.({ toolCallId: 'call_2', name: 'mcp_echo_send' } as any, servers)
+  ).toBe('echo');
+  expect(
+    antigravityAcp.mcpServerOf?.({ toolCallId: 'call_3', name: 'regular_tool' } as any, servers)
+  ).toBeUndefined();
+  expect(
+    antigravityAcp.mcpServerOf?.(
+      { toolCallId: 'call_4', name: 'mcp_unregistered_tool' } as any,
+      servers
+    )
+  ).toBeUndefined();
+  // Longest prefix wins when server names overlap
+  expect(
+    antigravityAcp.mcpServerOf?.({ toolCallId: 'call_5', name: 'mcp_a_b_tool' } as any, servers)
+  ).toBe('a_b');
+});
+
+it('auto-approves Switch MCP calls using tool name when _meta is absent', async () => {
+  const { adapter, events, server } = await setup();
+  await adapter.sendTurn({ sessionId: 's', turnId: 't', text: 'connect' });
+  server.send({
+    id: 95,
+    method: 'session/request_permission',
+    params: {
+      sessionId: 'native',
+      toolCall: {
+        toolCallId: 'call_new',
+        name: 'mcp_switch_connect_to_room',
+        kind: 'other',
+        title: 'Run mcp_switch_connect_to_room',
+      },
+      options: [{ optionId: 'once', name: 'Allow once', kind: 'allow_once' }],
+    },
+  });
+  await flush();
+  expect(server.received.find((m) => m.id === 95)?.result).toEqual({
+    outcome: { outcome: 'selected', optionId: 'once' },
+  });
+  expect(events.filter((e) => e.type === 'request.opened')).toHaveLength(0);
+});
+
 const httpSwitch = {
   switch: {
     transport: 'http' as const,
@@ -711,20 +767,20 @@ it('registers an HTTP MCP server with its headers when the agent declares HTTP',
   });
 });
 
-it('refuses to start a session whose HTTP MCP servers the agent cannot reach', async () => {
+it('registers an HTTP MCP server when agy does not declare HTTP, as agy 1.5 does not', async () => {
   acp.http = false;
   const adapter = createAntigravityAdapter();
-  await expect(
-    adapter.startSession({
-      sessionId: 'no-http',
-      cwd: '/work',
-      runtimeMode: 'approval-required',
-      env: {},
-      mcpServers: httpSwitch,
-      connectorMcpServers: [],
-    })
-  ).rejects.toThrow('Antigravity does not declare MCP over HTTP');
-  expect(servers.at(-1)!.received.some((m) => m.method === 'session/new')).toBe(false);
+  await adapter.startSession({
+    sessionId: 'no-http',
+    cwd: '/work',
+    runtimeMode: 'approval-required',
+    env: {},
+    mcpServers: httpSwitch,
+    connectorMcpServers: [],
+  });
+  expect(servers.at(-1)!.received.find((m) => m.method === 'session/new')?.params).toMatchObject({
+    mcpServers: [{ name: 'switch', type: 'http', url: 'http://127.0.0.1:4567/mcp' }],
+  });
 });
 
 it('auto-approves calls to any MCP server the session registered, not only Switch', async () => {

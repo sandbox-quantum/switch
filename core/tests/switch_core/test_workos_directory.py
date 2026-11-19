@@ -4,6 +4,8 @@ stand-in for the WorkOS API."""
 from __future__ import annotations
 
 import json
+import logging
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import httpx
@@ -19,6 +21,7 @@ from switch_core.organization_directory import (
     DirectoryUnavailable,
     MemberChange,
 )
+from switch_core.outbound import OutboundHostUnresolved, OutboundURLRefused
 from switch_core.workos_directory import (
     EventCursorRejected,
     WorkOSDirectory,
@@ -27,6 +30,8 @@ from switch_core.workos_directory import (
 
 API = "https://workos.example.test"
 KEY = "sk_test_example"
+
+_ANY_TIME = datetime(2026, 11, 2, tzinfo=UTC)
 
 
 class _WorkOS:
@@ -61,6 +66,7 @@ class _WorkOS:
                 json={
                     "data": [
                         {
+                            "id": f"om_{organization_id}",
                             "organization_id": organization_id,
                             "role": {"slug": role},
                             "status": "active",
@@ -431,6 +437,30 @@ class TestChangesThroughTheMembersService:
             await directory.join(LINKED, "bob", "member")  # type: ignore[arg-type]
 
 
+class TestReachingWorkOS:
+    @pytest.mark.parametrize(
+        ("refusal", "said"),
+        [
+            (
+                OutboundHostUnresolved("api.example.test does not resolve"),
+                "its host does not resolve",
+            ),
+            (
+                OutboundURLRefused("api.example.test resolves to 10.0.0.1"),
+                "its address is refused",
+            ),
+        ],
+    )
+    async def test_an_address_switch_will_not_reach_is_unavailable(
+        self, refusal: OutboundURLRefused, said: str
+    ) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise refusal
+
+        with pytest.raises(DirectoryUnavailable, match=said):
+            await _directory(handler).organization("org_1")
+
+
 class TestWhatTheMirrorReads:
     async def test_events_are_asked_for_by_type_from_the_cursor_oldest_first(
         self,
@@ -457,18 +487,35 @@ class TestWhatTheMirrorReads:
         types = ("organization_membership.created", "organization.deleted")
 
         first = await directory.events(
-            types, after=None, range_start="2026-11-02T00:00:00+00:00"
+            types,
+            after=None,
+            range_start=datetime(2026, 11, 2, 1, 2, 3, 456789, tzinfo=UTC),
         )
-        await directory.events(types, after="event_1", range_start="unused")
+        await directory.events(types, after="event_1", range_start=_ANY_TIME)
 
         assert [event["id"] for event in first] == ["event_1"]
         assert seen[0].url.path == "/events"
         assert seen[0].url.params.get_list("events") == list(types)
         assert seen[0].url.params["order"] == "asc"
-        assert seen[0].url.params["range_start"] == "2026-11-02T00:00:00+00:00"
+        assert seen[0].url.params["range_start"] == "2026-11-02T01:02:03.456Z"
         assert "after" not in seen[0].url.params
         assert seen[1].url.params["after"] == "event_1"
         assert "range_start" not in seen[1].url.params
+
+    async def test_a_time_with_no_timezone_is_refused_before_asking(self) -> None:
+        seen: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request)
+            return httpx.Response(200, json={"data": [], "list_metadata": {}})
+
+        with pytest.raises(ValueError, match="no timezone"):
+            await _directory(handler).events(
+                ("organization.deleted",),
+                after=None,
+                range_start=datetime(2026, 11, 2),
+            )
+        assert seen == []
 
     async def test_a_page_switch_cannot_read_is_unavailable(self) -> None:
         directory = _directory(
@@ -477,7 +524,7 @@ class TestWhatTheMirrorReads:
 
         with pytest.raises(DirectoryUnavailable):
             await directory.events(
-                ("organization.deleted",), after=None, range_start="x"
+                ("organization.deleted",), after=None, range_start=_ANY_TIME
             )
 
     async def test_an_event_is_handed_back_as_sent_for_the_caller_to_judge(
@@ -488,7 +535,7 @@ class TestWhatTheMirrorReads:
         )
 
         assert await directory.events(
-            ("organization.deleted",), after=None, range_start="x"
+            ("organization.deleted",), after=None, range_start=_ANY_TIME
         ) == [{"id": "event_1"}]
 
     @pytest.mark.parametrize("status", [400, 404, 422])
@@ -505,7 +552,7 @@ class TestWhatTheMirrorReads:
 
         with pytest.raises(EventCursorRejected):
             await directory.events(
-                ("organization.deleted",), after="event_old", range_start="x"
+                ("organization.deleted",), after="event_old", range_start=_ANY_TIME
             )
 
     @pytest.mark.parametrize(
@@ -530,7 +577,7 @@ class TestWhatTheMirrorReads:
 
         with pytest.raises(DirectoryUnavailable) as refused:
             await directory.events(
-                ("organization.deleted",), after="event_1", range_start="x"
+                ("organization.deleted",), after="event_1", range_start=_ANY_TIME
             )
         assert not isinstance(refused.value, EventCursorRejected)
         assert str(status) in refused.value.message
@@ -590,3 +637,75 @@ class TestWhatTheMirrorReads:
             "user_A": "org_admin",
             "user_B": "member",
         }
+
+
+def _unrecognized(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    return [
+        r
+        for r in caplog.records
+        if r.name == "switch_core.workos_directory" and r.levelno == logging.WARNING
+    ]
+
+
+class TestUnrecognizedRoles:
+    async def test_are_members_at_sign_in_and_logged(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        workos = _WorkOS(
+            organizations={},
+            memberships=[
+                ("org_a", "viewer"),
+                ("org_b", "auditor"),
+                ("org_c", "contractor"),
+            ],
+        )
+
+        memberships = await _directory(workos).memberships_at_sign_in("user_EXAMPLE")
+
+        assert [m.role for m in memberships] == ["member", "member", "member"]
+        records = _unrecognized(caplog)
+        assert len(records) == 2
+        assert "om_org_b" in records[0].getMessage()
+        assert "'auditor'" in records[0].getMessage()
+        assert "om_org_c" in records[1].getMessage()
+        assert "'contractor'" in records[1].getMessage()
+
+    async def test_expected_roles_are_not_reported(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        workos = _WorkOS(
+            organizations={},
+            memberships=[
+                ("org_a", "org_admin"),
+                ("org_b", "admin"),
+                ("org_c", "editor"),
+                ("org_d", "viewer"),
+            ],
+        )
+
+        await _directory(workos).memberships_at_sign_in("user_EXAMPLE")
+
+        assert _unrecognized(caplog) == []
+
+    async def test_are_members_through_membership_role_and_logged(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "data": [
+                        {
+                            "id": "om_A",
+                            "organization_id": "org_a",
+                            "role": {"slug": "auditor"},
+                        }
+                    ]
+                },
+            )
+
+        assert await _directory(handler).membership_role("user_A", "org_a") == "member"
+        [record] = _unrecognized(caplog)
+        assert "om_A" in record.getMessage()
+        assert "org_a" in record.getMessage()
+        assert "'auditor'" in record.getMessage()

@@ -25,6 +25,7 @@ it('runs agy as `agy acp` in the user’s own profile, on every OS', async () =>
       binaryPath,
       cwd: '/work',
       env: { HOME: '/home/u', PATH: '/usr/bin' },
+      mcpServers: {},
     });
     expect(launch).toEqual({
       command: binaryPath,
@@ -40,9 +41,9 @@ it('refuses the Antigravity IDE launcher, which would take `acp` for a folder to
     '/usr/bin/antigravity',
     'C:\\Users\\u\\AppData\\Local\\Programs\\Antigravity\\bin\\antigravity.cmd',
   ])
-    await expect(antigravityLaunch({ binaryPath, cwd: '/work', env: {} })).rejects.toThrow(
-      'Antigravity IDE launcher'
-    );
+    await expect(
+      antigravityLaunch({ binaryPath, cwd: '/work', env: {}, mcpServers: {} })
+    ).rejects.toThrow('Antigravity IDE launcher');
 });
 
 it('tells a legacy wrapper install from Google’s agy', () => {
@@ -61,6 +62,7 @@ it('records the auth type where every Antigravity ACP version reads it, keeping 
     binaryPath: '/home/u/.local/bin/antigravity-acp',
     cwd: profile,
     env: { GEMINI_HOME: profile, PATH: '/usr/bin:/bin' },
+    mcpServers: {},
   });
   expect(JSON.parse(await readFile(join(profile, 'settings.json'), 'utf8'))).toEqual({
     auth: { type: 'oauth-personal' },

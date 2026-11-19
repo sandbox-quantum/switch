@@ -1,9 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { Session, TenantMembership } from "./api";
 import {
-  administersOrganization,
   appView,
-  canAdminTenant,
   clearPendingInvite,
   deliveryNotice,
   inviteTokenFrom,
@@ -19,6 +17,7 @@ const acme: TenantMembership = {
   role: "member",
   organization_role: "member",
   organization_id: "o1",
+  archived_at: null,
 };
 
 function session(overrides: Partial<Session> = {}): Session {
@@ -30,6 +29,7 @@ function session(overrides: Partial<Session> = {}): Session {
     can_create_workspace: true,
     can_add_workspace: false,
     invite_email_enabled: false,
+    can_manage_connector_apps: false,
     ...overrides,
   };
 }
@@ -54,25 +54,6 @@ describe("appView", () => {
     for (const state of ["ready", "needs_workspace", "needs_selection"] as const) {
       expect(appView(session({ state }), "tok")).toBe("accept_invite");
     }
-  });
-});
-
-describe("canAdminTenant", () => {
-  it("follows the workspace role", () => {
-    expect(canAdminTenant(session())).toBe(false);
-    expect(canAdminTenant(session({ tenant: { ...acme, role: "admin" } }))).toBe(true);
-  });
-
-  it("is granted to an operator whatever the role", () => {
-    const operator = session({
-      user: { id: "u1", name: "Op", email: "op@example.com", is_operator: true },
-    });
-    expect(canAdminTenant(operator)).toBe(true);
-  });
-
-  it("is not granted with no session or no workspace", () => {
-    expect(canAdminTenant(null)).toBe(false);
-    expect(canAdminTenant(session({ tenant: null, state: "needs_workspace" }))).toBe(false);
   });
 });
 
@@ -128,19 +109,5 @@ describe("deliveryNotice", () => {
     const notice = deliveryNotice("not_requested", null);
     expect(notice.severity).toBe("success");
     expect(notice.text).not.toContain("null");
-  });
-});
-
-describe("administersOrganization", () => {
-  it("follows the organization role, not the operator bit", () => {
-    expect(administersOrganization(session())).toBe(false);
-    expect(
-      administersOrganization(session({ tenant: { ...acme, organization_role: "org_admin" } })),
-    ).toBe(true);
-    expect(
-      administersOrganization(
-        session({ user: { id: "u1", name: "Ada", email: "a@example.com", is_operator: true } }),
-      ),
-    ).toBe(false);
   });
 });

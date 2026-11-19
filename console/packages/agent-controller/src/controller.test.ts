@@ -81,7 +81,6 @@ function deps(server = core.url): ControllerDeps {
     rechecks: new ProviderRechecks(),
     refreshPath: async () => {},
     providerSeed: [],
-    sessionStarted: () => {},
     tools: async () => [],
     fetch,
     openWebSocket: core.openWebSocket,
@@ -89,8 +88,10 @@ function deps(server = core.url): ControllerDeps {
     dataDir: dir,
     workspacesFor: () => join(dir, 'workspaces'),
     version: '0.1.0',
+    deviceId: 'd'.repeat(64),
     updatedBy: 'self',
     selfUpdate: null,
+    supervised: false,
     now: Date.now,
     random: () => 0,
     timing: {

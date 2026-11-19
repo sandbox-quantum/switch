@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 
 import telegram
 from telegram.error import InvalidToken
@@ -109,8 +109,11 @@ class TelegramAppClient:
         webhook_url: str,
         webhook_secret: str,
         on_connected: Callable[[TelegramAppClient], Awaitable[None]],
+        feature_flags: Mapping[str, bool],
     ) -> None:
         self._bot = bot
+        # The deployment's: which commands the `/` menu offers.
+        self._feature_flags = feature_flags
         self._on_connected = on_connected
         self._webhook_url = webhook_url
         self._webhook_secret = webhook_secret
@@ -149,7 +152,7 @@ class TelegramAppClient:
         if self._username is None:
             raise TelegramAppNotReady(
                 "the Switch Telegram bot has not connected yet, so there is no "
-                "link to offer. Try again shortly; the server log says why if "
+                "link to offer. Try again shortly; Switch's log says why if "
                 "it keeps failing."
             )
 
@@ -198,7 +201,7 @@ class TelegramAppClient:
         full without it, and a missing menu is a far better outcome than an app
         that offers no links because a cosmetic call failed.
         """
-        menu = command_menu()
+        menu = command_menu(self._feature_flags)
         try:
             await self._bot.set_my_commands(menu)
         except Exception:

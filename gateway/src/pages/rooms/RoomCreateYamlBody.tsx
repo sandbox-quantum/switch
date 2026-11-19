@@ -7,7 +7,7 @@ import {
   Stack,
   Typography,
 } from "@mui/material";
-import { Suspense, lazy, useCallback, useState } from "react";
+import { Suspense, lazy, useCallback, useId, useState } from "react";
 import { useNavigate } from "react-router";
 import { type ProvisionResult, createRoomFromYaml } from "../../data/api";
 
@@ -18,9 +18,7 @@ const PLACEHOLDER = `room:
   description: "Pilot room for ACME"
   instructions: "Be helpful."
   bridge: "Mattermost"            # bridge display name; omit for internal-only
-  channel_type: channel_public
-  read_visibility: public
-  write_visibility: public
+  channel_type: channel_private  # channel_public to make it public
   agents: [claude-code.my-project.alice]
   users: [alice]
   roles:
@@ -44,6 +42,7 @@ const PLACEHOLDER = `room:
 export default function RoomCreateYamlBody() {
   const navigate = useNavigate();
   const [yamlText, setYamlText] = useState("");
+  const emptyReasonId = useId();
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<ProvisionResult | null>(null);
@@ -123,7 +122,12 @@ export default function RoomCreateYamlBody() {
         references can attach an existing one (by name or id) or define a new one
         inline.
       </Typography>
-      <Stack direction="row" spacing={1} justifyContent="flex-end">
+      <Stack direction="row" spacing={1} justifyContent="flex-end" alignItems="center">
+        {!yamlText.trim() && (
+          <Typography id={emptyReasonId} variant="body2" color="text.secondary" sx={{ flexGrow: 1 }}>
+            Write or paste a room template to create it.
+          </Typography>
+        )}
         <Button onClick={() => navigate("/rooms")} disabled={submitting}>
           Cancel
         </Button>
@@ -131,6 +135,7 @@ export default function RoomCreateYamlBody() {
           variant="contained"
           onClick={handleSubmit}
           disabled={!yamlText.trim() || submitting}
+          aria-describedby={!yamlText.trim() ? emptyReasonId : undefined}
           startIcon={submitting ? <CircularProgress size={16} /> : undefined}
         >
           Create

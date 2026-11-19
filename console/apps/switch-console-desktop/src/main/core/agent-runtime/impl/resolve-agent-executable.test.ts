@@ -14,7 +14,7 @@ vi.mock('@main/lib/logger', () => ({
   log: { warn: vi.fn(), error: vi.fn(), info: vi.fn() },
 }));
 
-const { resolveAgentExecutable, clearResolvedPathCache } =
+const { resolveAgentExecutable, resolveAgentExecutableWithReason, clearResolvedPathCache } =
   await import('./resolve-agent-executable');
 
 const ctx = {} as never;
@@ -171,5 +171,58 @@ describe('resolveAgentExecutable', () => {
       });
       expect(second).toBe('/v2/claude');
     });
+  });
+});
+
+describe('resolveAgentExecutableWithReason on Windows with the official Codex installer', () => {
+  const official = 'C:\\Users\\USER\\AppData\\Local\\Programs\\OpenAI\\Codex\\bin\\codex.exe';
+  const stalePin = 'C:\\Users\\USER\\.local\\bin\\codex.exe';
+  const onDisk = new Set([official]);
+
+  beforeEach(() => {
+    resolveCommandPathMock.mockImplementation((async (command: string) =>
+      onDisk.has(command) ? command : command === 'codex' ? official : null) as never);
+  });
+
+  it('uses the picked codex.exe once it has replaced the pin', async () => {
+    const result = await resolveAgentExecutableWithReason({
+      providerId: 'codex',
+      binaryName: 'codex',
+      ctx,
+      hostDependencyStore: makeStore({ kind: 'path', path: official }),
+    });
+    expect(result).toEqual({ path: official, selectionProblem: null });
+  });
+
+  it('says the stale pin was passed over when it falls back to PATH', async () => {
+    const result = await resolveAgentExecutableWithReason({
+      providerId: 'codex',
+      binaryName: 'codex',
+      ctx,
+      hostDependencyStore: makeStore({ kind: 'pinned', realpath: stalePin }),
+    });
+    expect(result.path).toBe(official);
+    expect(result.selectionProblem).toContain(stalePin);
+  });
+
+  it('says a path override with no path saved cannot be used', async () => {
+    const result = await resolveAgentExecutableWithReason({
+      providerId: 'codex',
+      binaryName: 'codex',
+      ctx,
+      hostDependencyStore: makeStore({ kind: 'path', path: '' }),
+    });
+    expect(result.path).toBe(official);
+    expect(result.selectionProblem).toMatch(/no path was saved/);
+  });
+
+  it('reports nothing for auto', async () => {
+    const result = await resolveAgentExecutableWithReason({
+      providerId: 'codex',
+      binaryName: 'codex',
+      ctx,
+      hostDependencyStore: makeStore(null),
+    });
+    expect(result).toEqual({ path: official, selectionProblem: null });
   });
 });

@@ -34,7 +34,9 @@ function serve(initialDays: number | null, toDelete = 0) {
 
 describe("describeRetention", () => {
   it("says what the policy does in plain words", () => {
-    expect(describeRetention(null)).toBe("Messages are kept forever.");
+    expect(describeRetention(null)).toBe(
+      "No retention policy is set, so Switch keeps every message and the files attached to it.",
+    );
     expect(describeRetention(1)).toBe("Messages older than 1 day are deleted.");
     expect(describeRetention(90)).toBe("Messages older than 90 days are deleted.");
   });
@@ -46,10 +48,10 @@ describe("RetentionSection", () => {
       "fetch",
       vi.fn(async () => new Response(JSON.stringify({ detail: "boom" }), { status: 500 })),
     );
-    render(<RetentionSection tenantId="t1" />);
+    render(<RetentionSection tenantId="t1" canSetWindow />);
 
     await screen.findByText("boom");
-    expect(screen.queryByText(/kept forever/)).toBeNull();
+    expect(screen.queryByText(/No retention policy is set/)).toBeNull();
     expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
   });
 
@@ -60,8 +62,8 @@ describe("RetentionSection", () => {
 
   it("asks for confirmation with the number of messages before turning retention on", async () => {
     const calls = serve(null, 1234);
-    render(<RetentionSection tenantId="t1" />);
-    await screen.findByText(/Messages are kept forever/);
+    render(<RetentionSection tenantId="t1" canSetWindow />);
+    await screen.findByText(/No retention policy is set/);
 
     fireEvent.click(screen.getByLabelText("Delete messages older than"));
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
@@ -77,20 +79,20 @@ describe("RetentionSection", () => {
 
   it("goes back to keeping forever without a confirmation", async () => {
     const calls = serve(30);
-    render(<RetentionSection tenantId="t1" />);
+    render(<RetentionSection tenantId="t1" canSetWindow />);
     await screen.findByText(/Messages older than 30 days are deleted/);
 
     fireEvent.click(screen.getByLabelText("Keep forever"));
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
-    await screen.findByText(/Messages are kept forever/);
+    await screen.findByText(/No retention policy is set/);
     expect(calls.some((c) => c.method === "DELETE")).toBe(true);
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
   it("does not save a custom window out of range", async () => {
     serve(45);
-    render(<RetentionSection tenantId="t1" />);
+    render(<RetentionSection tenantId="t1" canSetWindow />);
     await screen.findByText(/Messages older than 45 days are deleted/);
 
     const days = screen.getByLabelText("Days");
@@ -100,5 +102,18 @@ describe("RetentionSection", () => {
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Save" }).hasAttribute("disabled")).toBe(true),
     );
+  });
+
+  it("lets an admin without their own membership turn retention off, but not on", async () => {
+    const calls = serve(30);
+    render(<RetentionSection tenantId="t1" canSetWindow={false} />);
+    await screen.findByText(/Messages older than 30 days are deleted/);
+
+    expect(screen.getByLabelText("Delete messages older than")).toHaveProperty("disabled", true);
+    expect(screen.getByText(/Only this workspace's own admins can turn retention on/)).toBeTruthy();
+
+    fireEvent.click(screen.getByLabelText("Keep forever"));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(calls.some((c) => c.method === "DELETE")).toBe(true));
   });
 });

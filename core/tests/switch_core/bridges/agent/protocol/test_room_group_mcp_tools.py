@@ -14,6 +14,7 @@ from switch_core.db.stores.room_group_store import (
     RoomGroupStore,
 )
 from switch_core.db.stores.room_store import RoomStore
+from tests.telemetry_records import recording_telemetry
 
 
 def _service(session_factory: async_sessionmaker[AsyncSession]) -> AgentCore:
@@ -71,6 +72,22 @@ class TestCreateRoomGroup:
         child = await svc.create_room_group("agent-x", "C", None, None, "P")
         assert child["parent_group_id"] == parent["id"]
         assert child["path"] == "P / C"
+
+    async def test_an_agents_group_is_reported_once_committed(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        """As a group made in the gateway is: `room_group_created` counted
+        only the gateway's before."""
+        svc = _service(session_factory)
+        svc.telemetry, sink = recording_telemetry()  # type: ignore[misc]
+
+        await svc.create_room_group("agent-x", "P", None, None, None)
+        await svc.create_room_group("agent-x", "C", None, None, "P")
+
+        assert sink.events("room_group_created") == [
+            {"has_parent": False},
+            {"has_parent": True},
+        ]
 
     async def test_unknown_parent_name_raises(
         self, session_factory: async_sessionmaker[AsyncSession]

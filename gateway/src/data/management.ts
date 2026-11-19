@@ -1,8 +1,9 @@
 // Agent management: the machines (agent controllers) that run managed agents,
 // the agents placed on them, and the operations sent to them. Served under
-// /gateway/management only when the server turns on its agent_management flag,
-// except the provider list and advanced-configuration fields, which are always
+// /gateway/management, except the provider list and advanced-configuration fields, which are always
 // served; every failure comes back as {"error": {"code", "message", "retryable"}}.
+
+import { gatewayFetch } from "./gatewayFetch";
 
 const BASE = "/gateway/management";
 
@@ -65,6 +66,8 @@ export interface ProviderStatus {
   auth_source: string | null;
   checked_at: string;
   reason?: string | null;
+  /** What went wrong signing it in, in the controller's words. */
+  auth_problem?: string | null;
 }
 
 export interface AgentStatus {
@@ -140,6 +143,10 @@ export interface Controller {
   assignment_revision: number;
   created_at: string;
   revoked_at: string | null;
+  /** What the caller may do to it: rename, describe and ask it to re-check
+   * its providers; and revoke it. */
+  can_edit: boolean;
+  can_remove: boolean;
 }
 
 export interface Definition {
@@ -170,6 +177,10 @@ export interface ManagedAgent {
   status: AgentStatus | null;
   created_at: string;
   updated_at: string;
+  /** What the caller may do to it: start, stop, restart and edit it; and
+   * stop managing it. */
+  can_edit: boolean;
+  can_delete: boolean;
 }
 
 export interface Operation {
@@ -195,6 +206,13 @@ export interface EnrollmentCode {
    * page's own address is no stand-in: a gateway need not serve the agent API.
    */
   server_url: string | null;
+  /**
+   * Whether a device other than the one Switch runs on could enroll here at
+   * all, and if not, why, in Switch's own words: Switch Console runs it, or
+   * its public address only reaches the computer it runs on. Absent from a
+   * server from before it said, where any device may try.
+   */
+  remote_devices?: { supported: boolean; reason: string | null };
 }
 
 /** A refusal from a management route, with the contract's reason code. */
@@ -225,26 +243,13 @@ export async function managementError(res: Response): Promise<ManagementApiError
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
+  const res = await gatewayFetch(`${BASE}${path}`, {
     ...init,
     credentials: "include",
     headers: init?.body ? { "Content-Type": "application/json" } : undefined,
   });
   if (!res.ok) throw await managementError(res);
   return (await res.json()) as T;
-}
-
-/**
- * Whether this server has agent management turned on. With it off the routes
- * are not mounted at all, so the probe sees the framework's own 404 (no error
- * envelope) rather than a management refusal.
- */
-export async function fetchManagementAvailable(): Promise<boolean> {
-  const res = await fetch(`${BASE}/controllers`, { credentials: "include" });
-  if (res.ok) return true;
-  const error = await managementError(res);
-  if (res.status === 404 && error.code === "http_error") return false;
-  throw error;
 }
 
 export function fetchControllers(): Promise<Controller[]> {
@@ -319,17 +324,202 @@ export async function unmanageAgent(agentId: string): Promise<void> {
   });
 }
 
-export function fetchOperations(): Promise<Operation[]> {
-  return request<Operation[]>("/operations");
-}
-
 export function createOperation(body: {
   controller_id: string;
   agent_id: string | null;
-  kind: "agent.restart" | "provider.recheck";
+  kind: "agent.restart" | "provider.recheck" | "controller.restart";
   params: Record<string, unknown>;
 }): Promise<Operation> {
   return request<Operation>("/operations", { method: "POST", body: JSON.stringify(body) });
+}
+
+/** What a device is, as people tell them apart. */
+export type DeviceType = "computer" | "remote_ssh" | "cloud";
+
+/** A device in the workspace's list, as the caller may see it: everyone's to
+ *  an admin, their own to anyone else. Removed devices are left out. */
+export interface WorkspaceDevice {
+  id: string;
+  name: string;
+  description: string | null;
+  kind: Controller["kind"];
+  type: DeviceType;
+  platform: Platform | null;
+  version: string | null;
+  state: ControllerState;
+  last_seen_at: string | null;
+  created_at: string;
+  owner_id: string;
+  owner_name: string;
+  /** The providers it last reported, by id. */
+  providers: Provider[];
+  agents_total: number;
+  agents_running: number;
+  /** Null when it has never connected. */
+  connection: ControllerConnection | null;
+  /** Null when Switch names no release for it (`updated_by_console`). */
+  release: ControllerReleaseState | null;
+  /** Where it last said it stands in moving to the release; null when it said nothing. */
+  update: ControllerUpdate | null;
+  /** Switch Console updates its controller, so it follows no release Switch names. */
+  updated_by_console: boolean;
+  /** Each provider as it last reported it: installed or not, and its sign-in. */
+  provider_reports: ProviderStatus[];
+  /** Rename and describe it; ask it to re-check its providers; remove it.
+   *  Its owner does the first two, and its owner or an admin removes it, but
+   *  nobody renames or removes a cloud device: Switch does. */
+  can_edit: boolean;
+  can_recheck: boolean;
+  can_remove: boolean;
+}
+
+/** A managed agent in the workspace's list, as the caller may see it. */
+export interface WorkspaceManagedAgent {
+  agent_id: string;
+  name: string;
+  display_name: string | null;
+  provider: Provider;
+  controller_id: string | null;
+  controller_name: string | null;
+  controller_kind: Controller["kind"] | null;
+  controller_state: ControllerState | null;
+  desired_state: DesiredState;
+  /** What its device last reported of it; null before it has, and for one
+   *  placed nowhere. */
+  process: string | null;
+  /** Why it is in that state, and more on it, when its device said. */
+  process_reason: string | null;
+  process_detail: string | null;
+  /** Its device runs an older revision of its definition than the latest. */
+  updating: boolean;
+  owner_id: string;
+  owner_name: string;
+  /** Start, stop, restart and edit it: its owner. Stop managing it, or delete
+   *  it: its owner or an admin. */
+  can_edit: boolean;
+  can_delete: boolean;
+}
+
+export interface WorkspaceDevices {
+  devices: WorkspaceDevice[];
+  managed_agents: WorkspaceManagedAgent[];
+  operations: Operation[];
+}
+
+export function fetchWorkspaceDevices(): Promise<WorkspaceDevices> {
+  return request<WorkspaceDevices>("/workspace");
+}
+
+/** Which of the organization's workspaces a row of Organization › Devices is in. */
+interface InWorkspace {
+  workspace_id: string;
+  workspace_name: string;
+}
+
+/** Every device and managed agent in the organization's workspaces, as an
+ *  admin of each sees them, each saying which workspace it is in. */
+export interface OrganizationDevices {
+  devices: (WorkspaceDevice & InWorkspace)[];
+  managed_agents: (WorkspaceManagedAgent & InWorkspace)[];
+}
+
+const ORGANIZATION = "/gateway/organizations/current";
+
+/** A refusal from an Organization › Devices route: the gateway's `detail`
+ *  from the checks made first (not an organization admin, a workspace
+ *  elsewhere), or the management envelope from the route's own. */
+async function organizationError(res: Response): Promise<ManagementApiError> {
+  const body: unknown = await res
+    .clone()
+    .json()
+    .catch(() => null);
+  const detail = body && typeof body === "object" && "detail" in body ? (body as { detail: unknown }).detail : null;
+  if (typeof detail === "string") return new ManagementApiError(res.status, "http_error", detail);
+  return managementError(res);
+}
+
+async function organizationRequest<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await gatewayFetch(`${ORGANIZATION}${path}`, { ...init, credentials: "include" });
+  if (!res.ok) throw await organizationError(res);
+  return (await res.json()) as T;
+}
+
+export function fetchOrganizationDevices(): Promise<OrganizationDevices> {
+  return organizationRequest<OrganizationDevices>("/devices");
+}
+
+/** Remove a device in one of the organization's workspaces. */
+export async function removeOrganizationDevice(workspaceId: string, controllerId: string): Promise<void> {
+  await organizationRequest<{ ok: boolean }>(
+    `/workspaces/${encodeURIComponent(workspaceId)}/devices/${encodeURIComponent(controllerId)}`,
+    { method: "DELETE" },
+  );
+}
+
+/** Stop managing an agent in one of the organization's workspaces. */
+export async function unmanageOrganizationAgent(workspaceId: string, agentId: string): Promise<void> {
+  await organizationRequest<{ ok: boolean }>(
+    `/workspaces/${encodeURIComponent(workspaceId)}/managed-agents/${encodeURIComponent(agentId)}`,
+    { method: "DELETE" },
+  );
+}
+
+/** The caller's cloud machine, as its owner sees it from this workspace. */
+export interface CloudMachine {
+  machine_id: string;
+  state: string;
+  desired_state: string;
+  stop_reason: string | null;
+  stopped_by_admin: boolean;
+  sleeping: boolean;
+  revision: number;
+  error: string | null;
+  error_code: string | null;
+  retain_until: string | null;
+  heartbeat_at: string | null;
+  /** The controller it enrolled as here; null until it has. */
+  controller_id: string | null;
+}
+
+export type CloudMachineAction = "stop" | "start" | "retry";
+
+const HOSTED = "/gateway/hosted-machines";
+
+async function hostedRequest<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await gatewayFetch(`${HOSTED}${path}`, {
+    ...init,
+    credentials: "include",
+    headers: init?.body ? { "Content-Type": "application/json" } : undefined,
+  });
+  if (!res.ok) {
+    const body: unknown = await res.json().catch(() => null);
+    const detail = body && typeof body === "object" && "detail" in body ? (body as { detail: unknown }).detail : null;
+    throw new ManagementApiError(
+      res.status,
+      "http_error",
+      typeof detail === "string" ? detail : `${res.status} ${res.statusText}`,
+    );
+  }
+  return (await res.json()) as T;
+}
+
+/** The caller's cloud machine, when it serves this workspace. */
+export async function fetchCloudMachines(): Promise<CloudMachine[]> {
+  return (await hostedRequest<{ available: boolean; machines: CloudMachine[] }>("")).machines;
+}
+
+/** Stop, start or retry the caller's cloud machine, at the revision they saw. */
+export async function cloudMachineLifecycle(
+  machineId: string,
+  action: CloudMachineAction,
+  revision: number,
+): Promise<CloudMachine> {
+  return (
+    await hostedRequest<{ machine: CloudMachine }>(`/${encodeURIComponent(machineId)}/lifecycle`, {
+      method: "POST",
+      body: JSON.stringify({ action, revision }),
+    })
+  ).machine;
 }
 
 /** One word for a POSIX shell: as it is when nothing in it is special, else single-quoted. */

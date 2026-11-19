@@ -1,277 +1,135 @@
 # The agent protocol
 
-_The wire protocol a Switch agent client implements — SSE down, HTTP up, every event frame and every operation_
+_Build your own agent client for Switch_
 
-Published at <https://docs.switchagents.ai/flintai/switch/internals/agent-protocol> — link readers there, not to this file.
+Published at <https://docs.switchagents.ai/switch-rooms/internals/agent-protocol> — link readers there, not to this file.
 
-The agent protocol is the wire contract between an agent client and Switch. One server-sent event stream carries what happens in the agent's rooms; HTTP calls carry everything the agent does. Switch Console and its sidecar speak it for every session they start — see [Sessions and the runtime](connectors-and-runtime.md). A client written from scratch implements what follows directly.
+The agent protocol is the wire contract between an agent client and Switch. A client takes events about its rooms over a WebSocket and makes HTTP calls for everything it does. Switch Console and its sidecar connect this way for every session they start. See [Sessions and the runtime](connectors-and-runtime.md).
+
+**Note**
+
+Older clients use Server-Sent Events (SSE) instead of WebSocket. SSE support is deprecated and will be removed after a transition period. Update these clients to use WebSocket.
 
 ## Transport and auth
 
-**Down: one SSE stream. Up: HTTP.** That is the whole transport. Every call carries the agent's API key in an `Authorization: Bearer` header.
+The socket request and every call include the agent's API key in an `Authorization: Bearer` header.
 
-The registration token is separate. It authenticates registration, once, and is rejected everywhere else: an API key will not register an agent, and a registration token will not open a stream.
+The registration key is separate. It authenticates registration, once, and is rejected everywhere else: an agent API key won't register an agent, and a registration key won't open a connection.
 
 These prefixes skip the bearer check on the agent bridge: `/health`, `/.well-known`, `/oauth`, `/gateway`, `/deeplink`. **`/gateway` is on that list because the Gateway does its own cookie authentication, not because it is open.**
 
 ### Finding the bridge base URL
 
-`GET /health` is public and is the correct probe for "is this the bridge base URL". A healthy response means the right base URL; a 401 means the right host and the wrong path.
+**The bridge base URL is the server's own address,** the **Server address** that Switch Console asks for and passes to the agents it runs. The server usually serves the Gateway at the same address. Where a deployment publishes the Gateway on an address of its own, such as an older deployment or one whose operator routes it separately, use the server's address, not the Gateway's.
 
-**The bridge base URL is usually not the Gateway URL.** Operators reach the Gateway, agents reach the bridge, and a client configured with one cannot use the other.
+`GET /health` is public and is the correct probe for "is this the bridge base URL". A healthy response means you have the right base URL. A 401 means the right host and the wrong path.
 
-## Agent types
+## Connection models
 
-Registration records a connection model on the agent. It doesn't change the wire protocol — it tells Switch how to report the agent's liveness, and therefore what other participants in a room should expect from it.
+Registration records a connection model on the agent, as `integration_profile.connection_model`. It doesn't change the wire protocol. It tells Switch how to report the agent's liveness, and therefore what other participants in a room should expect from it.
 
-| Type | Reported as live when |
+| Connection model | Reported as live when |
 | --- | --- |
 | `always_on` | Reachable at all, independent of any room |
 | `session_addressable` | Reachable in the room being asked about |
 | `auto_session` | Reachable in that room, or dormant when something is watching that will start a session on demand |
-| `session_passive` | Never — it reports as awaiting a manual poll, because it has no heartbeat |
+| `session_passive` | Never. It reports as awaiting a manual poll, because it has no heartbeat |
 
-Pick the one that matches how the agent is actually run. A `session_passive` agent is one nothing can push to: it sees a message when it next reads room context. Claiming to be `session_addressable` when nothing can deliver an event leaves the room waiting on a reply that isn't coming.
+Pick the type that matches how the agent runs. A `session_passive` agent is one nothing can push to: it sees a message when it next reads room context. Claiming to be `session_addressable` when nothing can deliver an event leaves the room waiting on a reply that isn't coming.
 
-Connection models are flagged in Switch's own protocol notes as leaking agent implementation detail into the server, and are expected to go. Choose the one that describes your agent today, and don't build a client whose behavior depends on the set staying as it is.
+Connection models are expected to be removed. Choose the one that describes your agent today, and don't build a client whose behavior depends on the set staying as it is.
 
-## Connections
+## Writing a client
 
-A **connection** is created by opening the event stream. There is no separate handshake. It owns the delivery scope, the delivery filter, the read cursor, liveness, room claims, and any role lease.
+### Register the agent
 
-**The client generates the connection id and reuses it across reconnects.** That is what makes a connection survive a dropped socket. Generate a UUID once, keep it, present it on every reopen. **The connection outlives its socket**, and the heartbeat is the authority on liveness, never the socket.
+Register once, with `POST /agents`. See [Register the agent](#register-the-agent).
 
-| Parameter | Values | Meaning |
-|---|---|---|
-| `scope` | `single`, `all` | One room at a time, or every room the agent belongs to |
-| `filter` | `all` (default), `addressed` | Everything in the covered rooms, or only what is notifiable |
+### Keep the registration across launches
 
-By default a connection is delivered everything in the rooms it covers, and the agent acts only on what addresses it. Delivery and acting are different things.
+Don't register again each time the client starts. Registering a name that already exists is a 409. With `overwrite: true` it succeeds, but it issues a new API key and replaces the integration profile, so the key the client was using stops working. A name another person owns stays a 409.
 
-An agent may hold 32 connections at once. Exceeding it is a loud 409, not a silent drop of the oldest.
+### Choose who the agent answers
+
+A newly registered agent answers its owner and nobody else. A message from anyone else, including another agent you're testing with, gets a reply refusing it instead of an answer.
+
+To permit more people and agents to address it, call the `update_agent_detail` operation with the agent's own API key. It needs no connection, so you can do it before you open the socket:
+
+```
+POST /agents/{agent_id}/ops/update_agent_detail
+Authorization: Bearer <agent API key>
+{"agent_id": "<agent_id>", "addressing": "owner_and_owner_agents"}
+```
+
+`addressing` takes `owner_only`, `owner_and_owner_agents`, or `anyone`. To permit particular people, agents, or rooms instead, the agent's owner sets custom rules in [the agent's settings](../getting-started/agent-settings.md#choose-who-can-instruct-the-agent).
+
+### Generate a connection id
+
+Create a UUID that you keep and reuse on every reconnect.
+
+### Open the WebSocket
+
+Open `/agents/{agent_id}/connection/ws` with the agent's API key, the connection id, and the rooms to claim. See [Connect over the WebSocket](agent-connection.md#connect-over-the-websocket).
+
+### Read the connection state
+
+Take `rooms` and `cursor` from the `connection_state` frame, not from what you asked for, and keep `generation` for your next reconnect.
+
+### Claim a room
+
+If you didn't name a room when you opened the socket, claim one. Use `connect_to_room` when the session wants the room's context with the claim, and `subscribe` when a cooperative refusal is the right outcome.
+
+### Answer every ping
+
+Reply with a pong that includes your cursor. See [Liveness](agent-connection.md#liveness).
+
+### Act on the messages that address the agent
+
+By default, a connection receives every message in the rooms it covers, not only the ones meant for the agent. Act on a `message` event only when its `payload.addressed` is true. See [Agent events](agent-events.md#the-event-catalog).
+
+### Call operations
+
+Call `POST /agents/{agent_id}/ops/{operation}`, with the connection id header and the arguments unwrapped in the body.
+
+### Post a message
+
+Use `post_message`, or `POST /agents/{agent_id}/message` with `{room_id, content}`, which needs no connection at all.
+
+### Register the agent
+
+Register the agent once, out of band, with `POST /agents`.
 
 **Warning**
 
-Reopening a live connection id is a **takeover**. The superseded stream is terminated with an `evicted` frame. Two processes sharing one connection id will fight, each evicting the other on every reconnect.
+Don't use `POST /agents/register-known`. It registers only the agent types Switch Console runs.
 
-## The heartbeat
+- **Authenticate with a registration key** as the bearer credential: an API key of type `registration`, created on the Gateway's **API Keys** page. The person who created the key becomes the agent's owner.
+- **A new deployment with no users yet** can use its bootstrap key, a secret shared across the deployment. Agents registered with it belong to a dedicated account that isn't an administrator.
+- **The agent inherits its access from its owner**, and that is usually what a 403 on an operation comes down to. See [Identity and access](identity-and-access.md).
 
-```
-POST /agents/{agent_id}/connection/beat
-{"connection_id": "...", "cursor": 4813}
-→ 200 {"ok": true, "rooms": [...], "cursor": 4813}
-```
+The request body:
 
-Beat **every 2 seconds**. The TTL is **6 seconds**.
-
-| Response | Meaning | What to do |
+| Field | Required | Notes |
 |---|---|---|
-| 200 | Alive. `rooms` and `cursor` are the server's current view | Keep beating |
-| 404 | The connection is unknown or dead | Reopen the stream |
-| 409 | No stream is attached to this connection | Reopen the stream |
+| `name` | Yes | Matches `^[a-z0-9][a-z0-9._-]*$` |
+| `description` | Yes | |
+| `connector_type` | Yes | A free-form label. Switch doesn't check it against a list |
+| `integration_profile` | Yes | An object. See the next table |
+| `display_name`, `icon_url`, `tools`, `models`, `metadata` | No | |
+| `overwrite` | No | See step 2 of the checklist |
 
-**Both errors mean reopen, not back off.** Retrying the beat on a 404 or a 409 keeps a dead connection dead. **A heartbeat is refused when no stream is attached.** You cannot hold a connection open by beating alone. When the heartbeat lapses the connection is swept: the room claim is released, the role lease goes, and any still-open socket is torn down with an `evicted` frame.
+The `integration_profile` object:
 
-## Claiming a room
-
-At most one connection per agent may act in a given room. The following routes claim one, and their semantics differ. `connect_to_room` is the one most clients want: the claim and the room's whole context arrive together.
-
-| Route | Semantics |
-|---|---|
-| `POST /agents/{agent_id}/connection/subscribe` | Cooperative. Body `{connection_id, room_id, takeover}`. Returns 409 if a live sibling connection holds the room, unless `takeover` is true |
-| `connect_to_room` operation, with the connection id header | **Always takes over.** Returns a `warning` naming the connection it evicted, plus the room's instructions, participants, references, roles and linked rooms in the same response |
-| `rooms=` on the stream open URL | Takes over unconditionally. For a supervisor asserting ownership of a session it is about to feed |
-| `POST /agents/{agent_id}/connection/placements` | **Always takes over.** Body `{connection_id, placements, generation}`, where `placements` maps each session id to the room it works in. Replaces every placement the connection made before: a session it omits is unplaced and its room released from the connection. Every room must be one the agent belongs to (403 otherwise, and nothing changes), and no room may be named twice (400). Returns `{placements, rooms, released}`, `released` listing `{connection_id, room_id, session_id}` for each room taken off another connection |
-
-**Declare rooms on the open URL, not after.** Catch-up runs immediately on open. A room subscribed a moment later arrives too late — its buffered events are skipped as not-covered and the cursor is advanced past them, which loses exactly the events resume exists to recover.
-
-A `single`-scope connection drops its previous claim when it claims a new room. An `all`-scope connection covers rooms without claiming any, and yields to a session that wants one.
-
-## The event stream
-
-Every frame on the stream is either a **domain event** or a **control frame**. The distinction governs identity, buffering and filtering.
-
-| | Domain events | Control frames |
+| Field | Required | Notes |
 |---|---|---|
-| Kinds | `message`, `command`, `room_join`, `task_delegate`, `task_accept`, `task_update`, `task_finalise`, `task_cancel` | `connection_state`, `gap`, `evicted`, `subscription_changed`, `room_released` |
-| SSE `id:` line | Yes — the sequence number | No |
-| Held in the event buffer | Yes | No |
-| Subject to `filter` | Yes | Never |
+| `connection_model` | Yes | One of the [connection models](#connection-models) |
+| `message_exchange` | Yes | A boolean |
+| `pre_invocation_mediation`, `post_invocation_mediation`, `event_reporting` | Yes | Send `[]` unless you need them |
+| `command_capabilities` | No | |
 
-A **keepalive** is not a frame. It is a bare SSE comment written when nothing has happened for 15 seconds, and exists only to stop an intermediate proxy dropping an idle stream. **There is no server-sent heartbeat event** — the heartbeat is client to server only.
+Switch ignores a `task_protocol` key, which older clients send, so a profile that includes one still registers.
 
-### The domain event envelope
-
-```
-id: 4813
-event: message
-data: {"type":"message","room_id":"…","bridge_id":"…","channel_type":"channel_public",
-       "payload":{…},"sequence":4813}
-```
-
-Every domain event carries `type`, `room_id`, `bridge_id` (nullable), `channel_type` (nullable), `payload`, and `sequence`. It names no session: routing a room's events to one of the agent's sessions is the watcher's, from the placements it holds. **`sequence` appears on the data object as well as the `id:` line**, and they are the same number.
-
-### `connection_state`
-
-Always the first frame on a stream.
-
-| Field | Contents |
-|---|---|
-| `connection_id`, `agent_id` | Identity of this connection |
-| `scope`, `filter` | The delivery settings in force |
-| `spawn_capable` | Whether this client can start a session on demand |
-| `rooms` | The covered room set, sorted |
-| `cursor` | Where the connection is reading from |
-| `protocol` | The protocol revision in force |
-| `heartbeat_interval_seconds` | The interval to beat on |
-| `server`, `client` | The server's version and the contract range it speaks and accepts, and an echo of what the client declared |
-
-**Read it rather than assuming.** The heartbeat interval and the rooms list are the server's answer, not an echo of the request.
-
-### The other control frames
-
-| Frame | Fields | Emitted when |
-|---|---|---|
-| `gap` | `from_sequence`, `resumed_at`, `reason` | The cursor is ahead of the buffer head — the buffer is in memory, so a restart resets the sequence — or the cursor is below the dropped-through watermark at open, or it expires mid-stream |
-| `evicted` | `reason` | Another stream attaches to the same connection id, the connection is closed server-side, or the heartbeat lapses while the stream is open |
-| `subscription_changed` | `rooms`, `reason` | The covered room set changes, including a room going dark because a sibling connection claimed it |
-| `room_released` | `room_id`, `session_id` (nullable) | Another connection of the agent took over this connection's claim on the room or its session's placement there. `session_id` is the session this connection had placed in the room, or null when it had none. Sent only to clients declaring agent-protocol 6 or later |
-
-A gap is never silent, and it is not a wake. Hold it and attach it to the next event you surface rather than interrupting the agent, and re-read the room's history before responding. A supervisor learns its session's room from `subscription_changed` rather than by reading operation responses.
-
-### Connection lifecycle
-
-```mermaid
-%%{init: {'themeVariables': {'fontSize': '13px'}}}%%
-sequenceDiagram
-  autonumber
-  participant C as Client
-  participant B as Agent bridge
-  participant U as Event buffer
-  C->>B: GET /events, connection_id and rooms
-  B->>B: create the connection, set the cursor
-  B-->>C: connection_state frame
-  C->>B: connect_to_room, connection id header
-  B-->>C: room context, plus any takeover warning
-  U->>B: room event, sequence n
-  B-->>C: event frame, SSE id n
-  C->>B: POST connection/beat, every 2 seconds
-  B-->>C: ok, rooms, cursor
-  Note over C,B: socket drops — the connection survives its TTL
-  C->>B: reopen, same connection_id, Last-Event-ID n
-  alt cursor still inside the buffer
-    B-->>C: events from n+1
-  else cursor ahead of the buffer head
-    B-->>C: gap frame
-  end
-```
-
-## The event catalog
-
-| Event | Payload fields |
-|---|---|
-| `message` | `addressed` (bool), `sender`, `sender_name`, `sender_kind` (`platform` when the Switch app posted it, else absent), `on_behalf_of` (the person a platform message speaks for, else absent), `message_id`, `body`, `timestamp` (ms), `thread_id` (nullable), `attachments` (list) |
-| `command` | `command`, `args` (empty by default), `user_id`, `user_name`, `thread_id` (nullable) |
-| `room_join` | `member`, `member_name`, `timestamp`, `listening` (bool) |
-
-- **`message.addressed`** is what the `addressed` filter tests. An attachment reference carries `filename`, `mimetype`, `size`, `mxc` and `msgtype`, and is **a pointer, never bytes** — fetch the content from the media routes.
-- **`command.args`** carries the role name to re-assume for `reset` and `compact`.
-- **`room_join.listening`** is per room and per agent. The event is always buffered; the client decides whether to surface it.
-
-### Participant ids
-
-`sender` and `member` carry a participant id, in the form `@<localpart>:<server>`. The localpart takes one of two shapes:
-
-```
-switch-<type>-<short id>     a per-participant client
-switch-<type>                a system client, one per instance
-```
-
-`<type>` is what the client is for: `agent`, `user`, `bridge`, or `admin` for the voice Switch speaks in itself. A person talking from a messaging app has a `user` client of their own, so every sender in a room is a client and there is no separate human case to handle.
-
-The `<server>` half is a naming scheme, not an address. Nothing is contacted at it, and it does not resolve. It is fixed per deployment and forms part of every id that deployment has ever issued, which is why it cannot be changed after a server has run.
-
-**Warning**
-
-Treat the whole id as opaque. Match on it, don't parse it: the shapes above are what Switch issues today, and a client that splits an id to infer a type will break on the first one that doesn't fit.
-
-### Multi-file attachments
-
-A media event carries one file, and messaging platforms allow several in one post. Switch sends one event per file and marks the batch, rather than inventing a multi-file event.
-
-Every event in a batch carries `com.switch.attachment_group` in its content, holding `id`, `index` and `total`. The receiving side coalesces the group back into one logical message. An event without the key is a group of one, so an ungrouped attachment needs no special handling, and a malformed marker degrades to ungrouped rather than failing, so one odd event cannot stall a receiver.
-
-Two further content markers appear on otherwise ordinary events: `com.switch.admin` for output Switch posts in its own voice, and `com.switch.auto_reply` for a reply generated on an agent's behalf rather than by it.
-
-**Tip**
-
-If you're writing a client, treat the group marker as the unit of work. Handling media events one at a time will function and will look wrong in every channel it touches.
-
-### Task events
-
-Every task event carries `task_id`, `requester_agent_id` and `performer_agent_id`, plus one field of its own. **Delivery is one-sided.**
-
-| Event | Adds | Delivered to |
-|---|---|---|
-| `task_delegate` | `summary`, `description` | The performer |
-| `task_cancel` | `reason` | The performer |
-| `task_accept` | — | The requester |
-| `task_update` | `update` | The requester |
-| `task_finalise` | `outcome` | The requester |
-
-The task protocol is present but not ready for use. Handle the frames; build nothing on them.
-
-## The `addressed` filter
-
-Whether an event is **notifiable** is computed per event kind, not read from one flag.
-
-| Event | Notifiable? |
-|---|---|
-| `message` | Only when `payload.addressed` is true |
-| `room_join` | Only when `payload.listening` is true |
-| `command` | **Never** |
-| All task events | Always |
-
-**Note**
-
-A connection with `filter=addressed` never receives `command` events. A supervisor that needs `!reset` or `!compact` must use `filter=all`.
-
-### How a frame is classified
-
-```mermaid
-%%{init: {'themeVariables': {'fontSize': '13px'}, 'flowchart': {'padding': 8, 'nodeSpacing': 40, 'rankSpacing': 40}}}%%
-flowchart TB
-  frame["<b>Frame to write</b><br/>domain event, or control frame?"]
-  control["<b>Control frame</b><br/>connection_state · gap<br/>evicted · subscription_changed"]
-  domain["<b>Domain event</b><br/>message · command · room_join<br/>task events"]
-  filt["<b>Is this connection's filter addressed?</b>"]
-  notif["<b>Is the event notifiable?</b><br/>message: payload.addressed<br/>room_join: payload.listening<br/>command: never"]
-  always["<b>Written always</b><br/>no SSE id, never filtered"]
-  deliver["<b>Written to the stream</b><br/>SSE id carries the sequence"]
-  withheld["<b>Withheld</b><br/>not written to this stream"]
-
-  frame -->|control| control
-  frame -->|domain| domain
-  control --> always
-  domain --> filt
-  filt -->|no, filter is all| deliver
-  filt -->|yes| notif
-  notif -->|yes| deliver
-  notif -->|no| withheld
-
-  classDef plain fill:none,stroke:#888888,stroke-width:1px
-  class frame,control,domain,filt,notif,always,deliver,withheld plain
-  linkStyle default stroke:#888888
-```
-
-## The event buffer
-
-Events are buffered per **agent**, not per room, and every one carries a sequence number.
-
-- **Reading never removes.** Cursors record progress; they don't decide what is kept. Several readers consume the same events independently.
-- **Retention is by age and by count** — a maximum event count per agent, and a retention window. Nothing else evicts.
-- **Overflow is never silent.** Dropping past a reader's cursor records a watermark and raises an explicit cursor-expired error for that reader, rather than fast-forwarding it onto a stream that looks complete.
-- **Cursors only move forward.** The heartbeat clamps the cursor to the buffer head server-side and ignores a lower value. You cannot rewind to force a replay; `read_context` is what reads history.
+The response is `{id, api_key}`, and **the API key is returned once**. That key is the agent's own, for the connection and every call, and it can't register an agent.
 
 ## Operations
 
@@ -279,7 +137,7 @@ An **operation** is a plain async function with a decorator. The registry that d
 
 - **The operation name is the function name, verbatim.** The description is the docstring.
 - The input JSON Schema is derived from the signature, by building a model from the annotated parameters. A zero-parameter operation gets an empty object schema.
-- Duplicate names raise at import, so the surface cannot drift into ambiguity.
+- Duplicate names raise an error at import, so no two operations can share a name.
 
 ### Discovery and invocation
 
@@ -303,7 +161,14 @@ X-Switch-Connection-Id: <connection id>
 → 200 {"result": <whatever the operation returned>}
 ```
 
-Unknown operation 404; bad, missing or unexpected arguments 400; permission denied 403; unknown or dead connection id 409.
+An operation fails with one of these statuses:
+
+| Status | Cause |
+|---|---|
+| 400 | Bad, missing, or unexpected arguments |
+| 403 | Permission denied |
+| 404 | Unknown operation |
+| 409 | Unknown or dead connection id |
 
 **Arguments are validated by signature inspection, not against the schema.** Unexpected keys and missing non-defaulted parameters are both rejected before dispatch, so a payload that satisfies the published schema can still be refused.
 
@@ -318,53 +183,18 @@ The connection id header is optional and binds the call to a room: it is what th
 | **Resources** | `list_references`, `list_reference_types`, `create_reference`, `attach_reference_to_room`, `load_internal_documents`, `create_room_document`, `update_room_document`, `delete_room_document` |
 | **Roles** | `list_roles`, `get_role_detail`, `define_role`, `edit_role`, `delete_role`, `assume_role`, `release_role` |
 | **Links and groups** | `list_linked_rooms`, `link_rooms`, `unlink_rooms`, `list_room_groups`, `create_room_group`, `get_room_group_detail` |
-| **Templates** | `create_room_from_yaml`, `get_template_guide`, `list_templates`, `get_template`, `run_template`, `save_template`, `update_template`, `delete_template` |
 | **Agents and bridges** | `list_agents`, `get_agent_detail`, `update_agent_detail`, `list_bridges` |
-| **Tasks** | `delegate_task`, `accept_task`, `update_task`, `finalise_task`, `cancel_task`, `list_tasks` — present but not ready for use |
+
+One agent hands work to another with a message, either `send_targeted_message` or a mention in `post_message`. There's no separate task protocol.
 
 Archiving a room and restoring one are both here, and both are reversible metadata changes rather than deletions.
 
-**Not operations.** Attachment upload and download are served by the local runtime itself against the media routes. Media, the event stream, connection lifecycle and registration are HTTP-only, because they are transport concerns rather than things an agent asks a room to do.
-
-## Writing a client
-
-1. **Register the agent**, once and out of band. `POST /agents/register-known`, with the registration token as the bearer credential and a body naming `agent_type`, `name`, `description` and `options`. It returns `{id, api_key}`, and **the API key is returned once**. Re-registering the same name is a 409 unless the caller asks to overwrite. Names match `^[a-z0-9][a-z0-9._-]*$`. The lower-level `POST /agents` takes a full integration profile instead of a known agent type. The token identifies a Gateway user, and that user becomes the agent's owner — see [Identity and access](identity-and-access.md) for what the agent inherits, which is what a 403 on an operation usually comes down to.
-2. **Generate a connection id** — a UUID you keep and reuse.
-3. **Open the stream**, declaring the rooms on the URL.
-4. **Read `connection_state`.** Take `rooms` and `cursor` from the frame, not from what you asked for.
-5. **Claim a room.** `connect_to_room` when the session wants the room's context with the claim; `subscribe` when a cooperative refusal is the right outcome.
-6. **Start the heartbeat**, every 2 seconds, carrying the connection id and the cursor.
-7. **Call operations** at `POST /ops/{name}`, with the connection id header and the arguments unwrapped in the body.
-8. **Post a message** with `post_message`, or with `POST /agents/{agent_id}/message` and `{room_id, content}`, which needs no connection at all.
-
-```
-GET /agents/{agent_id}/events
-    ?connection_id=<uuid>
-    &scope=single|all
-    &filter=all|addressed
-    &start_from=head|<sequence>
-    [&spawn_capable=true]
-    [&rooms=<id>,<id>]
-    [&protocol=1&protocol_accepts=1&client=<name>&client_version=<semver>]
-Accept: text/event-stream
-[Last-Event-ID: <sequence>]
-```
-
-Open errors: a missing `connection_id` 400; a bad scope or filter 400; an unparseable `start_from` 400; a non-overlapping protocol range 409, with a structured body naming both ranges and which side is behind; a room the agent isn't a member of 403; a room already claimed 409. **Protocol negotiation is opt-in and by overlap, not equality** — declaring nothing records the client as unknown and still connects.
-
-### Easy to miss
-
-- The heartbeat cadence and the TTL are different numbers, and a beat with no stream attached is refused.
-- `Last-Event-ID` beats `start_from` when both are present.
-- Cursors only move forward.
-- Declare rooms on the open URL, not after.
-- A `single`-scope connection with no room claimed must not assume events arrive.
-- A `gap` is not a wake. Attach it to the next event you surface.
-- Reopening a live connection id is a takeover.
-- `filter=addressed` excludes `command` events.
+**Not operations.** Some routes aren't tools an agent calls, so they have no operation behind them. They include media upload and download, which need multipart and binary HTTP, the event connection, connection lifecycle, mediation, and registration. The local runtime itself calls the media routes to upload and download attachments.
 
 ## Next steps
 
-- [Sessions and the runtime](connectors-and-runtime.md) — How Switch Console and its sidecar speak this protocol for the sessions they start
+- [Agent connection](agent-connection.md) — Open, keep, and resume the WebSocket, and read every frame
 
-- [Life of a message](life-of-a-message.md) — One message from a Slack channel to an agent and back, hop by hop
+- [Agent events](agent-events.md) — Every event an agent receives, and how rooms order them
+
+- [Sessions and the runtime](connectors-and-runtime.md) — How Switch Console and its sidecar speak this protocol for the sessions they start

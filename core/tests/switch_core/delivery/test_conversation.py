@@ -26,6 +26,7 @@ from switch_core.delivery.conversation import (
 from tests.switch_core.delivery.world import (
     CHANNEL,
     MAIN,
+    ONE_TO_ONE,
     T0,
     THREAD,
     World,
@@ -471,6 +472,127 @@ class TestFollowUpsOff:
         reply = await world.post("alice", "why?", at=30, thread=answer)
 
         assert await world.route("helper", reply) == THREAD
+
+
+# ── A room routing by decision ──────────────────────────────────────────────
+
+
+class TestAutoRouteOn:
+    """Automatic routing switches the thread follow-up off, and nothing
+    else: the decision service, which sees the whole thread, decides thread
+    replies instead."""
+
+    async def test_no_thread_follow_up(self, world: World) -> None:
+        answer = await world.post("helper", "It starts the stack", at=0)
+        reply = await world.post(
+            "alice", "why two database roles?", at=30, thread=answer
+        )
+
+        decision = await world.decide("helper", reply, auto_route_on=True)
+        assert decision.route is None
+        assert decision.reason == (
+            "thread follow-ups are off while automatic routing is on"
+        )
+        assert await world.route("helper", reply) == THREAD
+
+    async def test_the_channel_follow_up_still_applies(self, world: World) -> None:
+        await world.post("alice", "@helper first", at=0)
+        await world.post("helper", "answer", at=20)
+        follow_up = await world.post("alice", "and then?", at=40)
+
+        assert await world.route("helper", follow_up, auto_route_on=True) == CHANNEL
+
+    async def test_the_main_agent_still_gets_thread_replies(self, world: World) -> None:
+        await world.assign("helper")
+        answer = await world.post("reviewer", "One nit", at=0)
+        reply = await world.post("alice", "which nit?", at=30, thread=answer)
+
+        assert await world.route("helper", reply, auto_route_on=True) == MAIN
+        assert await world.route("reviewer", reply, auto_route_on=True) is None
+
+
+# ── One person and one agent, auto-route on ─────────────────────────────────
+
+
+class TestOneToOne:
+    """In an auto-route room whose only person sent the message and that has
+    one agent, the agent gets every untagged message without a decision."""
+
+    async def _one_to_one(self, world: World) -> None:
+        await world.remove_agent("reviewer")
+        await world.join("alice")
+
+    async def test_a_channel_message_reaches_the_only_agent(self, world: World) -> None:
+        await self._one_to_one(world)
+        question = await world.post("alice", "can you look at the logs?", at=0)
+
+        decision = await world.decide("helper", question, auto_route_on=True)
+        assert decision.route == ONE_TO_ONE
+        assert decision.reason == "the only agent in an auto-route room with one person"
+
+    async def test_so_does_a_thread_reply(self, world: World) -> None:
+        await self._one_to_one(world)
+        root = await world.post("alice", "a question", at=0)
+        reply = await world.post("alice", "and another", at=900, thread=root)
+
+        assert await world.route("helper", reply, auto_route_on=True) == ONE_TO_ONE
+
+    async def test_and_small_talk(self, world: World) -> None:
+        await self._one_to_one(world)
+        thanks = await world.post("alice", "thanks", at=0)
+
+        assert await world.route("helper", thanks, auto_route_on=True) == ONE_TO_ONE
+
+    async def test_even_with_follow_ups_off(self, world: World) -> None:
+        await self._one_to_one(world)
+        async with world.session_factory() as session:
+            await RoomStore().set_follow_ups_enabled(session, world.room_id, False)
+            await session.commit()
+        question = await world.post("alice", "anything new?", at=0)
+
+        assert await world.route("helper", question, auto_route_on=True) == ONE_TO_ONE
+
+    async def test_a_follow_up_is_still_named_as_such(self, world: World) -> None:
+        await self._one_to_one(world)
+        answer = await world.post("helper", "Done", at=0)
+        reply = await world.post("alice", "why?", at=30, thread=answer)
+
+        assert await world.route("helper", reply) == THREAD
+
+    async def test_not_with_auto_route_off(self, world: World) -> None:
+        await self._one_to_one(world)
+        question = await world.post("alice", "can you look at the logs?", at=0)
+
+        assert await world.route("helper", question) is None
+
+    async def test_not_with_a_second_person(self, world: World) -> None:
+        await self._one_to_one(world)
+        await world.join("bob")
+        question = await world.post("alice", "can you look at the logs?", at=0)
+
+        assert await world.route("helper", question, auto_route_on=True) is None
+
+    async def test_not_with_a_second_agent(self, world: World) -> None:
+        await world.join("alice")
+        question = await world.post("alice", "can you look at the logs?", at=0)
+
+        assert await world.route("helper", question, auto_route_on=True) is None
+        assert await world.route("reviewer", question, auto_route_on=True) is None
+
+    async def test_not_for_someone_who_is_not_the_one_person(
+        self, world: World
+    ) -> None:
+        await self._one_to_one(world)
+        question = await world.post("bob", "can you look at the logs?", at=0)
+
+        assert await world.route("helper", question, auto_route_on=True) is None
+
+    async def test_switch_s_own_clients_are_not_people(self, world: World) -> None:
+        await self._one_to_one(world)
+        await world.join("admin")
+        question = await world.post("alice", "can you look at the logs?", at=0)
+
+        assert await world.route("helper", question, auto_route_on=True) == ONE_TO_ONE
 
 
 # ── Fixes from review ───────────────────────────────────────────────────────

@@ -372,6 +372,7 @@ class TestStreamFrames:
                     controller_id=controller.controller_id,
                     owner_id=owner.id,
                     tenant_id=TENANT_ZERO_ID,
+                    key_id=None,
                 ),
                 protocol=harness.protocol,
                 authenticator=harness.management.authenticator,
@@ -422,6 +423,7 @@ class TestStreamFrames:
                     thread_id=None,
                     surface="slack",
                     requester_name="Ada",
+                    direct=False,
                     target_message_id=None,
                 ),
             )

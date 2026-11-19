@@ -13,7 +13,7 @@ const NAMED_AGENTS = 4;
  * only forget it, not revoke it.
  */
 export function disconnectCopy(
-  entry: Pick<ConnectionCatalogEntry, 'name' | 'auth_type'>,
+  entry: Pick<ConnectionCatalogEntry, 'name' | 'auth_type' | 'method'>,
   grantedAgents: string[] | null
 ): { title: string; lines: string[] } {
   const { name } = entry;
@@ -26,11 +26,15 @@ export function disconnectCopy(
           ? `${grantedAgents[0]} loses ${name}.`
           : `${grantedAgents.length} agents lose ${name}: ${namedAgents(grantedAgents)}. Disconnecting removes their access.`,
   ];
-  if (entry.auth_type === 'api_key') {
+  if (entry.method === 'token' || entry.method === 'keys') {
+    lines.push(`Switch removes what you pasted for ${name}.`);
+  } else if (entry.auth_type === 'api_key') {
     lines.push('Switch removes the key it keeps.');
-    lines.push(`Switch can't revoke this key at ${name}; delete it there.`);
   } else {
     lines.push(`Switch removes the sign-in it keeps for ${name}.`);
+  }
+  if (entry.auth_type === 'api_key') {
+    lines.push(`Switch can't revoke this key at ${name}; delete it there.`);
   }
   return { title: `Disconnect ${name}?`, lines };
 }
@@ -45,14 +49,16 @@ function namedAgents(names: string[]): string {
 /**
  * What an admin is asked before switching a service off for the workspace, or
  * null when nobody is connected and no agent uses it: switching it off then
- * changes nothing anyone has, and is done without asking.
+ * changes nothing anyone has, and is done without asking. Null too when the
+ * server doesn't say who it reaches, as it says only to an admin: the switch
+ * is then refused, so there is nothing to weigh.
  */
 export function switchOffConfirmation(
   service: Pick<WorkspaceService, 'name' | 'connected_members' | 'granted_agents'>
 ): { title: string; description: string } | null {
   const members = service.connected_members;
   const agents = service.granted_agents;
-  if (members === 0 && agents === 0) return null;
+  if (members === null || agents === null || (members === 0 && agents === 0)) return null;
   const connected = `${members} ${members === 1 ? 'member is' : 'members are'} connected`;
   const using = `${agents} ${agents === 1 ? 'agent uses' : 'agents use'} it`;
   return {

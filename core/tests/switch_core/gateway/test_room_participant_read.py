@@ -65,6 +65,7 @@ async def _read(session: AsyncSession, room_id: str, user: User) -> object:
         None,
         None,
         None,
+        None,
         user,
         False,  # type: ignore[arg-type]
     )
@@ -77,6 +78,7 @@ async def _write(session: AsyncSession, room_id: str, user: User) -> None:
         session,
         _SentinelRoomService(),  # type: ignore[arg-type]
         _ROOM_STORE,
+        None,  # type: ignore[arg-type]
         None,  # type: ignore[arg-type]
         None,  # type: ignore[arg-type]
         None,  # type: ignore[arg-type]
@@ -149,6 +151,6 @@ async def test_participants_read_a_private_room_and_change_nothing(
 
         with pytest.raises(HTTPException) as hidden:
             await _read(session, room.id, stranger)
-        assert hidden.value.status_code == 403
+        assert hidden.value.status_code == 404
         with pytest.raises(_GatePassed):
             await _write(session, room.id, owner)

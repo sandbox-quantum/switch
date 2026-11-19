@@ -15,7 +15,7 @@ import {
 } from "@mui/material";
 import { useState } from "react";
 import type { ChatClaim } from "../../data/api";
-import { MONO_SX, titleCase } from "../../theme/hootFormat";
+import { MONO_SX, titleCase } from "../../theme/format";
 
 interface Props {
   platform: string;

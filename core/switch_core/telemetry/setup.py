@@ -16,9 +16,15 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.config import SwitchConfig
 from switch_core.observability.otlp import OtlpClient
-from switch_core.telemetry.deployment import load_deployment_identity
+from switch_core.telemetry.deployment import (
+    load_deployment_identity,
+    record_telemetry_switch,
+    settle_from_evidence,
+)
+from switch_core.telemetry.reporter import read_watermark
 from switch_core.telemetry.service import TelemetryService
 from switch_core.telemetry.sink import NullSink, OtlpRelaySink, TelemetrySink
+from switch_core.telemetry.snapshot import milestones_passed
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +35,27 @@ logger = logging.getLogger(__name__)
 _FLUSH_INTERVAL_SECONDS = 5.0
 _MAX_BATCH = 200
 _MAX_BUFFERED = 10_000
+
+
+async def _milestones_passed(
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    enabled: bool,
+    enabled_since: datetime | None,
+) -> set[str]:
+    """`milestones_passed`, leaving to the snapshot pass any room it will
+    report: with telemetry on, one that went live after both the last pass
+    and the moment reporting began. Before the first pass, which reports no
+    room, and with telemetry off, every room is evidence."""
+    watermark = await read_watermark(session_factory) if enabled else None
+    activated_before = (
+        None
+        if watermark is None
+        else max(watermark, enabled_since)
+        if enabled_since is not None
+        else watermark
+    )
+    return await milestones_passed(session_factory, activated_before=activated_before)
 
 
 async def build_telemetry(
@@ -64,16 +91,41 @@ async def build_telemetry(
                 version=version,
                 session_factory=session_factory,
                 installed_at=None,
+                enabled_since=None,
                 enabled=False,
             ),
             None,
             None,
         )
 
-    # Both streams send `flint.client_id`, so a deployment reporting both must
+    # Both streams send `switch_trust.client_id`, so a deployment reporting both must
     # be one subject downstream. The operator's value wins; the generated one
     # cannot be copied between deployments and carries the install date.
     client_id = config.deployment_id or generated_id
+
+    try:
+        enabled_since, switched_on = await record_telemetry_switch(
+            session_factory, enabled=config.telemetry_enabled
+        )
+    except Exception:
+        # Not fatal, and not a reason to stop reporting: without it, events
+        # about the past are dated no earlier than the install alone.
+        logger.error(
+            "Could not record when product telemetry was switched on; events "
+            "about the past this run are clamped to the install date only.",
+            exc_info=True,
+        )
+        enabled_since, switched_on = None, False
+    # Before any service that reports a milestone is built.
+    await settle_from_evidence(
+        session_factory,
+        lambda: _milestones_passed(
+            session_factory,
+            enabled=config.telemetry_enabled,
+            enabled_since=enabled_since,
+        ),
+        switched_on=switched_on,
+    )
 
     if not config.telemetry_enabled:
         logger.info(
@@ -88,6 +140,7 @@ async def build_telemetry(
                 version=version,
                 session_factory=session_factory,
                 installed_at=installed_at,
+                enabled_since=None,
             ),
             installed_at,
             None,
@@ -120,10 +173,28 @@ async def build_telemetry(
             version=version,
             session_factory=session_factory,
             installed_at=installed_at,
+            enabled_since=enabled_since,
         ),
         installed_at,
         http_client,
     )
+
+
+def telemetry_environment(config: SwitchConfig, version: str | None) -> str:
+    """The Amplitude project this deployment reports to (`switch_trust.env`).
+
+    `TELEMETRY_ENVIRONMENT` when it is set. Otherwise `dev` for a build that
+    is not a release (a `.dev` version, as every image built from main is), so
+    a development server nobody configured does not report as production, and
+    `prod` for a release, which is what every customer runs. A source checkout
+    reports the release version in `core/pyproject.toml`, so it is read as a
+    release; `just init-env` sets `TELEMETRY_ENVIRONMENT=local` for one.
+    """
+    if "telemetry_environment" in config.model_fields_set:
+        return config.telemetry_environment
+    if version is not None and ".dev" in version:
+        return "dev"
+    return config.telemetry_environment
 
 
 def _service(
@@ -134,6 +205,7 @@ def _service(
     version: str | None,
     session_factory: async_sessionmaker[AsyncSession],
     installed_at: datetime | None,
+    enabled_since: datetime | None,
     enabled: bool | None = None,
 ) -> TelemetryService:
     """`enabled` overrides the setting for the one case that has to: with no
@@ -143,9 +215,10 @@ def _service(
         enabled=config.telemetry_enabled if enabled is None else enabled,
         client_id=client_id,
         version=version,
-        telemetry_environment=config.telemetry_environment,
+        telemetry_environment=telemetry_environment(config, version),
         telemetry_internal=config.telemetry_internal,
         deployment_kind=config.deployment_kind,
         session_factory=session_factory,
         installed_at=installed_at,
+        enabled_since=enabled_since,
     )

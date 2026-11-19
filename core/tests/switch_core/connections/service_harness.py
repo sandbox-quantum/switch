@@ -24,7 +24,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.api.service_routes import router as service_router
 from switch_core.connections.broker import ServiceBroker
+from switch_core.connections.flows import ServiceFlows
 from switch_core.connections.loader import CATALOG
+from switch_core.connections.sign_in_flows import SignInFlows
 from switch_core.db.models import (
     TENANT_ZERO_ID,
     Agent,
@@ -78,12 +80,16 @@ def build_service_harness(
         workspace_services=WorkspaceServiceStore(),
         workspace_gate=workspace_gate,
         public_url=None,
+        allow_non_expiring_keys=False,
     )
     harness.app.include_router(service_router, prefix="/agents")
     harness.gateway_app.include_router(service_connections_router)
     harness.gateway_app.include_router(workspace_services_router)
     harness.app.state.service_broker = broker
     harness.gateway_app.state.service_broker = broker
+    harness.gateway_app.state.service_flows = ServiceFlows(
+        None, {}, SignInFlows(session_factory, TEST_KEYRING)
+    )
     return harness, broker
 
 
@@ -172,6 +178,8 @@ async def connect(
                 )
             ),
             oauth_client_id=None,
+            method="oauth",
+            choices={},
         )
         await session.commit()
 

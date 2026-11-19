@@ -14,6 +14,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Literal
 
 from switch_core import messaging_platforms
 from switch_core.sessions.contract import (
@@ -26,6 +27,8 @@ from switch_core.sessions.contract import (
     TurnUpsert,
 )
 
+from .subagents import is_tool_call
+
 # How finely a running turn's clock is shown, and so how often the clock alone
 # is worth redrawing a message for. Seconds would sit still between those
 # redraws and read as a card that had stopped.
@@ -36,6 +39,11 @@ RUNNING_CLOCK_SECONDS = 60
 # the same tool log, the last line still marked in progress, and nothing to say
 # which of the two a reader is looking at. Plain sentences, not markup, so
 # every renderer reads the same wording rather than each keeping its own copy.
+#: A turn's state while its message waits for a turn that was already running.
+QUEUED_BEHIND = "Queued behind the running turn. Starts when it ends."
+#: How a message steered into a running turn is introduced in the turn's log.
+STEERED_MARKER = "Steered into this turn"
+
 TURN_STATE = {
     "queued": "Queued. Waiting for the agent to start…",
     "running": "Working…",
@@ -51,6 +59,7 @@ def turn_state(
     *,
     tool_detail: bool,
     elapsed_seconds: float | None = None,
+    running_clock: Literal["minutes", "exact"] = "minutes",
 ) -> str:
     """Where a turn got to, and what it left behind if it stopped.
 
@@ -80,29 +89,49 @@ def turn_state(
     reporting — the duration stays, because that is the turn's own. What a
     turn left unfinished is not covered by it: that is an outcome, and it is
     reported wherever the turn is.
+
+    `running_clock` is "minutes" for a platform that redraws a running card on
+    a timer (Slack), where seconds would sit still between those redraws, and
+    "exact" for one that redraws only when the turn changes: there the time is
+    right at every drawing, and whole minutes would leave "Working…" unchanged
+    through every change of the first minute, reading as a card that stopped.
     """
     state = TURN_STATE[turn.status]
+    if turn.status == "queued" and any(
+        item.kind == "user-message" and item.delivery == "queued" for item in items
+    ):
+        state = QUEUED_BEHIND
     if turn.status not in TURN_ENDED:
-        if elapsed_seconds is not None and elapsed_seconds >= RUNNING_CLOCK_SECONDS:
-            return f"{state} {int(elapsed_seconds // RUNNING_CLOCK_SECONDS)}m"
-        return state
-    if elapsed_seconds is not None:
-        worked = _worked_for(elapsed_seconds, items, tool_detail=tool_detail)
-        state = worked if turn.status == "completed" else f"{state} {worked}"
-    unfinished = sum(
-        1
-        for item in items
-        if item.kind == "tool-activity" and item.status == "in-progress"
-    )
-    if not unfinished:
-        return state
-    step = "step" if unfinished == 1 else "steps"
-    return f"{state} {unfinished} {step} left unfinished."
+        if elapsed_seconds is not None and running_clock == "exact":
+            state = f"{state} {_format_duration(elapsed_seconds)}"
+        elif elapsed_seconds is not None and elapsed_seconds >= RUNNING_CLOCK_SECONDS:
+            state = f"{state} {int(elapsed_seconds // RUNNING_CLOCK_SECONDS)}m"
+    else:
+        if elapsed_seconds is not None:
+            worked = _worked_for(elapsed_seconds, items, tool_detail=tool_detail)
+            state = worked if turn.status == "completed" else f"{state} {worked}"
+        unfinished = sum(
+            1 for item in items if is_tool_call(item) and item.status == "in-progress"
+        )
+        if unfinished:
+            step = "step" if unfinished == 1 else "steps"
+            state += f" {unfinished} {step} left unfinished."
+    steered = sum(1 for item in items if is_steered(item))
+    if steered:
+        noun = "message" if steered == 1 else "messages"
+        state += f" {steered} {noun} steered into this turn."
+    return state
+
+
+def is_steered(item: Item) -> bool:
+    """A person's message that joined this turn while it ran, rather than
+    waiting for a turn of its own."""
+    return item.kind == "user-message" and item.delivery == "steered"
 
 
 def _worked_for(elapsed_seconds: float, items: list[Item], *, tool_detail: bool) -> str:
     """How long a turn ran, and how much of that was tool calls."""
-    calls = sum(1 for item in items if item.kind == "tool-activity")
+    calls = sum(1 for item in items if is_tool_call(item))
     worked = f"Worked for {_format_duration(elapsed_seconds)}."
     if not calls or not tool_detail:
         return worked
@@ -416,6 +445,13 @@ class Markup:
         card that already has two.
         """
         return self.code(text)
+
+    def reply_with(self, handle: str) -> str:
+        """How a card's instruction to answer starts, given its marked
+        `handle`: "Reply with `R42`". A platform where an answer only reaches
+        Switch as a reply to the card says so: in a Telegram group the bot
+        sees replies to its own messages, not the messages around them."""
+        return f"Reply with {handle}"
 
 
 MARKDOWN = Markup()

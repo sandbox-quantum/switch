@@ -1,6 +1,8 @@
 import { useQuery } from '@tanstack/react-query';
+import { observer } from 'mobx-react-lite';
 import { useEffect, useReducer, useState } from 'react';
 import { CopyButton } from '@renderer/features/admin/copy-button';
+import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import type { BaseModalProps } from '@renderer/lib/modal/modal-provider';
@@ -17,10 +19,12 @@ import { Input } from '@renderer/lib/ui/input';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import {
   enrollCommand,
+  enrollmentRefusal,
   installCommand,
   MAX_MACHINE_DESCRIPTION,
   MAX_MACHINE_NAME,
 } from '@shared/core/managed-agents/machine-enrollment';
+import { addDeviceRefusal } from './machine-state';
 
 type Props = BaseModalProps<void> & { serverId: string };
 
@@ -29,15 +33,22 @@ type Props = BaseModalProps<void> & { serverId: string };
  * one-time code, issued when the dialog opens. The code is shown once:
  * closing discards it, and opening again issues a new one. The optional name
  * and description go into the commands, so the machine enrolls with them.
+ *
+ * Where no other device could reach the server, it says why in place of the
+ * commands: a server Console runs on this computer without asking it for a
+ * code, any other once the server or the address it would use says so.
  */
-export function AddMachineModal({ serverId, onClose }: Props) {
+export const AddMachineModal = observer(function AddMachineModal({ serverId, onClose }: Props) {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
+  const server = switchServersStore.serverById(serverId);
+  const onThisComputer = server ? addDeviceRefusal(server) : null;
   // A fresh code each time the dialog opens or "New code" is pressed, never one from the cache.
   const [opening, setOpening] = useState(() => crypto.randomUUID());
   const enrollment = useQuery({
     queryKey: ['machine-enrollment', serverId, opening],
     queryFn: () => rpc.managedAgents.machineEnrollment(serverId),
+    enabled: onThisComputer === null,
     staleTime: Infinity,
     gcTime: 0,
     retry: false,
@@ -57,6 +68,7 @@ export function AddMachineModal({ serverId, onClose }: Props) {
     return () => clearTimeout(timer);
   }, [issued]);
   const expired = issued !== undefined && new Date(issued.expiresAt).getTime() <= Date.now();
+  const refused = onThisComputer ?? (issued ? enrollmentRefusal(issued) : null);
 
   return (
     <>
@@ -64,13 +76,22 @@ export function AddMachineModal({ serverId, onClose }: Props) {
         <DialogTitle>Add a device</DialogTitle>
       </DialogHeader>
       <DialogContentArea className="space-y-4 pt-0">
-        <DialogDescription>
-          Run the agents controller on the computer that should run your agents: a laptop, your own
-          VM or a server. Enroll it once with the code below, and it runs whatever agents you place
-          on it. It needs Linux or macOS with Node 22.13 or later, and the CLI of each provider your
-          agents use, signed in as the user the controller runs as.
-        </DialogDescription>
-        {enrollment.error ? (
+        {refused === null && (
+          <DialogDescription>
+            Run the agents controller on the computer that should run your agents: a laptop, your
+            own VM or a server. Enroll it once with the code below, and it runs whatever agents you
+            place on it. It needs Linux or macOS with Node 22.13 or later, and the CLI of each
+            provider your agents use, signed in as the user the controller runs as.
+          </DialogDescription>
+        )}
+        {refused !== null ? (
+          <p
+            role="status"
+            className="rounded-md border border-border-warning bg-background-warning px-3 py-2 text-sm text-foreground-warning"
+          >
+            {refused}
+          </p>
+        ) : enrollment.error ? (
           <p role="alert" className="text-sm text-destructive">
             {failureText(enrollment.error, 'Could not issue an enrollment code.')}
           </p>
@@ -107,26 +128,16 @@ export function AddMachineModal({ serverId, onClose }: Props) {
               </Field>
             </FieldGroup>
 
-            {issued.loopback ? (
+            {issued.fallback && (
               <p
                 role="status"
                 className="rounded-md border border-border-warning bg-background-warning px-3 py-2 text-xs text-foreground-warning"
               >
-                These commands use {issued.serverUrl}, which only this computer can reach. On
-                another device, change <code>--server</code> to an address it reaches Switch at.
+                This server has no public address set, so these commands use the address this
+                Console reaches it at, {issued.serverUrl}. If the device reaches Switch at another
+                address (behind a proxy, or by an internal name), change <code>--server</code> to
+                that.
               </p>
-            ) : (
-              issued.fallback && (
-                <p
-                  role="status"
-                  className="rounded-md border border-border-warning bg-background-warning px-3 py-2 text-xs text-foreground-warning"
-                >
-                  This server has no public address set, so these commands use the address this
-                  Console reaches it at, {issued.serverUrl}. If the device reaches Switch at another
-                  address (behind a proxy, or by an internal name), change <code>--server</code> to
-                  that.
-                </p>
-              )
             )}
 
             {nameTooLong || descriptionTooLong ? (
@@ -165,7 +176,7 @@ export function AddMachineModal({ serverId, onClose }: Props) {
             </p>
             <p className="text-xs text-foreground-muted">
               Nothing is saved until the device enrolls: closing this discards the code, and the
-              device shows up in Your devices only once its controller reports. If it does not, run{' '}
+              device shows up in Devices only once its controller reports. If it does not, run{' '}
               <code>switch-agent-controller doctor</code> on it. A computer you reach over SSH can
               also join without this: create an agent on it, and Switch Console sets its controller
               up.
@@ -178,7 +189,7 @@ export function AddMachineModal({ serverId, onClose }: Props) {
       </DialogFooter>
     </>
   );
-}
+});
 
 function CommandBlock({ title, command, note }: { title: string; command: string; note: string }) {
   return (
