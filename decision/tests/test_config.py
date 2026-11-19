@@ -55,7 +55,7 @@ def test_bedrock_backend_defaults(monkeypatch):
         monkeypatch.delenv(k, raising=False)
     s = load_settings()
     assert (s.model, s.aws_region, s.aws_profile) == (
-        "us.anthropic.claude-haiku-5-5-v1:0",
+        "us.anthropic.claude-haiku-5-5",
         "us-east-1",
         None,
     )
