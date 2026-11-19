@@ -4435,6 +4435,19 @@ class TurnStatusPost(TenantScoped, Base):
     reaction_message_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
     mark: Mapped[str | None] = mapped_column(Text, nullable=True)
     attention_post_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # `!work-threads` (Slack): the agent's own channel message the turn is
+    # drawn in a thread under, and the streams Slack closed on the turn before
+    # `external_post_id` took over from them, oldest first. Null otherwise.
+    work_message_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
+    earlier_post_ids: Mapped[list[str] | None] = mapped_column(
+        ARRAY(Text), nullable=True
+    )
+    # When the work thread's ending ran, and the answer its plan went under
+    # if the thread was removed (nothing is drawn into it after that).
+    work_finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    folded_into: Mapped[str | None] = mapped_column(Text, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),

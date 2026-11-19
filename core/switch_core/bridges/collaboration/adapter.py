@@ -193,6 +193,10 @@ class TurnActivity:
     # covers a thread it has no memory of, such as one it lost on a restart or
     # a work thread under the agent's own message that nobody has spoken in.
     recipient_external_id: str | None = None
+    # Drawn in a work thread (`!work-threads`): the agent's own message, with
+    # this turn's activity under it. The adapter keeps that message's line up
+    # to date and, where its stream closes, opens another in the same thread.
+    work_thread: bool = False
 
 
 @dataclass(frozen=True)
@@ -1534,8 +1538,12 @@ class PlatformAdapter(ABC):
         message_ref: str,
         content: RichContent,
         thread_root_id: str | None,
-    ) -> None:
+    ) -> str | None:
         """Redraw what `post_rich` posted, in place.
+
+        Returns the message the content is drawn in from now on, for an
+        adapter whose redraw can carry on in a new one (Slack, for a work
+        thread whose stream it closed); None, as here, when it stays put.
 
         Falls back the same way `post_rich` does. Most adapters'
         `update_message` swallows its own errors by design, for the
@@ -1573,6 +1581,7 @@ class PlatformAdapter(ABC):
                 f"channel {channel_id}: {error}",
                 text=text,
             ) from error
+        return None
 
     def notice_address(self, message_ref: str, thread_root_id: str | None) -> str:
         """Where a notice *about* a publication has to be said.
@@ -1811,6 +1820,24 @@ class PlatformAdapter(ABC):
         is who the work is for. Raises `RichContentFailed` when nothing was
         posted.
         """
+        raise NotImplementedError
+
+    async def attach_activity(
+        self,
+        channel_id: str,
+        answer_ref: str,
+        answer_text: str,
+        content: TurnActivity,
+    ) -> bool:
+        """Put a finished turn's plan under its answer, the agent's message
+        `answer_ref` posted as `answer_text`. True once done."""
+        raise NotImplementedError
+
+    async def remove_work_thread(
+        self, channel_id: str, work_ref: str, stream_refs: Sequence[str]
+    ) -> bool:
+        """Delete a work thread's streams and then its work message. True when
+        all of them are gone; False at the first refusal."""
         raise NotImplementedError
 
     async def settle_work_message(
