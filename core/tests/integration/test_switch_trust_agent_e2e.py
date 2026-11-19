@@ -35,7 +35,9 @@ class _FixedTrustClient:
         self._result = result
         self.room_ids: list[str] = []
 
-    async def check(self, *, role: str, content: str, room_id: str) -> TrustCheckResult:
+    async def check(
+        self, *, tenant_id: str, role: str, content: str, room_id: str
+    ) -> TrustCheckResult:
         self.room_ids.append(room_id)
         return self._result
 
@@ -43,7 +45,9 @@ class _FixedTrustClient:
 class _FailingTrustClient:
     """A Switch Trust outage: every check raises, never answers an outcome."""
 
-    async def check(self, *, role: str, content: str, room_id: str) -> TrustCheckResult:
+    async def check(
+        self, *, tenant_id: str, role: str, content: str, room_id: str
+    ) -> TrustCheckResult:
         raise GuardrailsCheckError("boom")
 
 
@@ -93,6 +97,7 @@ async def _wire_admin_client(harness: Harness, session_env: SessionEnv) -> None:
         connections=AgentConnectionRegistry(),
         frontend_base_url=session_env.config.dashboard_base_url,
         follow_the_conversation_enabled=False,
+        feature_flags={},
         decision_availability=DecisionAvailability(
             enabled=False,
             server=ServerDefault(

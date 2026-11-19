@@ -41,6 +41,7 @@ from switch_core.gateway.agent_sessions import router as agent_sessions_router
 from switch_core.gateway.agents import router as agents_router
 from switch_core.gateway.api_keys import router as api_keys_router
 from switch_core.gateway.auth_routes import router as auth_router
+from switch_core.gateway.browser_handoff import router as browser_handoff_router
 from switch_core.gateway.changes import router as changes_router
 from switch_core.gateway.chats import chat_error_response
 from switch_core.gateway.chats import router as chats_router
@@ -64,8 +65,14 @@ from switch_core.gateway.oidc_routes import router as oidc_router
 from switch_core.gateway.organization_connector_apps import (
     router as organization_connector_apps_router,
 )
+from switch_core.gateway.organization_guardrails import (
+    router as organization_guardrails_router,
+)
 from switch_core.gateway.organization_services import (
     router as organization_services_router,
+)
+from switch_core.gateway.organization_workspaces import (
+    router as organization_workspaces_router,
 )
 from switch_core.gateway.organizations import router as organizations_router
 from switch_core.gateway.origin_check import (
@@ -80,6 +87,7 @@ from switch_core.gateway.references import router as references_router
 from switch_core.gateway.room_groups import router as room_groups_router
 from switch_core.gateway.room_links import router as room_links_router
 from switch_core.gateway.room_schedules import router as room_schedules_router
+from switch_core.gateway.rooms import auto_route_router as room_auto_route_router
 from switch_core.gateway.rooms import router as rooms_router
 from switch_core.gateway.service_connections import (
     router as service_connections_router,
@@ -94,6 +102,9 @@ from switch_core.gateway.trust_settings import router as trust_settings_router
 from switch_core.gateway.workos_sign_in_routes import (
     router as workos_sign_in_router,
 )
+from switch_core.gateway.workspace_guardrails import (
+    router as workspace_guardrails_router,
+)
 from switch_core.gateway.workspace_services import (
     router as workspace_services_router,
 )
@@ -104,6 +115,7 @@ from switch_core.request_validation import validation_error_response
 from switch_core.room_service import RoomService
 from switch_core.sessions.errors import SessionError
 from switch_core.sessions.http import session_error_response
+from switch_core.trust.connection_check import TrustConnectionCheck
 from switch_core.user_changes import LocalUserChanges
 
 
@@ -136,7 +148,8 @@ def create_gateway_app(
     chat_service: ChatService,
     connector_apps: ConnectorApps,
     config: SwitchConfig,
-    trust_settings_changed: Callable[[], None] | None = None,
+    trust_connection_check: TrustConnectionCheck,
+    trust_settings_changed: Callable[[str], None] | None = None,
 ) -> FastAPI:
     init_dependencies(
         agent_store=agent_store,
@@ -164,6 +177,7 @@ def create_gateway_app(
         invite_mailer=invite_mailer,
         user_changes=user_changes,
         config=config,
+        trust_connection_check=trust_connection_check,
         trust_settings_changed=trust_settings_changed,
     )
 
@@ -249,6 +263,10 @@ def create_gateway_app(
         per_caller=config.gateway_requests_per_caller,
         read_timeout=config.gateway_read_statement_timeout,
         keyring=config.keyring,
+        # The only bearer token a gateway route takes (`hosted_controller.py`).
+        controller_token=app.state.hosted_controller_settings.token.get_secret_value()
+        if app.state.hosted_controller_settings
+        else None,
     )
 
     app.add_exception_handler(RequestValidationError, validation_error_response)
@@ -258,11 +276,15 @@ def create_gateway_app(
         agent_sessions_router, prefix="/agent-sessions", tags=["session activity"]
     )
     app.include_router(auth_router, tags=["auth"])
+    app.include_router(browser_handoff_router, tags=["auth"])
     app.include_router(oidc_router, tags=["auth"])
     app.include_router(workos_sign_in_router, tags=["auth"])
     app.include_router(tenants_router, tags=["tenants"])
     app.include_router(organizations_router, tags=["organizations"])
+    app.include_router(organization_workspaces_router, tags=["organizations"])
     app.include_router(rooms_router, prefix="/rooms", tags=["rooms"])
+    if config.decision_routing_enabled:
+        app.include_router(room_auto_route_router, prefix="/rooms", tags=["rooms"])
     app.include_router(changes_router, tags=["changes"])
     app.include_router(chats_router, prefix="/chats", tags=["chats"])
     app.include_router(room_groups_router, prefix="/room-groups", tags=["room-groups"])
@@ -284,7 +306,10 @@ def create_gateway_app(
     app.include_router(template_runs_router, tags=["templates"])
     app.include_router(ecosystem_router, prefix="/ecosystem", tags=["ecosystem"])
     app.include_router(trust_settings_router, tags=["trust-settings"])
-    app.include_router(decision_settings_router, tags=["decision-settings"])
+    app.include_router(organization_guardrails_router, tags=["organizations"])
+    app.include_router(workspace_guardrails_router, tags=["trust-settings"])
+    if config.decision_routing_enabled:
+        app.include_router(decision_settings_router, tags=["decision-settings"])
     app.include_router(feature_flags_router, tags=["feature-flags"])
     app.include_router(
         messaging_installs_router,

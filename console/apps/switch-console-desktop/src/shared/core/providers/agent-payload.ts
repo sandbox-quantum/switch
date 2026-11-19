@@ -117,7 +117,14 @@ export type HostDependencySelection = InstallOverride | null;
 
 type InstallCommandError =
   | { type: 'permission-denied'; message: string; output: string; exitCode?: number }
-  | { type: 'command-failed'; message: string; output: string; exitCode?: number }
+  | {
+      type: 'command-failed';
+      message: string;
+      output: string;
+      exitCode?: number;
+      /** The program the install needed and could not find (`npm`, `winget`). */
+      missingCommand?: string;
+    }
   | { type: 'process-open-failed'; message: string };
 
 export type AgentInstallError =

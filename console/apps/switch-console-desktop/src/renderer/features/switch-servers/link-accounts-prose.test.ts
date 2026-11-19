@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import { handleOf } from '@renderer/lib/components/bridge-tile';
 import type { LinkCode } from '@shared/core/switch-servers/switch-servers';
 import {
+  accountName,
   commandToPost,
   connectedAppsSummary,
   LINK_ACCOUNTS_LATER,
@@ -69,5 +71,32 @@ describe('commandToPost', () => {
     expect(commandToPost(linkCode('Post `!link-account AB12-CD34 from that account.'))).toBe(
       'AB12-CD34'
     );
+  });
+});
+
+describe('naming a linked account', () => {
+  const telegram = {
+    id: 'eu-42',
+    bridgeId: 'b-tg',
+    bridgeDisplayName: 'Telegram',
+    bridgeType: 'telegram',
+    externalUserId: '42',
+    externalUsername: 'MM_42',
+    externalDisplayName: 'M M',
+    hasHandle: false,
+    verified: true,
+  };
+
+  it('uses the person’s name where Switch made up the handle', () => {
+    expect(accountName(telegram)).toBe('M M');
+    expect(handleOf(telegram)).toBe('M M');
+  });
+
+  it('uses the handle otherwise, and for a server that predates the name', () => {
+    expect(
+      accountName({ externalUsername: 'ada', externalDisplayName: 'Ada', hasHandle: true })
+    ).toBe('@ada');
+    expect(accountName({ externalUsername: 'ada' })).toBe('@ada');
+    expect(handleOf({ ...telegram, externalUsername: 'ada', hasHandle: undefined })).toBe('@ada');
   });
 });

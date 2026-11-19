@@ -19,6 +19,12 @@ it. A vendor that sends the browser back with an error rather than a code
 fails the flow with what it said: at Core's callback in core mode, and
 through Console, whose listener received it, in loopback mode.
 
+A flow started from the gateway (`start_web`) finishes in the browser
+instead: it leaves and returns through Core as a **core** flow does, and at
+the callback Core exchanges the code itself, for the person whose Switch
+session the browser carries, and sends the browser back to the connector's
+page. Nothing holds its completion secret, so Console cannot complete it.
+
 What the person picked before signing in, where the entry asks
 (`auth.oauth.choices`, a vendor's site), Console gives with the start. The
 flow keeps it, every step calls the vendor where it says, and the
@@ -36,6 +42,8 @@ import secrets
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from urllib.parse import urlencode
+
+from fastapi import Request
 
 from switch_core.connections.adapters import (
     ReauthorizationRequiredError,
@@ -75,6 +83,11 @@ KIND = "service"
 # characters.
 MAX_CODE_LENGTH = 8192
 INTERRUPTED = "Sign-in was interrupted. Start it again from Switch Console."
+WEB_INTERRUPTED = "Sign-in was interrupted. Connect again."
+# Marks a flow started from the gateway, in its details: it returns to the
+# browser, not to a listener, so it has no port.
+RETURNS_TO_WEB = {"returns_to": "web"}
+NO_LISTENER = 0
 
 
 def client_changed(name: str) -> str:
@@ -113,12 +126,25 @@ class ServiceFlow:
         return self.stored.tenant_id
 
     @property
+    def user_id(self) -> str:
+        return self.stored.user_id
+
+    @property
     def name(self) -> str:
         return str(self.stored.details["name"])
 
     @property
     def mode(self) -> RedirectMode:
         return "core" if self.stored.mode == "core" else "loopback"
+
+    @property
+    def on_web(self) -> bool:
+        """Started from the gateway: it finishes at Core's callback."""
+        return self.stored.details.get("returns_to") == "web"
+
+    @property
+    def interrupted(self) -> str:
+        return WEB_INTERRUPTED if self.on_web else INTERRUPTED
 
     @property
     def callback_url(self) -> str | None:
@@ -164,6 +190,14 @@ class Exchange:
     choices: dict[str, str]
 
 
+def get_service_flows(request: Request) -> ServiceFlows:
+    """The flows `gateway/app.py` installs on the gateway."""
+    flows = getattr(request.app.state, "service_flows", None)
+    if not isinstance(flows, ServiceFlows):
+        raise RuntimeError("No service sign-in flows are installed on this app.")
+    return flows
+
+
 class ServiceFlows:
     def __init__(
         self,
@@ -185,6 +219,26 @@ class ServiceFlows:
             definition.auth.oauth.redirect,
             self._redirects.get(definition.slug),
             self._public_url,
+        )
+
+    @property
+    def public_url(self) -> str | None:
+        """Where Core's callback is, when this server knows its address."""
+        return self._public_url
+
+    def web_ready(self, definition: ConnectionDefinition) -> bool:
+        """Whether a sign-in to `definition` can start and finish in the
+        browser: GitHub's always returns to Core, and an OAuth entry's does
+        where this server sends its sign-ins back to Core's callback. Not one
+        whose sign-ins come back to Switch Console: its vendor may accept
+        Core's callback only once its admin allow-lists it, and Switch
+        registers its client for one way back. Not one that asks what to pick
+        before signing in (a site), which the dashboard does not ask yet."""
+        if definition.adapter == "github":
+            return True
+        oauth = definition.auth.oauth
+        return (
+            oauth is not None and not oauth.choices and self.mode(definition) == "core"
         )
 
     def authorize_url(self, service: str, state: str) -> str:
@@ -223,6 +277,61 @@ class ServiceFlows:
                 f"{', '.join(str(p) for p in ports)} of this computer. Close "
                 "whatever is using them, and connect again."
             )
+        return await self._start(
+            definition=definition,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            state=state,
+            mode=mode,
+            port=port,
+            completion_secret=completion_secret,
+            owner_label=owner_label,
+            choices=choices,
+            marks={},
+        )
+
+    async def start_web(
+        self,
+        *,
+        definition: ConnectionDefinition,
+        tenant_id: str,
+        user_id: str,
+        owner_label: str,
+    ) -> ServiceFlow:
+        """A flow the gateway starts, which finishes at Core's callback. It
+        picks nothing: an entry that asks is not `web_ready`."""
+        if not self.web_ready(definition):
+            raise FlowError(
+                f"{definition.name} can't be connected from the web here. "
+                "Connect it from Switch Console."
+            )
+        return await self._start(
+            definition=definition,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            state=secrets.token_urlsafe(32),
+            mode="core",
+            port=NO_LISTENER,
+            completion_secret=secrets.token_urlsafe(32),
+            owner_label=owner_label,
+            choices={},
+            marks=RETURNS_TO_WEB,
+        )
+
+    async def _start(
+        self,
+        *,
+        definition: ConnectionDefinition,
+        tenant_id: str,
+        user_id: str,
+        state: str,
+        mode: RedirectMode,
+        port: int,
+        completion_secret: str,
+        owner_label: str,
+        choices: dict[str, str],
+        marks: dict[str, str],
+    ) -> ServiceFlow:
         access = definition.access
         assert access is not None
         # Connecting asks for everything a grant may need: write where the
@@ -258,6 +367,7 @@ class ServiceFlows:
                         else access.consent.model_dump(mode="json")
                     ),
                     "choices": choices,
+                    **marks,
                 },
                 completion_secret=completion_secret,
             )
@@ -345,6 +455,32 @@ class ServiceFlows:
         takes the code on to Console's listener. Once per flow. Back with the
         vendor's `error` instead, the flow fails with it and
         `SignInRefusedError` says why."""
+        if flow.on_web:
+            raise FlowError("The sign-in could not be verified.")
+        await self._back_from_vendor(
+            flow, code=code, error=error, description=description, nonce=nonce
+        )
+        taken = await self._flows.advance(
+            flow.stored, expect=("authorizing",), to="delivered", changes={}
+        )
+        if taken is None:
+            raise FlowError("The sign-in could not be verified.")
+        return f"{loopback_redirect(flow.port)}?" + urlencode(
+            {"code": code, "state": flow.state}
+        )
+
+    async def _back_from_vendor(
+        self,
+        flow: ServiceFlow,
+        *,
+        code: str,
+        error: str,
+        description: str | None,
+        nonce: str,
+    ) -> None:
+        """The browser is back at Core's callback: it is the one that left
+        through Core, and the vendor issued a code, or refused, which fails
+        the flow with what it said (`SignInRefusedError`)."""
         if (
             flow.mode != "core"
             or flow.status != "authorizing"
@@ -361,14 +497,42 @@ class ServiceFlows:
                 changes={"error": refusal},
             )
             raise SignInRefusedError(refusal)
-        taken = await self._flows.advance(
-            flow.stored, expect=("authorizing",), to="delivered", changes={}
+
+    async def finish_web(
+        self,
+        flow: ServiceFlow,
+        *,
+        code: str,
+        error: str,
+        description: str | None,
+        nonce: str,
+        adapter: OAuthAdapter,
+        discard: Callable[[SignIn], Awaitable[str | None]],
+    ) -> Exchange:
+        """The browser is back at Core's callback with a flow the gateway
+        started: Core exchanges the code there and then. The caller has
+        checked whose session the browser carries. Every way it cannot go on
+        fails the flow with why, for the page the browser returns to; as
+        `complete`, a flow that can stays `checking` until the caller settles
+        it."""
+        unverified = f"{flow.name} sign-in could not be verified. Connect again."
+        if not flow.on_web:
+            raise FlowError(unverified)
+        try:
+            await self._back_from_vendor(
+                flow, code=code, error=error, description=description, nonce=nonce
+            )
+        except SignInRefusedError:
+            raise
+        except FlowError:
+            await self.refuse(flow.stored, unverified)
+            raise FlowError(unverified) from None
+        checking = await self._flows.advance(
+            flow.stored, expect=("authorizing",), to="checking", changes={}
         )
-        if taken is None:
-            raise FlowError("The sign-in could not be verified.")
-        return f"{loopback_redirect(flow.port)}?" + urlencode(
-            {"code": code, "state": flow.state}
-        )
+        if checking is None:
+            raise FlowError(unverified)
+        return await self._exchange(flow, checking, code, adapter, discard)
 
     async def vendor_refused(
         self,
@@ -419,7 +583,8 @@ class ServiceFlows:
             f"{flow.name} sign-in could not be verified. Connect again."
         )
         if (
-            not flow.stored.holds_secret(completion_secret)
+            flow.on_web
+            or not flow.stored.holds_secret(completion_secret)
             or flow.status != ready_for
             or not code
             or len(code) > MAX_CODE_LENGTH
@@ -430,6 +595,19 @@ class ServiceFlows:
         )
         if checking is None:
             raise refused
+        return await self._exchange(flow, checking, code, adapter, discard)
+
+    async def _exchange(
+        self,
+        flow: ServiceFlow,
+        checking: StoredFlow,
+        code: str,
+        adapter: OAuthAdapter,
+        discard: Callable[[SignIn], Awaitable[str | None]],
+    ) -> Exchange:
+        """Exchange a `checking` flow's code and read the account it signed
+        in. A failure settles the flow with why; when the account cannot be
+        read, `discard` revokes the sign-in the vendor just issued."""
         try:
             recorded = flow.stored.details.get("client_id")
             if recorded is not None and recorded != await adapter.client_id(
@@ -446,7 +624,7 @@ class ServiceFlows:
         except ServiceAdapterError as error:
             raise await self._refused(flow, checking, error, None) from None
         except BaseException:
-            await self.failed(checking, INTERRUPTED)
+            await self.failed(checking, flow.interrupted)
             raise
         try:
             account = await adapter.identify(
@@ -459,11 +637,11 @@ class ServiceFlows:
                 logger.exception("%s unkept sign-in discard failed", flow.service)
                 note = f"Switch could not check the sign-in {flow.name} just issued."
             except BaseException:
-                await self.failed(checking, INTERRUPTED)
+                await self.failed(checking, flow.interrupted)
                 raise
             raise await self._refused(flow, checking, error, note) from None
         except BaseException:
-            await self.failed(checking, INTERRUPTED)
+            await self.failed(checking, flow.interrupted)
             raise
         return Exchange(
             flow=checking, signed_in=signed_in, account=account, choices=flow.choices

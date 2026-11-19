@@ -115,6 +115,14 @@ class _FakeLifecycle:
     def get(self, bridge_id: str) -> Any:
         return self._bridges.get(bridge_id)
 
+    def typed_commands(self, bridge_type, connection_config):
+        return {}
+
+    def channel_creation_blocker(
+        self, bridge_type: str, connection_config: object
+    ) -> str | None:
+        return None
+
 
 class _NoRunningClients:
     def get_by_agent_id(self, agent_id: str) -> Any:

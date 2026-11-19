@@ -78,6 +78,35 @@ export interface AgentSummary {
   createdAt: string;
 }
 
+/** A room an agent is a member of, as the gateway lists an agent's rooms. */
+export interface AgentRoomMembership {
+  roomId: string;
+  roomName: string;
+  archived: boolean;
+  status: string;
+  roomRole: string | null;
+}
+
+interface RawAgentRoomMembership {
+  room_id: string;
+  room_name: string;
+  archived: boolean;
+  status: string;
+  room_role: string | null;
+}
+
+function toAgentRoomMembership(
+  row: RawAgentRoomMembership,
+): AgentRoomMembership {
+  return {
+    roomId: row.room_id,
+    roomName: row.room_name,
+    archived: row.archived,
+    status: row.status,
+    roomRole: row.room_role,
+  };
+}
+
 /**
  * One event off the agent-facing notification stream.
  *
@@ -253,6 +282,19 @@ export interface WorkspaceMembership {
   role: string;
   organization_role: string | null;
   organization_id: string | null;
+  archived_at: string | null;
+}
+
+/** One of the organization's workspaces, as its Workspaces page lists it. */
+export interface OrganizationWorkspace extends WorkspaceMembership {
+  created_at: string;
+  users: number;
+  agents: number;
+  rooms: number;
+  admins: string[];
+  can_archive: boolean;
+  archive_blocked_reason: string | null;
+  can_restore: boolean;
 }
 
 /** A workspace's message retention window; `message_retention_days: null` keeps messages forever. */
@@ -487,17 +529,49 @@ export class SwitchClient {
   }
 
   /**
-   * `POST /gateway/users` — a user in the signed-in admin's workspace. `role: 'admin'` makes a deployment operator.
-   * The account signs in with `password` for as long as it lasts, so it goes to the run's issued secrets.
+   * `POST /gateway/auth/signup` — a new account, made the way a person makes
+   * one, and a client already signed in as it with the session signing up
+   * opened. Sign-up puts the account in the server's default workspace as a
+   * plain member. Its password and session go to the run's issued secrets.
+   *
+   * This is the only way the harness makes an account, so a server that
+   * refuses sign-up fails here, saying what it needs.
    */
-  async createUser(params: {
-    name: string;
+  async signUp(params: {
     email: string;
     password: string;
-    role: "user" | "admin";
-  }): Promise<{ id: string }> {
+    displayName: string;
+  }): Promise<{ id: string; client: SwitchClient }> {
     this.issued.record(params.password);
-    return this.gateway<{ id: string }>("POST", "/users", params);
+    let signedUp: { parsed: unknown; response: Response };
+    try {
+      signedUp = await this.rawRequest("POST", "/gateway/auth/signup", {
+        body: {
+          email: params.email,
+          password: params.password,
+          display_name: params.displayName,
+        },
+      });
+    } catch (error) {
+      if (error instanceof SwitchHttpError && (error.status === 403 || error.status === 429)) {
+        throw new Error(
+          `The server refused to sign up ${params.email} (${error.status}: ${errorDetail(error.body)}). ` +
+            "The harness makes its own accounts by signing up, as a person does, so the server " +
+            "must allow it: GATEWAY_SIGNUP_ENABLED=true, with password sign-in on, no gateway " +
+            "OIDC sign-in and GATEWAY_SIGNUP_MODE=default_tenant, and GATEWAY_SIGNUP_MAX_PER_HOUR " +
+            "above what a run signs up. The ephemeral stack (scripts/ephemeral-stack.sh) starts " +
+            "its server that way.",
+          { cause: error },
+        );
+      }
+      throw error;
+    }
+    const cookie = sessionCookieFrom(signedUp.response);
+    if (!cookie) throw new Error("Signing up returned no switch_auth cookie.");
+    this.issued.record(cookie.slice("switch_auth=".length));
+    const client = this.as(params.email, params.password);
+    client.gatewayCookie = cookie;
+    return { id: (signedUp.parsed as { id: string }).id, client };
   }
 
   /**
@@ -574,6 +648,20 @@ export class SwitchClient {
     return this.gateway("GET", "/organizations/current/issues");
   }
 
+  /** `GET /gateway/organizations/current/guardrails` — the Switch Trust policy the organization connected; organization admin only. */
+  async organizationGuardrails(): Promise<{
+    connected: boolean;
+    policy_id: string | null;
+    policy_name: string | null;
+  }> {
+    return this.gateway("GET", "/organizations/current/guardrails");
+  }
+
+  /** `DELETE /gateway/organizations/current/guardrails` — disconnect the organization's Switch Trust policy. */
+  async disconnectOrganizationGuardrails(): Promise<{ connected: boolean }> {
+    return this.gateway("DELETE", "/organizations/current/guardrails");
+  }
+
   /** `GET /gateway/organizations/current` — the current workspace's organization and the caller's role there. */
   async currentOrganization(): Promise<{
     id: string;
@@ -593,11 +681,126 @@ export class SwitchClient {
     return this.gateway("GET", "/tenants/counts");
   }
 
-  /** `GET /gateway/organizations/current/workspaces` — the current organization's workspaces the caller may enter. */
-  async organizationWorkspaces(): Promise<WorkspaceMembership[]> {
-    return this.gateway<WorkspaceMembership[]>(
+  /** `GET /gateway/organizations/current/workspaces` — the current organization's workspaces the caller may enter, as its Workspaces page lists them. */
+  async organizationWorkspaces(): Promise<OrganizationWorkspace[]> {
+    return this.gateway<OrganizationWorkspace[]>(
       "GET",
       "/organizations/current/workspaces",
+    );
+  }
+
+  /** `POST /gateway/organizations/current/workspaces/{id}/archive` — close one of the organization's workspaces; organization admin only. */
+  async archiveOrganizationWorkspace(
+    workspaceId: string,
+  ): Promise<{ id: string; name: string; archived_at: string | null }> {
+    return this.gateway(
+      "POST",
+      `/organizations/current/workspaces/${encodeURIComponent(workspaceId)}/archive`,
+    );
+  }
+
+  /** `POST /gateway/organizations/current/workspaces/{id}/members` — add someone already in the organization to one of its workspaces. */
+  async addToOrganizationWorkspace(
+    workspaceId: string,
+    userId: string,
+    role: "admin" | "member",
+  ): Promise<{ id: string; name: string; role: string; archived: boolean }> {
+    return this.gateway(
+      "POST",
+      `/organizations/current/workspaces/${encodeURIComponent(workspaceId)}/members`,
+      { user_id: userId, role },
+    );
+  }
+
+  /** `PATCH /gateway/organizations/current` — rename the organization; its admins only. */
+  async renameOrganization(name: string): Promise<{ id: string; name: string }> {
+    return this.gateway("PATCH", "/organizations/current", { name });
+  }
+
+  /** `PATCH /gateway/organizations/current/workspaces/{id}` — rename one of the organization's workspaces. */
+  async renameOrganizationWorkspace(
+    workspaceId: string,
+    name: string,
+  ): Promise<{ id: string; name: string }> {
+    return this.gateway(
+      "PATCH",
+      `/organizations/current/workspaces/${encodeURIComponent(workspaceId)}`,
+      { name },
+    );
+  }
+
+  /** `PUT /gateway/organizations/current/workspaces/{id}/admins` — choose a workspace's admins among its members who are not organization admins. */
+  async setOrganizationWorkspaceAdmins(
+    workspaceId: string,
+    userIds: string[],
+  ): Promise<{ id: string; name: string; admins: string[] }> {
+    return this.gateway(
+      "PUT",
+      `/organizations/current/workspaces/${encodeURIComponent(workspaceId)}/admins`,
+      { user_ids: userIds },
+    );
+  }
+
+  /** `PATCH /gateway/organizations/current/workspaces/{id}/members/{user_id}` — change someone's role in one of the organization's workspaces. */
+  async changeOrganizationWorkspaceRole(
+    workspaceId: string,
+    userId: string,
+    role: "admin" | "member",
+  ): Promise<{ id: string; name: string; role: string; archived: boolean }> {
+    return this.gateway(
+      "PATCH",
+      `/organizations/current/workspaces/${encodeURIComponent(workspaceId)}/members/${encodeURIComponent(userId)}`,
+      { role },
+    );
+  }
+
+  /** `GET /gateway/organizations/current/workspaces/{id}/members/{user_id}/removal` — who would receive what they own there. */
+  async previewOrganizationWorkspaceRemoval(
+    workspaceId: string,
+    userId: string,
+  ): Promise<{ handed_over_to: { user_id: string } | null }> {
+    return this.gateway(
+      "GET",
+      `/organizations/current/workspaces/${encodeURIComponent(workspaceId)}/members/${encodeURIComponent(userId)}/removal`,
+    );
+  }
+
+  /** `DELETE /gateway/organizations/current/workspaces/{id}/members/{user_id}` — remove someone from one of the organization's workspaces. */
+  async removeFromOrganizationWorkspace(
+    workspaceId: string,
+    userId: string,
+  ): Promise<{ ok: boolean }> {
+    return this.gateway(
+      "DELETE",
+      `/organizations/current/workspaces/${encodeURIComponent(workspaceId)}/members/${encodeURIComponent(userId)}`,
+    );
+  }
+
+  /**
+   * `POST /gateway/organizations/current/workspaces/{id}/invitations` — an
+   * invite link to one of the organization's workspaces. The token is a
+   * bearer credential, so it goes to the run's issued secrets.
+   */
+  async inviteToOrganizationWorkspace(
+    workspaceId: string,
+    role: "admin" | "member",
+  ): Promise<string> {
+    const { token } = await this.gateway<{ token: string }>(
+      "POST",
+      `/organizations/current/workspaces/${encodeURIComponent(workspaceId)}/invitations`,
+      { role },
+    );
+    this.issued.record(token);
+    return token;
+  }
+
+  /** `POST /gateway/organizations/current/workspaces/{id}/restore` — open an archived workspace again. */
+  async restoreOrganizationWorkspace(
+    workspaceId: string,
+  ): Promise<{ id: string; name: string; archived_at: string | null }> {
+    return this.gateway(
+      "POST",
+      `/organizations/current/workspaces/${encodeURIComponent(workspaceId)}/restore`,
     );
   }
 
@@ -829,6 +1032,17 @@ export class SwitchClient {
     body: { on?: boolean; fallback_agent?: string | null },
   ): Promise<Record<string, unknown>> {
     return this.gateway("PUT", `/rooms/${roomId}/auto-route`, body);
+  }
+
+  /** `PATCH /gateway/rooms/{room_id}`: change who can read the room. */
+  async setRoomReadVisibility(
+    roomId: string,
+    readVisibility: "public" | "private",
+  ): Promise<RoomDetail> {
+    const row = await this.gateway<RawRoom>("PATCH", `/rooms/${roomId}`, {
+      read_visibility: readVisibility,
+    });
+    return toRoomDetail(row);
   }
 
   async deleteRoom(roomId: string): Promise<void> {
@@ -1228,6 +1442,29 @@ export class SwitchClient {
     return body.code;
   }
 
+  /** `GET /gateway/agents/{agent_id}`: the rooms the agent's detail lists. */
+  async agentDetailRooms(agentId: string): Promise<AgentRoomMembership[]> {
+    const detail = await this.gateway<{ rooms: RawAgentRoomMembership[] }>(
+      "GET",
+      `/agents/${encodeURIComponent(agentId)}`,
+    );
+    return detail.rooms.map(toAgentRoomMembership);
+  }
+
+  /** `GET /gateway/agents/rooms`: several agents' rooms in one request, keyed by agent id. */
+  async roomsOfAgents(
+    agentIds: string[],
+  ): Promise<{ agentId: string; rooms: AgentRoomMembership[] }[]> {
+    const query = new URLSearchParams(agentIds.map((id) => ["agent_id", id]));
+    const rows = await this.gateway<
+      { agent_id: string; rooms: RawAgentRoomMembership[] }[]
+    >("GET", `/agents/rooms?${query}`);
+    return rows.map((row) => ({
+      agentId: row.agent_id,
+      rooms: row.rooms.map(toAgentRoomMembership),
+    }));
+  }
+
   async listAgents(): Promise<AgentSummary[]> {
     const rows = await this.gateway<
       { id: string; name: string; created_at: string }[]
@@ -1313,6 +1550,14 @@ export class SwitchClient {
   }
 
   /**
+   * `PATCH /gateway/tenants/{tenant_id}` — rename the bound workspace. Whoever
+   * administers it: its admins, its organization's admin and the operator.
+   */
+  async renameTenant(tenantId: string, name: string): Promise<{ id: string; name: string }> {
+    return this.gateway("PATCH", `/tenants/${encodeURIComponent(tenantId)}`, { name });
+  }
+
+  /**
    * `DELETE /gateway/tenants/{tenant_id}` — delete the bound workspace, once it
    * is empty, by typing its name. Its own admins only. The server re-mints the
    * session onto the caller's only other workspace, if there is exactly one,
@@ -1344,9 +1589,22 @@ export class SwitchClient {
     });
   }
 
-  /** `DELETE /gateway/users/{user_id}` — the deployment operator deletes someone's whole account. */
-  async deleteUser(userId: string): Promise<void> {
-    await this.gateway<unknown>("DELETE", `/users/${encodeURIComponent(userId)}`);
+  /**
+   * `GET /gateway/auth/me/deletion` — what deleting the signed-in account
+   * would be refused with now, or null when it would go ahead.
+   */
+  async accountDeletionRefusal(): Promise<string | null> {
+    const check = await this.gateway<{ refusal: string | null }>("GET", "/auth/me/deletion");
+    return check.refusal;
+  }
+
+  /**
+   * `DELETE /gateway/auth/me` — delete the signed-in account everywhere on
+   * the server, confirmed by typing `email`, which must be the account's own.
+   * Its sessions stop working, this client's included.
+   */
+  async deleteMyAccount(email: string): Promise<void> {
+    await this.gateway<unknown>("DELETE", "/auth/me", { email });
   }
 
   /**
@@ -1355,14 +1613,6 @@ export class SwitchClient {
    */
   async endMySessions(): Promise<void> {
     await this.gateway<unknown>("POST", "/auth/sessions/revoke");
-  }
-
-  /** `POST /gateway/users/{user_id}/sessions/revoke` — the deployment operator signs someone out of every device. */
-  async endUserSessions(userId: string): Promise<void> {
-    await this.gateway<unknown>(
-      "POST",
-      `/users/${encodeURIComponent(userId)}/sessions/revoke`,
-    );
   }
 
   /** `GET /gateway/tenants/{tenant_id}/retention` — how long the workspace keeps messages; null days is forever. */
@@ -1477,9 +1727,9 @@ export class SwitchClient {
     });
   }
 
-  /** `GET /gateway/operator/workspaces` — every workspace on the server, platform operator only. */
-  async operatorWorkspaces(): Promise<{ id: string; name: string }[]> {
-    return this.gateway<{ id: string; name: string }[]>("GET", "/operator/workspaces");
+  /** `GET /gateway/tenants` — the workspaces the signed-in account belongs to, and its role in each. */
+  async workspaces(): Promise<WorkspaceMembership[]> {
+    return this.gateway<WorkspaceMembership[]>("GET", "/tenants");
   }
 
   /** `GET /gateway/auth/session` — the signed-in account's own id. */

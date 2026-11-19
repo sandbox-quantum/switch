@@ -61,7 +61,7 @@ messaging app bridge down, server errors, a slow API, a stalled server,
 agents dropping off together, or auto-route decisions failing, backing up or
 expiring (see [Decision routing](#decision-routing)). Each says what users see and what to check, posts
 when it fires, again every hour while it stays firing (`renotify_interval: 60`),
-and once more when it recovers. A crashed bridge also gets an alert that names
+and once more when it recovers. The gateway's admission control (`gateway/admission.py`) has two: requests answered 503 because a pod ran out of its share of the pool, which people see as errors, and, at low urgency, one caller answered 429 again and again, which usually means a client that should batch its requests. A crashed bridge also gets an alert that names
 it (`switch.bridges.crashed`), and "the morning report didn't post" fires when
 the 09:00 report has been silent for 25 hours, so a quiet channel can be
 trusted.
@@ -398,6 +398,13 @@ is the kind of machine (`vm` for every machine this server makes today).
 - `switch.auth.sign_in_failures` counts password sign-ins refused for a wrong
   password or an unknown email, with no attributes at all. Its alert fires
   above 20 in 10 minutes, at low urgency.
+- `switch.auth.sign_in_lockouts` counts password sign-in lock-outs by `limit`
+  (`email` or `client_address`), never the email or the address. Anyone who
+  knows a person's email can lock their password sign-in by failing with it,
+  and keep it locked by repeating that: email lock-outs arriving steadily
+  with no `client_address` ones beside them look like that. A dashboard panel
+  only, no alert. The operator lifts a lock with
+  `DELETE /gateway/users/{user_id}/sign-in-lock`.
 - `switch.runtime.unhandled_exceptions` counts exceptions nothing in Core
   handled, by `component` (`http`, `websocket` or a background `task`) and
   `type` (the nearest exception class from a fixed list, else `other`). Each

@@ -25,6 +25,12 @@ export type OperationDeps = {
   takeUpLogin: (
     provider: Provider
   ) => Promise<{ status: ProviderStatus; problem: { code: string; message: string } | null }>;
+  /**
+   * Arranges for this controller to end, once the running operations are
+   * reported, for whatever runs it to start it again; resolves with why it
+   * cannot (nothing would start it again), or null.
+   */
+  restartController: () => { reason: string; detail: string } | null;
   log: Logger;
 };
 
@@ -33,8 +39,9 @@ function failed(code: string, message: string): OperationResult {
 }
 
 /**
- * Runs one claimed operation: `agent.restart`, `provider.recheck`, and
- * `provider.login` with `method: "sealed"`; anything else is refused.
+ * Runs one claimed operation: `agent.restart`, `controller.restart`,
+ * `provider.recheck`, and `provider.login` with `method: "sealed"`; anything
+ * else is refused.
  */
 export async function executeOperation(
   operation: Operation,
@@ -57,6 +64,11 @@ export async function executeOperation(
           `Agent ${operation.agent_id} is assigned as ${entry.desired_state}; only a running agent is restarted.`
         );
       const failure = await deps.restartAgent(entry);
+      if (failure) return failed(failure.reason, failure.detail);
+      return { outcome: 'succeeded' };
+    }
+    case 'controller.restart': {
+      const failure = deps.restartController();
       if (failure) return failed(failure.reason, failure.detail);
       return { outcome: 'succeeded' };
     }

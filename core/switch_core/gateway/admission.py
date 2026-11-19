@@ -18,13 +18,19 @@ caller has too many running, 503 when the process does. Long-lived streams
 are not counted: they hold no connection while they wait for news.
 
 A read (GET or HEAD) also runs under a statement timeout
-(`db/statement_timeout.py`), which every session it opens gets, and a read
-stopped by it is answered 503. A read that slow is a bug or someone loading
-the database on purpose, and its client gave up long before. Writes run
-without one: some do a workspace's worth of work in one statement.
+(`db/statement_timeout.py`), which every session it opens gets. A read that
+slow is a bug or someone loading the database on purpose, and its client gave
+up long before. Writes run without one: some do a workspace's worth of work in
+one statement. So do the few GET routes that write, which carry
+`writes_on_get`: the sign-in and connection callbacks, which a sign-in
+provider sends the browser back to with a GET, as OAuth and OIDC do. A
+request a statement timeout stopped is answered 503.
 
 The caller is the person a session cookie names, once its signature checks
-out, or a bearer token, hashed, or else the address the request came from.
+out, or the cloud controller when its bearer token is the one configured, or
+else the address the request came from. No other gateway route takes a
+bearer token, so any other one is counted against its address: a client that
+sends a new random token with every request still waits in one line.
 Behind a proxy every request without a valid session comes from the proxy's
 address and they share one line. That only slows sign-ins on this process:
 the requests of signed-in people run in lines of their own. The state is this
@@ -37,6 +43,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import secrets
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -44,12 +51,15 @@ from dataclasses import dataclass, field
 from starlette.requests import HTTPConnection
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from switch_core.db.statement_timeout import statement_timeout, timed_out
+from switch_core.db.statement_timeout import (
+    lift_statement_timeout,
+    statement_timeout,
+    timed_out,
+)
 from switch_core.gateway.auth import session_subject
 from switch_core.keys import Keyring
 from switch_core.observability.catalogue import GATEWAY_TURNED_AWAY
 from switch_core.observability.metrics import metrics
-from switch_core.refusal_breaker import bearer_caller
 
 logger = logging.getLogger(__name__)
 
@@ -119,20 +129,37 @@ class _Line:
         return self.running == 0 and not self.waiting
 
 
-def caller_key(scope: Scope, keyring: Keyring) -> str:
+def caller_key(
+    scope: Scope, keyring: Keyring, controller_auth: bytes | None = None
+) -> str:
     """Who a request or socket is counted against: the person its session
-    cookie names, once the signature checks out, else its bearer token,
-    hashed, else the address it came from."""
+    cookie names, once the signature checks out, else the cloud controller
+    when it carries that controller's exact `Authorization` header, else the
+    address it came from. Any other bearer token counts as its address, so a
+    client can't make itself new callers by sending made-up tokens."""
     token = HTTPConnection(scope).cookies.get("switch_auth")
     if token:
         subject = session_subject(token, keyring)
         if subject is not None:
             return f"user:{subject}"
-    bearer = bearer_caller(scope)
-    if bearer is not None:
-        return f"token:{bearer}"
+    if controller_auth is not None:
+        for name, value in scope.get("headers", []):
+            if name == b"authorization" and secrets.compare_digest(
+                value, controller_auth
+            ):
+                return "cloud-controller"
     client = scope.get("client")
     return f"address:{client[0] if client else 'unknown'}"
+
+
+async def writes_on_get() -> None:
+    """Marks a GET route that writes, so it runs without the read timeout.
+
+    A route dependency (`dependencies=[Depends(writes_on_get)]`), which
+    FastAPI runs before the route's other dependencies and so before its
+    first transaction. `test_admission.py` checks every gateway callback has it.
+    """
+    lift_statement_timeout()
 
 
 def route_path(scope: Scope) -> str:
@@ -151,19 +178,23 @@ class GatewayAdmission:
         per_caller: int,
         read_timeout: str,
         keyring: Keyring,
+        controller_token: str | None = None,
     ) -> None:
         self.app = app
         self.limit = limit
         self.per_caller = per_caller
         self.read_timeout = read_timeout
         self._keyring = keyring
+        self._controller_auth = (
+            f"Bearer {controller_token}".encode() if controller_token else None
+        )
         self._process = _Line(limit)
         self._callers: dict[str, _Line] = {}
         self._named: dict[str, float] = {}
 
     def caller(self, scope: Scope) -> str:
         """Who a request's turns are counted against."""
-        return caller_key(scope, self._keyring)
+        return caller_key(scope, self._keyring, self._controller_auth)
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http" or route_path(scope) in STREAMS:
@@ -207,17 +238,19 @@ class GatewayAdmission:
             with statement_timeout(limit):
                 await self.app(scope, receive, noting_start)
         except Exception as exc:
-            if limit is None or started or not timed_out(exc):
+            # Whatever bound the limit, the read timeout or Postgres's own: a
+            # stopped statement is a busy server to the client, never a 500.
+            if started or not timed_out(exc):
                 raise
             logger.warning(
-                "A read of %s ran past its statement timeout (%s) and was stopped",
+                "A statement of %s %s ran past its statement timeout and was stopped",
+                scope.get("method"),
                 route_path(scope),
-                limit,
             )
             await _answer(
                 send,
                 503,
-                "This read took longer than Switch allows, so it was stopped. "
+                "This took longer than Switch allows, so it was stopped. "
                 "Try again in a moment.",
             )
 

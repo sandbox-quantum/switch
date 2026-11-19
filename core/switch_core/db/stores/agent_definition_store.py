@@ -112,6 +112,22 @@ class AgentDefinitionStore:
         )
         return [(row[0], row[1]) for row in result.all()]
 
+    async def list_for_tenant(
+        self, session: AsyncSession, tenant_id: str
+    ) -> list[tuple[AgentDefinition, Agent]]:
+        """Every definition in the workspace, whoever owns it."""
+        result = await session.execute(
+            select(AgentDefinition, Agent)
+            .join(
+                Agent,
+                (Agent.id == AgentDefinition.agent_id)
+                & (Agent.tenant_id == AgentDefinition.tenant_id),
+            )
+            .where(AgentDefinition.tenant_id == tenant_id)
+            .order_by(Agent.name)
+        )
+        return [(row[0], row[1]) for row in result.all()]
+
     async def list_for_controller(
         self, session: AsyncSession, tenant_id: str, controller_id: str
     ) -> list[tuple[AgentDefinition, Agent]]:

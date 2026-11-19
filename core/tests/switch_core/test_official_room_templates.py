@@ -1,6 +1,6 @@
 """The room templates that come with Switch: one document each in
-official_templates/rooms/, each creating a room and its agents, served only
-with agent management and never revised."""
+official_templates/rooms/, each creating a room and its agents, and never
+revised."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from switch_core import official_templates as official
 from switch_core.agent_templates import plan_template
 from switch_core.management.schemas import MAX_INSTRUCTIONS_BYTES
 from switch_core.official_templates import official_templates
+from switch_core.providers.registry import provider_ids
 from switch_core.rooms_yaml import RoomSpec
 from switch_core.template_lint import lint_template
 
@@ -37,12 +38,8 @@ _MACHINES = [
 ]
 
 
-def _rooms(agent_management: bool, switch_buddy: bool) -> list:
-    return [
-        t
-        for t in official_templates(agent_management, switch_buddy)
-        if t.kind == "room"
-    ]
+def _rooms(switch_buddy: bool) -> list:
+    return [t for t in official_templates(switch_buddy) if t.kind == "room"]
 
 
 def _inputs(params: dict) -> dict:
@@ -58,20 +55,20 @@ def _inputs(params: dict) -> dict:
     return inputs
 
 
-def test_the_34_room_templates_are_served_only_with_agent_management():
+def test_the_34_room_templates_are_served():
     for switch_buddy in (True, False):
-        rooms = _rooms(True, switch_buddy)
+        rooms = _rooms(switch_buddy)
         assert len(rooms) == 34 == len({t.id for t in rooms})
         assert all(t.removable for t in rooms)
         assert [t.id for t in rooms] == [f"official:{p.stem}" for p in _DOCUMENTS]
-        assert _rooms(False, switch_buddy) == []
-    agents = [t for t in official_templates(True, True) if t.kind == "agent"]
+    agents = [t for t in official_templates(True) if t.kind == "agent"]
     assert agents and not any(t.removable for t in agents)
 
 
 def test_every_room_template_plans_its_room_and_agents():
-    for template in _rooms(True, False):
+    for template in _rooms(False):
         assert template.name and template.description, template.id
+        assert template.use_case, template.id
         assert template.version == 1
         result = lint_template(template.content)
         assert result.errors == [] and result.warnings == [], template.id
@@ -84,6 +81,7 @@ def test_every_room_template_plans_its_room_and_agents():
             _inputs(data["params"]),
             builtins=_BUILTINS,
             machines=_MACHINES,
+            providers=frozenset(provider_ids()),
         )
         assert len(plan.new_agents) == kinds.count("agent"), template.id
         assert {a.machine for a in plan.new_agents} == {"laptop"}
@@ -96,12 +94,15 @@ def test_every_room_template_plans_its_room_and_agents():
         assert sorted(room.agents) == sorted(a.name for a in plan.new_agents)
         assert room.users == ["{$creator}"] and room.bridge == "{bridge}"
         assert room.instructions
+        # Every official room is private, in Switch and on its messaging app.
+        assert room.channel_type == "channel_private", template.id
+        assert room.read_visibility in (None, "private"), template.id
 
 
 def test_room_template_runs_without_bridge():
     """Templates with optional bridge param should plan successfully when bridge is omitted."""
     incident_template = next(
-        t for t in _rooms(True, False) if t.id == "official:incident-war-room"
+        t for t in _rooms(False) if t.id == "official:incident-war-room"
     )
 
     inputs = {
@@ -117,6 +118,7 @@ def test_room_template_runs_without_bridge():
         inputs,
         builtins=_BUILTINS,
         machines=_MACHINES,
+        providers=frozenset(provider_ids()),
     )
 
     assert len(plan.new_agents) == 3
@@ -135,6 +137,18 @@ def test_a_room_template_the_catalogue_does_not_name_fails_loud(tmp_path, monkey
     monkeypatch.setattr(official, "_CATALOGUE", tmp_path / "catalogue.yaml")
     with pytest.raises(RuntimeError, match="no name or no description"):
         official._room_templates.__wrapped__()
+    (tmp_path / "catalogue.yaml").write_text("a: {name: A, description: D}\n")
+    with pytest.raises(RuntimeError, match="'a' the use case None; it takes one of"):
+        official._room_templates.__wrapped__()
+    (tmp_path / "catalogue.yaml").write_text(
+        "a: {name: A, description: D, use_case: finance}\n"
+    )
+    with pytest.raises(RuntimeError, match="'a' the use case 'finance'"):
+        official._room_templates.__wrapped__()
+    (tmp_path / "catalogue.yaml").write_text(
+        "a: {name: A, description: D, use_case: ops}\n"
+    )
+    assert official._room_templates.__wrapped__()[0].use_case == "ops"
     (tmp_path / "b.yaml").write_text("version: 2\n")
     with pytest.raises(RuntimeError, match=r"one side only: \['b'\]"):
         official._room_templates.__wrapped__()

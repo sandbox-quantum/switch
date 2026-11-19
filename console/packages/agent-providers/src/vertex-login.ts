@@ -1,9 +1,10 @@
 import { z } from 'zod';
 
 /**
- * A Claude login through Google Vertex AI: the Google Cloud project and region
- * Claude Code calls Vertex in, and the Google credential it signs in with. It
- * is the `credential` of a provider login of kind `vertex`, as JSON.
+ * A login through Google Vertex AI: the Google Cloud project and region the
+ * provider calls Vertex in, and the Google credential it signs in with. It is
+ * the `credential` of a provider login of kind `vertex`, as JSON. Claude Code
+ * and Google's Antigravity CLI (`agy`) sign in with one.
  *
  * The credential is a service account key, or a user's own sign-in as
  * `gcloud auth application-default login` writes it (`authorized_user`).
@@ -12,6 +13,18 @@ import { z } from 'zod';
  * credential on the computer that made them, which the machine does not have.
  */
 const nonEmpty = z.string().trim().min(1);
+
+/** The providers a `vertex` login signs in. */
+export const VERTEX_PROVIDERS = ['claude', 'antigravity'] as const;
+export type VertexProvider = (typeof VERTEX_PROVIDERS)[number];
+
+/** Why a `vertex` login was refused for any other provider. */
+export const VERTEX_PROVIDERS_ONLY = 'Only Claude and Antigravity sign in through Vertex AI.';
+
+/** Whether `provider` can sign in with a `vertex` login. */
+export function signsInThroughVertex(provider: string): provider is VertexProvider {
+  return (VERTEX_PROVIDERS as readonly string[]).includes(provider);
+}
 
 const authorizedUserSchema = z.looseObject({
   type: z.literal('authorized_user'),
@@ -122,3 +135,50 @@ export function parseVertexLogin(credential: string): VertexLogin {
     );
   return { ...outer.data, credentials: googleCredentials(credentials) };
 }
+
+/**
+ * The variables `provider` signs in to Vertex AI with: `login`'s project and
+ * region, and the Google credential written at `credentialsPath`. Claude Code
+ * reads its own; Antigravity's `agy` signs in with application-default
+ * credentials when `AGY_ADC_AUTH` is set, and bills the quota project.
+ */
+export function vertexEnvironment(
+  provider: VertexProvider,
+  login: VertexLogin,
+  credentialsPath: string
+): Record<string, string> {
+  switch (provider) {
+    case 'claude':
+      return {
+        CLAUDE_CODE_USE_VERTEX: '1',
+        ANTHROPIC_VERTEX_PROJECT_ID: login.project,
+        CLOUD_ML_REGION: login.region,
+        GOOGLE_APPLICATION_CREDENTIALS: credentialsPath,
+      };
+    case 'antigravity':
+      return {
+        AGY_ADC_AUTH: 'true',
+        GOOGLE_CLOUD_PROJECT: login.project,
+        GOOGLE_CLOUD_QUOTA_PROJECT: login.project,
+        GOOGLE_CLOUD_LOCATION: login.region,
+        GOOGLE_APPLICATION_CREDENTIALS: credentialsPath,
+      };
+  }
+}
+
+/** Every variable `vertexEnvironment` sets for `provider`. */
+export const VERTEX_VARIABLES: Record<VertexProvider, readonly string[]> = {
+  claude: [
+    'CLAUDE_CODE_USE_VERTEX',
+    'ANTHROPIC_VERTEX_PROJECT_ID',
+    'CLOUD_ML_REGION',
+    'GOOGLE_APPLICATION_CREDENTIALS',
+  ],
+  antigravity: [
+    'AGY_ADC_AUTH',
+    'GOOGLE_CLOUD_PROJECT',
+    'GOOGLE_CLOUD_QUOTA_PROJECT',
+    'GOOGLE_CLOUD_LOCATION',
+    'GOOGLE_APPLICATION_CREDENTIALS',
+  ],
+};

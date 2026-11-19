@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.authz import (
     Principal,
     can,
-    can_manage,
+    can_read_in_package,
     require,
     require_visibility_change,
     validate_visibility_pair,
@@ -36,7 +36,7 @@ from switch_core.db.stores.package_store import PackageStore
 from switch_core.db.stores.reference_store import ReferenceStore
 from switch_core.db.stores.reference_type_store import ReferenceTypeStore
 from switch_core.db.stores.room_link_store import RoomLinkStore
-from switch_core.db.stores.room_store import AttachedRooms
+from switch_core.db.stores.room_store import AttachedRooms, readable_by
 from switch_core.telemetry import TelemetryService, emit_after_commit
 from switch_core.telemetry.ages import age_days
 
@@ -154,15 +154,19 @@ class ResourceService:
     # ── Helpers ────────────────────────────────────────────────────────────
 
     @staticmethod
-    def _reference_to_payload(ref: Reference) -> dict[str, Any]:
-        return {
+    def _reference_to_payload(ref: Reference, *, readable: bool) -> dict[str, Any]:
+        """A reference as an agent in a room it reaches is given it: with its
+        `value` and `instructions` when `readable`, else marked `withheld`
+        without them (`can_read_in_package`)."""
+        payload: dict[str, Any] = {
             "id": ref.id,
             "type": ref.type,
             "name": ref.name,
             "description": ref.description,
-            "instructions": ref.instructions,
-            "value": ref.value,
         }
+        if not readable:
+            return {**payload, "withheld": True}
+        return {**payload, "instructions": ref.instructions, "value": ref.value}
 
     @staticmethod
     def reference_to_summary(
@@ -195,15 +199,17 @@ class ResourceService:
         return summary
 
     @staticmethod
-    def _document_metadata(doc: Document) -> dict[str, Any]:
-        return {
+    def _document_metadata(doc: Document, *, readable: bool) -> dict[str, Any]:
+        payload: dict[str, Any] = {
             "id": doc.id,
             "name": doc.name,
             "description": doc.description,
-            "instructions": doc.instructions,
             "scope": "room" if doc.room_id is not None else "global",
             "created_by_agent_id": doc.created_by_agent_id,
         }
+        if not readable:
+            return {**payload, "withheld": True}
+        return {**payload, "instructions": doc.instructions}
 
     # ── Reference types ───────────────────────────────────────────────────
 
@@ -260,20 +266,21 @@ class ResourceService:
     ) -> list[ReferenceTypeRow]:
         """The management list: database rows only, never built-ins.
 
-        A principal manages the rows it owns; an admin manages every row, per
-        ``can_manage``. A row shadowed by a built-in stays here, and stays
-        editable and deletable, flagged rather than hidden.
+        Every row the principal may read: its own and the public ones, or
+        every row for an admin. What it may do to each is the caller's to
+        report, row by row, so a public type someone else owns is listed even
+        where it may only be read, and can be edited where it is publicly
+        writable. A row shadowed by a built-in stays here, and stays editable
+        and deletable, flagged rather than hidden.
         """
         rows = (
             await self._reference_types.list_all(session)
             if is_admin
             else await self._reference_types.list_for_user(session, user_id)
         )
-        principal = Principal(user_id, is_admin)
         return [
             ReferenceTypeRow(row=row, shadowed_by_builtin=is_builtin_type(row.type))
             for row in sorted(rows, key=lambda r: r.type)
-            if can_manage(principal, row.owner_id)
         ]
 
     async def resolve_display_names(
@@ -466,8 +473,13 @@ class ResourceService:
     # ── On-connect / list helpers ─────────────────────────────────────────
 
     async def list_room_resources(
-        self, session: AsyncSession, room_id: str
+        self, session: AsyncSession, room_id: str, reader: Principal
     ) -> dict[str, Any]:
+        """What is attached to `room_id`, as an agent acting for `reader` is
+        given it. Attaching shares: what is attached to the room comes whole.
+        A package attached to it shares what its owner put in it of theirs;
+        anything else in it someone keeps private comes withheld
+        (`can_read_in_package`)."""
         refs = await self._references.list_for_room(session, room_id)
         docs = await self._documents.list_for_room(session, room_id)
         packages = await self._packages.list_for_room(session, room_id)
@@ -494,8 +506,18 @@ class ResourceService:
                     "name": pkg.name,
                     "description": pkg.description,
                     "instructions": pkg.instructions,
-                    "references": [self._reference_to_payload(r) for r in pkg_refs],
-                    "documents": [self._document_metadata(d) for d in pkg_docs],
+                    "references": [
+                        self._reference_to_payload(
+                            r, readable=can_read_in_package(reader, r, pkg.owner_id)
+                        )
+                        for r in pkg_refs
+                    ],
+                    "documents": [
+                        self._document_metadata(
+                            d, readable=can_read_in_package(reader, d, pkg.owner_id)
+                        )
+                        for d in pkg_docs
+                    ],
                 }
             )
 
@@ -512,8 +534,8 @@ class ResourceService:
 
         return {
             "reference_types": await self.resolve_types_for_payload(session, all_types),
-            "references": [self._reference_to_payload(r) for r in refs],
-            "documents": [self._document_metadata(d) for d in docs],
+            "references": [self._reference_to_payload(r, readable=True) for r in refs],
+            "documents": [self._document_metadata(d, readable=True) for d in docs],
             "packages": package_payloads,
             "linked_rooms": linked_rooms,
         }
@@ -521,17 +543,27 @@ class ResourceService:
     # ── Load (called by the resource manager handler) ─────────────────────
 
     async def load_documents(
-        self, session: AsyncSession, room_id: str, document_ids: list[str]
+        self,
+        session: AsyncSession,
+        room_id: str,
+        document_ids: list[str],
+        reader: Principal,
     ) -> list[ResourceLoadEntry]:
-        """Fetch documents that are attached to ``room_id``. Raises if any
-        requested id is missing or not attached (fail-loud per CLAUDE.md)."""
+        """Fetch documents that are attached to ``room_id``, for an agent
+        acting for `reader`: attached to the room or written in it, or in a
+        package attached to it that shares it with them
+        (`can_read_in_package`). Raises if any requested id is missing, not
+        attached, or withheld, and returns none of them then (fail-loud per
+        CLAUDE.md)."""
         if not document_ids:
             return []
         attached = set(await self._documents.list_ids_for_room(session, room_id))
-        attached.update(
-            await self._packages.list_document_ids_for_room(session, room_id)
-        )
-        missing = [d for d in document_ids if d not in attached]
+        packaged: dict[str, list[str]] = {}
+        for doc_id, package_owner_id in await self._packages.list_documents_for_room(
+            session, room_id
+        ):
+            packaged.setdefault(doc_id, []).append(package_owner_id)
+        missing = [d for d in document_ids if d not in attached and d not in packaged]
         if missing:
             raise ValueError(f"Documents not attached to room {room_id}: {missing}")
         docs = await self._documents.get_many(session, document_ids)
@@ -539,6 +571,21 @@ class ResourceService:
         absent = [d for d in document_ids if d not in by_id]
         if absent:
             raise ValueError(f"Documents do not exist: {absent}")
+        withheld = [
+            d
+            for d in document_ids
+            if d not in attached
+            and not any(
+                can_read_in_package(reader, by_id[d], package_owner_id)
+                for package_owner_id in packaged[d]
+            )
+        ]
+        if withheld:
+            raise PermissionError(
+                "These documents reach this room only through someone else's "
+                "package, and their owners keep them private: "
+                f"{withheld}"
+            )
         return [
             ResourceLoadEntry(
                 id=d.id, name=d.name, description=d.description, content=d.content
@@ -618,6 +665,77 @@ class ResourceService:
         users' secrets. The single-resource read keeps the bypass.
         """
         return await self._references.list_for_user(session, user_id)
+
+    async def list_references_shown_to(
+        self, session: AsyncSession, user_id: str, *, is_admin: bool
+    ) -> list[Reference]:
+        """The references the library lists to the user: those they may read
+        (`can`), which for an admin is every one, as their own pages open
+        them."""
+        if is_admin:
+            return await self._references.list_all(session)
+        return await self._references.list_for_user(session, user_id)
+
+    async def open_reference(
+        self, session: AsyncSession, reference_id: str, user_id: str, *, is_admin: bool
+    ) -> Reference:
+        """The reference, for its own page: when the user may read it
+        (`can`), or it reaches them through a room they may read that it is
+        attached to, or through a package that shares it with them. What a
+        room or a package shows someone opens for them on its own too.
+        Attaching it, adding it to a package and changing it still take
+        `can`."""
+        ref = await self._references.get(session, reference_id)
+        if ref is None:
+            raise ValueError(f"Reference not found: {reference_id}")
+        principal = Principal(user_id, is_admin)
+        if not (
+            can(principal, "read", ref)
+            or await self._references.list_rooms_for_reference(
+                session, ref.id, reader_id=user_id, reader_is_admin=is_admin
+            )
+            or await self._shared_by_a_package(
+                session,
+                ref,
+                principal,
+                await self._packages.list_packages_for_reference(session, ref.id),
+            )
+        ):
+            raise PermissionError("Not authorized to read this resource")
+        return ref
+
+    async def _shared_by_a_package(
+        self,
+        session: AsyncSession,
+        item: Reference | Document,
+        principal: Principal,
+        package_ids: list[str],
+    ) -> bool:
+        """Whether one of `package_ids` that `principal` may open shares
+        `item` with them (`can_read_in_package`)."""
+        for package_id in package_ids:
+            pkg = await self._packages.get(session, package_id)
+            if (
+                pkg is not None
+                and can_read_in_package(principal, item, pkg.owner_id)
+                and await self._reaches_package(session, pkg, principal)
+            ):
+                return True
+        return False
+
+    async def _reaches_package(
+        self, session: AsyncSession, pkg: Package, principal: Principal
+    ) -> bool:
+        """Whether `principal` may open `pkg`: read it (`can`), or read a room
+        it is attached to, which shares it."""
+        return can(principal, "read", pkg) or bool(
+            await self._packages.list_rooms_for_package(
+                session,
+                pkg.id,
+                reader_id=principal.id,
+                reader_is_admin=principal.is_admin,
+            )
+        )
 
     async def list_references_with_owner_names(
         self,
@@ -948,6 +1066,49 @@ class ResourceService:
         self, session: AsyncSession, user_id: str
     ) -> list[Document]:
         return await self._documents.list_for_user(session, user_id)
+
+    async def list_documents_shown_to(
+        self, session: AsyncSession, user_id: str, *, is_admin: bool
+    ) -> list[Document]:
+        """The library documents listed to the user, as
+        `list_references_shown_to` lists references."""
+        if is_admin:
+            return await self._documents.list_library(session)
+        return await self._documents.list_for_user(session, user_id)
+
+    async def open_document(
+        self, session: AsyncSession, document_id: str, user_id: str, *, is_admin: bool
+    ) -> Document:
+        """The document, for its own page, as `open_reference` opens a
+        reference; a room's own document opens for whoever may read its
+        room."""
+        doc = await self._documents.get(session, document_id)
+        if doc is None:
+            raise ValueError(f"Document not found: {document_id}")
+        principal = Principal(user_id, is_admin)
+        in_readable_room = doc.room_id is not None and (
+            await session.scalar(
+                select(Room.id).where(
+                    Room.id == doc.room_id, readable_by(user_id, is_admin=is_admin)
+                )
+            )
+            is not None
+        )
+        if not (
+            can(principal, "read", doc)
+            or in_readable_room
+            or await self._documents.list_rooms_for_document(
+                session, doc.id, reader_id=user_id, reader_is_admin=is_admin
+            )
+            or await self._shared_by_a_package(
+                session,
+                doc,
+                principal,
+                await self._packages.list_packages_for_document(session, doc.id),
+            )
+        ):
+            raise PermissionError("Not authorized to read this resource")
+        return doc
 
     async def update_document(
         self,
@@ -1342,6 +1503,28 @@ class ResourceService:
         self, session: AsyncSession, user_id: str
     ) -> list[Package]:
         return await self._packages.list_for_user(session, user_id)
+
+    async def list_packages_shown_to(
+        self, session: AsyncSession, user_id: str, *, is_admin: bool
+    ) -> list[Package]:
+        """The packages listed to the user, as `list_references_shown_to`
+        lists references."""
+        if is_admin:
+            return await self._packages.list_all(session)
+        return await self._packages.list_for_user(session, user_id)
+
+    async def open_package(
+        self, session: AsyncSession, package_id: str, user_id: str, *, is_admin: bool
+    ) -> Package:
+        """The package, for its own page and what it holds: when the user may
+        read it (`can`), or it is attached to a room they may read, which
+        shares it, as `open_reference` opens a reference."""
+        pkg = await self._packages.get(session, package_id)
+        if pkg is None:
+            raise ValueError(f"Package not found: {package_id}")
+        if not await self._reaches_package(session, pkg, Principal(user_id, is_admin)):
+            raise PermissionError("Not authorized to read this resource")
+        return pkg
 
     async def update_package(
         self,

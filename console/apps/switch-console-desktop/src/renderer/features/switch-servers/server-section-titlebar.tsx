@@ -1,7 +1,7 @@
 import type { LucideIcon } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { WorkspaceAvatar } from '@renderer/features/workspaces/workspace-avatar';
-import { workspaceTitle } from '@renderer/features/workspaces/workspace-title';
+import { breadcrumbTitle } from '@renderer/features/workspaces/workspace-title';
 import { Titlebar } from '@renderer/lib/components/titlebar/Titlebar';
 import { TitlebarBreadcrumb } from '@renderer/lib/components/titlebar/titlebar-breadcrumb';
 import { ServerStatusPill } from './server-presentation';
@@ -31,7 +31,7 @@ export const ServerSectionTitlebar = observer(function ServerSectionTitlebar({
   onSectionClick?: () => void;
 }) {
   const server = switchServersStore.servers.find((s) => s.id === serverId);
-  const title = server ? workspaceTitle(server) : null;
+  const title = server ? breadcrumbTitle(server) : null;
   return (
     <Titlebar
       leftSlot={

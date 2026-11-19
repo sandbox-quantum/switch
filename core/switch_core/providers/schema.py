@@ -4,9 +4,10 @@ agent, its own and managed ones, from these."""
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
-from switch_core.providers.registry import agent_providers
+from switch_core.providers.registry import agent_providers, offered_providers
 
 
 def advanced_config_schema() -> dict[str, Any]:
@@ -22,9 +23,9 @@ def advanced_config_schema() -> dict[str, Any]:
     }
 
 
-def providers_schema() -> dict[str, Any]:
-    """Every provider a definition can name, in the order a client offers
-    them, as `GET /gateway/management/providers` serves them."""
+def providers_schema(flags: Mapping[str, bool]) -> dict[str, Any]:
+    """Every provider a new definition can name with `flags`, in the order a
+    client offers them, as `GET /gateway/management/providers` serves them."""
     return {
         "providers": [
             {
@@ -32,6 +33,6 @@ def providers_schema() -> dict[str, Any]:
                 "label": provider.label,
                 "advanced_fields": [field.wire() for field in provider.advanced_fields],
             }
-            for provider in agent_providers()
+            for provider in offered_providers(flags)
         ]
     }

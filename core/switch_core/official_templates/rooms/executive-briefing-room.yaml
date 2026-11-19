@@ -95,6 +95,7 @@ resources:
     name: "{org} - Exec Briefing"
     description: "{cadence} executive briefing room for {org}. Status updates, decisions, and strategic alignment."
     bridge: "{bridge}"
+    channel_type: channel_private
     agents: [briefing_compiler, decision_tracker]
     users:
       - {if: "{bridge}", value: ["{$creator}"]}

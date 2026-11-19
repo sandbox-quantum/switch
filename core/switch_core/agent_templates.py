@@ -23,6 +23,7 @@ import yaml
 from pydantic import ValidationError
 
 from switch_core.agent_icon import InvalidIconUrl, validate_icon_url
+from switch_core.providers.registry import provider_ids
 from switch_core.rooms_yaml import (
     CONSOLE_PARAM_TYPES,
     ENTITY_PARAM_TYPES,
@@ -39,7 +40,7 @@ from switch_core.template_runs import (
     NewAgentPlan,
     Problem,
 )
-from switch_core.template_v2 import compile_v2, is_v2
+from switch_core.template_v2 import compile_v2, is_v2, resource_types
 
 TemplateKind = Literal["room", "group", "agent"]
 
@@ -81,6 +82,39 @@ def template_kind(text: str) -> TemplateKind:
     if agents:
         return "agent" if len(agents) == 1 else "group"
     return "room"
+
+
+@dataclass(frozen=True)
+class TemplateCounts:
+    """How many agents and rooms a document describes: what the catalogue
+    says a template creates."""
+
+    agents: int
+    rooms: int
+
+
+def template_counts(text: str) -> TemplateCounts:
+    """The agents and rooms a document describes, counting the ones a
+    condition may leave out, since which are created depends on the inputs.
+    An agent a room merely invites is not one it creates. Raises ValueError
+    for a document that does not parse.
+
+    Version 2 counts its resources by type; a group's rooms are resources of
+    their own. Version 1 counts its ``agent:`` or ``agents:``, and its
+    ``room:`` or the ``rooms:`` of a ``group:``."""
+    data = _load(text)
+    if is_v2(data):
+        types = resource_types(data)
+        return TemplateCounts(agents=types.count("agent"), rooms=types.count("room"))
+    rooms = data.get("rooms")
+    return TemplateCounts(
+        agents=len(_agents(data)),
+        rooms=(
+            sum(isinstance(r, dict) for r in rooms)
+            if isinstance(rooms, list)
+            else int(isinstance(data.get("room"), dict))
+        ),
+    )
 
 
 # Past this a display name is not slugged, as in the Console's agent-slug.
@@ -196,7 +230,7 @@ def agent_slots(text: str) -> list[AgentSlot]:
     data = _load(text)
     if is_v2(data):
         return _v2_slots(data)
-    planner = _Planner(data, {}, None)
+    planner = _Planner(data, {}, None, frozenset(provider_ids()))
 
     def said(entry: dict[str, Any], key: str) -> str | None:
         if entry.get(key) is not None:
@@ -469,10 +503,12 @@ class _Planner:
         data: dict[str, Any],
         values: dict[str, Any],
         machines: list[dict[str, Any]] | None,
+        providers: frozenset[str],
     ) -> None:
         self.data = data
         self.values = values
         self.machines = machines
+        self.providers = providers
         raw = data.get("params")
         self.params: dict[str, dict[str, Any]] = {
             k: v
@@ -592,11 +628,13 @@ class _Planner:
             if self.machines is not None and machine_ref is not None
             else None
         )
-        ready = _ready_providers(machine)
+        ready = [p for p in _ready_providers(machine) if p in self.providers]
         for candidate in self.chain(name):
             if candidate == FIRST:
                 if ready:
                     return ready[0]
+                continue
+            if candidate not in self.providers:
                 continue
             if machine is None or candidate in ready:
                 return candidate
@@ -713,6 +751,13 @@ class _Planner:
                 "provider_unresolved",
                 "none of the coding agents its provider input offers is ready "
                 "on its machine; give a provider in inputs.",
+            )
+        if provider is not None and provider not in self.providers:
+            self.problem(
+                slot,
+                "provider_not_offered",
+                f"{provider} is not a coding agent this server offers; one of "
+                f"{', '.join(sorted(self.providers))}.",
             )
 
         directory: str | None = None
@@ -887,6 +932,7 @@ def plan_template(
     *,
     builtins: dict[str, str],
     machines: list[dict[str, Any]] | None,
+    providers: frozenset[str],
 ) -> TemplatePlan:
     """What running ``text`` on the server creates.
 
@@ -895,8 +941,10 @@ def plan_template(
     ``allow_existing: true`` takes one. Every other entry is created as a
     managed agent. ``machines`` is the owner's machines as ``list_machines``
     reports them (None without agent management), for a ``machine`` or
-    ``provider`` param's candidates. Refused with every problem found, before
-    anything is created.
+    ``provider`` param's candidates. ``providers`` is the providers an agent
+    may be created on (`offered_provider_ids`): a candidate outside it is
+    passed over, and an agent that names one is refused. Refused with every
+    problem found, before anything is created.
     """
     data = _load(text)
     room_addressing: dict[str, list[str]] = {}
@@ -912,7 +960,7 @@ def plan_template(
         data = _load(text)
     values = {**builtins, **_known_values(data, inputs)}
     values.pop(AGENTS_DIR[1:-1], None)
-    planner = _Planner(data, values, machines)
+    planner = _Planner(data, values, machines, providers)
     planner.room_inputs = {
         name: str(value)
         for name, value in inputs.items()

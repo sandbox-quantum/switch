@@ -107,6 +107,14 @@ class _Lifecycle:
     def rooms_changed(self, bridge_id: str) -> None:
         return None
 
+    def typed_commands(self, bridge_type, connection_config):
+        return {}
+
+    def channel_creation_blocker(
+        self, bridge_type: str, connection_config: object
+    ) -> str | None:
+        return None
+
 
 class _NoClients:
     def get_by_agent_id(self, agent_id: str) -> Any:
@@ -166,7 +174,12 @@ async def test_a_room_created_with_a_new_channel_records_the_channels_real_name(
 ) -> None:
     svc, bridge_id = await _service(session_factory)
     result = await svc.create_room(
-        RoomCreateConfig(name="Payments Team", description="d", bridge_id=bridge_id)
+        RoomCreateConfig(
+            name="Payments Team",
+            description="d",
+            bridge_id=bridge_id,
+            channel_type="channel_public",
+        )
     )
     assert await _naming(session_factory, result.room.id) == (
         "Payments Team",
@@ -269,7 +282,12 @@ async def test_a_channel_slack_refuses_fails_the_room_with_slacks_reason(
 
     with pytest.raises(BridgeOperationError, match="channels:manage"):
         await svc.create_room(
-            RoomCreateConfig(name=name, description="d", bridge_id=bridge_id)
+            RoomCreateConfig(
+                name=name,
+                description="d",
+                bridge_id=bridge_id,
+                channel_type="channel_public",
+            )
         )
 
     assert web.creates == 1

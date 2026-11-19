@@ -24,7 +24,14 @@ export function SegmentedControl<T extends string>({
   value: T;
   onChange: (value: T) => void;
   /** An option `disabled` is shown and can't be chosen; the caller says why beside it. */
-  options: readonly { value: T; label: string; icon?: LucideIcon; disabled?: boolean }[];
+  options: readonly {
+    value: T;
+    label: string;
+    icon?: LucideIcon;
+    disabled?: boolean;
+    /** A small dot after the label: something behind this option wants a look. */
+    dot?: boolean;
+  }[];
   ariaLabel: string;
   className?: string;
   /**
@@ -56,7 +63,7 @@ export function SegmentedControl<T extends string>({
           key={option.value}
           value={option.value}
           disabled={option.disabled}
-          aria-label={option.label}
+          aria-label={option.dot ? `${option.label}, unread` : option.label}
           // The hover fill is an overlay, and only on the option that is not
           // already chosen: the default `background-1` is the dialog and panel
           // surface itself in dark mode, so it draws nothing.
@@ -68,6 +75,13 @@ export function SegmentedControl<T extends string>({
         >
           {option.icon && <option.icon className="size-3.5" />}
           {option.label}
+          {option.dot && (
+            <span
+              data-testid="segment-dot"
+              aria-hidden
+              className="ml-1 size-1.5 rounded-full bg-primary-button-background"
+            />
+          )}
         </ToggleGroupItem>
       ))}
     </ToggleGroup>

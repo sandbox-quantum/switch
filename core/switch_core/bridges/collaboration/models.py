@@ -65,9 +65,10 @@ class CreatedChannel(BaseModel):
 class ChannelCreationUnsupported(ValueError):
     """Raised when a bridge will not create a channel for a new room.
 
-    Either the platform has no such call — a Telegram bot cannot create a chat
-    — or an operator has withheld it from this connection. Both are answers to
-    a caller's request rather than faults, so this is a ``ValueError``: every
+    The platform has no such call — a Telegram bot cannot create a chat — an
+    operator has withheld it from this connection, or the connection lacks
+    what a channel needs, such as a Teams default team. All are answers to a
+    caller's request rather than faults, so this is a ``ValueError``: every
     door into room creation already turns one into a 4xx carrying the message,
     where an unexpected exception becomes an opaque 500 and the explanation
     never leaves the server.
@@ -161,6 +162,20 @@ class DirectoryUser(BaseModel):
     username: str
     display_name: str
     email: str | None = None
+    # False where the platform gave this person no handle and `username` is
+    # one Switch made up to address them by (a Telegram account without a
+    # username), so it is not shown as if it were theirs.
+    has_handle: bool = True
+
+
+@dataclass(frozen=True)
+class KnownUserLabel:
+    """How a person Switch has seen is shown in an account search: the name
+    the platform shows for them, and whether their stored name is a handle
+    they chose rather than one Switch made up."""
+
+    display_name: str
+    has_handle: bool
 
 
 class InboundMessage(BaseModel):
@@ -192,6 +207,12 @@ class InboundMessage(BaseModel):
     # delivers another bot's posts, and Teams does not mark them, so both leave
     # this False and their cards accept the answer.
     sender_is_app: bool = False
+    # The message is a reply to one the Switch app posted: an agent's message,
+    # a card or a notice. Set by a platform where a reply is addressed to the
+    # one message it answers (Telegram), so it reaches the agent that posted
+    # that message as a mention would, even where the platform delivers the
+    # bot nothing else. False everywhere replies are threads.
+    replies_to_app: bool = False
     # Content keys for the room message, beside its body.
     extra_content: dict[str, object] = {}
 

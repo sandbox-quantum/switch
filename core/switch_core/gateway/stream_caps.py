@@ -14,8 +14,8 @@ read.
 
 This middleware bounds both, per kind of stream.
 
-One caller (`caller_key`: the person a session cookie names, a bearer token or
-an address) holds at most `per_caller` streams of each kind in this process.
+One caller (`caller_key`: the person a session cookie names, else the address
+it came from) holds at most `per_caller` streams of each kind in this process.
 Console opens one of each per server, so the limit is only met by many windows
 or tabs of one person, or by a client that leaks them. Past it, the caller's
 oldest stream of that kind is closed to make room for the new one, rather than

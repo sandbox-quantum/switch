@@ -20,24 +20,39 @@ describe('opencode host dependency', () => {
     expect(option.recommended).toBe(true);
   });
 
-  it('installs the @opencode/cli package on every platform', () => {
-    for (const platform of ['macos', 'linux', 'windows'] as const) {
-      expect(firstOption(platform).command).toContain('@opencode/cli');
+  // OpenCode 2 (`@opencode/cli`) serves an API Switch does not speak yet.
+  it('installs OpenCode 1 from npm on macOS and Linux', () => {
+    for (const platform of ['macos', 'linux'] as const) {
+      expect(firstOption(platform).command).toMatch(/opencode-ai$/);
+      expect(firstOption(platform).command).not.toContain('@opencode/cli');
     }
   });
 
-  // macOS and Windows npm prefixes are user-writable already, and moving them
-  // would strand anyone who installed before this.
-  it.each(['macos', 'windows'] as const)('leaves the %s prefix alone', (platform) => {
-    expect(firstOption(platform).command).not.toContain('--prefix');
+  // macOS npm prefixes are user-writable already, and moving them would
+  // strand anyone who installed before this.
+  it('leaves the macOS prefix alone', () => {
+    expect(firstOption('macos').command).not.toContain('--prefix');
   });
 
-  it('uninstalls both @opencode/cli and the legacy opencode-ai on every platform', () => {
-    for (const platform of ['macos', 'linux', 'windows'] as const) {
+  it('uninstalls both opencode-ai and the @opencode/cli Console used to install', () => {
+    for (const platform of ['macos', 'linux'] as const) {
       const cmd = firstOption(platform).uninstallCommand ?? '';
       expect(cmd).toContain('@opencode/cli');
       expect(cmd).toContain('opencode-ai');
     }
+  });
+
+  // A fresh Windows has no Node, so no npm.
+  it('installs the OpenCode 1 release on Windows, without npm, and offers npm after it', () => {
+    const [release, npm] = hostDependency.installCommands?.windows ?? [];
+    expect(release?.recommended).toBe(true);
+    expect(release?.command).toContain('/releases/download/v1.');
+    expect(release?.command).toContain('opencode-windows-x64.zip');
+    expect(release?.command).not.toMatch(/[$%]/);
+    expect(release?.command.slice(release.command.indexOf('"') + 1, -1)).not.toContain('"');
+    expect(release?.uninstallCommand).toContain("'.opencode', 'bin'");
+    expect(npm?.command).toBe('npm install -g opencode-ai');
+    expect(npm?.recommended).toBeUndefined();
   });
 
   it('probes the opencode binary', () => {

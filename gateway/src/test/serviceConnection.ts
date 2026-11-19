@@ -31,9 +31,53 @@ export function serviceConnection(overrides: Partial<ServiceConnection> = {}): S
     workspace_enabled: true,
     organization_locked: false,
     decided_by: "workspace",
+    web_sign_in: false,
+    sign_in_choices: null,
+    paste: [],
+    reconnect_code: null,
+    reconnect_reason: null,
     consent: null,
     external_identity: null,
     can_revoke: false,
+    method: null,
+    choices: null,
+    access_note: null,
     ...overrides,
   };
+}
+
+/** Datadog as the server lists it: a sign-in that finishes only in Switch
+ * Console, at a site picked first, or a token, or keys, pasted in its place. */
+export function pastedConnector(overrides: Partial<ServiceConnection> = {}): ServiceConnection {
+  return serviceConnection({
+    slug: "datadog",
+    name: "Datadog",
+    category: "Observability",
+    publisher: "Datadog",
+    sign_in_choices: [
+      { name: "site", label: "Datadog site", secret: false, help: null, choices: ["datadoghq.com", "datadoghq.eu"] },
+    ],
+    paste: [
+      {
+        method: "token",
+        label: "Personal access token",
+        fields: [{ name: "pat", label: "Personal access token", secret: true, help: null, choices: null }],
+        help_url: "https://docs.example.test/tokens",
+        expires: "vendor",
+        access_note: "Reaches what your token allows.",
+      },
+      {
+        method: "keys",
+        label: "API and application keys",
+        fields: [
+          { name: "api_key", label: "API key", secret: true, help: null, choices: null },
+          { name: "application_key", label: "Application key", secret: true, help: null, choices: null },
+        ],
+        help_url: null,
+        expires: "never",
+        access_note: "Reaches what your keys allow.",
+      },
+    ],
+    ...overrides,
+  });
 }

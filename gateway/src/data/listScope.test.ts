@@ -12,6 +12,7 @@ function capabilities(administers: boolean, isOperator = false) {
     role: "member" as const,
     organization_role: null,
     organization_id: null,
+    archived_at: null,
   };
   const session: Session = {
     user: { id: "u1", name: "Ada", email: "ada@example.com", is_operator: isOperator },
@@ -21,6 +22,7 @@ function capabilities(administers: boolean, isOperator = false) {
     can_create_workspace: false,
     can_add_workspace: false,
     invite_email_enabled: false,
+    can_manage_connector_apps: false,
   };
   const current: CurrentTenant = {
     id: "t1",

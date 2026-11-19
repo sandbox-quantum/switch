@@ -63,6 +63,7 @@ from switch_core.gateway.hosted_machines import hosted_settings
 from switch_core.gateway.rooms import router as rooms_router
 from switch_core.keys import Keyring
 from switch_core.room_service import RoomService
+from tests.switch_core.gateway.login_limit_defaults import LOGIN_LIMIT_DEFAULTS
 from tests.switch_core.pool_checkouts import PoolCheckouts
 
 # Made for each run, so nothing secret-looking is committed.
@@ -144,6 +145,7 @@ class _Adapter:
                 username=query,
                 display_name=query,
                 email=None,
+                has_handle=True,
             )
         ]
 
@@ -191,11 +193,22 @@ class _CollabLifecycle:
     def supports_private_channels(self, bridge_type: str) -> bool:
         return True
 
+    def typed_commands(self, bridge_type, connection_config):
+        return {}
+
+    def channel_creation_blocker(
+        self, bridge_type: str, connection_config: object
+    ) -> str | None:
+        return None
+
     def adds_creator_to_public_channel(self, bridge_type: str) -> bool:
         return True
 
     def supports_directory_search(self, bridge_type: str) -> bool:
         return True
+
+    def directory_search_hint(self, bridge_id: str, bridge_type: str) -> str:
+        return "Your name or handle"
 
     def unlinkable_account_reason(
         self, bridge_type: str, external_user_id: str
@@ -276,6 +289,7 @@ def _config() -> SimpleNamespace:
         decision_endpoint_url=None,
         decision_api_key=None,
         decision_bedrock_enabled=False,
+        **LOGIN_LIMIT_DEFAULTS,
     )
 
 
@@ -328,6 +342,7 @@ def _client(app: Any, user: User) -> httpx.AsyncClient:
         TENANT_ZERO_ID,
         session_version=0,
         auth_time=datetime.now(UTC),
+        session_id=secrets.token_urlsafe(16),
     )
     return httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app),
@@ -709,16 +724,6 @@ class TestPasswordRoutes:
         bcrypt_calls: list[tuple[str, bool, int]],
     ) -> None:
         user = await _admin(session_factory)
-        async with session_factory() as session:
-            operator = User(name="op", email="op@example.com", role="admin")
-            session.add(operator)
-            await session.flush()
-            session.add(
-                TenantMember(
-                    tenant_id=TENANT_ZERO_ID, user_id=operator.id, role="member"
-                )
-            )
-            await session.commit()
         calls = _Calls(pool_checkouts)
         collab = _CollabLifecycle(calls)
         app = _app(
@@ -743,27 +748,15 @@ class TestPasswordRoutes:
                 "/auth/signup",
                 json={"email": "new@example.com", "password": "a password!"},
             )
-        async with _client(app, operator) as client:
-            created = await client.post(
-                "/users",
-                json={
-                    "name": "made",
-                    "email": "made@example.com",
-                    "password": "a password!",
-                    "role": "user",
-                },
-            )
 
         assert login.status_code == 200, login.text
         assert wrong.status_code == 401, wrong.text
         assert changed.status_code == 200, changed.text
         assert signed_up.status_code == 201, signed_up.text
-        assert created.status_code == 200, created.text
         assert bcrypt_calls == [
             ("verify", False, 0),
             ("verify", False, 0),
             ("verify", False, 0),
-            ("hash", False, 0),
             ("hash", False, 0),
             ("hash", False, 0),
         ]

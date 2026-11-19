@@ -9,7 +9,8 @@ const JUNIE_NPM_INSTALL = 'npm install -g @jetbrains/junie';
 export const plugin = definePlugin(
   {
     id: 'junie',
-    name: 'Junie',
+    name: 'JetBrains Junie',
+    shortName: 'Junie',
     description:
       "JetBrains' coding agent, run through its CLI over ACP with native approvals, model choice and saved conversations.",
     websiteUrl: 'https://junie.jetbrains.com/docs/junie-cli-acp.html',

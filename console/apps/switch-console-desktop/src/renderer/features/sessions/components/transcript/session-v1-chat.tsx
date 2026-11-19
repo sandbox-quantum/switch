@@ -13,6 +13,13 @@ import { SessionV1Controls } from './session-v1-controls';
 import { SessionV1Request } from './session-v1-request';
 
 /** Both remote and local-only transports feed the same contract-shaped view. */
+/** How a message sent while another turn ran was delivered, in the transcript's words. */
+export function deliveryLabel(delivery: 'steered' | 'queued'): string {
+  return delivery === 'steered'
+    ? 'Steered into the running turn'
+    : 'Queued behind the running turn';
+}
+
 export function SessionV1Chat({
   client,
   restartHost,
@@ -463,10 +470,21 @@ export function SessionV1Chat({
             <div key={item.itemId}>
               {item.kind === 'user-message' ? (
                 <div className="flex flex-col items-end gap-1">
-                  {item.origin?.surface && item.origin.surface !== 'console' && (
-                    <span className="ml-auto hidden text-tiny text-foreground-passive xl:inline">
-                      {item.origin.surface}
+                  {item.delivery ? (
+                    <span className="ml-auto text-tiny text-foreground-passive">
+                      {deliveryLabel(item.delivery)}
                     </span>
+                  ) : item.title ? (
+                    <span className="ml-auto hidden text-tiny text-foreground-passive xl:inline">
+                      {item.title}
+                    </span>
+                  ) : (
+                    item.origin?.surface &&
+                    item.origin.surface !== 'console' && (
+                      <span className="ml-auto hidden text-tiny text-foreground-passive xl:inline">
+                        {item.origin.surface}
+                      </span>
+                    )
                   )}
                   <div className="max-w-[85%] rounded-2xl bg-background-1 px-4 py-3 text-sm leading-relaxed break-words whitespace-pre-wrap">
                     {item.text}

@@ -2,7 +2,11 @@ import { type ChildProcess, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { createInterface } from 'node:readline';
-import { loginCommandOf, providerRuntime } from '@switch-console/agent-providers';
+import {
+  loginCommandOf,
+  opencodeV1DatabaseEnv,
+  providerRuntime,
+} from '@switch-console/agent-providers';
 import { events } from '@main/lib/events';
 import { log } from '@main/lib/logger';
 import { requireProvider } from '@shared/core/providers/agent-provider-registry';
@@ -37,7 +41,10 @@ class ProviderLoginRunner {
       : (process.env.SHELL ?? (process.platform === 'darwin' ? '/bin/zsh' : '/bin/bash'));
     const child = spawn(shell, windows ? ['/c', loginCommand] : ['-lc', loginCommand], {
       cwd: homedir(),
-      env: process.env,
+      env:
+        providerId === 'opencode'
+          ? { ...process.env, ...opencodeV1DatabaseEnv(process.env) }
+          : process.env,
       stdio: ['pipe', 'pipe', 'pipe'],
       detached: !windows,
       windowsHide: true,
@@ -65,6 +72,18 @@ class ProviderLoginRunner {
       end(code, signal ? `${loginCommand} was stopped (${signal}).` : null)
     );
     return { attemptId };
+  }
+
+  /**
+   * Types a line into the attempt's sign-in command: the code a CLI asks for
+   * when its browser round trip ends on a page that shows one to paste. A
+   * line for an attempt that has ended or been replaced is refused.
+   */
+  input(attemptId: string, line: string): void {
+    const running = this.current;
+    if (running?.attemptId !== attemptId || !running.child.stdin?.writable)
+      throw new Error('That sign-in has already ended. Start it again.');
+    running.child.stdin.write(`${line.trim()}\n`);
   }
 
   /** Ends the attempt in progress, with everything it started. */

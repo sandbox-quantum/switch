@@ -8,6 +8,8 @@ handlers in `bridges/agent/commands.py` call the same functions, for a command
 typed somewhere else.
 """
 
+from collections.abc import Callable, Mapping
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.db.audit import AuditAction, record_audit_event
@@ -33,20 +35,28 @@ CODE_REFUSED = (
 )
 NOT_LINKED = "This account isn't linked to any Switch user."
 
+#: How to unlink the Switch user a confirmation names, as the rest of "If
+#: that isn't you, …": given their name and the connection's stored config.
+UnlinkInstructions = Callable[[str, Mapping[str, object]], str]
 
-def linked_notice(platform: str, username: str, name: str, *, ran_command: bool) -> str:
+
+def unlink_the_way_you_ran_this(name: str, _config: Mapping[str, object]) -> str:
+    """For a link confirmed with a command. "The way you ran this" because
+    platforms differ in how a command reaches Switch: typed with `!`, as a
+    slash command, or with the app mentioned, and the person just did one."""
+    return f"run `unlink-account {name}` the way you ran this command"
+
+
+def linked_notice(platform: str, username: str, name: str, *, unlink: str) -> str:
     """What the account is told once a link is confirmed.
 
     Names the Switch user, so whoever confirmed it sees who the account is now
-    recognised as, and how to take that back if it is not them. "The way you
-    ran this" because platforms differ in how a command reaches Switch: typed
-    with `!`, as a slash command, or with the app mentioned. A link confirmed
-    by tapping a prompt (`ran_command=False`) had no command to point back at.
+    recognised as, and how to take that back if it is not them: `unlink`
+    finishes "If that isn't you, …".
     """
-    how = "the way you ran this command" if ran_command else "from this account"
     return (
         f"✅ Linked this {platform} account ({username}) to Switch user "
-        f"**{name}**. If that isn't you, run `unlink-account {name}` {how}."
+        f"**{name}**. If that isn't you, {unlink}."
     )
 
 
@@ -56,6 +66,7 @@ async def confirm_with_code(
     external_user_store: ExternalUserStore,
     user_store: UserStore,
     account: ExternalUser,
+    account_name: str,
     code: str,
     only_here: bool,
 ) -> str | None:
@@ -75,6 +86,9 @@ async def confirm_with_code(
     from any other account matches nothing, which is why posting it in a busy
     channel gives nothing away.
 
+    `account_name` is how the confirmation names the account: its handle,
+    or the person's name where the platform gave them none.
+
     The caller replies after closing `session`: a rejected code may have
     locked the request it was checked against, and nobody should wait on that
     while a reply is written.
@@ -91,9 +105,10 @@ async def confirm_with_code(
         session,
         user_store=user_store,
         account=account,
+        account_name=account_name,
         user_id=request.user_id,
         by="code",
-        ran_command=True,
+        unlink_instructions=unlink_the_way_you_ran_this,
     )
 
 
@@ -102,16 +117,18 @@ async def record_confirmed_link(
     *,
     user_store: UserStore,
     account: ExternalUser,
+    account_name: str,
     user_id: str,
     by: str,
-    ran_command: bool,
+    unlink_instructions: UnlinkInstructions,
 ) -> str:
     """Audit a link `account` has just confirmed to `user_id`, commit, and say
     what to tell the account.
 
     The one place a confirmation is recorded, whichever proof the account
     gave: a code it posted (`by="code"`) or a number it tapped
-    (`by="prompt"`).
+    (`by="prompt"`). A tapped number had no command to point back at, so its
+    `unlink_instructions` give the platform's own command and where it works.
     """
     linked = await user_store.get(session, user_id)
     bridge = await session.get(CollaborationBridge, account.bridge_id)
@@ -122,7 +139,6 @@ async def record_confirmed_link(
             f"{account.bridge_id}, but could not read either back"
         )
     name, platform = linked.name, bridge.display_name
-    username = account.external_username
     await record_audit_event(
         session,
         tenant_id=account.tenant_id,
@@ -133,7 +149,12 @@ async def record_confirmed_link(
         details={"bridge_id": account.bridge_id, "user_id": user_id, "by": by},
     )
     await session.commit()
-    return linked_notice(platform, username, name, ran_command=ran_command)
+    return linked_notice(
+        platform,
+        account_name,
+        name,
+        unlink=unlink_instructions(name, bridge.connection_config or {}),
+    )
 
 
 def strip_quotes(text: str) -> str:
