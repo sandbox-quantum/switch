@@ -52,6 +52,30 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Security
+- **One client can no longer take a process's database pool.** Gateway
+  requests hold at most `GATEWAY_POOL_SHARE` (0.75) of each process's pool
+  at once, leaving the rest to its own work, such as renewing its lease,
+  which drops the process's agents when it lapses. One signed-in person (else one address)
+  runs at most `GATEWAY_REQUESTS_PER_CALLER` (8) at once. A request
+  past either waits its turn for up to 3 seconds, then is answered 429 (its
+  caller's) or 503 (the process's), with `Retry-After`. A read (GET or HEAD)
+  runs each statement under `GATEWAY_READ_STATEMENT_TIMEOUT` (10s), apart
+  from the sign-in and connection callbacks, which write; any request a
+  statement timeout stops is answered 503. Requests turned away are counted in
+  `switch.http.gateway_turned_away`, on the dashboard beside the other
+  refusals.
+- **One person can no longer hold unbounded live streams.** The chats feed,
+  the activity feed and the change-notice socket stay open for as long as
+  Console or a tab runs, and nothing bounded how many one caller opened. One
+  signed-in person (else one address) now holds at most
+  `GATEWAY_STREAMS_PER_CALLER` (8) of each kind per process: a newer one
+  closes their oldest of that kind, or is refused 429 while that oldest is
+  under 30 seconds old. A process holds at most `GATEWAY_STREAMS_PER_PROCESS`
+  (4000) of every kind together, past which a new one is refused 503 with a
+  `Retry-After` of 2 to 10 seconds. `switch.http.gateway_streams.*` counts
+  them, on the dashboard beside the requests turned away.
+
 ### [0.32.1] - 2026-11-18
 
 #### Added
@@ -109,30 +133,6 @@ version of their own to them without also giving them a release of their own.
   room with a single agent delivers an untagged message straight to it when a
   single person is present. The decision service also gains a **Gemini** backend
   option alongside the existing ones.
-
-#### Security
-- **One client can no longer take a process's database pool.** Gateway
-  requests hold at most `GATEWAY_POOL_SHARE` (0.75) of each process's pool
-  at once, leaving the rest to its own work, such as renewing its lease,
-  which drops the process's agents when it lapses. One signed-in person (else one address)
-  runs at most `GATEWAY_REQUESTS_PER_CALLER` (8) at once. A request
-  past either waits its turn for up to 3 seconds, then is answered 429 (its
-  caller's) or 503 (the process's), with `Retry-After`. A read (GET or HEAD)
-  runs each statement under `GATEWAY_READ_STATEMENT_TIMEOUT` (10s), apart
-  from the sign-in and connection callbacks, which write; any request a
-  statement timeout stops is answered 503. Requests turned away are counted in
-  `switch.http.gateway_turned_away`, on the dashboard beside the other
-  refusals.
-- **One person can no longer hold unbounded live streams.** The chats feed,
-  the activity feed and the change-notice socket stay open for as long as
-  Console or a tab runs, and nothing bounded how many one caller opened. One
-  signed-in person (else one address) now holds at most
-  `GATEWAY_STREAMS_PER_CALLER` (8) of each kind per process: a newer one
-  closes their oldest of that kind, or is refused 429 while that oldest is
-  under 30 seconds old. A process holds at most `GATEWAY_STREAMS_PER_PROCESS`
-  (4000) of every kind together, past which a new one is refused 503 with a
-  `Retry-After` of 2 to 10 seconds. `switch.http.gateway_streams.*` counts
-  them, on the dashboard beside the requests turned away.
 
 ### [0.32.0] - 2026-11-17
 
@@ -4692,6 +4692,13 @@ version of their own to them without also giving them a release of their own.
 ## switch-console
 
 ### [Unreleased]
+
+#### Fixed
+
+- **Creating an agent no longer flashes "An agent called … already exists
+  on this server".** The form checked the name against the server's agent
+  list, which picks up the new agent before the dialog closes, so for a moment
+  it reported its own agent as a clash.
 
 ### [0.41.1] - 2026-11-18
 
