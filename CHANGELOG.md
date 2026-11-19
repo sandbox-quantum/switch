@@ -61,6 +61,20 @@ version of their own to them without also giving them a release of their own.
   and controller it held offline. Each process now holds one more
   connection, which the boot-time connection budget counts.
 
+#### Security
+- **One client can no longer take a process's database pool.** Gateway
+  requests hold at most `GATEWAY_POOL_SHARE` (0.75) of each process's pool
+  at once, leaving the rest to its own work, such as renewing its lease,
+  which drops the process's agents when it lapses. One signed-in person (else one address)
+  runs at most `GATEWAY_REQUESTS_PER_CALLER` (8) at once. A request
+  past either waits its turn for up to 3 seconds, then is answered 429 (its
+  caller's) or 503 (the process's), with `Retry-After`. A read (GET or HEAD)
+  runs each statement under `GATEWAY_READ_STATEMENT_TIMEOUT` (10s), apart
+  from the sign-in and connection callbacks, which write; any request a
+  statement timeout stops is answered 503. Requests turned away are counted in
+  `switch.http.gateway_turned_away`, on the dashboard beside the other
+  refusals.
+
 ### [0.32.1] - 2026-11-18
 
 #### Added
@@ -1073,6 +1087,13 @@ version of their own to them without also giving them a release of their own.
   `{supported, reason}`, saying whether another device could enroll and, if
   not, why. The code is still issued. Against a server from before it, the
   dialog shows the commands as it always did.
+- **A private Discord chat Discord refuses says why.** "Continue in a
+  private Discord channel" failed with a bare 500 when the Switch bot's role
+  lacked Manage Channels, the same refusal rooms already explain. It now fails
+  with Discord's reason and what to change, and Switch Console shows that
+  message instead of "Switch did not answer". When Discord makes the channel
+  but won't let the person into it (the bot lacks Manage Roles, or the person
+  isn't in the server), the channel is removed again and the reason given.
 - **A room Discord refuses to make a channel for says why.** When Discord
   turned down the new channel, for example because the Switch bot's role
   lacks Manage Channels, creating the room failed with a bare 500 and
