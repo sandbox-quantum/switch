@@ -1,5 +1,5 @@
+import type { ChatSummary } from '@switch-console/chat-ui/contracts/chats';
 import { describe, expect, it } from 'vitest';
-import type { ChatSummary } from '@shared/core/chats/chats';
 import type { LinkedIdentity, RemoteBridge } from '@shared/core/switch-servers/switch-servers';
 import { RpcError } from '@shared/lib/ipc/rpc-error';
 import {

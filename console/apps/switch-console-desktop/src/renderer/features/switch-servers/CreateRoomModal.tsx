@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useRef, useState } from 'react';
-import { chatFailure } from '@renderer/features/chats/stores/chat-errors';
+import { chatFailure } from '@renderer/features/chats/chat-errors';
 import { chatsStore } from '@renderer/features/chats/stores/chats';
 import { agentsStore } from '@renderer/features/locations/stores/agents-store';
 import { useManagedAgents } from '@renderer/features/managed-agents/use-managed-agents';

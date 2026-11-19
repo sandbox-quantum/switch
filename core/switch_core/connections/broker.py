@@ -80,7 +80,6 @@ from switch_core.connections.organization_apps import (
     OrganizationApps,
 )
 from switch_core.connections.registry import every_scope
-from switch_core.connections.shielded import finish_shielded
 from switch_core.db.audit import AuditAction, record_audit_event
 from switch_core.db.models import (
     Agent,
@@ -104,6 +103,7 @@ from switch_core.db.stores.workspace_service_store import (
 from switch_core.keys import Keyring
 from switch_core.observability.catalogue import SERVICE_TOKEN_REQUESTS
 from switch_core.observability.metrics import metrics
+from switch_core.shielded import finish_shielded
 
 logger = logging.getLogger(__name__)
 

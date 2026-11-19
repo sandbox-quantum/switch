@@ -1,5 +1,5 @@
+import type { ChatSummary } from '@switch-console/chat-ui/contracts/chats';
 import { isConsoleGroupChatSummary } from '@renderer/features/switch-servers/room-filters';
-import type { ChatSummary } from '@shared/core/chats/chats';
 
 export type AddAgentToRoomApi = {
   /** The chat behind a room, when it is one of the user's chats. */

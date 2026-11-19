@@ -1,11 +1,19 @@
+import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
+import { CHAT_UI_SRC, chatUiResolve } from "./scripts/chat-ui.mjs";
 import { devRoleAccounts } from "./scripts/dev-role-accounts.mjs";
 
 export default defineConfig({
-  plugins: [react(), devRoleAccounts(new URL(".dev-role-accounts.json", import.meta.url))],
+  plugins: [
+    react(),
+    tailwindcss(),
+    devRoleAccounts(new URL(".dev-role-accounts.json", import.meta.url)),
+  ],
+  resolve: chatUiResolve,
   build: { outDir: "dist" },
   server: {
+    fs: { allow: [".", CHAT_UI_SRC] },
     proxy: {
       "/gateway": {
         target: "http://127.0.0.1:8000",

@@ -1,10 +1,10 @@
+import { agentInitials } from '@switch-console/chat-ui/model/agent-avatar';
+import { personColour } from '@switch-console/chat-ui/model/person-colour';
 import { Loader2, X } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { useAgentAccent } from '@renderer/lib/components/agent-accent';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { cn } from '@renderer/utils/utils';
-import { agentInitials } from '@shared/core/agents/agent-avatar';
-import { personColour } from '@shared/core/people/person-colour';
 import { type Participant, pickerKey, searchParticipants } from './participant-search';
 
 /** What a person's colour is seeded by: their Switch user when known. */

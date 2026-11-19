@@ -1,12 +1,37 @@
+import { configureFailures } from '@switch-console/chat-ui/model/failures';
+import { ChatTitler } from '@switch-console/chat-ui/stores/chat-titler';
+import { type ChatsEvents, ChatsStore } from '@switch-console/chat-ui/stores/chats-store';
 import { reaction } from 'mobx';
+import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { switchServersStore } from '@renderer/features/switch-servers/switch-servers-store';
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 import { events, rpc } from '@renderer/lib/ipc';
 import { log } from '@renderer/utils/logger';
+import {
+  chatMessageChannel,
+  chatRemovedChannel,
+  chatResetChannel,
+  chatStreamStateChannel,
+  chatSummaryChannel,
+} from '@shared/core/chats/chatEvents';
+import { consoleFailures } from '../chat-errors';
 import { agentActivities } from './activities';
 import { agentChatsFlag } from './agent-chats-flag';
-import { ChatTitler } from './chat-titler';
-import { ChatsStore, chatsEventsFrom } from './chats-store';
+
+configureFailures(consoleFailures);
+
+/** The chats feed's events, from the typed renderer event bus. */
+export function chatsEventsFrom(bus: {
+  on: <T>(event: { name: string; _data?: T }, cb: (data: T) => void) => () => void;
+}): ChatsEvents {
+  return {
+    onMessage: (cb) => bus.on(chatMessageChannel, cb),
+    onSummary: (cb) => bus.on(chatSummaryChannel, cb),
+    onRemoved: (cb) => bus.on(chatRemovedChannel, cb),
+    onState: (cb) => bus.on(chatStreamStateChannel, cb),
+    onReset: (cb) => bus.on(chatResetChannel, cb),
+  };
+}
 
 /** The app's chats store, following the workspace the window is scoped to. */
 export const chatsStore = new ChatsStore(
@@ -46,6 +71,7 @@ export const chatsStore = new ChatsStore(
         });
         throw error;
       }),
+    roomsChanged: () => switchRoomsStore.refreshRoomState(),
   },
   chatsEventsFrom(events)
 );

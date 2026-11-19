@@ -1,5 +1,5 @@
+import type { ChatSummary } from '@switch-console/chat-ui/contracts/chats';
 import { describe, expect, it, vi } from 'vitest';
-import type { ChatSummary } from '@shared/core/chats/chats';
 import { addAgentToRoom, mayAddToRoom } from './add-agent-to-room';
 
 const group = {

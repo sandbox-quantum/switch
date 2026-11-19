@@ -1,3 +1,4 @@
+import ForumOutlined from "@mui/icons-material/ForumOutlined";
 import HomeOutlined from "@mui/icons-material/HomeOutlined";
 import LocalLibraryOutlined from "@mui/icons-material/LocalLibraryOutlined";
 import MeetingRoomOutlined from "@mui/icons-material/MeetingRoomOutlined";
@@ -5,7 +6,7 @@ import PowerOutlined from "@mui/icons-material/PowerOutlined";
 import SettingsOutlined from "@mui/icons-material/SettingsOutlined";
 import SmartToyOutlined from "@mui/icons-material/SmartToyOutlined";
 import ViewQuiltOutlined from "@mui/icons-material/ViewQuiltOutlined";
-import type { ComponentType, ReactNode } from "react";
+import { type ComponentType, type ReactNode, Suspense, lazy } from "react";
 import {
   type Access,
   type Capabilities,
@@ -15,6 +16,7 @@ import {
   anyOf,
   connectorAppManagers,
   everyone,
+  gatewayChats,
   organizationAdmins,
   organizationAdminsOnly,
   organizationConnectorApps,
@@ -59,6 +61,14 @@ import PrivateChannelRoomsPage from "../pages/workspace/PrivateChannelRoomsPage"
 import WorkspaceConnectorsPage from "../pages/workspace/WorkspaceConnectorsPage";
 import WorkspaceGeneralPage from "../pages/workspace/WorkspaceGeneralPage";
 import WorkspaceUsersPage from "../pages/workspace/WorkspaceUsersPage";
+
+// The chat UI is loaded only when the page is opened.
+const ChatsPage = lazy(() => import("../pages/chats/ChatsPage"));
+const chats = (
+  <Suspense fallback={null}>
+    <ChatsPage />
+  </Suspense>
+);
 
 /** Every page the signed-in dashboard has, in one table: its URL and who
  * may open it. The routes, their guards, the rail and the settings menus are
@@ -173,6 +183,10 @@ export const ROUTES: readonly AppRoute[] = [
   page("/overview", everyone, <OverviewPage />),
 
   page("/ecosystem", everyone, <EcosystemGraphPage />),
+  page("/chats", gatewayChats, chats),
+  page("/chats/agents/:agentId", gatewayChats, chats),
+  page("/chats/rooms/:roomId", gatewayChats, chats),
+  page("/chats/:roomId", gatewayChats, chats),
   page("/rooms", everyone, <RoomsPage />),
   page("/rooms/new", everyone, <CreateRoomPage />),
   page("/rooms/groups", everyone, <GroupsPage />),
@@ -405,6 +419,7 @@ export const RAIL: readonly RailItem[] = [
   railItem("Home", "/overview", HomeOutlined, {
     activeFor: ["/overview", "/ecosystem"],
   }),
+  railItem("Chats", "/chats", ForumOutlined),
   railItem("Agents", "/agents", SmartToyOutlined),
   railItem("Rooms", "/rooms", MeetingRoomOutlined),
   railItem("Templates", "/templates", ViewQuiltOutlined),

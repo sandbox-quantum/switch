@@ -81,6 +81,11 @@ Repo root:
     (`@switch-console/shared`).
   - `packages/plugins/` - Plugin interfaces and helpers, and the agent provider plugins
     under `src/agents/impl/<id>/`.
+  - `packages/chat-ui/` - The chat UI (`@switch-console/chat-ui`): the `/chats` contracts,
+    the chat stores and the chat components, shared with the web dashboard (`gateway/`).
+    Source-only, with no build step: each app compiles it. An app draws a chat under a
+    `ChatHostProvider` (`src/host.tsx`) that supplies its stores and its own pieces of UI;
+    Console's is `src/renderer/features/chats/console-chat-host.tsx`.
   - `packages/switch-agent-runtime/` - The published agent runtime; sessions run a pinned
     version of it (see "Versioned Artifacts").
 - Root config files - `pnpm-workspace.yaml`, root `package.json` with aggregate scripts,
