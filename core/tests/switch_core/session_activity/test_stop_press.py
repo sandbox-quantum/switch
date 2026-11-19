@@ -14,7 +14,10 @@ from switch_core.bridges.agent.protocol.agent_connections import (
 from switch_core.bridges.agent.protocol.positions import OWN_EVENTS
 from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
 from switch_core.bridges.collaboration.models import InboundInteraction
-from switch_core.bridges.collaboration.session.renderers import INTERRUPT_ACTION
+from switch_core.bridges.collaboration.session.renderers import (
+    INTERRUPT_ACTION,
+    SESSION_STOP_ACTION,
+)
 from switch_core.db.models import Agent
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.session_activity.publisher import StopTarget
@@ -179,3 +182,50 @@ async def test_a_press_with_no_controller_attached_says_so(service, people, room
     )
     await bridge._handle_inbound_interaction(_press())
     assert "controller is not connected" in platform.told[0]
+
+
+def _session_stop(message_ref: str = STATUS_POST) -> InboundInteraction:
+    """Slack's own Stop on an agent session: no turn, only the message."""
+    return InboundInteraction(
+        channel_id="C1",
+        sender_id="U1",
+        sender_name="person",
+        sender_display_name="person",
+        action_id=SESSION_STOP_ACTION,
+        value="",
+        message_ref=message_ref,
+    )
+
+
+def _shown(room: str, shows: str, running: str | None) -> StopTarget:
+    return StopTarget(
+        agent_id=AGENT,
+        session_id=SESSION,
+        room_id=room,
+        thread_id="sw_asked",
+        running_turn_id=running,
+        turn_id=shows,
+    )
+
+
+async def test_slacks_own_stop_stops_the_turn_its_message_shows(service, people, room):
+    registry = AgentConnectionRegistry()
+    conn = _watching(registry)
+    bridge, platform = _bridge(
+        service, registry, _shown(room, "turn-1", "turn-1"), people.owner
+    )
+    await bridge._handle_inbound_interaction(_session_stop())
+    [command] = conn.session_commands
+    assert command["body"] == {"type": "turn.interrupt", "turnId": "current"}
+    assert "asked the agent to stop" in platform.told[0]
+
+
+async def test_slacks_own_stop_leaves_a_later_turn_running(service, people, room):
+    registry = AgentConnectionRegistry()
+    conn = _watching(registry)
+    bridge, platform = _bridge(
+        service, registry, _shown(room, "turn-1", "turn-2"), people.owner
+    )
+    await bridge._handle_inbound_interaction(_session_stop())
+    assert conn.session_commands == []
+    assert "TURN_NOT_RUNNING" in platform.told[0]

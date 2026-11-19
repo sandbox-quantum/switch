@@ -2030,3 +2030,14 @@ async def test_an_inline_turn_asked_in_a_thread_keeps_its_work_there(
     await inline_platform.wait_until(lambda: len(_turns(inline_platform)) >= 1)
     assert _turns(inline_platform)[0].thread_ref == ASKED_POST
     assert inline_platform.of("open_session") == []
+
+
+async def test_slacks_stop_on_a_work_message_finds_the_turn_it_shows(
+    service, work_publisher, work_platform, bridged
+):
+    await _worked(service, bridged.room_id)
+    await _tool_drawn(work_platform)
+    [opened] = work_platform.of("open_work_message")
+    target = await work_publisher.stop_target(bridged.channel_id, opened.ref)
+    assert target is not None
+    assert (target.turn_id, target.running_turn_id) == ("turn-1", "turn-1")

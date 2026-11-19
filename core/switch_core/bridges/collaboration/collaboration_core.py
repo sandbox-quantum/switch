@@ -56,7 +56,10 @@ from switch_core.bridges.collaboration.models import (
     OutboundAttachment,
 )
 from switch_core.bridges.collaboration.session.refusal import InboundActor, Refused
-from switch_core.bridges.collaboration.session.renderers import INTERRUPT_ACTION
+from switch_core.bridges.collaboration.session.renderers import (
+    INTERRUPT_ACTION,
+    SESSION_STOP_ACTION,
+)
 from switch_core.chat_account_links import (
     ACCOUNT_COMMANDS,
     CODE_REFUSED,
@@ -2965,7 +2968,7 @@ class CollaborationCore:
         self, interaction: InboundInteraction
     ) -> None:
         """Someone operated a control on a message this bridge posted."""
-        if interaction.action_id == INTERRUPT_ACTION:
+        if interaction.action_id in (INTERRUPT_ACTION, SESSION_STOP_ACTION):
             await self._handle_stop_press(interaction)
             return
         if is_prompt_token(interaction.value):
@@ -3045,10 +3048,14 @@ class CollaborationCore:
                 "can name."
             )
             return
-        if (
-            target.running_turn_id is None
-            or target.running_turn_id != interaction.value
-        ):
+        # Switch's Stop names the turn it was drawn for. Slack's own Stop on a
+        # session names none: it stops the turn the session's message shows.
+        turn_id = (
+            target.turn_id
+            if interaction.action_id == SESSION_STOP_ACTION
+            else interaction.value
+        )
+        if target.running_turn_id is None or target.running_turn_id != turn_id:
             await tell(
                 "The agent was not stopped (TURN_NOT_RUNNING): the turn that "
                 "control was drawn for is no longer running."
@@ -3070,7 +3077,7 @@ class CollaborationCore:
             room_id=target.room_id,
             actor_id=actor_id,
             message_ref=interaction.message_ref,
-            turn_id=interaction.value,
+            turn_id=turn_id,
             thread_id=target.thread_id,
             surface=self._bridge_type,
         )

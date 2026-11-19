@@ -221,6 +221,9 @@ class StopTarget:
     thread_id: str | None
     # The session's running turn now, which the pressed control must still name.
     running_turn_id: str | None
+    # The turn the message shows. What Slack's own Stop on a session names,
+    # which carries no turn of its own.
+    turn_id: str | None = None
 
 
 @dataclass
@@ -2286,6 +2289,7 @@ class AgentSessionActivityPublisher:
             room_id=view.row.room_id,
             thread_id=view.row.thread_id,
             running_turn_id=running,
+            turn_id=view.turn.turn_id,
         )
 
     async def _turn_at(
