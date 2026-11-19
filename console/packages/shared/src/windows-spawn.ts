@@ -59,7 +59,7 @@ export function getWindowsPathExts(
 }
 
 /** What cmd.exe treats specially on a command line. */
-const CMD_EXE_META = /([()\][%!^"`<>&|;, *?])/g;
+const CMD_EXE_META = /([()\][%!^"`<>&|;, *?\r\n])/g;
 
 /** A program path for a cmd.exe command line: each metacharacter caret-escaped. */
 export function escapeCmdExeCommand(command: string): string {
