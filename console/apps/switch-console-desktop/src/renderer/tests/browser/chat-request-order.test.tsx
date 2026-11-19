@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, expect, it, vi } from 'vitest';
+import { NO_ENTRANCE } from '@renderer/features/chats/chat-entrance';
 import { ChatTimelineView } from '@renderer/features/chats/components/chat-timeline';
 import {
   type ActivityApi,
@@ -153,6 +154,7 @@ it('shows the question form after the text the turn posted, in reading order', a
           people={[]}
           activities={[activity]}
           onReply={() => {}}
+          entrance={NO_ENTRANCE}
         />
       </QueryClientProvider>
     )

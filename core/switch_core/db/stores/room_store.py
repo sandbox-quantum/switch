@@ -542,6 +542,23 @@ class RoomStore:
         )
         return set(result.scalars().all())
 
+    async def people_present(self, session: AsyncSession, room_id: str) -> set[str]:
+        """The transport ids of the people present in the room: the platform
+        accounts and Switch Console members with a membership row. Agents and
+        Switch's own clients (the admin, the bridges) are not people."""
+        result = await session.execute(
+            select(Client.transport_user_id)
+            .join(ClientRoom, ClientRoom.client_id == Client.id)
+            .where(
+                ClientRoom.room_id == room_id,
+                or_(
+                    Client.type == MEMBER_CLIENT_TYPE,
+                    exists().where(ExternalUser.client_id == Client.id),
+                ),
+            )
+        )
+        return set(result.scalars().all())
+
     async def people_in_room(
         self, session: AsyncSession, room_id: str
     ) -> list[tuple[str, str]]:

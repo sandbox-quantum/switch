@@ -147,13 +147,18 @@ class RoomAutoRoute(BaseModel):
     the same one `!auto-route` sets; `available` whether it can act in the
     room (the server's flag and the workspace's decision backend), with
     `reason` saying why not and who can fix it; `fallback_agent` the id of
-    the room's triage agent, if any, and `fallback_agent_name` its name."""
+    the room's triage agent, if any, and `fallback_agent_name` its name;
+    `assigned_agent` and `assigned_agent_name` the room's assigned agent,
+    which gets every message first, so auto-route cannot be turned on, and
+    does not act, while it is set."""
 
     on: bool
     available: bool
     reason: str | None
     fallback_agent: str | None
     fallback_agent_name: str | None
+    assigned_agent: str | None
+    assigned_agent_name: str | None
 
 
 class RoomAutoRouteRequest(BaseModel):

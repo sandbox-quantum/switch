@@ -53,7 +53,7 @@ from switch_core.db.models import (
 )
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.agent_runtime_state_store import AgentRuntimeStateStore
-from switch_core.db.stores.room_store import auto_route_fallback_in
+from switch_core.db.stores.room_store import auto_route_fallback_in, auto_route_on_in
 from switch_core.db.stores.session_activity_store import (
     RETRYABLE_TURN_STATUSES,
     AgentSessionActivityStore,
@@ -1021,7 +1021,14 @@ async def _cmd_auto_route(
         )
 
     body = _AUTO_ROUTE_ON if state.on else _AUTO_ROUTE_OFF
-    if state.on and fallback is not None:
+    if state.on and state.assigned_agent is not None:
+        body = (
+            "Automatic routing is **on** in this room but not acting: every "
+            f"message goes to **{state.assigned_agent_name}**, assigned with "
+            "`!assign-agent`. Run `!unassign-agent` for auto-route to decide, "
+            "or turn it off with `!auto-route off`."
+        )
+    elif state.on and fallback is not None:
         body += (
             f" While the decision service is failing, those messages go to "
             f"**{_label(fallback)}**, the room's triage agent."
@@ -1183,6 +1190,12 @@ async def _cmd_assign_agent(
             )
             return
         await client._room_store.set_main_agent(session, meta.room_id, target.id)
+        room_row = await session.get(Room, meta.room_id)
+        turned_off_auto_route = room_row is not None and auto_route_on_in(
+            room_row.metadata_
+        )
+        if turned_off_auto_route:
+            await client._room_store.set_auto_route_on(session, meta.room_id, False)
         await session.commit()
 
     replaced = (
@@ -1195,7 +1208,13 @@ async def _cmd_assign_agent(
         room,
         event,
         f"From now on, every message here goes to **{_label(target)}**{replaced} "
-        "unless it mentions someone else. Clear it with `!unassign-agent`.",
+        "unless it mentions someone else. Clear it with `!unassign-agent`."
+        + (
+            " Automatic routing was on, so I turned it off: an assigned agent "
+            "and auto-route can't both be on."
+            if turned_off_auto_route
+            else ""
+        ),
     )
 
 

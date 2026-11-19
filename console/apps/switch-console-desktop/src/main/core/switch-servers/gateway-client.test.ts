@@ -3866,8 +3866,13 @@ describe('agent management calls', () => {
       name: 'build-box',
       platform: { os: 'linux', arch: 'x64', os_version: '6.1.0' },
       version: '0.1.0',
+      deviceId: null,
     });
-    expect(enrolled).toEqual({ controllerId: 'controller-1', credential: 'swcc_placeholder' });
+    expect(enrolled).toEqual({
+      controllerId: 'controller-1',
+      credential: 'swcc_placeholder',
+      adopted: false,
+    });
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe('https://switch.example.com/gateway/management/controllers');
     expect(init.method).toBe('POST');
@@ -3877,6 +3882,25 @@ describe('agent management calls', () => {
       platform: { os: 'linux', arch: 'x64', os_version: '6.1.0' },
       version: '0.1.0',
     });
+  });
+
+  it('names this computer by its device id, and reads a takeover of the device it already was', async () => {
+    fetchMock.mockImplementation(async () =>
+      respond(201, { controller_id: 'controller-0', credential: 'swcc_placeholder', adopted: true })
+    );
+    const enrolled = await enrollConsoleController(SERVER, {
+      name: 'build-box',
+      platform: { os: 'linux', arch: 'x64', os_version: '6.1.0' },
+      version: '0.1.0',
+      deviceId: 'd'.repeat(64),
+    });
+    expect(enrolled).toEqual({
+      controllerId: 'controller-0',
+      credential: 'swcc_placeholder',
+      adopted: true,
+    });
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(JSON.parse(String(init.body))).toMatchObject({ device_id: 'd'.repeat(64) });
   });
 
   it('reads a bare 404 as a server without agent management, and an enveloped one as a refusal', async () => {

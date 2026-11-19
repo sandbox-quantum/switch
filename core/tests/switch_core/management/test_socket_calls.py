@@ -71,6 +71,7 @@ def _principal(controller: EnrolledController) -> ControllerPrincipal:
         controller_id=controller.controller_id,
         owner_id=controller.owner.id,
         tenant_id=TENANT_ZERO_ID,
+        key_id=None,
     )
 
 
@@ -259,7 +260,7 @@ async def test_a_call_that_fails_is_still_answered() -> None:
         {"agent_id": "a1", "operation": "post_message"},
         "c-1",
         principal=ControllerPrincipal(
-            controller_id="c1", owner_id="o1", tenant_id=TENANT_ZERO_ID
+            controller_id="c1", owner_id="o1", tenant_id=TENANT_ZERO_ID, key_id=None
         ),
         protocol=cast(Any, None),
         authenticator=cast(Any, _Failing()),
