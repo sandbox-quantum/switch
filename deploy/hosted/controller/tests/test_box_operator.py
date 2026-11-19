@@ -1186,3 +1186,176 @@ def test_every_box_controller_gets_the_daily_call_cap():  # type: ignore[no-unty
     assert all(
         e["name"] != cap["name"] for name, env in envs.items() if name != "controller" for e in env
     )
+
+
+def _without_daily_calls(kube):  # type: ignore[no-untyped-def]
+    """The box as the template made it before the daily call cap (finding 21): the same, minus that one env entry."""
+    controller = kube.objects[("StatefulSet", NS, "box")]["spec"]["template"]["spec"]["containers"][
+        0
+    ]
+    before = len(controller["env"])
+    controller["env"] = [
+        e for e in controller["env"] if e["name"] != "SWITCH_CONTROLLER_GATEWAY_DAILY_CALLS"
+    ]
+    assert len(controller["env"]) == before - 1
+
+
+def test_a_box_made_before_the_daily_call_cap_is_still_reused(caplog):  # type: ignore[no-untyped-def]
+    """A box made by the template before finding 21's cap has no SWITCH_CONTROLLER_GATEWAY_DAILY_CALLS. Core asking
+    for its machine's box again (a retry, a re-claim) re-uses it, as before the upgrade, rather than refusing it,
+    writes nothing, and says it re-used an older shape."""
+    kube = FakeKube()
+    BoxOperator(FakeCore(), kube, cfg()).provision(action())
+    _without_daily_calls(kube)
+    made = list(kube.created)
+    caplog.set_level("WARNING", logger="switch_hosted_controller.box_operator")
+    assert _again(kube, cfg()) == ("done", NS, None)
+    assert kube.created == made
+    assert any(
+        "earlier template (before the daily call cap)" in r.getMessage() and NS in r.getMessage()
+        for r in caplog.records
+    )
+
+
+def test_the_ceiling_changed_the_box_is_still_reused(caplog):  # type: ignore[no-untyped-def]
+    """The operator changes daily_calls (500 to 5000): a box made with 500 is still this box's own on its next
+    re-claim, keeps the cap it was made with (no writes), and the difference is logged with both values."""
+    kube = FakeKube()
+    BoxOperator(FakeCore(), kube, cfg(daily_calls=500)).provision(action())
+    made = list(kube.created)
+    caplog.set_level("INFO", logger="switch_hosted_controller.box_operator")
+    assert _again(kube, cfg(daily_calls=5000)) == ("done", NS, None)
+    assert kube.created == made
+    assert any(
+        NS in r.getMessage() and "made with (500), not the configured 5000" in r.getMessage()
+        for r in caplog.records
+    )
+
+
+def test_todays_box_is_reused_without_a_warning(caplog):  # type: ignore[no-untyped-def]
+    kube = FakeKube()
+    BoxOperator(FakeCore(), kube, cfg()).provision(action())
+    caplog.set_level("WARNING", logger="switch_hosted_controller.box_operator")
+    assert _again(kube, cfg()) == ("done", NS, None)
+    assert not any("earlier template" in r.getMessage() for r in caplog.records)
+
+
+def test_an_earlier_box_shape_is_accepted_only_exactly():
+    """Only the earlier template's exact shape: a pre-cap box with anything else changed is still refused, and a
+    cap env holding anything but a valid cap (ASCII digits, no leading zero, 1 to 1e9) is refused, never taken as
+    missing."""
+    kube = FakeKube()
+    BoxOperator(FakeCore(), kube, cfg()).provision(action())
+    _without_daily_calls(kube)
+    kube.objects[("StatefulSet", NS, "box")]["spec"]["template"]["spec"]["hostNetwork"] = True
+    assert _again(kube, cfg()) == ("failed", NS, "object_refused")
+
+    for invalid in ("0", "-5", "ten", "1000000001", "", "007", "1e3"):
+        kube = FakeKube()
+        BoxOperator(FakeCore(), kube, cfg()).provision(action())
+        pod = kube.objects[("StatefulSet", NS, "box")]["spec"]["template"]["spec"]
+        (cap,) = [
+            e
+            for e in pod["containers"][0]["env"]
+            if e["name"] == "SWITCH_CONTROLLER_GATEWAY_DAILY_CALLS"
+        ]
+        cap["value"] = invalid
+        assert _again(kube, cfg()) == ("failed", NS, "object_refused"), invalid
+
+
+# The box template's fields as of the daily call cap (see the test below).
+PINNED_TEMPLATE_FIELDS = {
+    "pod": [
+        "affinity",
+        "automountServiceAccountToken",
+        "containers",
+        "enableServiceLinks",
+        "hostname",
+        "nodeSelector",
+        "runtimeClassName",
+        "securityContext",
+        "serviceAccountName",
+        "terminationGracePeriodSeconds",
+        "volumes",
+    ],
+    "containers": {
+        "controller": [
+            "args",
+            "env",
+            "image",
+            "imagePullPolicy",
+            "name",
+            "resources",
+            "securityContext",
+            "volumeMounts",
+        ],
+        "agents": [
+            "command",
+            "env",
+            "image",
+            "imagePullPolicy",
+            "name",
+            "resources",
+            "securityContext",
+            "volumeMounts",
+        ],
+    },
+    "env": {
+        "controller": [
+            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+            "HOME",
+            "HTTPS_PROXY",
+            "HTTP_PROXY",
+            "NODE_EXTRA_CA_CERTS",
+            "NO_PROXY",
+            "SWITCH_BOX_MEMORY_LIMIT_BYTES",
+            "SWITCH_CONTROLLER_DATA_DIR",
+            "SWITCH_CONTROLLER_GATEWAY_DAILY_CALLS",
+            "SWITCH_CONTROLLER_GATEWAY_PROXY",
+            "SWITCH_CONTROLLER_PROVIDER_GATEWAY",
+            "SWITCH_CONTROLLER_RESERVE_BYTES",
+            "SWITCH_CONTROLLER_REST_AFTER_MS",
+            "SWITCH_MACHINE_DESCRIPTION",
+            "SWITCH_MACHINE_NAME",
+            "SWITCH_SERVER",
+            "SWITCH_SESSION_PARK_AFTER_MS",
+            "SWITCH_SESSION_START_CONCURRENCY",
+            "SWITCH_SESSION_START_RESERVE_BYTES",
+            "http_proxy",
+            "https_proxy",
+            "no_proxy",
+        ],
+        "agents": [
+            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+            "HOME",
+            "HTTPS_PROXY",
+            "HTTP_PROXY",
+            "NODE_EXTRA_CA_CERTS",
+            "NO_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "no_proxy",
+        ],
+    },
+}
+
+
+def _template_fields():  # type: ignore[no-untyped-def]
+    objs = box_objects(action(), cfg())
+    (box,) = [o for _, o in objs if o["kind"] == "StatefulSet"]
+    pod = box["spec"]["template"]["spec"]
+    return {
+        "pod": sorted(pod),
+        "containers": {c["name"]: sorted(c) for c in pod["containers"]},
+        "env": {c["name"]: sorted(e["name"] for e in c.get("env", [])) for c in pod["containers"]},
+    }
+
+
+def test_the_template_fields_have_their_earlier_shapes():
+    """A field added to the box template (a pod key, a container key, an env entry) makes every box made before it
+    a mismatch, refused on re-use, unless box_operator._earlier_templates lists the shape without it. So this fails
+    on any change to the template's fields: add the earlier shape and a test that it is re-used, then this list."""
+    assert _template_fields() == PINNED_TEMPLATE_FIELDS, (
+        "The box template's fields changed: boxes made before would be refused on re-use. Add the earlier shape to "
+        "box_operator._earlier_templates, with a test that it is re-used, then update PINNED_TEMPLATE_FIELDS."
+    )

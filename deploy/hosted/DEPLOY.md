@@ -66,6 +66,20 @@ the ceiling it was made with, as it keeps its image, until it's updated.
 `switch-box-operator-config`) and apply the filled files **before** rolling the new hosted controller image. The new
 provisioner refuses to start with a config that has no `daily_calls`, so no new boxes are made until it's set.
 
+**A box made before this version has no per-box cap until it's recreated.** Such boxes keep working and are re-used
+as before (the provisioner logs a warning naming each one it re-uses in the older shape), but the provisioner may
+create a box's StatefulSet, not change it, so the cap reaches a box only when the box is made again. Bringing old
+boxes up to date in place is a later change, with the admission policy extended to cover it.
+
+**Changing `daily_calls` reaches only new or recreated boxes.** An existing box keeps the cap it was made with (the
+provisioner logs the difference when it re-uses one). So **lowering** it, say to stop abuse, does not cut existing
+boxes' caps: an urgent cut needs those boxes recreated, or the workspace's daily AI budget lowered in Core, since
+the box enforces the lower of the two.
+
+**A box made by a build older than this provisioner's reviewed template (the old all-in-one builds) can't be
+re-used and must be recreated**, as was already true before the cap: only today's template and the shapes it lists
+as earlier (`_earlier_templates`) count as a box's own.
+
 It writes filled copies of `k8s/*.yaml`, `box/priorityclass-switch-box.yaml` and
 `egress/egress-proxy-networkpolicy.yaml` into the new folder, and refuses, writing nothing, if a value is malformed
 or any placeholder would be left. The folder must be outside this repo, so a filled copy is never committed, and

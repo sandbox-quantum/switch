@@ -54,6 +54,7 @@ BOX_RESTART = "switch-operator-restart"
 CONTROLLER_ACCOUNT = "switch-hosted-controller"
 CONTROLLER_HOME = "switch-hosted"
 MACHINE_NAME = "Switch cloud"  # what the user sees on their Machines page
+DAILY_CALLS_ENV = "SWITCH_CONTROLLER_GATEWAY_DAILY_CALLS"
 
 # The failure codes Core accepts in a result. Core records the claim itself; every step
 # here is safe to repeat, so a retried action needs no record of how far the last try got.
@@ -571,7 +572,7 @@ def _box_pod_spec(config: OperatorConfig, size: BoxSize, user_name: str, zone: s
             {"name": "SWITCH_SESSION_START_CONCURRENCY", "value": "3"},
             {"name": "SWITCH_SESSION_START_RESERVE_BYTES", "value": "536870912"},
             {"name": "SWITCH_CONTROLLER_PROVIDER_GATEWAY", "value": "1"},
-            {"name": "SWITCH_CONTROLLER_GATEWAY_DAILY_CALLS", "value": str(config.daily_calls)},
+            {"name": DAILY_CALLS_ENV, "value": str(config.daily_calls)},
             {"name": "SWITCH_CONTROLLER_RESERVE_BYTES", "value": "268435456"},
             # The controller's gateway takes its own login; its other traffic uses the plain proxy URL.
             _proxy_env("SWITCH_CONTROLLER_GATEWAY_PROXY", "ctl_https_proxy"),
@@ -866,8 +867,30 @@ def _memory_limit_for(size: BoxSize) -> str:
     return str(_bytes(CONTROLLER_MEMORY_LIMIT) + _bytes(size.memory_limit))
 
 
+def _existing_daily_calls(existing_container: Any) -> str | None:
+    """The existing box's daily call cap, if it carries a valid one (a whole number from 1 to MAX_DAILY_CALLS, as
+    `config_from` accepts); None when it has none or one that isn't valid."""
+    if not isinstance(existing_container, dict) or not isinstance(
+        existing_container.get("env"), list
+    ):
+        return None
+    for env in existing_container["env"]:
+        if isinstance(env, dict) and env.get("name") == DAILY_CALLS_ENV:
+            value = env.get("value")
+            if (
+                isinstance(value, str)
+                and re.fullmatch(r"[1-9][0-9]{0,9}", value)
+                and int(value) <= MAX_DAILY_CALLS
+            ):
+                return value
+            return None
+    return None
+
+
 def _box_as_sized(wanted: dict, existing: dict, size: BoxSize) -> dict:
-    """The StatefulSet this would have made at `size`, with the existing (already allowed) image in each container."""
+    """The StatefulSet this would have made at `size`, with the existing (already allowed) image in each container,
+    and the existing box's daily call cap where it carries a valid one: the operator may change `daily_calls` later,
+    and a box keeps the cap it was made with (DEPLOY.md)."""
     out = copy.deepcopy(wanted)
     have = existing["spec"]["template"]["spec"]["containers"]
     for container, existing_container in zip(
@@ -879,6 +902,10 @@ def _box_as_sized(wanted: dict, existing: dict, size: BoxSize) -> dict:
         for env in container.get("env", []):
             if env.get("name") == MEMORY_LIMIT_ENV:
                 env["value"] = _memory_limit_for(size)
+            if env.get("name") == DAILY_CALLS_ENV:
+                kept = _existing_daily_calls(existing_container)
+                if kept is not None:
+                    env["value"] = kept
     return out
 
 
@@ -888,6 +915,20 @@ def _containers(sts: Any) -> list[Any] | None:
     except (KeyError, TypeError):
         return None
     return containers if isinstance(containers, list) else None
+
+
+def _earlier_templates(spec: dict) -> list[tuple[str | None, dict]]:
+    """`spec` as this would make it now (named None), then each shape an earlier template made, named, so a box made
+    before an upgrade is still this box's own and is re-used rather than refused. Only these exact shapes, listed
+    one by one, never anything looser. A field added to the template needs an entry here
+    (test_the_template_fields_have_their_earlier_shapes fails until it has one).
+    - "before the daily call cap" (finding 21): no SWITCH_CONTROLLER_GATEWAY_DAILY_CALLS. Such a box runs without
+      the per-box cap until it is recreated (DEPLOY.md): the operator may create StatefulSets, not change them."""
+    before_cap = copy.deepcopy(spec)
+    for container in before_cap["template"]["spec"]["containers"]:
+        if "env" in container:
+            container["env"] = [e for e in container["env"] if e.get("name") != DAILY_CALLS_ENV]
+    return [(None, spec), ("before the daily call cap", before_cap)]
 
 
 def box_matches(
@@ -913,8 +954,23 @@ def box_matches(
             continue
         sized = _box_as_sized(wanted, existing, size)
         sized["spec"]["replicas"] = replicas
-        if same_strictly(existing["spec"], sized["spec"]):
-            return True
+        for earlier, shape in _earlier_templates(sized["spec"]):
+            if same_strictly(existing["spec"], shape):
+                kept = _existing_daily_calls(have[0])
+                if earlier is None and kept is not None and kept != str(config.daily_calls):
+                    logger.info(
+                        "Re-using box %s/box with the daily call cap it was made with (%s), not the configured %s.",
+                        existing.get("metadata", {}).get("namespace"),
+                        kept,
+                        config.daily_calls,
+                    )
+                if earlier is not None:
+                    logger.warning(
+                        "Re-using box %s/box made by an earlier template (%s); it keeps that shape until it is recreated.",
+                        existing.get("metadata", {}).get("namespace"),
+                        earlier,
+                    )
+                return True
     return False
 
 
