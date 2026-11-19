@@ -277,9 +277,13 @@ this is the list it belongs on.
 ## Decision routing
 
 Auto-route (`docs/old/decision-routing.md`) has a group of its own,
-`switch.decision.*`. Each decision asked of a backend is counted by `backend`
-and `outcome`, failures by `reason`, and what the backend said went wrong
-behind it by `kind` (`backend_errors`). Its latency is timed around the whole
+`switch.decision.*`. Each decision asked of a backend is counted by `backend`,
+`model` and `outcome`, failures by `reason`, and what the backend said went
+wrong behind it by `kind` (`backend_errors`). `model` is the model that
+answered, as the server's decision service names it; a decision with no answer
+is `unknown`, a workspace's own endpoint `workspace_endpoint` (the name it
+sends is its owner's, so it is not kept), and a name that isn't plain, or past
+the first eight a process sees, `other`. Its latency is timed around the whole
 request (`duration`) beside the model time the backend reports
 (`model_time`), so the gap — network and the backend's queue — can be read.
 Confidence is a histogram for setting the threshold. Every undecided message's
