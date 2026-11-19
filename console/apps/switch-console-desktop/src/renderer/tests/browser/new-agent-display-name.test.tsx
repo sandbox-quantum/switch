@@ -44,7 +44,7 @@ afterEach(async () => {
 async function mountForm(): Promise<() => ConfigureAgentFormState> {
   let latest: ConfigureAgentFormState | null = null;
   function Probe() {
-    latest = useConfigureAgentForm(null);
+    latest = useConfigureAgentForm(null, null);
     return null;
   }
   container = document.createElement('div');
@@ -176,7 +176,7 @@ afterEach(async () => {
 });
 
 function Fields() {
-  domForm = useConfigureAgentForm(null);
+  domForm = useConfigureAgentForm(null, null);
   return <AgentIdentityFields form={domForm} serverId={null} nameTaken={false} />;
 }
 

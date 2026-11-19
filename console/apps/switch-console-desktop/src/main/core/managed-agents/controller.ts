@@ -3,6 +3,8 @@ import {
   type ProviderLogin,
   sealingKeyId,
   sealProviderLogin,
+  signsInThroughVertex,
+  VERTEX_PROVIDERS_ONLY,
   vertexLoginCredential,
 } from '@switch-console/agent-providers';
 import { agentMigrationService } from '@main/core/agent-migration/agent-migration';
@@ -381,7 +383,7 @@ async function loginToGive(
   input: MachineLoginInput
 ): Promise<ProviderLogin> {
   if (input.source === 'vertex') {
-    if (provider !== 'claude') throw new Error('Only Claude signs in through Vertex AI.');
+    if (!signsInThroughVertex(provider)) throw new Error(VERTEX_PROVIDERS_ONLY);
     const text =
       input.credentials.from === 'key'
         ? input.credentials.json.trim()

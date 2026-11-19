@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -62,6 +61,7 @@ from switch_core.operator_commands import (
     CommandRefused,
     account_by_email,
     database,
+    print_refusal,
     read_text_file,
     run,
     signals,
@@ -361,7 +361,7 @@ async def _run(config: SwitchConfig, arguments: argparse.Namespace) -> int:
                     )
                     print(f"Removed {arguments.service}'s app ({client_id}).")
     except CommandRefused as refused:
-        print(f"Refused: {refused}", file=sys.stderr)
+        print_refusal(refused)
         return 1
     return 0
 

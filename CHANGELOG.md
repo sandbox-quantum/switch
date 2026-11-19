@@ -52,7 +52,86 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+### [0.32.1] - 2026-11-18
+
 #### Added
+- **A computer enrolled again keeps its device and agents.** A controller
+  enrolling from a machine, OS account and data folder its owner already has
+  a device for in the workspace (Switch Console set up again after a
+  reinstall or with its data folder wiped, or a headless controller enrolled
+  again) takes that device over when it isn't running: same id, name and
+  agents, with a new credential and its old service tokens revoked. Before,
+  it was added as another device of the same name, and its agents stayed on
+  the old one. A second install on the same account with a data folder of
+  its own (a development build beside Switch Console, say) is a device of
+  its own, so the two don't take a device from each other. A device running
+  at that moment is left alone, as is a device enrolled or taken over in the
+  last minute that hasn't reported since.
+  Switch Cloud machines never are. Enrollment (`POST
+  /gateway/management/controllers` and `POST
+  /v1/management/controllers/enroll`) and status reports take an optional
+  `device_id`; Switch keeps only a hash of it with the owner's id, never the
+  id itself, and the enroll responses add `adopted`. A status report keeps
+  the device current, so a device enrolled before it could say is matched
+  from its next report. `device_id` in the Console enroll body raises the
+  `gateway-api` revision to 7.
+- **`GET /gateway/agents/rooms` lists the rooms of up to 100 agents in one
+  request** (`agent_id`, repeated), each as `GET /gateway/agents/{agent_id}`
+  lists them, in the same few statements however many agents are asked
+  about. An id with no agent behind it is left out.
+
+#### Changed
+- **Decision metrics name the model that answered.** `switch.decision.requests`,
+  `failures`, `backend_errors`, `duration`, `model_time` and `confidence`
+  carry `model` beside `backend`: the model the server's decision service
+  answered with (for example `gemini-decision-1` or `claude-haiku-5-5`), so a
+  change of model behind the server default can be compared before and after.
+  A decision with no answer is `unknown`, a workspace's own endpoint is
+  `workspace_endpoint` (its model name is never kept), and a name that isn't
+  plain, or past the first eight a process sees, is `other`. `backend` is
+  unchanged, so existing queries keep working. The core health dashboard in
+  `deploy/observability/` groups its decision panels by model, marks 0.80 on
+  the confidence panel, compares models side by side, and gains the release
+  comparison panels and the `version` and `baseline` pickers.
+
+#### Fixed
+- **Reading an agent no longer reads every room in the workspace.**
+  `GET /gateway/agents/{agent_id}` loaded every room its reader may see, to
+  learn which of the agent's rooms to name, and held a database connection
+  while it did. Switch Console reads each of its agents this way on every
+  refresh of its sidebar, so one open window with a few dozen agents could
+  take every connection in the pool for a moment. It now asks only about the
+  agent's own rooms, and the agent tools that describe an agent do the same.
+
+#### Changed
+- **Auto-route (preview — behind a feature flag, off by default).** A room's
+  assigned agent and auto-route are now mutually exclusive, and an auto-route
+  room with a single agent delivers an untagged message straight to it when a
+  single person is present. The decision service also gains a **Gemini** backend
+  option alongside the existing ones.
+
+### [0.32.0] - 2026-11-17
+
+#### Added
+- **Group chats.** A room can be a group chat: `POST /chats` with
+  `kind: "group"`, read positions and unread counts (`chat_reads`), mention
+  spans, and naming people in a message without waking agents. Fleet-wide
+  behind the `group_chats` flag, which this release turns on by default.
+- **Retry a failed turn.** A turn that failed can be retried without posting
+  the message again, from the room or with the `!retry` command, which is held
+  to the same permission rules as the Retry control.
+- **Restart a device's controller from Switch.** A device's agent controller
+  can be restarted from Switch (Workspace/Organization settings › Devices),
+  without touching the host.
+- **More messaging platforms (preview — behind a feature flag, off by
+  default).** Cisco Webex, Rocket.Chat, Matrix (through a bot account on any
+  homeserver), Signal, Zulip and Google Chat can be connected as collaboration
+  platforms alongside the existing ones. Gated by the newer-platforms feature
+  flag and off unless a deployment turns it on.
+- **Unrecognized WorkOS roles are reported.** Under
+  `ORGANIZATION_DIRECTORY=workos`, a membership whose role is not `org_admin`,
+  `admin`, `editor` or `viewer` is still a Member, as before, but it is now
+  logged at `warning`, so a new role or a wrongly assigned one can be found.
 - **`switch-promote-org-admin`, a break-glass command.** When an
   organization's admins can't make someone an admin themselves, the platform
   operator can run `switch-promote-org-admin <organization id or slug>
@@ -641,6 +720,17 @@ version of their own to them without also giving them a release of their own.
   Where a room says auto-route needs a decision service, or that the
   workspace turned it off, it points at Switch Console → Settings → Decision
   routing, where the page now lives.
+- **An auto-route room with one person and one agent no longer asks the
+  decision model.** Every untagged message from that person reaches the agent,
+  in the channel and in threads, as in a direct message; a second person or
+  agent brings the decision back. The model's scores in such rooms sit close
+  to its threshold, so people had to tag the only agent there.
+- **An assigned agent and auto-route can't both be on.** `!assign-agent` in a
+  room with auto-route on assigns the agent and turns auto-route off, saying
+  so; turning auto-route on (`!auto-route on`, the dashboard and Switch
+  Console) is refused while an agent is assigned. A room that has both from
+  before keeps them, and `!auto-route` and the room pages say auto-route is on
+  but not acting.
 - **Switch Trust guardrails are set per organization instead of once for
   the whole server.** Each organization's admins connect its own policy, with
   a policy ID and an API key, under Organization settings › Guardrails. Switch
@@ -915,6 +1005,8 @@ version of their own to them without also giving them a release of their own.
   policy, the workspace and organization guardrails pages say that images,
   audio, video, archives and Office files other than Word documents are
   delivered unchecked.
+- **Usage & budget is off in the dashboard until it is offered.** It is out of
+  Workspace settings, and `/usage` opens Settings.
 
 #### Removed
 - **Breaking for HTTP clients: the operator's account and workspace-list
@@ -932,6 +1024,32 @@ version of their own to them without also giving them a release of their own.
   (`POST /gateway/auth/sessions/revoke`) as before.
 
 #### Fixed
+- **On a deployment with one organization, an agent's service access names
+  one person to set up a connector app.** For a service waiting on its app,
+  it said "Whoever runs Switch can set it up. An admin of your organization
+  sets it up in Organization settings › Connector apps." It now says only
+  the second.
+- **Organization settings › Connector apps is headed Connector apps**, not
+  Connectors, the page above it in the menu.
+- **Your account's Delete account card keeps its description readable on a
+  narrow window.** It was squeezed to a word a line beside the button; the
+  button now drops below it, as a page header's do. A page header's buttons
+  also keep their own height beside a tall title.
+- **A platform operator following a link to a workspace they aren't in is
+  told what to do instead.** The dashboard doesn't take them into it, and
+  now adds that `switch-promote-org-admin`, where Switch runs, makes someone
+  an admin of an organization they aren't in.
+- **An organization's admins hear when deleting one of them fails
+  partway.** The person's organization admin role goes before anything
+  else, and a retry finds no role left to tell anyone about, so the admins
+  and the person were never told. They are now e-mailed when the deletion
+  fails, saying it didn't finish but had already ended that admin access.
+- **The e-mail about a change to who administers an organization links its
+  audit log only for those who can open it**: not for the person demoted,
+  removed or deleted.
+- **A server command's refusal comes after what it printed before it.**
+  Run without a terminal, `switch-accounts delete --execute` could print
+  "Refused" above the plan it refused.
 - **Add a device no longer shows commands that can't work.** On a Switch
   that Switch Console runs, or whose public address (`GATEWAY_PUBLIC_URL`)
   is a loopback one such as `http://localhost:8000` or the unspecified
@@ -1267,6 +1385,12 @@ version of their own to them without also giving them a release of their own.
   redirects to it.
 
 #### Security
+- **A controller's access token works only with the credential it was
+  exchanged for.** Tokens now name their credential, and one whose
+  controller no longer has it (rotated away, or replaced when another
+  controller took the device over) is refused as expired, so only the
+  holder of the current credential can exchange a new one. A token issued
+  before this release keeps working until it expires, within the hour.
 - **Cookie-signed changes must come from Switch's own origins.** Every POST,
   PUT, PATCH and DELETE that carries the sign-in cookie, sign-in itself and the
   change socket are checked against `GATEWAY_PUBLIC_URL`, `FRONTEND_BASE_URL`
@@ -4552,7 +4676,75 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+### [0.41.1] - 2026-11-18
+
+#### Fixed
+- **The workspace switcher shows on every build, not only one that can reach
+  Switch Cloud.** A build without a Switch Cloud address, stable included,
+  kept the older list of servers at the top of the sidebar, so a second
+  workspace on a server, and Create organization, New workspace and the
+  invitations waiting for you, couldn't be reached from it. Workspaces belong
+  to the server, so the switcher now lists each server's workspaces whether or
+  not the build knows a Cloud.
+- **The sidebar reads a workspace's agents' rooms in one request**, rather
+  than one request per agent on every refresh (every 20 seconds while the
+  window is open, and whenever it is focused). On a server from before that
+  request it still asks for one agent at a time.
+- **Install failures show the whole error.** A provider install that fails now
+  surfaces the full error in the UI, and logs it in full, instead of a
+  truncated message.
+- **Cursor sessions use supported permission modes.** Cursor launches with a
+  permission mode its CLI accepts, falling back to the provider's default
+  rather than one it would reject.
+
+#### Changed
+- **switch-buddy's opening messages slide in** on the way from onboarding or
+  Home, rather than appearing all at once.
+
+### [0.41.0] - 2026-11-17
+
 #### Added
+- **This computer keeps its agents when Switch Console is set up again on
+  it.** Console tells the server which computer, OS account and data folder
+  it runs from when it turns on managed agents, so a reinstall, or its data
+  folder wiped and set up again, takes over the device this Console already
+  was, agents included, instead of adding another of the same name. A
+  Console with a data folder of its own beside it (a development build, a
+  second profile) stays a device of its own. It needs a server that takes it
+  (`gateway-api` 7); an older one adds a device as before. In the Move
+  dialog, devices that share a name now say when each was last seen.
+- **switch-buddy's first message slides in.** At the end of onboarding its
+  welcome fades in as it rises into place, and the "Where does your team
+  chat?" cards follow just after. From Home, the message you sent comes in
+  the same way, and its first answer when it arrives. Only those first
+  messages move, and only on the way in from onboarding or Home: reopening
+  the chat draws them at once, as does reduced motion.
+- **Group chats.** Create a group chat from New room, open it in the room
+  view, and manage its agents and people from its Configuration tab. Offered
+  only where the server has them on (`group_chats`), which this release does by
+  default.
+- **Reworked Rooms experience.** New Room at the top of the sidebar's Rooms tab
+  (name and who's in it, in one field); rooms shown as cards with a filter by
+  messaging-app connection and archive from a card's menu; unread counts on
+  rooms and chats; leave a room as any member; and `@`-mention autocomplete
+  with badges in the chat composer.
+- **Room admins.** A room can have room admins, shown and managed on every
+  surface alongside the room's owner.
+- **Linear connector.** Linear joins the available connectors.
+- **Decision routing / auto-route (preview — behind a feature flag, off by
+  default).** Where the server offers it, a room can route untagged messages
+  through a decision service to the agent best placed to answer; the Decision
+  routing settings and the room auto-route toggle appear in Console and the
+  dashboard. Off unless the server turns the flag on.
+- **More agent providers (preview — behind a feature flag, off by default).**
+  Goose, Qwen Code, Factory Droid, Cline and DeepSeek Harness join the provider
+  list, behind the additional-providers flag (Pi, GitHub Copilot CLI, Kiro and
+  Junie are already available).
+- **Antigravity can be given a Vertex AI login, as Claude can.** Giving a
+  cloud machine an Antigravity login now offers Vertex AI beside this
+  computer's sign-in: a Google Cloud project, a region, and a service account
+  key or this computer's `gcloud auth application-default login` sign-in. It
+  needs Google's `agy` CLI on the machine.
 - **Home's chat bar takes several lines, and switch-buddy comes alive
   beside it.** The box grows with what you type, up to ten lines, then
   scrolls; Enter sends and Shift+Enter starts a new line. Each time Home
@@ -4853,6 +5045,21 @@ version of their own to them without also giving them a release of their own.
   agent"; it was the only place Console showed that name.
 
 #### Fixed
+- **A button with a tooltip is one labelled button.** Back, Forward, the
+  sidebar toggle, Reset to default, the install and copy buttons and a few
+  others sat inside the tooltip's own button, so screen readers met a
+  button within a button, named by nothing. The marks on an agent's row (its
+  device, a failed session, a host problem) were unlabelled buttons inside
+  the row's; each is now an image named by what its tooltip says.
+- **A chat's work log reads in the order the agent worked.** An agent's
+  tool calls all showed in one block above its first reply, even the calls
+  it made after it, and a question it asked showed as a raw AskUserQuestion
+  call far from the question's card. Each call now shows after the agent's
+  message it followed, so the question's call sits beside its card.
+- **Connectors stops trusting an old answer about who sets up connector
+  apps.** When asking the server again failed, the page said it couldn't
+  check but still offered Set up by the last answer; it now goes by none, as
+  it says.
 - **Add device no longer shows commands that can't work.** On a server
   Switch Console runs on this computer, Settings › Devices no longer offers
   Add device and says why: no other device can reach it. On any other
@@ -7124,6 +7331,24 @@ tags; see RELEASING.md.
 ### [Unreleased]
 
 #### Added
+- **Says which machine, OS account and data folder it runs from.**
+  Enrolling, and every status report, carry `device_id`: a SHA-256 of the
+  platform's machine id (a Mac's hardware UUID, Windows's MachineGuid,
+  Linux's machine-id), the OS user name and the data directory (or
+  `--device-root`, which Switch Console passes as its own data folder), with
+  the host name on Linux and Windows, where a cloned image can share a
+  machine id. A server that keeps it takes over the device that install
+  already was rather than adding another, and the enroll output says so. A
+  container whose host name changes each time it starts still enrolls as a
+  new device each time. `--device-id --device-root <folder>` prints it, for
+  Switch Console, which enrolls its computer itself. Left out wherever it
+  can't be read.
+- **Signs Antigravity in through Vertex AI.** A Vertex AI login given for
+  Antigravity is taken, its Google credential written to the agent's own
+  `provider-home/google-credentials.json`, and `agy` run with `AGY_ADC_AUTH`,
+  the project as `GOOGLE_CLOUD_PROJECT` and `GOOGLE_CLOUD_QUOTA_PROJECT`, the
+  region as `GOOGLE_CLOUD_LOCATION`, and `GOOGLE_APPLICATION_CREDENTIALS`. The
+  retired `antigravity-acp` runtime is refused one, since it cannot use it.
 - **Reports when its process started.** Each status report carries
   `controller.started_at`, so Core can count a cloud machine's controller
   restarting. An older Core ignores it.

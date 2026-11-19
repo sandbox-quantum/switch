@@ -85,6 +85,7 @@ logger = logging.getLogger(__name__)
 ASSIGNMENT_CHANGED_SIGNAL = "controller.assignment_changed"
 OPERATION_PENDING_SIGNAL = "controller.operation_pending"
 REVOKED_SIGNAL = "controller.revoked"
+CREDENTIAL_REPLACED_SIGNAL = "controller.credential_replaced"
 RENAMED_SIGNAL = "controller.renamed"
 CONNECTION_CHANGED_SIGNAL = "controller.connection_changed"
 
@@ -154,6 +155,7 @@ class ControllerSignals:
         bus.handle(ASSIGNMENT_CHANGED_SIGNAL, self._on_assignment_changed)
         bus.handle(OPERATION_PENDING_SIGNAL, self._on_operation_pending)
         bus.handle(REVOKED_SIGNAL, self._on_revoked)
+        bus.handle(CREDENTIAL_REPLACED_SIGNAL, self._on_credential_replaced)
         bus.handle(RENAMED_SIGNAL, self._on_renamed)
         bus.handle(CONNECTION_CHANGED_SIGNAL, self._on_connection_changed)
         bus.on_resync(self.resync)
@@ -190,6 +192,13 @@ class ControllerSignals:
     def revoked(self, controller_id: str) -> None:
         self._revoke_here(controller_id)
         self._bus.publish(REVOKED_SIGNAL, controller_id=controller_id)
+
+    def credential_replaced(self, controller_id: str) -> None:
+        """Another controller on the same device took this one over: every
+        process ends the stream the old holder has there, wherever its socket
+        attached (`ControllerPresence.credential_replaced`)."""
+        self._presence.credential_replaced(controller_id)
+        self._bus.publish(CREDENTIAL_REPLACED_SIGNAL, controller_id=controller_id)
 
     def renamed(self, tenant_id: str, controller_id: str) -> None:
         """The controller's owner renamed it. A rename bumps no assignment
@@ -239,6 +248,9 @@ class ControllerSignals:
 
     def _on_revoked(self, signal: dict[str, Any]) -> None:
         self._revoke_here(signal["controller_id"])
+
+    def _on_credential_replaced(self, signal: dict[str, Any]) -> None:
+        self._presence.credential_replaced(signal["controller_id"])
 
     def _on_renamed(self, signal: dict[str, Any]) -> None:
         self._bindings_owed.add((signal["tenant_id"], signal["controller_id"]))

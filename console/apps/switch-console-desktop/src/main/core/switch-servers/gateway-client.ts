@@ -1616,6 +1616,26 @@ export async function agentExistsOnServer(server: SwitchServer, agentId: string)
   }
 }
 
+type AgentRoomJson = {
+  room_id: string;
+  room_name: string;
+  archived: boolean;
+  status: string;
+  room_role: string | null;
+  answered_here?: boolean;
+};
+
+function toRemoteAgentRoom(r: AgentRoomJson): RemoteAgentRoom {
+  return {
+    roomId: r.room_id,
+    roomName: r.room_name,
+    archived: r.archived,
+    status: r.status,
+    roomRole: r.room_role,
+    answeredHere: r.answered_here ?? false,
+  };
+}
+
 export async function fetchAgentRooms(
   server: SwitchServer,
   agentId: string
@@ -1623,24 +1643,42 @@ export async function fetchAgentRooms(
   const res = await gatewayFetch(server, `/agents/${encodeURIComponent(agentId)}`, {
     authenticated: true,
   });
-  const json = (await res.json()) as {
-    rooms?: Array<{
-      room_id: string;
-      room_name: string;
-      archived: boolean;
-      status: string;
-      room_role: string | null;
-      answered_here?: boolean;
-    }>;
-  };
-  return (json.rooms ?? []).map((r) => ({
-    roomId: r.room_id,
-    roomName: r.room_name,
-    archived: r.archived,
-    status: r.status,
-    roomRole: r.room_role,
-    answeredHere: r.answered_here ?? false,
-  }));
+  const json = (await res.json()) as { rooms?: AgentRoomJson[] };
+  return (json.rooms ?? []).map(toRemoteAgentRoom);
+}
+
+/** The most agents one `GET /agents/rooms` answers for; the server refuses more. */
+export const AGENT_ROOMS_PER_REQUEST = 100;
+
+/**
+ * Many agents' rooms, keyed by agent id, each as {@link fetchAgentRooms} reads
+ * one, asked {@link AGENT_ROOMS_PER_REQUEST} agents to a request
+ * (`GET /agents/rooms`). An agent the server does not have is left out.
+ *
+ * Null is a server from before the route, which answers for one agent at a
+ * time: on it a 404 says the route is missing, not that an agent is. Every
+ * other refusal is raised.
+ */
+export async function fetchRoomsOfAgents(
+  server: SwitchServer,
+  agentIds: readonly string[]
+): Promise<Record<string, RemoteAgentRoom[]> | null> {
+  const rooms: Record<string, RemoteAgentRoom[]> = {};
+  for (let start = 0; start < agentIds.length; start += AGENT_ROOMS_PER_REQUEST) {
+    const query = new URLSearchParams(
+      agentIds.slice(start, start + AGENT_ROOMS_PER_REQUEST).map((id) => ['agent_id', id])
+    );
+    let res: Response;
+    try {
+      res = await gatewayFetch(server, `/agents/rooms?${query}`, { authenticated: true });
+    } catch (cause) {
+      if (cause instanceof GatewayError && cause.status === 404) return null;
+      throw cause;
+    }
+    const json = (await res.json()) as { agent_id: string; rooms: AgentRoomJson[] }[];
+    for (const entry of json) rooms[entry.agent_id] = entry.rooms.map(toRemoteAgentRoom);
+  }
+  return rooms;
 }
 
 /**
@@ -2625,6 +2663,8 @@ type ExternalUserSummaryJson = {
   external_user_id: string;
   external_username: string;
   first_seen_at?: string;
+  display_name?: string | null;
+  has_handle?: boolean;
   claimed_by?: IdentityClaimantJson[];
   link_request?: { user_id: string; code: LinkCodeJson | null } | null;
 };
@@ -3833,6 +3873,9 @@ type RoomAutoRouteJson = {
   fallback_agent: string | null;
   /** Absent from a server that predates it. */
   fallback_agent_name?: string | null;
+  /** Absent from a server that predates it. */
+  assigned_agent?: string | null;
+  assigned_agent_name?: string | null;
 };
 
 function mapRoomAutoRoute(json: RoomAutoRouteJson): RoomAutoRoute {
@@ -3842,6 +3885,8 @@ function mapRoomAutoRoute(json: RoomAutoRouteJson): RoomAutoRoute {
     reason: json.reason,
     fallbackAgent: json.fallback_agent,
     fallbackAgentName: json.fallback_agent_name ?? null,
+    assignedAgent: json.assigned_agent ?? null,
+    assignedAgentName: json.assigned_agent_name ?? null,
   };
 }
 
@@ -4102,6 +4147,8 @@ export async function fetchBridgePeople(
         linkedUserIds: linked.map((claim) => claim.user_id),
         linkedName: linked[0]?.user_name ?? null,
         firstSeenAt: user.first_seen_at ?? null,
+        ...(user.display_name ? { displayName: user.display_name } : {}),
+        ...(user.has_handle === false ? { hasHandle: false } : {}),
       };
     })
     .sort((a, b) => a.username.localeCompare(b.username));
@@ -5248,15 +5295,29 @@ type ManagedAgentJson = {
  */
 export async function enrollConsoleController(
   server: SwitchServer,
-  body: { name: string; platform: ControllerPlatform; version: string }
-): Promise<{ controllerId: string; credential: string }> {
+  body: { name: string; platform: ControllerPlatform; version: string; deviceId: string | null }
+): Promise<{ controllerId: string; credential: string; adopted: boolean }> {
   const res = await managementFetch(server, '/controllers', {
     authenticated: true,
     method: 'POST',
-    body: { name: body.name, kind: 'console', platform: body.platform, version: body.version },
+    body: {
+      name: body.name,
+      kind: 'console',
+      platform: body.platform,
+      version: body.version,
+      ...(body.deviceId === null ? {} : { device_id: body.deviceId }),
+    },
   });
-  const json = (await res.json()) as { controller_id: string; credential: string };
-  return { controllerId: json.controller_id, credential: json.credential };
+  const json = (await res.json()) as {
+    controller_id: string;
+    credential: string;
+    adopted?: boolean;
+  };
+  return {
+    controllerId: json.controller_id,
+    credential: json.credential,
+    adopted: json.adopted === true,
+  };
 }
 
 /**

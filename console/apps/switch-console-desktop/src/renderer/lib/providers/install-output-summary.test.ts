@@ -27,6 +27,26 @@ describe('installOutputSummary', () => {
 
   it('returns null for empty output and caps a long line', () => {
     expect(installOutputSummary('  \n')).toBeNull();
-    expect(installOutputSummary(`error ${'x'.repeat(300)}`)).toHaveLength(201);
+    expect(installOutputSummary(`error ${'x'.repeat(500)}`)).toHaveLength(401);
+  });
+
+  it('joins a PowerShell error message wrapped at the console width', () => {
+    const output = [
+      'Installing Codex CLI',
+      'iex : Exception calling "ResolveDirectory" with "1" argument(s): "The path cannot be traversed because it contains an',
+      'untrusted mount point."',
+      'At line:1 char:47',
+      '+ irm https://chatgpt.com/codex/install.ps1 | iex',
+      '+                                               ~~~',
+      '    + CategoryInfo          : NotSpecified: (:) [Invoke-Expression], MethodInvocationException',
+      '    + FullyQualifiedErrorId : Win32Exception,Microsoft.PowerShell.Commands.InvokeExpressionCommand',
+    ].join('\r\n');
+    expect(installOutputSummary(output)).toBe(
+      'iex : Exception calling "ResolveDirectory" with "1" argument(s): "The path cannot be traversed because it contains an untrusted mount point."'
+    );
+  });
+
+  it('keeps one line when no PowerShell position follows it', () => {
+    expect(installOutputSummary('error: first\nsecond line\nthird line')).toBe('error: first');
   });
 });

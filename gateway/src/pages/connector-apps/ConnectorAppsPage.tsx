@@ -15,7 +15,7 @@ import { ConnectorAppScopeContext } from "./scope";
 function Heading({ publicUrl }: { publicUrl: string | null }) {
   return (
     <Box mb={2}>
-      <Typography variant="h5">Connectors</Typography>
+      <Typography variant="h5">Connector apps</Typography>
       <Typography variant="body2" color="text.secondary">
         Some connectors sign in through an app you register at the vendor. Set each up once,
         for all of Switch, before anyone can connect it.

@@ -11,17 +11,20 @@ export function SidebarSpace() {
     <div className="flex h-11 w-full items-center justify-end gap-2 px-2 [-webkit-app-region:drag]">
       <NavButtons />
       <Tooltip>
-        <TooltipTrigger>
-          <Toggle
-            className="size-7 border-none bg-background-tertiary-3 [-webkit-app-region:no-drag] hover:bg-background-tertiary-3 data-pressed:bg-background-tertiary-2"
-            variant="outline"
-            size="sm"
-            pressed={isLeftOpen}
-            onPressedChange={() => setCollapsed('left', isLeftOpen)}
-          >
-            <PanelLeft className="h-4 w-4" />
-          </Toggle>
-        </TooltipTrigger>
+        <TooltipTrigger
+          render={
+            <Toggle
+              className="size-7 border-none bg-background-tertiary-3 [-webkit-app-region:no-drag] hover:bg-background-tertiary-3 data-pressed:bg-background-tertiary-2"
+              variant="outline"
+              size="sm"
+              aria-label="Toggle left sidebar"
+              pressed={isLeftOpen}
+              onPressedChange={() => setCollapsed('left', isLeftOpen)}
+            >
+              <PanelLeft className="h-4 w-4" />
+            </Toggle>
+          }
+        />
         <TooltipContent>
           Toggle left sidebar
           <BoundShortcut settingsKey="toggleLeftSidebar" variant="badge" />
