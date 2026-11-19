@@ -41,6 +41,7 @@ def _run(
         "--pause-image": PAUSE,
         "--ca-cert": str(ca),
         "--kubernetes-service-ip": "10.100.0.1",
+        "--daily-calls": "300",
         **{f"--{k.replace('_', '-')}": v for k, v in overrides.items()},
     }
     argv = [sys.executable, str(SCRIPT), "--out", str(tmp_path / out)]
@@ -93,6 +94,7 @@ def test_fills_every_placeholder_in_the_provisioners_shape(tmp_path: Path) -> No
     )
     assert loaded.image == BOX
     assert loaded.allowed_images == {BOX, OLDER, OLDEST}
+    assert config["daily_calls"] == 300 and loaded.daily_calls == 300
 
     policies = (out / "30-admission-policies.yaml").read_text()
     assert "matches('^(xx-test-1a|xx-test-1b)$')" in policies
@@ -140,6 +142,10 @@ def test_no_earlier_images_leaves_an_empty_allowed_list(tmp_path: Path) -> None:
             "at most 2",
         ),
         ((), {"kubernetes_service_ip": "kubernetes.default"}, "IPv4 address"),
+        ((), {"daily_calls": "0"}, "--daily-calls"),
+        ((), {"daily_calls": "unlimited"}, "--daily-calls"),
+        ((), {"daily_calls": "-5"}, "--daily-calls"),
+        ((), {"daily_calls": "1000000001"}, "--daily-calls"),
         (
             (),
             {"ca": CA + "-----BEGIN PRIVATE KEY-----\nxx\n-----END PRIVATE KEY-----\n"},

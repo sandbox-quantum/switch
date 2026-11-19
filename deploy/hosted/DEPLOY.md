@@ -52,8 +52,19 @@ deploy/hosted/fill-placeholders.py --out <new folder> \
   --agents-subnet <cidr> [--agents-subnet <cidr> ...] --zone <zone> [--zone <zone> ...] \
   --box-image <repo@sha256:...> \
   --controller-image <repo@sha256:...> --pause-image <repo@sha256:...> \
-  --kubernetes-service-ip <ip> --ca-cert <file.pem>
+  --kubernetes-service-ip <ip> --ca-cert <file.pem> --daily-calls <n>
 ```
+
+`--daily-calls` is every box's daily **ceiling** on AI calls through its gateway. A box enforces the lower of this
+ceiling and its workspace's daily AI budget (set in the dashboard), so a budget above the ceiling is held to it: set
+`--daily-calls` at or above the largest workspace budget you want honoured. A workspace with no budget set gets the
+ceiling in full, so choose a number you'd be content to see any one box spend in a day, not a large placeholder. Each
+box counts its own calls, one box per person. It's required and finite, and the provisioner refuses to start without it. A box made before a change keeps
+the ceiling it was made with, as it keeps its image, until it's updated.
+
+**Upgrading a cluster that already runs v2:** add `--daily-calls` (it becomes `"daily_calls"` in
+`switch-box-operator-config`) and apply the filled files **before** rolling the new hosted controller image. The new
+provisioner refuses to start with a config that has no `daily_calls`, so no new boxes are made until it's set.
 
 It writes filled copies of `k8s/*.yaml`, `box/priorityclass-switch-box.yaml` and
 `egress/egress-proxy-networkpolicy.yaml` into the new folder, and refuses, writing nothing, if a value is malformed

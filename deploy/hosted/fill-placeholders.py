@@ -6,7 +6,7 @@
         --agents-subnet <cidr> [--agents-subnet <cidr> ...] --zone <zone> [--zone <zone> ...] \\
         --box-image <repo@sha256:...> [--previous-box-image <repo@sha256:...> ...] \\
         --controller-image <repo@sha256:...> --pause-image <repo@sha256:...> \\
-        --kubernetes-service-ip <ip> --ca-cert <file.pem>
+        --kubernetes-service-ip <ip> --ca-cert <file.pem> --daily-calls <n>
 
 Reads `k8s/*.yaml`, `box/priorityclass-switch-box.yaml` and
 `egress/egress-proxy-networkpolicy.yaml` from beside this script, and writes filled copies, with the same names,
@@ -29,6 +29,12 @@ What each value is (see `k8s/README.md`):
                         which the cluster services' NetworkPolicies allow (the files carry the test cluster's)
   --ca-cert             a PEM file: the CA that signs the Switch server's certificate (its public CA if it's
                         publicly trusted). The box provisioner refuses to start without one.
+  --daily-calls         every box's daily ceiling on AI calls through its gateway, a whole number from 1. A box
+                        enforces the lower of this and its workspace's daily budget, so set it at or above the
+                        largest workspace budget you want honoured. A workspace with no budget gets this
+                        ceiling in full, so choose a number you'd be content to see any one box spend in a day,
+                        not a large placeholder. There is no "no cap"; the provisioner refuses to start without
+                        one.
 
 Standard library only, so it runs wherever Python 3.10+ does.
 """
@@ -60,6 +66,7 @@ PLACEHOLDER = re.compile(r"__[A-Z0-9_]+__")
 IMAGE = re.compile(r"^[a-z0-9][a-z0-9._\-/:]*@sha256:[0-9a-f]{64}$")
 ZONE = re.compile(r"^[a-z]{2}(-[a-z]+)+-[0-9][a-z]$")
 MAX_PREVIOUS = 2
+MAX_DAILY_CALLS = 1_000_000_000  # the gateway's own upper bound
 
 # Text the filler rewrites whole, rather than one placeholder at a time, because the number of entries varies.
 CONFIG_ALLOWED = """      "allowed_images": [
@@ -142,7 +149,16 @@ def checked(args: argparse.Namespace) -> dict[str, object]:
         raise Refused(
             f"--ca-cert {args.ca_cert} holds a private key; give only the CA's certificate"
         )
+    if (
+        not re.fullmatch(r"[1-9][0-9]{0,9}", args.daily_calls)
+        or int(args.daily_calls) > MAX_DAILY_CALLS
+    ):
+        raise Refused(
+            f"--daily-calls {args.daily_calls!r} must be a whole number of AI calls a day per box, from 1 to"
+            f" {MAX_DAILY_CALLS}"
+        )
     return {
+        "daily_calls": int(args.daily_calls),
         "server_ip": _ip(args.server_ip, "--server-ip"),
         "api": [_ip(a, "--api-server-ip") for a in args.api_server_ip],
         "subnet": " ".join(subnets),
@@ -208,6 +224,7 @@ def fill(name: str, text: str, v: dict[str, object]) -> str:
         "__CONTROLLER_IMAGE__": v["controller"],
         "__EGRESS_LISTS_IMAGE__": v["controller"],
         "__PAUSE_IMAGE__": v["pause"],
+        "__DAILY_CALLS__": v["daily_calls"],
     }
     for placeholder, value in simple.items():
         text = text.replace(placeholder, str(value))
@@ -232,6 +249,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--pause-image", required=True)
     parser.add_argument("--kubernetes-service-ip", required=True)
     parser.add_argument("--ca-cert", required=True)
+    parser.add_argument("--daily-calls", required=True)
     args = parser.parse_args(argv)
     out = Path(args.out)
     try:

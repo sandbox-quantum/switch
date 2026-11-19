@@ -93,6 +93,10 @@ class BoxSize:
     memory_limit: str
 
 
+# The gateway refuses a cap above this (gateway-usage.ts, MAX_CAP).
+MAX_DAILY_CALLS = 1_000_000_000
+
+
 @dataclass(frozen=True)
 class OperatorConfig:
     server_ip: str
@@ -107,6 +111,11 @@ class OperatorConfig:
     default_size: str
     ca_cert: str  # the test CA's public certificate, from the operator's own mounted file
     managed_settings: str  # the managed settings JSON, from the operator's own mounted file
+    # Every box's daily ceiling on AI calls through its gateway (SWITCH_CONTROLLER_GATEWAY_DAILY_CALLS). The box
+    # enforces the lower of this and the workspace's own daily budget, which Core hands it, so a budget above this
+    # ceiling is held to it, and a workspace with no budget gets the ceiling in full. Required and finite: there is no
+    # "no cap" here.
+    daily_calls: int
     split: bool = True
     extra: Mapping[str, Any] = field(default_factory=dict)
     # The images an existing box may run: `image` plus the earlier digests still in use.
@@ -144,7 +153,7 @@ def config_from(raw: Any, ca_cert: str, managed_settings: str) -> OperatorConfig
         raise ConfigError("the configuration must be an object")
     known = {
         "server_ip", "server_url", "image", "storage_class", "proxy_host", "proxy_port", "zones", "sizes",
-        "ceiling", "default_size", "split", "allowed_images",
+        "ceiling", "default_size", "split", "allowed_images", "daily_calls",
     }  # fmt: skip
     unknown = set(raw) - known
     if unknown:
@@ -216,6 +225,16 @@ def config_from(raw: Any, ca_cert: str, managed_settings: str) -> OperatorConfig
     ceiling = raw.get("ceiling")
     if not isinstance(ceiling, int) or isinstance(ceiling, bool) or not 1 <= ceiling <= 10_000:
         raise ConfigError("ceiling must be a whole number from 1 to 10000")
+    daily_calls = raw.get("daily_calls")
+    if (
+        not isinstance(daily_calls, int)
+        or isinstance(daily_calls, bool)
+        or not 1 <= daily_calls <= MAX_DAILY_CALLS
+    ):
+        raise ConfigError(
+            f"daily_calls must be a whole number of AI calls a day per box, from 1 to {MAX_DAILY_CALLS}: every box"
+            " gets a finite cap"
+        )
     default_size = raw.get("default_size")
     if not isinstance(default_size, str) or default_size not in sizes:
         raise ConfigError("default_size must name one of the sizes")
@@ -237,6 +256,7 @@ def config_from(raw: Any, ca_cert: str, managed_settings: str) -> OperatorConfig
         sizes=sizes,
         ceiling=ceiling,
         default_size=default_size,
+        daily_calls=daily_calls,
         ca_cert=ca_cert,
         managed_settings=managed_settings,
         split=split,
@@ -551,6 +571,7 @@ def _box_pod_spec(config: OperatorConfig, size: BoxSize, user_name: str, zone: s
             {"name": "SWITCH_SESSION_START_CONCURRENCY", "value": "3"},
             {"name": "SWITCH_SESSION_START_RESERVE_BYTES", "value": "536870912"},
             {"name": "SWITCH_CONTROLLER_PROVIDER_GATEWAY", "value": "1"},
+            {"name": "SWITCH_CONTROLLER_GATEWAY_DAILY_CALLS", "value": str(config.daily_calls)},
             {"name": "SWITCH_CONTROLLER_RESERVE_BYTES", "value": "268435456"},
             # The controller's gateway takes its own login; its other traffic uses the plain proxy URL.
             _proxy_env("SWITCH_CONTROLLER_GATEWAY_PROXY", "ctl_https_proxy"),

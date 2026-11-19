@@ -57,6 +57,7 @@ RAW_CONFIG = {
     },
     "ceiling": 50,
     "default_size": "standard",
+    "daily_calls": 500,
 }
 
 
@@ -692,6 +693,18 @@ def test_the_operator_builds_exactly_the_ticked_template():
         action(machine_id="7a3e8f4c-1d2b-4c5e-9f60-718293a4b5c6", user_keyed_id=USER),
         config,
     )
+    # One addition to the ticked template since: the controller's daily AI call cap (finding 21), checked here
+    # and then taken out, so every other field still has to equal the reviewed render.
+    controller = next(
+        c
+        for _, o in built
+        if o["kind"] == "StatefulSet"
+        for c in o["spec"]["template"]["spec"]["containers"]
+        if c["name"] == "controller"
+    )
+    cap = {"name": "SWITCH_CONTROLLER_GATEWAY_DAILY_CALLS", "value": "500"}
+    assert controller["env"].count(cap) == 1
+    controller["env"].remove(cap)
     ours = {(o["kind"], o["metadata"]["name"]): o for _, o in built}
     theirs = {(o["kind"], o["metadata"]["name"]): o for o in rendered}
     assert set(ours) == set(theirs)
@@ -1149,3 +1162,27 @@ def test_every_default_the_real_api_server_added_still_counts_as_ours():
         "defaultMode",
     }
     assert _again(kube, cfg()) == ("done", NS, None)
+
+
+@pytest.mark.parametrize("value", [None, 0, -1, True, 2.5, "500", 1_000_000_001])
+def test_the_daily_call_cap_is_required_and_finite(value):  # type: ignore[no-untyped-def]
+    """Every box gets a finite daily cap on AI calls through its gateway (finding 21): a config without one, or
+    with anything but a whole number from 1 to the gateway's bound, is refused whole."""
+    raw = {**RAW_CONFIG, "daily_calls": value}
+    if value is None:
+        del raw["daily_calls"]
+    with pytest.raises(ConfigError, match="daily_calls"):
+        config_from(raw, CA, SETTINGS)
+
+
+def test_every_box_controller_gets_the_daily_call_cap():  # type: ignore[no-untyped-def]
+    """The cap goes to the box controller's gateway as SWITCH_CONTROLLER_GATEWAY_DAILY_CALLS, a plain value
+    (admission policy P8 admits plain values), and to no other container."""
+    built = box_objects(action(), cfg(daily_calls=1234))
+    (box,) = [o for _, o in built if o["kind"] == "StatefulSet"]
+    envs = {c["name"]: c.get("env", []) for c in box["spec"]["template"]["spec"]["containers"]}
+    cap = {"name": "SWITCH_CONTROLLER_GATEWAY_DAILY_CALLS", "value": "1234"}
+    assert envs["controller"].count(cap) == 1
+    assert all(
+        e["name"] != cap["name"] for name, env in envs.items() if name != "controller" for e in env
+    )
