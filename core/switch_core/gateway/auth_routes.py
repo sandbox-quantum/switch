@@ -716,6 +716,9 @@ async def delete_my_account(
     reason = await deletion.refusal(session, user, workspaces)
     if reason is not None:
         raise HTTPException(status_code=409, detail=reason)
+    # The checks only read. Their transaction ends here, so the connection is
+    # not held through a deletion that opens sessions of its own per workspace.
+    await session.commit()
     try:
         changes = await deletion.delete(session, user, workspaces, actor_id=user.id)
     except AccountDeletionRefused as refused:
@@ -790,6 +793,8 @@ async def reset_test_account(
     workspaces = await _workspaces_to_delete(
         deletion, session_factory, user_store, user.id
     )
+    # As `delete_my_account`: not held through the purges and the deletion.
+    await session.commit()
     try:
         changes = await reset.reset(session, user, workspaces)
     except AccountDeletionRefused as refused:

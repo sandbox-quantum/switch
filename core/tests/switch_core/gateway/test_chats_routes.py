@@ -1569,7 +1569,7 @@ async def test_an_agent_owner_is_not_joined_to_bridged_rooms_holding_their_agent
     assert await _reads(chats, chats.alice, channel) == 403
     assert await _reads(chats, chats.alice, dm) == 403
     assert await _listed(chats, chats.alice) == {}
-    await chats.room_service.room_agents_changed(TENANT, channel)
+    await chats.room_service.room_agents_changed(TENANT, [channel])
     assert await _listed(chats, chats.alice) == {}
     assert await _grants(chats) == 0
 
@@ -1823,7 +1823,7 @@ async def test_a_deleted_agent_takes_its_owners_access_with_it(
     async with chats.factory() as session:
         await AgentStore().delete(session, agent.id)
         await session.commit()
-    await chats.room_service.room_agents_changed(TENANT, room_id)
+    await chats.room_service.room_agents_changed(TENANT, [room_id])
 
     assert await _reads(chats, chats.alice, room_id) == 403
 
