@@ -1840,6 +1840,22 @@ class PlatformAdapter(ABC):
         all of them are gone; False at the first refusal."""
         raise NotImplementedError
 
+    async def open_session(
+        self,
+        channel_id: str,
+        agent_name: str,
+        message_ref: str,
+        initiator_external_id: str | None,
+        title: str,
+    ) -> None:
+        """Mark a message of the agent's as a turn in progress, for whoever
+        asked, where the platform has such a thing. Nothing by default."""
+
+    async def close_session(
+        self, channel_id: str, agent_name: str, message_ref: str, summary: str
+    ) -> None:
+        """End what `open_session` started, naming how the turn ended."""
+
     async def settle_work_message(
         self, channel_id: str, agent_name: str, message_ref: str, summary: str
     ) -> None:

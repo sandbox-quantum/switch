@@ -91,7 +91,11 @@ from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.client_store import ClientStore
 from switch_core.db.stores.external_user_store import ExternalUserStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
-from switch_core.db.stores.room_store import RoomStore, work_threads_on_in
+from switch_core.db.stores.room_store import (
+    RoomStore,
+    WorkThreadsMode,
+    work_threads_mode_in,
+)
 from switch_core.db.stores.session_activity_post_store import (
     ApprovalRequestPostStore,
     SteeredMessageMarkStore,
@@ -198,9 +202,9 @@ class _Target:
     channel_id: str
     thread_ref: str | None
     agent: Agent
-    # The room's `!work-threads` setting. Whether a turn actually gets a work
-    # thread also depends on where it was asked and on the platform.
-    work_threads: bool = False
+    # The room's `!work-threads` setting. Whether a turn is actually drawn
+    # that way also depends on where it was asked and on the platform.
+    work_mode: WorkThreadsMode | None = None
 
     @property
     def agent_name(self) -> str:
@@ -670,7 +674,7 @@ class AgentSessionActivityPublisher:
                 db, key, room.external_channel_id, thread_id
             ),
             agent=agent,
-            work_threads=work_threads_on_in(room.metadata_),
+            work_mode=work_threads_mode_in(room.metadata_),
         )
 
     async def _platform_ref(
@@ -815,7 +819,7 @@ class AgentSessionActivityPublisher:
                     # follow it, so the turn ending would mark it unread for
                     # them after all: it goes where the question was, as the
                     # answer does.
-                    or await self._works_in_own_thread(target)
+                    or await self._work_mode(target) is not None
                 )
             ):
                 # Asked in the channel, and this platform cannot show a
@@ -1274,7 +1278,7 @@ class AgentSessionActivityPublisher:
             # replaced by a new one, which needs someone to address it to.
             answering = (
                 await self._recipient(db, room_id, target.agent, view.row, None)
-                if post is None or post.work_message_ref is not None
+                if post is None or (post.work_message_ref and not _inline(post))
                 else None
             )
             db.expunge_all()
@@ -1289,8 +1293,14 @@ class AgentSessionActivityPublisher:
             elapsed,
             interrupt_turn_id=interrupt_turn_id,
             recipient_external_id=answering,
-            work_thread=post is not None and post.work_message_ref is not None,
+            work_thread=post is not None
+            and post.work_message_ref is not None
+            and not _inline(post),
         )
+        if post is not None and _inline(post):
+            # Switch's own room tools are talking, not work: an inline status
+            # message leaves them out of its plan and its count.
+            content = replace(content, items=work_items(content.items))
         state = status_state(
             view,
             elapsed_seconds=elapsed,
@@ -1310,18 +1320,43 @@ class AgentSessionActivityPublisher:
                 )
             await self._marks(key, unposted, view, target, waiting_behind=bool(unended))
             drawn_in: _Target | None = target
-            if await self._works_in_own_thread(target, view.row):
+            mode = await self._work_mode(target, view.row)
+            if mode == "thread":
                 drawn_in = await self._work_thread(key, view, target, answering)
+            elif mode == "inline":
+                # One message of the agent's at the channel root, posted as the
+                # turn starts (not while it is queued) and edited from then on.
+                drawn_in = (
+                    None
+                    if view.turn.status == "queued"
+                    else replace(target, thread_ref=None)
+                )
+                content = replace(content, items=work_items(content.items))
             if drawn_in is None:
                 post = None
             else:
                 unposted.thread_ref = drawn_in.thread_ref
-                if drawn_in is not target:
+                if mode == "thread" and drawn_in is not target:
                     unposted.work_message_ref = drawn_in.thread_ref
                     content = replace(content, work_thread=True)
                 post = await self._begin_turn(
-                    key, view, drawn_in, unposted, content, state, drawn
+                    key,
+                    view,
+                    drawn_in,
+                    unposted,
+                    content,
+                    state,
+                    drawn,
+                    inline=mode == "inline",
                 )
+                if post is not None and mode == "inline":
+                    await self._adapter.open_session(
+                        target.channel_id,
+                        target.agent_name,
+                        post.external_post_id,
+                        answering,
+                        f"{target.agent_name} is working on this",
+                    )
             if post is not None or (view.ended and unposted.mark is None):
                 self._unposted.pop(key, None)
         else:
@@ -1351,21 +1386,23 @@ class AgentSessionActivityPublisher:
             for other in unended:
                 self._enqueue(("turn", agent_id, session_id, other), _SOON)
 
-    async def _works_in_own_thread(
+    async def _work_mode(
         self, target: _Target, turn_row: AgentSessionActivityItem | None = None
-    ) -> bool:
-        """Whether a turn here does its work in a thread under its own message.
+    ) -> WorkThreadsMode | None:
+        """How a turn here is drawn, if not in the asker's thread as usual.
 
-        The room has `!work-threads` on, the question was asked at the channel
-        root (a question asked in a thread keeps its work there: it cannot be
-        nested any deeper), and the platform has work threads in this channel.
-        `turn_row` None asks only about the room and the platform.
+        The room's `!work-threads` setting, where the question was asked at the
+        channel root (a question asked in a thread keeps its work there: it
+        cannot be nested any deeper) and the platform does this in this
+        channel. `turn_row` None asks only about the room and the platform.
         """
-        if not target.work_threads:
-            return False
+        if target.work_mode is None:
+            return None
         if turn_row is not None and not _known_root_turn(turn_row):
-            return False
-        return await self._adapter.hosts_work_threads(target.channel_id)
+            return None
+        if not await self._adapter.hosts_work_threads(target.channel_id):
+            return None
+        return target.work_mode
 
     async def _work_thread(
         self,
@@ -1439,9 +1476,31 @@ class AgentSessionActivityPublisher:
         streams = [*(post.earlier_post_ids or []), post.external_post_id]
         folded: str | None = None
         removed = False
-        if view.turn.status == "completed" and not any(
+        nothing_to_show = view.turn.status == "completed" and not any(
             is_tool_call(item) for item in worked
-        ):
+        )
+        if _inline(post):
+            # The status message is the record, kept as it was last drawn,
+            # unless the turn only talked.
+            if nothing_to_show:
+                removed = await self._adapter.remove_work_thread(
+                    target.channel_id, work_ref, []
+                )
+            if not removed:
+                await self._adapter.close_session(
+                    target.channel_id,
+                    target.agent_name,
+                    work_ref,
+                    turn_state(
+                        worked,
+                        view.turn,
+                        tool_detail=True,
+                        elapsed_seconds=content.elapsed_seconds,
+                    ),
+                )
+            await self._work_finished(post, work_ref if removed else None)
+            return
+        if nothing_to_show:
             self._answer_waits.pop(key, None)
             removed = await self._adapter.remove_work_thread(
                 target.channel_id, work_ref, streams
@@ -1481,6 +1540,11 @@ class AgentSessionActivityPublisher:
                     view.turn.turn_id,
                     work_ref,
                 )
+        await self._work_finished(post, folded or (work_ref if removed else None))
+        self._work_messages.pop(key, None)
+
+    async def _work_finished(self, post: TurnStatusPost, folded: str | None) -> None:
+        """Record that a turn's work message has had its ending."""
         async with tenant_session(self._sessions, self._tenant_id) as db, db.begin():
             stored = await self._turn_posts.get(
                 db,
@@ -1492,10 +1556,9 @@ class AgentSessionActivityPublisher:
             )
             if stored is not None:
                 stored.work_finished_at = func.now()
-                stored.folded_into = folded or (work_ref if removed else None)
+                stored.folded_into = folded
         post.work_finished_at = datetime.now(UTC)
-        post.folded_into = folded or (work_ref if removed else None)
-        self._work_messages.pop(key, None)
+        post.folded_into = folded
 
     async def _turn_answer(
         self, view: TurnView, target: _Target
@@ -1643,8 +1706,13 @@ class AgentSessionActivityPublisher:
         content: TurnActivity,
         state: str,
         drawn: _TurnDrawn,
+        *,
+        inline: bool = False,
     ) -> TurnStatusPost | None:
         """Post the turn in its thread, or at the channel root with none to thread under.
+
+        `inline` (`!work-threads inline`): the message is the turn's work
+        message as well, recorded as such so its ending finds it.
 
         `post` is the turn's row as it stood before the message, marker and
         all, and is stored once the platform has the message. One the platform
@@ -1716,6 +1784,8 @@ class AgentSessionActivityPublisher:
             else datetime.now(UTC) + timedelta(seconds=closes_in)
         )
         post.external_post_id = ref
+        if inline:
+            post.work_message_ref = ref
         async with tenant_session(self._sessions, self._tenant_id) as db, db.begin():
             await self._turn_posts.create(db, post)
             db.expunge(post)
@@ -2251,6 +2321,15 @@ def _until_the_clock_moves(elapsed: float | None) -> float:
     if elapsed is None:
         return RUNNING_CLOCK_SECONDS
     return RUNNING_CLOCK_SECONDS - elapsed % RUNNING_CLOCK_SECONDS
+
+
+def _inline(post: TurnStatusPost) -> bool:
+    """Whether a turn is drawn inline (`!work-threads inline`): its own message
+    is its work message, at the channel root."""
+    return (
+        post.work_message_ref is not None
+        and post.work_message_ref == post.external_post_id
+    )
 
 
 def _known_root_turn(turn_row: AgentSessionActivityItem | None) -> bool:

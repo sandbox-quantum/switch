@@ -949,13 +949,27 @@ _WORK_THREADS_ON = (
     "question asked at the top of the channel, its steps go in a thread under "
     "a message of its own, so the turn ending doesn't bring your thread back "
     "as unread. Its answer still comes where you asked. DMs and questions "
-    "asked inside a thread are unchanged. Turn it off with `!work-threads off`."
+    "asked inside a thread are unchanged. Try `!work-threads inline` for one "
+    "message instead, or turn it off with `!work-threads off`."
+)
+_WORK_THREADS_INLINE = (
+    "Work threads are **inline** in this room. On Slack, when an agent works "
+    "on a question asked at the top of the channel, its steps go in one "
+    "message of its own at the top of the channel, updated as it works, so "
+    "your thread isn't marked unread when it finishes. Its answer still comes "
+    "where you asked. DMs and questions asked inside a thread are unchanged. "
+    "Use `!work-threads on` for a thread instead, or `!work-threads off`."
 )
 _WORK_THREADS_OFF = (
     "Work threads are **off** in this room. An agent's steps go in a thread "
     "under the message that asked for them. Turn them on with "
-    "`!work-threads on` (Slack only)."
+    "`!work-threads on` or `!work-threads inline` (Slack only)."
 )
+_WORK_THREADS_SAID = {
+    "thread": _WORK_THREADS_ON,
+    "inline": _WORK_THREADS_INLINE,
+    None: _WORK_THREADS_OFF,
+}
 
 
 async def _cmd_work_threads(
@@ -970,13 +984,13 @@ async def _cmd_work_threads(
         return
 
     choice = event.args.strip().lower()
-    if choice not in ("", "on", "off"):
+    if choice not in ("", "on", "inline", "off"):
         await _reply(
             client,
             room,
             event,
-            "Usage: `!work-threads on`, `!work-threads off`, or `!work-threads` "
-            "to see which it is.",
+            "Usage: `!work-threads on`, `!work-threads inline`, "
+            "`!work-threads off`, or `!work-threads` to see which it is.",
         )
         return
 
@@ -992,13 +1006,19 @@ async def _cmd_work_threads(
             )
             if await _refused(client, room, event, decision):
                 return
-            await client._room_store.set_work_threads_on(
-                session, meta.room_id, choice == "on"
+            await client._room_store.set_work_threads_mode(
+                session,
+                meta.room_id,
+                "thread"
+                if choice == "on"
+                else "inline"
+                if choice == "inline"
+                else None,
             )
             await session.commit()
-        on = await client._room_store.work_threads_on(session, meta.room_id)
+        mode = await client._room_store.work_threads_mode(session, meta.room_id)
 
-    await _reply(client, room, event, _WORK_THREADS_ON if on else _WORK_THREADS_OFF)
+    await _reply(client, room, event, _WORK_THREADS_SAID[mode])
 
 
 _AUTO_ROUTE_FLAG_OFF = (
@@ -2851,10 +2871,10 @@ COMMANDS: list[Command] = [
         "On Slack, put an agent's steps for a question asked at the top of the "
         "channel in a thread of the agent's own, so the turn ending doesn't "
         "mark the asker's thread unread. Changing it is for the room's owner "
-        "or an admin. Usage: `!work-threads on`, `!work-threads off`, or "
-        "`!work-threads`.",
+        "or an admin. Usage: `!work-threads on`, `!work-threads inline` (one "
+        "message instead of a thread), `!work-threads off`, or `!work-threads`.",
         _cmd_work_threads,
-        args_spec=(CommandArg("state", "on or off", required=False),),
+        args_spec=(CommandArg("state", "on, inline or off", required=False),),
         admin_owned=True,
     ),
     Command(
