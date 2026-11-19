@@ -70,19 +70,32 @@ class Settings:
     # fallback_after_s seconds, or failed; None: no fallback.
     fallback_backend: FallbackBackend | None = None
     fallback_after_s: float = DEFAULT_FALLBACK_AFTER_S
+    # The threshold an answer from the fallback is held to, by the plain
+    # threshold rule. None: the same rule as the default backend's.
+    fallback_confidence_threshold: float | None = None
 
 
 def fallback_settings(s: Settings) -> Settings | None:
-    """The settings the fallback backend is asked with, or None without one."""
+    """The settings the fallback backend is asked with, and its answer
+    judged by, or None without one."""
+    if s.fallback_backend is None:
+        return None
+    fallback = s
+    if s.fallback_confidence_threshold is not None:
+        fallback = replace(
+            s, confidence_threshold=s.fallback_confidence_threshold, min_lead=None
+        )
     if s.fallback_backend == "bedrock":
-        return replace(s, backend="bedrock", model=s.bedrock_model)
-    return None
+        return replace(fallback, backend="bedrock", model=s.bedrock_model)
+    raise ValueError(f"unknown fallback backend {s.fallback_backend!r}")
 
 
-def _fallback(backend: str, timeout_s: float) -> tuple[FallbackBackend | None, float]:
+def _fallback(
+    backend: str, timeout_s: float
+) -> tuple[FallbackBackend | None, float, float | None]:
     name = os.environ.get("DECISION_FALLBACK_BACKEND", "").strip().lower()
     if not name:
-        return None, DEFAULT_FALLBACK_AFTER_S
+        return None, DEFAULT_FALLBACK_AFTER_S, None
     if name not in FALLBACK_BACKENDS:
         raise ValueError(
             f"DECISION_FALLBACK_BACKEND must be one of {list(FALLBACK_BACKENDS)} "
@@ -100,7 +113,14 @@ def _fallback(backend: str, timeout_s: float) -> tuple[FallbackBackend | None, f
             f"DECISION_FALLBACK_AFTER_S must be more than 0 and less than "
             f"DECISION_TIMEOUT_S ({timeout_s}), got {after_s}"
         )
-    return name, after_s  # type: ignore[return-value]
+    threshold_raw = os.environ.get("DECISION_FALLBACK_CONFIDENCE_THRESHOLD", "").strip()
+    threshold = float(threshold_raw) if threshold_raw else None
+    if threshold is not None and not 0.0 <= threshold <= 1.0:
+        raise ValueError(
+            "DECISION_FALLBACK_CONFIDENCE_THRESHOLD must be between 0 and 1, "
+            f"got {threshold}"
+        )
+    return name, after_s, threshold  # type: ignore[return-value]
 
 
 def load_settings() -> Settings:
@@ -128,7 +148,9 @@ def load_settings() -> Settings:
             "DECISION_BACKEND=gemini_decision needs GEMINI_DECISION_API_KEY"
         )
     timeout_s = float(os.environ.get("DECISION_TIMEOUT_S", "30"))
-    fallback_backend, fallback_after_s = _fallback(backend, timeout_s)
+    fallback_backend, fallback_after_s, fallback_threshold = _fallback(
+        backend, timeout_s
+    )
     default_model = {"bedrock": bedrock_model, "gemini_decision": gemini_model}.get(
         backend, DEFAULT_MODELS[backend]
     )
@@ -157,4 +179,5 @@ def load_settings() -> Settings:
         gemini_decision_model=gemini_model,
         fallback_backend=fallback_backend,
         fallback_after_s=fallback_after_s,
+        fallback_confidence_threshold=fallback_threshold,
     )

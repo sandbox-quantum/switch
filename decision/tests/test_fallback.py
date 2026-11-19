@@ -166,6 +166,9 @@ def gemini_env(monkeypatch):
         "DECISION_MODEL",
         "DECISION_FALLBACK_BACKEND",
         "DECISION_FALLBACK_AFTER_S",
+        "DECISION_FALLBACK_CONFIDENCE_THRESHOLD",
+        "DECISION_CONFIDENCE_THRESHOLD",
+        "DECISION_MIN_LEAD",
         "DECISION_TIMEOUT_S",
         "DECISION_BEDROCK_ENABLED",
         "DECISION_BEDROCK_MODEL",
@@ -533,3 +536,132 @@ def test_the_real_backends_race(make_client, monkeypatch, caplog):
     assert converse_calls[0]["modelId"] == HAIKU_MODEL
     [line] = _decide_lines(caplog)
     assert "fallback=won fallback_reason=slow" in line.getMessage()
+
+
+# ── the fallback's own threshold ────────────────────────────────────────────
+
+
+def test_fallback_threshold_setting(gemini_env):
+    gemini_env.setenv("DECISION_FALLBACK_BACKEND", "bedrock")
+    assert load_settings().fallback_confidence_threshold is None
+    gemini_env.setenv("DECISION_FALLBACK_CONFIDENCE_THRESHOLD", "0.65")
+    gemini_env.setenv("DECISION_MIN_LEAD", "0.1")
+    s = load_settings()
+    assert s.fallback_confidence_threshold == 0.65
+    fb = fallback_settings(s)
+    assert fb is not None
+    assert (fb.confidence_threshold, fb.min_lead) == (0.65, None)
+    assert (s.confidence_threshold, s.min_lead) == (0.6, 0.1)
+
+
+def test_without_a_fallback_threshold_the_fallback_keeps_the_primary_rule(gemini_env):
+    gemini_env.setenv("DECISION_FALLBACK_BACKEND", "bedrock")
+    gemini_env.setenv("DECISION_CONFIDENCE_THRESHOLD", "0.8")
+    gemini_env.setenv("DECISION_MIN_LEAD", "0.1")
+    fb = fallback_settings(load_settings())
+    assert fb is not None and (fb.confidence_threshold, fb.min_lead) == (0.8, 0.1)
+
+
+@pytest.mark.parametrize("value", ["-0.1", "1.5"])
+def test_fallback_threshold_out_of_range_refused(gemini_env, value):
+    gemini_env.setenv("DECISION_FALLBACK_BACKEND", "bedrock")
+    gemini_env.setenv("DECISION_FALLBACK_CONFIDENCE_THRESHOLD", value)
+    with pytest.raises(
+        ValueError,
+        match="DECISION_FALLBACK_CONFIDENCE_THRESHOLD must be between 0 and 1",
+    ):
+        load_settings()
+
+
+def test_fallback_threshold_is_not_read_without_a_fallback(gemini_env):
+    gemini_env.setenv("DECISION_FALLBACK_CONFIDENCE_THRESHOLD", "7")
+    assert load_settings().fallback_confidence_threshold is None
+
+
+def test_a_fallback_answer_is_held_to_the_fallback_threshold(
+    make_client, backends_by_name, caplog
+):
+    plan, _ = backends_by_name
+    plan["gemini_decision"] = (1.0, GEMINI)
+    # A runner-up too: the fallback's rule is the plain threshold, never the lead.
+    plan["bedrock"] = (0.0, ModelAnswer("billing-bot", 0.7, "r", runner_up=0.65))
+    tc = make_client(_settings(fallback_confidence_threshold=0.65, min_lead=0.1))
+    with caplog.at_level(logging.INFO, logger="switch_decision"):
+        body = tc.post("/decide", json=BODY).json()
+    assert (body["agent"], body["backend"], body["threshold"], body["rule"]) == (
+        "billing-bot",
+        "bedrock",
+        0.65,
+        "threshold",
+    )
+    assert body["min_lead"] is None
+    [line] = _decide_lines(caplog)
+    assert "threshold=0.65 picked=billing-bot" in line.getMessage()
+    assert "rule=threshold" in line.getMessage()
+
+
+def test_a_primary_answer_keeps_the_primary_rule(make_client, backends_by_name, caplog):
+    plan, _ = backends_by_name
+    plan["gemini_decision"] = (0.0, ModelAnswer("deploy-bot", 0.7, "", runner_up=0.2))
+    tc = make_client(
+        _settings(fallback_confidence_threshold=0.65, fallback_after_s=1.0)
+    )
+    with caplog.at_level(logging.INFO, logger="switch_decision"):
+        body = tc.post("/decide", json=BODY).json()
+    assert (body["agent"], body["backend"], body["threshold"]) == (
+        None,
+        "gemini_decision",
+        0.8,
+    )
+    [line] = _decide_lines(caplog)
+    assert "threshold=0.80 picked=None" in line.getMessage()
+    with_lead = make_client(
+        _settings(
+            fallback_confidence_threshold=0.65, fallback_after_s=1.0, min_lead=0.1
+        )
+    )
+    body = with_lead.post("/decide", json=BODY).json()
+    assert (body["agent"], body["rule"], body["min_lead"]) == (
+        "deploy-bot",
+        "lead",
+        0.1,
+    )
+
+
+@pytest.mark.parametrize(
+    ("gemini_delay", "backend"), [(0.0, "gemini_decision"), (1.0, "bedrock")]
+)
+def test_a_request_threshold_holds_for_either_backend(
+    make_client, backends_by_name, gemini_delay, backend
+):
+    plan, _ = backends_by_name
+    plan["gemini_decision"] = (
+        gemini_delay,
+        ModelAnswer("deploy-bot", 0.85, "", runner_up=0.1),
+    )
+    plan["bedrock"] = (0.0, ModelAnswer("deploy-bot", 0.85, "r"))
+    tc = make_client(
+        _settings(
+            fallback_confidence_threshold=0.65, fallback_after_s=0.2, min_lead=0.1
+        )
+    )
+    body = tc.post("/decide", json={**BODY, "confidence_threshold": 0.9}).json()
+    assert (body["agent"], body["backend"], body["threshold"], body["rule"]) == (
+        None,
+        backend,
+        0.9,
+        "threshold",
+    )
+
+
+def test_health_reports_the_fallback_threshold(make_client):
+    body = make_client(_settings(fallback_confidence_threshold=0.65)).get("/health")
+    assert body.json()["fallback_confidence_threshold"] == 0.65
+    assert (
+        make_client(_settings()).get("/health").json()["fallback_confidence_threshold"]
+        is None
+    )
+    off = make_client(
+        _settings(fallback_backend=None, fallback_confidence_threshold=0.65)
+    )
+    assert off.get("/health").json()["fallback_confidence_threshold"] is None

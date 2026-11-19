@@ -208,6 +208,9 @@ async def health() -> dict:
         "fallback_backend": fallback.backend if fallback else None,
         "fallback_model": fallback.model if fallback else None,
         "fallback_after_s": settings.fallback_after_s if fallback else None,
+        "fallback_confidence_threshold": settings.fallback_confidence_threshold
+        if fallback
+        else None,
     }
 
 
@@ -220,11 +223,6 @@ async def decide(req: DecideRequest, request: Request) -> DecideResponse:
     used, api_key = resolve_backend(request)
     # A request that chose its backend gets that backend alone.
     fallback = fallback_settings(settings) if used is settings else None
-    threshold = (
-        req.confidence_threshold
-        if req.confidence_threshold is not None
-        else used.confidence_threshold
-    )
     candidates = len(req.agents)
     started = time.monotonic()
     try:
@@ -268,6 +266,12 @@ async def decide(req: DecideRequest, request: Request) -> DecideResponse:
         raise DecideFailed(str(exc), exc.kind) from exc
     total_ms = int((time.monotonic() - started) * 1000)
     answered = fallback if raced.by_fallback and fallback is not None else used
+    # A request's own threshold (a workspace's) holds for either backend.
+    threshold = (
+        req.confidence_threshold
+        if req.confidence_threshold is not None
+        else answered.confidence_threshold
+    )
     latency_ms = int(raced.seconds * 1000)
     race_fields, race_args = _race_log(raced, total_ms)
     answer = raced.answer

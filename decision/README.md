@@ -54,7 +54,8 @@ switch-core talks only to this contract; the backend behind it is configuration.
 
 - **`GET /health`** returns `200 {"ok": true, "backend", "model", "model_server",
   "model_server_status", "confidence_threshold", "min_lead", "backends_available",
-  "fallback_backend", "fallback_model", "fallback_after_s"}`, or
+  "fallback_backend", "fallback_model", "fallback_after_s",
+  "fallback_confidence_threshold"}`, or
   `503 {"detail"}` when the default backend's model server is down (the
   fallback is not checked and never makes the service unready).
   `backends_available` is `["default", "anthropic"]`, plus `"bedrock"` when
@@ -88,9 +89,20 @@ backend races a second backend when the first is slow:
    failure too.
 
 An answer that names an agent who is not a candidate is an answer, from
-either backend, not a failure: it routes to nobody as before. The same rule
-(`DECISION_CONFIDENCE_THRESHOLD`, or `DECISION_MIN_LEAD` for a backend that
-scores every option) applies to whichever backend answered.
+either backend, not a failure: it routes to nobody as before.
+
+Which rule an answer is held to depends on who gave it. The default backend's
+answer keeps the service's rule (`DECISION_CONFIDENCE_THRESHOLD`, or
+`DECISION_MIN_LEAD` for a backend that scores every option). The fallback's
+answer is held to `DECISION_FALLBACK_CONFIDENCE_THRESHOLD` by the plain
+threshold rule, never the lead; unset, it keeps the default backend's rule.
+A request that carries its own `confidence_threshold` (a workspace that set
+one) is held to that for either backend, as before. The response's
+`threshold` and the log line's `threshold=` are the one applied.
+
+Why a threshold of its own: Haiku rates its confidence in coarse steps (0.6,
+0.7, 0.8, 0.85), and on real traffic it did best at 0.65 (accuracy 0.965 and
+recall 0.93, against 0.947 and 0.88 at 0.80), while Gemini did best at 0.80.
 
 A request that chose its backend with `X-Decision-Backend` (anything but
 `default`) gets that backend alone, with no fallback.
@@ -244,6 +256,7 @@ An answer that names an agent who is not a candidate is not a failure: it is
 | `DECISION_BEDROCK_MODEL` | `us.anthropic.claude-haiku-5-5` | Bedrock model or inference profile, for a `bedrock` request, backend or fallback. The `us.` profile serves US regions; EU regions (`AWS_REGION=eu-west-3`, ...) need `eu.anthropic.claude-haiku-5-5` |
 | `DECISION_FALLBACK_BACKEND` | unset | `bedrock` races Haiku on Bedrock against the default backend; unset or empty, no fallback. See [Fallback](#fallback-after-n-seconds) |
 | `DECISION_FALLBACK_AFTER_S` | `2` | seconds the default backend has before the fallback is asked too; more than 0 and less than `DECISION_TIMEOUT_S`. Read only with a fallback |
+| `DECISION_FALLBACK_CONFIDENCE_THRESHOLD` | unset | 0 to 1: the threshold the fallback's answer is held to (plain threshold rule, no lead). Unset, the fallback's answer keeps the default backend's rule. A request's own threshold wins over it. Read only with a fallback |
 | `AWS_REGION`, `AWS_PROFILE` | `us-east-1`, unset | standard AWS credential chain |
 | `ANTHROPIC_API_KEY` | unset | service-wide key when `DECISION_BACKEND=anthropic` |
 | `GEMINI_DECISION_API_KEY` | unset | Google API key for `gemini_decision`; required (startup fails without it) when `DECISION_BACKEND=gemini_decision`. Never logged |

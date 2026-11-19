@@ -72,8 +72,10 @@ version of their own to them without also giving them a release of their own.
   backend that has no answer after `DECISION_FALLBACK_AFTER_S` (2 s), or that
   failed, also asks Claude Haiku on Amazon Bedrock, and the first answer
   wins. The answer names the model that gave it, so switch-core's `model`
-  attribute shows which one decided. A workspace that chose its backend gets
-  that backend alone. Off unless set.
+  attribute shows which one decided. The fallback's answer can be held to a
+  threshold of its own (`DECISION_FALLBACK_CONFIDENCE_THRESHOLD`, for Haiku's
+  coarser confidences); a workspace's own threshold still holds for both. A
+  workspace that chose its backend gets that backend alone. Off unless set.
 
 #### Fixed
 - **The decision service's default Bedrock model is a valid id:**
