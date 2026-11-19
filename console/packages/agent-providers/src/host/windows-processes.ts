@@ -47,8 +47,18 @@ function powershell(): string {
  * condition; omitted, every process is listed.
  */
 export async function listWindowsProcesses(filter?: string): Promise<WindowsProcess[]> {
-  const query = filter
-    ? `Get-CimInstance Win32_Process -Filter '${filter}'`
+  if (filter !== undefined && typeof filter !== 'string') {
+    throw new Error(`Invalid process filter: expected string, got ${typeof filter}`);
+  }
+  const trimmed = filter?.trim();
+  if (trimmed) {
+    if (/[\r\n\0;`$|&{}#]/.test(trimmed)) {
+      throw new Error(`Invalid process filter: ${filter}`);
+    }
+  }
+  const escaped = trimmed?.replaceAll("'", "''");
+  const query = escaped
+    ? `Get-CimInstance Win32_Process -Filter '${escaped}'`
     : 'Get-CimInstance Win32_Process';
   const script = [
     "$ErrorActionPreference = 'Stop'",

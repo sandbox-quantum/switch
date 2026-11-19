@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { describe, expect, it } from 'vitest';
 import { fenceDeadOwner, killProcessTree, processCommandLine } from './process-fence';
-import { descendants, listWindowsProcesses, type WindowsProcess } from './windows-processes';
+import { descendants, listWindowsProcesses, windowsProcess, type WindowsProcess } from './windows-processes';
 
 const at = (seconds: number) => Date.UTC(2026, 0, 1) + seconds * 1000;
 const proc = (pid: number, ppid: number, created: number): WindowsProcess => ({
@@ -37,6 +37,56 @@ describe('descendants', () => {
   it('survives a parent cycle', () => {
     const processes = [proc(11, 12, 5), proc(12, 11, 6)];
     expect(descendants(processes, 11, at(0)).map((entry) => entry.pid)).toEqual([12]);
+  });
+});
+
+describe('listWindowsProcesses filter validation', () => {
+  it('rejects filters with command injection payloads', async () => {
+    await expect(
+      listWindowsProcesses("Name = 'cmd.exe'; Start-Process calc.exe; #")
+    ).rejects.toThrow('Invalid process filter');
+  });
+
+  it('rejects filters with dangerous characters', async () => {
+    await expect(listWindowsProcesses('ProcessId = 1; whoami')).rejects.toThrow(
+      'Invalid process filter'
+    );
+    await expect(listWindowsProcesses('ProcessId = 1 | whoami')).rejects.toThrow(
+      'Invalid process filter'
+    );
+    await expect(listWindowsProcesses('ProcessId = 1 & whoami')).rejects.toThrow(
+      'Invalid process filter'
+    );
+    await expect(listWindowsProcesses('ProcessId = $(whoami)')).rejects.toThrow(
+      'Invalid process filter'
+    );
+    await expect(listWindowsProcesses('ProcessId = `whoami`')).rejects.toThrow(
+      'Invalid process filter'
+    );
+    await expect(listWindowsProcesses('ProcessId = 1\nwhoami')).rejects.toThrow(
+      'Invalid process filter'
+    );
+    await expect(listWindowsProcesses('ProcessId = 1\0')).rejects.toThrow(
+      'Invalid process filter'
+    );
+    await expect(listWindowsProcesses('ProcessId = 1 { calc }')).rejects.toThrow(
+      'Invalid process filter'
+    );
+  });
+
+  it('rejects non-string filter argument', async () => {
+    await expect(listWindowsProcesses(123 as unknown as string)).rejects.toThrow(
+      'Invalid process filter'
+    );
+  });
+});
+
+describe('windowsProcess', () => {
+  it('rejects invalid process ids', async () => {
+    await expect(windowsProcess(-1)).rejects.toThrow('Invalid process id');
+    await expect(windowsProcess(0)).rejects.toThrow('Invalid process id');
+    await expect(windowsProcess(NaN)).rejects.toThrow('Invalid process id');
+    await expect(windowsProcess(1.5)).rejects.toThrow('Invalid process id');
   });
 });
 
