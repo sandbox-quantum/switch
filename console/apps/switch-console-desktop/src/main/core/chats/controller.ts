@@ -1,3 +1,21 @@
+import type {
+  ChatActivityTarget,
+  ChatApproval,
+  ChatApprovalAnswer,
+  ChatControlCommand,
+  RoomActivity,
+} from '@switch-console/chat-ui/contracts/activity';
+import type {
+  ChatCommand,
+  ChatMember,
+  ChatMessage,
+  ChatMessagesPage,
+  ChatSendInput,
+  ChatSummary,
+  ChatUpload,
+  ChatUploadInput,
+  WorkspaceMember,
+} from '@switch-console/chat-ui/contracts/chats';
 import { listManagedAgentRecords } from '@main/core/agent-migration/managed-agents-store';
 import { getAgentLocation } from '@main/core/agents/agent-location';
 import { getAgents } from '@main/core/agents/getAgents';
@@ -9,24 +27,6 @@ import { trackEvent } from '@main/core/telemetry/telemetry-service';
 import { withServerWorkspaceSession } from '@main/core/workspaces/workspace-session';
 import { requireWorkspaceForServer } from '@main/core/workspaces/workspaces-store';
 import { log } from '@main/lib/logger';
-import type {
-  ChatActivityTarget,
-  ChatApproval,
-  ChatApprovalAnswer,
-  ChatControlCommand,
-  RoomActivity,
-} from '@shared/core/chats/activity';
-import type {
-  ChatCommand,
-  ChatMember,
-  ChatMessage,
-  ChatMessagesPage,
-  ChatSendInput,
-  ChatSummary,
-  ChatUpload,
-  ChatUploadInput,
-  WorkspaceMember,
-} from '@shared/core/chats/chats';
 import type { RoomAccess, SwitchServer } from '@shared/core/switch-servers/switch-servers';
 import { createRPCController } from '@shared/lib/ipc/rpc';
 import { type ActivityDeps, resolveChatActivity } from './activity';

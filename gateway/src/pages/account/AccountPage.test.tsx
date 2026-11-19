@@ -38,7 +38,9 @@ function answer(routes: Record<string, unknown>): Call[] {
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const path = String(input).replace(/^\/gateway/, "").split("?")[0];
+      const path = String(input)
+        .replace(/^\/gateway/, "")
+        .split("?")[0];
       const method = init?.method ?? "GET";
       calls.push({ method, path, body: init?.body ? JSON.parse(String(init.body)) : undefined });
       const key = `${method} ${path}`;
@@ -178,7 +180,9 @@ describe("Your account", () => {
     expect((await card.findByRole("alert")).textContent).toBe(
       "Couldn't sign out of every device: Internal Server Error",
     );
-    const again = card.getByRole("button", { name: "Sign out of all devices" }) as HTMLButtonElement;
+    const again = card.getByRole("button", {
+      name: "Sign out of all devices",
+    }) as HTMLButtonElement;
     expect(again.disabled).toBe(false);
     fireEvent.click(again);
     expect(auth.logoutEverywhere).toHaveBeenCalledTimes(2);
@@ -250,7 +254,9 @@ describe("Deleting your account", () => {
     const dialog = within(await openDelete());
     const field = await dialog.findByLabelText("Type ada@example.test to confirm");
     expect(
-      dialog.getByText(/A workspace only you are in is deleted too, unless something is still in it/),
+      dialog.getByText(
+        /A workspace only you are in is deleted too, unless something is still in it/,
+      ),
     ).toBeTruthy();
     const confirm = dialog.getByRole("button", { name: "Delete account" }) as HTMLButtonElement;
     expect(confirm.disabled).toBe(true);
@@ -264,6 +270,38 @@ describe("Deleting your account", () => {
     expect(auth.logout).not.toHaveBeenCalled();
     fireEvent.click(dialog.getByRole("button", { name: "Done" }));
     expect(auth.logout).toHaveBeenCalledTimes(1);
+  });
+
+  it("resets a test account on a test server, then signs out on closing", async () => {
+    signedIn();
+    const calls = answer({
+      "GET /auth/config": { password_login_enabled: true, test_account_reset_enabled: true },
+      "GET /auth/me": me(),
+      "GET /auth/me/deletion": { refusal: null },
+      "POST /auth/me/reset-test-account": { ok: true },
+    });
+    render(<AccountPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "Reset test account" }));
+    const dialog = within(await screen.findByRole("dialog"));
+    fireEvent.change(await dialog.findByLabelText("Type ada@example.test to confirm"), {
+      target: { value: "ada@example.test" },
+    });
+    fireEvent.click(dialog.getByRole("button", { name: "Reset test account" }));
+    expect(await dialog.findByText("Your test account is reset")).toBeTruthy();
+    expect(calls.find((c) => c.path === "/auth/me/reset-test-account")?.body).toEqual({
+      email: "ada@example.test",
+    });
+    expect(calls.some((c) => c.method === "DELETE")).toBe(false);
+    fireEvent.click(dialog.getByRole("button", { name: "Done" }));
+    expect(auth.logout).toHaveBeenCalledTimes(1);
+  });
+
+  it("offers no test-account reset outside test servers", async () => {
+    signedIn();
+    answer({ "GET /auth/me": me() });
+    render(<AccountPage />);
+    await screen.findByRole("button", { name: "Delete account" });
+    expect(screen.queryByRole("button", { name: "Reset test account" })).toBeNull();
   });
 
   it("leaves the page by loading the app again when signing out afterwards fails", async () => {
@@ -291,7 +329,8 @@ describe("Deleting your account", () => {
 
   it("shows a refusal from the deletion itself as it shows the check's, in place of the form", async () => {
     signedIn();
-    const reason = "You're the only admin of Acme, which has other users. Make one of them an admin first.";
+    const reason =
+      "You're the only admin of Acme, which has other users. Make one of them an admin first.";
     answer({
       "GET /auth/me": me(),
       "GET /auth/me/deletion": { refusal: null },

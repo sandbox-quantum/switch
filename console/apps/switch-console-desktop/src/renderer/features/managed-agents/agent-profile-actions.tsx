@@ -1,7 +1,7 @@
+import { ProfileButton } from '@switch-console/chat-ui/components/agent-page';
 import { ArrowRightLeft, Power, PowerOff } from 'lucide-react';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import type { ManagedAgentView } from '@shared/core/managed-agents/managed-agents';
-import { ProfileButton } from './agent-profile';
 import { useManagedAgentActions } from './use-managed-agent-actions';
 
 /**

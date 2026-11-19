@@ -117,6 +117,18 @@ ORGANIZATION_CONNECTOR_APPS = "organization_connector_apps"
 # see ALWAYS_ON_FEATURE_FLAGS.
 GATEWAY_V2 = "gateway_v2"
 
+# Chats in the dashboard: a Chats page listing the person's chats and the
+# rooms they are in with agents, opened and answered on the web as in Switch
+# Console. Core has nothing of its own behind it; the dashboard reads it and
+# uses the `/chats` routes Console already uses.
+GATEWAY_CHATS = "gateway_chats"
+
+# Getting started in the dashboard: on a server with cloud machines, a person
+# who signs in gets their cloud machine started, connects an AI provider to it
+# and meets switch-buddy there, all on the web. Core has nothing of its own
+# behind it; the dashboard reads it and uses the routes Console uses.
+GATEWAY_ONBOARDING = "gateway_onboarding"
+
 # Messaging platforms beyond Slack, Mattermost, Teams, Discord and Telegram:
 # WhatsApp, Google Chat, Zulip, Signal, Matrix, Rocket.Chat and Webex. With it
 # off their adapters are not registered, so they are missing from the platform
@@ -182,6 +194,8 @@ KNOWN_FEATURE_FLAGS: frozenset[str] = frozenset(
         BUDDY_SLACK_HANDOFF,
         ORGANIZATION_CONNECTOR_APPS,
         GATEWAY_V2,
+        GATEWAY_CHATS,
+        GATEWAY_ONBOARDING,
         ADDITIONAL_MESSAGING_PLATFORMS,
         ADDITIONAL_AGENT_PROVIDERS,
     }

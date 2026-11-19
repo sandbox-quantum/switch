@@ -53,6 +53,11 @@ PAGE_PATHS: tuple[str, ...] = (
     # Where Switch Console's sign-in link opens.
     "/auth/handoff",
     "/ecosystem",
+    # Behind `gateway_chats`.
+    "/chats",
+    "/chats/agents/{agent_id}",
+    "/chats/rooms/{room_id}",
+    "/chats/{room_id}",
     "/rooms",
     "/rooms/new",
     "/rooms/groups",
@@ -74,6 +79,8 @@ PAGE_PATHS: tuple[str, ...] = (
     "/workspace",
     "/workspace/private-channel-rooms",
     "/organization",
+    # Behind `gateway_onboarding`.
+    "/get-started",
     "/overview",
     "/templates",
     "/templates/{id}",

@@ -138,6 +138,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 MACHINE_OWNER_STOPPED = "Your cloud machine is stopped. Start it in Switch Console."
+MACHINE_AFTER_WORKSPACE = "Your cloud machine starts once you have created a workspace."
 
 
 def _gateway_declaration() -> ServerDeclaration:
@@ -294,12 +295,14 @@ async def signup(
     config: Annotated[SwitchConfig, Depends(get_config)],
     settings: Annotated[HostedControllerSettings | None, Depends(hosted_settings)],
 ) -> SignupResponse:
-    """Open self sign-up: a new member of tenant zero, signed in, machine warming.
+    """Open self sign-up: a new account, signed in.
 
-    No caller exists yet to take a tenant from, so the account lands in tenant
-    zero by name, exactly as an OIDC first sign-in does. The cloud machine is
-    claimed after the account is committed and failing to claim one never
-    fails the sign-up: the response says why instead.
+    Where it lands follows `gateway_signup_mode`, as an OIDC first sign-in
+    does. Under "default_tenant" it joins tenant zero by name, since no caller
+    exists yet to take a tenant from, and its cloud machine starts warming:
+    claimed after the account is committed, and failing to claim one never
+    fails the sign-up, the response says why instead. Under "open" it joins
+    nothing and is sent to create a workspace, whose machine is warmed then.
     """
     if not config.gateway_signup_open:
         emit_safely(current_telemetry(), "signup_refused", {"reason": "disabled"})
@@ -332,9 +335,13 @@ async def signup(
             role="user",
             password_hash=password_hash,
         )
+        joins_tenant_zero = config.gateway_signup_mode == "default_tenant"
         try:
             async with session.begin_nested():
-                await user_store.create(session, user)
+                if joins_tenant_zero:
+                    await user_store.create(session, user)
+                else:
+                    await user_store.create_without_membership(session, user)
         except IntegrityError as err:
             if not email_taken(err):
                 raise
@@ -355,11 +362,15 @@ async def signup(
             user,
             config.keyring,
             config.gateway_cookie_secure,
-            TENANT_ZERO_ID,
+            TENANT_ZERO_ID if joins_tenant_zero else None,
             signed_in_now(),
         )
         signed_in = _session_response(user)
-        machine = await _prewarm(session, session_factory, user.id, config, settings)
+        machine = (
+            await _prewarm(session, session_factory, user.id, config, settings)
+            if joins_tenant_zero
+            else SignupMachine(status="unavailable", reason=MACHINE_AFTER_WORKSPACE)
+        )
     return SignupResponse(**signed_in.model_dump(), machine=machine)
 
 
@@ -448,7 +459,9 @@ async def auth_config(
     # exists to decide which login methods to offer.
     return AuthConfigResponse(
         password_login_enabled=config.gateway_password_login_enabled,
-        signup_enabled=config.gateway_signup_open,
+        signup_enabled=config.gateway_signup_joins_tenant_zero,
+        web_signup_enabled=config.gateway_signup_open
+        and config.gateway_onboarding_enabled,
         test_account_reset_enabled=config.gateway_allow_test_account_reset,
         oidc_enabled=config.gateway_oidc_enabled,
         oidc_provider_label=config.gateway_oidc_provider_label,

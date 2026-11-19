@@ -10,8 +10,21 @@ export const ORGANIZATION_CONNECTOR_APPS = "organization_connector_apps";
 /** Each person gets their own agent, switch-buddy, set up by Switch Console.
  * The server offers it only with agent management on as well. */
 export const SWITCH_BUDDY = "switch_buddy";
+export const GATEWAY_CHATS = "gateway_chats";
+export const GATEWAY_ONBOARDING = "gateway_onboarding";
+export const HOSTED_AGENTS = "hosted_agents";
+export const BUDDY_SLACK_HANDOFF = "buddy_slack_handoff";
 
-const KNOWN = [AGENT_MANAGEMENT, SERVICE_CONNECTIONS, ORGANIZATION_CONNECTOR_APPS, SWITCH_BUDDY] as const;
+const KNOWN = [
+  AGENT_MANAGEMENT,
+  SERVICE_CONNECTIONS,
+  ORGANIZATION_CONNECTOR_APPS,
+  SWITCH_BUDDY,
+  GATEWAY_CHATS,
+  GATEWAY_ONBOARDING,
+  HOSTED_AGENTS,
+  BUDDY_SLACK_HANDOFF,
+] as const;
 
 export type FeatureFlagKey = (typeof KNOWN)[number];
 

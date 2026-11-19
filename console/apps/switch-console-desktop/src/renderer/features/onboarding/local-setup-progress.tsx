@@ -1,10 +1,9 @@
-import { Circle, CircleCheck } from 'lucide-react';
+import { SetupChecklist } from '@switch-console/chat-ui/components/setup-checklist';
 import { observer } from 'mobx-react-lite';
 import { useEffect, useRef, useState } from 'react';
 import { LocalSetupStep } from '@renderer/features/switch-servers/AddServerModal';
 import { localServerStore } from '@renderer/features/switch-servers/local-server-store';
 import { Button } from '@renderer/lib/ui/button';
-import { Spinner } from '@renderer/lib/ui/spinner';
 import { OnboardingSurface, useWizardExit } from '@renderer/lib/ui/wizard-frame';
 import { SETUP_STAGES, setupStage } from './setup-stages';
 
@@ -111,43 +110,18 @@ export const LocalSetupProgress = observer(function LocalSetupProgress({
         </Button>
       }
     >
-      <div className="mx-auto flex w-full max-w-sm flex-col items-center gap-4 text-center">
-        <h1 className="text-2xl font-semibold">Setting things up…</h1>
-        <ul
-          className="flex flex-col gap-2.5 text-left"
-          role="status"
-          aria-label="Setting things up"
-        >
-          {SETUP_STAGES.map((label, index) => {
-            const state = running || index < stage ? 'done' : index === stage ? 'current' : 'next';
-            return (
-              <li
-                key={label}
-                data-state={state}
-                className={
-                  state === 'next'
-                    ? 'flex items-center gap-2.5 text-sm text-foreground-muted'
-                    : 'flex items-center gap-2.5 text-sm text-foreground'
-                }
-              >
-                {state === 'done' ? (
-                  <CircleCheck aria-hidden className="size-4 text-green-500" />
-                ) : state === 'current' ? (
-                  <Spinner aria-hidden className="size-4" />
-                ) : (
-                  <Circle aria-hidden className="size-4" />
-                )}
-                {label}
-              </li>
-            );
-          })}
-        </ul>
-        {long && (
-          <p className="text-xs text-foreground-muted">
-            Still working — the first setup can take a couple of minutes on a slow connection.
-          </p>
-        )}
-      </div>
+      <SetupChecklist
+        title="Setting things up…"
+        stages={SETUP_STAGES.map((label, index) => ({
+          label,
+          state: running || index < stage ? 'done' : index === stage ? 'current' : 'next',
+        }))}
+        note={
+          long
+            ? 'Still working — the first setup can take a couple of minutes on a slow connection.'
+            : null
+        }
+      />
     </OnboardingSurface>
   );
 });

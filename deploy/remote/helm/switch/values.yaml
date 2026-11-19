@@ -399,10 +399,16 @@ switchCore:
   cookieSecure: true
   # Allow email+password self sign-up on the gateway login page. Takes effect
   # only while signup.mode is default_tenant, where a new account joins the
-  # deployment's one pre-existing workspace.
+  # deployment's one pre-existing workspace, or open, where it joins none and
+  # the web dashboard asks it to create one. Addresses are not verified, so
+  # keep it to test servers until they are.
   signupEnabled: false
   # Most users created per rolling hour, counting every way a user is created.
   signupMaxPerHour: 20
+  # Test and canary servers only: lets a person wipe their own account and
+  # everything they alone own (Account → Reset test account), and start
+  # onboarding over. Irreversible; leave off anywhere people keep real data.
+  allowTestAccountReset: false
   # Gateway OIDC login (bring-your-own IdP, e.g. Okta). Disabled by default;
   # set enabled=true and supply issuerUrl/clientId (plus
   # secrets.gatewayOidcClientSecret) to gate the gateway behind OIDC. Provider
@@ -544,8 +550,10 @@ switchCore:
   # Matrix, Rocket.Chat, Webex), additional_agent_providers (DeepSeek
   # Harness, Pi, GitHub Copilot, Kiro, Mistral Vibe, Goose, Qwen Code, Factory
   # Droid, Cline, Junie), hosted_awake_budgets and hosted_cloud_files (hosted
-  # agents v2). gateway_v2, agent_chats, group_chats and agent_management are
-  # still accepted but always on.
+  # agents v2), gateway_chats (chats in the dashboard), gateway_onboarding
+  # (getting started on Switch Cloud from the dashboard). gateway_v2,
+  # agent_chats, group_chats and agent_management are still accepted but always
+  # on.
   featureFlags:
     enabled: []
   # Catalog services turned off on this server, each with the reason people
