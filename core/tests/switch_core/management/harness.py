@@ -71,7 +71,7 @@ from switch_core.gateway import dependencies as gw_deps
 from switch_core.gateway.auth import create_jwt
 from switch_core.gateway.providers import router as providers_router
 from switch_core.keys import Keyring
-from switch_core.management import controller_routes
+from switch_core.management import controller_routes, tokens
 from switch_core.management.dependencies import get_authenticator, get_management
 from switch_core.management.errors import ManagementError
 from switch_core.management.wiring import Management, build_management
@@ -450,15 +450,24 @@ class EnrolledController:
         return bearer(self.access_token)
 
 
+async def credential_key_id(harness: Harness, credential: str) -> str:
+    """The `api_keys` row behind a controller's credential."""
+    async with harness.session_factory() as session:
+        key = await ApiKeyStore().get_by_hash(session, tokens.hash_secret(credential))
+    assert key is not None
+    return key.id
+
+
 async def enroll_console(
     harness: Harness,
     client: httpx.AsyncClient,
     owner: User,
     name: str = "laptop",
     tenant_id: str = TENANT_ZERO_ID,
+    device_id: str | None = None,
 ) -> EnrolledController:
-    """Enroll a console controller for `owner` in `tenant_id` and exchange
-    its credential."""
+    """Enroll a console controller for `owner` in `tenant_id`, on the device
+    `device_id` names when given, and exchange its credential."""
     response = await client.post(
         "/gateway/management/controllers",
         json={
@@ -466,6 +475,7 @@ async def enroll_console(
             "kind": "console",
             "platform": platform(),
             "version": "0.1.0",
+            **({} if device_id is None else {"device_id": device_id}),
         },
         cookies=cookies_for(owner, tenant_id),
     )
@@ -665,6 +675,7 @@ def _principal(controller: EnrolledController) -> ControllerPrincipal:
         controller_id=controller.controller_id,
         owner_id=controller.owner.id,
         tenant_id=TENANT_ZERO_ID,
+        key_id=None,
     )
 
 

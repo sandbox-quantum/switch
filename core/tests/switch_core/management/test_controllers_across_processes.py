@@ -235,6 +235,26 @@ class TestPresence:
 
         await _eventually(lambda: not presence.is_live(agent_id))
 
+    async def test_a_take_over_ends_the_old_holders_stream_on_the_other_process(
+        self, processes: tuple[Harness, Harness]
+    ) -> None:
+        here, there = processes
+        owner = await add_member(here.session_factory, "ada")
+        async with there.client() as client:
+            controller = await enroll_console(there, client, owner)
+            await connect(client, controller)
+        held = there.protocol.connections.controllers
+        conn = held.current_connection(controller.controller_id)
+        assert conn is not None
+
+        # Taken over through this process, where the old holder's socket is not.
+        here.management.service.signals.credential_replaced(controller.controller_id)
+
+        await _eventually(
+            lambda: held.current_connection(controller.controller_id) is None
+        )
+        assert conn.closure is not None and conn.closure.code == "taken_over"
+
     async def test_a_dead_holder_stops_counting_on_the_next_pass(
         self, processes: tuple[Harness, Harness], session_factory: SessionFactory
     ) -> None:

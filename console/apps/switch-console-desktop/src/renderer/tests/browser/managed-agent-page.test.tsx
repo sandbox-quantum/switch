@@ -113,6 +113,7 @@ const LAPTOP: OwnedMachine = {
   cloud: false,
   workspacesDir: '/home/me/workspaces',
   os: null,
+  lastSeenAt: null,
 };
 
 let container: HTMLDivElement;

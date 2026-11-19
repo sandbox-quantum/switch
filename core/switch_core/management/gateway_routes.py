@@ -170,8 +170,12 @@ async def enroll_console(
     session: Session,
     user: CurrentUser,
     management: Management,
-) -> dict[str, str]:
-    controller, credential = await management.create_controller(
+    broker: Broker,
+) -> dict[str, str | bool]:
+    """Enroll the caller's Switch Console as a controller. `adopted`: it took
+    over the caller's device on the same machine, account and data folder, which keeps its
+    id and agents, rather than adding another (`Management.create_controller`)."""
+    enrolled = await management.create_controller(
         session,
         owner_id=user.id,
         description=ControllerDescription(
@@ -180,10 +184,21 @@ async def enroll_console(
             description=body.description,
             platform=body.platform,
             version=body.version,
+            device_id=body.device_id,
         ),
         public_key=body.public_key,
     )
-    return {"controller_id": controller.id, "credential": credential}
+    if enrolled.adopted:
+        await revoke_controller_tokens(
+            session,
+            broker,
+            ServiceTokenIssuance.controller_id == enrolled.controller.id,
+        )
+    return {
+        "controller_id": enrolled.controller.id,
+        "credential": enrolled.credential,
+        "adopted": enrolled.adopted,
+    }
 
 
 @router.get("/workspace")

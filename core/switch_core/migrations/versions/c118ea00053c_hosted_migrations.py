@@ -23,7 +23,7 @@ reason. The downgrade refuses while any move is unfinished (a row not yet
 would drop the record a rollback needs. Finish or roll them back first.
 
 Revision ID: c118ea00053c
-Revises: efd7dfbd0bb7
+Revises: 850587725db3
 Create Date: 2026-11-10 00:00:00.000000
 
 """
@@ -34,7 +34,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "c118ea00053c"
-down_revision: str | Sequence[str] | None = "efd7dfbd0bb7"
+down_revision: str | Sequence[str] | None = "850587725db3"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 expand_only: bool = True

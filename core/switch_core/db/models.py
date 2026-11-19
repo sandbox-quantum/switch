@@ -4810,6 +4810,14 @@ class AgentController(TenantScoped, Base):
     ignored. `assignment_revision` bumps on every change to the set of agents
     the controller should run, and is what its ETag carries.
 
+    `device_hash` says which machine, OS account and data folder the controller
+    runs from: the SHA-256 of its owner's id and the device id it derives
+    (`management/device_identity.py`), so the stored value is no use for
+    linking two people's controllers to one machine. A controller enrolling
+    with the hash of one of its owner's devices that is not running takes that
+    device over, agents and all, rather than adding another. Null for a
+    controller that has not said, and for a Switch Cloud machine's.
+
     The `connection_*`, `connected_at` and `disconnect*` columns are the
     controller's socket as the switch-core process holding it last recorded it
     (`management/connection_ledger.py`): which connection, which process holds
@@ -4849,6 +4857,13 @@ class AgentController(TenantScoped, Base):
         ),
         Index("ix_agent_controllers_owner_id", "owner_id"),
         Index("ix_agent_controllers_tenant_id", "tenant_id"),
+        Index(
+            "ix_agent_controllers_device_hash",
+            "tenant_id",
+            "owner_id",
+            "device_hash",
+            postgresql_where=text("device_hash IS NOT NULL"),
+        ),
     )
 
     id: Mapped[str] = mapped_column(Text, primary_key=True, default=_uuid)
@@ -4861,6 +4876,7 @@ class AgentController(TenantScoped, Base):
     version: Mapped[str | None] = mapped_column(Text, nullable=True)
     public_key: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     api_key_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    device_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
     assignment_revision: Mapped[int] = mapped_column(
         Integer, server_default=text("0"), nullable=False
     )

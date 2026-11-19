@@ -22,7 +22,7 @@ from tests.switch_core.test_migration_cloud_machine_backend import (
     _script,
 )
 
-_BEFORE = "efd7dfbd0bb7"
+_BEFORE = "850587725db3"
 _UNDER_TEST = "c118ea00053c"
 
 

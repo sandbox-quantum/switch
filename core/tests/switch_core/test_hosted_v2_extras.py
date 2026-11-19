@@ -516,7 +516,9 @@ async def test_a_status_report_reads_and_locks_only_with_v2_on(
     report = StatusReport.model_validate(_status_with({}, {"session": "active"}))
     await svc.record_status(
         AsyncMock(),
-        ControllerPrincipal(controller_id="c", owner_id="u", tenant_id="t"),
+        ControllerPrincipal(
+            controller_id="c", owner_id="u", tenant_id="t", key_id=None
+        ),
         report,
     )
     calls = 1 if on else 0
@@ -663,7 +665,9 @@ async def test_unset_allow_lists_add_no_403_on_the_paths_that_check_them(
     # With v2 on, where the list can apply at all: with v2 off it never does
     # (test_workspace_allowed).
     tenant_ids = _management_tenant_ids(path, True)
-    principal = ControllerPrincipal(controller_id="c", owner_id="u", tenant_id="t-2")
+    principal = ControllerPrincipal(
+        controller_id="c", owner_id="u", tenant_id="t-2", key_id=None
+    )
     authenticator = ManagementAuthenticator(
         session_factory=AsyncMock(),  # type: ignore[arg-type]
         controllers=AsyncMock(),  # type: ignore[arg-type]
