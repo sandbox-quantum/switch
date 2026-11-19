@@ -139,9 +139,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# How many open chat streams of this process re-read at once after a wake.
-STREAM_READS_AT_ONCE = 16
-
 # Told the rooms whose part in a person's chats changed, or None for any.
 MembershipWatcher = Callable[[list[str] | None], None]
 
@@ -246,10 +243,6 @@ class ChatService:
         self._membership_watchers: dict[tuple[str, str], set[MembershipWatcher]] = {}
         self._agent_room_listeners: tuple[Callable[[str, list[str]], None], ...] = ()
         self._tasks: set[asyncio.Task[None]] = set()
-        # Held by an open chat stream while it re-reads after a wake
-        # (`gateway/chats.py`): a change to a room wakes the stream of
-        # everyone in it at once, and each re-read holds a session.
-        self.stream_reads = asyncio.Semaphore(STREAM_READS_AT_ONCE)
         # Rooms whose people's streams are still to be woken, per tenant, and
         # the one task per tenant waking them (`rooms_changed`).
         self._changed_rooms: dict[str, dict[str, None]] = {}
