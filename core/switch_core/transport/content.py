@@ -13,6 +13,8 @@ change, and it is not this module's to make.
 
 from __future__ import annotations
 
+import html as html_mod
+
 import markdown
 
 from switch_core.attachments import ATTACHMENT_GROUP_KEY
@@ -103,10 +105,17 @@ def _rendered(body: str, mentions: list[str] | None) -> str:
     still wants the id there for exactly that reason, so the form is shared
     rather than being made Matrix-only.
     """
-    html: str = markdown.markdown(body)
+    # Mention replacement is a plain-text search on the rendered HTML.  It
+    # won't match inside <code> spans because markdown will have entity-escaped
+    # the @ there — good enough for chat bodies; a full HTML-aware rewriter is
+    # not worth the complexity.
+    rendered: str = markdown.markdown(html_mod.escape(body))
     for user_id in mentions or ():
         local = user_id.split(":")[0].lstrip("@")
-        html = html.replace(
-            f"@{local}", f'<a href="https://matrix.to/#/{user_id}">{local}</a>'
+        escaped_local = html_mod.escape(local)
+        rendered = rendered.replace(
+            f"@{escaped_local}",
+            f'<a href="https://matrix.to/#/{html_mod.escape(user_id)}">'
+            f"{escaped_local}</a>",
         )
-    return html
+    return rendered
