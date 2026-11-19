@@ -25,11 +25,21 @@ export type ControllerPlatform = { os: string; arch: string; os_version: string 
 
 /** The server side, through the signed-in session of a workspace. */
 export interface ManagementPort {
-  /** Enrolls this Console in the workspace; says which server and agent bridge that is. */
+  /**
+   * Enrolls this Console in the workspace; says which server and agent bridge
+   * that is, and whether it took over the device this computer already was
+   * there (`adopted`), which keeps its agents.
+   */
   enroll(
     workspaceId: string,
-    body: { name: string; platform: ControllerPlatform; version: string }
-  ): Promise<{ serverId: string; apiUrl: string; controllerId: string; credential: string }>;
+    body: { name: string; platform: ControllerPlatform; version: string; deviceId: string | null }
+  ): Promise<{
+    serverId: string;
+    apiUrl: string;
+    controllerId: string;
+    credential: string;
+    adopted: boolean;
+  }>;
   /** The controller's state and the agents placed on it; with no controller, only whether management is there. */
   read(workspaceId: string, controllerId: string | null): Promise<EmbeddedControllerRemote>;
   /** Renames it and/or changes its description. */
@@ -72,6 +82,13 @@ export type EmbeddedControllerDeps = {
   bundles: { controller: () => string; sharedHost: () => string };
   /** The controller bundle's own version (`--version`), which also proves it runs here. */
   controllerVersion: (bundle: string) => Promise<string>;
+  /**
+   * This machine, OS account and data folder `root` as the controller names
+   * them (`--device-id`); null when unknown.
+   */
+  controllerDeviceId: (bundle: string, root: string) => Promise<string | null>;
+  /** The data folder the device id names, the same at enrollment and at every run. */
+  deviceRoot: () => string;
   spawn: SpawnController;
   /** The binary the controller runs on: Electron's, as Node. */
   execPath: string;
@@ -236,11 +253,13 @@ export class EmbeddedControllerService {
         const bundle = this.deps.bundles.controller();
         this.deps.bundles.sharedHost();
         const version = await this.deps.controllerVersion(bundle);
+        const deviceId = await this.deps.controllerDeviceId(bundle, this.deps.deviceRoot());
         const machine = this.deps.machine();
         const enrolled = await this.deps.management.enroll(workspaceId, {
           name: machine.name,
           platform: machine.platform,
           version,
+          deviceId,
         });
         if (enrolled.serverId !== serverId) {
           await this.revokeQuietly(workspaceId, enrolled.controllerId);
@@ -263,10 +282,12 @@ export class EmbeddedControllerService {
           await this.revokeQuietly(workspaceId, enrolled.controllerId);
           throw error;
         }
-        this.deps.log.info('Enrolled this computer as an agent controller', {
-          serverId,
-          controllerId: enrolled.controllerId,
-        });
+        this.deps.log.info(
+          enrolled.adopted
+            ? 'Enrolled this computer as the agent controller it already was, with its agents'
+            : 'Enrolled this computer as an agent controller',
+          { serverId, controllerId: enrolled.controllerId }
+        );
       } catch (error) {
         this.setPhase(serverId, { kind: 'off' });
         throw error;
@@ -502,6 +523,8 @@ export class EmbeddedControllerService {
         '--credential-stdin',
         '--shared-host-bundle',
         this.deps.bundles.sharedHost(),
+        '--device-root',
+        this.deps.deviceRoot(),
         ...providerSeedArgs(this.deps.providerSeed()),
       ],
       env: {

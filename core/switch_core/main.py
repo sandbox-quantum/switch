@@ -1199,7 +1199,7 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
         publisher=user_change_publisher,
         window_seconds=COALESCE_SECONDS,
     )
-    room_service.on_room_changed(room_changes.room_changed)
+    room_service.on_room_changed(room_changes.room_changed, room_changes.rooms_changed)
     postgres_provisioning.on_membership_changed(room_changes.room_changed)
     management = create_management(
         config,
@@ -1362,12 +1362,12 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
     # streams held here too (`chats/signals.py`).
     ChatSignals(service=chat_service, bus=signal_bus)
     room_service.use_chats(chat_service)
-    room_service.on_room_agents_changed(chat_service.sync_room)
+    room_service.on_room_agents_changed(chat_service.sync_rooms)
     protocol.set_room_agents_listener(room_service.room_agents_changed)
     protocol.set_agent_profile_listener(chat_service.agent_changed)
     protocol.set_member_adder(chat_service.add_member, chat_service.require_can_join)
     chat_service.on_agent_room_changed(room_changes.rooms_changed)
-    room_service.on_room_changed(chat_service.room_changed)
+    room_service.on_room_changed(chat_service.room_changed, chat_service.rooms_changed)
 
     # ── Connector app credentials ─────────────────────────────────────────────
     # Each connector's app, from configuration or a row the operator saved,

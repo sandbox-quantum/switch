@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from collections.abc import Collection
 from datetime import UTC, datetime
 from typing import Any
 
@@ -90,6 +91,9 @@ class _Changes:
 
     def room_changed(self, tenant_id: str, room_id: str) -> None:
         self.changed.append((tenant_id, room_id))
+
+    def rooms_changed(self, tenant_id: str, room_ids: Collection[str]) -> None:
+        self.changed.extend((tenant_id, room_id) for room_id in room_ids)
 
 
 class _Notices:

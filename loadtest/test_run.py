@@ -322,3 +322,15 @@ def test_the_pool_ceiling_is_the_release_s_size_and_overflow_or_switch_core_s_ow
     env = {"DB_POOL_SIZE": {"value": "50"}, "DB_MAX_OVERFLOW": {"value": "0"}}
     assert pool_ceiling(_Kube(env)) == 50
     assert pool_ceiling(_Kube(RuntimeError("no cluster"))) is None
+
+
+def test_admin_bulk_is_refused_past_the_servers_batch_cap():
+    with pytest.raises(SystemExit):
+        _args("--scenarios", "admin-bulk", "--bulk-batch", "201")
+
+
+def test_admin_bulk_clicks_must_start_inside_the_window():
+    with pytest.raises(SystemExit):
+        _args("--scenarios", "admin-bulk", "--duration", "60", "--bulk-at", "60")
+    a = _args("--scenarios", "admin-bulk", "--duration", "60", "--bulk-at", "10")
+    assert a.bulk_rooms == 400 and a.bulk_batch == 200

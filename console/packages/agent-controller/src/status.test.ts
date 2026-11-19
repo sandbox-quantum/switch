@@ -331,6 +331,24 @@ describe('ProviderStatuses', () => {
     expect(changes).toBe(PROVIDERS + 1);
     expect(statuses.snapshot().find((s) => s.provider === 'claude')?.auth).toBe('missing');
   });
+
+  it('says where each checked CLI was found, for the recheck log', async () => {
+    const locator = new FakeLocator();
+    locator.missing.add('cursor');
+    const statuses = new ProviderStatuses({
+      locator,
+      runtime: new FakeRuntime(),
+      sealed: null,
+      probeCwd: '/tmp',
+      now: () => NOW,
+      log: silentLogger,
+      onChange: () => {},
+    });
+    expect(statuses.locations()).toEqual({});
+    await statuses.check('codex');
+    await statuses.check('cursor');
+    expect(statuses.locations()).toEqual({ codex: '/usr/bin/codex', cursor: 'not found' });
+  });
 });
 
 describe('ProviderStatuses trying a login with a test prompt', () => {
@@ -824,6 +842,7 @@ describe('StatusCollector', () => {
       attached: () => true,
       dataDir: dir,
       workspacesDir: join(dir, 'workspaces'),
+      deviceId: 'd'.repeat(64),
       version: '0.1.0',
       updatedBy: 'self',
       now: () => clock,
@@ -857,6 +876,7 @@ describe('StatusCollector', () => {
     expect(first.agents[0]!.directory).toBeNull();
     expect(first.machine.sessions_running).toBe(2);
     expect(first.machine.workspaces_dir).toBe(join(dir, 'workspaces'));
+    expect(first.machine.device_id).toBe('d'.repeat(64));
     expect(first.machine.disk_total_bytes).toBeGreaterThan(0);
 
     clock += 1000;

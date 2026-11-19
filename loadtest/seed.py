@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import itertools
+import time
 from dataclasses import dataclass
 
 import httpx
@@ -49,6 +50,12 @@ class RequestIds:
 
 def prefix(run_id: str) -> str:
     return f"load-{run_id}-"
+
+
+def bulk_prefix(run_id: str) -> str:
+    """The admin-bulk scenario's rooms: the run's own, so teardown archives
+    them with the rest."""
+    return f"{prefix(run_id)}bulk"
 
 
 @dataclass
@@ -153,6 +160,73 @@ class Admin:
                 f"the run's workspace has active bridges ({names}); "
                 "run it in a workspace of its own with --workspace"
             )
+
+    async def workspace_id(self) -> str:
+        """The workspace this session is bound to."""
+        r = await self.call("GET", "/tenants/current")
+        if r.status_code != 200:
+            raise _fail("reading the current workspace", r)
+        return r.json()["id"]
+
+    async def make_private(self, tenant_id: str, room_ids: list[str]) -> dict:
+        """One click of the admin's "Make N Private": what the server changed
+        and skipped, how long it took, and its status."""
+        t = time.monotonic()
+        try:
+            r = await self.call(
+                "POST",
+                f"/tenants/{tenant_id}/private-channel-rooms/make-private",
+                json={"room_ids": room_ids},
+            )
+        except httpx.HTTPError as exc:
+            return {
+                "rooms": len(room_ids),
+                "status": None,
+                "error": type(exc).__name__,
+                "ms": round((time.monotonic() - t) * 1000, 1),
+            }
+        out: dict = {
+            "rooms": len(room_ids),
+            "status": r.status_code,
+            "ms": round((time.monotonic() - t) * 1000, 1),
+        }
+        if r.status_code == 200:
+            body = r.json()
+            out["changed"] = len(body["changed"])
+            out["skipped"] = len(body["skipped"])
+        else:
+            out["error"] = r.text[:200]
+        return out
+
+    async def bulk_archive(self, room_ids: list[str], archived: bool) -> dict:
+        """One click of the Rooms page's bulk archive (or unarchive): what the
+        server changed and refused, how long it took, and its status."""
+        t = time.monotonic()
+        try:
+            r = await self.call(
+                "POST",
+                "/rooms/bulk-archive",
+                json={"room_ids": room_ids, "archived": archived},
+            )
+        except httpx.HTTPError as exc:
+            return {
+                "rooms": len(room_ids),
+                "status": None,
+                "error": type(exc).__name__,
+                "ms": round((time.monotonic() - t) * 1000, 1),
+            }
+        out: dict = {
+            "rooms": len(room_ids),
+            "status": r.status_code,
+            "ms": round((time.monotonic() - t) * 1000, 1),
+        }
+        if r.status_code == 200:
+            body = r.json()
+            out["changed"] = body["updated"]
+            out["skipped"] = len(body["refused"])
+        else:
+            out["error"] = r.text[:200]
+        return out
 
     async def close(self) -> None:
         await self.http.aclose()
@@ -334,6 +408,48 @@ async def create_rooms(
 
     await asyncio.gather(*(create_room(j, m) for j, m in enumerate(membership)))
     return [rid for rid in room_ids if rid]
+
+
+async def create_bulk_rooms(
+    admin: Admin, run_id: str, count: int, sem: asyncio.Semaphore
+) -> list[str]:
+    """`count` rooms with no agents and no traffic of their own, for the
+    admin-bulk scenario to change in bulk; `bulk_rooms.py shape` binds them."""
+    room_ids: list[str | None] = [None] * count
+
+    async def create_room(j: int) -> None:
+        name = f"{bulk_prefix(run_id)}{j:04d}"
+        async with sem:
+            r = await admin.call(
+                "POST",
+                "/rooms",
+                json={
+                    "name": name,
+                    "description": f"load test {run_id}, bulk change",
+                    "agent_ids": [],
+                    "internal_only": True,
+                },
+            )
+        if r.status_code not in (200, 201):
+            raise _fail(f"creating room {name}", r)
+        room_ids[j] = r.json()["id"]
+
+    await asyncio.gather(*(create_room(j) for j in range(count)))
+    return [rid for rid in room_ids if rid]
+
+
+async def archive_rooms(admin: Admin, room_ids: list[str], concurrency: int) -> int:
+    """Archive these rooms; how many were. Raises if the server refused any."""
+    sem = asyncio.Semaphore(concurrency)
+
+    async def one(room_id: str) -> bool:
+        async with sem:
+            r = await admin.call("POST", f"/rooms/{room_id}/archive")
+        if r.status_code not in (200, 204, 404):
+            raise _fail(f"archiving room {room_id}", r)
+        return r.status_code != 404
+
+    return sum(await asyncio.gather(*(one(room_id) for room_id in room_ids)))
 
 
 async def teardown(

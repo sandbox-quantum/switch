@@ -57,6 +57,7 @@ function ownedMachine(controller: ManagementController, local: LocalControllers)
     cloud,
     workspacesDir: controller.workspacesDir,
     os: controller.os,
+    lastSeenAt: controller.lastSeenAt,
     local: machineLocal(controller, local),
   };
 }

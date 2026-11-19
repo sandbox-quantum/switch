@@ -530,6 +530,12 @@ export type RoomAutoRoute = {
   /** That agent's name, for display; null when there is none, or from a
    * server that predates it. */
   fallbackAgentName: string | null;
+  /** The room's assigned agent (`!assign-agent`), which gets every message
+   * first, so auto-route can't be turned on while it is set; null when none,
+   * or from a server that predates it. */
+  assignedAgent: string | null;
+  /** That agent's name, for display. */
+  assignedAgentName: string | null;
 };
 
 /** A change to a room's auto-route setting (`PUT /rooms/{id}/auto-route`);

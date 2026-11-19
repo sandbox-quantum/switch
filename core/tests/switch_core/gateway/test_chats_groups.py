@@ -1200,7 +1200,8 @@ class _Published:
     def __init__(self) -> None:
         self.notices: list[tuple[str, str, str]] = []
 
-    def publish(self, tenant_id: str, user_id: str, kind: str, id: str) -> None:
+    def publish(self, tenant_id: str, user_id: str, kind: str, id: str | None) -> None:
+        assert id is not None
         self.notices.append((user_id, kind, id))
 
 
@@ -1209,7 +1210,7 @@ async def test_people_are_told_when_a_room_of_theirs_changes(chats: _Harness) ->
     changes = RoomChanges(
         session_factory=chats.factory, publisher=published, window_seconds=0.0
     )
-    chats.room_service.on_room_changed(changes.room_changed)
+    chats.room_service.on_room_changed(changes.room_changed, changes.rooms_changed)
     chats.service._provisioning.on_membership_changed(changes.room_changed)  # type: ignore[attr-defined]
 
     async def told() -> set[str]:
@@ -1358,7 +1359,9 @@ async def test_only_a_manager_renames_a_group_and_everyone_sees_it(
         return room.name
 
     monkeypatch.setattr(rooms_module, "_build_room_detail", detail)
-    chats.room_service.on_room_changed(chats.service.room_changed)
+    chats.room_service.on_room_changed(
+        chats.service.room_changed, chats.service.rooms_changed
+    )
     created = await chats.client.post(
         "/chats",
         json={"agentIds": [], "memberUserIds": [chats.bob.id], "requestId": "c1"},
