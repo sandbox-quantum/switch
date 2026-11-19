@@ -65,6 +65,9 @@ Where the box keeps its own rule over upstream's:
     re-enrolling controller the device it was before, with its agents; a box enrols again only after it was revoked
     or lost its controller, where that could give back a paused or deleted machine's agents, so hosted agents v2's
     own re-enrolment stays the only path. `device-id.ts` is kept as upstream's. (`main.ts`)
+25. The provider gateway's daily call cap also takes the workspace's daily AI budget, which Core hands a v2 box in
+    its assignment (`gateway_daily_cap`): the lower of it and the operator's `SWITCH_CONTROLLER_GATEWAY_DAILY_CALLS`
+    is in force, and the status reports the cap and which set it. (`gateway-usage.ts`, `controller.ts`)
 
 Plus the box features themselves: the split box (launcher, credential gateway, sealed logins), the box valve and
 memory guard, resting and parking, the live status file, and the sign-in-after-wake and control-port fixes.

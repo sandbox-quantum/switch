@@ -37,7 +37,7 @@ import {
   resolveGateway,
 } from './gateway-agents';
 import { gatewayPlanFor, VertexTokenCache } from './gateway-logins';
-import { DailyCallCap, dailyCalls, usageFile } from './gateway-usage';
+import { DailyCallCap, dailyCalls, usageFile, workspaceCap } from './gateway-usage';
 import type { HostTickets } from './host-tickets';
 import { HubSocket } from './hub-socket';
 import type { LauncherGuard } from './launcher-guard';
@@ -773,13 +773,16 @@ export async function runController(
   let gateway: GatewayDeps | null = null;
   let dailyCap: DailyCallCap | null = null;
   if (deps.providerGateway) {
-    if (dailyCallCap > 0)
-      dailyCap = new DailyCallCap({
-        cap: dailyCallCap,
-        file: usageFile(join(deps.dataDir, 'gateway-usage.json')),
-        log,
-        now: deps.now,
-      });
+    // Kept whether or not a cap is set yet: the workspace's comes with the
+    // assignment and may change at any pull, and the day's calls count from
+    // the start.
+    dailyCap = new DailyCallCap({
+      cap: dailyCallCap,
+      file: usageFile(join(deps.dataDir, 'gateway-usage.json')),
+      log,
+      now: deps.now,
+    });
+    dailyCap.setWorkspaceCap(workspaceCap(assignment?.gateway_daily_cap));
     gateway = {
       gateway: new ProviderGateway({ log, ...(dailyCap ? { cap: dailyCap } : {}) }),
       vertex: new VertexTokenCache(),
@@ -1070,6 +1073,7 @@ export async function runController(
             }
           assignment = pulled.assignment;
           etag = pulled.etag;
+          dailyCap?.setWorkspaceCap(workspaceCap(assignment.gateway_daily_cap));
           store.saveAssignment(assignment, etag, new Date(deps.now()).toISOString());
           log.info('Pulled assignment', { revision: assignment.revision, why });
           unrestored.push(...placeAgents(assignment));

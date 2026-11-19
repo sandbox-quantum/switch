@@ -1540,6 +1540,60 @@ describe('runController on a split box: refused tickets', () => {
 });
 
 describe('runController on a split box with the provider gateway', () => {
+  it('takes the workspace’s daily cap from its assignment, lower than its own, and reports which set it', async () => {
+    const socketPath = join(dir, 'launcher.sock');
+    const link = new LauncherLink({ socketPath, now: Date.now, log: () => {} });
+    const split = {
+      link,
+      tickets: new HostTickets(),
+      guard: new LauncherGuard({ link, now: Date.now }),
+      runner: { launchOf: () => null, currentLaunch: () => null },
+      gate: new LaunchGate(Date.now),
+      setProbeEnv: () => {},
+    };
+    const machine = () => core.statusReports.at(-1)?.machine;
+    core.setAssignment({ revision: 1, agents: [], gateway_daily_cap: 2 });
+    running = runController(
+      { ...deps(), providerGateway: true, providerGatewayDailyCalls: '3', split },
+      stop.signal
+    );
+    await waitFor(
+      () => machine()?.gateway_daily_cap === 2 && machine()?.gateway_cap_source === 'workspace',
+      'the workspace’s cap in force'
+    );
+    expect(machine()).toMatchObject({ gateway_calls_today: 0, gateway_capped: false });
+    // The workspace raises its budget past the operator's: the operator's is in force.
+    core.setAssignment({ revision: 2, agents: [], gateway_daily_cap: 200 });
+    core.push('assignment.changed', { revision: 2 });
+    await waitFor(
+      () => machine()?.gateway_daily_cap === 3 && machine()?.gateway_cap_source === 'local',
+      'the operator’s cap in force'
+    );
+  });
+
+  it('reports no cap with neither the operator’s nor the workspace’s set, as before', async () => {
+    const socketPath = join(dir, 'launcher.sock');
+    const link = new LauncherLink({ socketPath, now: Date.now, log: () => {} });
+    const split = {
+      link,
+      tickets: new HostTickets(),
+      guard: new LauncherGuard({ link, now: Date.now }),
+      runner: { launchOf: () => null, currentLaunch: () => null },
+      gate: new LaunchGate(Date.now),
+      setProbeEnv: () => {},
+    };
+    core.setAssignment({ revision: 1, agents: [], gateway_daily_cap: null });
+    running = runController({ ...deps(), providerGateway: true, split }, stop.signal);
+    await waitFor(
+      () => core.statusReports.some((report) => report.machine.gateway_agents !== undefined),
+      'a report with the gateway'
+    );
+    const reported = core.statusReports.at(-1)!.machine;
+    expect(reported.gateway_daily_cap).toBeUndefined();
+    expect(reported.gateway_cap_source).toBeUndefined();
+    expect(reported.gateway_calls_today).toBeUndefined();
+  });
+
   it('hands the gateway probe to the split runtime: a login check gets a swpg_ token, never the login', async () => {
     const socketPath = join(dir, 'launcher.sock');
     const link = new LauncherLink({ socketPath, now: Date.now, log: () => {} });

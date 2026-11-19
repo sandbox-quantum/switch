@@ -3,7 +3,10 @@ import type { Logger } from './log';
 
 /**
  * The box's daily cap on provider calls through the gateway: a
- * safety net against a runaway agent or a misused token, set by the operator.
+ * safety net against a runaway agent or a misused token. Two numbers can set
+ * it: the operator's own (`SWITCH_CONTROLLER_GATEWAY_DAILY_CALLS`), and the
+ * workspace's daily AI budget, which Core hands a v2 box in its assignment
+ * (`gateway_daily_cap`). The lower of the two set is the cap in force.
  * A box serves one user, so the box's count is that user's count.
  *
  * Calls are counted in a UTC day, across every agent and probe. The count is
@@ -25,6 +28,19 @@ export function dailyCalls(setting: string | undefined): number {
   if (!/^[0-9]{1,10}$/.test(raw) || Number(raw) > MAX_CAP)
     throw new Error(`${DAILY_CALLS_SETTING} must be a whole number of calls a day (0 for no cap).`);
   return Number(raw);
+}
+
+/** Which number set today's cap, as the machine report says it. */
+export type CapSource = 'local' | 'workspace';
+
+/**
+ * The workspace's cap from an assignment, held to the gateway's bounds: a
+ * whole number from 1 up, anything above the gateway's limit read as that
+ * limit; null when there is none, or when what came is not a number of calls.
+ */
+export function workspaceCap(value: unknown): number | null {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1) return null;
+  return Math.min(value, MAX_CAP);
 }
 
 export type UsageFile = {
@@ -69,8 +85,12 @@ export class DailyCallCap {
   /** The day the cap was last said to be hit, so it's said once a day. */
   private saidCapped: string | null = null;
 
+  /** The workspace's cap from the latest assignment; null with none. */
+  private workspace: number | null = null;
+
   constructor(
     private readonly deps: {
+      /** The operator's cap; 0 for none. */
       cap: number;
       file: UsageFile;
       log: Logger;
@@ -85,6 +105,26 @@ export class DailyCallCap {
     return (this.deps.now ?? Date.now)();
   }
 
+  /** The workspace's cap from the latest assignment (`workspaceCap`), or null when it has none. */
+  setWorkspaceCap(cap: number | null): void {
+    if (cap === this.workspace) return;
+    this.workspace = cap;
+    const limit = this.limit();
+    this.deps.log.info('The provider gateway’s daily call cap changed', {
+      cap: limit?.cap ?? null,
+      source: limit?.source ?? null,
+    });
+  }
+
+  /** The cap in force and which number set it, or null when neither is set. The operator's wins a tie. */
+  limit(): { cap: number; source: CapSource } | null {
+    const local = this.deps.cap > 0 ? this.deps.cap : null;
+    if (local !== null && (this.workspace === null || local <= this.workspace))
+      return { cap: local, source: 'local' };
+    if (this.workspace !== null) return { cap: this.workspace, source: 'workspace' };
+    return null;
+  }
+
   /**
    * Counts one call, or refuses it: null when it may go, or the seconds until
    * the cap resets when the day's calls are used up. A refused call isn't counted.
@@ -92,12 +132,14 @@ export class DailyCallCap {
   take(): number | null {
     const now = this.now();
     this.rollOver(now);
-    if (this.calls >= this.deps.cap) {
+    const limit = this.limit();
+    if (limit !== null && this.calls >= limit.cap) {
       if (this.saidCapped !== this.day) {
         this.saidCapped = this.day;
         this.deps.log.warn('The provider gateway reached its daily call cap', {
           calls: this.calls,
-          cap: this.deps.cap,
+          cap: limit.cap,
+          source: limit.source,
           day: this.day,
         });
       }
@@ -109,10 +151,21 @@ export class DailyCallCap {
     return null;
   }
 
-  /** For the machine report. */
-  counts(): { callsToday: number; capped: boolean } {
+  /**
+   * For the machine report: the day's calls, whether the cap is reached, and
+   * the cap with its source. Empty while no cap is set; calls are still
+   * counted then, so a cap set later in the day counts the day's earlier calls.
+   */
+  counts(): { callsToday?: number; capped?: boolean; dailyCap?: number; capSource?: CapSource } {
     this.rollOver(this.now());
-    return { callsToday: this.calls, capped: this.calls >= this.deps.cap };
+    const limit = this.limit();
+    if (limit === null) return {};
+    return {
+      callsToday: this.calls,
+      capped: this.calls >= limit.cap,
+      dailyCap: limit.cap,
+      capSource: limit.source,
+    };
   }
 
   /** Saves the count if it changed; the controller calls this when it stops. */

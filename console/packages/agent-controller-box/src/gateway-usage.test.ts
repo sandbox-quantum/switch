@@ -8,6 +8,7 @@ import {
   SAVE_EVERY_MS,
   type UsageFile,
   usageFile,
+  workspaceCap,
 } from './gateway-usage';
 import type { Logger } from './log';
 
@@ -62,7 +63,7 @@ describe('the daily cap', () => {
     expect([cap.take(), cap.take(), cap.take()]).toEqual([null, null, null]);
     expect(cap.take()).toBe((MIDNIGHT - NOON) / 1000);
     expect(cap.take()).toBe((MIDNIGHT - NOON) / 1000);
-    expect(cap.counts()).toEqual({ callsToday: 3, capped: true });
+    expect(cap.counts()).toEqual({ callsToday: 3, capped: true, dailyCap: 3, capSource: 'local' });
   });
 
   it('says so once a day, with numbers only', () => {
@@ -76,7 +77,7 @@ describe('the daily cap', () => {
       l.startsWith('The provider gateway reached its daily call cap')
     );
     expect(said).toEqual([
-      'The provider gateway reached its daily call cap {"calls":1,"cap":1,"day":"2026-10-28"}',
+      'The provider gateway reached its daily call cap {"calls":1,"cap":1,"source":"local","day":"2026-10-28"}',
     ]);
     clock = MIDNIGHT + 1000;
     cap.take();
@@ -95,7 +96,7 @@ describe('the daily cap', () => {
     expect(cap.take()).toBeNull();
     expect(cap.take()).toBe(1);
     clock = MIDNIGHT;
-    expect(cap.counts()).toEqual({ callsToday: 0, capped: false });
+    expect(cap.counts()).toEqual({ callsToday: 0, capped: false, dailyCap: 1, capSource: 'local' });
     expect(cap.take()).toBeNull();
   });
 });
@@ -126,7 +127,7 @@ describe('the saved count', () => {
   it('survives a restart the same day, so the day’s calls stay used', () => {
     const file = memoryFile(saved('2026-10-28', 2));
     const cap = new DailyCallCap({ cap: 3, file, log: recordingLog(), now: () => NOON });
-    expect(cap.counts()).toEqual({ callsToday: 2, capped: false });
+    expect(cap.counts()).toMatchObject({ callsToday: 2, capped: false });
     expect(cap.take()).toBeNull();
     expect(cap.take()).not.toBeNull();
   });
@@ -194,5 +195,88 @@ describe('the usage file on disk', () => {
     expect(statSync(path).mode & 0o777).toBe(0o600);
     const cap = new DailyCallCap({ cap: 10, file, log: recordingLog(), now: () => NOON });
     expect(cap.counts().callsToday).toBe(7);
+  });
+});
+
+describe('the workspace’s cap from the assignment', () => {
+  const RESET = (MIDNIGHT - NOON) / 1000;
+
+  it('is held to the gateway’s bounds; anything but a whole number of calls is no cap', () => {
+    expect(workspaceCap(200)).toBe(200);
+    expect(workspaceCap(5_000_000_000)).toBe(1_000_000_000);
+    for (const value of [null, undefined, 0, -1, 2.5, '200', Number.NaN, true])
+      expect(workspaceCap(value)).toBeNull();
+  });
+
+  it('refuses calls past it when the operator set none, and says it set the cap', () => {
+    const cap = new DailyCallCap({
+      cap: 0,
+      file: memoryFile(),
+      log: recordingLog(),
+      now: () => NOON,
+    });
+    cap.setWorkspaceCap(2);
+    expect([cap.take(), cap.take(), cap.take()]).toEqual([null, null, RESET]);
+    expect(cap.counts()).toEqual({
+      callsToday: 2,
+      capped: true,
+      dailyCap: 2,
+      capSource: 'workspace',
+    });
+  });
+
+  it('the lower of the two set is the cap in force; the operator’s wins a tie', () => {
+    const cap = new DailyCallCap({
+      cap: 3,
+      file: memoryFile(),
+      log: recordingLog(),
+      now: () => NOON,
+    });
+    cap.setWorkspaceCap(10);
+    expect(cap.limit()).toEqual({ cap: 3, source: 'local' });
+    cap.setWorkspaceCap(2);
+    expect(cap.limit()).toEqual({ cap: 2, source: 'workspace' });
+    cap.setWorkspaceCap(3);
+    expect(cap.limit()).toEqual({ cap: 3, source: 'local' });
+    cap.setWorkspaceCap(null);
+    expect(cap.limit()).toEqual({ cap: 3, source: 'local' });
+  });
+
+  it('a cap set later in the day counts the day’s earlier calls; lowered, it refuses at once; removed, calls go again', () => {
+    const log = recordingLog();
+    const cap = new DailyCallCap({ cap: 0, file: memoryFile(), log, now: () => NOON });
+    for (let i = 0; i < 4; i++) expect(cap.take()).toBeNull();
+    // No cap yet: nothing reported, but the calls were counted.
+    expect(cap.counts()).toEqual({});
+    cap.setWorkspaceCap(5);
+    expect(cap.take()).toBeNull();
+    expect(cap.take()).toBe(RESET);
+    cap.setWorkspaceCap(3);
+    expect(cap.take()).toBe(RESET);
+    expect(cap.counts()).toEqual({
+      callsToday: 5,
+      capped: true,
+      dailyCap: 3,
+      capSource: 'workspace',
+    });
+    cap.setWorkspaceCap(null);
+    expect(cap.take()).toBeNull();
+    expect(cap.counts()).toEqual({});
+    expect(
+      log.lines.filter((line) => line.startsWith('The provider gateway’s daily call cap changed'))
+    ).toEqual([
+      'The provider gateway’s daily call cap changed {"cap":5,"source":"workspace"}',
+      'The provider gateway’s daily call cap changed {"cap":3,"source":"workspace"}',
+      'The provider gateway’s daily call cap changed {"cap":null,"source":null}',
+    ]);
+  });
+
+  it('the same cap again changes nothing and says nothing', () => {
+    const log = recordingLog();
+    const cap = new DailyCallCap({ cap: 0, file: memoryFile(), log, now: () => NOON });
+    cap.setWorkspaceCap(null);
+    cap.setWorkspaceCap(4);
+    cap.setWorkspaceCap(4);
+    expect(log.lines.filter((line) => line.includes('cap changed'))).toHaveLength(1);
   });
 });

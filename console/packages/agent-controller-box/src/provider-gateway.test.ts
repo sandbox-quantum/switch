@@ -730,6 +730,38 @@ describe('a probe token', () => {
 });
 
 describe('the box’s daily call cap', () => {
+  it('refuses calls past the workspace’s cap from the assignment, with no operator cap', async () => {
+    const noon = Date.UTC(2026, 9, 28, 12, 0, 0);
+    const cap = new DailyCallCap({
+      cap: 0,
+      file: { read: () => null, write: () => {} },
+      log,
+      now: () => noon,
+    });
+    cap.setWorkspaceCap(2);
+    const capped = makeGateway({ cap, now: () => noon });
+    await capped.start();
+    capped.setReady();
+    try {
+      const agent = capped.mint('agent-a', anthropicKey(REAL_A));
+      const statuses = [];
+      for (let i = 0; i < 3; i++)
+        statuses.push(
+          (await call(capped.endpoint, '/v1/messages', { headers: { 'x-api-key': agent } })).status
+        );
+      expect(statuses).toEqual([200, 200, 429]);
+      expect(upstream.seen).toHaveLength(2);
+      expect(cap.counts()).toEqual({
+        callsToday: 2,
+        capped: true,
+        dailyCap: 2,
+        capSource: 'workspace',
+      });
+    } finally {
+      await capped.close();
+    }
+  });
+
   it('refuses calls past the cap with a plain 429 until 00:00 UTC, and refused calls don’t count', async () => {
     const noon = Date.UTC(2026, 9, 28, 12, 0, 0);
     let text: string | null = null;
@@ -759,7 +791,12 @@ describe('the box’s daily call cap', () => {
       expect(over.headers['retry-after']).toBe(String(12 * 3600));
       expect(over.body).toContain('daily AI limit');
       expect(upstream.seen).toHaveLength(3);
-      expect(cap.counts()).toEqual({ callsToday: 3, capped: true });
+      expect(cap.counts()).toEqual({
+        callsToday: 3,
+        capped: true,
+        dailyCap: 3,
+        capSource: 'local',
+      });
       expect(log.lines.join('\n')).toContain('"reason":"daily_cap"');
       // The refused probe call didn't use up one of its own calls either.
       expect(log.lines.join('\n')).not.toContain(probe);

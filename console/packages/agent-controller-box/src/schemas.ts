@@ -197,6 +197,13 @@ export type AgentAssignment = z.infer<typeof agentAssignmentSchema>;
 export const assignmentSchema = z.object({
   revision,
   agents: z.array(agentAssignmentSchema),
+  /**
+   * A v2 box only: the workspace's daily AI cap for this box's gateway, or
+   * null with none set. Absent for a person's own computer and with hosted
+   * agents v2 off. Read leniently (`workspaceCap` holds it to the gateway's
+   * bounds), so a value the gateway can't use never refuses the assignment.
+   */
+  gateway_daily_cap: z.unknown().optional(),
 });
 export type Assignment = z.infer<typeof assignmentSchema>;
 
@@ -344,6 +351,9 @@ export const statusReportSchema = z.object({
     /** The box's daily call cap, where one is set: calls today, and whether the cap is reached. */
     gateway_calls_today: z.number().int().nonnegative().optional(),
     gateway_capped: z.boolean().optional(),
+    /** The cap in force, and which number set it: the operator's setting or the workspace's budget. */
+    gateway_daily_cap: z.number().int().min(1).max(1_000_000_000).optional(),
+    gateway_cap_source: z.enum(['local', 'workspace']).optional(),
     /**
      * Since the controller started: agents the memory guard stopped, and
      * sessions the box valve parked (Datadog's counts, as rises). Capped;
