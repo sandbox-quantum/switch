@@ -9,11 +9,15 @@ client that left is named so the person who lost the room is told too.
 
 The notice is a "read again", so it is sent from a task of its own after the
 change has committed, and a lost one costs only a delay: Console still reads
-its lists every few minutes. Changes to one room within `COALESCE_SECONDS` of
-the first are sent as one notice per person, so a bridge adding a channel's N
-members makes one read and N notices, not N reads and N² notices. The read
-starts after the window closes, so it sees every change made in it; a change
-after that opens a window of its own.
+its lists every few minutes. Changes to a workspace's rooms within
+`COALESCE_SECONDS` of the first are read together, in one session and one
+query, and sent as one notice per person and room: a bridge adding a
+channel's N members makes one read and N notices, not N reads and N²
+notices, and an admin changing hundreds of rooms at once makes one read, not
+hundreds side by side. Someone concerned by more than `ROOMS_NAMED_MAX` of
+them is told once that their rooms changed. The read starts after the window
+closes, so it sees every change made in it; a change after that opens a
+window of its own.
 """
 
 from __future__ import annotations
@@ -57,6 +61,10 @@ logger = logging.getLogger(__name__)
 
 COALESCE_SECONDS = 1.0
 
+# Rooms one window may name to one person before they are told, once, that
+# their rooms changed (`user_changes.UserChange` with no id).
+ROOMS_NAMED_MAX = 16
+
 
 class RoomChanges:
     def __init__(
@@ -70,34 +78,34 @@ class RoomChanges:
         self._publisher = publisher
         self._window_seconds = window_seconds
         self._tasks: set[asyncio.Task[None]] = set()
-        # Client ids gathered for each room whose window is open.
-        self._pending: dict[tuple[str, str], set[str]] = {}
+        # For each tenant with changes not yet read, its changed rooms and the
+        # client ids gathered for each.
+        self._pending: dict[str, dict[str, set[str]]] = {}
+        # The one task per tenant that waits out each window and reads it,
+        # one window after another.
+        self._publishers: dict[str, asyncio.Task[None]] = {}
 
     def room_changed(self, tenant_id: str, room_id: str, client_ids: list[str]) -> None:
         """Tell everyone the room concerns, and the people behind `client_ids`
         (who may just have left it), that it changed. Returns at once."""
-        key = (tenant_id, room_id)
-        if key in self._pending:
-            self._pending[key].update(client_ids)
-            return
-        self._pending[key] = set(client_ids)
-        self._start(tenant_id, [room_id])
+        self._add(tenant_id, {room_id: client_ids})
 
     def rooms_changed(self, tenant_id: str, room_ids: list[str]) -> None:
         """`room_changed` for many rooms at once (an agent in each was
-        renamed), read in one session and one query however many there are.
-        A room whose window is open already is told with that window."""
-        opened = []
-        for room_id in dict.fromkeys(room_ids):
-            key = (tenant_id, room_id)
-            if key not in self._pending:
-                self._pending[key] = set()
-                opened.append(room_id)
-        if opened:
-            self._start(tenant_id, opened)
+        renamed, an admin changed them together). Rooms are told with the
+        tenant's open window, or open it."""
+        self._add(tenant_id, {room_id: [] for room_id in room_ids})
 
-    def _start(self, tenant_id: str, room_ids: list[str]) -> None:
-        task = asyncio.create_task(self._publish(tenant_id, room_ids))
+    def _add(self, tenant_id: str, changed: Mapping[str, list[str]]) -> None:
+        if not changed:
+            return
+        pending = self._pending.setdefault(tenant_id, {})
+        for room_id, client_ids in changed.items():
+            pending.setdefault(room_id, set()).update(client_ids)
+        if tenant_id in self._publishers:
+            return
+        task = asyncio.create_task(self._publish(tenant_id))
+        self._publishers[tenant_id] = task
         self._tasks.add(task)
         task.add_done_callback(self._finished)
 
@@ -110,18 +118,41 @@ class RoomChanges:
                 exc_info=task.exception(),
             )
 
-    async def _publish(self, tenant_id: str, room_ids: list[str]) -> None:
+    async def _publish(self, tenant_id: str) -> None:
+        """Wait out the tenant's window, then read and tell what changed in
+        it; a change made while that read runs opens the next window, after
+        it, so a tenant never has two reads waiting for the pool."""
         try:
-            await asyncio.sleep(self._window_seconds)
+            while tenant_id in self._pending:
+                await asyncio.sleep(self._window_seconds)
+                changed = {
+                    room_id: sorted(client_ids)
+                    for room_id, client_ids in self._pending.pop(tenant_id).items()
+                }
+                try:
+                    await self._tell(tenant_id, changed)
+                except Exception:
+                    logger.error(
+                        "Could not tell people %d room(s) changed; their Console "
+                        "reads them again on its next poll",
+                        len(changed),
+                        exc_info=True,
+                    )
         finally:
-            changed = {
-                room_id: sorted(self._pending.pop((tenant_id, room_id)))
-                for room_id in room_ids
-            }
+            del self._publishers[tenant_id]
+
+    async def _tell(self, tenant_id: str, changed: dict[str, list[str]]) -> None:
         async with tenant_session(self._session_factory, tenant_id) as session:
             concerned = await people_concerned(session, changed)
+        rooms_of: dict[str, list[str]] = {}
         for room_id, user_ids in concerned.items():
             for user_id in user_ids:
+                rooms_of.setdefault(user_id, []).append(room_id)
+        for user_id, room_ids in rooms_of.items():
+            if len(room_ids) > ROOMS_NAMED_MAX:
+                self._publisher.publish(tenant_id, user_id, ROOM, None)
+                continue
+            for room_id in room_ids:
                 self._publisher.publish(tenant_id, user_id, ROOM, room_id)
 
 

@@ -15,7 +15,7 @@ import json
 import random
 from dataclasses import asdict, dataclass
 
-SCENARIOS = ("idle", "steady", "burst")
+SCENARIOS = ("idle", "steady", "burst", "admin-bulk")
 
 
 def rng_for(seed: int, *labels: object) -> random.Random:
@@ -116,6 +116,8 @@ def build_schedule(
       spread evenly at random over `burst_window` seconds, every `burst_every`
       seconds (first one `burst_every / 2` in). With `hot_room`, the spikes all
       land in the room with the most connected members.
+    - admin-bulk: the steady background only; the bulk change that runs over
+      it is `bulk_plan`'s, made by the admin rather than sent by an agent.
     """
     if scenario not in SCENARIOS:
         raise ValueError(f"unknown scenario {scenario!r}")
@@ -154,6 +156,36 @@ def build_schedule(
             start += burst_every
     sends.sort(key=lambda s: (s.at, s.room, s.sender))
     return sends
+
+
+# What the admin-bulk scenario's clicks do to its rooms, in order: every room
+# made Private, then archived, then unarchived, each in batches.
+MAKE_PRIVATE, ARCHIVE, UNARCHIVE = "make_private", "archive", "unarchive"
+BULK_ACTIONS = (MAKE_PRIVATE, ARCHIVE, UNARCHIVE)
+
+
+@dataclass(frozen=True)
+class BulkChange:
+    """One click of an admin's bulk change: `action` on rooms `start` to
+    `end` of the run's bulk rooms, `at` seconds into the window."""
+
+    at: float
+    action: str
+    start: int
+    end: int
+
+
+def bulk_plan(rooms: int, batch: int, at: float, gap: float) -> list[BulkChange]:
+    """The admin-bulk scenario's clicks: the bulk rooms in batches of `batch`,
+    made Private, then archived, then unarchived, the first click `at`
+    seconds in and each `gap` seconds after the one before, as an admin
+    working through a long list confirms one page after another."""
+    batches = [(start, min(start + batch, rooms)) for start in range(0, rooms, batch)]
+    clicks = [(action, *b) for action in BULK_ACTIONS for b in batches]
+    return [
+        BulkChange(at + i * gap, action, start, end)
+        for i, (action, start, end) in enumerate(clicks)
+    ]
 
 
 def payload(token: str, size: int) -> str:
