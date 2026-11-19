@@ -541,6 +541,9 @@ async def _report_stopped(
             Observation(state="stopped", revision=revision),
             session,
             factory,
+            # Read only for a missing box, never on a `stopped` report.
+            config=None,  # type: ignore[arg-type]
+            settings=None,  # type: ignore[arg-type]
         )
 
 

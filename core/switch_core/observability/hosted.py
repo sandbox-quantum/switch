@@ -165,6 +165,9 @@ MACHINE_EVENTS: dict[str, frozenset[str]] = {
             # An error observed while the machine is wanted stopped, retained
             # or deleted.
             "stop_failed",
+            # A v2 box the scaler found missing from the cluster after it was
+            # made, that Core didn't ask for again (`box_provision.box_missing`).
+            "box_missing",
         }
     ),
     "woken": frozenset({"message", "agent_placed", "owner"}),

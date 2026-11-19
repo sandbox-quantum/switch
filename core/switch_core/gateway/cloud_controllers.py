@@ -22,6 +22,7 @@ from typing import Any, Literal, Protocol
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from switch_core.db.audit import ServerAuditAction, record_server_audit_event
 from switch_core.db.models import (
     AgentController,
     AgentControllerEnrollmentCode,
@@ -32,9 +33,11 @@ from switch_core.db.models import (
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.hosted_machine_store import (
     CloudMachineStore,
+    WorkspaceOnMachine,
     await_reconnect,
     bump_revision,
     idle_sleeping,
+    revoke_box_controllers,
     workspace_on,
     workspaces_on,
 )
@@ -52,6 +55,7 @@ from switch_core.observability.hosted import (
     reports_memory,
 )
 from switch_core.telemetry import emit_after_commit
+from switch_core.tenant_context import no_tenant
 from switch_core.visibility.box_provision import provision_times, revived_at
 
 # How recent the machine's last status report must be for its silence to count
@@ -810,3 +814,60 @@ async def revoke_machine_controller(
     await cloud_enrollment().revoke_machine_controller(
         session, tenant_id, controller_id
     )
+
+
+async def forget_missing_box(
+    factory: async_sessionmaker[AsyncSession],
+    machine: CloudMachine,
+    workspaces: list[WorkspaceOnMachine],
+    by: Literal["re_ask", "retry"],
+) -> None:
+    """A box the box scaler found missing takes its controller identity with
+    it, as a revived box's does: each workspace controller is revoked and
+    its stored code forgotten, so the new box gets a fresh code to enrol
+    with. Without it `prepare` hands the new box no code (the old controller
+    is still live), and it could never connect. For Core's one re-ask
+    (`hosted_controller._box_missing`) and the owner's Retry.
+
+    A `hosted.box_controllers_revoked` entry (the machine, the reason and how
+    many controllers) is written and committed first, so no revoke is ever
+    unrecorded; then each workspace commits its own revoke. The caller's own
+    transaction commits after: if it fails, the revokes stand, which fails
+    safe (the next report finds a revoked controller and the machine goes to
+    error, for the owner's Retry)."""
+    controllers = [w for w in workspaces if w.controller_id is not None]
+    with no_tenant():
+        async with factory() as audit:
+            await record_server_audit_event(
+                audit,
+                actor_user_id=None,
+                action=ServerAuditAction.HOSTED_BOX_CONTROLLERS_REVOKED,
+                target_type="cloud_machine",
+                target_id=machine.id,
+                details={
+                    "machine_id": machine.id,
+                    "reason": "box_missing",
+                    "by": by,
+                    "revision": machine.revision,
+                    "controllers": len(controllers),
+                },
+            )
+            await audit.commit()
+    try:
+        enrollment: CloudEnrollment | None = cloud_enrollment()
+    except CloudEnrollmentUnavailable:
+        # Without agent management no controller could have enrolled.
+        enrollment = None
+    if enrollment is not None:
+        revoked = await revoke_box_controllers(
+            factory, machine, workspaces, enrollment.revoke_machine_controller
+        )
+        # Every process drops the old streams at once.
+        enrollment.announce_revoked(revoked)
+    for workspace in workspaces:
+        async with tenant_session(factory, workspace.tenant_id) as scoped:
+            row = await workspace_on(scoped, machine.id)
+            if row is not None:
+                row.enrollment_code_encrypted = None
+                row.enrollment_code_revision = None
+            await scoped.commit()

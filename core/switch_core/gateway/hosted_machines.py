@@ -27,9 +27,11 @@ from switch_core.db.stores.hosted_machine_store import (
     managed_agent_ids,
     owner_stopped,
     workspace_on,
+    workspaces_on,
 )
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.cloud_controllers import (
+    forget_missing_box,
     note_start_click,
     revoke_machine_controller,
     workspace_reported,
@@ -48,7 +50,11 @@ from switch_core.providers.hosted import (
     tenant_allowed,
 )
 from switch_core.telemetry import emit_after_commit
-from switch_core.visibility.box_provision import ask_for_box, box_provisioning_on
+from switch_core.visibility.box_provision import (
+    BOX_MISSING,
+    ask_for_box,
+    box_provisioning_on,
+)
 from switch_core.visibility.hosted_access import block_reason_in
 from switch_core.visibility.reason_codes import StopReason
 
@@ -404,6 +410,7 @@ async def lifecycle(
     body: MachineLifecycleRequest,
     user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_session)],
+    factory: Annotated[async_sessionmaker[AsyncSession], Depends(get_session_factory)],
 ) -> dict:
     machines = CloudMachineStore()
     _machine, workspace = await _owned(session, machine_id, user.id)
@@ -458,6 +465,14 @@ async def lifecycle(
     else:
         if machine.state != "error":
             raise HTTPException(409, "Only a machine in error can be retried.")
+        if machine.error_code == BOX_MISSING and machine.backend == "box":
+            # Its box is gone: the new one enrols afresh, as on Core's re-ask.
+            await forget_missing_box(
+                factory, machine, await workspaces_on(factory, machine.id), by="retry"
+            )
+            machine.heartbeat = None
+            machine.heartbeat_at = None
+            machine.running_observed_at = None
         machines.retry(machine, now)
     await session.commit()
     return {"machine": await machine_summary(session, machine, workspace)}
