@@ -6,9 +6,10 @@ closes a stream ten minutes after it opens, so a long turn is drawn across
 several streams in that thread: `earlier_post_ids` holds every one but the
 current, which stays `external_post_id`. Both are kept so the turn's ending can
 find them after a restart, to attach the plan to the answer and remove them.
-`work_finished_at` says that ending has run, and `folded_into` names the answer
-the plan went under when the work thread was removed, so nothing draws into
-the messages that are gone.
+`work_finished_at` says that ending has run, and `folded_into` is set when the
+work thread was removed (to the answer the plan went under, or to the work
+message for a turn with nothing to show), so nothing draws into messages that
+are gone.
 
 Expand only: a release from before this revision neither reads nor writes the
 columns, and draws every turn in the asker's thread as before.

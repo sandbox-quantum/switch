@@ -437,3 +437,16 @@ async def test_a_closed_stream_in_the_askers_thread_is_edited_as_before() -> Non
     )
     assert moved is None
     assert len(client.started) == 1
+
+
+async def test_room_tools_are_not_counted_as_steps() -> None:
+    client = FakeWebClient()
+    adapter = _adapter(client)
+    work = await adapter.open_work_message(CHANNEL, "Agent", "working", ASKER)
+    post = _tool().model_copy(
+        update={"item_id": "p1", "title": "mcp__switch__post_message"}
+    )
+    ref = await adapter.post_rich(CHANNEL, "Agent", _work([post]), work)
+    assert _notes(client, work) == [], "talking in the room is not a step"
+    await adapter.update_rich(CHANNEL, "Agent", ref, _work([post, _tool()]), work)
+    assert _notes(client, work) == ["Working… · step 1"]

@@ -4380,8 +4380,9 @@ class TurnStatusPost(TenantScoped, Base):
     earlier_post_ids: Mapped[list[str] | None] = mapped_column(
         ARRAY(Text), nullable=True
     )
-    # When the work thread's ending ran, and the answer its plan went under
-    # if the thread was removed (nothing is drawn into it after that).
+    # When the work thread's ending ran, and, if the thread was removed, the
+    # answer its plan went under (or the work message itself, for a turn with
+    # nothing to show). Nothing is drawn into a removed thread.
     work_finished_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

@@ -77,7 +77,10 @@ from switch_core.bridges.collaboration.session.renderers.slack import (
     render_turn_with_request,
     with_mention,
 )
-from switch_core.bridges.collaboration.session.renderers.subagents import is_tool_call
+from switch_core.bridges.collaboration.session.renderers.subagents import (
+    is_room_tool,
+    is_tool_call,
+)
 from switch_core.bridges.collaboration.slack.agent_groups import (
     SlackAgentGroupDirectory,
 )
@@ -612,13 +615,14 @@ _MAX_ANSWER_SECTIONS = 40
 
 
 def _work_line(items: Sequence[Any]) -> str:
-    """ "Working… · step 4": how many calls the turn has made.
+    """How far a turn has got: "Working… · step 4".
 
     A count rather than the step's title, because the title of a shell step is
     the command it runs, which is not a label anyone should have to read in
-    the channel. The steps themselves are in the thread.
+    the channel. The steps themselves are in the thread. Calls to Switch's own
+    room tools are talking, not work, and are not counted.
     """
-    steps = sum(1 for item in items if is_tool_call(item))
+    steps = sum(1 for item in items if is_tool_call(item) and not is_room_tool(item))
     return f"{WORKING_NOTE} · step {steps}" if steps else WORKING_NOTE
 
 

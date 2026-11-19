@@ -12,6 +12,7 @@ settling it after its session went away (`ORPHANED_SUBAGENT_TEXT`) reads as not
 confirmed finished, because nothing said how it ended.
 """
 
+import re
 from collections.abc import Callable
 
 from switch_core.sessions.contract import ORPHANED_SUBAGENT_TEXT, Item
@@ -25,6 +26,30 @@ def is_subagent(item: Item) -> bool:
 
 def is_tool_call(item: Item) -> bool:
     return item.kind == "tool-activity" and not item.subagent
+
+
+# How a Claude-hosted agent's call to one of Switch's own tools is titled:
+# `mcp__switch__post_message`, `mcp__switch__read_context`.
+_ROOM_TOOL_TITLE = re.compile(r"mcp__switch__\w+")
+
+
+def is_room_tool(item: Item) -> bool:
+    """A call to one of Switch's own room tools: posting, reading the room.
+
+    Talking in the room, not work, so a work thread (`!work-threads`) neither
+    counts it nor keeps itself for it. Known by its title, which names the tool
+    for Claude-hosted agents; a host that titles it otherwise has it treated
+    as work, which only shows a little more than it needs to.
+    """
+    return (
+        is_tool_call(item)
+        and _ROOM_TOOL_TITLE.fullmatch(item.title.strip()) is not None
+    )
+
+
+def work_items(items: list[Item]) -> list[Item]:
+    """A turn's items without its calls to Switch's own room tools."""
+    return [item for item in items if not is_room_tool(item)]
 
 
 def subagent_state(item: Item) -> str:
