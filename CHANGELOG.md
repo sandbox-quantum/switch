@@ -4672,6 +4672,13 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Fixed
+
+- **Creating an agent no longer flashes "An agent called … already exists
+  on this server".** The form checked the name against the server's agent
+  list, which picks up the new agent before the dialog closes, so for a moment
+  it reported its own agent as a clash.
+
 ### [0.41.1] - 2026-11-18
 
 #### Fixed
