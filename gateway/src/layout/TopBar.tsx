@@ -30,7 +30,6 @@ const SECTION_LABELS: [prefix: string, label: string][] = [
   ["/usage", "Usage & budget"],
   ["/settings/org", "Organization settings"],
   ["/settings", "Settings"],
-  ["/platform", "Platform"],
 ];
 
 const DOCS_URL = "https://docs.switchagents.ai/switch-rooms/getting-started";
@@ -59,10 +58,9 @@ function PageLabel({ label }: { label: string | undefined }) {
 }
 
 /** The breadcrumb: "Organization / Workspace", which opens the
- * workspace switcher, then the page. In an area outside the workspace,
- * organization settings or Platform, the way back to it instead: back to the
- * page it was entered from, or, when it was opened directly, from
- * organization settings to workspace settings and from Platform home. */
+ * workspace switcher, then the page. In organization settings, an area
+ * outside the workspace, the way back to it instead: back to the page it was
+ * entered from, or, when it was opened directly, to workspace settings. */
 function WorkspaceCrumbs({
   section,
   outside,

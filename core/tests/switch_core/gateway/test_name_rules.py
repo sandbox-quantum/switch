@@ -111,18 +111,6 @@ NAMED: dict[str, tuple[Persona, Ask]] = {
         Persona.MEMBER,
         Ask("PATCH", f"{G}/auth/me", {"name": NAME}),
     ),
-    "create an account as the operator": (
-        Persona.OPERATOR,
-        Ask(
-            "POST",
-            f"{G}/users",
-            {
-                "name": NAME,
-                "email": "made-by-the-operator@example.invalid",
-                "password": "correct-horse-battery-staple",
-            },
-        ),
-    ),
 }
 
 # Made and renamed only, as the rest are made by the matrix's own people.

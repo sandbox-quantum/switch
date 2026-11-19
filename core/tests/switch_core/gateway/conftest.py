@@ -339,7 +339,7 @@ def _chat_service(
         telemetry=telemetry,
     )
     room_service.use_chats(service)
-    room_service.on_room_agents_changed(service.sync_room)
+    room_service.on_room_agents_changed(service.sync_rooms)
     return service, room_service
 
 

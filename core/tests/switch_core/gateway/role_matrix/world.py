@@ -363,10 +363,6 @@ class World:
         remove from it."""
         return await self._person("org-target", workspace=False, organization=True)
 
-    async def user_target(self) -> str:
-        """An account in no workspace, for the operator to delete."""
-        return await self._person("user-target", workspace=False, organization=False)
-
     # ── Rooms and resources ──────────────────────────────────────────────
 
     async def room(self) -> str:

@@ -14,7 +14,8 @@
  *
  * Plain data with no imports, because the harness reads it too. Every page
  * assumes the server has `agent_management`, `service_connections` and
- * `organization_connector_apps` on, as the harness's stack does. */
+ * `organization_connector_apps` on, as the harness's stack does, and more
+ * than one organization: the server's default one and the harness's own. */
 
 /** The roles, each a real account in the harness:
  *
@@ -89,26 +90,23 @@ export const PAGES: readonly MatrixPage[] = [
   page("/settings/api-keys", EVERYONE),
   page("/settings/guardrails", EVERYONE),
   page("/settings/devices", EVERYONE),
-  page("/usage", ADMINS),
   page("/settings/account", EVERYONE),
 
   page("/settings/org/general", ORGANIZATION_ADMIN_OR_OPERATOR),
   page("/settings/org/workspaces", ORGANIZATION_ADMIN_OR_OPERATOR),
   page("/settings/org/users", ORGANIZATION_ADMIN_OR_OPERATOR),
   page("/settings/org/connectors", ORGANIZATION_ADMIN),
+  // The deployment's connector apps. An organization's admin may set them up
+  // only on a deployment with no other organization, which this is not.
+  page("/settings/org/connector-apps", OPERATOR),
   page("/settings/org/guardrails", ORGANIZATION_ADMIN),
   page("/settings/org/devices", ORGANIZATION_ADMIN),
   page("/settings/org/audit-log", ORGANIZATION_ADMIN),
-
-  page("/platform/workspaces", OPERATOR),
-  page("/platform/users", OPERATOR),
-  page("/platform/connectors", OPERATOR),
 ];
 
 export const AREAS: readonly MatrixArea[] = [
   { path: "/settings", open: EVERYONE, first: "/settings/general" },
   { path: "/settings/org", open: ORGANIZATION_ADMIN_OR_OPERATOR, first: "/settings/org/general" },
-  { path: "/platform", open: OPERATOR, first: "/platform/workspaces" },
 ];
 
 /** Every moved page's old URL, so a link from an older Switch Console, the
@@ -122,8 +120,13 @@ export const REDIRECTS: readonly MatrixRedirect[] = [
   { from: "/workspace", to: "/settings/users" },
   { from: "/workspace/private-channel-rooms", to: "/settings/general/private-channel-rooms" },
   { from: "/organization", to: "/settings/org" },
-  { from: "/users", to: "/platform/users" },
-  { from: "/operator/workspaces", to: "/platform/workspaces" },
+  { from: "/usage", to: "/settings" },
+  { from: "/users", to: "/settings/org/users" },
+  { from: "/operator/workspaces", to: "/settings/org/workspaces" },
+  { from: "/platform", to: "/settings/org/workspaces" },
+  { from: "/platform/workspaces", to: "/settings/org/workspaces" },
+  { from: "/platform/users", to: "/settings/org/users" },
+  { from: "/platform/connectors", to: "/settings/org/connector-apps" },
 ];
 
 // The ecosystem graph has no rail item of its own: Home links to it.
@@ -142,10 +145,10 @@ export const RAIL: Record<Persona, readonly string[]> = {
   orgAdmin: RAIL_EVERYONE,
   workspaceAdmin: RAIL_EVERYONE,
   member: RAIL_EVERYONE,
-  operator: [...RAIL_EVERYONE, "Platform"],
+  operator: RAIL_EVERYONE,
 };
 
-export type MatrixSettingsArea = "workspace" | "organization" | "platform";
+export type MatrixSettingsArea = "workspace" | "organization";
 
 const WORKSPACE_MENU_EVERYONE = [
   "General",
@@ -156,12 +159,7 @@ const WORKSPACE_MENU_EVERYONE = [
   "Guardrails",
 ];
 const WORKSPACE_MENU_MEMBER = [...WORKSPACE_MENU_EVERYONE, "Devices", "Your account"];
-const WORKSPACE_MENU_ADMIN = [
-  ...WORKSPACE_MENU_EVERYONE,
-  "Usage & budget",
-  "Devices",
-  "Your account",
-];
+const WORKSPACE_MENU_ADMIN = WORKSPACE_MENU_MEMBER;
 
 /** Each settings area's menu, in order: the pages it lists, not the link
  * across to the other area. Null where the role may not
@@ -186,12 +184,6 @@ export const SETTINGS_MENUS: Record<MatrixSettingsArea, Record<Persona, readonly
       ],
       workspaceAdmin: null,
       member: null,
-      operator: ["General", "Workspaces", "Users"],
-    },
-    platform: {
-      orgAdmin: null,
-      workspaceAdmin: null,
-      member: null,
-      operator: ["All workspaces", "Users", "Connectors"],
+      operator: ["General", "Workspaces", "Users", "Connector apps"],
     },
   };

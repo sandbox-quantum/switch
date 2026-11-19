@@ -17,7 +17,7 @@ from pydantic import (
 from pydantic_core import PydanticCustomError
 
 from switch_core.addressing import AddressingKind, AddressingPolicy
-from switch_core.bridges.agent.protocol.types import OverallStatus
+from switch_core.bridges.agent.protocol.types import SUBAGENTS_MAX, OverallStatus
 from switch_core.bridges.collaboration.models import (
     BridgeInstallLink,
     ChannelRetirement,
@@ -147,13 +147,18 @@ class RoomAutoRoute(BaseModel):
     the same one `!auto-route` sets; `available` whether it can act in the
     room (the server's flag and the workspace's decision backend), with
     `reason` saying why not and who can fix it; `fallback_agent` the id of
-    the room's triage agent, if any, and `fallback_agent_name` its name."""
+    the room's triage agent, if any, and `fallback_agent_name` its name;
+    `assigned_agent` and `assigned_agent_name` the room's assigned agent,
+    which gets every message first, so auto-route cannot be turned on, and
+    does not act, while it is set."""
 
     on: bool
     available: bool
     reason: str | None
     fallback_agent: str | None
     fallback_agent_name: str | None
+    assigned_agent: str | None
+    assigned_agent_name: str | None
 
 
 class RoomAutoRouteRequest(BaseModel):
@@ -276,8 +281,19 @@ class RoomAgentUpdateRequest(BaseModel):
     receives_join_events: bool
 
 
+# The most rooms one bulk request may name. The request is answered once
+# every room is done, so its size is how long it runs.
+BULK_ROOMS_MAX = 200
+# Fewer to delete: each room is emptied one member at a time, and its
+# channel may be retired on its platform.
+BULK_DELETE_MAX = 25
+# The most people one request may add to or take out of a room: one
+# platform call each.
+ROOM_USERS_MAX = 200
+
+
 class RoomUsersRequest(BaseModel):
-    user_names: list[str]
+    user_names: list[str] = Field(max_length=ROOM_USERS_MAX)
 
 
 class RoomUsersRemoved(BaseModel):
@@ -300,7 +316,7 @@ class RoomObserveRequest(BaseModel):
 
 
 class BulkDeleteRequest(BaseModel):
-    room_ids: list[str]
+    room_ids: list[str] = Field(max_length=BULK_DELETE_MAX)
     # Also archive, delete or leave each room's platform channel, as its
     # platform allows. Off unless asked: deleting a room is often about taking
     # the agents out of a channel people keep using.
@@ -332,7 +348,7 @@ class BulkDeleteResponse(BaseModel):
 
 
 class BulkArchiveRequest(BaseModel):
-    room_ids: list[str]
+    room_ids: list[str] = Field(max_length=BULK_ROOMS_MAX)
     # True archives the rooms, False unarchives them.
     archived: bool
 
@@ -366,7 +382,7 @@ class RoomGroupCreateRequest(BaseModel):
 class RoomGroupAssignRequest(BaseModel):
     # Rooms to (re)assign into the group. Rooms already in another group are
     # moved; rooms already in this group are a no-op.
-    room_ids: list[str]
+    room_ids: list[str] = Field(max_length=BULK_ROOMS_MAX)
 
 
 class RoomGroupAssignResponse(BaseModel):
@@ -452,6 +468,13 @@ class AgentRoomMembership(BaseModel):
     # Whether the agent has had a turn in this room: someone addressed it there
     # and one of its sessions took the message up.
     answered_here: bool
+
+
+class AgentRooms(BaseModel):
+    """One agent's rooms, as `GET /agents/{agent_id}` lists them in `rooms`."""
+
+    agent_id: str
+    rooms: list[AgentRoomMembership]
 
 
 class AgentSessionDetail(BaseModel):
@@ -751,7 +774,7 @@ class RegisterKnownSubagentsRequest(BaseModel):
     agent_type: str
     parent_agent_id: str
     options: dict[str, Any] = {}
-    subagents: list[BulkSubagentSpec]
+    subagents: list[BulkSubagentSpec] = Field(max_length=SUBAGENTS_MAX)
     overwrite: bool = False
 
 
@@ -1064,6 +1087,13 @@ class ExternalUserSummary(BaseModel):
     # When Switch first saw this account, so a client waiting for someone to
     # say hello to the bot can tell a new arrival from the people it knew.
     first_seen_at: str
+    # How to name the person, as the platform's adapter names them, and
+    # whether `external_username` is a handle of theirs. False where Switch
+    # made the handle up (a Telegram account with no username): show
+    # `display_name` alone, never `@external_username`. Left at the username
+    # where the bridge is not running to ask.
+    display_name: str | None = None
+    has_handle: bool = True
     # Everyone who has claimed this platform account. A list, not one user:
     # claiming is not exclusive, so an account shared by several Switch users
     # satisfies an owner rule for any of them.
@@ -1280,26 +1310,6 @@ Email = Annotated[
 ]
 
 
-class OperatorUserResponse(UserResponse):
-    """An account as the deployment operator manages it. `can_delete`: not
-    their own, which they delete from their account settings, and not the
-    server's administrator account (`accounts.deletion.is_server_administrator`).
-    `can_demote`: another platform operator, on the same terms. What else
-    stands in the way is answered when it is asked."""
-
-    can_delete: bool
-    can_demote: bool
-
-
-class CreateUserRequest(BaseModel):
-    name: Name
-    email: Email
-    password: Password
-    # Only the exact string "admin" grants operator rights (`require_admin`),
-    # so anything else would create an account claiming a role it lacks.
-    role: Literal["user", "admin"] = "user"
-
-
 class ChangePasswordRequest(BaseModel):
     current_password: str
     new_password: Password
@@ -1428,17 +1438,6 @@ class WorkspaceCountsResponse(BaseModel):
     id: str
     users: int
     agents: int
-
-
-class OperatorWorkspaceResponse(BaseModel):
-    """One workspace on the server, as the platform operator's list shows it."""
-
-    id: str
-    slug: str
-    name: str
-    organization_id: str | None
-    organization_name: str | None
-    archived_at: str | None
 
 
 class CurrentTenantResponse(TenantMembershipResponse):
@@ -1606,6 +1605,16 @@ class SessionStateResponse(BaseModel):
     # Whether an invitation addressed to an e-mail is sent there, or only
     # minted for the admin to share.
     invite_email_enabled: bool
+    # Whether the caller may set up the deployment's connector apps
+    # (`gateway/connector_apps.py`): the platform operator, or an `org_admin`
+    # of the deployment's only organization (`auth.deployment_manager`).
+    can_manage_connector_apps: bool
+    # Whether those apps are set up in the dashboard by the admins of the
+    # deployment's organization, which has exactly one; with several, only
+    # the platform operator sets them up, with `switch-connector-apps`
+    # (`auth.connector_apps_in_dashboard`). Says, to someone who may not,
+    # whom to ask.
+    connector_apps_in_dashboard: bool
 
 
 MAX_INVITATION_USES = 100

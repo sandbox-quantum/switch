@@ -1,7 +1,8 @@
 import ContentCopy from "@mui/icons-material/ContentCopy";
 import OpenInNew from "@mui/icons-material/OpenInNew";
-import { Box, Card, CardActions, CardContent, IconButton, Link, Stack, Tooltip, Typography } from "@mui/material";
+import { Card, CardActions, CardContent, IconButton, Link, Stack, Tooltip, Typography } from "@mui/material";
 import { type ReactNode, useState } from "react";
+import PageHeader from "../../components/PageHeader";
 import SuccessSnackbar from "../../components/SuccessSnackbar";
 import { MONO_SX } from "../../theme/format";
 
@@ -46,27 +47,31 @@ export default function GuardrailPolicyCard({
   return (
     <Card variant="outlined" sx={{ borderRadius: "16px", maxWidth: 640 }}>
       <CardContent>
-        <Stack direction="row" spacing={2} sx={{ alignItems: "flex-start", justifyContent: "space-between" }}>
-          <Box sx={{ minWidth: 0 }}>
+        <PageHeader
+          title={
             <Typography variant="subtitle1" component="h2" sx={{ fontWeight: 600 }}>
               {policyName ?? "Switch Trust policy"}
             </Typography>
-            <Stack direction="row" spacing={0.5} sx={{ alignItems: "center", mt: 0.5 }}>
-              <Typography component="span" sx={{ ...MONO_SX, wordBreak: "break-all" }}>
-                {policyId}
+          }
+          description={
+            <>
+              <Stack direction="row" spacing={0.5} sx={{ alignItems: "center", mt: 0.5 }}>
+                <Typography component="span" sx={{ ...MONO_SX, wordBreak: "break-all" }}>
+                  {policyId}
+                </Typography>
+                <Tooltip title="Copy the policy ID">
+                  <IconButton size="small" aria-label="Copy the policy ID" onClick={() => void copy()}>
+                    <ContentCopy fontSize="small" />
+                  </IconButton>
+                </Tooltip>
+              </Stack>
+              <Typography variant="caption" color="text.secondary" role="status" sx={{ display: "block" }}>
+                {copied === "refused" ? "Your browser blocked the clipboard. Select the ID and copy it." : ""}
               </Typography>
-              <Tooltip title="Copy the policy ID">
-                <IconButton size="small" aria-label="Copy the policy ID" onClick={() => void copy()}>
-                  <ContentCopy fontSize="small" />
-                </IconButton>
-              </Tooltip>
-            </Stack>
-            <Typography variant="caption" color="text.secondary" role="status" sx={{ display: "block" }}>
-              {copied === "refused" ? "Your browser blocked the clipboard. Select the ID and copy it." : ""}
-            </Typography>
-          </Box>
-          {actions}
-        </Stack>
+            </>
+          }
+          actions={actions}
+        />
         {policyUrl && (
           <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
             Its detectors for user and assistant messages are listed on Switch Trust.

@@ -28,6 +28,21 @@ export function settingsPagePath(
   return newLayout ? 'settings/org' : 'organization';
 }
 
+/**
+ * The dashboard pages where the deployment's connector apps are set up.
+ * `organization-settings`: the new layout (`gateway_v2`) on a server that says
+ * who may manage them (`can_manage_connector_apps` on its session).
+ * `platform`: the new layout on a server from before that, which keeps them
+ * under Platform. `old-layout`: today's layout, on any server.
+ */
+export type ConnectorAppsPage = 'organization-settings' | 'platform' | 'old-layout';
+
+/** Where `page` is on the dashboard. */
+export function connectorAppsPagePath(page: ConnectorAppsPage): string {
+  if (page === 'organization-settings') return 'settings/org/connector-apps';
+  return page === 'platform' ? 'platform/connectors' : 'connectors';
+}
+
 /** A room's page, in either layout. */
 export function roomPagePath(roomId: string): string {
   return `rooms/${roomId}`;

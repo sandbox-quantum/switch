@@ -1,5 +1,5 @@
 {
-  "revision": 6,
+  "revision": 7,
   "bodies": {
     "switch_core.gateway.agent_sessions.AnswerBody": [
       "answer",
@@ -196,6 +196,7 @@
     ],
     "switch_core.management.schemas.ConsoleControllerRequest": [
       "description",
+      "device_id",
       "kind",
       "name",
       "platform",

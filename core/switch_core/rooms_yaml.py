@@ -459,6 +459,14 @@ class DocSpec(BaseModel):
     content: str
 
 
+# The most rooms a group document creates, and agents and people a room
+# document names. Each is created or added on its own, with platform calls, by
+# the request that asked.
+GROUP_ROOMS_MAX = 50
+ROOM_AGENTS_MAX = 50
+ROOM_USERS_MAX = 200
+
+
 class RoomSpec(BaseModel):
     name: Name
     description: str
@@ -476,8 +484,8 @@ class RoomSpec(BaseModel):
     # Accepted from older templates and ignored: a room has no write
     # visibility of its own.
     write_visibility: str | None = None
-    agents: list[str] = []
-    users: list[str] = []
+    agents: list[str] = Field(default=[], max_length=ROOM_AGENTS_MAX)
+    users: list[str] = Field(default=[], max_length=ROOM_USERS_MAX)
     roles: list[RoleSpec] = []
     references: list[ExternalReferenceEntry] = []
     packages: list[PackageEntry] = []
@@ -509,7 +517,7 @@ class GroupMeta(BaseModel):
 
 class GroupSpec(BaseModel):
     group: GroupMeta
-    rooms: list[RoomSpec]
+    rooms: list[RoomSpec] = Field(max_length=GROUP_ROOMS_MAX)
     links: list[GroupLinkSpec] = []
 
 
@@ -525,7 +533,7 @@ class GroupTemplateDocument(BaseModel):
     """Top-level shape of a group template file."""
 
     group: GroupMeta
-    rooms: list[RoomSpec]
+    rooms: list[RoomSpec] = Field(max_length=GROUP_ROOMS_MAX)
     links: list[GroupLinkSpec] = []
     params: dict[str, ParamSpec] | None = None
 
@@ -787,6 +795,11 @@ class RoomYamlService:
         raw_rooms = body["rooms"]
         if not isinstance(raw_rooms, list) or not raw_rooms:
             raise ValueError("'rooms:' must be a non-empty list")
+        if len(raw_rooms) > GROUP_ROOMS_MAX:
+            raise ValueError(
+                f"A group creates at most {GROUP_ROOMS_MAX} rooms; this one "
+                f"lists {len(raw_rooms)}"
+            )
         rooms: list[RoomSpec] = []
         for i, entry in enumerate(raw_rooms):
             try:

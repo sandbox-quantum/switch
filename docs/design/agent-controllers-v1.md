@@ -129,11 +129,15 @@ Controller access token (`{id}` must match the token's `cid`, otherwise `403 for
     A controller resyncs fully on every reconnect.
 
 ### Gateway routes (cookie, `get_current_user`, owner-only)
-- `POST   /gateway/management/enrollment-codes` returns `{code, expires_at, server_url}`.
+- `POST   /gateway/management/enrollment-codes` returns `{code, expires_at, server_url, remote_devices}`.
   `server_url` is the agent bridge's public origin (`GATEWAY_PUBLIC_URL`), the
   `--server` to enroll with, or null when it is not configured; the gateway
   page's own address is not a stand-in, since a gateway need not serve the
-  agent bridge.
+  agent bridge. `remote_devices` is `{supported, reason}`: whether a device
+  other than the one Switch runs on could enroll at all. It is false, with a
+  reason to show, on a server Switch Console runs and when `server_url` is a
+  loopback address; the code is issued either way, since Console enrolls the
+  SSH hosts it sets up with one.
 - `POST   /gateway/management/controllers`
   - Console enrollment by a signed-in user.
   - Body: `{name, description?, kind:"console", platform, version, public_key?}`.

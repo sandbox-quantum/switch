@@ -2,6 +2,7 @@ import Add from "@mui/icons-material/Add";
 import { Alert, Box, Button, CircularProgress, Stack, Typography } from "@mui/material";
 import { useCallback, useState } from "react";
 import InfoTip from "../../../components/InfoTip";
+import PageHeader from "../../../components/PageHeader";
 import SuccessSnackbar from "../../../components/SuccessSnackbar";
 import { useAuth } from "../../../data/AuthContext";
 import { fetchCurrentOrganization, fetchOrganizationWorkspaces } from "../../../data/api";
@@ -36,14 +37,11 @@ export default function OrganizationWorkspacesSettings() {
 
   return (
     <Box>
-      <Stack
-        direction="row"
-        spacing={2}
-        sx={{ alignItems: "flex-start", justifyContent: "space-between", mb: 3 }}
-      >
-        <Stack spacing={0.5}>
-          <Typography variant="h5">Workspaces</Typography>
-          <Stack direction="row" spacing={0.5} sx={{ alignItems: "center" }}>
+      <PageHeader
+        sx={{ mb: 3 }}
+        title={<Typography variant="h5">Workspaces</Typography>}
+        description={
+          <Stack direction="row" spacing={0.5} sx={{ alignItems: "center", mt: 0.5 }}>
             <Typography variant="body2" color="text.secondary">
               The workspaces in {organization.data?.name ?? "this organization"}.
             </Typography>
@@ -52,18 +50,15 @@ export default function OrganizationWorkspacesSettings() {
               workspace's users include them.
             </InfoTip>
           </Stack>
-        </Stack>
-        {session.can_add_workspace && (
-          <Button
-            variant="contained"
-            startIcon={<Add />}
-            onClick={() => setCreateOpen(true)}
-            sx={{ flexShrink: 0 }}
-          >
-            Create workspace
-          </Button>
-        )}
-      </Stack>
+        }
+        actions={
+          session.can_add_workspace && (
+            <Button variant="contained" startIcon={<Add />} onClick={() => setCreateOpen(true)}>
+              Create workspace
+            </Button>
+          )
+        }
+      />
       {error !== null ? (
         <Alert severity="error">{error}</Alert>
       ) : loading ? (

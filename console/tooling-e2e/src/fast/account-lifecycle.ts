@@ -4,24 +4,27 @@ import type { FastScenario } from "./scenario.ts";
 
 /**
  * What ends: ownership, a workspace and an account. The harness admin hands a
- * package to a colleague, who cannot hand on what is not theirs. A second
- * person makes a workspace of their own and deletes it, once they type its
- * name right. Asked before deleting, the colleague's account could go, and so
- * could the operator's own while another operator remains: only the server's
- * administrator account is kept. The colleague cannot delete anyone's
- * account; the operator deletes theirs, which ends their sign-in.
+ * package to a colleague who signed up, who cannot hand on what is not
+ * theirs. A second person who signed up makes a workspace of their own and
+ * deletes it, once they type its name right, and it is no longer among their
+ * workspaces. Asked before deleting, the colleague's account could go and the
+ * harness admin's, Switch's administrator account, could not. Typing someone
+ * else's email deletes nothing; the colleague deletes their own account with
+ * theirs, which ends their session and their sign-in.
  *
- * The workspace maker is a deployment operator, so they can make a
- * workspace, and this runs only on a stack thrown away after the run.
+ * The workspace maker's account is left behind, so this runs only on a stack
+ * thrown away after the run.
  */
 export const accountLifecycle: FastScenario = {
   header: {
     id: "account-lifecycle",
     covers: [
+      "POST /gateway/auth/signup",
       "POST /gateway/ownership/transfer",
       "DELETE /gateway/tenants/{tenant_id}",
-      "DELETE /gateway/users/{user_id}",
+      "GET /gateway/tenants",
       "GET /gateway/auth/me/deletion",
+      "DELETE /gateway/auth/me",
     ],
     lane: "fast",
     environments: ["ephemeral"],
@@ -42,15 +45,7 @@ export const accountLifecycle: FastScenario = {
       return [200, ""];
     };
 
-    const password = `e2e-${names.runId}-${crypto.randomUUID()}`;
-    const email = `${names.name("colleague")}@e2e.invalid`;
-    // A member of the harness admin's workspace, where the transfer happens.
-    const { id: colleagueId, client: colleague } = await switchClient.createMember({
-      name: "E2E colleague",
-      email,
-      password,
-      role: "user",
-    });
+    const colleague = await fixtures.account("colleague");
 
     const given = await switchClient.createPackage({
       name: names.name("given"),
@@ -76,31 +71,29 @@ export const accountLifecycle: FastScenario = {
     const moved = await switchClient.transferOwnership({
       kind: "package",
       id: given.id,
-      newOwnerId: colleagueId,
+      newOwnerId: colleague.id,
     });
     expect(moved, "the package handed to the colleague").toMatchObject({
       kind: "package",
       id: given.id,
-      owner_id: colleagueId,
+      owner_id: colleague.id,
       agent_key_reissued: false,
     });
     const [notTheirs] = await status(() =>
-      colleague.transferOwnership({
+      colleague.client.transferOwnership({
         kind: "package",
         id: kept.id,
-        newOwnerId: colleagueId,
+        newOwnerId: colleague.id,
       }),
     );
     expect(notTheirs, "a member taking what isn't theirs").toBe(403);
 
     const makerEmail = `${names.name("maker")}@e2e.invalid`;
-    const { id: makerId } = await switchClient.createUser({
-      name: "E2E workspace maker",
+    const { client: maker } = await switchClient.signUp({
       email: makerEmail,
-      password,
-      role: "admin",
+      password: `e2e-${names.runId}-${crypto.randomUUID()}`,
+      displayName: "E2E workspace maker",
     });
-    const maker = switchClient.as(makerEmail, password);
     const spaceName = names.name("space");
     const spaceId = await maker.createTenant(spaceName);
     const [wrongName] = await status(() =>
@@ -108,29 +101,36 @@ export const accountLifecycle: FastScenario = {
     );
     expect(wrongName, "deleting with the wrong name").toBe(400);
     await maker.deleteTenant(spaceId, spaceName);
-    const everyWorkspace = await switchClient.operatorWorkspaces();
     expect(
-      everyWorkspace.map((row) => row.id),
-      "the deleted workspace",
+      (await maker.workspaces()).map((row) => row.id),
+      "the maker's workspaces after deleting one",
     ).not.toContain(spaceId);
 
     expect(
-      await colleague.accountDeletionRefusal(),
+      await colleague.client.accountDeletionRefusal(),
       "a member asking whether their account can go",
     ).toBeNull();
     // Only the server's administrator account is kept whatever happens;
     // another operator may go while one remains.
     expect(
-      await maker.accountDeletionRefusal(),
-      "an operator asking whether their account can go",
-    ).toBeNull();
+      await switchClient.accountDeletionRefusal(),
+      "Switch's administrator asking whether their account can go",
+    ).toContain("administrator account");
 
-    const [notOperator] = await status(() => colleague.deleteUser(makerId));
-    expect(notOperator, "a member deleting someone's account").toBe(403);
+    const [someoneElse] = await status(() =>
+      colleague.client.deleteMyAccount(makerEmail),
+    );
+    expect(someoneElse, "deleting your account by typing someone else's email").toBe(400);
+    expect(
+      await colleague.client.userId(),
+      "the colleague, still signed in after the refusal",
+    ).toBe(colleague.id);
 
-    await switchClient.deleteUser(colleagueId);
+    await colleague.client.deleteMyAccount(colleague.email);
+    const [session] = await status(() => colleague.client.tenantId());
+    expect(session, "the deleted account's session").toBe(401);
     const [signIn] = await status(() =>
-      switchClient.as(email, password).tenantId(),
+      switchClient.as(colleague.email, colleague.password).tenantId(),
     );
     expect(signIn, "signing in to a deleted account").toBe(401);
   },

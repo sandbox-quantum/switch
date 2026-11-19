@@ -113,6 +113,8 @@ export type ControllerDeps = {
   /** Where agents' working directories go when their definition names none, for a server. */
   workspacesFor: (server: string) => string;
   version: string;
+  /** Which machine, OS account and data folder this is (`readDeviceId`), or null when unknown. */
+  deviceId: string | null;
   /** Who moves it onto another release, as its status reports to Switch. */
   updatedBy: UpdatedBy;
   /**
@@ -438,6 +440,7 @@ export async function runController(
     attached: (agentId) => hub.attached(agentId),
     dataDir: deps.dataDir,
     workspacesDir: workspaces,
+    deviceId: deps.deviceId,
     version: deps.version,
     updatedBy: deps.updatedBy,
     now: deps.now,
@@ -587,6 +590,10 @@ export async function runController(
     // A recheck is asked for by someone setting up or fixing a login, so
     // each login is tried for real, not only reported as there.
     await providers.checkAll({ verify: true });
+    deps.log.info('Rechecked providers', {
+      path: process.env.PATH,
+      found: providers.locations(),
+    });
     await reporter?.sendFresh();
     // Agents waiting on a provider can start now.
     void reconcileLocally();

@@ -79,6 +79,15 @@ W = f"{G}/tenants/{{tenant}}"
 # Each persona acting on its own account or its own things.
 SELF = anyone()
 
+# The deployment's connector apps are the operator's, and also the
+# organization admin's on a deployment with only their organization
+# (`auth.deployment_manager`). This world has two, the default workspace's
+# and the matrix's own, so the organization admin is refused here.
+ONLY_ORGANIZATION = (
+    "The operator's, and the only organization's admins' where there is one; "
+    "this world has two organizations."
+)
+
 ROUTES: dict[str, Case] = {
     # ── Agents ───────────────────────────────────────────────────────────
     "GET /gateway/agents": get(f"{G}/agents", anyone()),
@@ -87,6 +96,12 @@ ROUTES: dict[str, Case] = {
         f"{G}/agents/icon-choices", anyone(), name="matrix"
     ),
     "GET /gateway/agents/{agent_id}": get(f"{G}/agents/{{agent}}", anyone()),
+    "GET /gateway/agents/rooms": get(
+        f"{G}/agents/rooms",
+        anyone(),
+        "Each agent's rooms as its detail lists them, which anyone may read.",
+        agent_id="{agent}",
+    ),
     "DELETE /gateway/agents/{agent_id}": delete(
         f"{G}/agents/{{agent}}", owner_or_admins()
     ),
@@ -282,7 +297,6 @@ ROUTES: dict[str, Case] = {
             "membership; let through, then told nobody has that id."
         ),
     ),
-    "GET /gateway/operator/workspaces": get(f"{G}/operator/workspaces", operator()),
     "GET /gateway/tenants/{tenant_id}/members": get(f"{W}/members", anyone()),
     "PATCH /gateway/tenants/{tenant_id}/members/{user_id}": patch(
         f"{W}/members/{{member_target}}", admins(), json={"role": "member"}
@@ -526,28 +540,6 @@ ROUTES: dict[str, Case] = {
         state="matrix",
     ),
     # ── Operator ─────────────────────────────────────────────────────────
-    "GET /gateway/users": get(f"{G}/users", operator()),
-    "POST /gateway/users": post(
-        f"{G}/users",
-        operator(),
-        json={
-            "name": "New",
-            "email": "{tag}-new@example.invalid",
-            "password": "a-long-enough-password",
-        },
-    ),
-    "DELETE /gateway/users/{user_id}": delete(f"{G}/users/{{user_target}}", operator()),
-    "POST /gateway/users/{user_id}/sessions/revoke": post(
-        f"{G}/users/{{user_target}}/sessions/revoke", operator()
-    ),
-    "POST /gateway/users/{user_id}/demote": post(
-        f"{G}/users/{{user_target}}/demote",
-        operator(ok=409),
-        why="The operator's; this account is no operator, which is what they're told.",
-    ),
-    "DELETE /gateway/users/{user_id}/sign-in-lock": delete(
-        f"{G}/users/{{user_target}}/sign-in-lock", operator()
-    ),
     "POST /gateway/auth/sessions/revoke": post(
         f"{G}/auth/sessions/revoke",
         SELF,
@@ -570,23 +562,29 @@ ROUTES: dict[str, Case] = {
         why="Gone: guardrails are set per organization; still the operator's.",
     ),
     "GET /gateway/workspace/guardrails": get(f"{G}/workspace/guardrails", SELF),
-    "GET /gateway/connector-apps": get(f"{G}/connector-apps", operator()),
+    "GET /gateway/connector-apps": get(
+        f"{G}/connector-apps", operator(), why=ONLY_ORGANIZATION
+    ),
     "PUT /gateway/connector-apps/{service}": put(
         f"{G}/connector-apps/github",
         operator(),
         json={"client_id": "example", "replace": False},
+        why=ONLY_ORGANIZATION,
     ),
     "POST /gateway/connector-apps/{service}/import": post(
-        f"{G}/connector-apps/github/import", operator()
+        f"{G}/connector-apps/github/import", operator(), why=ONLY_ORGANIZATION
     ),
     "POST /gateway/connector-apps/{service}/check": post(
-        f"{G}/connector-apps/github/check", operator()
+        f"{G}/connector-apps/github/check", operator(), why=ONLY_ORGANIZATION
     ),
     "GET /gateway/connector-apps/{service}/impact": get(
-        f"{G}/connector-apps/github/impact", operator(), client_id="example"
+        f"{G}/connector-apps/github/impact",
+        operator(),
+        ONLY_ORGANIZATION,
+        client_id="example",
     ),
     "DELETE /gateway/connector-apps/{service}": delete(
-        f"{G}/connector-apps/github", operator()
+        f"{G}/connector-apps/github", operator(), why=ONLY_ORGANIZATION
     ),
     # ── Rooms ────────────────────────────────────────────────────────────
     "GET /gateway/rooms": get(f"{G}/rooms", anyone()),

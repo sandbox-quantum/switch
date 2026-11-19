@@ -568,8 +568,8 @@ export default function ConnectorPage() {
         <PageBanner
           tone="warning"
           action={
-            connection.unavailable_code === "app_not_set_up" && capabilities.isOperator ? (
-              <Button component={RouterLink} to={`/platform/connectors?set_up=${connection.slug}`} size="small">
+            connection.unavailable_code === "app_not_set_up" && capabilities.canManageConnectorApps ? (
+              <Button component={RouterLink} to={`/settings/org/connector-apps?set_up=${connection.slug}`} size="small">
                 Set up
               </Button>
             ) : undefined

@@ -30,8 +30,8 @@ import { NoAccessPage } from "./StatusPages";
  *
  * Each group of the menu sits below a rule: the area's own pages, headed
  * "This workspace" in the workspace's area, then the pages about the person
- * (Your account), then, for an organization admin, the way into organization
- * settings, which leaves this area. Organization settings has no way back in
+ * (Your account), then, for whoever may enter organization settings, the way
+ * into them, which leaves this area. Organization settings has no way back in
  * its menu: the top bar's "Back to workspace" is the one way out. */
 export function SettingsLayout({ area }: { area: SettingsArea }) {
   const { capabilities } = useAuth();
@@ -167,8 +167,12 @@ export function SettingsIndex({ area }: { area: SettingsArea }) {
   const candidates = [carried, rememberedSettingsPage(area)].filter(
     (path): path is string => path !== null,
   );
+  // The area's first page, unless this person may not open it: then the
+  // first of its menu they may.
+  const fallbacks = [definition.first, ...menuOf(area, capabilities).map((item) => item.path)];
   const landing =
-    candidates.find((path) => accessTo(path, capabilities)?.allowed === true) ??
-    definition.first;
+    [...candidates, ...fallbacks].find(
+      (path) => accessTo(path, capabilities)?.allowed === true,
+    ) ?? definition.first;
   return <Navigate to={landing} replace />;
 }

@@ -1,6 +1,7 @@
 import Add from "@mui/icons-material/Add";
 import { Alert, Box, Button, CircularProgress, Stack, Typography } from "@mui/material";
 import { useCallback, useState } from "react";
+import PageHeader from "../../components/PageHeader";
 import { useAuth } from "../../data/AuthContext";
 import { type Session, type TenantMembership, fetchMembers } from "../../data/api";
 import { type Capabilities, organizationAdmins } from "../../data/capabilities";
@@ -31,28 +32,22 @@ export default function WorkspaceUsersPage() {
 
   return (
     <Box>
-      <Stack
-        direction="row"
-        spacing={2}
-        sx={{ alignItems: "flex-start", justifyContent: "space-between", mb: 3 }}
-      >
-        <Stack spacing={0.5}>
-          <Typography variant="h5">Users</Typography>
-          <Typography variant="body2" color="text.secondary">
+      <PageHeader
+        sx={{ mb: 3 }}
+        title={<Typography variant="h5">Users</Typography>}
+        description={
+          <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
             Everyone in {tenant.name}.
           </Typography>
-        </Stack>
-        {administers && (
-          <Button
-            variant="contained"
-            startIcon={<Add />}
-            onClick={() => setInviteOpen(true)}
-            sx={{ flexShrink: 0 }}
-          >
-            Invite users
-          </Button>
-        )}
-      </Stack>
+        }
+        actions={
+          administers && (
+            <Button variant="contained" startIcon={<Add />} onClick={() => setInviteOpen(true)}>
+              Invite users
+            </Button>
+          )
+        }
+      />
       {(notice !== null || warning !== null) && (
         <Stack spacing={1.5} sx={{ mb: 3 }}>
           {notice !== null && (

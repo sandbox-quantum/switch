@@ -11,6 +11,7 @@ import {
 } from "@mui/material";
 import { useCallback } from "react";
 import { Link as RouterLink } from "react-router";
+import PageHeader from "../../components/PageHeader";
 import { useAuth } from "../../data/AuthContext";
 import { fetchMembers, loadAgents, loadRooms } from "../../data/api";
 import { type ListScope, agentsInScope, listScopeOf, roomsInScope } from "../../data/listScope";
@@ -140,17 +141,15 @@ export default function OverviewPage() {
 
   return (
     <Box>
-      <Stack direction="row" alignItems="center" justifyContent="space-between" mb={3}>
-        <Typography variant="h5">Home</Typography>
-        <Button
-          component={RouterLink}
-          to="/ecosystem"
-          variant="outlined"
-          startIcon={<AccountTreeOutlined />}
-        >
-          View graph
-        </Button>
-      </Stack>
+      <PageHeader
+        sx={{ mb: 3 }}
+        title={<Typography variant="h5">Home</Typography>}
+        actions={
+          <Button component={RouterLink} to="/ecosystem" variant="outlined" startIcon={<AccountTreeOutlined />}>
+            View graph
+          </Button>
+        }
+      />
       <Counts key={scope} tenantId={tenant.id} userId={session.user.id} scope={scope} />
     </Box>
   );
