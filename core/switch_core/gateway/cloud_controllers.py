@@ -697,6 +697,11 @@ async def wake_controller_machine(
         is not None
     ):
         return machine
+    if machine.desired_state in ("retained", "deleted"):
+        # Retained or on its way out: only its owner's claim or Retry brings
+        # it back, never a message or a placement, whatever stop reason it
+        # was left with (a turn-off's included).
+        return machine
     store = CloudMachineStore()
     # A box stopped as `turned_off` for another workspace (its only one then,
     # since joined by this one) wakes for this one: that workspace's controller
