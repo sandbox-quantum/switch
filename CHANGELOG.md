@@ -1088,6 +1088,13 @@ version of their own to them without also giving them a release of their own.
   `{supported, reason}`, saying whether another device could enroll and, if
   not, why. The code is still issued. Against a server from before it, the
   dialog shows the commands as it always did.
+- **A private Discord chat Discord refuses says why.** "Continue in a
+  private Discord channel" failed with a bare 500 when the Switch bot's role
+  lacked Manage Channels, the same refusal rooms already explain. It now fails
+  with Discord's reason and what to change, and Switch Console shows that
+  message instead of "Switch did not answer". When Discord makes the channel
+  but won't let the person into it (the bot lacks Manage Roles, or the person
+  isn't in the server), the channel is removed again and the reason given.
 - **A room Discord refuses to make a channel for says why.** When Discord
   turned down the new channel, for example because the Switch bot's role
   lacks Manage Channels, creating the room failed with a bare 500 and
