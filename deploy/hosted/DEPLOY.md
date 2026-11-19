@@ -117,6 +117,11 @@ minute while it lasts, `squid-reload: WARN box files failed squid -k parse; kept
 failing_for=Ns)`, with counts only. The monitor on that line pages if it lasts over 5 minutes: until it's fixed,
 new boxes get no egress.
 
+That monitor is in `observability/monitors.json`, the box cluster's own monitors. Import it with the environment and
+notification handle filled in, the same placeholders as `../observability/monitors.json`. It finds the line through
+the squid pod's Datadog tags (`service:switch-egress-proxy`), so it needs a Datadog agent on the box cluster, which
+isn't part of this folder yet. Until there is one, the WARN line is only in the pod's log.
+
 Every login change reloads squid (`squid -k reconfigure`, a HUP), so there's a reload on each box start and stop.
 A reconfigure re-reads the config and restarts the login helpers, but it doesn't close open connections: other
 boxes' tunnels carry on. QA's slot check "a reload doesn't drop other boxes' connections" is the proof of that on a

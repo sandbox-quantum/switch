@@ -1,0 +1,18 @@
+[
+  {
+    "name": "[Switch REPLACE-WITH-ENV] box egress proxy is keeping an old config",
+    "type": "log alert",
+    "query": "logs(\"service:switch-egress-proxy env:REPLACE-WITH-ENV \\\"failed squid -k parse\\\"\").index(\"*\").rollup(\"count\").last(\"5m\") > 0",
+    "message": "{{#is_alert}}The box egress proxy has rejected its box files for at least 5 minutes and is running on its last good config. Boxes made since then have no egress (their agents can't reach their model providers). Logins, including removals, still apply.\n\n**Check:** the squid pod's `squid-reload: WARN` lines give the file count and how long it has failed. The file at fault is one of the egress-lists generator's writes into `squid-boxes`. See deploy/hosted/DEPLOY.md, \"How fast a box gets egress\".{{/is_alert}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "tags": ["service:switch-egress-proxy", "env:REPLACE-WITH-ENV", "team:switch", "tier:now"],
+    "options": {
+      "notify_no_data": false,
+      "renotify_interval": 60,
+      "notify_audit": false,
+      "require_full_window": false,
+      "include_tags": true,
+      "enable_logs_sample": false,
+      "thresholds": {"critical": 0}
+    }
+  }
+]

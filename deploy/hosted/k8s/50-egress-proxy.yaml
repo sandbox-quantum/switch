@@ -18,9 +18,16 @@ spec:
     type: RollingUpdate
   template:
     metadata:
-      annotations: {}
+      annotations:
+        # Datadog: the squid container's lines (its reload wrapper's included) go under one service, so the box
+        # cluster's monitors (../observability/monitors.json) can find them. Inert until the cluster runs an agent.
+        ad.datadoghq.com/squid.logs: '[{"source":"squid","service":"switch-egress-proxy"}]'
+        # The access-log sidecar prints each box's proxy login and destination host. An agent collecting every
+        # container's output must drop all of it: it never leaves the cluster.
+        ad.datadoghq.com/access-log.logs: '[{"source":"squid-access","service":"switch-egress-proxy","log_processing_rules":[{"type":"exclude_at_match","name":"never_ship_box_destinations","pattern":"."}]}]'
       labels:
         app: squid
+        tags.datadoghq.com/service: switch-egress-proxy
     spec:
       automountServiceAccountToken: false
       containers:
