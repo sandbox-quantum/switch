@@ -14,6 +14,12 @@ test = ["pytest>=8,<9"]
 
 [project.scripts]
 switch-hosted-controller = "switch_hosted_controller.cli:main"
+switch-node-gate = "switch_hosted_controller.node_gate_main:main"
+switch-egress-lists = "switch_hosted_controller.egress_lists:main"
+switch-egress-check-template = "switch_hosted_controller.egress_lists:check_template_main"
+switch-box-operator = "switch_hosted_controller.box_operator_main:main"
+switch-hosted-workers = "switch_hosted_controller.workers_main:main"
+switch-drain-worker = "switch_hosted_controller.drain_main:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/switch_hosted_controller"]

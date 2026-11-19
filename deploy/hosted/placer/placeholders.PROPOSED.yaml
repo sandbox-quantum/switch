@@ -1,0 +1,107 @@
+# PROPOSED, not applied. Placeholders: one low-priority "pause" Deployment per zone, each pod the size of one
+# box. A box that needs the room pre-empts a placeholder at once; the placeholder going pending makes the autoscaler
+# add a machine in that zone, so scale-up starts before real boxes wait. The placer changes only the replica count
+# (`SWITCH_BOX_PLACEHOLDERS=on`), one step per pass, 0 to 3 per zone by default.
+#
+# Placeholders: __PLACER_NS__ (where the hosted controller runs), __PLACEHOLDER_NS__ (a namespace of their own,
+# e.g. switch-placeholders, holding nothing else), __ZONE__ (one copy of the Deployment per zone,
+# e.g. eu-west-3a), __PAUSE_IMAGE__ (pinned by digest, from the cluster's own registry), __POOL__ (the boxes'
+# machine pool: agents-l3, the same value as the placer's SWITCH_PLACEMENT_POOL).
+#
+# For platform, before this is applied:
+# - Karpenter or the cluster autoscaler? With Karpenter, `switch.dev/gate1` should be a startupTaint on the node
+#   pool, or a placeholder that can't tolerate it stays pending and keeps asking for machines.
+# - Box pods should carry `karpenter.sh/do-not-disrupt: "true"` (or the cluster autoscaler's
+#   `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"`) in the user template, so only machines with no boxes are
+#   removed. That's a template change, not in this file.
+# - The size matches the box's requests today (250m CPU, 1Gi memory). Change both together.
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: switch-placeholder
+value: -10  # below every box (boxes have no class, so 0): any box pre-empts a placeholder
+preemptionPolicy: Never  # a placeholder never pushes anything out
+globalDefault: false
+description: "Placeholders: hold room for one box each, give it up at once."
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: switch-placeholder-__ZONE__
+  namespace: __PLACEHOLDER_NS__
+  labels: { app: switch-placeholder, switch.dev/placeholder-zone: __ZONE__ }
+spec:
+  replicas: 0  # the placer sets this
+  selector:
+    matchLabels: { app: switch-placeholder, switch.dev/placeholder-zone: __ZONE__ }
+  template:
+    metadata:
+      labels: { app: switch-placeholder, switch.dev/placeholder-zone: __ZONE__ }
+    spec:
+      priorityClassName: switch-placeholder
+      terminationGracePeriodSeconds: 0
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      nodeSelector:
+        switch.dev/pool: __POOL__
+        topology.kubernetes.io/zone: __ZONE__
+      # The same toleration as the boxes, so a placeholder holds room on the machines boxes use. Never the
+      # gate-1 taint: a machine still at gate 1 takes neither boxes nor placeholders.
+      tolerations:
+        - { key: switch.dev/level, operator: Equal, value: l3, effect: NoSchedule }
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65535
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: pause
+          image: __PAUSE_IMAGE__
+          resources:
+            requests: { cpu: 250m, memory: 1Gi }
+            limits: { cpu: 250m, memory: 1Gi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+---
+# The placer's power over placeholders: read them, and change the replica count of the named placeholder
+# Deployments only. They live in a namespace of their own, so the list (which RBAC can't limit to names) shows
+# nothing else, and the controller's own Deployment is out of reach.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: switch-placer-placeholders
+  namespace: __PLACEHOLDER_NS__
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list"]
+  - apiGroups: ["apps"]
+    resources: ["deployments/scale"]
+    resourceNames: ["switch-placeholder-__ZONE__"]  # one entry per zone
+    verbs: ["patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: switch-placer-placeholders
+  namespace: __PLACEHOLDER_NS__
+subjects:
+  - kind: ServiceAccount
+    name: switch-placer
+    namespace: __PLACER_NS__
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: switch-placer-placeholders
+---
+# Pause needs no network: nothing in or out for anything in the placeholders' namespace.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: __PLACEHOLDER_NS__
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress", "Egress"]

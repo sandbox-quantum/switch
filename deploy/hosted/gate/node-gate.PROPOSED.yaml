@@ -1,0 +1,418 @@
+# PROPOSED, not applied. The in-cluster node gate: the narrow powers it gets, the guard on them, the fixed
+# responder the proxy check aims at, and the gate itself. Review before applying.
+#
+# Placeholders: __CONTROLLER_IMAGE__, __PYTHON_IMAGE__, __ALPINE_IMAGE__, __RESPONDER_IMAGE__ (each pinned by a
+# 64-character sha256 digest, from the cluster's own registry; the two check images must match the gate's config),
+# __SYSTEM_POOL__ (the system machines' pool label value), __GATE_CONFIG_JSON__ (the config the gate refuses whole if
+# anything in it is off; see node_gate_jobs.gate_config_from;
+# its extra_l3_subnets must include the base node subnet if l3 machines can land there, as the watcher accepted).
+#
+# The gate's access, in full:
+#   ClusterRole switch-node-gate        nodes: get, list, watch, patch (the patch narrowed below to removing the
+#                                       switch.dev/gate1 taint). namespaces: get, list, create, delete (narrowed to
+#                                       agents-check-* names). pods: list (always by a spec.nodeName field selector;
+#                                       nothing from a pod's spec is logged). rolebindings: create (narrowed to
+#                                       agents-check-* and one fixed role and subject). clusterroles: bind, only
+#                                       switch-node-gate-check. No escalate, no secrets, no configmaps, no exec.
+#   ClusterRole switch-node-gate-check  bound per check namespace only, by the RoleBinding the gate creates there:
+#                                       jobs, the namespace's quota and network policies, and reading its pods and
+#                                       their logs. Nothing else, and nothing outside that namespace.
+#   AWS (Pod Identity)                  ec2:DescribeInstances and ec2:DescribeSubnets only (node-gate-iam.PROPOSED.json).
+#
+# RBAC can't limit a patch to one field or a name to a prefix, so the ValidatingAdmissionPolicies below do. The pod
+# policy holds for ANY pod in an agents-check-* namespace, whoever creates it (the Job controller does): without it the
+# gate could place any pod on a machine that hasn't passed.
+#
+# The policy and the code share their names and patterns; tests/test_node_gate_policy.py fails if they drift. CEL
+# cost limits and the exact refusals are only known to the cluster, so before applying: a server-side dry run of
+# each case, run outside the repo and agreed before applying.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: switch-node-gate
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: switch-node-gate
+  namespace: switch-node-gate
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: switch-node-gate
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch", "patch"]
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "create", "delete"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["rolebindings"]
+    verbs: ["create"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["clusterroles"]
+    resourceNames: ["switch-node-gate-check"]
+    verbs: ["bind"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: switch-node-gate
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: switch-node-gate
+subjects:
+  - kind: ServiceAccount
+    name: switch-node-gate
+    namespace: switch-node-gate
+---
+# Never bound cluster-wide: only by the RoleBinding the gate creates inside each check namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: switch-node-gate-check
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["resourcequotas"]
+    verbs: ["create"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["create"]
+---
+# Nodes: the gate's only change is removing the switch.dev/gate1 taint, from a node that has it. Labels, annotations,
+# owners, finalizers and every other spec field stay as they were.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: switch-node-gate-only-untaint
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["UPDATE"]
+        resources: ["nodes", "nodes/status"]
+  matchConditions:
+    - name: is-the-gate
+      expression: "request.userInfo.username == 'system:serviceaccount:switch-node-gate:switch-node-gate'"
+  validations:
+    - expression: "request.subResource == ''"
+      message: "the node gate may not change a node's status"
+    - expression: "has(oldObject.spec.taints) && oldObject.spec.taints.exists(t, t.key == 'switch.dev/gate1')"
+      message: "the node gate may only change a node that carries the switch.dev/gate1 taint"
+    - expression: >-
+        oldObject.spec.taints.filter(t, t.key != 'switch.dev/gate1').size() == 0
+        ? (!has(object.spec.taints) || object.spec.taints.size() == 0)
+        : (has(object.spec.taints) && object.spec.taints == oldObject.spec.taints.filter(t, t.key != 'switch.dev/gate1'))
+      message: "the node gate may only remove the switch.dev/gate1 taint, leaving every other taint as it was"
+    - expression: >-
+        (has(object.metadata.labels) == has(oldObject.metadata.labels)) && (!has(object.metadata.labels) || object.metadata.labels == oldObject.metadata.labels) &&
+        (has(object.metadata.annotations) == has(oldObject.metadata.annotations)) && (!has(object.metadata.annotations) || object.metadata.annotations == oldObject.metadata.annotations) &&
+        (has(object.metadata.ownerReferences) == has(oldObject.metadata.ownerReferences)) && (!has(object.metadata.ownerReferences) || object.metadata.ownerReferences == oldObject.metadata.ownerReferences) &&
+        (has(object.metadata.finalizers) == has(oldObject.metadata.finalizers)) && (!has(object.metadata.finalizers) || object.metadata.finalizers == oldObject.metadata.finalizers)
+      message: "the node gate may not change a node's labels, annotations, owners or finalizers"
+    - expression: >-
+        (has(object.spec.configSource) == has(oldObject.spec.configSource)) && (!has(object.spec.configSource) || object.spec.configSource == oldObject.spec.configSource) &&
+        (has(object.spec.externalID) == has(oldObject.spec.externalID)) && (!has(object.spec.externalID) || object.spec.externalID == oldObject.spec.externalID) &&
+        (has(object.spec.podCIDR) == has(oldObject.spec.podCIDR)) && (!has(object.spec.podCIDR) || object.spec.podCIDR == oldObject.spec.podCIDR) &&
+        (has(object.spec.podCIDRs) == has(oldObject.spec.podCIDRs)) && (!has(object.spec.podCIDRs) || object.spec.podCIDRs == oldObject.spec.podCIDRs) &&
+        (has(object.spec.providerID) == has(oldObject.spec.providerID)) && (!has(object.spec.providerID) || object.spec.providerID == oldObject.spec.providerID) &&
+        (has(object.spec.unschedulable) == has(oldObject.spec.unschedulable)) && (!has(object.spec.unschedulable) || object.spec.unschedulable == oldObject.spec.unschedulable)
+      message: "the node gate may not change a node's spec beyond its taints"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: switch-node-gate-only-untaint
+spec:
+  policyName: switch-node-gate-only-untaint
+  validationActions: ["Deny"]
+---
+# Namespaces: the gate creates and deletes only check namespaces, each labelled as its own, restricted, and naming
+# the machine it checks.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: switch-node-gate-only-check-namespaces
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE", "DELETE"]
+        resources: ["namespaces"]
+  matchConditions:
+    - name: is-the-gate
+      expression: "request.userInfo.username == 'system:serviceaccount:switch-node-gate:switch-node-gate'"
+  validations:
+    - expression: "request.operation != 'UPDATE'"
+      message: "the node gate may not change a namespace"
+    - expression: "request.name.matches('^agents-check-[a-z0-9]([a-z0-9-]*[a-z0-9])?-(g1|px|rs)$') && request.name.size() <= 63"
+      message: "the node gate may only create or delete agents-check-<machine>-<hash>-{g1,px,rs} namespaces"
+    - expression: >-
+        (request.operation == 'DELETE' ? oldObject : object).metadata.?labels[?'app.kubernetes.io/managed-by'].orValue('') == 'switch-node-gate'
+      message: "a check namespace must carry the gate's managed-by label (and the gate deletes only its own)"
+    - expression: >-
+        request.operation == 'DELETE' ||
+        (object.metadata.?labels[?'pod-security.kubernetes.io/enforce'].orValue('') == 'restricted' &&
+         has(object.metadata.annotations) && 'switch.dev/check-node' in object.metadata.annotations)
+      message: "a check namespace must enforce restricted pod security and name the machine it checks"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: switch-node-gate-only-check-namespaces
+spec:
+  policyName: switch-node-gate-only-check-namespaces
+  validationActions: ["Deny"]
+---
+# What the gate creates inside a check namespace: the one RoleBinding (fixed role, fixed subject), the quota and the
+# network policies. RBAC already stops it creating these anywhere else except rolebindings; this stops that too.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: switch-node-gate-only-check-objects
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["rbac.authorization.k8s.io"]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["rolebindings"]
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["resourcequotas"]
+      - apiGroups: ["networking.k8s.io"]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["networkpolicies"]
+      - apiGroups: ["batch"]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["jobs"]
+  matchConditions:
+    - name: is-the-gate
+      expression: "request.userInfo.username == 'system:serviceaccount:switch-node-gate:switch-node-gate'"
+  validations:
+    - expression: "request.namespace.matches('^agents-check-[a-z0-9]([a-z0-9-]*[a-z0-9])?-(g1|px|rs)$')"
+      message: "the node gate may only create objects inside its check namespaces"
+    - expression: "request.operation == 'CREATE'"
+      message: "the node gate may not change an object once created"
+    - expression: >-
+        request.kind.kind != 'RoleBinding' ||
+        (object.roleRef.kind == 'ClusterRole' && object.roleRef.name == 'switch-node-gate-check' &&
+         object.subjects.size() == 1 && object.subjects[0].kind == 'ServiceAccount' &&
+         object.subjects[0].name == 'switch-node-gate' && object.subjects[0].namespace == 'switch-node-gate')
+      message: "the node gate may bind only switch-node-gate-check, and only to itself"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: switch-node-gate-only-check-objects
+spec:
+  policyName: switch-node-gate-only-check-objects
+  validationActions: ["Deny"]
+---
+# Pods in check namespaces, whoever creates them: only the pinned check images, under gVisor, pinned to the machine
+# the namespace names, tolerating only the gate-1 and l3 taints, with no host access, no privilege, no volumes and no
+# service-account token.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: switch-node-gate-check-pods
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["pods", "pods/ephemeralcontainers"]
+  matchConditions:
+    - name: in-a-check-namespace
+      expression: "request.namespace.matches('^agents-check-[a-z0-9]([a-z0-9-]*[a-z0-9])?-(g1|px|rs)$')"
+  validations:
+    - expression: "request.subResource == ''"
+      message: "a check pod may not be given an ephemeral container"
+    # The Job controller and the kubelet UPDATE a pod's metadata (the job-tracking finalizer, conditions); refusing
+    # that would leave Jobs uncounted and namespaces stuck Terminating. The spec may not change.
+    - expression: "request.operation == 'CREATE' || object.spec == oldObject.spec"
+      message: "a check pod's spec may not be changed once created"
+    - expression: >-
+        object.spec.containers.all(c, c.image in ['__PYTHON_IMAGE__', '__ALPINE_IMAGE__']) &&
+        (!has(object.spec.initContainers) || object.spec.initContainers.size() == 0) &&
+        (!has(object.spec.ephemeralContainers) || object.spec.ephemeralContainers.size() == 0)
+      message: "a check pod may only run the pinned check images, with no init or ephemeral containers"
+    - expression: "has(object.spec.runtimeClassName) && object.spec.runtimeClassName == 'gvisor'"
+      message: "a check pod must run under gVisor"
+    - expression: >-
+        has(object.spec.nodeName) && has(namespaceObject.metadata.annotations) &&
+        namespaceObject.metadata.annotations[?'switch.dev/check-node'].orValue('') == object.spec.nodeName
+      message: "a check pod must be pinned to the machine its namespace checks"
+    # The API server adds the not-ready and unreachable tolerations (Exists, NoExecute) to every pod before this
+    # runs (DefaultTolerationSeconds), so exactly those are allowed too.
+    - expression: >-
+        !has(object.spec.tolerations) ||
+        object.spec.tolerations.all(t, has(t.key) && has(t.operator) && (
+          (t.key in ['switch.dev/gate1', 'switch.dev/level'] && t.operator == 'Equal') ||
+          (t.key in ['node.kubernetes.io/not-ready', 'node.kubernetes.io/unreachable'] && t.operator == 'Exists' &&
+           has(t.effect) && t.effect == 'NoExecute' && has(t.tolerationSeconds) && t.tolerationSeconds <= 300)))
+      message: "a check pod may tolerate only the switch.dev/gate1 and switch.dev/level taints by exact value, plus the API server's own not-ready and unreachable defaults"
+    - expression: >-
+        (!has(object.spec.hostNetwork) || !object.spec.hostNetwork) &&
+        (!has(object.spec.hostPID) || !object.spec.hostPID) &&
+        (!has(object.spec.hostIPC) || !object.spec.hostIPC) &&
+        (!has(object.spec.volumes) || object.spec.volumes.size() == 0) &&
+        has(object.spec.automountServiceAccountToken) && !object.spec.automountServiceAccountToken
+      message: "a check pod may have no host access, no volumes and no service-account token"
+    - expression: >-
+        object.spec.containers.all(c, has(c.securityContext) &&
+          (!has(c.securityContext.privileged) || !c.securityContext.privileged) &&
+          has(c.securityContext.allowPrivilegeEscalation) && !c.securityContext.allowPrivilegeEscalation)
+      message: "a check pod may not be privileged or allow privilege escalation"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: switch-node-gate-check-pods
+spec:
+  policyName: switch-node-gate-check-pods
+  validationActions: ["Deny"]
+---
+# The fixed target of the proxy check: a tiny responder in its own namespace that accepts from anywhere,
+# so the check proving a box CAN'T reach it means something. A check never touches a user's box.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: switch-node-gate-responder
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gate-responder
+  namespace: switch-node-gate-responder
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: gate-responder}
+  template:
+    metadata:
+      labels: {app: gate-responder}
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      nodeSelector: {switch.dev/pool: __SYSTEM_POOL__}
+      securityContext: {runAsNonRoot: true, runAsUser: 1000, seccompProfile: {type: RuntimeDefault}}
+      containers:
+        - name: responder
+          image: __RESPONDER_IMAGE__
+          command: ["python3", "-m", "http.server", "8080", "--directory", "/srv/empty"]
+          ports: [{containerPort: 8080}]
+          resources: {requests: {cpu: 10m, memory: 32Mi}, limits: {cpu: 100m, memory: 64Mi}}
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: ["ALL"]}}
+          volumeMounts:
+            - {name: empty, mountPath: /srv/empty, readOnly: true}
+      volumes:
+        - name: empty
+          emptyDir: {sizeLimit: 1Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gate-responder
+  namespace: switch-node-gate-responder
+spec:
+  selector: {app: gate-responder}
+  ports: [{port: 8080, targetPort: 8080}]
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: switch-node-gate
+  namespace: switch-node-gate
+data:
+  config.json: |
+    __GATE_CONFIG_JSON__
+---
+# The gate: one replica on the system machines. Machines stay tainted while it is down (it fails closed), and the
+# "Ready and still tainted for over 600 s" log line is what the alert watches.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: switch-node-gate
+  namespace: switch-node-gate
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app: switch-node-gate}
+  template:
+    metadata:
+      labels: {app: switch-node-gate}
+    spec:
+      serviceAccountName: switch-node-gate
+      enableServiceLinks: false
+      nodeSelector: {switch.dev/pool: __SYSTEM_POOL__}
+      securityContext: {runAsNonRoot: true, runAsUser: 1000, seccompProfile: {type: RuntimeDefault}}
+      containers:
+        - name: gate
+          image: __CONTROLLER_IMAGE__
+          command: ["switch-node-gate"]
+          env:
+            - {name: SWITCH_NODE_GATE_CONFIG, value: /config/config.json}
+          volumeMounts:
+            - {name: config, mountPath: /config, readOnly: true}
+          resources: {requests: {cpu: 50m, memory: 128Mi}, limits: {cpu: 500m, memory: 256Mi}}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+      volumes:
+        - name: config
+          configMap: {name: switch-node-gate}
+---
+# The gate talks only to DNS, the EKS Pod Identity agent (its AWS credentials) and, on 443, the Kubernetes API and EC2.
+# 443 is open to any address: the API server's private endpoint addresses can change, and EC2's regional endpoint is
+# public unless the VPC has an EC2 interface endpoint. With one, narrow this rule to the VPC's range.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: switch-node-gate
+  namespace: switch-node-gate
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress", "Egress"]
+  egress:
+    - to:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: kube-system}}
+          podSelector: {matchLabels: {k8s-app: kube-dns}}
+      ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
+    - to:
+        - ipBlock: {cidr: 169.254.170.23/32}
+      ports: [{protocol: TCP, port: 80}]
+    # If the cluster runs IPv6, add: ipBlock fd00:ec2::23/128 on TCP 80.
+    - ports: [{protocol: TCP, port: 443}]
