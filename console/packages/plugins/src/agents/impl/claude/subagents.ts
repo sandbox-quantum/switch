@@ -112,7 +112,7 @@ function splitList(raw: string | undefined): string[] {
   if (!raw) return [];
   return raw
     .split(',')
-    .map((t) => t.trim())
+    .map((t) => t.replace(/\s*[\r\n]+\s*/g, ' ').trim())
     .filter((t) => t.length > 0);
 }
 
@@ -173,7 +173,7 @@ const TERMINAL_ONLY_KEYS = new Set(['color', 'isolation']);
  * when there are no instructions.
  */
 function launchDefinitionFor(attributes: RepoAgentAttributes): RepoAgentLaunchDefinition {
-  const description = toScalar(attributes.description).replace(/\s*\r?\n\s*/g, ' ');
+  const description = sanitizeScalar(attributes.description);
   const definition: RepoAgentLaunchDefinition = {
     description,
     prompt: toScalar(attributes[BODY_KEY]) || description,
@@ -201,7 +201,7 @@ function launchDefinitionFor(attributes: RepoAgentAttributes): RepoAgentLaunchDe
       if (Number.isFinite(n) && n > 0) definition[key] = n;
       continue;
     }
-    const scalar = toScalar(raw);
+    const scalar = sanitizeScalar(raw);
     if (scalar.length > 0) definition[key] = scalar;
   }
   return definition;
@@ -220,8 +220,16 @@ function toScalar(value: RepoAgentAttributes[string] | undefined): string {
   return String(value).trim();
 }
 
+function sanitizeScalar(value: RepoAgentAttributes[string] | undefined): string {
+  return toScalar(value).replace(/\s*[\r\n]+\s*/g, ' ');
+}
+
 function toList(value: RepoAgentAttributes[string] | undefined): string[] {
-  if (Array.isArray(value)) return value.map((v) => String(v).trim()).filter((v) => v.length > 0);
+  if (Array.isArray(value)) {
+    return value
+      .map((v) => String(v).replace(/\s*[\r\n]+\s*/g, ' ').trim())
+      .filter((v) => v.length > 0);
+  }
   if (typeof value === 'string') return splitList(value);
   return [];
 }
@@ -234,8 +242,8 @@ function toList(value: RepoAgentAttributes[string] | undefined): string[] {
  * the description when no system prompt is given.
  */
 function serializeDefinition(attributes: RepoAgentAttributes): string {
-  const name = toScalar(attributes.name);
-  const description = toScalar(attributes.description).replace(/\s*\r?\n\s*/g, ' ');
+  const name = sanitizeScalar(attributes.name);
+  const description = sanitizeScalar(attributes.description);
   const lines = ['---', `name: ${name}`, `description: ${description}`];
 
   for (const key of FRONTMATTER_FIELD_KEYS) {
@@ -261,7 +269,7 @@ function serializeDefinition(attributes: RepoAgentAttributes): string {
       if (Number.isFinite(n) && n > 0) lines.push(`${key}: ${n}`);
       continue;
     }
-    const scalar = toScalar(raw);
+    const scalar = sanitizeScalar(raw);
     if (scalar.length > 0) lines.push(`${key}: ${scalar}`);
   }
 
@@ -457,7 +465,7 @@ export const claudeRepoAgentsBehavior: IRepoAgentsBehavior = {
   },
 
   async writeDefinition(workdirFs, attributes: RepoAgentAttributes): Promise<void> {
-    const name = toScalar(attributes.name);
+    const name = sanitizeScalar(attributes.name);
     await workdirFs.write(definitionRelPath(name), serializeDefinition(attributes));
   },
 
