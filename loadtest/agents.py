@@ -78,6 +78,25 @@ class Stats:
         default_factory=lambda: defaultdict(list)
     )
     lag_max: dict[str, float] = field(default_factory=lambda: defaultdict(float))
+    # Console windows' sidebar re-reads (consoles.py), by the window they
+    # started in: how long each took, and its requests and failed requests.
+    console_refreshes: dict[str, list[float]] = field(
+        default_factory=lambda: defaultdict(list)
+    )
+    console_requests: dict[str, int] = field(default_factory=lambda: defaultdict(int))
+    console_errors: dict[str, int] = field(default_factory=lambda: defaultdict(int))
+    # Each answered Console request's time, by window and by what it read:
+    # "rooms" (the room list) or "agents" (agents' rooms, either way).
+    console_reads: dict[tuple[str, str], list[float]] = field(
+        default_factory=lambda: defaultdict(list)
+    )
+
+    def console_refresh(
+        self, phase: str, seconds: float, requests: int, errors: int
+    ) -> None:
+        self.console_refreshes[phase].append(seconds)
+        self.console_requests[phase] += requests
+        self.console_errors[phase] += errors
 
     def add(self, msg: Message) -> None:
         self.messages[msg.token] = msg

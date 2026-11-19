@@ -52,6 +52,20 @@ version of their own to them without also giving them a release of their own.
 
 ### [Unreleased]
 
+#### Security
+- **One client can no longer take a process's database pool.** Gateway
+  requests hold at most `GATEWAY_POOL_SHARE` (0.75) of each process's pool
+  at once, leaving the rest to its own work, such as renewing its lease,
+  which drops the process's agents when it lapses. One signed-in person (else one address)
+  runs at most `GATEWAY_REQUESTS_PER_CALLER` (8) at once. A request
+  past either waits its turn for up to 3 seconds, then is answered 429 (its
+  caller's) or 503 (the process's), with `Retry-After`. A read (GET or HEAD)
+  runs each statement under `GATEWAY_READ_STATEMENT_TIMEOUT` (10s), apart
+  from the sign-in and connection callbacks, which write; any request a
+  statement timeout stops is answered 503. Requests turned away are counted in
+  `switch.http.gateway_turned_away`, on the dashboard beside the other
+  refusals.
+
 ### [0.32.1] - 2026-11-18
 
 #### Added
