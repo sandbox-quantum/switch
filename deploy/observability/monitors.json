@@ -1139,5 +1139,28 @@
       }
     },
     "priority": 4
+  },
+  {
+    "name": "[Switch REPLACE-WITH-ENV] Hosted box first starts slow",
+    "type": "query alert",
+    "query": "min(last_30m):p90:switch.hosted.start_seconds{service:REPLACE-WITH-SERVICE,case:first_start,stage:total} > 30",
+    "message": "{{#is_alert}}For 30 minutes, a person's first hosted agents v2 box has taken over 30 seconds (p90) from their first request to ready (target: 20 s p50, 30 s p90).\n\n**Check:** the box start stages on the hosted dashboard (the slowest stage says where), free room on the agents node group, and the operator's and scaler's logs.{{/is_alert}}{{#is_recovery}}Recovered: first starts are back within 30 seconds (p90).{{/is_recovery}}\n\n@REPLACE-WITH-NOTIFICATION-HANDLE",
+    "tags": [
+      "service:REPLACE-WITH-SERVICE",
+      "env:REPLACE-WITH-ENV",
+      "team:switch",
+      "tier:now"
+    ],
+    "options": {
+      "notify_no_data": false,
+      "renotify_interval": 60,
+      "notify_audit": false,
+      "require_full_window": false,
+      "include_tags": true,
+      "thresholds": {
+        "critical": 30
+      }
+    },
+    "priority": 4
   }
 ]

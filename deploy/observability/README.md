@@ -181,6 +181,7 @@ database query duration, pool hold and wait time (`switch.db.pool.hold.duration`
 the agent buffer's scan length and duration, garbage-collection pauses
 (`switch.runtime.gc_pause`), cloud machine memory (`switch.hosted.box_memory_used`),
 hosted box anonymous memory (`switch.hosted.box_anon_memory`),
+hosted box start times (`switch.hosted.start_seconds`),
 and decision duration, model time, confidence
 and wait (`switch.decision.duration`, `switch.decision.model_time`,
 `switch.decision.confidence`, `switch.decision.wait`) are OTLP histograms, and the
@@ -197,12 +198,12 @@ configured tag set (`route` for requests, `operation` for database queries and
 the agent buffer, `caller` for pool hold time but not wait time, `generation` for
 garbage-collection pauses, `bridge` and `platform` for bridge calls, `platform`
 and `delivery` for rate-limit hold-backs, `model` for decision duration, model
-time and confidence, `outcome` for decision wait, and `version` for the
+time and confidence, `outcome` for decision wait, `case` and `stage` for hosted box start times, and `version` for the
 release scorecard and comparisons), or
 `p95: … by {…}` returns nothing on a fresh account. Empty is the honest outcome either way; a panel is never silently
 switched to a different statistic.
 
-The three latency **monitors** (the API, delivery, and decisions) depend on the same thing, and fail more quietly
+The four latency **monitors** (the API, delivery, decisions, and hosted box first starts) depend on the same thing, and fail more quietly
 than a panel does: an alert over a percentile that is not enabled evaluates
 against no series and sits healthy for ever. Check them after enabling
 percentiles, not before.

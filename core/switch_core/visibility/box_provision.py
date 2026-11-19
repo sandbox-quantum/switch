@@ -147,6 +147,44 @@ async def _linked(session: AsyncSession, request_id: str) -> list[ServerAuditEve
     return list(rows.scalars().all())
 
 
+async def provision_times(
+    session: AsyncSession, machine_id: str, since: datetime | None
+) -> tuple[datetime | None, datetime | None, datetime | None]:
+    """When the machine's latest box request (after `since`, a revival, when
+    given) was asked for, claimed by the operator, and answered `done`: for
+    timing a first start (`switch.hosted.start_seconds`). Nones where a step
+    isn't recorded."""
+    query = select(ServerAuditEvent).where(
+        ServerAuditEvent.action == ACTION,
+        ServerAuditEvent.details["phase"].astext == "requested",
+        ServerAuditEvent.details["machine_id"].astext == machine_id,
+    )
+    if since is not None:
+        query = query.where(ServerAuditEvent.occurred_at > since)
+    request = await session.scalar(
+        query.order_by(
+            ServerAuditEvent.occurred_at.desc(), ServerAuditEvent.id.desc()
+        ).limit(1)
+    )
+    if request is None:
+        return None, None, None
+    linked = await _linked(session, request.id)
+    claimed = next(
+        (e.occurred_at for e in linked if (e.details or {}).get("step") == "claimed"),
+        None,
+    )
+    done = next(
+        (
+            e.occurred_at
+            for e in linked
+            if (e.details or {}).get("phase") == "result"
+            and (e.details or {}).get("result") == "done"
+        ),
+        None,
+    )
+    return request.occurred_at, claimed, done
+
+
 def _result_of(linked: list[ServerAuditEvent]) -> str | None:
     for entry in linked:
         if (entry.details or {}).get("phase") == "result":

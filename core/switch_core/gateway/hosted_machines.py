@@ -30,6 +30,7 @@ from switch_core.db.stores.hosted_machine_store import (
 )
 from switch_core.gateway.auth import get_current_user
 from switch_core.gateway.cloud_controllers import (
+    note_start_click,
     revoke_machine_controller,
     workspace_reported,
 )
@@ -367,6 +368,8 @@ async def ensure(
         raise HTTPException(503, str(error)) from None
     except CloudMachineConflict as error:
         raise HTTPException(409, str(error)) from None
+    # The person opening hosted agents starts a v2 box start's clock.
+    note_start_click(machine, datetime.now(UTC))
     await session.commit()
     # A new user's machine asks for its box, just after the claim commits.
     await ask_for_box(
@@ -451,6 +454,7 @@ async def lifecycle(
             )
             record_machine_event(session, "woken", "owner", machine.backend)
         machines.start(machine, now)
+        note_start_click(machine, now)
     else:
         if machine.state != "error":
             raise HTTPException(409, "Only a machine in error can be retried.")

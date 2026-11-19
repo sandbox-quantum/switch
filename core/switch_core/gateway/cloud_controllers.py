@@ -48,10 +48,11 @@ from switch_core.observability.hosted import (
     record_controller_restart,
     record_machine_event,
     record_provisioned,
+    record_start_stage,
     reports_memory,
 )
 from switch_core.telemetry import emit_after_commit
-from switch_core.visibility.box_provision import revived_at
+from switch_core.visibility.box_provision import provision_times, revived_at
 
 # How recent the machine's last status report must be for its silence to count
 # as idle rather than as a machine that stopped reporting.
@@ -411,13 +412,141 @@ async def record_controller_status(
             "revision": machine.revision,
             "controller_id": controller_id,
             "tenant_id": workspace.tenant_id,
+            # Its first report at this revision, for the start's stages.
+            "at": _first_report_at(machine.heartbeat, machine.revision, now),
         }
     await ready_if_both_signals(session, machine, now, reported_now=True)
 
 
 # Where the heartbeat keeps the last controller report seen at the machine's
-# revision (hosted agents v2 boxes only): its revision, controller and workspace.
+# revision (hosted agents v2 boxes only): its revision, controller and
+# workspace, and when the first report at that revision came.
 REPORTED_KEY = "reported"
+# A v2 box start's clock, for its current revision: when the person's first
+# request that needs the box came (`note_start_click`), and its case.
+START_KEY = "start"
+# When the person's first request for this machine came, ever (cleared when
+# the row is revived): a box already ready then is a first start of 0 s.
+FIRST_CLICK_KEY = "first_click"
+
+
+def _first_report_at(heartbeat: Any, revision: int, now: datetime) -> str:
+    previous = (heartbeat or {}).get(REPORTED_KEY)
+    if (
+        isinstance(previous, dict)
+        and previous.get("revision") == revision
+        and isinstance(previous.get("at"), str)
+    ):
+        return str(previous["at"])
+    return now.isoformat()
+
+
+def note_start_click(machine: CloudMachine, now: datetime) -> None:
+    """Start the clock for a v2 box's start: the person's first request that
+    needs the box (opening hosted agents, placing an agent, a message waking
+    it, or the owner's Start), once per revision. A box already ready needs no
+    start; if that's the person's very first request, it's a first start of
+    0 s. The caller holds the machine's lock and commits. Nothing with v2 off,
+    or for a v1 machine."""
+    if not process_hosted_v2() or machine.backend != "box":
+        return
+    heartbeat = dict(machine.heartbeat or {})
+    first_click = FIRST_CLICK_KEY not in heartbeat
+    heartbeat.setdefault(FIRST_CLICK_KEY, now.isoformat())
+    started = heartbeat.get(START_KEY)
+    if machine.state == "ready" and machine.desired_state == "running":
+        if first_click:
+            record_start_stage("first_start", "total", 0.0)
+    elif not (
+        isinstance(started, dict) and started.get("revision") == machine.revision
+    ):
+        heartbeat[START_KEY] = {
+            "revision": machine.revision,
+            "case": "first_start" if machine.first_ready_at is None else "wake",
+            "clicked_at": now.isoformat(),
+        }
+    machine.heartbeat = heartbeat
+
+
+def start_segments(
+    clock: datetime, marks: list[tuple[str, datetime | None]]
+) -> list[tuple[str, float]]:
+    """Each stage's own seconds, in order from `clock`: a stage that happened
+    before the one before it (or before the clock) counts 0, and a stage with
+    no time recorded is left out, its time counted in the next. So the stages
+    always add up to the clock to the last stage."""
+    out: list[tuple[str, float]] = []
+    cursor = clock
+    for stage, at in marks:
+        if at is None:
+            continue
+        end = max(at, cursor)
+        out.append((stage, (end - cursor).total_seconds()))
+        cursor = end
+    return out
+
+
+async def _record_start_timings(
+    session: AsyncSession, machine: CloudMachine, now: datetime, new_machine: bool
+) -> None:
+    """A v2 box just became ready: its start's stages, by case and stage only
+    (`record_start_stage`). Timed from the start clock when the person's
+    request came first; a first start is also timed from its box request
+    (`since_box_request`), which may predate the click."""
+    heartbeat = machine.heartbeat or {}
+    started = heartbeat.get(START_KEY)
+    if not (isinstance(started, dict) and started.get("revision") == machine.revision):
+        started = None
+    case = (
+        str(started["case"])
+        if started is not None
+        else ("first_start" if new_machine else "wake")
+    )
+    requested = claimed = provisioned = None
+    if case == "first_start":
+        requested, claimed, provisioned = await provision_times(
+            session, machine.id, await revived_at(session, machine.id)
+        )
+        if requested is not None:
+            record_start_stage(
+                case, "since_box_request", (now - requested).total_seconds()
+            )
+    if started is None:
+        return  # the clock never started: nobody was waiting
+    clock = _when(started.get("clicked_at"))
+    if clock is None:
+        return
+    reported = heartbeat.get(REPORTED_KEY)
+    reported_at = (
+        _when(reported.get("at"))
+        if isinstance(reported, dict) and reported.get("revision") == machine.revision
+        else None
+    )
+    marks: list[tuple[str, datetime | None]] = []
+    if case == "first_start":
+        marks += [
+            ("box_requested", requested),
+            ("box_claimed", claimed),
+            ("box_provisioned", provisioned),
+        ]
+    marks += [
+        ("box_running", machine.running_observed_at),
+        ("controller_reported", reported_at),
+        ("ready", now),
+    ]
+    for stage, seconds in start_segments(clock, marks):
+        record_start_stage(case, stage, seconds)
+    record_start_stage(case, "total", max((now - clock).total_seconds(), 0.0))
+
+
+def _when(value: Any) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        moment = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return moment if moment.tzinfo else moment.replace(tzinfo=UTC)
 
 
 async def ready_if_both_signals(
@@ -484,6 +613,8 @@ async def ready_if_both_signals(
     )
     if provisioning_seconds is not None:
         record_provisioned(provisioning_seconds, machine.backend)
+    if process_hosted_v2() and machine.backend == "box":
+        await _record_start_timings(session, machine, now, new_machine)
     return True
 
 
@@ -568,6 +699,7 @@ async def wake_controller_machine(
     # stays revoked and refused, so only this workspace's agents come back.
     if idle_sleeping(machine) or machine.stop_reason == "turned_off":
         store.start(machine, now)
+        note_start_click(machine, now)
         emit_after_commit(
             session, current_telemetry(), "cloud_machine_woken", {"trigger": trigger}
         )
