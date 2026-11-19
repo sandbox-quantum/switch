@@ -564,3 +564,84 @@ async def test_after_slacks_stop_the_turn_does_not_open_another_stream() -> None
 
 def test_the_app_subscribes_to_slacks_stop() -> None:
     assert "agent_session_stopped" in SLACK_BOT_EVENTS
+
+
+# ── Which Stop to show ───────────────────────────────────────────────────────
+
+
+def _answering(client: FakeWebClient, answer: FakeResponse) -> None:
+    async def api_call(method: str, **kwargs: Any) -> FakeResponse:
+        client.api_calls.append((method, kwargs))
+        return answer
+
+    client.api_call = api_call  # type: ignore[method-assign]
+
+
+def _has_own_stop(blocks: list[dict[str, Any]]) -> bool:
+    return any(block.get("type") == "actions" for block in blocks)
+
+
+async def _inline_post(adapter: SlackAdapter, client: FakeWebClient) -> list[Any]:
+    await adapter.open_session(CHANNEL, "Agent", f"{CHANNEL}:4.0", ASKER, "t")
+    await adapter.post_rich(
+        CHANNEL,
+        "Agent",
+        TurnActivity([_tool()], _turn(), interrupt_turn_id="t1", has_session=True),
+        None,
+    )
+    return client.posted[-1]["blocks"]
+
+
+async def test_an_app_subscribed_to_slacks_stop_leaves_its_own_out() -> None:
+    client = FakeWebClient()
+    _answering(client, FakeResponse({"ok": True, "status": "processing"}))
+    adapter = _adapter(client)
+    blocks = await _inline_post(adapter, client)
+    assert adapter.native_stop_available() is True
+    assert not _has_own_stop(blocks), "Slack draws the Stop on the session"
+
+
+async def test_an_app_not_subscribed_keeps_switchs_own_stop() -> None:
+    client = FakeWebClient()
+    _answering(
+        client,
+        FakeResponse(
+            {
+                "ok": True,
+                "warning": "missing_agent_session_stopped_event_subscription",
+                "response_metadata": {
+                    "warnings": ["missing_agent_session_stopped_event_subscription"]
+                },
+            }
+        ),
+    )
+    adapter = _adapter(client)
+    blocks = await _inline_post(adapter, client)
+    assert adapter.native_stop_available() is False
+    assert _has_own_stop(blocks)
+
+
+async def test_a_workspace_without_sessions_keeps_switchs_own_stop() -> None:
+    client = FakeWebClient()
+
+    async def api_call(method: str, **kwargs: Any) -> FakeResponse:
+        raise SlackApiError("no", FakeResponse({"error": "feature_disabled"}))
+
+    client.api_call = api_call  # type: ignore[method-assign]
+    adapter = _adapter(client)
+    blocks = await _inline_post(adapter, client)
+    assert adapter.native_stop_available() is False
+    assert _has_own_stop(blocks)
+
+
+async def test_a_turn_without_a_session_always_keeps_switchs_own_stop() -> None:
+    client = FakeWebClient()
+    adapter = _adapter(client)
+    adapter._native_stop = True
+    await adapter.post_rich(
+        CHANNEL,
+        "Agent",
+        TurnActivity([_tool()], _turn(), interrupt_turn_id="t1"),
+        None,
+    )
+    assert _has_own_stop(client.posted[-1]["blocks"])

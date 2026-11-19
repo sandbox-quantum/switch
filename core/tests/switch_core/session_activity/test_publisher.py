@@ -1905,6 +1905,11 @@ async def test_a_restart_finishes_a_work_thread_whose_ending_had_not_run(
 
 @dataclass
 class InlinePlatform(WorkThreadPlatform):
+    native_stop: bool | None = None
+
+    def native_stop_available(self) -> bool | None:
+        return self.native_stop
+
     async def open_session(
         self,
         channel_id: str,
@@ -2041,3 +2046,18 @@ async def test_slacks_stop_on_a_work_message_finds_the_turn_it_shows(
     target = await work_publisher.stop_target(bridged.channel_id, opened.ref)
     assert target is not None
     assert (target.turn_id, target.running_turn_id) == ("turn-1", "turn-1")
+
+
+async def test_an_inline_message_is_redrawn_without_its_stop_where_slack_has_one(
+    service, inline_publisher, inline_platform, bridged
+):
+    """The message goes up before the session says Slack draws its own Stop;
+    it is drawn again at once, marked as having a session, so the adapter
+    leaves Switch's out."""
+    inline_platform.native_stop = True
+    await _turn(service, bridged.room_id, "running", 1)
+    await inline_platform.wait_until(lambda: len(_turns(inline_platform)) >= 2)
+    first, again = _turns(inline_platform)[:2]
+    assert (first.call, again.call) == ("post_rich", "update_rich")
+    assert again.ref == first.ref
+    assert again.content.has_session
