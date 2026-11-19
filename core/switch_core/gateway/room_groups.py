@@ -172,8 +172,9 @@ async def assign_rooms_to_group(
     principal = Principal(user.id, is_admin)
     forbidden: list[str] = []
     allowed: list[str] = []
-    for room_id in req.room_ids:
-        room = await room_store.get(session, room_id)
+    rooms = await room_store.get_many(session, req.room_ids)
+    for room_id in dict.fromkeys(req.room_ids):
+        room = rooms.get(room_id)
         if room is None:
             continue  # skip unknown ids rather than failing the whole batch
         if not room_policy.allows(

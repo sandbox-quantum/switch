@@ -1,3 +1,4 @@
+import { introduceChat } from '@renderer/features/chats/chat-entrance';
 import { focusComposerWhenOpened } from '@renderer/features/chats/components/chat-composer';
 import { chatsStore, chatTitler } from '@renderer/features/chats/stores/chats';
 import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
@@ -75,15 +76,21 @@ async function findOrMakeBuddyChat(
 /**
  * Opens the person's buddy's page, in its chat. When the chat cannot
  * be had the agent's page still opens, and a toast says why.
+ *
+ * `entrance` is how its first message appears: sliding in when the chat is
+ * arrived at from elsewhere, at once where it is already on screen (the
+ * buddy's page before it existed draws the same message).
  */
 export async function openBuddyChat(
   serverId: string,
-  agent: { agentId: string; name: string }
+  agent: { agentId: string; name: string },
+  entrance: 'slide-in' | 'in-place'
 ): Promise<void> {
   let roomId: string | null = null;
   try {
     roomId = (await buddyChat(serverId, agent)).roomId;
     focusComposerWhenOpened(roomId);
+    if (entrance === 'slide-in') introduceChat(roomId, 'agent');
   } catch (cause) {
     toast({
       title: 'Could not open the chat with switch-buddy',
@@ -136,6 +143,8 @@ export async function askBuddy(
   });
   void chatTitler.sent(serverId, roomId, text);
   focusComposerWhenOpened(roomId);
+  // Your message slides in as the chat opens, and the buddy's answer when it comes.
+  introduceChat(roomId, 'own-and-agent');
   appState.navigation.navigate('managedAgent', {
     serverId,
     agentId: agent.agentId,
@@ -154,7 +163,7 @@ export async function openBuddyAfterOnboarding(
   agent: { agentId: string; name: string } | null
 ): Promise<void> {
   if (agent) {
-    await openBuddyChat(serverId, agent);
+    await openBuddyChat(serverId, agent, 'slide-in');
     return;
   }
   buddyIntroStore.skipped();

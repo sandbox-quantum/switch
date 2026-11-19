@@ -77,8 +77,14 @@ export function RoomAutoRouteSection({
     }
   }
 
-  // Unavailable, it can still be turned off, so a room isn't stuck "on".
-  const canFlip = canWrite && pending === null && (autoRoute.available || autoRoute.on);
+  const assigned =
+    autoRoute.assignedAgent === null
+      ? null
+      : (autoRoute.assignedAgentName ?? autoRoute.assignedAgent);
+  // Unavailable, or with an assigned agent getting every message, it can
+  // still be turned off, so a room isn't stuck "on".
+  const canFlip =
+    canWrite && pending === null && (autoRoute.on || (autoRoute.available && assigned === null));
   const triage = autoRoute.fallbackAgent;
   // A triage agent that has left the room is still listed, so the setting stays visible.
   const triageChoices =
@@ -113,6 +119,18 @@ export function RoomAutoRouteSection({
       {!canWrite && (
         <p className="text-xs text-foreground-muted" role="note">
           Only the room's owner, a room admin or a workspace admin can turn auto-route on or off.
+        </p>
+      )}
+
+      {assigned !== null && (
+        <p className="text-xs text-foreground-muted" role="note">
+          {autoRoute.on
+            ? `On, but not acting: every message goes to ${assigned}, assigned with `
+            : `Every message goes to ${assigned}, assigned with `}
+          <code>!assign-agent</code>. Run <code>!unassign-agent</code> in the room
+          {autoRoute.on
+            ? ' for auto-route to decide, or turn it off here.'
+            : ' to turn auto-route on.'}
         </p>
       )}
 

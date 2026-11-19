@@ -124,6 +124,8 @@ class _Lifecycle(Protocol):
 class _RoomChanges(Protocol):
     def room_changed(self, tenant_id: str, room_id: str) -> None: ...
 
+    def rooms_changed(self, tenant_id: str, room_ids: Collection[str]) -> None: ...
+
 
 class _NoticePoster(Protocol):
     async def __call__(
@@ -511,8 +513,8 @@ class PrivateChannelRooms:
                 actor_user_id,
                 room.channel_type or "of an unrecorded type",
             )
-            self._room_changes.room_changed(tenant_id, room.id)
         if changed:
+            self._room_changes.rooms_changed(tenant_id, [room.id for room in changed])
             task = asyncio.create_task(
                 self._notify_all(
                     tenant_id, [room.transport_room_id for room in changed]

@@ -1,5 +1,6 @@
 import { type FeatureFlagState, type FeatureFlags, featureFlagsFrom } from "./featureFlags";
 import { LONG_REQUEST_TIMEOUT_MS, gatewayFetch } from "./gatewayFetch";
+import { BULK_ROOMS_MAX, ROOM_USERS_MAX, inChunks } from "./inBatches";
 
 const BASE = "/gateway";
 
@@ -384,6 +385,13 @@ export interface RoomAutoRoute {
   fallback_agent: string | null;
   /** That agent's name, for display. Absent on servers that predate it. */
   fallback_agent_name?: string | null;
+  /**
+   * The room's assigned agent (`!assign-agent`), which gets every message
+   * first: auto-route can't be turned on while it is set. Absent on servers
+   * that predate it.
+   */
+  assigned_agent?: string | null;
+  assigned_agent_name?: string | null;
 }
 
 export interface SetRoomAutoRouteInput {
@@ -705,13 +713,22 @@ export async function setRoomAutoRoute(
   return jsonRequest<RoomAutoRoute>(`/rooms/${roomId}/auto-route`, "PUT", input);
 }
 
+// One request per `ROOM_USERS_MAX` people, one after another; the room as
+// the last one left it.
 export async function addRoomUsers(
   roomId: string,
   userNames: string[],
 ): Promise<RoomDetail> {
-  return jsonRequest<RoomDetail>(`/rooms/${roomId}/users`, "POST", {
-    user_names: userNames,
+  const [first = [], ...rest] = inChunks(userNames, ROOM_USERS_MAX);
+  let room = await jsonRequest<RoomDetail>(`/rooms/${roomId}/users`, "POST", {
+    user_names: first,
   });
+  for (const chunk of rest) {
+    room = await jsonRequest<RoomDetail>(`/rooms/${roomId}/users`, "POST", {
+      user_names: chunk,
+    });
+  }
+  return room;
 }
 
 /** Delete the room. Its platform channel is kept unless `retireChannel`
@@ -733,15 +750,22 @@ export interface BulkRoomRefusal {
 /** Archive or unarchive many rooms. The server skips, without failing, any
  * room the viewer may not change or that is gone, says how many it did
  * change, and names each it skipped with the reason. */
+// One request per `BULK_ROOMS_MAX` rooms, one after another.
 export async function bulkArchiveRooms(
   roomIds: string[],
   archived: boolean,
 ): Promise<{ updated: number; refused: BulkRoomRefusal[] }> {
-  return jsonRequest<{ updated: number; refused: BulkRoomRefusal[] }>(
-    "/rooms/bulk-archive",
-    "POST",
-    { room_ids: roomIds, archived },
-  );
+  const done = { updated: 0, refused: [] as BulkRoomRefusal[] };
+  for (const chunk of inChunks(roomIds, BULK_ROOMS_MAX)) {
+    const result = await jsonRequest<{ updated: number; refused: BulkRoomRefusal[] }>(
+      "/rooms/bulk-archive",
+      "POST",
+      { room_ids: chunk, archived },
+    );
+    done.updated += result.updated;
+    done.refused.push(...result.refused);
+  }
+  return done;
 }
 
 // ── Room groups ──────────────────────────────────────────────────────────────
@@ -789,15 +813,21 @@ export async function updateRoomGroup(
   return jsonRequest<RoomGroupDetail>(`/room-groups/${groupId}`, "PATCH", input);
 }
 
+// One request per `BULK_ROOMS_MAX` rooms, one after another.
 export async function assignRoomsToGroup(
   groupId: string,
   roomIds: string[],
 ): Promise<{ assigned: number }> {
-  return jsonRequest<{ assigned: number }>(
-    `/room-groups/${groupId}/rooms`,
-    "PUT",
-    { room_ids: roomIds },
-  );
+  let assigned = 0;
+  for (const chunk of inChunks(roomIds, BULK_ROOMS_MAX)) {
+    const result = await jsonRequest<{ assigned: number }>(
+      `/room-groups/${groupId}/rooms`,
+      "PUT",
+      { room_ids: chunk },
+    );
+    assigned += result.assigned;
+  }
+  return { assigned };
 }
 
 export async function deleteRoomGroup(groupId: string): Promise<void> {
@@ -2373,7 +2403,7 @@ export interface AskPlatformResult {
   remaining: number;
 }
 
-/** The most rooms one apply changes. */
+/** The most rooms one apply changes; the server refuses more. */
 export const MAKE_PRIVATE_MAX = 200;
 
 /** How many rooms the review page would list. One query; no platform. */
@@ -2407,15 +2437,22 @@ export async function previewPrivateChannelRooms(
   return result.rooms;
 }
 
+// One request per `MAKE_PRIVATE_MAX` rooms, one after another.
 export async function makeRoomsPrivate(
   tenantId: string,
   roomIds: string[],
 ): Promise<MakeRoomsPrivateResult> {
-  return jsonRequest<MakeRoomsPrivateResult>(
-    `/tenants/${encodeURIComponent(tenantId)}/private-channel-rooms/make-private`,
-    "POST",
-    { room_ids: roomIds },
-  );
+  const done: MakeRoomsPrivateResult = { changed: [], skipped: [] };
+  for (const chunk of inChunks(roomIds, MAKE_PRIVATE_MAX)) {
+    const result = await jsonRequest<MakeRoomsPrivateResult>(
+      `/tenants/${encodeURIComponent(tenantId)}/private-channel-rooms/make-private`,
+      "POST",
+      { room_ids: chunk },
+    );
+    done.changed.push(...result.changed);
+    done.skipped.push(...result.skipped);
+  }
+  return done;
 }
 
 // ── Erasing a person ───────────────────────────────────────────────────────

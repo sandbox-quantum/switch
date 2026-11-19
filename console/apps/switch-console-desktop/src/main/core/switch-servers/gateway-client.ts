@@ -3873,6 +3873,9 @@ type RoomAutoRouteJson = {
   fallback_agent: string | null;
   /** Absent from a server that predates it. */
   fallback_agent_name?: string | null;
+  /** Absent from a server that predates it. */
+  assigned_agent?: string | null;
+  assigned_agent_name?: string | null;
 };
 
 function mapRoomAutoRoute(json: RoomAutoRouteJson): RoomAutoRoute {
@@ -3882,6 +3885,8 @@ function mapRoomAutoRoute(json: RoomAutoRouteJson): RoomAutoRoute {
     reason: json.reason,
     fallbackAgent: json.fallback_agent,
     fallbackAgentName: json.fallback_agent_name ?? null,
+    assignedAgent: json.assigned_agent ?? null,
+    assignedAgentName: json.assigned_agent_name ?? null,
   };
 }
 
@@ -5290,15 +5295,29 @@ type ManagedAgentJson = {
  */
 export async function enrollConsoleController(
   server: SwitchServer,
-  body: { name: string; platform: ControllerPlatform; version: string }
-): Promise<{ controllerId: string; credential: string }> {
+  body: { name: string; platform: ControllerPlatform; version: string; deviceId: string | null }
+): Promise<{ controllerId: string; credential: string; adopted: boolean }> {
   const res = await managementFetch(server, '/controllers', {
     authenticated: true,
     method: 'POST',
-    body: { name: body.name, kind: 'console', platform: body.platform, version: body.version },
+    body: {
+      name: body.name,
+      kind: 'console',
+      platform: body.platform,
+      version: body.version,
+      ...(body.deviceId === null ? {} : { device_id: body.deviceId }),
+    },
   });
-  const json = (await res.json()) as { controller_id: string; credential: string };
-  return { controllerId: json.controller_id, credential: json.credential };
+  const json = (await res.json()) as {
+    controller_id: string;
+    credential: string;
+    adopted?: boolean;
+  };
+  return {
+    controllerId: json.controller_id,
+    credential: json.credential,
+    adopted: json.adopted === true,
+  };
 }
 
 /**

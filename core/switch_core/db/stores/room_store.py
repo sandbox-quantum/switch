@@ -542,6 +542,23 @@ class RoomStore:
         )
         return set(result.scalars().all())
 
+    async def people_present(self, session: AsyncSession, room_id: str) -> set[str]:
+        """The transport ids of the people present in the room: the platform
+        accounts and Switch Console members with a membership row. Agents and
+        Switch's own clients (the admin, the bridges) are not people."""
+        result = await session.execute(
+            select(Client.transport_user_id)
+            .join(ClientRoom, ClientRoom.client_id == Client.id)
+            .where(
+                ClientRoom.room_id == room_id,
+                or_(
+                    Client.type == MEMBER_CLIENT_TYPE,
+                    exists().where(ExternalUser.client_id == Client.id),
+                ),
+            )
+        )
+        return set(result.scalars().all())
+
     async def people_in_room(
         self, session: AsyncSession, room_id: str
     ) -> list[tuple[str, str]]:
@@ -1226,6 +1243,20 @@ class RoomStore:
         else:
             room.archived_at = None
         await session.flush()
+
+    async def set_archived_many(
+        self, session: AsyncSession, room_ids: Collection[str], archived: bool
+    ) -> None:
+        """`set_archived` for many rooms in one statement. An id with no room
+        changes nothing."""
+        if not room_ids:
+            return
+        await session.execute(
+            update(Room)
+            .where(any_of(Room.id, room_ids))
+            .values(archived_at=datetime.now(UTC) if archived else None)
+            .execution_options(synchronize_session=False)
+        )
 
     async def update_fields(
         self,

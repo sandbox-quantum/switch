@@ -50,7 +50,7 @@ export const roomMessageSchema = z.object({
     // nobody. A rule a newer server adds is read as none, which frames the
     // message as addressing the agent: a notice it did not need beats silence.
     follow_up: z
-      .enum(['thread_follow_up', 'channel_follow_up', 'main_agent'])
+      .enum(['thread_follow_up', 'channel_follow_up', 'main_agent', 'one_to_one'])
       .nullish()
       .catch(null),
   }),
@@ -152,6 +152,7 @@ const FOLLOW_UP_REASONS = {
   thread_follow_up: 'you spoke or were tagged in this thread more recently than any other agent',
   channel_follow_up: 'it continues their exchange with you',
   main_agent: "you are this room's assigned agent",
+  one_to_one: 'you are the only agent in this room and they are the only person',
 } as const;
 
 /** One of a message's attachments: what the command names it by, or why it is not delivered. */

@@ -28,6 +28,38 @@ def _max(xs: list[float]) -> float | None:
     return round(max(xs), 1) if xs else None
 
 
+# An admin-bulk window passes when the clicks all worked and the agents'
+# traffic beside them kept going: no errors, and sends answered within the
+# 2 s the pilot's API-slowness alert allows.
+BULK_SEND_MS_P99_MAX = 2000.0
+
+
+def bulk_summary(clicks: list[dict]) -> dict:
+    """An admin-bulk window's clicks, added up."""
+    return {
+        "clicks": len(clicks),
+        "rooms": sum(c["rooms"] for c in clicks),
+        "changed": sum(c.get("changed", 0) for c in clicks),
+        "failed_clicks": sum(c["status"] != 200 for c in clicks),
+        "click_ms_max": max((c["ms"] for c in clicks), default=None),
+    }
+
+
+def bulk_verdict(summary: dict) -> list[str]:
+    """Why an admin-bulk window failed; empty when it passed."""
+    bulk = summary["bulk"]
+    why = []
+    if bulk["failed_clicks"]:
+        why.append(f"{bulk['failed_clicks']} clicks failed")
+    if bulk["changed"] < bulk["rooms"]:
+        why.append(f"{bulk['changed']} of {bulk['rooms']} rooms changed")
+    if summary["errors"]:
+        why.append(f"{summary['errors']} errors in the agents' traffic")
+    if (summary["send_ms_p99"] or 0) > BULK_SEND_MS_P99_MAX:
+        why.append(f"agents' send p99 {summary['send_ms_p99']:g} ms")
+    return why
+
+
 def phase_summary(
     phase: dict, stats, samples: list[dict], agents_connected: list[int]
 ) -> dict:
@@ -146,6 +178,7 @@ def phase_summary(
         "db_xact_per_s_p50": round(statistics.median(xact), 1) if xact else None,
         "db_xact_per_s_max": _max(xact),
         "rds": phase.get("rds"),
+        "bulk": bulk_summary(phase["bulk"]) if "bulk" in phase else None,
     }
 
 
@@ -239,6 +272,31 @@ def render(meta: dict, phases: list[dict], teardown: dict | None) -> str:
                 f"| {_fmt(p['console_refresh_ms_p50'])} / {_fmt(p['console_refresh_ms_p99'])} "
                 f"| {_fmt(p.get('console_rooms_ms_p99'))} | {_fmt(p.get('console_agents_ms_p99'))} "
                 f"| {p['console_requests']} | {p['console_errors']} |"
+            )
+    bulk = [p for p in phases if p.get("bulk")]
+    if bulk:
+        lines += [
+            "",
+            "## Admin bulk change",
+            "",
+            "An admin making the run's bulk rooms Private, then archiving and unarchiving "
+            "them, one click a batch, while the agents' traffic runs. It fails on a click that failed or left rooms unchanged, "
+            "on any error in the agents' traffic, or on an agents' send p99 over "
+            f"{BULK_SEND_MS_P99_MAX:g} ms. Pool timeouts and a pod handing its bridges away "
+            "are not visible from here: check `switch.db.pool.timeouts` and the pods' logs "
+            "for the window.",
+            "",
+            "| phase | clicks | rooms changed / asked | slowest click ms | DB conns app max "
+            "(idle in tx) | send p99 ms | errors | verdict |",
+            "|---|---|---|---|---|---|---|---|",
+        ]
+        for p in bulk:
+            b, why = p["bulk"], bulk_verdict(p)
+            lines.append(
+                f"| {p['phase']} | {b['clicks']} | {b['changed']} / {b['rooms']} "
+                f"| {_fmt(b['click_ms_max'])} | {_fmt(p['db_app_conns_max'])} "
+                f"({_fmt(p['db_app_idle_tx_max'])}) | {_fmt(p['send_ms_p99'])} "
+                f"| {p['errors']} | {'fail: ' + '; '.join(why) if why else 'pass'} |"
             )
     if teardown is not None:
         lines += [

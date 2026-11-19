@@ -54,6 +54,9 @@ class AgentProvider:
     Off, it is left out of what clients are offered and no new agent may name
     it, but an agent already defined on it keeps running."""
 
+    supports_auto_mode: bool = True
+    """Whether the session interface exposes automatic permission review."""
+
     known_agent_type: str = ""
     """The known-agent spec its agents register through, stored on each agent
     as `known_agent_type`. Defaults to `id`."""
@@ -158,6 +161,7 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
     ),
     AgentProvider(
         id="cursor",
+        supports_auto_mode=False,
         label="Cursor CLI",
         sign_in_command="agent login",
         flag=None,
