@@ -32,7 +32,7 @@ import argparse
 import getpass
 import sys
 import textwrap
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Collection
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -374,11 +374,13 @@ class _NoChats:
     """The room service, for a command that runs none: refused first, as
     `_NoAgentBridge` is, while the account has an open chat."""
 
-    async def set_room_archived(self, room_id: str, archived: bool) -> None:
+    async def set_rooms_archived(
+        self, tenant_id: str, room_ids: Collection[str], archived: bool
+    ) -> list[str]:
         raise RuntimeError(
-            f"the account opened a chat ({room_id}) since the deletion started, "
-            "which only a running server can archive; archive it from the "
-            "dashboard or Switch Console first"
+            f"the account opened chats ({', '.join(room_ids)}) since the deletion "
+            "started, which only a running server can archive; archive them from "
+            "the dashboard or Switch Console first"
         )
 
 
