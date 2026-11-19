@@ -96,6 +96,7 @@ from switch_core.bridges.collaboration.webhooks import (
 from switch_core.bridges.resource.service import ResourceService
 from switch_core.chats.service import ChatService
 from switch_core.chats.signals import ChatSignals
+from switch_core.chats.stream_reads import chat_stream_slots_for
 from switch_core.clients.actor import Actor, AgentActor, HumanActor, SystemActor
 from switch_core.clients.admin_messages import AdminMessageType
 from switch_core.clients.agent_admin import AgentAdministration, AgentDeletionRequests
@@ -1357,6 +1358,7 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
         trust_client=trust_client,
         message_observer=message_telemetry,
         telemetry=telemetry,
+        stream_slots=chat_stream_slots_for(config.db_pool_size, config.db_max_overflow),
     )
     # Changes to people's chats made in another process wake the Console
     # streams held here too (`chats/signals.py`).
