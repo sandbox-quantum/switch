@@ -54,6 +54,8 @@ class DecideResponse(BaseModel):
     lead: float | None = None
     reason: str
     model: str
-    # The backend that answered: the configured one, or the per-request override.
+    # The backend that answered: the configured one, the per-request
+    # override, or the fallback.
     backend: str
+    # The answering backend's own call time.
     latency_ms: int

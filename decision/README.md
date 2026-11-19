@@ -53,8 +53,10 @@ sat at 0.51–0.61 confidence, just under the threshold.
 switch-core talks only to this contract; the backend behind it is configuration.
 
 - **`GET /health`** returns `200 {"ok": true, "backend", "model", "model_server",
-  "model_server_status", "confidence_threshold", "min_lead", "backends_available"}`, or
-  `503 {"detail"}` when the default backend's model server is down.
+  "model_server_status", "confidence_threshold", "min_lead", "backends_available",
+  "fallback_backend", "fallback_model", "fallback_after_s"}`, or
+  `503 {"detail"}` when the default backend's model server is down (the
+  fallback is not checked and never makes the service unready).
   `backends_available` is `["default", "anthropic"]`, plus `"bedrock"` when
   `DECISION_BEDROCK_ENABLED=1` and `"gemini_decision"` when
   `GEMINI_DECISION_API_KEY` is set. It never needs a token.
@@ -66,6 +68,47 @@ switch-core talks only to this contract; the backend behind it is configuration.
   which: `threshold` or `lead`), and for an answer that names an agent who is
   not a candidate (logged as an error). `lead` is the chosen option's
   probability minus the next one's, when the backend scores every option.
+  `model` and `backend` are the ones that answered: the configured backend,
+  the per-request override, or the fallback (see
+  [Fallback](#fallback-after-n-seconds)). `latency_ms` is that backend's own
+  call time, which switch-core records as the model time.
+
+### Fallback after N seconds
+
+With `DECISION_FALLBACK_BACKEND` set, a request on the service's default
+backend races a second backend when the first is slow:
+
+1. The default backend is asked.
+2. If it has not answered after `DECISION_FALLBACK_AFTER_S` seconds (default
+   2), the fallback is asked too, and the default keeps running. If the
+   default fails before then, the fallback is asked at once.
+3. The first answer wins and the other call is cancelled. If one fails, the
+   other is waited for. If both fail, the request fails with the default
+   backend's error (its `error_kind`), and the log line names the fallback's
+   failure too.
+
+An answer that names an agent who is not a candidate is an answer, from
+either backend, not a failure: it routes to nobody as before. The same rule
+(`DECISION_CONFIDENCE_THRESHOLD`, or `DECISION_MIN_LEAD` for a backend that
+scores every option) applies to whichever backend answered.
+
+A request that chose its backend with `X-Decision-Backend` (anything but
+`default`) gets that backend alone, with no fallback.
+
+`bedrock` is the only fallback for now: Claude Haiku on Amazon Bedrock, on
+the service's own AWS credentials, with `DECISION_BEDROCK_MODEL` and
+`AWS_REGION`. It does not need `DECISION_BEDROCK_ENABLED`, which only governs
+whether a request may choose Bedrock with `X-Decision-Backend`; the two are
+independent. The service refuses to start with any other value, or with the
+fallback the same as `DECISION_BACKEND`, or with a delay that is not more than
+0 and less than `DECISION_TIMEOUT_S`.
+
+Why: Google's Decisions API usually answers in 0.3 to 0.5 s, but in some
+periods 15 to 45% of its calls take 5 to 30 s, and a retry is just as slow,
+while switch-core gives up on a decision after 5 s. Haiku on Bedrock answered
+real decide requests in 1.7 s at the median, 2.0 s at p95 and 2.5 s at most,
+with nearly the same accuracy. A cancelled Bedrock call cannot be stopped
+mid-flight (boto3 runs in a thread); its answer is dropped.
 
 ### Who gets the message
 
@@ -177,7 +220,7 @@ An answer that names an agent who is not a candidate is not a failure: it is
 | `llamacpp` (the image's default) | a llama.cpp server; reads the probabilities of the option letters from the first token | `qwen3.5-4b-q4_k_m` |
 | `systemone` | a SystemOne-API server: Strands Decider (the chart's default, `DECISION_MODEL=strands-decider-E4B`) or Clef-flash | `clef-flash` |
 | `anthropic` | Claude Haiku on the Anthropic API, forced to call a pick tool; thinking off | `claude-haiku-5-5` |
-| `bedrock` | a model on Amazon Bedrock through Converse, forced to call the same tool | `us.anthropic.claude-haiku-5-5-v1:0` |
+| `bedrock` | a model on Amazon Bedrock through Converse, forced to call the same tool | `us.anthropic.claude-haiku-5-5` (EU regions: `eu.anthropic.claude-haiku-5-5`) |
 | `gemini_decision` | Google's Decisions API: one `choice` question over the agents and a `nobody` option, with the routing rules and the room state as plain text; every option is scored, so the lead rule applies. The reason is empty | `gemini-decision-1` |
 | `ollama` | an Ollama model forced into JSON, kept for comparison | `qwen3.5:9b` |
 
@@ -198,7 +241,9 @@ An answer that names an agent who is not a candidate is not a failure: it is
 | `DECISION_SERVICE_TOKEN` | unset | bearer token for everything but `/health` |
 | `MODEL_SERVER_TOKEN` | unset | bearer token sent to the llama.cpp or SystemOne server |
 | `DECISION_BEDROCK_ENABLED` | unset | `1` lets a request choose `bedrock` |
-| `DECISION_BEDROCK_MODEL` | `us.anthropic.claude-haiku-5-5-v1:0` | Bedrock model or inference profile |
+| `DECISION_BEDROCK_MODEL` | `us.anthropic.claude-haiku-5-5` | Bedrock model or inference profile, for a `bedrock` request, backend or fallback. The `us.` profile serves US regions; EU regions (`AWS_REGION=eu-west-3`, ...) need `eu.anthropic.claude-haiku-5-5` |
+| `DECISION_FALLBACK_BACKEND` | unset | `bedrock` races Haiku on Bedrock against the default backend; unset or empty, no fallback. See [Fallback](#fallback-after-n-seconds) |
+| `DECISION_FALLBACK_AFTER_S` | `2` | seconds the default backend has before the fallback is asked too; more than 0 and less than `DECISION_TIMEOUT_S`. Read only with a fallback |
 | `AWS_REGION`, `AWS_PROFILE` | `us-east-1`, unset | standard AWS credential chain |
 | `ANTHROPIC_API_KEY` | unset | service-wide key when `DECISION_BACKEND=anthropic` |
 | `GEMINI_DECISION_API_KEY` | unset | Google API key for `gemini_decision`; required (startup fails without it) when `DECISION_BACKEND=gemini_decision`. Never logged |
@@ -239,6 +284,20 @@ switch-core's:
   unknown. A logged exception adds `error` (`kind`, `message`, `stack`).
 - `request_id` is the `X-Request-Id` of the request the line was written
   for. Search for switch-core's decision id to find the service's line for it.
+- With a fallback configured, the decide line of a request on the default
+  backend names the backend and model that answered and adds
+  `fallback=` (`not_needed`: the default answered before the delay; `won`:
+  the fallback answered first; `lost`: the fallback started, the default
+  answered first; `primary_failed`: the default failed, the fallback
+  answered), `fallback_reason=` (`slow`, or the default's error kind; `-` when
+  the fallback did not start) and `total_ms=` (the whole decision; `latency_ms`
+  is the answering call's own time). A failure on either side is named:
+  `primary_error=`, or `fallback_error_kind=` and `fallback_error=`, and the
+  line is then a warning. When both fail the `decide failed` line, which
+  names the default backend's error as before, adds `fallback=failed`,
+  `fallback_reason=`, `fallback_backend=`, `fallback_model=`,
+  `fallback_error_kind=`, `fallback_error=` and `total_ms=`. Without a
+  fallback, or for a request that chose its backend, none of these appear.
 - uvicorn's own lines go through the same handler. Its access log leaves out
   `GET /health` (the probes) and cuts the query string off every other path.
 - Never logged: message text, room names and instructions, keys and tokens,

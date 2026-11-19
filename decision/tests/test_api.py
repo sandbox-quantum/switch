@@ -180,9 +180,9 @@ def test_bedrock_enabled_override_uses_bedrock_model(make_client, monkeypatch):
     assert r.status_code == 200
     assert (
         r.json()["backend"] == "bedrock"
-        and r.json()["model"] == "us.anthropic.claude-haiku-5-5-v1:0"
+        and r.json()["model"] == "us.anthropic.claude-haiku-5-5"
     )
-    assert calls[0]["modelId"] == "us.anthropic.claude-haiku-5-5-v1:0"
+    assert calls[0]["modelId"] == "us.anthropic.claude-haiku-5-5"
     assert "temperature" not in calls[0]["inferenceConfig"]
     assert make_client(_settings(bedrock_enabled=True)).get("/health").json()[
         "backends_available"
