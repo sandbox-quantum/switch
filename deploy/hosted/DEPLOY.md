@@ -64,7 +64,26 @@ cluster's `kubernetes` Service address in the NetworkPolicies. Later image updat
 
 ### 3. Apply them (platform, cluster-admin)
 
-Apply the filled folder in name order: `kubectl apply -f <folder>/` does that (`10-` to `71-`; the box
+**First, the namespaces, then three objects nothing in the folder creates.** egress-lists patches `squid-boxes`
+and `squid-passwd` and only reads `egress-settings`, and rightly has no right to create any of them, so on a new cluster
+they're made once, empty, before the rest is applied. Each command creates its object only if it's missing and
+never overwrites one that's there, so running the step again changes nothing:
+
+```sh
+kubectl apply -f <folder>/10-namespaces.yaml
+kubectl -n egress-proxy get configmap squid-boxes >/dev/null 2>&1 \
+  || kubectl -n egress-proxy create configmap squid-boxes
+kubectl -n egress-proxy get secret squid-passwd >/dev/null 2>&1 \
+  || kubectl -n egress-proxy create secret generic squid-passwd --from-literal=passwd=
+kubectl -n egress-lists get secret egress-settings >/dev/null 2>&1 \
+  || kubectl -n egress-lists create secret generic egress-settings --from-literal=egress.json='{}'
+```
+
+Empty means deny: no box files and no logins, so squid lets nothing through until egress-lists fills
+`squid-boxes` and `squid-passwd` for each box. `egress-settings`' `{}` gives every box the default parts; per-box
+settings go in it later through the secret store, never in this file.
+
+Then apply the filled folder in name order: `kubectl apply -f <folder>/` does that (`10-` to `71-`; the box
 PriorityClass and squid's NetworkPolicy are numbered `70-` and `71-`). The admission policies and NetworkPolicies are the safety rules: apply them
 unchanged. Have a second person review the filled folder before it's applied.
 

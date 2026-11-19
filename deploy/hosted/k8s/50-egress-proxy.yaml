@@ -123,10 +123,18 @@ spec:
         name: run
       - emptyDir: {}
         name: tmp
-      - configMap:
+      # The box files: a fixed `_none.conf` (squid-boxes-base), so `include /etc/squid/boxes/*.conf` always
+      # finds a file and squid starts with no box yet, beside the per-box files egress-lists writes into
+      # squid-boxes (optional, so a missing one never holds squid back). Read-only, as before.
+      - name: boxes
+        projected:
           defaultMode: 420
-          name: squid-boxes
-        name: boxes
+          sources:
+          - configMap:
+              name: squid-boxes-base
+          - configMap:
+              name: squid-boxes
+              optional: true
       - name: passwd
         secret:
           defaultMode: 288
@@ -250,6 +258,19 @@ data:
 kind: ConfigMap
 metadata:
   name: squid-conf
+  namespace: egress-proxy
+---
+apiVersion: v1
+data:
+  # No box files yet: nothing is allowed (squid.conf denies all after the include). The leading underscore is a
+  # name no box's files can have (theirs start with the box id), so egress-lists can never write over it.
+  _none.conf: |
+    # No box yet: nothing is allowed. egress-lists writes each box's files beside this one.
+kind: ConfigMap
+metadata:
+  labels:
+    app: squid
+  name: squid-boxes-base
   namespace: egress-proxy
 ---
 apiVersion: v1
