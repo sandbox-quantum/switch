@@ -50,6 +50,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 import uuid
 from collections.abc import Mapping
@@ -158,6 +159,20 @@ FailureReason = Literal[
 # A backend as telemetry and the log name it: the server default is told apart
 # from a workspace's own endpoint.
 BackendLabel = Literal["server_default", "endpoint", "haiku_anthropic", "haiku_bedrock"]
+
+# The model that answered, as the metrics' `model` attribute names it. The
+# server's own decision service (the default and Haiku) answers with the model
+# its operator configured, so that name is kept when it is a plain model name,
+# and only the first MAX_MODEL_LABELS distinct names a process sees: anything
+# past them, or not plain, is `other`. A workspace's own endpoint answers with
+# whatever name its owner chooses, which can identify the workspace, so its
+# model is never kept. With no answer there is no model to name: Switch
+# configures none itself, the decision service chooses it.
+MODEL_UNKNOWN = "unknown"
+MODEL_OTHER = "other"
+MODEL_WORKSPACE_ENDPOINT = "workspace_endpoint"
+MAX_MODEL_LABELS = 8
+_PLAIN_MODEL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/@-]{0,79}")
 
 
 # What an error answer's body said, classified as it arrives. The body itself
@@ -510,6 +525,7 @@ class DynamicDecisionClient:
         self._telemetry = telemetry
         self._cache_seconds = cache_seconds
         self._cache: dict[str, tuple[float, ResolvedSettings]] = {}
+        self._model_labels: set[str] = set()
 
     @property
     def server(self) -> ServerDefault:
@@ -563,6 +579,29 @@ class DynamicDecisionClient:
         """Drop the workspace's cached settings, after a save here."""
         self._cache.pop(tenant_id, None)
 
+    def model_label(self, backend: BackendLabel, answer: DecisionAnswer | None) -> str:
+        """The `model` attribute for a decision `backend` was asked: see
+        MAX_MODEL_LABELS for what is kept."""
+        if backend == "endpoint":
+            return MODEL_WORKSPACE_ENDPOINT
+        if answer is None:
+            return MODEL_UNKNOWN
+        name = answer.model.strip()
+        if name in self._model_labels:
+            return name
+        if not _PLAIN_MODEL_NAME.fullmatch(name):
+            return MODEL_OTHER
+        if len(self._model_labels) >= MAX_MODEL_LABELS:
+            logger.warning(
+                "The decision service answered with a model Switch has not seen "
+                "before, past the %d it names in metrics; it is counted as %r",
+                MAX_MODEL_LABELS,
+                MODEL_OTHER,
+            )
+            return MODEL_OTHER
+        self._model_labels.add(name)
+        return name
+
     async def decide(
         self,
         request: DecisionRequest,
@@ -615,7 +654,11 @@ class DynamicDecisionClient:
             if error.error_kind is not None:
                 metrics().increment(
                     DECISION_BACKEND_ERRORS,
-                    {"backend": label, "kind": error.error_kind},
+                    {
+                        "backend": label,
+                        "model": self.model_label(label, None),
+                        "kind": error.error_kind,
+                    },
                 )
             return self._failed(
                 room_id, label, error.reason, str(error), latency_ms=latency_ms
@@ -636,7 +679,9 @@ class DynamicDecisionClient:
                 "decision_failed",
                 {"backend": label, "reason": "bad_answer"},
             )
-            self._count_failure(label, "bad_answer", latency_ms)
+            self._count_failure(
+                label, self.model_label(label, answer), "bad_answer", latency_ms
+            )
             return Failed(
                 reason="bad_answer",
                 backend=label,
@@ -645,13 +690,14 @@ class DynamicDecisionClient:
                 answer=answer,
             )
         outcome = "agent" if answer.agent is not None else "none"
+        series = {"backend": label, "model": self.model_label(label, answer)}
         registry = metrics()
-        registry.increment(DECISION_REQUESTS, {"backend": label, "outcome": outcome})
-        registry.observe(DECISION_DURATION, {"backend": label}, latency_ms)
+        registry.increment(DECISION_REQUESTS, {**series, "outcome": outcome})
+        registry.observe(DECISION_DURATION, series, latency_ms)
         if answer.confidence is not None:
-            registry.observe(DECISION_CONFIDENCE, {"backend": label}, answer.confidence)
+            registry.observe(DECISION_CONFIDENCE, series, answer.confidence)
         if answer.latency_ms is not None:
-            registry.observe(DECISION_MODEL_TIME, {"backend": label}, answer.latency_ms)
+            registry.observe(DECISION_MODEL_TIME, series, answer.latency_ms)
         emit_safely(
             self._telemetry,
             "decision_made",
@@ -682,7 +728,7 @@ class DynamicDecisionClient:
         emit_safely(
             self._telemetry, "decision_failed", {"backend": label, "reason": reason}
         )
-        self._count_failure(label, reason, latency_ms)
+        self._count_failure(label, self.model_label(label, None), reason, latency_ms)
         return Failed(
             reason=reason,
             backend=label,
@@ -693,13 +739,14 @@ class DynamicDecisionClient:
 
     @staticmethod
     def _count_failure(
-        label: BackendLabel, reason: FailureReason, latency_ms: int | None
+        label: BackendLabel, model: str, reason: FailureReason, latency_ms: int | None
     ) -> None:
+        series = {"backend": label, "model": model}
         registry = metrics()
-        registry.increment(DECISION_REQUESTS, {"backend": label, "outcome": "failed"})
-        registry.increment(DECISION_FAILURES, {"backend": label, "reason": reason})
+        registry.increment(DECISION_REQUESTS, {**series, "outcome": "failed"})
+        registry.increment(DECISION_FAILURES, {**series, "reason": reason})
         if latency_ms is not None:
-            registry.observe(DECISION_DURATION, {"backend": label}, latency_ms)
+            registry.observe(DECISION_DURATION, series, latency_ms)
 
     async def test(
         self,
