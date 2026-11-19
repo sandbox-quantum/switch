@@ -1,7 +1,7 @@
 import { format, isToday, isYesterday } from 'date-fns';
 import { CornerUpLeft, Loader2, RotateCw, X } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
-import { Fragment, type ReactNode } from 'react';
+import { Fragment, type ReactNode, useState } from 'react';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { bridgePlatformLabel } from '@renderer/lib/components/bridge-platform';
 import { Button } from '@renderer/lib/ui/button';
@@ -15,7 +15,15 @@ import {
   liveSessionStartingNotices,
   turnEndNotice,
 } from '@shared/core/chats/chats';
-import { foldTurnEndNotices, placeRequests, placeTurns, type TurnActivity } from '../activity-join';
+import { personColour } from '@shared/core/people/person-colour';
+import {
+  foldTurnEndNotices,
+  placeRequests,
+  placeTurns,
+  splitTurn,
+  type TurnActivity,
+} from '../activity-join';
+import { type ChatEntrance, Entrance } from '../chat-entrance';
 import { messageAnchorId, threadChip } from '../chat-threads';
 import {
   agentTargets,
@@ -108,10 +116,11 @@ function MentionText({
   );
 }
 
-function PersonAvatar({ name }: { name: string }) {
+function PersonAvatar({ name, userId }: { name: string; userId: string | null }) {
   return (
     <span
-      className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full bg-[var(--fill-2)] text-[11px] font-medium text-foreground"
+      className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full text-[11px] font-medium"
+      style={personColour(userId ?? name)}
       title={name}
       aria-hidden
     >
@@ -161,12 +170,14 @@ type Props = {
   people: MentionPerson[];
   activities: AgentActivity[];
   onReply: (message: ChatMessage) => void;
+  /** Which first messages slide in, as the chat opens from a hand-off. */
+  entrance: ChatEntrance;
 };
 
 /**
  * The chat's messages in sequence order, each agent's activity under the
- * room message that started it, then the sends from here the room has not
- * echoed yet.
+ * room message that started it (under its latest reply while running), then
+ * the sends from here the room has not echoed yet.
  */
 export const ChatTimelineView = observer(function ChatTimelineView({
   serverId,
@@ -175,9 +186,24 @@ export const ChatTimelineView = observer(function ChatTimelineView({
   people,
   activities,
   onReply,
+  entrance,
 }: Props) {
+  // Your first message is chosen as the chat is first drawn: the one waiting
+  // to be sent then, or already sent. It does not slide in again when the
+  // server takes a waiting one and it is drawn as sent.
+  const [enteringOwnId] = useState(() =>
+    entrance.firstOwn && !timeline.hasMore
+      ? (timeline.messages.find((message) => message.sender.kind === 'human')?.messageId ??
+        timeline.pending[0]?.requestId ??
+        null)
+      : null
+  );
   const turnsByMessage = new Map<string, { activity: AgentActivity; turn: TurnActivity }[]>();
-  const blocksByAnchor = new Map<string, { activity: AgentActivity; turn: TurnActivity }[]>();
+  /** Each turn's work log, in parts by the message each shows under (`splitTurn`). */
+  const blocksByAnchor = new Map<
+    string,
+    { activity: AgentActivity; turn: TurnActivity; withReasoning: boolean; last: boolean }[]
+  >();
   /** Requests shown after the agent's text that led up to them rather than with their turn. */
   const requestsByAnchor = new Map<
     string,
@@ -195,11 +221,21 @@ export const ChatTimelineView = observer(function ChatTimelineView({
       turnsByMessage.set(messageId, list);
     }
     for (const [anchorId, turns] of placeTurns(timeline.messages, activity.agentId, bound)) {
-      blocksByAnchor.set(anchorId, [
-        ...(blocksByAnchor.get(anchorId) ?? []),
-        ...turns.map((turn) => ({ activity, turn })),
-      ]);
-      for (const turn of turns)
+      for (const turn of turns) {
+        const parts = splitTurn(timeline.messages, activity.agentId, bound, anchorId, turn);
+        // The part that carries the turn's state, and the requests placed with it.
+        const blockAnchor = parts[parts.length - 1].anchorId;
+        parts.forEach((part, index) =>
+          blocksByAnchor.set(part.anchorId, [
+            ...(blocksByAnchor.get(part.anchorId) ?? []),
+            {
+              activity,
+              turn: part.turn,
+              withReasoning: part.reasoning,
+              last: index === parts.length - 1,
+            },
+          ])
+        );
         for (const [requestAnchor, requests] of placeRequests(
           timeline.messages,
           activity.agentId,
@@ -207,7 +243,7 @@ export const ChatTimelineView = observer(function ChatTimelineView({
           anchorId,
           turn
         )) {
-          if (requestAnchor === anchorId)
+          if (requestAnchor === blockAnchor)
             blockRequests.set(`${activity.agentId}:${turn.turnId}`, requests);
           else
             requestsByAnchor.set(requestAnchor, [
@@ -215,6 +251,7 @@ export const ChatTimelineView = observer(function ChatTimelineView({
               { activity, requests },
             ]);
         }
+      }
     }
     for (const [noticeId, turnId] of foldTurnEndNotices(timeline.messages, activity.agentId, bound))
       foldedNotices.set(noticeId, `${activity.agentId}:${turnId}`);
@@ -248,6 +285,16 @@ export const ChatTimelineView = observer(function ChatTimelineView({
       blocks.flatMap(({ turn }) => turn.requests.map((request) => request.requestId))
     )
   );
+  // Only when the conversation's start is loaded is its first agent message the first.
+  const enteringId =
+    entrance.firstAgent && !timeline.hasMore
+      ? (timeline.messages.find(
+          (message) =>
+            message.sender.kind === 'agent' &&
+            !isSessionStartingNotice(message) &&
+            turnEndNotice(message) === null
+        )?.messageId ?? null)
+      : null;
   let previous: Date | null = null;
   /** The agent whose block the last row belongs to; its next row shows no avatar or name. */
   let blockAgent: string | null = null;
@@ -371,40 +418,44 @@ export const ChatTimelineView = observer(function ChatTimelineView({
                 />
               </AgentRow>
             ) : message.sender.kind === 'human' ? (
-              <div
-                id={messageAnchorId(message.messageId)}
-                className={cn('group/row flex gap-3', spacing())}
-              >
-                <PersonAvatar name={message.sender.name} />
-                <div className="flex max-w-[85%] min-w-0 flex-col items-start gap-1">
-                  <span className="flex items-center gap-1.5 text-xs">
-                    <span className="font-medium text-foreground-muted">{message.sender.name}</span>
-                    {isBridged(message) && (
-                      <span className="rounded bg-background-1 px-1.5 py-px text-[10px] text-foreground-passive">
-                        {bridgePlatformLabel(message.source)}
+              <Entrance play={message.messageId === enteringOwnId} order={0}>
+                <div
+                  id={messageAnchorId(message.messageId)}
+                  className={cn('group/row flex gap-3', spacing())}
+                >
+                  <PersonAvatar name={message.sender.name} userId={message.sender.userId} />
+                  <div className="flex max-w-[85%] min-w-0 flex-col items-start gap-1">
+                    <span className="flex items-center gap-1.5 text-xs">
+                      <span className="font-medium text-foreground-muted">
+                        {message.sender.name}
                       </span>
-                    )}
-                  </span>
-                  {chip && <ThreadChipButton chip={chip} />}
-                  <div className="min-w-0 rounded-2xl bg-background-1 px-4 py-2.5 text-sm leading-relaxed break-words whitespace-pre-wrap">
-                    <MentionText
-                      message={message}
-                      agents={agents}
-                      people={people}
+                      {isBridged(message) && (
+                        <span className="rounded bg-background-1 px-1.5 py-px text-[10px] text-foreground-passive">
+                          {bridgePlatformLabel(message.source)}
+                        </span>
+                      )}
+                    </span>
+                    {chip && <ThreadChipButton chip={chip} />}
+                    <div className="min-w-0 rounded-2xl bg-background-1 px-4 py-2.5 text-sm leading-relaxed break-words whitespace-pre-wrap">
+                      <MentionText
+                        message={message}
+                        agents={agents}
+                        people={people}
+                        serverId={serverId}
+                      />
+                    </div>
+                    <ChatAttachments
                       serverId={serverId}
+                      roomId={timeline.roomId}
+                      attachments={message.attachments}
                     />
+                    {turns.some(({ turn }) => turn.status === 'queued') && (
+                      <span className="text-xs text-foreground-passive">queued</span>
+                    )}
                   </div>
-                  <ChatAttachments
-                    serverId={serverId}
-                    roomId={timeline.roomId}
-                    attachments={message.attachments}
-                  />
-                  {turns.some(({ turn }) => turn.status === 'queued') && (
-                    <span className="text-xs text-foreground-passive">queued</span>
-                  )}
+                  <ReplyButton onReply={() => onReply(message)} />
                 </div>
-                <ReplyButton onReply={() => onReply(message)} />
-              </div>
+              </Entrance>
             ) : kickoff ? (
               <KickoffRow
                 id={messageAnchorId(message.messageId)}
@@ -415,26 +466,28 @@ export const ChatTimelineView = observer(function ChatTimelineView({
                 serverId={serverId}
               />
             ) : message.sender.kind === 'agent' ? (
-              <AgentRow
-                id={messageAnchorId(message.messageId)}
-                className={cn('group/row', spacing(head))}
-                agent={agentLabel}
-                serverId={serverId}
-                head={head}
-                trailing={<ReplyButton onReply={() => onReply(message)} />}
-              >
-                <div className="flex flex-col gap-1">
-                  {chip && <ThreadChipButton chip={chip} />}
-                  <div className="text-sm leading-relaxed">
-                    <ChatMarkdown>{message.body}</ChatMarkdown>
+              <Entrance play={message.messageId === enteringId} order={0}>
+                <AgentRow
+                  id={messageAnchorId(message.messageId)}
+                  className={cn('group/row', spacing(head))}
+                  agent={agentLabel}
+                  serverId={serverId}
+                  head={head}
+                  trailing={<ReplyButton onReply={() => onReply(message)} />}
+                >
+                  <div className="flex flex-col gap-1">
+                    {chip && <ThreadChipButton chip={chip} />}
+                    <div className="text-sm leading-relaxed">
+                      <ChatMarkdown>{message.body}</ChatMarkdown>
+                    </div>
+                    <ChatAttachments
+                      serverId={serverId}
+                      roomId={timeline.roomId}
+                      attachments={message.attachments}
+                    />
                   </div>
-                  <ChatAttachments
-                    serverId={serverId}
-                    roomId={timeline.roomId}
-                    attachments={message.attachments}
-                  />
-                </div>
-              </AgentRow>
+                </AgentRow>
+              </Entrance>
             ) : (
               // Switch's own lines (notices, kickoff headlines) are written in
               // the same Markdown as messages: drawn as text, `**name**` read
@@ -446,28 +499,34 @@ export const ChatTimelineView = observer(function ChatTimelineView({
                 <ChatMarkdown>{message.body}</ChatMarkdown>
               </div>
             )}
-            {(blocksByAnchor.get(message.messageId) ?? []).map(({ activity, turn }) => {
-              const turnAgent = agentOf(activity.agentId);
-              const head = turnShown(activity, turn) && startsBlock(activity.agentId);
-              return (
-                <ChatActivityBlock
-                  serverId={serverId}
-                  key={`${activity.agentId}:${turn.turnId}`}
-                  activity={activity}
-                  turn={{
-                    ...turn,
-                    requests: blockRequests.get(`${activity.agentId}:${turn.turnId}`) ?? [],
-                  }}
-                  endReason={endReasons.get(`${activity.agentId}:${turn.turnId}`) ?? null}
-                  head={head}
-                  agent={{
-                    name: turnAgent ? chatAgentLabel(turnAgent) : activity.agentId,
-                    iconUrl: turnAgent?.iconUrl ?? null,
-                  }}
-                  className={spacing(head)}
-                />
-              );
-            })}
+            {(blocksByAnchor.get(message.messageId) ?? []).map(
+              ({ activity, turn, withReasoning, last }) => {
+                const turnAgent = agentOf(activity.agentId);
+                const head =
+                  turnShown(activity, turn, withReasoning) && startsBlock(activity.agentId);
+                return (
+                  <ChatActivityBlock
+                    serverId={serverId}
+                    key={`${activity.agentId}:${turn.turnId}:${message.messageId}`}
+                    activity={activity}
+                    turn={{
+                      ...turn,
+                      requests: last
+                        ? (blockRequests.get(`${activity.agentId}:${turn.turnId}`) ?? [])
+                        : [],
+                    }}
+                    withReasoning={withReasoning}
+                    endReason={endReasons.get(`${activity.agentId}:${turn.turnId}`) ?? null}
+                    head={head}
+                    agent={{
+                      name: turnAgent ? chatAgentLabel(turnAgent) : activity.agentId,
+                      iconUrl: turnAgent?.iconUrl ?? null,
+                    }}
+                    className={spacing(head)}
+                  />
+                );
+              }
+            )}
             {(requestsByAnchor.get(message.messageId) ?? []).map(({ activity, requests }) =>
               requestsRow(`requests:${activity.agentId}:${requests[0].turnId}`, activity, requests)
             )}
@@ -482,13 +541,9 @@ export const ChatTimelineView = observer(function ChatTimelineView({
         return requestsRow(`requests:${activity.agentId}`, activity, requests);
       })}
       {timeline.pending.map((send) => (
-        <PendingBubble
-          key={send.requestId}
-          timeline={timeline}
-          send={send}
-          find={find}
-          className={spacing()}
-        />
+        <Entrance key={send.requestId} play={send.requestId === enteringOwnId} order={0}>
+          <PendingBubble timeline={timeline} send={send} find={find} className={spacing()} />
+        </Entrance>
       ))}
     </div>
   );
@@ -539,13 +594,15 @@ const PendingBubble = observer(function PendingBubble({
         </span>
       ) : (
         <div role="alert" className="flex max-w-[85%] flex-col items-start gap-1 text-xs">
-          <span className="text-foreground-destructive">
-            {send.state === 'conflict'
-              ? 'This request id was already used for a different message, so it was not sent. Discard it and send again.'
-              : send.uncertain
-                ? `Not confirmed: ${send.error ?? 'Switch did not answer.'} Retrying sends the same message, never a second copy.`
-                : send.error}
-          </span>
+          {(send.state === 'conflict' || send.uncertain || send.error) && (
+            <span className="text-foreground-destructive">
+              {send.state === 'conflict'
+                ? 'This request id was already used for a different message, so it was not sent. Discard it and send again.'
+                : send.uncertain
+                  ? `Not confirmed: ${send.error ?? 'Switch did not answer.'} Retrying sends the same message, never a second copy.`
+                  : send.error}
+            </span>
+          )}
           <span className="flex gap-1">
             {send.state === 'failed' && (
               <Button size="sm" variant="ghost" onClick={() => timeline.retry(send.requestId)}>

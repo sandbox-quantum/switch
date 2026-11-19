@@ -17,8 +17,8 @@ resource in the deployment, not just their own.
 That guarantee only holds if the account at :data:`BOOTSTRAP_OWNER_EMAIL` is
 the one this module itself provisioned. Nothing in this codebase reserves
 that address, and an admin role is not the only way to end up controlling
-it: a gateway admin can `POST /users` with that email and an admin role, but
-an OIDC identity provider can also claim it outright by asserting it as a
+it: an operator can create that address with `switch-accounts create
+--operator`, but an OIDC identity provider can also claim it outright by asserting it as a
 login email — JIT provisioning always creates a `role="user"` account, so an
 account's mere existence there proves nothing about who put it there. Both
 entry points here refuse to adopt an existing account at that address unless

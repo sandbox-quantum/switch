@@ -3,6 +3,7 @@ import type { RemoteRoomSummary } from '@shared/core/switch-servers/switch-serve
 
 const listRooms = vi.hoisted(() => vi.fn());
 const listAgentRooms = vi.hoisted(() => vi.fn());
+const listRoomsOfAgents = vi.hoisted(() => vi.fn());
 const serversStore = vi.hoisted(() => ({
   servers: [] as {
     id: string;
@@ -17,7 +18,7 @@ const serversStore = vi.hoisted(() => ({
   statusFor: (serverId: string) => ({ user: { id: `user-of-${serverId}` } }),
 }));
 const workspaces = vi.hoisted(() => ({
-  workspaces: [] as { id: string; serverId: string; name: string }[],
+  workspaces: [] as { id: string; serverId: string; name: string; tenantId?: string | null }[],
   activeId: null as string | null,
   byId(workspaceId: string) {
     return this.workspaces.find((w) => w.id === workspaceId) ?? null;
@@ -29,7 +30,7 @@ const workspaces = vi.hoisted(() => ({
 
 vi.mock('@renderer/lib/ipc', () => ({
   events: { on: vi.fn() },
-  rpc: { workspaces: { listRooms, listAgentRooms } },
+  rpc: { workspaces: { listRooms, listAgentRooms, listRoomsOfAgents } },
 }));
 vi.mock('@renderer/features/workspaces/workspaces-store', () => ({
   workspacesStore: workspaces,
@@ -46,6 +47,13 @@ vi.mock('./local-server-store', () => ({ localServerStore: localServer }));
 vi.mock('./remote-server-store', () => ({ remoteServerStore: { isRunning: () => true } }));
 
 const { SwitchRoomsStore } = await import('./switch-rooms-store');
+
+// A server from before reading many agents' rooms at once, unless a test says
+// otherwise: the per-agent read `listAgentRooms` answers for each.
+beforeEach(() => {
+  listRoomsOfAgents.mockReset();
+  listRoomsOfAgents.mockResolvedValue(null);
+});
 
 function room(id: string, ownerId: string | null, overrides: Partial<RemoteRoomSummary> = {}) {
   return {
@@ -456,6 +464,124 @@ describe('agent memberships', () => {
     expect(store.roomsFor('ws-a', 'agent-late')?.[0].roomId).toBe('room-b');
   });
 
+  it('reads every agent of a workspace in one request when the server can', async () => {
+    listRoomsOfAgents.mockImplementation(
+      async ({ workspaceId, agentIds }: { workspaceId: string; agentIds: string[] }) =>
+        Object.fromEntries(
+          agentIds.map((id) => [
+            id,
+            [
+              {
+                roomId: `${workspaceId}-room-of-${id}`,
+                roomName: 'r',
+                archived: false,
+                status: 'live',
+                roomRole: null,
+              },
+            ],
+          ])
+        )
+    );
+    const store = new SwitchRoomsStore();
+
+    await store.ensureMembershipsFor([
+      { workspaceId: 'ws-a', switchAgentId: 'agent-1' },
+      { workspaceId: 'ws-a', switchAgentId: 'agent-2' },
+      { workspaceId: 'ws-b', switchAgentId: 'agent-3' },
+    ]);
+
+    expect(listRoomsOfAgents.mock.calls.map(([params]) => params)).toEqual([
+      { workspaceId: 'ws-a', agentIds: ['agent-1', 'agent-2'] },
+      { workspaceId: 'ws-b', agentIds: ['agent-3'] },
+    ]);
+    expect(listAgentRooms).not.toHaveBeenCalled();
+    expect(store.roomsFor('ws-a', 'agent-2')?.[0].roomId).toBe('ws-a-room-of-agent-2');
+    expect(store.roomsFor('ws-b', 'agent-3')?.[0].roomId).toBe('ws-b-room-of-agent-3');
+  });
+
+  it('asks the server again only for agents not yet read, unless forced', async () => {
+    listRoomsOfAgents.mockImplementation(async ({ agentIds }: { agentIds: string[] }) =>
+      Object.fromEntries(agentIds.map((id) => [id, []]))
+    );
+    const store = new SwitchRoomsStore();
+    const one = { workspaceId: 'ws-a', switchAgentId: 'agent-1' };
+    const two = { workspaceId: 'ws-a', switchAgentId: 'agent-2' };
+
+    await store.ensureMembershipsFor([one]);
+    await store.ensureMembershipsFor([one, two]);
+    await store.ensureMembershipsFor([one, two], { force: true });
+
+    expect(listRoomsOfAgents.mock.calls.map(([params]) => params.agentIds)).toEqual([
+      ['agent-1'],
+      ['agent-2'],
+      ['agent-1', 'agent-2'],
+    ]);
+  });
+
+  it('reads an agent at a time from a server that cannot read many at once', async () => {
+    const store = new SwitchRoomsStore();
+
+    await store.ensureMembershipsFor([
+      { workspaceId: 'ws-a', switchAgentId: 'agent-1' },
+      { workspaceId: 'ws-a', switchAgentId: 'agent-2' },
+    ]);
+
+    expect(listRoomsOfAgents).toHaveBeenCalledOnce();
+    expect(listAgentRooms).toHaveBeenCalledTimes(2);
+    expect(store.roomsFor('ws-a', 'agent-1')?.[0].roomId).toBe('room-of-agent-1');
+    expect(store.agentsWithUnknownMembership).toBe(0);
+  });
+
+  it('reports an agent the server does not have as unknown, not as in no rooms', async () => {
+    listRoomsOfAgents.mockResolvedValue({ 'agent-1': [] });
+    const store = new SwitchRoomsStore();
+
+    await store.ensureMembershipsFor([
+      { workspaceId: 'ws-a', switchAgentId: 'agent-1' },
+      { workspaceId: 'ws-a', switchAgentId: 'agent-gone' },
+    ]);
+
+    expect(store.roomsFor('ws-a', 'agent-1')).toEqual([]);
+    expect(store.roomsFor('ws-a', 'agent-gone')).toBeUndefined();
+    expect(store.agentsWithUnknownMembership).toBe(1);
+    expect(store.errorFor('ws-a', 'agent-gone')).toContain('no such agent');
+  });
+
+  it('leaves every agent unknown when the read of them all fails', async () => {
+    listRoomsOfAgents.mockRejectedValue(new Error('unreachable'));
+    const store = new SwitchRoomsStore();
+
+    await store.ensureMembershipsFor([
+      { workspaceId: 'ws-a', switchAgentId: 'agent-1' },
+      { workspaceId: 'ws-a', switchAgentId: 'agent-2' },
+    ]);
+
+    expect(store.agentsWithUnknownMembership).toBe(2);
+    expect(store.isLoading('ws-a', 'agent-1')).toBe(false);
+  });
+
+  it('keeps a newer read of an agent over an older one that answers later', async () => {
+    let answerOld: (rooms: Record<string, unknown[]>) => void = () => {};
+    listRoomsOfAgents.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          answerOld = resolve;
+        })
+    );
+    const store = new SwitchRoomsStore();
+
+    const old = store.ensureMembershipsFor([{ workspaceId: 'ws-a', switchAgentId: 'agent-1' }]);
+    await store.fetchAgentRooms('ws-a', 'agent-1', { force: true });
+    answerOld({
+      'agent-1': [
+        { roomId: 'stale', roomName: 'r', archived: false, status: 'live', roomRole: null },
+      ],
+    });
+    await old;
+
+    expect(store.roomsFor('ws-a', 'agent-1')?.[0].roomId).toBe('room-of-agent-1');
+  });
+
   it('reports an agent whose membership failed as unknown, not as in no rooms', async () => {
     listAgentRooms.mockImplementation(async ({ agentId }: { agentId: string }) => {
       if (agentId === 'agent-1') throw new Error('nope');
@@ -681,7 +807,10 @@ it('does not clear a newer loading state or error from an older request', async 
 describe('dashboard links', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    twoWorkspaces();
+    workspaces.workspaces = [
+      { id: 'ws-a', serverId: 'srv-a', name: 'Alpha', tenantId: 'tenant-a' },
+      { id: 'ws-b', serverId: 'srv-b', name: 'Beta', tenantId: 'tenant-b' },
+    ];
     workspaces.activeId = null;
     serversStore.servers = [
       { id: 'srv-a', url: 'https://alpha.example.com/', dashboardUrl: null },
@@ -700,30 +829,45 @@ describe('dashboard links', () => {
     const store = new SwitchRoomsStore();
     await store.loadRoomNames();
 
-    expect(store.gatewayRoomUrl('room-a')).toBe('https://alpha.example.com/rooms/room-a');
+    expect(store.gatewayRoomUrl('room-a')).toBe(
+      'https://alpha.example.com/rooms/room-a?workspace=tenant-a'
+    );
   });
 
   it('opens a room on the dashboard address an older server keeps apart', async () => {
     const store = new SwitchRoomsStore();
     await store.loadRoomNames();
 
-    expect(store.gatewayRoomUrl('room-b')).toBe('https://beta-gateway.example.com/rooms/room-b');
+    expect(store.gatewayRoomUrl('room-b')).toBe(
+      'https://beta-gateway.example.com/rooms/room-b?workspace=tenant-b'
+    );
+  });
+
+  it('names no workspace for one not matched to the server’s yet', async () => {
+    workspaces.workspaces[0]!.tenantId = null;
+    const store = new SwitchRoomsStore();
+    await store.loadRoomNames();
+
+    expect(store.gatewayRoomUrl('room-a')).toBe('https://alpha.example.com/rooms/room-a');
+    expect(store.gatewayAgentUrl('ws-a', 'agent-1')).toBe(
+      'https://alpha.example.com/agents/agent-1'
+    );
   });
 
   it('has no link for a room whose server it does not know yet', () => {
     expect(new SwitchRoomsStore().gatewayRoomUrl('room-a')).toBeNull();
   });
 
-  it('opens an agent on the same address its server’s rooms open on', () => {
+  it('opens an agent in its workspace, on the address its server’s rooms open on', () => {
     const store = new SwitchRoomsStore();
 
-    expect(store.gatewayAgentUrl('srv-a', 'agent-1')).toBe(
-      'https://alpha.example.com/agents/agent-1'
+    expect(store.gatewayAgentUrl('ws-a', 'agent-1')).toBe(
+      'https://alpha.example.com/agents/agent-1?workspace=tenant-a'
     );
-    expect(store.gatewayAgentUrl('srv-b', 'agent-1')).toBe(
-      'https://beta-gateway.example.com/agents/agent-1'
+    expect(store.gatewayAgentUrl('ws-b', 'agent-1')).toBe(
+      'https://beta-gateway.example.com/agents/agent-1?workspace=tenant-b'
     );
-    expect(store.gatewayAgentUrl('srv-unknown', 'agent-1')).toBeNull();
+    expect(store.gatewayAgentUrl('ws-unknown', 'agent-1')).toBeNull();
   });
 
   it('has no links into a server that serves no admin pages', async () => {
@@ -733,8 +877,10 @@ describe('dashboard links', () => {
       await store.loadRoomNames();
 
       expect(store.gatewayRoomUrl('room-a')).toBeNull();
-      expect(store.gatewayAgentUrl('srv-a', 'agent-1')).toBeNull();
-      expect(store.gatewayRoomUrl('room-b')).toBe('https://beta-gateway.example.com/rooms/room-b');
+      expect(store.gatewayAgentUrl('ws-a', 'agent-1')).toBeNull();
+      expect(store.gatewayRoomUrl('room-b')).toBe(
+        'https://beta-gateway.example.com/rooms/room-b?workspace=tenant-b'
+      );
     } finally {
       localServer.withoutPages.clear();
     }

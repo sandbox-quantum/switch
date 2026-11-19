@@ -3,3 +3,4 @@ export * from './session-launch';
 export { withWindowsAgyBinDir } from './impl/antigravity/windows-path';
 export { withWindowsCodexBinDir } from './impl/codex/windows-path';
 export { withWindowsGitBashDir } from './windows-git-bash';
+export { withWindowsInstallerBinDirs } from './windows-installer-paths';

@@ -21,6 +21,7 @@ import {
   chatAgentLabel,
   requestIdOfClientTxn,
 } from '@shared/core/chats/chats';
+import { personColour } from '@shared/core/people/person-colour';
 import { snippetOf } from '../chat-threads';
 import { commandQuery, filterCommands } from '../command-query';
 import {
@@ -704,7 +705,8 @@ export const ChatComposer = observer(function ChatComposer({
                         <>
                           <span
                             aria-hidden
-                            className="flex size-5 shrink-0 items-center justify-center rounded-full bg-[var(--fill-2)] text-[9px] font-medium text-foreground"
+                            className="flex size-5 shrink-0 items-center justify-center rounded-full text-[9px] font-medium"
+                            style={personColour(each.id)}
                           >
                             {agentInitials(each.person.name)}
                           </span>

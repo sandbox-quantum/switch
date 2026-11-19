@@ -6,17 +6,21 @@ import { chatsStore } from '@renderer/features/chats/stores/chats';
 import { followConsoleLink } from '@renderer/features/deeplinks/console-link-handler';
 import { useMyIdentities } from '@renderer/features/switch-servers/use-my-identities';
 import { BridgeIcon } from '@renderer/lib/components/bridge-icon';
+import { CopyCommand } from '@renderer/lib/components/copy-command';
+import { TermInfo } from '@renderer/lib/components/term-info';
 import { failureText } from '@renderer/lib/errors/describe-failure';
 import { rpc } from '@renderer/lib/ipc';
 import { useShowModal } from '@renderer/lib/modal/modal-provider';
 import { reportOpenAttempt } from '@renderer/lib/open-external';
 import { appState } from '@renderer/lib/stores/app-state';
 import { useWorkspaceAgents } from '@renderer/lib/stores/use-workspace-agents';
+import { SwitchConsoleMark } from '@renderer/lib/switch-console-mark';
 import { Button } from '@renderer/lib/ui/button';
 import { Spinner } from '@renderer/lib/ui/spinner';
 import { cn } from '@renderer/utils/utils';
 import { consoleLink } from '@shared/core/deeplinks/console-links';
 import type { RemoteBridge } from '@shared/core/switch-servers/switch-servers';
+import { typedCommand } from '@shared/core/switch-servers/typed-command';
 import {
   type BuddyPlatform,
   type BuddyRefusal,
@@ -28,6 +32,7 @@ import {
   buddyResumeBridges,
   buddySetupStep,
 } from './buddy-setup-step';
+import { ChatAppChecklist, useGroupProgress, useTalkedIn } from './chat-app-checklist';
 import {
   BUDDY_CHAT_NAME,
   buddyHandoffRequestId,
@@ -43,7 +48,7 @@ export const BUDDY_STAY_MESSAGE = 'I’ll stay in Switch Console for now.';
  * The setup cards under the greeting in the buddy's Welcome chat: pick a chat
  * app, connect it, link your account, then continue with the buddy there — in
  * a private channel made for them on Slack or Discord, by their own invite elsewhere. Or
- * stay here, which says so in the chat for the buddy to pick up. Drawn only in
+ * pick Switch Console to stay here, which says so in the chat for the buddy to pick up. Drawn only in
  * the Welcome chat.
  */
 export const BuddySetupCards = observer(function BuddySetupCards({
@@ -160,7 +165,22 @@ const Cards = observer(function Cards({
     for (const query of resumeQueries) if (query.isError) void query.refetch();
   };
 
+  // Set up and talking to the buddy there: the cards fold into one line, and
+  // open again for connecting another app.
+  // Teams is guided the same way, by an invite the person sends, so it folds too.
+  const checklistBridge = step.kind === 'checklist' || step.kind === 'guide' ? step.bridge : null;
+  const progress = useGroupProgress({
+    workspaceId,
+    agentId,
+    bridge: checklistBridge,
+    enabled: (ids.identities ?? []).some((identity) => identity.bridgeId === checklistBridge?.id),
+  });
+  const [connectAnother, setConnectAnother] = useState(false);
   const doneRoomId = step.kind === 'done' ? step.chat.roomId : null;
+  const talkedInChannel = useTalkedIn({ workspaceId, agentId, roomId: doneRoomId });
+  const settled =
+    !connectAnother &&
+    ((checklistBridge !== null && progress.talking) || (doneRoomId !== null && talkedInChannel));
   const roomQuery = useQuery({
     queryKey: ['buddy-handoff-room', workspaceId, doneRoomId],
     queryFn: () => rpc.workspaces.getRoomDetail({ workspaceId, roomId: doneRoomId as string }),
@@ -169,7 +189,7 @@ const Cards = observer(function Cards({
   const channelUrl = roomQuery.data?.externalChannelUrl ?? null;
   const openChannel = (url: string) =>
     void reportOpenAttempt(
-      rpc.switchRooms.openRoomChannel({ serverId, channelUrl: url }),
+      rpc.switchRooms.openRoomChannel({ channelUrl: url }),
       `Could not open ${label}`,
       url
     );
@@ -214,10 +234,49 @@ const Cards = observer(function Cards({
   const pressed = (app: BuddyPlatform) =>
     platform === app && (picked !== null || (step.kind !== 'loading' && step.kind !== 'unknown'));
 
+  if (settled)
+    return (
+      <div className="mt-4 flex flex-col gap-3" data-testid="buddy-setup-cards">
+        <StatusRow>
+          <CheckCircle2 className="size-4 shrink-0 text-foreground-success" />
+          <span className="min-w-0 flex-1">
+            <span className="font-semibold">{label} is set up.</span> You’re talking to {agentName}{' '}
+            there.
+          </span>
+          {doneRoomId && channelUrl && (
+            <Button size="sm" onClick={() => openChannel(channelUrl)}>
+              Open {label}
+              <ArrowRight />
+            </Button>
+          )}
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => {
+              setConnectAnother(true);
+              setPicked(null);
+            }}
+          >
+            Connect another app
+          </Button>
+        </StatusRow>
+        {doneRoomId && roomQuery.data?.createdAt && (
+          <CreatedSince
+            workspaceId={workspaceId}
+            buddyId={agentId}
+            since={roomQuery.data.createdAt}
+          />
+        )}
+      </div>
+    );
+
   return (
     <div className="@container mt-4 flex flex-col gap-3" data-testid="buddy-setup-cards">
-      <div className="font-semibold">Where does your team chat?</div>
-      <div className="grid grid-cols-2 gap-3 @lg:grid-cols-4">
+      <div className="flex items-center gap-2 font-semibold">
+        Where does your team chat?
+        <TermInfo term="messagingApp" />
+      </div>
+      <div className="grid grid-cols-2 gap-3 @md:grid-cols-3 @2xl:grid-cols-5">
         {TILES.map((app) => (
           <button
             key={app.bridgeType}
@@ -225,7 +284,7 @@ const Cards = observer(function Cards({
             aria-pressed={pressed(app.bridgeType)}
             onClick={() => setPicked(app.bridgeType)}
             className={cn(
-              'flex flex-col items-start gap-3 rounded-lg border bg-background p-3 text-left transition-colors hover:bg-background-1 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none',
+              TILE_CLASS,
               pressed(app.bridgeType) && 'border-foreground/40 shadow-sm ring-1 ring-foreground/20'
             )}
           >
@@ -233,11 +292,11 @@ const Cards = observer(function Cards({
             <TileText name={app.name} subtitle={app.subtitle} />
           </button>
         ))}
+        <button type="button" onClick={stay} className={TILE_CLASS}>
+          <SwitchConsoleMark size={28} />
+          <TileText name="Switch Console" subtitle="Connect an app later" />
+        </button>
       </div>
-      <Button variant="ghost" size="sm" className="self-start" onClick={stay}>
-        No chat app? Continue here in Switch Console
-        <ArrowRight />
-      </Button>
 
       {platform && step.kind === 'loading' && (
         <StatusRow>
@@ -249,7 +308,7 @@ const Cards = observer(function Cards({
       {step.kind === 'unknown' && (
         <StatusRow className="border-border-destructive text-foreground-destructive">
           <div className="min-w-0 flex-1">
-            <div className="font-semibold">Couldn’t check {label || 'your chat apps'}</div>
+            <div className="font-semibold">Couldn’t check {label || 'your messaging apps'}</div>
             <div>Switch did not answer.</div>
           </div>
           <Button size="sm" variant="outline" onClick={retry}>
@@ -349,13 +408,7 @@ const Cards = observer(function Cards({
           <PlatformCard
             platform={step.bridge.type}
             title={`Link your ${label} account`}
-            description={
-              // The bot can find only people who have written where it can hear them, and
-              // privacy mode lets it hear only slash commands.
-              step.bridge.type === 'telegram'
-                ? `I answer only accounts I recognise. Make a Telegram group with just you and the ${step.bridge.displayName} bot, and send this in it. Then link your account here: Switch shows a code to send in that group. Once it's linked, I'll answer when you reply to the bot's message there.`
-                : `So I recognise you in ${step.bridge.displayName}.`
-            }
+            description={`So I recognise you in ${step.bridge.displayName}.`}
             footer={
               <div className="flex flex-col items-start gap-3">
                 <BridgeChoice
@@ -366,9 +419,6 @@ const Cards = observer(function Cards({
                   onChoose={setChosenBridgeId}
                 />
                 <div className="flex flex-wrap items-center gap-3">
-                  {step.bridge.type === 'telegram' && (
-                    <InviteCommand platform="telegram" agentName={agentName} />
-                  )}
                   <Button
                     onClick={() => showClaimIdentity({ workspaceId, bridgeId: step.bridge.id })}
                   >
@@ -379,6 +429,30 @@ const Cards = observer(function Cards({
             }
           />
         </>
+      )}
+
+      {step.kind === 'checklist' && (
+        <div className="flex flex-col gap-3">
+          {connectedBridges.length > 1 && (
+            <BridgeChoice
+              platform={step.bridge.type}
+              bridges={connectedBridges}
+              chosenId={step.bridge.id}
+              disabled={false}
+              onChoose={setChosenBridgeId}
+            />
+          )}
+          <ChatAppChecklist
+            serverId={serverId}
+            workspaceId={workspaceId}
+            bridge={step.bridge}
+            label={label}
+            agentId={agentId}
+            agentName={agentName}
+            identities={ids.identities ?? []}
+            onIdentitiesChanged={ids.refresh}
+          />
+        </div>
       )}
 
       {step.kind === 'create' && (
@@ -443,11 +517,7 @@ const Cards = observer(function Cards({
           <PlatformCard
             platform={step.bridge.type}
             title={`Continue in ${label}`}
-            description={
-              step.bridge.type === 'telegram'
-                ? `In a Telegram group with you and the ${step.bridge.displayName} bot, send this if you haven't yet. Then reply to the bot's message, mention ${agentName} in that reply, and say what you work on.`
-                : `Add the Switch app to a Teams chat or channel and send this there. Then mention ${agentName} with a short note on what you work on.`
-            }
+            description={`Add the Switch app to a ${label} chat or channel and send this there. Then mention ${agentName} with a short note on what you work on.`}
             footer={
               <div className="flex flex-col items-start gap-3">
                 <BridgeChoice
@@ -457,7 +527,9 @@ const Cards = observer(function Cards({
                   disabled={false}
                   onChoose={setChosenBridgeId}
                 />
-                <InviteCommand platform={step.bridge.type} agentName={agentName} />
+                <CopyCommand
+                  command={typedCommand(step.bridge, 'invite-agent', { agent: agentName })}
+                />
               </div>
             }
           />
@@ -612,6 +684,9 @@ const PLATFORM_NAMES: Record<BuddyPlatform, string> = {
   telegram: 'Telegram',
 };
 
+const TILE_CLASS =
+  'flex flex-col items-start gap-3 rounded-lg border bg-background p-3 text-left transition-colors hover:bg-background-1 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none';
+
 const TILES = [
   { bridgeType: 'slack', name: 'Slack', subtitle: 'Channels & DMs' },
   { bridgeType: 'teams', name: 'Microsoft Teams', subtitle: 'Teams & chats' },
@@ -665,15 +740,6 @@ function TileText({ name, subtitle }: { name: string; subtitle: string }) {
       <div className="font-semibold">{name}</div>
       <div className="text-sm text-foreground-muted">{subtitle}</div>
     </div>
-  );
-}
-
-/** Telegram's bot sees only slash commands in a group where it is not an admin. */
-function InviteCommand({ platform, agentName }: { platform: string; agentName: string }) {
-  return (
-    <code className="rounded bg-background px-2 py-1 font-mono text-sm select-all">
-      {platform === 'telegram' ? '/invite_agent' : '!invite-agent'} @{agentName}
-    </code>
   );
 }
 

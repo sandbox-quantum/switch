@@ -4,15 +4,28 @@ import { useAgentAccent } from '@renderer/lib/components/agent-accent';
 import { AgentAvatar } from '@renderer/lib/components/agent-avatar';
 import { cn } from '@renderer/utils/utils';
 import { agentInitials } from '@shared/core/agents/agent-avatar';
+import { personColour } from '@shared/core/people/person-colour';
 import { type Participant, pickerKey, searchParticipants } from './participant-search';
 
-/** A person's initials disc, as the chat timeline draws people. */
-function Initials({ name, size }: { name: string; size: number }) {
+/** What a person's colour is seeded by: their Switch user when known. */
+function personSeed(participant: Participant): string {
+  return participant.kind === 'person'
+    ? (participant.userIds?.[0] ?? participant.id)
+    : participant.id;
+}
+
+/** A person's initials disc in their colour, as the chat timeline draws people. */
+function Initials({ name, seed, size }: { name: string; seed: string; size: number }) {
   return (
     <span
       aria-hidden
-      style={{ width: size, height: size, fontSize: Math.round(size * 0.5) }}
-      className="flex shrink-0 items-center justify-center rounded-full bg-[var(--fill-2)] leading-none font-medium text-foreground"
+      style={{
+        width: size,
+        height: size,
+        fontSize: Math.round(size * 0.5),
+        ...personColour(seed),
+      }}
+      className="flex shrink-0 items-center justify-center rounded-full leading-none font-medium"
     >
       {agentInitials(name)}
     </span>
@@ -36,7 +49,7 @@ function Mark({
       size={size}
     />
   ) : (
-    <Initials name={participant.name} size={size} />
+    <Initials name={participant.name} seed={personSeed(participant)} size={size} />
   );
 }
 
@@ -99,7 +112,7 @@ function FixedChip({ fixed }: { fixed: FixedParticipant }) {
         fixed.warning ? 'bg-destructive/15' : 'bg-[var(--fill-2)]'
       )}
     >
-      <Initials name={fixed.participant.name} size={18} />
+      <Initials name={fixed.participant.name} seed={personSeed(fixed.participant)} size={18} />
       {/* On one baseline: centred separately, the smaller detail sits higher than the name. */}
       <span className="flex min-w-0 items-baseline gap-1.5">
         <span className="truncate">{fixed.participant.name}</span>

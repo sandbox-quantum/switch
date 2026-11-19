@@ -97,6 +97,22 @@ export type RendererTelemetryEvents = {
       | 'kimi'
       | 'none';
   };
+  /**
+   * Something done on a server's Home: a suggestion clicked (which one), Connect
+   * to AI pressed, or a message sent to switch-buddy from its box. Never the
+   * message.
+   */
+  home_action: {
+    action: 'chip' | 'connect_ai' | 'message';
+    chip:
+      | 'connect_chat_app'
+      | 'first_agent'
+      | 'team_room'
+      | 'new_room'
+      | 'new_agent'
+      | 'room_instructions'
+      | 'none';
+  };
   /** A screen failed and the error boundary caught it. */
   renderer_crashed: Record<never, never>;
 };

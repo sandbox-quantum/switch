@@ -3,7 +3,7 @@
 Every route except creating a chat requires the caller's membership of the
 room (`ChatService.require_member`); adding a member or adding or removing
 an agent requires managing it.
-With `agent_chats` on, owning an agent in a chat one started keeps one a
+Owning an agent in a chat one started keeps one a
 member of it (`sync_owned_rooms`), so the list, the event stream and the room
 routes bring that up to date first.
 Refusals are `ChatError`s, answered as `{"detail": {"code", "message"}}`.
@@ -34,7 +34,7 @@ from fastapi import (
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from switch_core.bridges.agent.commands import COMMANDS
+from switch_core.bridges.agent.commands import COMMANDS_BY_NAME, commands_for
 from switch_core.chats.service import (
     ChatError,
     ChatService,
@@ -50,6 +50,7 @@ from switch_core.chats.views import (
     chat_messages,
     chat_summaries,
 )
+from switch_core.config import SwitchConfig
 from switch_core.content_disposition import untrusted_file_headers
 from switch_core.db.models import (
     AgentSessionActivityItem,
@@ -60,8 +61,12 @@ from switch_core.db.models import (
 from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.agent_sessions import ApprovalRequestView
-from switch_core.gateway.auth import get_current_user, session_is_current
-from switch_core.gateway.dependencies import get_user_store
+from switch_core.gateway.auth import (
+    get_current_user,
+    session_id_of,
+    session_still_enters,
+)
+from switch_core.gateway.dependencies import get_config, get_user_store
 from switch_core.session_activity.listener import Change, RoomSubscription
 
 logger = logging.getLogger(__name__)
@@ -362,15 +367,27 @@ async def create_chat(
 
 
 def _session_check(
-    service: ChatService, user_store: UserStore, user: User
+    service: ChatService,
+    user_store: UserStore,
+    user: User,
+    request: Request,
+    tenant_id: str,
 ) -> Callable[[], Awaitable[bool]]:
     """What a stream asks at each re-read: whether the session it was opened
-    with still stands, or the account's sessions have been ended since."""
+    with still stands, and may still enter its workspace, or the account's
+    sessions have been ended, this one signed out of, or the workspace left
+    or archived since."""
     session_version = user.session_version
+    session_id = session_id_of(request)
 
     async def still_current() -> bool:
-        return await session_is_current(
-            service.session_factory, user_store, user.id, session_version
+        return await session_still_enters(
+            service.session_factory,
+            user_store,
+            user.id,
+            session_version,
+            session_id,
+            tenant_id,
         )
 
     return still_current
@@ -378,6 +395,7 @@ def _session_check(
 
 @router.get("/events")
 async def chat_events_stream(
+    request: Request,
     user: CurrentUser,
     service: Service,
     user_store: Annotated[UserStore, Depends(get_user_store)],
@@ -392,7 +410,9 @@ async def chat_events_stream(
             parse_after(after),
             ping_seconds=PING_SECONDS,
             recheck_seconds=RECHECK_SECONDS,
-            session_current=_session_check(service, user_store, user),
+            session_current=_session_check(
+                service, user_store, user, request, tenant_id
+            ),
         ),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
@@ -423,6 +443,7 @@ async def agent_candidates(
 
 @router.get("/activity/events")
 async def chat_activity_stream(
+    request: Request,
     user: CurrentUser,
     service: Service,
     user_store: Annotated[UserStore, Depends(get_user_store)],
@@ -436,7 +457,9 @@ async def chat_activity_stream(
             ping_seconds=PING_SECONDS,
             recheck_seconds=RECHECK_SECONDS,
             queue_max=ACTIVITY_QUEUE_MAX,
-            session_current=_session_check(service, user_store, user),
+            session_current=_session_check(
+                service, user_store, user, request, tenant_id
+            ),
         ),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
@@ -528,6 +551,20 @@ async def upload_attachment(
     )
 
 
+def room_command(body: str) -> tuple[str, str] | None:
+    """`(name, args)` when `body` is a room command a member can type here
+    (`!name args`, split as the platform bridges split one), else None. Only a
+    command Switch has is taken: "!important" stays a message."""
+    text = body.strip()
+    if not text.startswith("!"):
+        return None
+    parts = text.split(None, 1)
+    name = parts[0][1:]
+    if name not in COMMANDS_BY_NAME:
+        return None
+    return name, parts[1].strip() if len(parts) > 1 else ""
+
+
 @router.post("/{room_id}/messages", response_model=SentMessages)
 async def send_message(
     room_id: str, req: SendRequest, user: CurrentUser, service: Service
@@ -545,6 +582,7 @@ async def send_message(
         mention_agent_ids=req.mention_agent_ids,
         mention_user_ids=req.mention_user_ids,
         mention_spans=req.mention_spans,
+        command=None if req.upload_ids else room_command(req.body),
     )
     async with tenant_session(service.session_factory, tenant_id) as session:
         return SentMessages(messages=await chat_messages(session, room, posted))
@@ -609,10 +647,14 @@ async def list_members(room_id: str, user: CurrentUser, service: Service) -> Mem
 
 @router.get("/{room_id}/commands", response_model=ChatCommands)
 async def list_commands(
-    room_id: str, user: CurrentUser, service: Service
+    room_id: str,
+    user: CurrentUser,
+    service: Service,
+    config: Annotated[SwitchConfig, Depends(get_config)],
 ) -> ChatCommands:
     """The room commands a member can type here (`!name`), as the platforms'
-    command lists show them: those that do something and are not hidden."""
+    command lists show them: those this server has (`commands_for`) that do
+    something and are not hidden."""
     tenant_id = require_tenant_id()
     async with tenant_session(service.session_factory, tenant_id) as session:
         await service.require_member(session, tenant_id, user, room_id)
@@ -628,7 +670,7 @@ async def list_commands(
                     ]
                 ),
             )
-            for command in COMMANDS
+            for command in commands_for(config.feature_flags)
             if command.handler is not None
             and not command.hidden
             and command.description.strip()

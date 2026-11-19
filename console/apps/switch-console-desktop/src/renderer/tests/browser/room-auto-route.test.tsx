@@ -56,7 +56,7 @@ import { RoomConfigurationPanel } from '@renderer/features/switch-rooms/room-con
 import { workspacesStore } from '@renderer/features/workspaces/workspaces-store';
 
 const NO_BACKEND =
-  'Auto-route needs a decision service. A workspace admin can set one up in Switch Console → Admin → Decision routing.';
+  'Auto-route needs a decision service. A workspace admin can set one up in Switch Console → Settings → Message routing.';
 
 const OFF: RoomAutoRoute = {
   on: false,
@@ -64,6 +64,8 @@ const OFF: RoomAutoRoute = {
   reason: null,
   fallbackAgent: null,
   fallbackAgentName: null,
+  assignedAgent: null,
+  assignedAgentName: null,
 };
 
 /** What the server says the signed-in account may do in the room. */
@@ -231,6 +233,8 @@ it('shows auto-route unavailable with the server’s reason, and holds the switc
     reason: NO_BACKEND,
     fallbackAgent: null,
     fallbackAgentName: null,
+    assignedAgent: null,
+    assignedAgentName: null,
   });
   await vi.waitFor(() => expect(toggle(el)).toBeTruthy());
 
@@ -245,10 +249,34 @@ it('still lets auto-route be turned off where it is on but unavailable', async (
     reason: NO_BACKEND,
     fallbackAgent: null,
     fallbackAgentName: null,
+    assignedAgent: null,
+    assignedAgentName: null,
   });
   await vi.waitFor(() => expect(toggle(el)).toBeTruthy());
 
   expect(el.textContent).toContain(`On, but unavailable: ${NO_BACKEND}`);
+  expect(disabled(el)).toBe(false);
+});
+
+it('holds the switch while an agent is assigned, and says how to unassign it', async () => {
+  const el = await render({ ...OFF, assignedAgent: 'agent-helper', assignedAgentName: 'helper' });
+  await vi.waitFor(() => expect(toggle(el)).toBeTruthy());
+
+  expect(el.textContent).toContain('Every message goes to helper');
+  expect(el.textContent).toContain('!unassign-agent');
+  expect(disabled(el)).toBe(true);
+});
+
+it('lets a room that has both turn auto-route off, saying it is not acting', async () => {
+  const el = await render({
+    ...OFF,
+    on: true,
+    assignedAgent: 'agent-helper',
+    assignedAgentName: 'helper',
+  });
+  await vi.waitFor(() => expect(toggle(el)).toBeTruthy());
+
+  expect(el.textContent).toContain('On, but not acting');
   expect(disabled(el)).toBe(false);
 });
 

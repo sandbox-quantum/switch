@@ -1,23 +1,34 @@
 import ContentCopy from "@mui/icons-material/ContentCopy";
 import OpenInNew from "@mui/icons-material/OpenInNew";
-import { Box, Card, CardActions, CardContent, IconButton, Link, Stack, Tooltip, Typography } from "@mui/material";
+import { Card, CardActions, CardContent, IconButton, Link, Stack, Tooltip, Typography } from "@mui/material";
 import { type ReactNode, useState } from "react";
+import PageHeader from "../../components/PageHeader";
+import SuccessSnackbar from "../../components/SuccessSnackbar";
 import { MONO_SX } from "../../theme/format";
 
+/** What Switch Trust does not check, said wherever a policy is shown, so no
+ *  one takes it to cover every file. Mirrors `file_text.py`'s kinds. */
+export const TRUST_COVERAGE =
+  "Switch Trust reads text: each message and the text in attached files, up to the first 20,000 characters, " +
+  "with a note on anything past that. Images, audio, video, archives, and Office files other than Word " +
+  "documents can't be read, so they are delivered unchecked.";
+
 /**
- * The Switch Trust policy that checks messages, as a card: its ID, to copy,
- * and where to see it on Switch Trust. Switch reads no more of a policy than
- * its ID, so its name and detectors are on Switch Trust only.
+ * The Switch Trust policy that checks messages, as a card: headed by its
+ * name, when Switch Trust gave one as the policy was connected, its ID, to
+ * copy, and where to see it on Switch Trust, which lists its detectors.
  *
  * `actions` go in the card's corner: the organization's page puts
  * Disconnect there; the workspace's, which only reads the policy, nothing.
  */
 export default function GuardrailPolicyCard({
   policyId,
+  policyName,
   policyUrl,
   actions,
 }: {
   policyId: string;
+  policyName: string | null;
   /** Null when the policy is on a Switch Trust Switch can't link into. */
   policyUrl: string | null;
   actions?: ReactNode;
@@ -36,36 +47,39 @@ export default function GuardrailPolicyCard({
   return (
     <Card variant="outlined" sx={{ borderRadius: "16px", maxWidth: 640 }}>
       <CardContent>
-        <Stack direction="row" spacing={2} sx={{ alignItems: "flex-start", justifyContent: "space-between" }}>
-          <Box sx={{ minWidth: 0 }}>
+        <PageHeader
+          title={
             <Typography variant="subtitle1" component="h2" sx={{ fontWeight: 600 }}>
-              Switch Trust policy
+              {policyName ?? "Switch Trust policy"}
             </Typography>
-            <Stack direction="row" spacing={0.5} sx={{ alignItems: "center", mt: 0.5 }}>
-              <Typography component="span" sx={{ ...MONO_SX, wordBreak: "break-all" }}>
-                {policyId}
+          }
+          description={
+            <>
+              <Stack direction="row" spacing={0.5} sx={{ alignItems: "center", mt: 0.5 }}>
+                <Typography component="span" sx={{ ...MONO_SX, wordBreak: "break-all" }}>
+                  {policyId}
+                </Typography>
+                <Tooltip title="Copy the policy ID">
+                  <IconButton size="small" aria-label="Copy the policy ID" onClick={() => void copy()}>
+                    <ContentCopy fontSize="small" />
+                  </IconButton>
+                </Tooltip>
+              </Stack>
+              <Typography variant="caption" color="text.secondary" role="status" sx={{ display: "block" }}>
+                {copied === "refused" ? "Your browser blocked the clipboard. Select the ID and copy it." : ""}
               </Typography>
-              <Tooltip title="Copy the policy ID">
-                <IconButton size="small" aria-label="Copy the policy ID" onClick={() => void copy()}>
-                  <ContentCopy fontSize="small" />
-                </IconButton>
-              </Tooltip>
-            </Stack>
-            <Typography variant="caption" color="text.secondary" role="status" sx={{ display: "block" }}>
-              {copied === "yes"
-                ? "Copied the policy ID."
-                : copied === "refused"
-                  ? "Your browser blocked the clipboard. Select the ID and copy it."
-                  : ""}
-            </Typography>
-          </Box>
-          {actions}
-        </Stack>
+            </>
+          }
+          actions={actions}
+        />
         {policyUrl && (
           <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
             Its detectors for user and assistant messages are listed on Switch Trust.
           </Typography>
         )}
+        <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+          {TRUST_COVERAGE}
+        </Typography>
       </CardContent>
       {policyUrl && (
         <CardActions sx={{ borderTop: "1px solid var(--sw-border)", px: 2 }}>
@@ -77,6 +91,7 @@ export default function GuardrailPolicyCard({
           </Link>
         </CardActions>
       )}
+      <SuccessSnackbar message={copied === "yes" ? "Copied the policy ID." : null} onClose={() => setCopied(null)} />
     </Card>
   );
 }

@@ -1240,6 +1240,7 @@ async def _template(harness: Harness, owner: User, content: str) -> str:
     harness.protocol.config.feature_flags = {
         "agent_management": True,
         "switch_buddy": False,
+        "additional_agent_providers": True,
     }  # type: ignore[attr-defined]
     harness.protocol.room_yaml_service = _NoRooms  # type: ignore[assignment,method-assign]
     async with harness.session_factory() as session:
@@ -1571,7 +1572,7 @@ async def _installs(harness: Harness, template_id: str) -> list[Any]:
 
 
 def _buddy_document() -> str:
-    buddy = official_template("official:switch-buddy", True, switch_buddy=True)
+    buddy = official_template("official:switch-buddy", switch_buddy=True)
     assert buddy is not None
     return buddy.content
 

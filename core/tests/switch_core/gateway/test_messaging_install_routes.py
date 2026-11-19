@@ -54,7 +54,11 @@ def _room(
     *, owner_id: str | None = None, read: str = "public", write: str = "public"
 ) -> SimpleNamespace:
     return SimpleNamespace(
-        owner_id=owner_id, read_visibility=read, write_visibility=write
+        owner_id=owner_id,
+        read_visibility=read,
+        write_visibility=write,
+        channel_type=None,
+        external_channel_id=None,
     )
 
 

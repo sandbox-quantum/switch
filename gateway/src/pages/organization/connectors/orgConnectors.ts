@@ -9,6 +9,7 @@ import type {
   OrganizationService,
   OrganizationServiceSetting,
 } from "../../../data/api";
+import { formatDate } from "../../../theme/format";
 
 /** An organization's say in a connector. The server keeps it as on or off,
  * locked or not, or none; these are the five that make. */
@@ -66,6 +67,22 @@ export function settingOf(policy: Policy): OrganizationServiceSetting | null {
       return { enabled: true, locked: true };
     case "off_locked":
       return { enabled: false, locked: true };
+  }
+}
+
+/** What the snackbar says once the organization's setting is `policy`. */
+export function policyChanged(connector: string, policy: Policy): string {
+  switch (policy) {
+    case "workspaces_decide":
+      return `Each workspace now decides whether to use ${connector}.`;
+    case "on_by_default":
+      return `${connector} is now on by default in every workspace. Workspace admins can turn it off.`;
+    case "off_by_default":
+      return `${connector} is now off by default in every workspace. Workspace admins can turn it on.`;
+    case "on_locked":
+      return `${connector} is on in every workspace. Workspace admins can't turn it off.`;
+    case "off_locked":
+      return `${connector} is off in every workspace. It disappears from them until it is switched back on.`;
   }
 }
 
@@ -162,4 +179,24 @@ export function appRowStatus(
     case "attention":
       return "Needs attention";
   }
+}
+
+/** "On in 2 of 3 workspaces · 1 sets its own · 4 people connected · set by Ada, 1 Oct 2026". */
+export function reachText(service: OrganizationService, workspaces: number): string {
+  if (service.server_switched_off !== null) return service.server_switched_off;
+  const parts = [
+    `On in ${service.workspaces_on} of ${workspaces} workspace${workspaces === 1 ? "" : "s"}`,
+  ];
+  // An unlocked setting doesn't reach a workspace that set its own.
+  if (service.workspaces_set_own > 0 && !service.setting?.locked)
+    parts.push(
+      `${service.workspaces_set_own} ${service.workspaces_set_own === 1 ? "sets its" : "set their"} own`,
+    );
+  if (service.connected_members > 0)
+    parts.push(
+      `${service.connected_members} ${service.connected_members === 1 ? "person" : "people"} connected`,
+    );
+  if (service.updated_by_name && service.updated_at)
+    parts.push(`set by ${service.updated_by_name}, ${formatDate(service.updated_at)}`);
+  return parts.join(" · ");
 }

@@ -62,6 +62,7 @@ from . import (
     RequestReference,
     example_value,
     is_steered,
+    offered_controls,
     surface_label,
     turn_state,
     unanswerable,
@@ -80,6 +81,10 @@ _CUT = "…{left} more not shown."
 # question left out. Answering by number means answering the numbers on the
 # screen, so a form that is not all on the screen stops asking to be answered
 # there and names the place it can be.
+# The least room worth spending on a prompt. Below this a cut prompt is a word
+# and an ellipsis, which says nothing the title did not; it is left out.
+_PROMPT_FLOOR = 40
+
 _TOO_BIG = (
     "Too long to show in full here, so it cannot be answered from this "
     f"message. {_CONSOLE} to read and answer it."
@@ -277,6 +282,7 @@ def turn_status(
     mention: str | None = None,
     error_summary: str | None = None,
     tool_detail: bool,
+    current_step: bool = False,
 ) -> str:
     """A turn's progress, compact enough to live in one message that is edited.
 
@@ -307,6 +313,14 @@ def turn_status(
     makes it reach them. It stands in for the state line, which under it would
     only be reporting a turn that is, by definition, not getting anywhere.
 
+    `current_step` adds the "Now: …" line on a platform that declines the rest
+    of the tool detail, for a running turn whose card otherwise only says it is
+    working: the step of the moment is the live part of the card there.
+
+    The time is exact while the turn runs: every platform drawing this redraws
+    a card when the turn changes and never on a timer, so whole minutes would
+    leave it reading the same through every change of the first minute.
+
     `mention` is already in the platform's own syntax and is not escaped: it is
     the adapter's, resolved from an id Switch holds, never host text.
     """
@@ -315,7 +329,11 @@ def turn_status(
         return _mentioned(mention, _truncate(f"⚠️ {error_summary}", budget))
 
     state = turn_state(
-        items, turn, tool_detail=tool_detail, elapsed_seconds=elapsed_seconds
+        items,
+        turn,
+        tool_detail=tool_detail,
+        elapsed_seconds=elapsed_seconds,
+        running_clock="exact",
     )
     head = markup.bold(state)
 
@@ -338,7 +356,12 @@ def turn_status(
         spent += len(line) + 1
     did = [item for item in items if is_tool_call(item)]
     for line in _doing(
-        did, turn, escape=escape, budget=budget, tool_detail=tool_detail
+        did,
+        turn,
+        escape=escape,
+        budget=budget,
+        tool_detail=tool_detail,
+        current_step=current_step,
     ):
         if spent + len(line) + 1 > budget:
             break
@@ -354,6 +377,7 @@ def _doing(
     escape: Callable[[str], str],
     budget: int,
     tool_detail: bool,
+    current_step: bool,
 ) -> list[str]:
     """The optional lines under the state: what is running, and how it is going.
 
@@ -372,7 +396,7 @@ def _doing(
         return []
     lines: list[str] = []
     ended = turn.status in TURN_ENDED
-    if tool_detail and not ended:
+    if (tool_detail or current_step) and not ended:
         current = next(
             (item for item in reversed(did) if item.status == "in-progress"), None
         )
@@ -615,6 +639,7 @@ def render_request(
             limit=limit,
             markup=markup,
             responder=responder,
+            buttons=control_label_limit is not None and bool(offered_controls(request)),
         )
     if unavailable_reason and request.state in {"open", "submitting"}:
         body = []
@@ -625,7 +650,9 @@ def render_request(
         body,
         footer,
         limit=limit,
-        if_cut=_TOO_BIG if invites_answer else footer,
+        if_cut=_too_big(request, reference, escape=escape, limit=limit, markup=markup)
+        if invites_answer
+        else footer,
     )
     return Drawn(text=text, answerable=invites_answer and not cut)
 
@@ -720,7 +747,7 @@ def _approval_footer(
         # reads as one fixed string to type, and the number in it is the whole
         # decision.
         return (
-            f"Reply with {markup.code(handle)} and your choice, "
+            f"{markup.reply_with(markup.code(handle))} and your choice, "
             f"e.g. {markup.code(f'{handle} 1')}."
         )
     if request.state == "submitting":
@@ -800,6 +827,7 @@ def _questions_form(
     limit: int,
     markup: Markup,
     responder: str | None,
+    buttons: bool,
 ) -> tuple[list[str], list[str], str, bool]:
     fit = _Faithful(escape)
     handle = markup.literal(escape)(reference.handle)
@@ -809,7 +837,9 @@ def _questions_form(
         fit(content.title, _share(limit, 1500, 3)),
     ]
 
-    body: list[str] = []
+    # A prompt is held as its index into `content.questions` until the rest of
+    # the form has been measured, because it is sized from what is left over.
+    body: list[str | int] = []
     if request.state == "open":
         budget = _label_budget(limit)
         for position, question in enumerate(content.questions, start=1):
@@ -818,26 +848,128 @@ def _questions_form(
                 markup.bold(f"{position}. {title}" if title else f"{position}.")
             )
             if question.prompt:
-                body.append(fit(question.prompt, _share(limit, 800, 4)))
+                body.append(position - 1)
             for index, option in enumerate(question.options, start=1):
                 body.append(_option_line(index, option, fit=fit, limit=limit))
     invites_answer = request.state == "open" and unanswerable(content.questions) is None
     if invites_answer and not fit.whole:
-        return (head, body, _TOO_BIG, False)
+        too_big = _too_big(
+            request, reference, escape=escape, limit=limit, markup=markup
+        )
+        return (head, _prompts_dropped(body), too_big, False)
+    footer = _questions_footer(
+        request,
+        content,
+        handle,
+        escape=escape,
+        limit=limit,
+        markup=markup,
+        responder=responder,
+        buttons=buttons,
+    )
+    too_big = _too_big(request, reference, escape=escape, limit=limit, markup=markup)
+    reserved = max(len(footer), len(too_big) if invites_answer else 0)
     return (
         head,
-        body,
-        _questions_footer(
-            request,
-            content,
-            handle,
-            escape=escape,
+        _with_prompts(
+            body,
+            content.questions,
+            room=limit - min(reserved, limit) - _spent(head) - _spent(body),
             limit=limit,
-            markup=markup,
-            responder=responder,
+            escape=escape,
         ),
+        footer,
         invites_answer,
     )
+
+
+# How much of each option's label a typed-answer list prints, and the most
+# options it lists: past either, the list is no shorter than the card it
+# stands in for.
+_LISTED_LABEL = 40
+_LISTED_OPTIONS = 6
+
+
+def _too_big(
+    request: SnapshotRequest,
+    reference: RequestReference,
+    *,
+    escape: Callable[[str], str],
+    limit: int,
+    markup: Markup,
+) -> str:
+    """What a form that does not fit says instead of asking for a number.
+
+    For one single-choice question, the typed answers themselves, each with
+    the start of its label: a short confirm card whose explanation ran long
+    can still be answered right here, by someone who can see which number is
+    which. Anything else (several questions, a long list, labels that look
+    alike once shortened) names Console instead.
+    """
+    content = request.content
+    if not isinstance(content, QuestionsContent) or len(content.questions) != 1:
+        return _TOO_BIG
+    question = content.questions[0]
+    options = question.options
+    if question.multi_select or not options or len(options) > _LISTED_OPTIONS:
+        return _TOO_BIG
+    labels = [_fit(option.label, _LISTED_LABEL, escape=escape) for option in options]
+    if len(set(labels)) != len(labels):
+        return _TOO_BIG
+    handle = markup.literal(escape)(reference.handle)
+    answers = " · ".join(
+        f"{markup.code(f'{handle} {index}')} {label}"
+        for index, label in enumerate(labels, start=1)
+    )
+    listed = (
+        f"Too long to show in full here. Reply with one of: {answers}. "
+        f"Or {_CONSOLE[0].lower()}{_CONSOLE[1:]} to read it all."
+    )
+    return listed if len(listed) <= limit // 2 else _TOO_BIG
+
+
+def _spent(lines: list[str] | list[str | int]) -> int:
+    """What the fixed lines of a form cost, each with its newline."""
+    return sum(len(line) + 1 for line in lines if isinstance(line, str))
+
+
+def _prompts_dropped(body: list[str | int]) -> list[str]:
+    return [line for line in body if isinstance(line, str)]
+
+
+def _with_prompts(
+    body: list[str | int],
+    questions: list[Question],
+    *,
+    room: int,
+    limit: int,
+    escape: Callable[[str], str],
+) -> list[str]:
+    """The body with each question's prompt in its place, sized to what is left.
+
+    A prompt is explanation, not a choice: the title says what is asked and
+    the options are what a reader picks between, and those are held whole or
+    the form stops asking for an answer. A prompt is cut to the room left over
+    once everything else is measured instead, the way Slack's card cuts it, so
+    a long explanation costs some of its own words rather than the buttons and
+    the typed answer under it. The room is shared out in order, so a short
+    prompt keeps all of itself and hands what it did not need to the next.
+    """
+    prompts = [line for line in body if isinstance(line, int)]
+    left = len(prompts)
+    shown: list[str] = []
+    for line in body:
+        if isinstance(line, str):
+            shown.append(line)
+            continue
+        share = min(_share(limit, 800, 1), (room - left) // left) if room > left else 0
+        left -= 1
+        if share < _PROMPT_FLOOR:
+            continue
+        prompt = _fit(questions[line].prompt, share, escape=escape)
+        shown.append(prompt)
+        room -= len(prompt) + 1
+    return shown
 
 
 def _option_line(
@@ -869,13 +1001,18 @@ def _questions_footer(
     limit: int,
     markup: Markup,
     responder: str | None,
+    buttons: bool,
 ) -> str:
     if request.state == "open":
         stuck = unanswerable(content.questions)
         if stuck is not None:
             return stuck
         example = markup.code(_example(handle, content.questions))
-        start = f"Reply with {markup.code(handle)}"
+        if buttons:
+            # The buttons are the answer; the typed form is for a client that
+            # does not draw them, so it is said once and briefly.
+            return f"Tap an answer, or reply {example}."
+        start = markup.reply_with(markup.code(handle))
         if len(content.questions) > 1:
             return (
                 f"{start} and your answers, e.g. {example} "

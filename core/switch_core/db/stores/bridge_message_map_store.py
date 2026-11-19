@@ -1,6 +1,6 @@
 from datetime import timedelta
 
-from sqlalchemy import delete, func, null, select, update
+from sqlalchemy import delete, func, null, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -54,8 +54,10 @@ class BridgeMessageMapStore:
         bridge_id: str,
         transport_event_id: str,
         external_post_id: str,
+        further_post_ids: list[str],
     ) -> None:
-        """Record the post a claimed message became on the platform."""
+        """Record the post a claimed message became on the platform, and the
+        further posts it took when the platform split it."""
         await session.execute(
             update(BridgeMessageMap)
             .where(
@@ -63,7 +65,10 @@ class BridgeMessageMapStore:
                 BridgeMessageMap.transport_event_id == transport_event_id,
                 BridgeMessageMap.external_post_id.is_(None),
             )
-            .values(external_post_id=external_post_id)
+            .values(
+                external_post_id=external_post_id,
+                further_post_ids=further_post_ids or None,
+            )
         )
 
     async def release_claim(
@@ -146,11 +151,19 @@ class BridgeMessageMapStore:
     async def get_by_external_post_id(
         self, session: AsyncSession, bridge_id: str, external_post_id: str
     ) -> BridgeMessageMap | None:
+        """The message posted as `external_post_id`, or as one of the further
+        parts it was split into."""
         result = await session.execute(
-            select(BridgeMessageMap).where(
+            select(BridgeMessageMap)
+            .where(
                 BridgeMessageMap.bridge_id == bridge_id,
-                BridgeMessageMap.external_post_id == external_post_id,
+                or_(
+                    BridgeMessageMap.external_post_id == external_post_id,
+                    BridgeMessageMap.further_post_ids.contains([external_post_id]),
+                ),
             )
+            .order_by((BridgeMessageMap.external_post_id == external_post_id).desc())
+            .limit(1)
         )
         return result.scalar_one_or_none()
 

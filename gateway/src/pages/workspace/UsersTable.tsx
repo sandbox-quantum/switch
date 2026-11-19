@@ -1,3 +1,6 @@
+import LogoutOutlined from "@mui/icons-material/LogoutOutlined";
+import ManageAccountsOutlined from "@mui/icons-material/ManageAccountsOutlined";
+import PersonRemoveOutlined from "@mui/icons-material/PersonRemoveOutlined";
 import { Box, Chip, Link, Stack, Typography } from "@mui/material";
 import { useMemo, useState } from "react";
 import { Link as RouterLink } from "react-router";
@@ -9,6 +12,7 @@ import ChangeRoleDialog from "./ChangeRoleDialog";
 import { removalNotice } from "./memberRemoval";
 import RemoveMemberDialog from "./RemoveMemberDialog";
 import { type RoleTone, roleOf } from "./roles";
+import UserAvatar from "./UserAvatar";
 
 type MemberRow = Member & { id: string };
 
@@ -97,8 +101,18 @@ export default function UsersTable({
     const rowActions = (row: MemberRow): RowAction[] => {
       if (row.organization_role === "org_admin") {
         return [
-          { label: "Change role", onClick: () => {}, disabledReason: ORG_ADMIN_ROLE_REASON },
-          { label: "Remove from workspace", onClick: () => {}, disabledReason: ORG_ADMIN_REMOVE_REASON },
+          {
+            label: "Change role",
+            icon: <ManageAccountsOutlined fontSize="small" />,
+            onClick: () => {},
+            disabledReason: ORG_ADMIN_ROLE_REASON,
+          },
+          {
+            label: "Remove from workspace",
+            icon: <PersonRemoveOutlined fontSize="small" />,
+            onClick: () => {},
+            disabledReason: ORG_ADMIN_REMOVE_REASON,
+          },
         ];
       }
       const self = row.user_id === selfId;
@@ -106,6 +120,7 @@ export default function UsersTable({
       if (row.can_change_role || row.change_role_blocked_reason !== null) {
         actions.push({
           label: self ? "Step down to Member" : "Change role",
+          icon: <ManageAccountsOutlined fontSize="small" />,
           onClick: () => setPending({ kind: self ? "step-down" : "change", member: row }),
           disabledReason: row.change_role_blocked_reason,
         });
@@ -113,6 +128,7 @@ export default function UsersTable({
       if (row.can_remove || row.remove_blocked_reason !== null) {
         actions.push({
           label: self ? "Leave workspace" : "Remove from workspace",
+          icon: self ? <LogoutOutlined fontSize="small" /> : <PersonRemoveOutlined fontSize="small" />,
           onClick: () => setPending({ kind: "remove", member: row }),
           destructive: true,
           disabledReason: row.remove_blocked_reason,
@@ -128,24 +144,27 @@ export default function UsersTable({
         flex: 1,
         minWidth: 260,
         renderCell: ({ row }) => (
-          <Stack sx={{ justifyContent: "center", height: "100%", minWidth: 0, lineHeight: 1.3 }}>
-            <Stack direction="row" spacing={1} sx={{ alignItems: "center", minWidth: 0 }}>
-              <Typography variant="body2" noWrap sx={{ fontWeight: 500 }}>
-                {row.name}
-                {row.user_id === selfId && (
-                  <Box component="span" sx={{ fontWeight: 400, color: "text.secondary" }}>
-                    {" "}
-                    (you)
-                  </Box>
+          <Stack direction="row" spacing={1.5} sx={{ alignItems: "center", height: "100%", minWidth: 0 }}>
+            <UserAvatar name={row.name} email={row.email} />
+            <Stack sx={{ minWidth: 0, lineHeight: 1.3 }}>
+              <Stack direction="row" spacing={1} sx={{ alignItems: "center", minWidth: 0 }}>
+                <Typography variant="body2" noWrap sx={{ fontWeight: 500 }}>
+                  {row.name}
+                  {row.user_id === selfId && (
+                    <Box component="span" sx={{ fontWeight: 400, color: "text.secondary" }}>
+                      {" "}
+                      (you)
+                    </Box>
+                  )}
+                </Typography>
+                {row.service_account && (
+                  <Chip label="Service account" size="small" variant="outlined" />
                 )}
+              </Stack>
+              <Typography variant="caption" color="text.secondary" noWrap>
+                {row.email}
               </Typography>
-              {row.service_account && (
-                <Chip label="Service account" size="small" variant="outlined" />
-              )}
             </Stack>
-            <Typography variant="caption" color="text.secondary" noWrap>
-              {row.email}
-            </Typography>
           </Stack>
         ),
       },
@@ -214,7 +233,7 @@ export default function UsersTable({
 
   const remove = async (member: Member) => {
     const result = await removeMember(tenantId, member.user_id);
-    onRemoved(removalNotice(member, result, selfId), result.warning);
+    onRemoved(removalNotice(member, result, selfId, null), result.warning);
     if (member.user_id === selfId) {
       await onLeft();
       return;
@@ -239,6 +258,7 @@ export default function UsersTable({
       {pending?.kind === "change" && (
         <ChangeRoleDialog
           member={pending.member}
+          workspaceName={workspaceName}
           onSave={(role) => changeRole(pending.member, role)}
           onClose={close}
         />

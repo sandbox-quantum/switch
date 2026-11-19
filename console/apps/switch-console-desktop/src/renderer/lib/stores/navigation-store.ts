@@ -13,13 +13,14 @@ type ViewParamsStore = Partial<{ [K in ViewId]: WrapParams<K> }>;
 export type LeaveGuard = (viewId: ViewId, params: unknown) => Promise<boolean>;
 
 export class NavigationStore implements Snapshottable<NavigationSnapshot> {
-  currentViewId: ViewId = 'home';
+  currentViewId: ViewId = 'noServer';
   viewParamsStore: ViewParamsStore = {};
   isNavigating: boolean = false;
-  lastNonSettingsView: NonSettingsViewId = 'home';
+  lastNonSettingsView: NonSettingsViewId = 'noServer';
 
   private readonly _guards = new Map<ViewId, (params: unknown) => GuardResult>();
   private readonly _registeredViewIds = new Set<ViewId>();
+  private readonly _agentParams = new Map<string, WrapParams<'managedAgent'>>();
   private _leaveGuard: LeaveGuard | null = null;
 
   constructor() {
@@ -72,6 +73,17 @@ export class NavigationStore implements Snapshottable<NavigationSnapshot> {
   }
 
   navigate<T extends ViewId>(viewId: T, params?: WrapParams<T>): void {
+    if (viewId === 'managedAgent' && params) {
+      const agent = params as WrapParams<'managedAgent'>;
+      if (!('roomId' in agent || 'room' in agent || 'section' in agent)) {
+        const remembered = this._agentParams.get(JSON.stringify([agent.serverId, agent.agentId]));
+        const restored = { ...remembered, ...agent };
+        this.whenLeaveAllowed('managedAgent', restored, () =>
+          this._navigate('managedAgent', restored)
+        );
+        return;
+      }
+    }
     this.whenLeaveAllowed(viewId, params ?? this.viewParamsStore[viewId], () =>
       this._navigate(viewId, params)
     );
@@ -104,7 +116,7 @@ export class NavigationStore implements Snapshottable<NavigationSnapshot> {
       this.isNavigating = true;
     }
     if (params !== undefined) {
-      this.viewParamsStore = { ...this.viewParamsStore, [viewId]: params };
+      this._setViewParams(viewId, params);
     }
     modalStore.closeModal();
   }
@@ -123,6 +135,16 @@ export class NavigationStore implements Snapshottable<NavigationSnapshot> {
 
   private _setViewParams<TId extends ViewId>(viewId: TId, params: WrapParams<TId>): void {
     this.viewParamsStore = { ...this.viewParamsStore, [viewId]: params };
+    if (viewId === 'managedAgent') {
+      const agent = params as WrapParams<'managedAgent'>;
+      this._agentParams.set(JSON.stringify([agent.serverId, agent.agentId]), agent);
+    }
+  }
+
+  replaceAgentChatRoomId(serverId: string, from: string, to: string): void {
+    for (const [key, agent] of this._agentParams)
+      if (agent.serverId === serverId && agent.roomId === from)
+        this._agentParams.set(key, { ...agent, roomId: to });
   }
 
   get snapshot(): NavigationSnapshot {
@@ -161,6 +183,9 @@ export class NavigationStore implements Snapshottable<NavigationSnapshot> {
         this.viewParamsStore = { ...this.viewParamsStore, [guard.redirect]: guard.params };
       }
     }
+    this._agentParams.clear();
+    if (this.viewParamsStore.managedAgent)
+      this._setViewParams('managedAgent', this.viewParamsStore.managedAgent);
     // Not reported as `view_opened`: the screen a launch resumes on is arrived
     // at, not opened, and counting it would make every launch, and every reload
     // of the window, look like someone using the app.

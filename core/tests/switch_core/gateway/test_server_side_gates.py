@@ -85,7 +85,10 @@ async def test_a_direct_or_group_conversations_members_are_not_changed_here(
                     answers[(f"{channel_type} {what}", persona.value)] = (
                         response.status_code
                     )
-    assert set(answers.values()) == {409}, answers
+    # A member not in it can't see it at all: a DM or group is private
+    # whatever its stored visibility. An admin is told why it is refused.
+    for (_what, persona), status in answers.items():
+        assert status == (404 if persona == Persona.MEMBER.value else 409), answers
 
 
 async def test_adding_to_a_package_takes_reading_what_is_added(

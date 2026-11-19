@@ -17,6 +17,8 @@ const modelCatalogue = vi.hoisted(() => vi.fn());
 const advancedConfigSchema = vi.hoisted(() => vi.fn());
 const giveMachineLogin = vi.hoisted(() => vi.fn());
 const machineLoginOutcome = vi.hoisted(() => vi.fn());
+// The server's additional_agent_providers flag; on unless a test turns it off.
+const flagState = vi.hoisted(() => ({ additionalProviders: true }));
 
 vi.hoisted(() => {
   window.electronAPI ??= {
@@ -34,6 +36,17 @@ vi.mock('@renderer/lib/ipc', () => ({
     hostControllers: { enable: hostEnable },
     agents: { modelCatalogue },
     managedAgents: { advancedConfigSchema, giveMachineLogin, machineLoginOutcome },
+    featureFlags: {
+      get: async (serverId: string) => ({
+        success: true,
+        data: {
+          serverId,
+          flags: { additional_agent_providers: flagState.additionalProviders },
+          fetchedAt: 1,
+          error: null,
+        },
+      }),
+    },
   },
 }));
 
@@ -54,6 +67,7 @@ let container: HTMLDivElement | null = null;
 let root: Root | null = null;
 
 beforeEach(() => {
+  flagState.additionalProviders = true;
   embeddedEnable.mockReset().mockResolvedValue(undefined);
   defaultWorkspace.mockReset().mockResolvedValue('/home/me/.switch/workspaces/pm-agent');
   hostEnable.mockReset().mockResolvedValue(undefined);
@@ -318,6 +332,7 @@ const BOX: OwnedMachine = {
   local: null,
   workspacesDir: null,
   os: null,
+  lastSeenAt: null,
   providers: [
     { provider: 'claude', ready: true, problem: null, detail: null, loginHelps: true },
     { provider: 'codex', ready: false, problem: 'not logged in', detail: null, loginHelps: true },
@@ -353,13 +368,35 @@ describe('the providers a server machine offers', () => {
     );
     expect(tile(el, 'Claude Code').disabled).toBe(false);
     expect(tile(el, 'Claude Code').textContent).toMatch(/Ready/);
-    expect(tile(el, 'Codex').disabled).toBe(true);
-    expect(tile(el, 'Codex').textContent).toMatch(/Not logged in/);
+    expect(tile(el, 'OpenAI Codex').disabled).toBe(true);
+    expect(tile(el, 'OpenAI Codex').textContent).toMatch(/Not logged in/);
     expect(tile(el, 'OpenCode').textContent).toMatch(/Not installed/);
     expect(tile(el, 'Cursor').disabled).toBe(true);
     expect(tile(el, 'Cursor').textContent).toMatch(/Not checked yet/);
-    await act(async () => tile(el, 'Codex').click());
+    await act(async () => tile(el, 'OpenAI Codex').click());
     expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it('leaves out a provider the server does not offer, even ready on the machine', async () => {
+    flagState.additionalProviders = false;
+    const el = await render(
+      <MachineProviderPicker
+        serverId="server-1"
+        machine={{
+          ...BOX,
+          providers: [
+            ...BOX.providers,
+            { provider: 'goose', ready: true, problem: null, detail: null, loginHelps: true },
+          ],
+        }}
+        value="claude"
+        onChange={vi.fn()}
+        defaultAgent="claude"
+      />
+    );
+    const names = [...el.querySelectorAll('button')].map((button) => button.textContent ?? '');
+    expect(names.some((name) => name.startsWith('Claude Code'))).toBe(true);
+    expect(names.some((name) => name.startsWith('Goose'))).toBe(false);
   });
 
   it('picks the one ready provider for the user', async () => {
@@ -406,13 +443,13 @@ describe('the providers a server machine offers', () => {
     );
     expect(el.textContent).toMatch(/Give build-box a login for/);
     const offered = [...el.querySelectorAll('button')].filter((button) =>
-      ['Codex', 'Cursor', 'OpenCode', 'Pi', 'Mistral Vibe', 'Kimi Code'].includes(
+      ['OpenAI Codex', 'Cursor', 'OpenCode', 'Pi', 'Mistral Vibe', 'Kimi Code'].includes(
         button.textContent ?? ''
       )
     );
     // Not OpenCode: it is not installed there, and no login would change that.
     // Not Pi, Mistral Vibe or Kimi Code: Console has no login it can give them.
-    expect(offered.map((button) => button.textContent)).toEqual(['Codex', 'Cursor']);
+    expect(offered.map((button) => button.textContent)).toEqual(['OpenAI Codex', 'Cursor']);
     await act(async () => offered[0]!.click());
     const input = el.querySelector<HTMLInputElement>('input[aria-label="API key"]')!;
     await act(async () => {
@@ -424,7 +461,7 @@ describe('the providers a server machine offers', () => {
       (button) => button.textContent === 'Give login'
     )!;
     await act(async () => giveButton.click());
-    await vi.waitFor(() => expect(el.textContent).toMatch(/Codex signs in on build-box/));
+    await vi.waitFor(() => expect(el.textContent).toMatch(/OpenAI Codex signs in on build-box/));
     expect(giveMachineLogin).toHaveBeenCalledWith({
       serverId: 'server-1',
       machineId: 'controller-7',

@@ -36,6 +36,7 @@ function renderDialog(emailEnabled: boolean) {
     <CreateInvitationDialog
       open
       tenantId="t1"
+      fromOrganization={false}
       workspaceName="Acme"
       emailEnabled={emailEnabled}
       onClose={() => {}}
@@ -122,7 +123,7 @@ describe("CreateInvitationDialog", () => {
     vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>((resolve) => (answer = resolve))));
     const onClose = vi.fn();
     render(
-      <CreateInvitationDialog open tenantId="t1" workspaceName="Acme" emailEnabled={false} onClose={onClose} />,
+      <CreateInvitationDialog open tenantId="t1" fromOrganization={false} workspaceName="Acme" emailEnabled={false} onClose={onClose} />,
     );
     pick("Role", "Member");
 
@@ -130,10 +131,20 @@ describe("CreateInvitationDialog", () => {
 
     const cancel = screen.getByRole("button", { name: "Cancel" }) as HTMLButtonElement;
     expect(cancel.disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Close" }) as HTMLButtonElement).disabled).toBe(true);
     fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
     expect(onClose).not.toHaveBeenCalled();
     answer(new Response(JSON.stringify({ ...created, email: null, email_delivery: "not_requested" }), { status: 201 }));
     expect(await screen.findByDisplayValue(/\/invite#token=tok123$/)).toBeTruthy();
+  });
+
+  it("closes from the corner, as from Cancel", () => {
+    const onClose = vi.fn();
+    render(
+      <CreateInvitationDialog open tenantId="t1" fromOrganization={false} workspaceName="Acme" emailEnabled={false} onClose={onClose} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 
   it("shows the server's refusal, such as the daily e-mail limit", async () => {

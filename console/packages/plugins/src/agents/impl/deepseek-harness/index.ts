@@ -2,8 +2,25 @@ import { definePlugin, registerPluginBehavior } from '@switch-console/core/agent
 import { npmDependency } from '@switch-console/core/agents/plugins/helpers';
 import { icon } from './icon';
 
-// Not offered on Windows until it is verified there (see the runtime's
-// unsupportedPlatforms).
+/**
+ * The dsh release Switch's approval gate is verified with, the last of the runtime's
+ * `DSH_GATE_VERSIONS` (a test keeps the two in step). A session that is not in full access
+ * refuses any other, so the install pins it rather than taking npm's latest.
+ */
+export const DSH_INSTALL_VERSION = '0.2.1-rc.5';
+
+/**
+ * The packages whose install scripts dsh needs: its spawn helper, node-pty and koffi among
+ * them. Recent npm (the one Node 26 ships)
+ * skips install scripts a package has not been allowed to run, and dsh then installs but
+ * cannot run commands. Older npm runs them anyway; it warns that the flag is an unknown
+ * config, and installs as before.
+ */
+export const DSH_ALLOW_SCRIPTS =
+  '--allow-scripts=@deepseek-ai/dsh-subprocess-local,koffi,node-pty,@google/genai,protobufjs';
+
+// Not offered on Windows until a Switch session has run there (see the runtime's
+// unsupportedPlatforms). The CLI alone was tried on Windows 11.
 function macAndLinux(
   descriptor: ReturnType<typeof npmDependency>
 ): ReturnType<typeof npmDependency> {
@@ -31,6 +48,8 @@ export const plugin = definePlugin(
         id: 'deepseek-harness',
         package: '@deepseek-ai/dsh',
         binaryNames: ['dsh'],
+        installFlags: DSH_ALLOW_SCRIPTS,
+        versionSuffix: `@${DSH_INSTALL_VERSION}`,
         installDocs: 'https://github.com/deepseek-ai/deepseek-harness#run-from-npm',
       })
     ),

@@ -54,9 +54,13 @@ export const HostTroubleIndicator = observer(function HostTroubleIndicator({
   if (status.kind === 'unreachable' || status.kind === 'auth-failed') {
     return (
       <Tooltip>
-        <TooltipTrigger>
-          <ServerOff className={ICON} aria-label="Host unavailable" />
-        </TooltipTrigger>
+        <TooltipTrigger
+          render={
+            <span role="img" aria-label="Host unavailable" className="flex shrink-0 items-center">
+              <ServerOff className={ICON} aria-hidden="true" />
+            </span>
+          }
+        />
         <TooltipContent>
           {status.kind === 'auth-failed'
             ? `SSH authentication to ${sshHost} failed — work is paused until you retry`
@@ -72,9 +76,13 @@ export const HostTroubleIndicator = observer(function HostTroubleIndicator({
   const hostItself = !plan || outstandingRequiredHostSteps(plan).length > 0;
   return (
     <Tooltip>
-      <TooltipTrigger>
-        <Wrench className={ICON} aria-label="Setup required" />
-      </TooltipTrigger>
+      <TooltipTrigger
+        render={
+          <span role="img" aria-label="Setup required" className="flex shrink-0 items-center">
+            <Wrench className={ICON} aria-hidden="true" />
+          </span>
+        }
+      />
       <TooltipContent>
         {hostItself
           ? `${sshHost} is missing something this agent needs`

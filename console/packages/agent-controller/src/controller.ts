@@ -113,6 +113,8 @@ export type ControllerDeps = {
   /** Where agents' working directories go when their definition names none, for a server. */
   workspacesFor: (server: string) => string;
   version: string;
+  /** Which machine, OS account and data folder this is (`readDeviceId`), or null when unknown. */
+  deviceId: string | null;
   /** Who moves it onto another release, as its status reports to Switch. */
   updatedBy: UpdatedBy;
   /**
@@ -120,6 +122,8 @@ export type ControllerDeps = {
    * Console updates it instead.
    */
   selfUpdate: SelfUpdater | null;
+  /** Whether ending with `restarting` starts this controller again: a service, or Switch Console. */
+  supervised: boolean;
   now: () => number;
   random: () => number;
   timing: ControllerTiming;
@@ -384,10 +388,14 @@ export async function runController(
   };
 
   let restarting = false;
+  let restartReason: 'update' | 'requested' = 'update';
   const restart = () => {
     restarting = true;
     stop.abort();
   };
+  // Asked for through Switch: taken up once the operation saying it will be
+  // done is reported, so the person asking sees it succeed before it goes.
+  let restartRequested = false;
 
   const failed = (what: string, error: unknown) => {
     if (isRevoked(error)) {
@@ -432,6 +440,7 @@ export async function runController(
     attached: (agentId) => hub.attached(agentId),
     dataDir: deps.dataDir,
     workspacesDir: workspaces,
+    deviceId: deps.deviceId,
     version: deps.version,
     updatedBy: deps.updatedBy,
     now: deps.now,
@@ -522,9 +531,24 @@ export async function runController(
             void reconcileLocally();
             return { status, problem: providers.loginProblem(provider) };
           },
+          restartController: () => {
+            if (!deps.supervised)
+              return {
+                reason: 'not_supervised',
+                detail:
+                  'This controller runs outside a service, so ending it would only stop it. Restart it on the machine instead.',
+              };
+            restartRequested = true;
+            return null;
+          },
           log,
         });
         if (ran) reporter?.request();
+        if (restartRequested) {
+          log.info('Restarting, as asked through Switch');
+          restartReason = 'requested';
+          restart();
+        }
       } catch (error) {
         failed('Running operations', error);
       }
@@ -566,6 +590,10 @@ export async function runController(
     // A recheck is asked for by someone setting up or fixing a login, so
     // each login is tried for real, not only reported as there.
     await providers.checkAll({ verify: true });
+    deps.log.info('Rechecked providers', {
+      path: process.env.PATH,
+      found: providers.locations(),
+    });
     await reporter?.sendFresh();
     // Agents waiting on a provider can start now.
     void reconcileLocally();
@@ -779,7 +807,11 @@ export async function runController(
         'Switch knows no controller by this credential; it stops its agents and exits. Enroll this machine again.'
       );
     if (restarting && !refused && !revocation)
-      log.info('Exiting for the service to start this controller on its new release.');
+      log.info(
+        restartReason === 'update'
+          ? 'Exiting for the service to start this controller on its new release.'
+          : 'Exiting for whatever runs this controller to start it again.'
+      );
   } finally {
     stopServingRechecks();
     clearInterval(resync);

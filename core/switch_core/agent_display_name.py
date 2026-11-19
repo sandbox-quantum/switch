@@ -19,6 +19,8 @@ adapters can share one rule rather than each growing their own.
 import re
 from typing import NoReturn
 
+from switch_core.names import hidden_character_refusal
+
 # Discord caps a webhook username at 80 characters; the other platforms sit at
 # or above that. 64 is a safe intersection with room to spare, and short enough
 # that a display name stays a label rather than a sentence.
@@ -53,7 +55,7 @@ def validate_display_name(value: str) -> str:
 
     Accepts any printable text — uppercase, spaces and punctuation are the
     point. Rejects a blank value, one longer than `MAX_DISPLAY_NAME_LENGTH`,
-    and any control character or line break.
+    any control character or line break, and a hidden character (`names`).
     """
     if not isinstance(value, str):
         _reject("must be a string")
@@ -67,6 +69,10 @@ def validate_display_name(value: str) -> str:
 
     if any(_is_control_or_line_break(character) for character in candidate):
         _reject("must not contain line breaks or control characters")
+
+    hidden = hidden_character_refusal(candidate)
+    if hidden is not None:
+        raise InvalidDisplayName(hidden)
 
     return candidate
 

@@ -1,4 +1,4 @@
-import { Alert, Button, Stack, Typography } from "@mui/material";
+import { Button, Stack, Typography } from "@mui/material";
 import { Link as RouterLink } from "react-router";
 import type { Access } from "../data/capabilities";
 import { useAuth } from "../data/AuthContext";
@@ -41,18 +41,6 @@ export function NotFoundPage() {
           Go to the start page
         </Button>
       </div>
-    </Stack>
-  );
-}
-
-/** A page of the new layout that is not built yet. Only a server with the
- * new layout turned on shows it, and that is meant for development and
- * staging until every page is in. */
-export function PlannedPage({ title }: { title: string }) {
-  return (
-    <Stack spacing={2}>
-      <Typography variant="h5">{title}</Typography>
-      <Alert severity="info">This page is part of the new layout and isn't built yet.</Alert>
     </Stack>
   );
 }

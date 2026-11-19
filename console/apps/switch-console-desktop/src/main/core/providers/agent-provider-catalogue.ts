@@ -34,7 +34,9 @@ export function buildAgentProviderCatalogue(
     description: metadata.description,
     docUrl: metadata.websiteUrl,
     cliLabel: metadata.cliLabel ?? metadata.name,
+    shortName: metadata.shortName ?? metadata.name,
     loginCommand: runtimeById.get(metadata.id)!.loginCommand,
     knownAgentType: metadata.knownAgentType ?? metadata.id,
+    supportsAutoMode: metadata.supportsAutoMode !== false,
   }));
 }

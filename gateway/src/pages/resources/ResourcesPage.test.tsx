@@ -114,20 +114,24 @@ const BUILT_IN = {
   owner_name: null,
 };
 
+/** Ada, in Acme, as a member or as one of its admins. */
+function signedInAs(role: "member" | "admin") {
+  const tenant = { id: "t1", slug: "acme", name: "Acme", role };
+  vi.mocked(useAuth).mockReturnValue({
+    session: { user: { id: "u1", name: "Ada" }, tenant, tenants: [tenant], state: "ready" } as unknown as Session,
+    capabilities: { administersWorkspace: role === "admin" },
+  } as unknown as ReturnType<typeof useAuth>);
+}
+
 const show = (tab: string) =>
   render(
     <MemoryRouter initialEntries={[`/resources?tab=${tab}`]}>
-      <ResourcesPage withTemplates={false} />
+      <ResourcesPage />
     </MemoryRouter>,
   );
 
 describe("ResourcesPage", () => {
-  beforeEach(() => {
-    const tenant = { id: "t1", slug: "acme", name: "Acme", role: "member" };
-    vi.mocked(useAuth).mockReturnValue({
-      session: { user: { id: "u1", name: "Ada" }, tenant, tenants: [tenant], state: "ready" } as unknown as Session,
-    } as unknown as ReturnType<typeof useAuth>);
-  });
+  beforeEach(() => signedInAs("member"));
 
   afterEach(() => {
     cleanup();
@@ -174,7 +178,7 @@ describe("ResourcesPage", () => {
       });
       show("references");
 
-      const search = await screen.findByLabelText("Search references");
+      const search = await screen.findByLabelText("Search by name, description or owner");
       fireEvent.change(search, { target: { value: "monorepo" } });
       expect(await screen.findByText("1 of 2 references")).toBeTruthy();
       fireEvent.change(search, { target: { value: "grace" } });
@@ -220,7 +224,9 @@ describe("ResourcesPage", () => {
       });
       show("documents");
 
-      fireEvent.change(await screen.findByLabelText("Search documents"), { target: { value: "checklist" } });
+      fireEvent.change(await screen.findByLabelText("Search by name, description or owner"), {
+        target: { value: "checklist" },
+      });
       expect(await screen.findByText("1 of 2 documents")).toBeTruthy();
     });
 
@@ -248,12 +254,53 @@ describe("ResourcesPage", () => {
     });
   });
 
+  it("words an empty list for what each viewer is shown: everyone's to an admin, theirs and the public ones to a member", async () => {
+    for (const [tab, path, title] of [
+      ["references", "GET /references", "references"],
+      ["documents", "GET /documents", "documents"],
+      ["packages", "GET /packages", "packages"],
+    ] as const) {
+      answer({ [path]: [200, []] });
+      show(tab);
+      expect(await screen.findByText(`No ${title} yet`)).toBeTruthy();
+      expect(screen.getByText(/Yours and the public ones in Acme show here/)).toBeTruthy();
+      cleanup();
+
+      signedInAs("admin");
+      answer({ [path]: [200, []] });
+      show(tab);
+      expect(await screen.findByText(`No ${title} in Acme yet`)).toBeTruthy();
+      expect(screen.queryByText(/Yours and the public ones/)).toBeNull();
+      cleanup();
+      signedInAs("member");
+    }
+  });
+
   describe("Reference types", () => {
     const types = (stored: ReferenceTypeDetail[]) =>
       answer({
         "GET /references/reference-types": [200, [BUILT_IN]],
         "GET /references/reference-types/owned": [200, stored],
       });
+
+    it("words an empty list for what each viewer is shown: every type to an admin, theirs and the public ones to a member", async () => {
+      const none = () =>
+        answer({
+          "GET /references/reference-types": [200, []],
+          "GET /references/reference-types/owned": [200, []],
+        });
+      none();
+      show("types");
+      expect(await screen.findByText("No reference types yet")).toBeTruthy();
+      expect(screen.getByText(/Yours and the public ones in Acme show here/)).toBeTruthy();
+      cleanup();
+
+      signedInAs("admin");
+      none();
+      show("types");
+      expect(await screen.findByText("No reference types in Acme yet")).toBeTruthy();
+      expect(screen.queryByText(/Yours and the public ones/)).toBeNull();
+    });
 
     it("lists a colleague's public type with nothing to do to it, beside the built-ins", async () => {
       types([storedType("notion", { owner_id: "u2", owner_name: "Grace", can_edit: false, can_manage: false })]);

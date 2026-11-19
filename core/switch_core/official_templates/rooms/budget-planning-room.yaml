@@ -95,6 +95,7 @@ resources:
     name: "Budget - {cycle}"
     description: "Budget planning for {cycle}. Department submissions, scenario modeling, and consolidated review."
     bridge: "{bridge}"
+    channel_type: channel_private
     agents: [budget_compiler, forecast_modeler]
     users:
       - {if: "{bridge}", value: ["{$creator}"]}

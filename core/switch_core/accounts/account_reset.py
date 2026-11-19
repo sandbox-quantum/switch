@@ -51,6 +51,7 @@ if TYPE_CHECKING:
     from switch_core.accounts.deletion import AccountDeletion
     from switch_core.accounts.organization_purge import OrganizationPurge
     from switch_core.db.models import User
+    from switch_core.organization_admin_notices import AdminChange
 
 
 @dataclass
@@ -61,10 +62,12 @@ class AccountReset:
 
     async def reset(
         self, session: AsyncSession, user: User, workspaces: list[Workspace]
-    ) -> None:
+    ) -> list[AdminChange]:
         """Wipe the account. `session` is the caller's, as `AccountDeletion`
-        takes it. Raises `AccountDeletionRefused`, before anything changes,
-        for what can't be wiped now."""
+        takes it. Returns what `AccountDeletion.delete` returns for the
+        caller to send, nothing when the purge deleted the account. Raises
+        `AccountDeletionRefused`, before anything changes, for what can't be
+        wiped now."""
         by_organization: dict[str, list[Workspace]] = defaultdict(list)
         for workspace in workspaces:
             if workspace.role == FORMER_MEMBER or workspace.id == TENANT_ZERO_ID:
@@ -146,8 +149,9 @@ class AccountReset:
             except PurgeRefused as refused:
                 raise AccountDeletionRefused(str(refused)) from None
             _finished(outcome, user.id)
-        if not deleted_by_purge:
-            await self.deletion.delete(session, user, remaining, actor_id=user.id)
+        if deleted_by_purge:
+            return []
+        return await self.deletion.delete(session, user, remaining, actor_id=user.id)
 
     async def _sole_plan(self, user: User, organization_id: str) -> PurgePlan | None:
         """The purge plan for an organization nobody but `user` is in, or

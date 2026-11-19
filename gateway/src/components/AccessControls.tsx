@@ -10,7 +10,8 @@ import {
 } from "../data/visibility";
 
 /** A compact chip summarising an entity's read/write visibility as one of the
- * three access levels (Private / Read-only / Public). */
+ * three access levels (Private / Read-only / Public). What everyone can see
+ * is filled; private is outlined, the lighter weight. */
 export function AccessChip({
   pair,
   size = "small",
@@ -18,8 +19,11 @@ export function AccessChip({
   pair: VisibilityPair;
   size?: "small" | "medium";
 }) {
-  const meta = ACCESS_META[toAccessLevel(pair)];
-  return <Chip label={meta.label} size={size} color={meta.color} />;
+  const level = toAccessLevel(pair);
+  const meta = ACCESS_META[level];
+  return (
+    <Chip label={meta.label} size={size} color={meta.color} variant={level === "private" ? "outlined" : "filled"} />
+  );
 }
 
 interface AccessSelectProps {

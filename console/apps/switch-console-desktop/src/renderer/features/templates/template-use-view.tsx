@@ -32,6 +32,7 @@ import {
   UserListField,
 } from '@renderer/features/room-templates/entity-fields';
 import { refreshSidebarRoomState } from '@renderer/features/sidebar/sidebar-tree-data';
+import { homeRedirect } from '@renderer/features/switch-servers/home-target';
 import { ServerSectionTitlebar } from '@renderer/features/switch-servers/server-section-titlebar';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { useMyIdentities } from '@renderer/features/switch-servers/use-my-identities';
@@ -52,11 +53,12 @@ import { Button } from '@renderer/lib/ui/button';
 import { Switch } from '@renderer/lib/ui/switch';
 import { cn } from '@renderer/utils/utils';
 import { AGENT_NAME_PATTERN, slugifyAgentNamePart } from '@shared/core/agents/agent-slug';
-import { NEW_AGENT_PERMISSIONS } from '@shared/core/agents/agents';
+import { newAgentPermissions } from '@shared/core/agents/agents';
 import type { OwnedMachine } from '@shared/core/managed-agents/managed-agents';
 import {
   type AgentProviderId,
   isValidProviderId,
+  providerOffered,
   providerDisplayName,
 } from '@shared/core/providers/agent-provider-registry';
 import { describeRemoteDirRefusal } from '@shared/core/remote-hosts/remote-dir';
@@ -316,8 +318,9 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
   const params = useViewParams();
   const { serverId, intoRoomId = null } = params;
   const workspaceId = workspacesStore.idOnServerInScope(serverId);
+  const serverFlags = useFeatureFlags(serverId || null);
   // Without the server's group_chats flag there are no Switch Console rooms.
-  const consoleOffered = useFeatureFlags(serverId || null).group_chats;
+  const consoleOffered = serverFlags.group_chats;
   const { navigate } = useNavigate();
   const { showModal } = useModalContext();
   const queryClient = useQueryClient();
@@ -544,7 +547,6 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
             onSuccess: () => refreshIdentities(),
           })
       : null;
-  const noMessagingApp = parsed !== null && bridgesQuery.data !== undefined && bridges.length === 0;
 
   const lists = useMemo(
     (): EntityLists => ({
@@ -757,7 +759,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
         // The providers its machine last reported ready; none to go by until it has a machine.
         const machine = setups[agentIndexOf(param)]?.machine;
         candidates = machine
-          ? machineProviderOptions(machine)
+          ? machineProviderOptions(machine, serverFlags)
               .filter((option) => option.ready)
               .map((option) => option.id)
           : undefined;
@@ -769,7 +771,10 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
             ? availability.data
             : localAvailability.data;
         candidates = list
-          ?.filter((a) => a.available && isValidProviderId(a.agentId))
+          ?.filter(
+            (a) =>
+              a.available && isValidProviderId(a.agentId) && providerOffered(a.agentId, serverFlags)
+          )
           .map((a) => a.agentId);
       }
       if (candidates === undefined) continue; // the list is still loading
@@ -793,6 +798,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
     localAvailability.data,
     machinesQuery.data,
     management,
+    serverFlags,
   ]);
 
   // ── Names: taken, invalid, or still unresolved ──────────────────────────
@@ -963,9 +969,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
                           ? null // no room is made, so nothing below applies
                           : creatorBlocked
                             ? 'Link your messaging account first.'
-                            : !isV2 && parsed !== null && noMessagingApp && parsed.usesCreator
-                              ? 'This server has no messaging app, so the room would have no chat.'
-                              : null;
+                            : null;
   // Existing agents in the room whose addressing policy blocks messages from
   // another member. New agents get the template's addressing at creation.
   const handoffBlocked = useMemo(() => {
@@ -1393,7 +1397,7 @@ const TemplateUsePanel = observer(function TemplateUsePanel() {
                 ? setup.displayName.trim()
                 : null,
             iconUrl: null,
-            ...NEW_AGENT_PERMISSIONS,
+            ...newAgentPermissions(providerId),
             instructions: slot.entry.instructions,
             definitionAttributes: {},
             providerConfig: null,
@@ -2217,7 +2221,7 @@ export const templateUseView = {
   MainPanel: TemplateUsePanel,
   canActivate: (params: unknown): GuardResult => {
     const p = params as Partial<Params> | null;
-    if (typeof p?.serverId !== 'string') return { ok: false, redirect: 'home' };
+    if (typeof p?.serverId !== 'string') return homeRedirect();
     if (!p.templateId && !p.yamlText)
       return { ok: false, redirect: 'templates', params: { serverId: p.serverId } };
     return { ok: true };

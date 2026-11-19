@@ -1,6 +1,7 @@
 import { CircleAlert } from 'lucide-react';
 import { observer } from 'mobx-react-lite';
 import { motion, useReducedMotion } from 'motion/react';
+import { TermInfo } from '@renderer/lib/components/term-info';
 import { ComputerNote, ProviderCard, SelectedPanel } from './provider-cards';
 import { useProviderSetup } from './use-provider-setup';
 import type { ThisComputer } from './use-this-computer';
@@ -40,7 +41,10 @@ export const ProviderSetup = observer(function ProviderSetup({
   return (
     <div className="flex flex-col gap-4">
       <ComputerNote computer={computer} onRetry={thisComputer.retry} />
-      <p className="text-sm text-foreground">Pick an AI provider to power switch-buddy:</p>
+      <p className="flex items-center gap-1.5 text-sm text-foreground">
+        Pick an AI provider to power switch-buddy:
+        <TermInfo term="provider" />
+      </p>
       <ul className="grid gap-3 sm:grid-cols-3">
         {setup.providers.map((provider) => (
           <ProviderCard
@@ -73,6 +77,7 @@ export const ProviderSetup = observer(function ProviderSetup({
             onStart={() => setup.start(setup.selected!)}
             onSignIn={() => void setup.signIn(setup.selected!)}
             onCancelSignIn={setup.cancelSignIn}
+            onSignInCode={(code) => void setup.sendSignInCode(code)}
             checked={setup.checked}
             onInstall={() => void setup.install(setup.selected!)}
             installFailed={setup.installFailed === setup.selected.id}

@@ -246,6 +246,20 @@ it('settles unanswered questions when the provider exits', async () => {
   await until(() => expect(host.snapshot().requests[0]?.state).toBe('closed'));
   expect(host.snapshot().session.pendingRequestIds).toEqual([]);
 });
+it('publishes a turn running when the host stops as interrupted, once', async () => {
+  const { root, host } = await start('claude');
+  await host.command(message('turn'));
+  await until(() => expect(host.snapshot().turns[0]?.status).toBe('running'));
+  await host.shutdown();
+  const ended = (events: ReturnType<HostedSession['replay']>['events']) =>
+    events.filter((e) => e.body.type === 'turn.upsert' && e.body.status === 'interrupted');
+  expect(host.snapshot().turns[0]?.status).toBe('interrupted');
+  expect(ended(host.replay(0).events)).toHaveLength(1);
+  const fixture = setup('claude');
+  const next = await startHost(root, fixture.config, fixture.adapter);
+  hosts.push(next);
+  expect(ended(next.replay(0).events)).toHaveLength(1);
+});
 it('rejects oversized input before persisting or dispatching a turn', async () => {
   const { host, adapter } = await start('claude');
   const command = message('large');

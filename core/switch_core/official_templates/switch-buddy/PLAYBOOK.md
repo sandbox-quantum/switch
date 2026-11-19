@@ -6,18 +6,24 @@ section stands on its own: read the one you were pointed at, then act.
 
 ## Telegram private channel
 
-Bots can't create chats on Telegram. They make a group with the bot and send
-`/invite_agent @<agent-name>` and `/invite_agent @<your-name>` in it (the bot
-sees only commands and replies to its messages, due to privacy mode). If
-`your_account_link` is `none`, they link from
-[Messaging apps in Settings](switchdash://open/settings?tab=messaging-apps) and send `/link_account CODE` in that
-group; until then owner-only agents ignore them. Then they reply to the bot's
-message, mentioning the agent's name.
+Bots can't create chats on Telegram. They make a group with the bot. With the
+bot's Group Privacy on (BotFather's default) it sees only commands and replies to
+its own messages; they can turn it off in BotFather (`/setprivacy`, Disable)
+before adding the bot, or, if it is already in, remove it and add it back or make
+it an admin. Linking comes first: if `your_account_link` is `none`, they link from
+[Messaging apps in Settings](switchdash://open/settings?tab=messaging-apps) and send `/link_account CODE` to
+the bot, in its private chat or in that group, since `/invite_agent` is refused
+and owner-only agents ignore them until then. Then they send
+`/invite_agent @<agent-name>` and `/invite_agent @<your-name>` in it, and talk to
+an agent by mentioning its name or replying to its message. Only where the
+bridge has said in that group that it can see just the messages that tag it do
+they need to reply to the bot's message: Telegram delivers nothing else there.
+Don't say it otherwise.
 
 ## Teams private channel
 
 If the connection has a default team and `can_create_channels`, make it like any
-other chat app's private channel: `create_room` with the chat's `bridge_id`,
+other messaging app's private channel: `create_room` with the chat's `bridge_id`,
 `channel_type` "channel_private", `read_visibility` and `write_visibility`
 "private", their username in `user_names`. Otherwise they add the Switch app to a
 chat or channel and send `!invite-agent @<agent-name>` and
@@ -57,7 +63,7 @@ them pick.
 | Page | Link |
 |---|---|
 | The server's home: the workspace at a glance (not where accounts or guardrails are) | `switchdash://open/home` |
-| This server's own settings, when their Switch Console runs it: start, stop, restart, update, the Mattermost beside it | `switchdash://open/server` |
+| This server's own settings, when their Switch Console runs it: start, stop, restart, update | `switchdash://open/server` |
 | Every room | `switchdash://open/rooms` |
 | A room | `switchdash://open/room/<room-id>` |
 | Templates (`tab=agent`, `room` or `group`) | `switchdash://open/templates` |
@@ -69,14 +75,12 @@ them pick.
 - A room's id comes from `list_rooms`, a template's from `list_templates` (only
   templates saved on the server have a page).
 
-## Server settings and bundled Mattermost
+## Server settings
 
-Starting, stopping, restarting or updating the server, and turning the bundled
-Mattermost on or off: `switchdash://open/server`. Only for a server their
-Switch Console runs (`get_my_context` says which); anyone else's is run by
-whoever set it up, so send them there. The Mattermost switch is only for a
-server on this computer: it needs Docker running and starts Mattermost right
-away, no server restart needed.
+Starting, stopping, restarting or updating the server:
+`switchdash://open/server`. Only for a server their Switch Console runs
+(`get_my_context` says which); anyone else's is run by whoever set it up, so
+send them there.
 
 ## Their own messaging app
 
@@ -154,6 +158,37 @@ Confluence (Atlassian), GitHub, Google (Gmail, Drive, Calendar) and the like.
 - **Not offered as a connector:** the machine's own access may cover it; see
   "Access the machine already has".
 
+## Onboarding connectors
+
+The connectors to offer after the work question, best first. Offer only those
+`get_my_context` lists for the workspace, and leave out any already connected.
+
+| Their answer | Connectors |
+|---|---|
+| Engineering | GitHub, Linear, Google Workspace |
+| Product | Linear, Notion, Google Workspace |
+| Design | Canva, Notion, Google Workspace |
+| Sales | Salesforce, Google Workspace |
+| Marketing | Google Workspace, Canva, Notion |
+| Other, or skipped | Google Workspace, GitHub |
+
+Never suggest a service Switch has no connector for (Figma, HubSpot): say the
+machine's own access may cover it (§ "Access the machine already has").
+
+## Room templates by work
+
+The official room templates to offer for a new room, best first, by id. Offer
+only those `list_templates` lists: a workspace admin may have removed some.
+
+| Their answer | Room templates |
+|---|---|
+| Engineering | official:sprint-room, official:code-review-room, official:incident-war-room |
+| Product | official:product-trio-room, official:user-research-lab, official:launch-war-room |
+| Design | official:design-review-studio, official:user-research-lab, official:brand-messaging-room |
+| Sales | official:deal-room, official:pipeline-review-room, official:sales-enablement-room |
+| Marketing | official:campaign-war-room, official:content-pipeline, official:launch-war-room |
+| Other, or skipped | official:product-trio-room, official:launch-war-room, official:okr-tracker |
+
 ## Access the machine already has
 
 An agent also gets what is set up on its machine, with no Switch connector:
@@ -196,7 +231,7 @@ It changes the advice:
 
 - **Switch Cloud:** messaging apps usually have the official app, and their
   agents can run on a cloud machine or their computer.
-- **A server Switch Console runs:** it comes with a built-in chat app. Their
+- **A server Switch Console runs:** it comes with a built-in messaging app. Their
   agents run on their computer, and Console must be open for them to answer.
   Usually it runs on their own computer, which nobody else can reach, so don't
   suggest inviting people (Switch Console does not offer it there). If they ask, say so; to work with others they need a

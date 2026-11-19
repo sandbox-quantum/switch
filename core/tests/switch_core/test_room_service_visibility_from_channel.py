@@ -1,8 +1,8 @@
 """A new room takes its visibility from its channel.
 
-A private channel, a group or a DM makes a private room; a public channel, or
-no channel at all, a public one. A caller who says which it should be gets
-that instead. Every room is stored write-private: changing a room is its
+A private channel, a group or a DM makes a private room, and a public channel
+a public one. A room is private unless the caller asks for public, and it can
+never be more visible than its channel. Every room is stored write-private: changing a room is its
 owner's (`room_policy`), so the write visibility grants nothing.
 
 Real Postgres; the running bridge is faked.
@@ -82,6 +82,7 @@ async def world(rls_harness: RLSHarness) -> Any:
             async with tenant_session(rls_harness.restricted, tenant) as session:
                 return await svc._room_store.get(session, result.room.id)
 
+    make.svc = svc  # type: ignore[attr-defined]
     return make, bridge
 
 
@@ -133,20 +134,77 @@ async def test_a_channel_the_platform_delivered_follows_it(world: Any) -> None:
     assert room.read_visibility == "private"
 
 
-async def test_a_room_with_no_channel_is_public_unless_told(world: Any) -> None:
+async def test_a_room_with_no_channel_is_private_unless_told(world: Any) -> None:
     make, _ = world
     room = await make(internal_only=True)
-    assert (room.read_visibility, room.write_visibility) == ("public", "private")
-    room = await make(internal_only=True, read_visibility="private")
-    assert room.read_visibility == "private"
+    assert room.channel_type == "channel_private"
+    assert (room.read_visibility, room.write_visibility) == ("private", "private")
+    room = await make(internal_only=True, read_visibility="public")
+    assert (room.channel_type, room.read_visibility) == ("channel_public", "public")
 
 
-async def test_an_explicit_choice_beats_the_channel(world: Any) -> None:
+async def test_a_private_room_with_no_channel_needs_no_linked_account(
+    world: Any,
+) -> None:
+    """A Switch Console room or one on no messaging app makes no channel, so
+    nobody has to be put in one: going private asks for no linked account."""
+    make, _ = world
+
+    async def _refuse(*_args: Any, **_kwargs: Any) -> None:
+        raise AssertionError("no channel, so nobody needs putting in one")
+
+    make.svc._private_channel_creator = _refuse
+    room = await make(internal_only=True)
+    assert (room.channel_type, room.read_visibility) == ("channel_private", "private")
+
+
+async def test_a_new_channel_is_private_unless_told(world: Any) -> None:
+    make, bridge = world
+    room = await make(bridge_id=bridge)
+    assert (room.channel_type, room.read_visibility) == ("channel_private", "private")
+
+
+async def test_asking_for_a_public_room_makes_a_public_channel(world: Any) -> None:
+    make, bridge = world
+    room = await make(bridge_id=bridge, read_visibility="public")
+    assert (room.channel_type, room.read_visibility) == ("channel_public", "public")
+
+
+@pytest.mark.parametrize("channel_type", ["channel_private", "direct"])
+async def test_a_room_cannot_be_more_visible_than_its_channel(
+    world: Any, channel_type: str
+) -> None:
+    make, bridge = world
+    with pytest.raises(ValueError, match="cannot be public"):
+        await make(
+            bridge_id=bridge,
+            channel_type=channel_type,
+            read_visibility="public",
+            **({"user_names": ["ada"]} if channel_type == "direct" else {}),
+        )
+
+
+async def test_an_existing_private_channel_cannot_make_a_public_room(
+    world: Any,
+) -> None:
+    make, bridge = world
+    with pytest.raises(ValueError, match="cannot be public"):
+        await make(
+            existing_type="channel_private",
+            bridge_id=bridge,
+            external_channel_id="chan-existing",
+            read_visibility="public",
+        )
+
+
+async def test_an_explicit_private_room_on_a_public_channel_is_kept(
+    world: Any,
+) -> None:
     make, bridge = world
     room = await make(
-        bridge_id=bridge, channel_type="channel_private", read_visibility="public"
+        bridge_id=bridge, channel_type="channel_public", read_visibility="private"
     )
-    assert room.read_visibility == "public"
+    assert room.read_visibility == "private"
 
 
 async def test_an_unknown_visibility_is_refused(world: Any) -> None:

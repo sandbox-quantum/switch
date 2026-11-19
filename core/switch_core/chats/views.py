@@ -445,7 +445,14 @@ async def chat_messages(
     for message in shown:
         client = clients.get(message.sender_client_id or "")
         agent = agents.get(message.sender_client_id or "")
-        if message.event_type == COMMAND_EVENT_TYPE:
+        if message.event_type == COMMAND_EVENT_TYPE and (
+            # A command a person typed (`!set-alias @helper @h`) is theirs, as
+            # it is on the platform they typed it on. One Switch words for
+            # itself ("Stop requested for helper by alice") stays its line.
+            client is None
+            or client.type not in (MEMBER_CLIENT_TYPE, "user")
+            or not _command_text(message).startswith("!")
+        ):
             kind, source = "system", "switch"
         elif agent is not None:
             kind, source = "agent", "switch"

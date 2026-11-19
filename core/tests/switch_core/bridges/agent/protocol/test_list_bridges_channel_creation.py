@@ -27,7 +27,7 @@ class _Bridges:
     def __init__(self, bridges: list[Any]) -> None:
         self._bridges = bridges
 
-    async def get_all(self, session: object) -> list[Any]:
+    async def get_listed(self, session: object) -> list[Any]:
         return self._bridges
 
 
@@ -39,6 +39,9 @@ class _Lifecycle:
 
     def supports_private_channels(self, bridge_type: str) -> bool:
         return True
+
+    def typed_commands(self, bridge_type, connection_config):
+        return {}
 
     def channel_creation_blocker(
         self, bridge_type: str, connection_config: Mapping[str, object]

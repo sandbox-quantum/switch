@@ -57,16 +57,27 @@ export function sessionToolAnswerer(deps: {
     issue: issueServiceToken,
     readGrants: readServiceGrants,
   });
+  // Read from Switch, not fixed for the life of this process: the server may
+  // have been upgraded since, with tools added or changed. Read again for each
+  // new CLI session (its `tools` ask), and for a call naming a tool the copy
+  // held here does not have yet, so an older copy never hides a newer tool.
   let catalog: Promise<SwitchToolCatalog> | null = null;
-  const tools = (): Promise<SwitchToolCatalog> => {
-    catalog ??= loadOperations(deps.identity).then(
-      (operations) => new SwitchToolCatalog(operations),
-      (error: unknown) => {
-        catalog = null;
-        throw error;
-      }
-    );
+  const tools = (fresh = false): Promise<SwitchToolCatalog> => {
+    if (fresh || catalog === null) {
+      const loading = loadOperations(deps.identity).then(
+        (operations) => new SwitchToolCatalog(operations),
+        (error: unknown) => {
+          if (catalog === loading) catalog = null;
+          throw error;
+        }
+      );
+      catalog = loading;
+    }
     return catalog;
+  };
+  const toolsFor = async (name: string): Promise<SwitchToolCatalog> => {
+    const held = await tools();
+    return held.has(name) ? held : tools(true);
   };
 
   const context = async (caller: Caller): Promise<CallerContext> => {
@@ -244,10 +255,11 @@ export function sessionToolAnswerer(deps: {
 
   return async (caller, ask) => {
     if (ask.type === 'service-token') return services.answer(ask.service, ask.rejected);
-    const catalog = await tools();
-    if (ask.type === 'tools') return catalog.tools();
-    if (ask.type === 'room-reply') return roomReply(caller, catalog, ask);
-    if (ask.type === 'room-instructions') return roomInstructions(caller, catalog, ask);
+    if (ask.type === 'tools') return (await tools(true)).tools();
+    if (ask.type === 'room-reply') return roomReply(caller, await toolsFor('post_message'), ask);
+    if (ask.type === 'room-instructions')
+      return roomInstructions(caller, await toolsFor('connect_to_room'), ask);
+    const catalog = await toolsFor(ask.name);
     const args = deps.redactions.value(ask.arguments);
     if (ask.name === 'connect_to_room') return connect(caller, catalog, args);
     return catalog.call(await context(caller), ask.name, args);

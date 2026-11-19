@@ -18,15 +18,17 @@ type EnvEntry = { key: string; value: string };
 const FieldTooltip: React.FC<{ content: string }> = ({ content }) => (
   <TooltipProvider>
     <Tooltip>
-      <TooltipTrigger>
-        <button
-          type="button"
-          className="text-muted-foreground hover:text-foreground"
-          aria-label="More information"
-        >
-          <Info className="h-3.5 w-3.5" aria-hidden="true" />
-        </button>
-      </TooltipTrigger>
+      <TooltipTrigger
+        render={
+          <button
+            type="button"
+            className="text-muted-foreground hover:text-foreground"
+            aria-label="More information"
+          >
+            <Info className="h-3.5 w-3.5" aria-hidden="true" />
+          </button>
+        }
+      />
       <TooltipContent side="top" className="max-w-[200px] text-xs">
         {content}
       </TooltipContent>

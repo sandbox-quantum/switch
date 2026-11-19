@@ -75,6 +75,7 @@ async function render(items: ChatActivityItem[]): Promise<HTMLDivElement> {
         <ChatActivityBlock
           activity={activity}
           turn={turn}
+          withReasoning
           agent={{ name: 'helper', iconUrl: null }}
           head
           endReason={null}
@@ -100,7 +101,7 @@ it('folds the earlier calls of a running turn and keeps the latest on its own li
   const group = [...el.querySelectorAll('button')].find((b) =>
     b.textContent?.startsWith('3 tool calls')
   )!;
-  expect(group.textContent).toContain('· 1 failed');
+  expect(group.textContent).not.toContain('failed');
   expect(group.getAttribute('aria-expanded')).toBe('false');
   expect(rows(el).filter((r) => r.includes('git remote -v'))).toHaveLength(1);
   expect(el.textContent).not.toContain('git status');

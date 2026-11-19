@@ -1,3 +1,4 @@
+import CloseOutlined from "@mui/icons-material/CloseOutlined";
 import ContentCopy from "@mui/icons-material/ContentCopy";
 import {
   Alert,
@@ -16,7 +17,7 @@ import {
   Tooltip,
 } from "@mui/material";
 import { useCallback, useState } from "react";
-import { type TenantRole, createInvitation } from "../../data/api";
+import { type TenantRole, createInvitation, inviteToOrganizationWorkspace } from "../../data/api";
 import { type DeliveryNotice, deliveryNotice, inviteUrl } from "../../data/sessionState";
 import { announceInvitationCreated } from "./invitationEvents";
 import { WORKSPACE_ROLES, workspaceRoleLabel } from "./roles";
@@ -36,6 +37,9 @@ const DEFAULT_EXPIRY_HOURS = 24 * 7;
 interface Props {
   open: boolean;
   tenantId: string;
+  /** Made from the organization's settings, for any of its workspaces, rather
+   * than from the workspace the session is in. */
+  fromOrganization: boolean;
   workspaceName: string;
   emailEnabled: boolean;
   onClose: () => void;
@@ -49,6 +53,7 @@ interface Props {
 export default function CreateInvitationDialog({
   open,
   tenantId,
+  fromOrganization,
   workspaceName,
   emailEnabled,
   onClose,
@@ -80,12 +85,15 @@ export default function CreateInvitationDialog({
     setSubmitting(true);
     setError(null);
     try {
-      const created = await createInvitation(tenantId, {
+      const input = {
         role,
         email: email.trim() === "" ? null : email.trim(),
         expires_in_hours: hours,
         uses_remaining: Number(uses),
-      });
+      };
+      const created = fromOrganization
+        ? await inviteToOrganizationWorkspace(tenantId, input)
+        : await createInvitation(tenantId, input);
       setLink(inviteUrl(window.location.origin, created.token));
       setNotice(deliveryNotice(created.email_delivery, created.email));
       announceInvitationCreated();
@@ -94,7 +102,7 @@ export default function CreateInvitationDialog({
     } finally {
       setSubmitting(false);
     }
-  }, [tenantId, role, email, hours, uses]);
+  }, [tenantId, fromOrganization, role, email, hours, uses]);
 
   const copy = useCallback(async () => {
     if (link === null) return;
@@ -111,7 +119,15 @@ export default function CreateInvitationDialog({
     // Held open while the link is being made: closed then, the link would be
     // created with nowhere to show it, and it is shown only once.
     <Dialog open={open} onClose={submitting ? undefined : handleClose} maxWidth="sm" fullWidth>
-      <DialogTitle>Invite users to {workspaceName}</DialogTitle>
+      <DialogTitle sx={{ pr: 8 }}>Invite users to {workspaceName}</DialogTitle>
+      <IconButton
+        aria-label="Close"
+        onClick={handleClose}
+        disabled={submitting}
+        sx={{ position: "absolute", top: 12, right: 16, width: 36, height: 36 }}
+      >
+        <CloseOutlined sx={{ fontSize: 18 }} />
+      </IconButton>
       <DialogContent>
         {link !== null && notice !== null ? (
           <Stack spacing={2} sx={{ pt: 1 }}>
