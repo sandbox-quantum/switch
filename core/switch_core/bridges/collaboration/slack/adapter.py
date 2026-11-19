@@ -75,9 +75,9 @@ from switch_core.bridges.collaboration.session.renderers.slack import (
     render_attention,
     render_request,
     render_turn_with_request,
-    running_step,
     with_mention,
 )
+from switch_core.bridges.collaboration.session.renderers.subagents import is_tool_call
 from switch_core.bridges.collaboration.slack.agent_groups import (
     SlackAgentGroupDirectory,
 )
@@ -603,24 +603,64 @@ _SLACK_BOT_ACCOUNT = "This is a Slack app's or bot's account, which isn't one pe
 
 #: What a work message (`!work-threads`) says while its turn runs. Its author
 #: is the agent, so the agent's name is already beside it.
-WORKING_NOTE = "Working on it…"
+WORKING_NOTE = "Working…"
+
+#: A section's text is capped at 3,000 characters; an answer longer than one
+#: is drawn across several, and one too long for this many is left as it was.
+_MAX_SECTION_TEXT = 3000
+_MAX_ANSWER_SECTIONS = 40
 
 
-#: How much of a step a work message's line shows. It is read at a glance, and
-#: the whole step heads the plan in the thread.
-_MAX_WORK_NOTE = 150
+def _work_line(items: Sequence[Any]) -> str:
+    """ "Working… · step 4": how many calls the turn has made.
 
-
-def _truncate_note(line: str) -> str:
-    return line if len(line) <= _MAX_WORK_NOTE else line[: _MAX_WORK_NOTE - 1] + "…"
+    A count rather than the step's title, because the title of a shell step is
+    the command it runs, which is not a label anyone should have to read in
+    the channel. The steps themselves are in the thread.
+    """
+    steps = sum(1 for item in items if is_tool_call(item))
+    return f"{WORKING_NOTE} · step {steps}" if steps else WORKING_NOTE
 
 
 def _work_note(text: str) -> dict[str, Any]:
-    """A work message's one block: a line of small italic text."""
+    """A work message's one block: a line of small text."""
     return {
         "type": "context",
-        "elements": [{"type": "mrkdwn", "text": f"_{escape_mrkdwn(text)}_"}],
+        "elements": [{"type": "mrkdwn", "text": escape_mrkdwn(text)}],
     }
+
+
+def _answer_sections(text: str) -> list[dict[str, Any]] | None:
+    """An answer's text as section blocks, split at line breaks to fit.
+
+    What `chat.postMessage` drew from `text` alone, rebuilt as blocks so a plan
+    can sit under it: a message with blocks shows them and not its text. None
+    when it will not fit in the sections a message can spare.
+    """
+    sections: list[str] = []
+    current = ""
+    for line in text.split("\n"):
+        while len(line) > _MAX_SECTION_TEXT:
+            if current:
+                sections.append(current)
+                current = ""
+            sections.append(line[:_MAX_SECTION_TEXT])
+            line = line[_MAX_SECTION_TEXT:]
+        candidate = f"{current}\n{line}" if current else line
+        if len(candidate) > _MAX_SECTION_TEXT:
+            sections.append(current)
+            current = line
+        else:
+            current = candidate
+    if current.strip():
+        sections.append(current)
+    if not sections or len(sections) > _MAX_ANSWER_SECTIONS:
+        return None
+    return [
+        {"type": "section", "text": {"type": "mrkdwn", "text": section}}
+        for section in sections
+        if section.strip()
+    ]
 
 
 class SlackAdapter(PlatformAdapter):
@@ -1274,8 +1314,12 @@ class SlackAdapter(PlatformAdapter):
         message_ref: str,
         content: RichContent,
         thread_root_id: str | None,
-    ) -> None:
+    ) -> str | None:
         """Redraw what `post_rich` posted, in place.
+
+        Returns the message the turn is drawn in from now on when that moved:
+        a work thread's turn carries on in a new stream once Slack closes one.
+        None otherwise.
 
         `agent_name` is not read: a Slack message carries its sender's name
         and face, so the name is never part of what was drawn.
@@ -1295,13 +1339,18 @@ class SlackAdapter(PlatformAdapter):
             try:
                 await self._extend_stream(stream, message_ref, content)
             except _StreamClosed:
+                reopened = await self._reopen_work_stream(
+                    channel_id, agent_name, content, thread_root_id
+                )
+                if reopened is not None:
+                    return reopened
                 # Slack closes every stream ten minutes after it opens, however
                 # recently it was appended to, and marks the steps still
                 # running as failed. Edited now, those read right again
                 # straight away rather than at the turn's next change.
                 pass
             else:
-                return
+                return None
         if message_ref in self._unredrawable:
             if not self._unredrawable[message_ref]:
                 self._unredrawable[message_ref] = True
@@ -1313,7 +1362,7 @@ class SlackAdapter(PlatformAdapter):
                     "is not shown.",
                     message_ref,
                 )
-            return
+            return None
         responder_name = None
         if isinstance(content, RequestCard) and content.responder_external_id:
             user = await self._resolve_user_name(content.responder_external_id)
@@ -1334,11 +1383,50 @@ class SlackAdapter(PlatformAdapter):
                 await self._recover_stranded_stream(
                     channel_id, message_ref, content, message
                 )
-                return
+                return None
             raise RichContentFailed(
                 f"Slack could not update the message in channel {channel_id}: {error}",
                 text=message.text,
             ) from error
+        return None
+
+    async def _reopen_work_stream(
+        self,
+        channel_id: str,
+        agent_name: str,
+        content: TurnActivity,
+        thread_root_id: str | None,
+    ) -> str | None:
+        """A fresh stream for a running turn whose last one Slack closed.
+
+        Only in a work thread: nobody follows it, so a new message there marks
+        nothing unread, where the same in the asker's thread would. The turn
+        is drawn into it whole, and its ref is what the caller draws to from
+        now on. None where there is no stream to open, and the turn is edited
+        into the closed one as before.
+        """
+        if (
+            not content.work_thread
+            or content.turn.status in TURN_ENDED
+            or thread_root_id is None
+            or not self._team_id
+            or not self._stream_recipient(content, thread_root_id)
+        ):
+            return None
+        try:
+            ref = await self._open_stream(
+                channel_id, agent_name, content, thread_root_id
+            )
+        except RichContentFailedAfterPost as failed:
+            # The message is there; it fills on the next draw.
+            return failed.ref
+        if ref is not None:
+            logger.info(
+                "Slack closed the activity stream for turn %s at its time limit; "
+                "carrying on in a new one in the same work thread.",
+                content.turn.turn_id,
+            )
+        return ref
 
     async def _recover_stranded_stream(
         self,
@@ -1900,26 +1988,24 @@ class SlackAdapter(PlatformAdapter):
     async def _note_work_step(
         self, content: RichContent, thread_root_id: str | None
     ) -> None:
-        """Edit the step a turn is on into its work message, when it changed.
+        """Edit how far a turn has got into its work message, when it changed.
 
-        "Working on it… · Running: Read file 2". An edit, so it notifies
-        nobody, and only when the line would read differently, so a redraw for
-        the clock or a remark costs nothing. While Slack is limiting edits it
-        is skipped rather than queued: the turn's next change, or its next
-        clock redraw, brings the line up to date.
-
-        Only for a work message this process posted. After a restart the line
-        keeps the last step it showed until the turn ends and it becomes the
-        work log.
+        "Working… · step 4". An edit, so it notifies nobody, and only when the
+        line would read differently, so a redraw for the clock or a remark
+        costs nothing. While Slack is limiting edits it is skipped rather than
+        queued: the turn's next change, or its next clock redraw, brings the
+        line up to date. After a restart this process has no memory of what
+        the line shows, so it is written once more.
         """
-        if not isinstance(content, TurnActivity) or thread_root_id is None:
+        if (
+            not isinstance(content, TurnActivity)
+            or not content.work_thread
+            or thread_root_id is None
+            or content.turn.status in TURN_ENDED
+        ):
             return
         shown = self._work_notes.get(thread_root_id)
-        if shown is None or content.turn.status in TURN_ENDED:
-            return
-        step = running_step(content.items, content.turn)
-        line = WORKING_NOTE if step is None else f"{WORKING_NOTE} · {step}"
-        line = _truncate_note(line)
+        line = _work_line(content.items)
         if line == shown or self._rich_update_cooldown.remaining() > 0:
             return
         client = self._web_client
@@ -1935,12 +2021,113 @@ class SlackAdapter(PlatformAdapter):
             # Anything else leaves the line as it was; the turn is unaffected.
             if self._throttled(error, line) is None:
                 logger.warning(
-                    "Could not show the current step on work message %s (%s).",
+                    "Could not show how far the turn has got on work message %s (%s).",
                     thread_root_id,
                     error.response.get("error"),
                 )
             return
         self._work_notes[thread_root_id] = line
+        self._work_notes.move_to_end(thread_root_id)
+        if len(self._work_notes) > _MAX_OPEN_STREAMS:
+            self._work_notes.popitem(last=False)
+
+    async def attach_activity(
+        self,
+        channel_id: str,
+        answer_ref: str,
+        answer_text: str,
+        content: TurnActivity,
+    ) -> bool:
+        """Put a finished turn's plan under its answer, in one edit.
+
+        The answer is rebuilt from `answer_text`, the text the bridge posted it
+        with, rather than read back: Slack allows some apps one history read a
+        minute. The plan is the collapsed block an ordinary post of the turn
+        carries. An edit of a message, so it notifies nobody.
+
+        False, with a warning, when it could not be done; the caller keeps the
+        work thread then. A rate limit is raised as `RichContentThrottled` so
+        the caller tries again after it.
+        """
+        client = self._web_client
+        _, ts = self._parse_message_ref(answer_ref)
+        if client is None or not ts:
+            return False
+        sections = _answer_sections(answer_text)
+        if sections is None:
+            logger.warning(
+                "The answer %s is too long to rebuild with a plan under it; "
+                "keeping the turn's work thread.",
+                answer_ref,
+            )
+            return False
+        drawn = render_activity_plan(
+            content.items, content.turn, elapsed_seconds=content.elapsed_seconds
+        )
+        plans = [block for block in drawn.blocks if block.get("type") == "plan"]
+        if len(plans) != 1:
+            return False
+        try:
+            await client.chat_update(
+                channel=channel_id,
+                ts=ts,
+                text=answer_text,
+                blocks=[*sections, *plans],
+            )
+        except SlackApiError as error:
+            throttled = self._throttled(error, answer_text)
+            if throttled is not None:
+                raise throttled from error
+            logger.warning(
+                "Slack would not put the plan under answer %s (%s); keeping the "
+                "turn's work thread.",
+                answer_ref,
+                error.response.get("error"),
+            )
+            return False
+        return True
+
+    async def remove_work_thread(
+        self, channel_id: str, work_ref: str, stream_refs: Sequence[str]
+    ) -> bool:
+        """Delete a turn's streams, then its work message, once the plan is
+        under the answer.
+
+        The session goes `active` first: deleting its message takes it out of
+        the asker's Agents & tools. The replies go before the message they
+        hang from, so it vanishes rather than staying as "This message was
+        deleted" over them. A message already gone counts as deleted. False at
+        the first refusal, with a warning, and nothing after it is deleted:
+        the caller keeps the work message then.
+        """
+        client = self._web_client
+        channel, ts = self._parse_message_ref(work_ref)
+        if client is None or not ts:
+            return False
+        await self._set_session_status(
+            {"channel_id": channel, "thread_ts": ts, "status": "active"}
+        )
+        for ref in [*stream_refs, work_ref]:
+            _, message_ts = self._parse_message_ref(ref)
+            if not message_ts:
+                continue
+            self._streams.pop(ref, None)
+            try:
+                await client.chat_delete(channel=channel_id, ts=message_ts)
+            except SlackApiError as error:
+                code = error.response.get("error")
+                if code == "message_not_found":
+                    continue
+                logger.warning(
+                    "Slack would not delete %s from the work thread %s (%s); "
+                    "keeping the work message.",
+                    ref,
+                    work_ref,
+                    code,
+                )
+                return False
+        self._work_notes.pop(work_ref, None)
+        return True
 
     async def _set_session_status(self, arguments: dict[str, Any]) -> None:
         await self._session_call("agents.sessions.setStatus", arguments)

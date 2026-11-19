@@ -78,6 +78,7 @@ from switch_core.db.models import (
     ApprovalRequestPost,
     BridgeMessageMap,
     Message,
+    MessageAttachment,
     Room,
     SteeredMessageMark,
     TurnStatusPost,
@@ -99,6 +100,7 @@ from switch_core.db.stores.session_activity_store import (
     ApprovalRequestStore,
 )
 from switch_core.delivery.addressing import AddressingResolver
+from switch_core.room_wide_mention import is_room_wide_mention
 from switch_core.session_activity.bridge_turns import (
     TurnView,
     status_state,
@@ -116,6 +118,7 @@ from switch_core.sessions.presentation import (
     notification_recipient,
     request_card_recipient,
 )
+from switch_core.ui_spec import UI_CONTENT_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -167,8 +170,24 @@ _SOON = 1
 _CLOCK = 2
 
 
-# What a work message (`!work-threads`) says once its turn has finished.
-WORK_LOG = "Work log"
+# Set on an agent's first message in a room, which the bridge draws as a
+# greeting (`bridges/agent/commands.py`).
+_AGENT_GREETING_KEY = "com.switch.agent_greeting"
+# How long a work thread's ending waits for the bridge to post the answer it
+# would put the plan under, before taking the turn to have none.
+_ANSWER_WAIT_SECONDS = 1.0
+_ANSWER_WAIT_ATTEMPTS = 10
+# The answer has not reached the platform yet.
+_NOT_YET = object()
+
+
+@dataclass(frozen=True)
+class _Answer:
+    """A turn's answer as the platform has it: its post, and the text it was
+    posted with."""
+
+    ref: str
+    text: str
 
 
 @dataclass(frozen=True)
@@ -293,6 +312,8 @@ class AgentSessionActivityPublisher:
         # A turn's work message (`!work-threads`), from when it is posted until
         # the turn ends: the thread its activity is drawn in.
         self._work_messages: dict[_Key, str] = {}
+        # How many times a work thread's ending has waited for its answer.
+        self._answer_waits: dict[_Key, int] = {}
         self._open_cards: dict[_Key, str] = {}
         self._online_seen: dict[str, bool] = {}
         self._unsure_marks: set[_Key] = set()
@@ -579,6 +600,21 @@ class AgentSessionActivityPublisher:
             ).all()
             marked = await self._turn_posts.marked(db, self._bridge_id)
             steered = await self._steered_marks_store.marked(db, self._bridge_id)
+            # A work thread whose turn's ending had not run: it is owed the
+            # plan under its answer, or the line the turn ended on.
+            unfinished = (
+                await db.execute(
+                    select(
+                        TurnStatusPost.agent_id,
+                        TurnStatusPost.session_id,
+                        TurnStatusPost.turn_id,
+                    ).where(
+                        TurnStatusPost.bridge_id == self._bridge_id,
+                        TurnStatusPost.work_message_ref.is_not(None),
+                        TurnStatusPost.work_finished_at.is_(None),
+                    )
+                )
+            ).all()
         for agent_id, session_id, request_id in requests:
             self._enqueue(("approval", agent_id, session_id, request_id), _SOON)
         for agent_id, session_id, turn_id, changed, running, drawn_at in turns:
@@ -590,6 +626,8 @@ class AgentSessionActivityPublisher:
             self._enqueue(("turn", post.agent_id, post.session_id, post.turn_id), _SOON)
         for mark in steered:
             self._enqueue(("turn", mark.agent_id, mark.session_id, mark.turn_id), _SOON)
+        for agent_id, session_id, turn_id in unfinished:
+            self._enqueue(("turn", agent_id, session_id, turn_id), _SOON)
 
     # ── Where a room's publications go ────────────────────────────────────────
 
@@ -1229,9 +1267,11 @@ class AgentSessionActivityPublisher:
             # either, so only that asks. Asked as if at the channel root: in a
             # thread, `notification_recipient` answers nobody on Slack, since a
             # mention there is not needed, and here it is the person who is.
+            # A work thread's turn asks on every draw: its stream can be
+            # replaced by a new one, which needs someone to address it to.
             answering = (
                 await self._recipient(db, room_id, target.agent, view.row, None)
-                if post is None
+                if post is None or post.work_message_ref is not None
                 else None
             )
             db.expunge_all()
@@ -1246,6 +1286,7 @@ class AgentSessionActivityPublisher:
             elapsed,
             interrupt_turn_id=interrupt_turn_id,
             recipient_external_id=answering,
+            work_thread=post is not None and post.work_message_ref is not None,
         )
         state = status_state(
             view,
@@ -1274,6 +1315,9 @@ class AgentSessionActivityPublisher:
                 post = None
             else:
                 unposted.thread_ref = drawn_in.thread_ref
+                if drawn_in is not target:
+                    unposted.work_message_ref = drawn_in.thread_ref
+                    content = replace(content, work_thread=True)
                 post = await self._begin_turn(
                     key, view, drawn_in, unposted, content, state, drawn
                 )
@@ -1291,8 +1335,14 @@ class AgentSessionActivityPublisher:
         else:
             self._live_turns.pop(key, None)
         if post is not None and drawn.final and not was_final:
-            await self._settle_work_message(key, post, view, target)
             await self._stamp_drawn(post)
+        if (
+            post is not None
+            and drawn.final
+            and post.work_message_ref is not None
+            and post.work_finished_at is None
+        ):
+            await self._finish_work_thread(key, post, view, target, content)
         if drawn.status != view.turn.status:
             drawn.status = view.turn.status
             # The other waiting turns' stop controls name this session's
@@ -1365,42 +1415,130 @@ class AgentSessionActivityPublisher:
             self._work_messages[key] = work_ref
         return replace(target, thread_ref=work_ref)
 
-    async def _settle_work_message(
-        self, key: _Key, post: TurnStatusPost, view: TurnView, target: _Target
+    async def _finish_work_thread(
+        self,
+        key: _Key,
+        post: TurnStatusPost,
+        view: TurnView,
+        target: _Target,
+        content: TurnActivity,
     ) -> None:
-        """Write the line a turn ended on into its work message, if it has one.
+        """End a work thread: its plan under the answer, and the thread gone.
 
-        Its thread is not the one the question was asked under, which is how a
-        work message is known after a restart as well as before one.
+        A completed turn whose answer is an ordinary message of the agent's at
+        the channel root gets its collapsed plan under that answer, and then
+        its streams and its work message are deleted, leaving the answer as
+        the one message the turn added. Otherwise, or where Slack refuses any
+        of it, the work message stays and says how the turn ended.
+
+        An answer the bridge has not recorded yet is waited for briefly: the
+        turn can end a moment before the bridge has posted what it said.
         """
-        work_ref = self._work_messages.pop(key, None)
-        if work_ref is None and (
-            post.thread_ref is None
-            or post.thread_ref == target.thread_ref
-            or not await self._works_in_own_thread(target, view.row)
-        ):
-            return
-        work_ref = work_ref or post.thread_ref
+        work_ref = post.work_message_ref
         assert work_ref is not None
-        # A finished turn's work message only has to say where its steps are:
-        # how long it took and how many calls it made head the steps already.
-        # One that stopped short says how, which is news the steps do not lead
-        # with.
-        summary = (
-            WORK_LOG
-            if view.turn.status == "completed"
-            else turn_state(view.items, view.turn, tool_detail=True)
-        )
-        try:
-            await self._adapter.settle_work_message(
-                target.channel_id, target.agent_name, work_ref, summary
+        folded: str | None = None
+        if view.turn.status == "completed":
+            answer = await self._turn_answer(view, target)
+            if answer is _NOT_YET:
+                waited = self._answer_waits.get(key, 0)
+                if waited < _ANSWER_WAIT_ATTEMPTS:
+                    self._answer_waits[key] = waited + 1
+                    self._enqueue_later(key, _ANSWER_WAIT_SECONDS, _SOON)
+                    return
+                answer = None
+            self._answer_waits.pop(key, None)
+            if isinstance(answer, _Answer) and await self._adapter.attach_activity(
+                target.channel_id, answer.ref, answer.text, content
+            ):
+                streams = [*(post.earlier_post_ids or []), post.external_post_id]
+                if await self._adapter.remove_work_thread(
+                    target.channel_id, work_ref, streams
+                ):
+                    folded = answer.ref
+        if folded is None:
+            summary = turn_state(
+                view.items,
+                view.turn,
+                tool_detail=True,
+                elapsed_seconds=content.elapsed_seconds,
             )
-        except Exception:
-            logger.exception(
-                "Could not settle the work message %s of turn %s.",
-                work_ref,
-                view.turn.turn_id,
+            try:
+                await self._adapter.settle_work_message(
+                    target.channel_id, target.agent_name, work_ref, summary
+                )
+            except Exception:
+                logger.exception(
+                    "Could not write how turn %s ended into its work message %s.",
+                    view.turn.turn_id,
+                    work_ref,
+                )
+        async with tenant_session(self._sessions, self._tenant_id) as db, db.begin():
+            stored = await self._turn_posts.get(
+                db,
+                self._bridge_id,
+                post.agent_id,
+                post.session_id,
+                post.turn_id,
+                for_update=True,
             )
+            if stored is not None:
+                stored.work_finished_at = func.now()
+                stored.folded_into = folded
+        post.work_finished_at = datetime.now(UTC)
+        post.folded_into = folded
+        self._work_messages.pop(key, None)
+
+    async def _turn_answer(
+        self, view: TurnView, target: _Target
+    ) -> _Answer | None | object:
+        """The agent's answer to a turn: its last message at the channel root
+        since the turn began, as the bridge posted it.
+
+        None when there is none, or when the last one is not an ordinary
+        message: a card, a file, a greeting or a room-wide mention is drawn
+        differently from its text, so it cannot be rebuilt with a plan under
+        it. `_NOT_YET` while it has not reached the platform.
+        """
+        client_id = target.agent.client_id
+        if client_id is None:
+            return None
+        async with tenant_session(self._sessions, self._tenant_id) as db:
+            message = await db.scalar(
+                select(Message)
+                .where(
+                    Message.room_id == view.row.room_id,
+                    Message.sender_client_id == client_id,
+                    Message.thread_root_event_id.is_(None),
+                    Message.event_type == "m.room.message",
+                    Message.sent_at >= view.row.created_at,
+                )
+                .order_by(Message.seq.desc())
+                .limit(1)
+            )
+            if message is None:
+                return None
+            content = message.content or {}
+            if (
+                message.msgtype not in (None, "m.text", "m.notice")
+                or not message.body
+                or UI_CONTENT_KEY in content
+                or content.get(_AGENT_GREETING_KEY) is True
+                or is_room_wide_mention(content)
+                or await db.scalar(
+                    select(MessageAttachment.id)
+                    .where(MessageAttachment.message_id == message.id)
+                    .limit(1)
+                )
+                is not None
+            ):
+                return None
+            ref = await self._platform_ref(
+                db, target.channel_id, message.transport_event_id
+            )
+            body = message.body
+        if ref is None:
+            return _NOT_YET
+        return _Answer(ref=ref, text=self._adapter.translate_outbound(body))
 
     def _redraw_due(self, drawn: _TurnDrawn, elapsed: float | None) -> datetime:
         """When a running turn is next due a redraw with no change of its own."""
@@ -1415,6 +1553,7 @@ class AgentSessionActivityPublisher:
         """Stop watching a turn that is gone, or no longer published here."""
         self._live_turns.pop(key, None)
         self._work_messages.pop(key, None)
+        self._answer_waits.pop(key, None)
         self._drop_unposted(key)
 
     def _drop_unposted(self, key: _Key) -> None:
@@ -1588,12 +1727,13 @@ class AgentSessionActivityPublisher:
         drawn: _TurnDrawn,
     ) -> None:
         """Rewrite the turn's message as the turn now stands, unless nothing shown moved."""
-        if drawn.wedged:
+        if drawn.wedged or post.folded_into is not None:
+            # A folded turn's messages are gone: its plan is under the answer.
             return
         if drawn.status_state == state and (not view.ended or drawn.final):
             return
         try:
-            await self._adapter.update_rich(
+            moved = await self._adapter.update_rich(
                 post.external_channel_id,
                 target.agent_name,
                 post.external_post_id,
@@ -1619,9 +1759,41 @@ class AgentSessionActivityPublisher:
                 what_next,
             )
             return
+        if moved is not None and moved != post.external_post_id:
+            await self._moved_to(post, moved, drawn)
         drawn.status_state = state
         drawn.final = view.ended
         self._retries.clear(key)
+
+    async def _moved_to(
+        self, post: TurnStatusPost, moved: str, drawn: _TurnDrawn
+    ) -> None:
+        """Record that the turn is drawn in a new message from now on.
+
+        The one it leaves is kept with the turn, so its ending can remove it
+        along with the rest of the work thread.
+        """
+        earlier = [*(post.earlier_post_ids or []), post.external_post_id]
+        async with tenant_session(self._sessions, self._tenant_id) as db, db.begin():
+            stored = await self._turn_posts.get(
+                db,
+                self._bridge_id,
+                post.agent_id,
+                post.session_id,
+                post.turn_id,
+                for_update=True,
+            )
+            if stored is not None:
+                stored.earlier_post_ids = earlier
+                stored.external_post_id = moved
+        post.earlier_post_ids = earlier
+        post.external_post_id = moved
+        closes_in = self._adapter.activity_closes_in(moved)
+        drawn.platform_closes_at = (
+            None
+            if closes_in is None
+            else datetime.now(UTC) + timedelta(seconds=closes_in)
+        )
 
     async def _say_wedged(
         self, post: TurnStatusPost, view: TurnView, target: _Target

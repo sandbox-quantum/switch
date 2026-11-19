@@ -13,7 +13,11 @@ from typing import Any
 import pytest
 from slack_sdk.errors import SlackApiError
 
-from switch_core.bridges.collaboration.adapter import RichContentFailed, TurnActivity
+from switch_core.bridges.collaboration.adapter import (
+    RichContentFailed,
+    RichContentThrottled,
+    TurnActivity,
+)
 from switch_core.bridges.collaboration.slack.adapter import (
     SlackAdapter,
     SlackConnectionConfig,
@@ -102,7 +106,7 @@ async def test_a_channel_that_cannot_be_looked_up_keeps_the_askers_thread() -> N
     assert await _adapter(client).hosts_work_threads(CHANNEL) is False
 
 
-async def test_a_work_message_is_a_divider_with_a_session_for_the_asker() -> None:
+async def test_a_work_message_is_a_line_with_a_session_for_the_asker() -> None:
     client = FakeWebClient()
     adapter = _adapter(client)
     ref = await adapter.open_work_message(
@@ -115,7 +119,7 @@ async def test_a_work_message_is_a_divider_with_a_session_for_the_asker() -> Non
     assert posted["blocks"] == [
         {
             "type": "context",
-            "elements": [{"type": "mrkdwn", "text": "_Working on it…_"}],
+            "elements": [{"type": "mrkdwn", "text": "Working…"}],
         }
     ]
     assert posted["text"] == "Agent is working on this"
@@ -153,12 +157,13 @@ async def test_a_work_message_slack_refuses_is_reported() -> None:
 async def test_settling_edits_in_the_last_line_renames_and_ends_the_session() -> None:
     client = FakeWebClient()
     adapter = _adapter(client)
-    await adapter.settle_work_message(CHANNEL, "Agent", f"{CHANNEL}:5.0", "Work log")
+    line = "Worked for 30s. 2 tool calls."
+    await adapter.settle_work_message(CHANNEL, "Agent", f"{CHANNEL}:5.0", line)
     [edit] = client.updated
     assert (edit["channel"], edit["ts"]) == (CHANNEL, "5.0")
-    assert edit["text"] == "Work log"
+    assert edit["text"] == line
     assert edit["blocks"] == [
-        {"type": "context", "elements": [{"type": "mrkdwn", "text": "_Work log_"}]}
+        {"type": "context", "elements": [{"type": "mrkdwn", "text": line}]}
     ]
     calls = [
         (method, kwargs["json"])
@@ -168,7 +173,11 @@ async def test_settling_edits_in_the_last_line_renames_and_ends_the_session() ->
     assert calls == [
         (
             "agents.sessions.rename",
-            {"channel_id": CHANNEL, "thread_ts": "5.0", "title": "Agent · Work log"},
+            {
+                "channel_id": CHANNEL,
+                "thread_ts": "5.0",
+                "title": "Agent · Worked for 30s. 2 tool calls.",
+            },
         ),
         (
             "agents.sessions.setStatus",
@@ -225,52 +234,58 @@ def _notes(client: FakeWebClient, work_ref: str) -> list[str]:
     return [edit["text"] for edit in client.updated if edit["ts"] == ts]
 
 
-def _done_tool() -> Item:
-    return _tool().model_copy(update={"status": "completed"})
+def _done_tool(item_id: str = "i1") -> Item:
+    return _tool().model_copy(update={"status": "completed", "item_id": item_id})
 
 
-async def test_the_step_a_turn_is_on_is_edited_into_its_work_message() -> None:
+def _work(items: list[Item], status: str = "running") -> TurnActivity:
+    return TurnActivity(
+        items, _turn(status), recipient_external_id=ASKER, work_thread=True
+    )
+
+
+async def test_how_far_a_turn_has_got_is_edited_into_its_work_message() -> None:
+    """A count of steps, never the step's own title, which for a shell step is
+    the command it runs."""
     client = FakeWebClient()
     adapter = _adapter(client)
     work = await adapter.open_work_message(CHANNEL, "Agent", "working", ASKER)
-    content = TurnActivity([_tool()], _turn(), recipient_external_id=ASKER)
-    ref = await adapter.post_rich(CHANNEL, "Agent", content, work)
-    assert _notes(client, work) == ["Working on it… · Running: Ran pytest"]
+    ref = await adapter.post_rich(CHANNEL, "Agent", _work([_tool()]), work)
+    assert _notes(client, work) == ["Working… · step 1"]
     note = [e for e in client.updated if e["text"].startswith("Working")][0]
     assert note["blocks"] == [
         {
             "type": "context",
-            "elements": [
-                {"type": "mrkdwn", "text": "_Working on it… · Running: Ran pytest_"}
-            ],
+            "elements": [{"type": "mrkdwn", "text": "Working… · step 1"}],
         }
     ]
 
     # Nothing changed in the line: no edit, whatever else is redrawn.
-    await adapter.update_rich(CHANNEL, "Agent", ref, content, work)
+    await adapter.update_rich(CHANNEL, "Agent", ref, _work([_done_tool()]), work)
     assert len(_notes(client, work)) == 1
 
-    # Between calls it names the last one, as the plan's header does.
     await adapter.update_rich(
-        CHANNEL, "Agent", ref, TurnActivity([_done_tool()], _turn()), work
+        CHANNEL, "Agent", ref, _work([_done_tool(), _done_tool("i2")]), work
     )
-    assert _notes(client, work)[-1] == "Working on it… · Last: Ran pytest"
+    assert _notes(client, work)[-1] == "Working… · step 2"
 
 
-async def test_an_ended_turn_leaves_the_line_to_the_work_log() -> None:
+async def test_after_a_restart_the_line_is_written_again() -> None:
+    client = FakeWebClient()
+    adapter = _adapter(client)
+    await adapter.post_rich(CHANNEL, "Agent", _work([_tool()]), f"{CHANNEL}:7.0")
+    assert _notes(client, f"{CHANNEL}:7.0") == ["Working… · step 1"]
+
+
+async def test_an_ended_turn_leaves_the_line_to_its_ending() -> None:
     client = FakeWebClient()
     adapter = _adapter(client)
     work = await adapter.open_work_message(CHANNEL, "Agent", "working", ASKER)
-    await adapter.post_rich(
-        CHANNEL,
-        "Agent",
-        TurnActivity([_done_tool()], _turn("completed"), recipient_external_id=ASKER),
-        work,
-    )
+    await adapter.post_rich(CHANNEL, "Agent", _work([_done_tool()], "completed"), work)
     assert _notes(client, work) == []
 
 
-async def test_only_a_work_message_this_process_posted_gets_the_step() -> None:
+async def test_a_turn_outside_a_work_thread_gets_no_line() -> None:
     client = FakeWebClient()
     adapter = _adapter(client)
     await adapter.post_rich(
@@ -282,32 +297,143 @@ async def test_only_a_work_message_this_process_posted_gets_the_step() -> None:
     assert client.updated == []
 
 
-async def test_the_step_waits_out_slacks_edit_limit() -> None:
+async def test_the_line_waits_out_slacks_edit_limit() -> None:
     client = FakeWebClient()
     adapter = _adapter(client)
     work = await adapter.open_work_message(CHANNEL, "Agent", "working", ASKER)
     adapter._rich_update_cooldown.start(30)
-    await adapter.post_rich(
-        CHANNEL,
-        "Agent",
-        TurnActivity([_tool()], _turn(), recipient_external_id=ASKER),
-        work,
-    )
+    await adapter.post_rich(CHANNEL, "Agent", _work([_tool()]), work)
     assert _notes(client, work) == []
 
 
-async def test_a_refused_step_edit_starts_the_cooldown_and_spares_the_turn() -> None:
+async def test_a_refused_line_edit_starts_the_cooldown_and_spares_the_turn() -> None:
     client = FakeWebClient()
     client.update_error = FakeResponse(
         {"error": "ratelimited"}, headers={"Retry-After": "5"}
     )
     adapter = _adapter(client)
     work = await adapter.open_work_message(CHANNEL, "Agent", "working", ASKER)
-    await adapter.post_rich(
-        CHANNEL,
-        "Agent",
-        TurnActivity([_tool()], _turn(), recipient_external_id=ASKER),
-        work,
-    )
+    await adapter.post_rich(CHANNEL, "Agent", _work([_tool()]), work)
     assert client.started, "the turn is still drawn"
     assert adapter._rich_update_cooldown.remaining() > 0
+
+
+# ── The ending ───────────────────────────────────────────────────────────────
+
+
+async def test_the_plan_goes_under_the_answer_rebuilt_from_its_text() -> None:
+    client = FakeWebClient()
+    adapter = _adapter(client)
+    ok = await adapter.attach_activity(
+        CHANNEL,
+        f"{CHANNEL}:8.0",
+        "Counted to 30.\nIt's *15:59*.",
+        _work([_done_tool()], "completed"),
+    )
+    assert ok
+    [edit] = client.updated
+    assert (edit["ts"], edit["text"]) == ("8.0", "Counted to 30.\nIt's *15:59*.")
+    section, plan = edit["blocks"]
+    assert section == {
+        "type": "section",
+        "text": {"type": "mrkdwn", "text": "Counted to 30.\nIt's *15:59*."},
+    }
+    assert plan["type"] == "plan"
+    assert client.api_calls == [], "the answer is not read back from Slack"
+
+
+async def test_a_long_answer_is_rebuilt_across_sections() -> None:
+    client = FakeWebClient()
+    adapter = _adapter(client)
+    text = "\n".join(["x" * 1000] * 7)
+    assert await adapter.attach_activity(
+        CHANNEL, f"{CHANNEL}:8.0", text, _work([_done_tool()], "completed")
+    )
+    blocks = client.updated[0]["blocks"]
+    sections = [b["text"]["text"] for b in blocks if b["type"] == "section"]
+    assert len(sections) == 4, "two 1,000-character lines and a break fit in one"
+    assert all(len(section) <= 3000 for section in sections)
+    assert "\n".join(sections) == text
+    assert blocks[-1]["type"] == "plan"
+
+
+async def test_an_attach_slack_refuses_is_reported() -> None:
+    client = FakeWebClient()
+    client.update_error = "cant_update_message"
+    adapter = _adapter(client)
+    assert not await adapter.attach_activity(
+        CHANNEL, f"{CHANNEL}:8.0", "hi", _work([_done_tool()], "completed")
+    )
+
+
+async def test_an_attach_slack_rate_limits_is_tried_again() -> None:
+    client = FakeWebClient()
+    client.update_error = FakeResponse(
+        {"error": "ratelimited"}, headers={"Retry-After": "5"}
+    )
+    adapter = _adapter(client)
+    with pytest.raises(RichContentThrottled):
+        await adapter.attach_activity(
+            CHANNEL, f"{CHANNEL}:8.0", "hi", _work([_done_tool()], "completed")
+        )
+
+
+async def test_removing_a_work_thread_takes_the_replies_first() -> None:
+    client = FakeWebClient()
+    adapter = _adapter(client)
+    ok = await adapter.remove_work_thread(
+        CHANNEL, f"{CHANNEL}:5.0", [f"{CHANNEL}:6.0", f"{CHANNEL}:7.0"]
+    )
+    assert ok
+    assert [d["ts"] for d in client.deleted] == ["6.0", "7.0", "5.0"]
+    [session] = _sessions(client)
+    assert session == {"channel_id": CHANNEL, "thread_ts": "5.0", "status": "active"}
+
+
+async def test_a_refused_delete_stops_before_the_work_message() -> None:
+    client = FakeWebClient()
+    refusals = iter(["message_not_found", "cant_delete_message"])
+
+    async def chat_delete(**kwargs: Any) -> FakeResponse:
+        client.deleted.append(kwargs)
+        raise SlackApiError("no", FakeResponse({"error": next(refusals)}))
+
+    client.chat_delete = chat_delete  # type: ignore[method-assign]
+    adapter = _adapter(client)
+    ok = await adapter.remove_work_thread(
+        CHANNEL, f"{CHANNEL}:5.0", [f"{CHANNEL}:6.0", f"{CHANNEL}:7.0"]
+    )
+    assert not ok
+    assert [d["ts"] for d in client.deleted] == ["6.0", "7.0"]
+
+
+async def test_a_closed_stream_in_a_work_thread_carries_on_in_a_new_one() -> None:
+    client = FakeWebClient()
+    adapter = _adapter(client)
+    work = await adapter.open_work_message(CHANNEL, "Agent", "working", ASKER)
+    first = await adapter.post_rich(CHANNEL, "Agent", _work([_tool()]), work)
+    client.append_error = "message_not_in_streaming_state"
+    moved = await adapter.update_rich(
+        CHANNEL, "Agent", first, _work([_done_tool(), _tool()]), work
+    )
+    client.append_error = None
+    assert moved is not None and moved != first
+    assert len(client.started) == 2
+    assert client.started[1]["thread_ts"] == work.split(":", 1)[1]
+
+
+async def test_a_closed_stream_in_the_askers_thread_is_edited_as_before() -> None:
+    client = FakeWebClient()
+    adapter = _adapter(client)
+    turn = TurnActivity([_tool()], _turn(), recipient_external_id=ASKER)
+    first = await adapter.post_rich(CHANNEL, "Agent", turn, f"{CHANNEL}:9.0")
+    client.append_error = "message_not_in_streaming_state"
+    moved = await adapter.update_rich(
+        CHANNEL,
+        "Agent",
+        first,
+        TurnActivity([_done_tool(), _tool()], _turn()),
+        f"{CHANNEL}:9.0",
+    )
+    assert moved is None
+    assert len(client.started) == 1
