@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   type CallerContext,
   callOperation,
+  fetchMediaToFile,
   serveMcpOverHttp,
   SwitchToolCatalog,
   type ToolDefinition,
@@ -125,6 +126,69 @@ describe('the tool catalog', () => {
     const written = result.content[0]!.text;
     expect(written.startsWith(ctx.mediaDir)).toBe(true);
     expect(readFileSync(written, 'utf8')).toBe('bytes');
+  });
+
+  it('encodes roomId when downloading an attachment to prevent path traversal', async () => {
+    const fetchMock = vi.fn(async () => new Response('bytes'));
+    vi.stubGlobal('fetch', fetchMock);
+    const ctx = context();
+    await catalog.call(ctx, 'download_attachment', {
+      mxc: 'mxc://example.com/test',
+      filename: 'a.txt',
+      room_id: '../../internal/admin/credentials?',
+    });
+    expect(fetchMock).toHaveBeenCalled();
+    const [url] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe(
+      'https://switch.test/agents/agent/rooms/..%2F..%2Finternal%2Fadmin%2Fcredentials%3F/media?mxc=mxc%3A%2F%2Fexample.com%2Ftest'
+    );
+  });
+
+  it('rejects a destName that escapes the media directory', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('bytes')));
+    const ctx = context();
+    const identity = ctx.identity;
+    await expect(
+      fetchMediaToFile(identity, ctx.mediaDir, 'room', 'mxc://s/id', '../../etc/passwd')
+    ).rejects.toThrow('Destination escapes media directory');
+  });
+
+  it('rejects an attachment whose body exceeds the size limit', async () => {
+    const huge = Buffer.alloc(101 * 1024 * 1024);
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(huge)));
+    const ctx = context();
+    await expect(
+      fetchMediaToFile(ctx.identity, ctx.mediaDir, 'room', 'mxc://s/id', 'big.bin')
+    ).rejects.toThrow('Attachment too large');
+  });
+
+  it('rejects an attachment whose Content-Length exceeds the size limit', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('small', {
+        headers: { 'Content-Length': String(200 * 1024 * 1024) },
+      }))
+    );
+    const ctx = context();
+    await expect(
+      fetchMediaToFile(ctx.identity, ctx.mediaDir, 'room', 'mxc://s/id', 'big.bin')
+    ).rejects.toThrow('Attachment too large');
+  });
+
+  it('encodes roomId when sending an attachment to prevent path traversal', async () => {
+    const fetchMock = vi.fn(async () => Response.json({ event_id: 'event' }));
+    vi.stubGlobal('fetch', fetchMock);
+    const ctx = context();
+    writeFileSync(join(ctx.cwd, 'notes.md'), 'hello');
+    await catalog.call(ctx, 'send_attachment', {
+      path: 'notes.md',
+      room_id: '../../internal/admin/credentials?',
+    });
+    expect(fetchMock).toHaveBeenCalled();
+    const [url] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe(
+      'https://switch.test/agents/agent/rooms/..%2F..%2Finternal%2Fadmin%2Fcredentials%3F/media'
+    );
   });
 });
 
