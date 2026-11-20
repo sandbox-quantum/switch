@@ -20,6 +20,7 @@ const PROVIDERS: readonly TelemetryProvider[] = [
   'droid',
   'cline',
   'junie',
+  'grok-build',
 ];
 
 /** A provider id as telemetry may carry it: one of these, else `none`. */
