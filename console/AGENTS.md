@@ -415,7 +415,11 @@ pnpm run lint
   settings directly — the gate is the one place that decides, and it fails closed when the
   setting can't be read — and do not cache the answer across a send, since the user can
   revoke it at any time. Consent off
-  means **no request is made at all**, not a request whose result is discarded.
+  means **no request is made at all**, not a request whose result is discarded. `track`
+  reads it twice — before building the payload and again immediately before the request —
+  because building awaits the database, and an opt-out in that gap must still stop the
+  event. Turning sharing off also deletes the install id (`forgetInstallId`), as does
+  boot when sharing is off and a send refused by the second read.
 - **The answer reaches the managed server too, and never by omission.** "Share usage
   data" is one decision covering this app and a Switch server it runs, so `startStack`
   reads it and writes `TELEMETRY_ENABLED` into the stack's `.env` on every start —
@@ -435,8 +439,11 @@ pnpm run lint
   and a host that cannot be read is reported as unknown, never as agreeing.
 - **The toggle defaults to on.** Usage data is opt-out: a first-run notice says what is
   shared and carries the off switch, and the same toggle lives in Settings. That default is
-  a product decision, and so is what identifies an install (today, only the random
-  per-install id). Changing either is a product and privacy call, not a code change.
+  a product decision, and so is what identifies an install (today, only a random id that
+  is replaced every `TELEMETRY_ID_LIFETIME_DAYS` days and deleted on opt-out —
+  `src/main/core/telemetry/install-id.ts`). Changing either is a product and privacy
+  call, not a code change. Because that id makes the data pseudonymous, the copy never
+  calls it anonymous.
 - **What a telemetry payload may contain.** Add an event only by adding it to the closed
   catalogue in `src/main/core/telemetry/events.ts`: its property types are literal unions,
   numbers and booleans, and `TELEMETRY_EVENT_PROPERTIES` names the same fields as data, which
@@ -446,8 +453,9 @@ pnpm run lint
   enough — excess-property checking does not apply through a spread — so the runtime
   filter is what makes "nothing free-text can reach a payload" true rather than intended.
   Permitted: which of the catalogued things happened, agent type, local-vs-remote,
-  success-vs-failure, how long an operation took, app version, operating system, the
-  random install id, a random id made fresh for each record (`flint.insert_id`, which
+  success-vs-failure, how long an operation took, app version, operating system family
+  and its major version (major.minor on macOS; `os-version.ts`), the rotating random
+  install id, a random id made fresh for each record (`flint.insert_id`, which
   only keeps two alike events apart), the session the event is in (`flint.session_id`:
   when the run of things someone did began, in epoch milliseconds, or `-1` for an event
   that is not someone using the app — `BACKGROUND_EVENTS` in `events.ts`), which kind
