@@ -288,16 +288,14 @@ def bedrock_request(req: DecideRequest, settings: Settings) -> dict:
     return body
 
 
-_bedrock_clients: dict[tuple[str, str | None], Any] = {}
+_aws_clients: dict[tuple[str, str | None], Any] = {}
 
 
-def bedrock_client(settings: Settings) -> Any:
-    key = (settings.aws_region, settings.aws_profile)
-    if key not in _bedrock_clients:
-        session = boto3.Session(
-            profile_name=settings.aws_profile, region_name=settings.aws_region
-        )
-        _bedrock_clients[key] = session.client(
+def _aws_client(region: str, settings: Settings) -> Any:
+    key = (region, settings.aws_profile)
+    if key not in _aws_clients:
+        session = boto3.Session(profile_name=settings.aws_profile, region_name=region)
+        _aws_clients[key] = session.client(
             "bedrock-runtime",
             config=Config(
                 read_timeout=settings.timeout_s,
@@ -305,27 +303,42 @@ def bedrock_client(settings: Settings) -> Any:
                 retries={"max_attempts": 2},
             ),
         )
-    return _bedrock_clients[key]
+    return _aws_clients[key]
+
+
+def bedrock_client(settings: Settings) -> Any:
+    return _aws_client(settings.aws_region, settings)
+
+
+def bedrock_openai_client(settings: Settings) -> Any:
+    return _aws_client(settings.bedrock_openai_region, settings)
+
+
+def _bedrock_failure(where: str, exc: BotoCoreError | ClientError) -> ModelServerError:
+    code = (
+        exc.response.get("Error", {}).get("Code", "")
+        if isinstance(exc, ClientError)
+        else ""
+    )
+    return ModelServerError(
+        f"{where} failed: {type(exc).__name__}: {exc}",
+        kind=kind_of_bedrock_error(exc),
+        log_text=f"{where} failed: {type(exc).__name__} {code}".rstrip(),
+    )
 
 
 async def ask_bedrock(settings: Settings, req: DecideRequest) -> ModelAnswer:
     options = [a.name for a in req.agents] + [NONE]
     where = f"Bedrock {settings.model} in {settings.aws_region}"
     try:
+        request = bedrock_request(req, settings)
+        # The client is made in the thread too: the first one resolves AWS
+        # credentials, which can block on the network.
         body = await asyncio.to_thread(
-            bedrock_client(settings).converse, **bedrock_request(req, settings)
+            lambda: bedrock_client(settings).converse(**request)
         )
     except (BotoCoreError, ClientError) as exc:
-        code = (
-            exc.response.get("Error", {}).get("Code", "")
-            if isinstance(exc, ClientError)
-            else ""
-        )
-        raise ModelServerError(
-            f"{where} failed: {type(exc).__name__}: {exc}",
-            kind=kind_of_bedrock_error(exc),
-            log_text=f"{where} failed: {type(exc).__name__} {code}".rstrip(),
-        ) from exc
+        raise _bedrock_failure(where, exc) from exc
     stop = body.get("stopReason")
     if stop in _BEDROCK_REFUSAL_STOPS:
         raise ModelServerError(
@@ -341,7 +354,7 @@ def read_letter_logprobs(body: dict, options: dict[str, str]) -> ModelAnswer:
         top = body["choices"][0]["logprobs"]["content"][0]["top_logprobs"]
     except (KeyError, IndexError, TypeError) as exc:
         raise ModelServerError(
-            "llama.cpp response has no top logprobs for the first token",
+            "the model response has no top logprobs for the first token",
             kind="model_server_error",
         ) from exc
     mass: dict[str, float] = {}
@@ -364,6 +377,73 @@ def read_letter_logprobs(body: dict, options: dict[str, str]) -> ModelAnswer:
         reason="probabilities: " + ", ".join(f"{k}={v:.2f}" for k, v in ranked),
         runner_up=_runner_up(probs, choice),
     )
+
+
+# The most top_logprobs each backend takes: llama.cpp and vLLM default to 20,
+# and Bedrock refuses more than 20. A room has at most 13 agents and "none".
+TOP_LOGPROBS = 20
+
+
+def letter_request(
+    req: DecideRequest, settings: Settings
+) -> tuple[dict, dict[str, str]]:
+    """An OpenAI chat body asking for one token and its top logprobs, and the
+    letter each option goes by. A room with more agents than letters is a
+    failure, so a fallback can answer it."""
+    try:
+        messages, letters = letter_messages(req, settings.history_limit)
+    except ValueError as exc:
+        raise ModelServerError(
+            f"the letter prompt cannot ask {settings.model}: {exc}",
+            kind="model_server_error",
+        ) from exc
+    return {
+        "messages": messages,
+        "max_tokens": 1,
+        "temperature": 0,
+        "logprobs": True,
+        "top_logprobs": TOP_LOGPROBS,
+    }, letters
+
+
+async def ask_bedrock_openai(settings: Settings, req: DecideRequest) -> ModelAnswer:
+    """An open-weights model on Bedrock through InvokeModel with an OpenAI chat
+    body, scored by the first token's letter logprobs like llama.cpp."""
+    where = f"Bedrock {settings.model} in {settings.bedrock_openai_region}"
+    payload, letters = letter_request(req, settings)
+    body_text = json.dumps(payload)
+
+    def invoke() -> bytes:
+        # The client is made in the thread too: the first one resolves AWS
+        # credentials, which can block on the network.
+        response = bedrock_openai_client(settings).invoke_model(
+            modelId=settings.model,
+            body=body_text,
+            contentType="application/json",
+            accept="application/json",
+        )
+        return response["body"].read()
+
+    try:
+        raw = await asyncio.to_thread(invoke)
+    except (BotoCoreError, ClientError) as exc:
+        raise _bedrock_failure(where, exc) from exc
+    try:
+        body = json.loads(raw)
+    except ValueError as exc:
+        raise ModelServerError(
+            f"{where} returned non-JSON", kind="model_server_error"
+        ) from exc
+    try:
+        finish = body["choices"][0].get("finish_reason")
+    except (KeyError, IndexError, TypeError, AttributeError):
+        finish = None
+    if finish == "content_filter":
+        raise ModelServerError(
+            f"{where} declined to answer (finish_reason={finish})",
+            kind="backend_refused",
+        )
+    return read_letter_logprobs(body, letters)
 
 
 def anthropic_request(req: DecideRequest, settings: Settings) -> dict:
@@ -608,6 +688,8 @@ async def ask_gemini_decision(
 def model_server(settings: Settings) -> str:
     if settings.backend == "bedrock":
         return f"bedrock:{settings.aws_region}"
+    if settings.backend == "bedrock_openai":
+        return f"bedrock:{settings.bedrock_openai_region}"
     if settings.backend == "llamacpp":
         return settings.llamacpp_url
     if settings.backend == "anthropic":
@@ -639,21 +721,16 @@ async def ask(
     anthropic or gemini_decision backend; None uses the service's own."""
     if settings.backend == "bedrock":
         return await ask_bedrock(settings, req)
+    if settings.backend == "bedrock_openai":
+        return await ask_bedrock_openai(settings, req)
     if settings.backend == "anthropic":
         return await ask_anthropic(settings, req, api_key)
     if settings.backend == "gemini_decision":
         return await ask_gemini_decision(client, settings, req, api_key)
     if settings.backend == "llamacpp":
-        messages, letters = letter_messages(req, settings.history_limit)
+        payload, letters = letter_request(req, settings)
+        payload["chat_template_kwargs"] = {"enable_thinking": False}
         url = f"{settings.llamacpp_url}/v1/chat/completions"
-        payload = {
-            "messages": messages,
-            "max_tokens": 1,
-            "temperature": 0,
-            "logprobs": True,
-            "top_logprobs": 20,
-            "chat_template_kwargs": {"enable_thinking": False},
-        }
         try:
             r = await client.post(
                 url,
@@ -737,7 +814,7 @@ async def check(client: httpx.AsyncClient, settings: Settings) -> dict:
                 "GEMINI_DECISION_API_KEY is not set", kind="credentials_missing"
             )
         return {"status": "api key set"}
-    if settings.backend == "bedrock":
+    if settings.backend in ("bedrock", "bedrock_openai"):
         try:
             creds = await asyncio.to_thread(
                 lambda: boto3.Session(
@@ -753,21 +830,15 @@ async def check(client: httpx.AsyncClient, settings: Settings) -> dict:
                 "AWS credentials unavailable: no profile or environment credentials found",
                 kind="credentials_missing",
             )
-        return {"status": "credentials found", "region": settings.aws_region}
+        region = (
+            settings.aws_region
+            if settings.backend == "bedrock"
+            else settings.bedrock_openai_region
+        )
+        return {"status": "credentials found", "region": region}
     if settings.backend == "llamacpp":
         url = f"{settings.llamacpp_url}/health"
-        try:
-            r = await client.get(url, timeout=5)
-            r.raise_for_status()
-            return r.json()
-        except (httpx.HTTPError, ValueError) as exc:
-            raise ModelServerError(
-                f"model server {url} unavailable: {type(exc).__name__}: {exc}",
-                kind=kind_of_httpx_error(exc)
-                if isinstance(exc, httpx.HTTPError)
-                else "model_server_error",
-            ) from exc
-    if settings.backend == "systemone":
+    elif settings.backend == "systemone":
         base = settings.systemone_url.rsplit("/v1/", 1)[0]
         url = f"{base}/health"
     else:
@@ -775,11 +846,24 @@ async def check(client: httpx.AsyncClient, settings: Settings) -> dict:
     try:
         r = await client.get(url, timeout=5)
         r.raise_for_status()
-        return r.json()
-    except (httpx.HTTPError, ValueError) as exc:
+    except httpx.HTTPError as exc:
         raise ModelServerError(
             f"model server {url} unavailable: {type(exc).__name__}: {exc}",
-            kind=kind_of_httpx_error(exc)
-            if isinstance(exc, httpx.HTTPError)
-            else "model_server_error",
+            kind=kind_of_httpx_error(exc),
         ) from exc
+    return health_body(r)
+
+
+def health_body(r: httpx.Response) -> dict:
+    """A model server's 200 health answer as a status object. vLLM answers
+    with an empty body, which is healthy too."""
+    try:
+        body = r.json()
+    except ValueError:
+        body = None
+    if isinstance(body, dict):
+        return body
+    return {
+        "status": "ok",
+        "body": "empty" if not r.content.strip() else "not a JSON object",
+    }

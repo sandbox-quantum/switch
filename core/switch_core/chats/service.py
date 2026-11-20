@@ -54,6 +54,7 @@ from switch_core.authz import (
 )
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
 from switch_core.bridges.agent.registration_bootstrap import is_bootstrap_owner
+from switch_core.bridges.collaboration.models import BridgeOperationError
 from switch_core.chats import MEMBER_CLIENT_TYPE, is_console_chat
 from switch_core.chats.views import (
     COMMAND_EVENT_TYPE,
@@ -1814,6 +1815,11 @@ class ChatService:
                         )
                     except ValueError as exc:
                         raise ChatError(422, "CHAT_NOT_CREATED", str(exc)) from exc
+                    except BridgeOperationError as exc:
+                        # The platform refused the chat's channel and said why
+                        # (a permission to turn on, a member missing from the
+                        # server): pass that on, as room creation does.
+                        raise ChatError(502, "CHAT_NOT_CREATED", str(exc)) from exc
                     room = created.room
                 else:
                     room = found

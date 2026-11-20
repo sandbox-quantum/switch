@@ -53,11 +53,52 @@ sat at 0.51–0.61 confidence, just under the threshold.
 switch-core talks only to this contract; the backend behind it is configuration.
 
 - **`GET /health`** returns `200 {"ok": true, "backend", "model", "model_server",
-  "model_server_status", "confidence_threshold", "min_lead", "backends_available"}`, or
-  `503 {"detail"}` when the default backend's model server is down.
+  "model_server_status", "confidence_threshold", "min_lead", "backends_available",
+  "fallback_backend", "fallback_model", "fallback_after_s",
+  "fallback_confidence_threshold", "backends"}`, or
+  `503 {"detail"}` when the default backend's model server is down (the
+  fallback and the backends a request may name are not checked and never make
+  the service unready). A model server whose `/health` answers 200 with an
+  empty or non-JSON body (vLLM) is healthy: `model_server_status` is then
+  `{"status": "ok", "body": "empty"}`. The top-level fields describe the
+  default backend: its model, the threshold its answers are held to, and its
+  fallback.
   `backends_available` is `["default", "anthropic"]`, plus `"bedrock"` when
-  `DECISION_BEDROCK_ENABLED=1` and `"gemini_decision"` when
-  `GEMINI_DECISION_API_KEY` is set. It never needs a token.
+  `DECISION_BEDROCK_ENABLED=1`, `"gemini_decision"` when
+  `GEMINI_DECISION_API_KEY` is set, `"bedrock_openai"` when
+  `DECISION_BEDROCK_OPENAI_ENABLED=1` and `"systemone"` when
+  `DECISION_SYSTEMONE_ENABLED=1`; `bedrock`, `bedrock_openai` and `systemone`
+  are listed without their flag when they are the default backend.
+  `backends` describes what a request naming each of those gets, keyed the
+  same way:
+
+  ```json
+  "backends": {
+    "default": {"backend": "bedrock_openai", "model": "qwen.qwen3-235b-a22b-2507-v1:0",
+                "label": "Qwen3 235B (Bedrock)", "threshold": 0.89, "fallback": null,
+                "is_default": true},
+    "anthropic": {"backend": "anthropic", "model": "claude-haiku-5-5",
+                  "label": "Claude Haiku (Anthropic)", "threshold": 0.65, "fallback": null},
+    "bedrock": {"backend": "bedrock", "model": "eu.anthropic.claude-haiku-5-5",
+                "label": "Claude Haiku (Bedrock)", "threshold": 0.65, "fallback": null},
+    "gemini_decision": {"backend": "gemini_decision", "model": "gemini-decision-1",
+                        "label": "Gemini (gemini-decision-1)", "threshold": 0.8,
+                        "fallback": {"backend": "bedrock",
+                                     "model": "eu.anthropic.claude-haiku-5-5", "after_s": 2.0}},
+    "bedrock_openai": {"backend": "bedrock_openai", "model": "qwen.qwen3-235b-a22b-2507-v1:0",
+                       "label": "Qwen3 235B (Bedrock)", "threshold": 0.89, "fallback": null},
+    "systemone": {"backend": "systemone", "model": "vllm-sr/d3-mini",
+                  "label": "vllm-sr d3-mini (self-hosted)", "threshold": 0.56, "fallback": null}
+  }
+  ```
+
+  `label` is a name for people (Switch Console shows it): `Qwen3 235B
+  (Bedrock)`, `vllm-sr d3-mini (self-hosted)`, `Gemini (<model>)`,
+  `Claude Haiku (Bedrock)`, `Claude Haiku (Anthropic)`, and the model id for
+  any other model. `threshold` is the one that backend's answers are held to
+  (see [Thresholds per backend](#thresholds-per-backend)); a request's own
+  `confidence_threshold` still wins. `default` mirrors the default backend's
+  entry and adds `"is_default": true`. It never needs a token.
 - **`POST /decide`** takes `room` (`name`, `instructions`), `message` (`sender`,
   `text`, `thread_id`), `agents` (`name`, `description`, `role`), `thread`,
   `recent` and an optional `confidence_threshold`. It returns
@@ -66,6 +107,96 @@ switch-core talks only to this contract; the backend behind it is configuration.
   which: `threshold` or `lead`), and for an answer that names an agent who is
   not a candidate (logged as an error). `lead` is the chosen option's
   probability minus the next one's, when the backend scores every option.
+  `model` and `backend` are the ones that answered: the configured backend,
+  the per-request override, or the fallback (see
+  [Fallback](#fallback-after-n-seconds)). `latency_ms` is that backend's own
+  call time, which switch-core records as the model time.
+
+### Fallback after N seconds
+
+A backend can have a fallback: `DECISION_FALLBACKS` lists them as
+`primary:fallback` pairs, comma-separated (`gemini_decision:bedrock`).
+Whenever that primary backend is used, as the service's default or because a
+request named it with `X-Decision-Backend`, it races its fallback when it is
+slow:
+
+1. The primary backend is asked.
+2. If it has not answered after `DECISION_FALLBACK_AFTER_S` seconds (default
+   2), the fallback is asked too, and the primary keeps running. If the
+   primary fails before then, the fallback is asked at once.
+3. The first answer wins and the other call is cancelled. If one fails, the
+   other is waited for. If both fail, the request fails with the primary
+   backend's error (its `error_kind`), and the log line names the fallback's
+   failure too.
+
+`DECISION_FALLBACK_BACKEND`, from before, is still read: it is the default
+backend's fallback, the same as `<DECISION_BACKEND>:<fallback>` in
+`DECISION_FALLBACKS`, so it too applies when a request names the default
+backend. A backend with no fallback is asked alone.
+
+An answer that names an agent who is not a candidate is an answer, from
+either backend, not a failure: it routes to nobody as before.
+
+Which rule an answer is held to depends on who gave it. The primary's
+answer keeps its own rule (see [Thresholds per backend](#thresholds-per-backend)).
+The fallback's answer is held to `DECISION_FALLBACK_CONFIDENCE_THRESHOLD` by
+the plain threshold rule, never the lead; unset, to the fallback backend's
+own `DECISION_THRESHOLD_<BACKEND>`; with neither, it keeps the primary's rule.
+A request that carries its own `confidence_threshold` (a workspace that set
+one) is held to that for either backend, as before. The response's
+`threshold` and the log line's `threshold=` are the one applied.
+
+Why a threshold of its own: Haiku rates its confidence in coarse steps (0.6,
+0.7, 0.8, 0.85), and on real traffic it did best at 0.65 (accuracy 0.965 and
+recall 0.93, against 0.947 and 0.88 at 0.80), while Gemini did best at 0.80.
+
+Two fallbacks are offered, both on the service's own AWS credentials:
+`bedrock` (Claude Haiku on Amazon Bedrock, with `DECISION_BEDROCK_MODEL` and
+`AWS_REGION`) and `bedrock_openai` (an open-weights model on Bedrock, with
+`DECISION_BEDROCK_OPENAI_MODEL` and `DECISION_BEDROCK_OPENAI_REGION`). A
+fallback needs no `DECISION_BEDROCK_ENABLED` or
+`DECISION_BEDROCK_OPENAI_ENABLED`, which only govern whether a request may
+choose that backend with `X-Decision-Backend`. The service refuses to start
+with an entry that is not `primary:fallback`, a primary that is not a
+backend or that no request can get (`bedrock_openai`, `systemone`, `bedrock`,
+`llamacpp` or `ollama` when it is neither `DECISION_BACKEND` nor enabled per
+request), a primary named twice, any other fallback, a fallback the same as
+its primary, `DECISION_FALLBACK_BACKEND` and `DECISION_FALLBACKS` disagreeing
+about the default backend, or a delay that is not more than 0 and less than
+`DECISION_TIMEOUT_S`.
+
+Why: Google's Decisions API usually answers in 0.3 to 0.5 s, but in some
+periods 15 to 45% of its calls take 5 to 30 s, and a retry is just as slow,
+while switch-core gives up on a decision after 5 s. Haiku on Bedrock answered
+real decide requests in 1.7 s at the median, 2.0 s at p95 and 2.5 s at most,
+with nearly the same accuracy. A cancelled Bedrock call cannot be stopped
+mid-flight (boto3 runs in a thread); its answer is dropped.
+
+### Thresholds per backend
+
+Each backend's probabilities sit on its own scale, so one threshold does not
+fit them all. `DECISION_THRESHOLD_<BACKEND>` (the backend's name in capitals:
+`DECISION_THRESHOLD_BEDROCK_OPENAI`, `DECISION_THRESHOLD_SYSTEMONE`,
+`DECISION_THRESHOLD_GEMINI_DECISION`, `DECISION_THRESHOLD_BEDROCK`,
+`DECISION_THRESHOLD_ANTHROPIC`, ...) is the threshold an answer from that
+backend is held to, by the plain threshold rule, whether it answered as the
+default, as the backend a request named, or as a fallback (unless
+`DECISION_FALLBACK_CONFIDENCE_THRESHOLD` is set). A backend without one keeps
+`DECISION_CONFIDENCE_THRESHOLD`, or the `DECISION_MIN_LEAD` rule, as before.
+A request's own `confidence_threshold` wins over all of them. The service
+refuses to start with a value outside 0 to 1, or a
+`DECISION_THRESHOLD_` variable that names no backend.
+
+The thresholds that did best on 164 labelled real decisions, and what they
+scored on all 260 labelled real decisions (the other 96 held out). Latency was
+measured one request at a time, from outside the cloud region for Bedrock:
+
+| Backend | Model | Threshold | Accuracy (260 real) | `/decide` p50 / p95 |
+|---|---|---|---|---|
+| `bedrock_openai` | Qwen3 235B A22B Instruct 2507 | 0.89 | 0.962 | 0.23 / 0.46 s |
+| `systemone` | vllm-sr d3-mini on vLLM, one NVIDIA L4 | 0.56 | 0.946 | 0.35 / 0.99 s |
+| `gemini_decision` | gemini-decision-1 | 0.80 | 0.973 | usually 0.3 to 0.5 s (see [Fallback](#fallback-after-n-seconds)) |
+| `bedrock`, `anthropic` | Claude Haiku | 0.65 | 0.965 | 1.7 / 2.0 s (Bedrock) |
 
 ### Who gets the message
 
@@ -131,20 +262,27 @@ Why: auto-route rooms skip switch-core's thread follow-up rule, and a short repl
   servers, so they can require it: llama.cpp with `--api-key` (or
   `LLAMA_API_KEY`), the Strands server with `STRANDS_API_KEY`. Neither guards
   `/health`. Never logged.
-- **Per-request backend override**, so a workspace can choose Haiku without a
-  restart. The headers are never logged.
+- **Per-request backend override**, so a workspace can choose its model
+  without a restart. The headers are never logged.
   - `X-Decision-Backend`: `default` (or absent) for the configured backend;
-    `anthropic`, which needs `X-Decision-Anthropic-Key`; or `bedrock`, refused
-    unless `DECISION_BEDROCK_ENABLED=1` (it spends the service's own AWS
-    credentials); or `gemini_decision`, which takes `X-Decision-Gemini-Key`
-    or, without it, the service's `GEMINI_DECISION_API_KEY` (refused when
-    neither is there).
+    `anthropic`, which needs `X-Decision-Anthropic-Key`; `bedrock`, refused
+    unless `DECISION_BEDROCK_ENABLED=1` or it is the default (it spends the
+    service's own AWS credentials); `gemini_decision`, which takes
+    `X-Decision-Gemini-Key` or, without it, the service's
+    `GEMINI_DECISION_API_KEY` (refused when neither is there);
+    `bedrock_openai`, refused unless `DECISION_BEDROCK_OPENAI_ENABLED=1` or it
+    is the default; or `systemone`, the service's own SystemOne model server
+    (`SYSTEMONE_URL`, model `DECISION_SYSTEMONE_MODEL`), refused unless
+    `DECISION_SYSTEMONE_ENABLED=1` or it is the default. A backend with a
+    fallback in `DECISION_FALLBACKS` races it however it was chosen.
   - `X-Decision-Anthropic-Key`: the Anthropic key for this request. Clients
     are cached by a SHA-256 of the key.
   - `X-Decision-Gemini-Key`: the Google API key for this request.
   - `X-Decision-Model`: the model for `anthropic` (default `claude-haiku-5-5`),
-    `bedrock` (default `DECISION_BEDROCK_MODEL`) or `gemini_decision`
-    (default `DECISION_GEMINI_MODEL`).
+    `bedrock` (default `DECISION_BEDROCK_MODEL`), `gemini_decision`
+    (default `DECISION_GEMINI_MODEL`), `bedrock_openai` (default
+    `DECISION_BEDROCK_OPENAI_MODEL`) or `systemone` (default
+    `DECISION_SYSTEMONE_MODEL`).
 - **Logs:** one line per decision: backend, model, number of candidates,
   choice, confidence, threshold, pick and latency, the rule, the lead and
   whether the conversation context was used (`context=`), plus
@@ -177,7 +315,8 @@ An answer that names an agent who is not a candidate is not a failure: it is
 | `llamacpp` (the image's default) | a llama.cpp server; reads the probabilities of the option letters from the first token | `qwen3.5-4b-q4_k_m` |
 | `systemone` | a SystemOne-API server: Strands Decider (the chart's default, `DECISION_MODEL=strands-decider-E4B`) or Clef-flash | `clef-flash` |
 | `anthropic` | Claude Haiku on the Anthropic API, forced to call a pick tool; thinking off | `claude-haiku-5-5` |
-| `bedrock` | a model on Amazon Bedrock through Converse, forced to call the same tool | `us.anthropic.claude-haiku-5-5-v1:0` |
+| `bedrock` | a model on Amazon Bedrock through Converse, forced to call the same tool | `us.anthropic.claude-haiku-5-5` (EU regions: `eu.anthropic.claude-haiku-5-5`) |
+| `bedrock_openai` | an open-weights model on Amazon Bedrock through InvokeModel with an OpenAI chat body (Converse returns no logprobs); reads the probabilities of the option letters from the first token, like `llamacpp`, with Bedrock's maximum of 20 top logprobs. The model must not think before answering (Qwen3 2507 Instruct does not) | `qwen.qwen3-235b-a22b-2507-v1:0`, in `DECISION_BEDROCK_OPENAI_REGION` |
 | `gemini_decision` | Google's Decisions API: one `choice` question over the agents and a `nobody` option, with the routing rules and the room state as plain text; every option is scored, so the lead rule applies. The reason is empty | `gemini-decision-1` |
 | `ollama` | an Ollama model forced into JSON, kept for comparison | `qwen3.5:9b` |
 
@@ -188,7 +327,7 @@ An answer that names an agent who is not a candidate is not a failure: it is
 | `DECISION_BACKEND` | `llamacpp` | see above |
 | `DECISION_MODEL` | per backend | reported by `/health` and `/decide` |
 | `LLAMACPP_URL` | `http://127.0.0.1:8300` | llama.cpp server |
-| `SYSTEMONE_URL` | `http://127.0.0.1:8100/v1/systemone` | SystemOne server |
+| `SYSTEMONE_URL` | `http://127.0.0.1:8100/v1/systemone` | SystemOne server (Strands, or vLLM's native `/v1/systemone` for vllm-sr d3-mini) |
 | `OLLAMA_URL` | `http://localhost:11434` | Ollama |
 | `DECISION_CONFIDENCE_THRESHOLD` | `0.6` | 0 to 1; a request can override it |
 | `DECISION_MIN_LEAD` | unset | 0 to 1. Set, the lead rule replaces the threshold for a backend that scores every option (`systemone`, `llamacpp`): see [Who gets the message](#who-gets-the-message) |
@@ -198,7 +337,17 @@ An answer that names an agent who is not a candidate is not a failure: it is
 | `DECISION_SERVICE_TOKEN` | unset | bearer token for everything but `/health` |
 | `MODEL_SERVER_TOKEN` | unset | bearer token sent to the llama.cpp or SystemOne server |
 | `DECISION_BEDROCK_ENABLED` | unset | `1` lets a request choose `bedrock` |
-| `DECISION_BEDROCK_MODEL` | `us.anthropic.claude-haiku-5-5-v1:0` | Bedrock model or inference profile |
+| `DECISION_BEDROCK_MODEL` | `us.anthropic.claude-haiku-5-5` | Bedrock model or inference profile, for a `bedrock` request, backend or fallback. The `us.` profile serves US regions; EU regions (`AWS_REGION=eu-west-3`, ...) need `eu.anthropic.claude-haiku-5-5` |
+| `DECISION_BEDROCK_OPENAI_ENABLED` | unset | `1` lets a request choose `bedrock_openai` |
+| `DECISION_BEDROCK_OPENAI_MODEL` | `qwen.qwen3-235b-a22b-2507-v1:0` | the Bedrock open-weights model, for a `bedrock_openai` request, backend or fallback |
+| `DECISION_BEDROCK_OPENAI_REGION` | `eu-central-1` | its region, separate from `AWS_REGION` (Haiku's) |
+| `DECISION_SYSTEMONE_ENABLED` | unset | `1` lets a request choose `systemone`; needs `SYSTEMONE_URL` and `DECISION_SYSTEMONE_MODEL` (startup fails without them) unless `systemone` is the default |
+| `DECISION_SYSTEMONE_MODEL` | `DECISION_MODEL` when the backend is `systemone` | the model name the SystemOne server serves (vLLM's `--served-model-name`) |
+| `DECISION_THRESHOLD_<BACKEND>` | unset | 0 to 1: the threshold that backend's answers are held to. See [Thresholds per backend](#thresholds-per-backend) |
+| `DECISION_FALLBACKS` | unset | `primary:fallback` pairs, comma-separated; the fallback is `bedrock` or `bedrock_openai`. See [Fallback](#fallback-after-n-seconds) |
+| `DECISION_FALLBACK_BACKEND` | unset | the default backend's fallback (`bedrock` or `bedrock_openai`), as in `DECISION_FALLBACKS`; unset or empty, none |
+| `DECISION_FALLBACK_AFTER_S` | `2` | seconds a primary backend has before its fallback is asked too; more than 0 and less than `DECISION_TIMEOUT_S`. Read only with a fallback |
+| `DECISION_FALLBACK_CONFIDENCE_THRESHOLD` | unset | 0 to 1: the threshold any fallback's answer is held to (plain threshold rule, no lead). Unset, the fallback backend's own threshold, else the primary's rule. A request's own threshold wins over it. Read only with a fallback |
 | `AWS_REGION`, `AWS_PROFILE` | `us-east-1`, unset | standard AWS credential chain |
 | `ANTHROPIC_API_KEY` | unset | service-wide key when `DECISION_BACKEND=anthropic` |
 | `GEMINI_DECISION_API_KEY` | unset | Google API key for `gemini_decision`; required (startup fails without it) when `DECISION_BACKEND=gemini_decision`. Never logged |
@@ -239,6 +388,20 @@ switch-core's:
   unknown. A logged exception adds `error` (`kind`, `message`, `stack`).
 - `request_id` is the `X-Request-Id` of the request the line was written
   for. Search for switch-core's decision id to find the service's line for it.
+- With a fallback configured for the backend a request used, the decide
+  line names the backend and model that answered and adds
+  `fallback=` (`not_needed`: the default answered before the delay; `won`:
+  the fallback answered first; `lost`: the fallback started, the default
+  answered first; `primary_failed`: the default failed, the fallback
+  answered), `fallback_reason=` (`slow`, or the default's error kind; `-` when
+  the fallback did not start) and `total_ms=` (the whole decision; `latency_ms`
+  is the answering call's own time). A failure on either side is named:
+  `primary_error=`, or `fallback_error_kind=` and `fallback_error=`, and the
+  line is then a warning. When both fail the `decide failed` line, which
+  names the default backend's error as before, adds `fallback=failed`,
+  `fallback_reason=`, `fallback_backend=`, `fallback_model=`,
+  `fallback_error_kind=`, `fallback_error=` and `total_ms=`. For a backend
+  without a fallback none of these appear.
 - uvicorn's own lines go through the same handler. Its access log leaves out
   `GET /health` (the probes) and cuts the query string off every other path.
 - Never logged: message text, room names and instructions, keys and tokens,

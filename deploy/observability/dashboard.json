@@ -2064,6 +2064,28 @@
     {
       "definition": {
         "type": "timeseries",
+        "title": "Gateway requests turned away per second, by whose limit they hit (caller: 429, process: 503)",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.http.gateway_turned_away{$service,$flint_env,$version,!version:0.27.0} by {reason}.as_rate()",
+            "display_type": "bars",
+            "style": {
+              "palette": "warm"
+            }
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 104,
+        "width": 12,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
         "title": "Database sessions for this server's role, by state (the database's view)",
         "show_legend": true,
         "requests": [
@@ -2075,7 +2097,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 104,
+        "y": 108,
         "width": 6,
         "height": 4
       }
@@ -2094,7 +2116,7 @@
       },
       "layout": {
         "x": 6,
-        "y": 104,
+        "y": 108,
         "width": 6,
         "height": 4
       }
@@ -2117,7 +2139,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 108,
+        "y": 112,
         "width": 6,
         "height": 4
       }
@@ -2140,7 +2162,7 @@
       },
       "layout": {
         "x": 6,
-        "y": 108,
+        "y": 112,
         "width": 6,
         "height": 4
       }
@@ -2163,7 +2185,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 112,
+        "y": 116,
         "width": 6,
         "height": 4
       }
@@ -2186,7 +2208,7 @@
       },
       "layout": {
         "x": 6,
-        "y": 112,
+        "y": 116,
         "width": 6,
         "height": 4
       }
@@ -2205,7 +2227,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 116,
+        "y": 120,
         "width": 6,
         "height": 4
       }
@@ -2224,7 +2246,7 @@
       },
       "layout": {
         "x": 6,
-        "y": 116,
+        "y": 120,
         "width": 6,
         "height": 4
       }
@@ -2255,7 +2277,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 120,
+        "y": 124,
         "width": 12,
         "height": 4
       }
@@ -2275,7 +2297,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 124,
+        "y": 128,
         "width": 12,
         "height": 2
       }
@@ -2294,7 +2316,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 126,
+        "y": 130,
         "width": 6,
         "height": 4
       }
@@ -2321,7 +2343,7 @@
       },
       "layout": {
         "x": 6,
-        "y": 126,
+        "y": 130,
         "width": 6,
         "height": 4
       }
@@ -2344,7 +2366,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 130,
+        "y": 134,
         "width": 6,
         "height": 4
       }
@@ -2363,7 +2385,7 @@
       },
       "layout": {
         "x": 6,
-        "y": 130,
+        "y": 134,
         "width": 6,
         "height": 4
       }
@@ -2382,7 +2404,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 134,
+        "y": 138,
         "width": 12,
         "height": 4
       }
@@ -2402,7 +2424,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 138,
+        "y": 142,
         "width": 12,
         "height": 2
       }
@@ -2421,7 +2443,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 140,
+        "y": 144,
         "width": 6,
         "height": 4
       }
@@ -2440,7 +2462,7 @@
       },
       "layout": {
         "x": 6,
-        "y": 140,
+        "y": 144,
         "width": 6,
         "height": 4
       }
@@ -2500,7 +2522,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 144,
+        "y": 148,
         "width": 6,
         "height": 4
       }
@@ -2614,7 +2636,7 @@
       },
       "layout": {
         "x": 6,
-        "y": 144,
+        "y": 148,
         "width": 6,
         "height": 4
       }
@@ -2633,7 +2655,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 148,
+        "y": 152,
         "width": 6,
         "height": 4
       }
@@ -2661,7 +2683,7 @@
       },
       "layout": {
         "x": 6,
-        "y": 148,
+        "y": 152,
         "width": 6,
         "height": 4
       }
@@ -2723,7 +2745,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 152,
+        "y": 156,
         "width": 12,
         "height": 4
       }
@@ -2766,7 +2788,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 156,
+        "y": 160,
         "width": 6,
         "height": 4
       }
@@ -2789,7 +2811,7 @@
       },
       "layout": {
         "x": 6,
-        "y": 156,
+        "y": 160,
         "width": 6,
         "height": 4
       }
@@ -2827,7 +2849,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 160,
+        "y": 164,
         "width": 6,
         "height": 4
       }
@@ -2846,7 +2868,7 @@
       },
       "layout": {
         "x": 6,
-        "y": 160,
+        "y": 164,
         "width": 6,
         "height": 4
       }
@@ -2865,7 +2887,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 164,
+        "y": 168,
         "width": 6,
         "height": 4
       }
@@ -2901,7 +2923,7 @@
       },
       "layout": {
         "x": 6,
-        "y": 164,
+        "y": 168,
         "width": 6,
         "height": 4
       }
@@ -2920,7 +2942,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 168,
+        "y": 172,
         "width": 6,
         "height": 4
       }
@@ -2970,7 +2992,7 @@
       },
       "layout": {
         "x": 6,
-        "y": 168,
+        "y": 172,
         "width": 6,
         "height": 4
       }
@@ -2990,7 +3012,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 172,
+        "y": 176,
         "width": 12,
         "height": 2
       }
@@ -3009,7 +3031,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 174,
+        "y": 178,
         "width": 6,
         "height": 4
       }
@@ -3028,7 +3050,7 @@
       },
       "layout": {
         "x": 6,
-        "y": 174,
+        "y": 178,
         "width": 6,
         "height": 4
       }
@@ -3047,7 +3069,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 178,
+        "y": 182,
         "width": 6,
         "height": 4
       }
@@ -3070,7 +3092,7 @@
       },
       "layout": {
         "x": 6,
-        "y": 178,
+        "y": 182,
         "width": 6,
         "height": 4
       }
@@ -3093,7 +3115,7 @@
       },
       "layout": {
         "x": 6,
-        "y": 182,
+        "y": 186,
         "width": 6,
         "height": 4
       }
@@ -3112,7 +3134,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 182,
+        "y": 186,
         "width": 6,
         "height": 4
       }
@@ -3131,7 +3153,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 186,
+        "y": 190,
         "width": 6,
         "height": 4
       }
@@ -3150,7 +3172,7 @@
       },
       "layout": {
         "x": 6,
-        "y": 186,
+        "y": 190,
         "width": 6,
         "height": 4
       }
@@ -3169,7 +3191,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 190,
+        "y": 194,
         "width": 6,
         "height": 4
       }
@@ -3192,7 +3214,7 @@
       },
       "layout": {
         "x": 6,
-        "y": 190,
+        "y": 194,
         "width": 6,
         "height": 4
       }
@@ -3215,7 +3237,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 194,
+        "y": 198,
         "width": 6,
         "height": 4
       }
@@ -3234,7 +3256,7 @@
       },
       "layout": {
         "x": 6,
-        "y": 194,
+        "y": 198,
         "width": 6,
         "height": 4
       }
@@ -3253,7 +3275,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 198,
+        "y": 202,
         "width": 6,
         "height": 4
       }
@@ -3272,7 +3294,7 @@
       },
       "layout": {
         "x": 6,
-        "y": 198,
+        "y": 202,
         "width": 6,
         "height": 4
       }
@@ -3291,7 +3313,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 202,
+        "y": 206,
         "width": 6,
         "height": 4
       }
@@ -3310,7 +3332,7 @@
       },
       "layout": {
         "x": 6,
-        "y": 202,
+        "y": 206,
         "width": 6,
         "height": 4
       }
@@ -3329,7 +3351,7 @@
       },
       "layout": {
         "x": 0,
-        "y": 206,
+        "y": 210,
         "width": 6,
         "height": 4
       }
@@ -3348,8 +3370,125 @@
       },
       "layout": {
         "x": 0,
-        "y": 210,
+        "y": 214,
         "width": 12,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "note",
+        "content": "**WorkOS directory.** Only with `ORGANIZATION_DIRECTORY=workos`, and only from the process holding the mirror; elsewhere these stay empty. Cursor age is how long since a pass read WorkOS's membership events through: up to 30 s is normal, and while it grows, people removed in WorkOS keep their access here. The recheck holds organizations whose change failed, checked on every pass. The full check runs at start and daily. A deleted organization counts once when WorkOS deletes the organization a Switch organization follows; that Switch organization is then no longer followed and waits for an operator to remove it.",
+        "background_color": "blue",
+        "font_size": "14",
+        "text_align": "left",
+        "vertical_align": "top",
+        "show_tick": false,
+        "tick_pos": "50%",
+        "tick_edge": "left",
+        "has_padding": true
+      },
+      "layout": {
+        "x": 0,
+        "y": 131,
+        "width": 12,
+        "height": 2
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "WorkOS mirror cursor age (s), read with max",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "max:switch.workos.cursor_age{$service,$flint_env,$version,!version:0.27.0}",
+            "display_type": "line"
+          }
+        ],
+        "markers": [
+          {
+            "value": "y = 300",
+            "display_type": "error dashed",
+            "label": "alert: 300 s"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 133,
+        "width": 4,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Oldest organization in the WorkOS recheck (s), read with max",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "max:switch.workos.recheck.oldest_age{$service,$flint_env,$version,!version:0.27.0}",
+            "display_type": "line"
+          }
+        ],
+        "markers": [
+          {
+            "value": "y = 900",
+            "display_type": "error dashed",
+            "label": "alert: 900 s"
+          }
+        ]
+      },
+      "layout": {
+        "x": 4,
+        "y": 133,
+        "width": 4,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Since the last full WorkOS check (s), read with max",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "max:switch.workos.full_check.age{$service,$flint_env,$version,!version:0.27.0}",
+            "display_type": "line"
+          }
+        ],
+        "markers": [
+          {
+            "value": "y = 93600",
+            "display_type": "error dashed",
+            "label": "alert: 26 h"
+          }
+        ]
+      },
+      "layout": {
+        "x": 8,
+        "y": 133,
+        "width": 4,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "WorkOS organizations deleted while followed",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.workos.organization_deleted{$service,$flint_env,$version,!version:0.27.0}.as_count()",
+            "display_type": "bars"
+          }
+        ]
+      },
+      "layout": {
+        "x": 0,
+        "y": 137,
+        "width": 4,
         "height": 4
       }
     }
