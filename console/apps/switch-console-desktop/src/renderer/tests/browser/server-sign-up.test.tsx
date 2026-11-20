@@ -62,6 +62,7 @@ beforeEach(() => {
     oidcProviderLabel: null,
     oidcLoginOptions: [],
     oidcBrowserHandoff: false,
+    testAccountResetEnabled: false,
     signupEnabled: true,
   });
   switchServers.getConnectionStatus.mockResolvedValue({

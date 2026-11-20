@@ -29,6 +29,15 @@ export interface Capabilities {
    * retention window and erasing people's data, which take an admin
    * membership of the caller's, as deleting it does. */
   canManageDataProtection: boolean;
+  /** The session's `can_manage_connector_apps`: setting up the deployment's
+   * connector apps, which the operator may, and the admins of its only
+   * organization while it has no other. */
+  canManageConnectorApps: boolean;
+  /** The session's `connector_apps_in_dashboard`: whether the deployment's
+   * connector apps are set up in the dashboard, by the admins of its one
+   * organization, rather than with the server's command; null from a server
+   * that does not say. Whom to send someone who may not set them up. */
+  connectorAppsInDashboard: boolean | null;
   features: FeatureFlags;
 }
 
@@ -44,6 +53,8 @@ export function capabilitiesOf(
     inOrganization: (session?.tenant?.organization_id ?? null) !== null,
     canDeleteWorkspace: tenant?.can_delete ?? false,
     canManageDataProtection: tenant?.can_manage_data_protection ?? false,
+    canManageConnectorApps: session?.can_manage_connector_apps ?? false,
+    connectorAppsInDashboard: session?.connector_apps_in_dashboard ?? null,
     features,
   };
 }
@@ -69,9 +80,6 @@ export const workspaceAdmins: Rule = (caps) =>
     ? ALLOWED
     : notPermitted("Only this workspace's admins can open this page.");
 
-export const operators: Rule = (caps) =>
-  caps.isOperator ? ALLOWED : notPermitted("Only the platform operator can open this page.");
-
 export const inOrganization: Rule = (caps) =>
   caps.inOrganization ? ALLOWED : notPermitted("This workspace belongs to no organization.");
 
@@ -92,6 +100,12 @@ export const organizationAdminsOnly: Rule = (caps) => {
   return caps.administersOrganization ? ALLOWED : notPermitted(ONLY_ORGANIZATION_ADMINS);
 };
 
+/** Whoever may set up the deployment's connector apps. */
+export const connectorAppManagers: Rule = (caps) =>
+  caps.canManageConnectorApps
+    ? ALLOWED
+    : notPermitted("Only whoever runs Switch, or an admin of its only organization, can open this page.");
+
 function feature(flag: FeatureFlagKey, what: string): Rule {
   return (caps) =>
     caps.features[flag]
@@ -105,6 +119,15 @@ export const organizationConnectorApps = feature(
   ORGANIZATION_CONNECTOR_APPS,
   "Organization connector apps aren't",
 );
+
+/** Allowed when any rule allows; otherwise the first rule's refusal. */
+export function anyOf(first: Rule, ...rest: Rule[]): Rule {
+  return (caps) => {
+    const refusal = first(caps);
+    if (refusal.allowed) return refusal;
+    return rest.some((rule) => rule(caps).allowed) ? ALLOWED : refusal;
+  };
+}
 
 /** Allowed when every rule allows; otherwise the first refusal. */
 export function allOf(...rules: Rule[]): Rule {

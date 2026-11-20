@@ -39,10 +39,12 @@ const SWITCH_DOCS_BASE = 'https://docs.switchagents.ai/switch-rooms';
 export const SWITCH_CONSOLE_DOCS_URL = `${SWITCH_DOCS_BASE}/getting-started`;
 export const SWITCH_DOCS_REMOTE_HOSTING_URL = `${SWITCH_DOCS_BASE}/deploy/host-remotely`;
 export const SWITCH_DOCS_MESSAGING_APPS_URL = `${SWITCH_DOCS_BASE}/deploy/messaging-apps`;
-export const SWITCH_DOCS_ROOMS_URL = `${SWITCH_DOCS_BASE}/using/work-in-a-room`;
 
 export const SWITCH_CONSOLE_ISSUES_URL = `${SWITCH_CONSOLE_REPO_URL}/issues`;
 export const SWITCH_CONSOLE_ISSUES_NEW_URL = `${SWITCH_CONSOLE_REPO_URL}/issues/new/choose`;
 
 /** Switch Trust, the guardrails service, linked from the top bar for everyone. */
 export const SWITCH_TRUST_URL = 'https://app.switchagents.ai/';
+
+/** What Switch Trust is, for the pages its guardrails power. */
+export const SWITCH_TRUST_ABOUT_URL = 'https://www.switchagents.ai/trust';

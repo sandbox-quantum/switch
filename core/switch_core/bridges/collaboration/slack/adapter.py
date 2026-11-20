@@ -5,6 +5,7 @@ import logging
 import math
 import re
 import time
+import traceback
 import uuid
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
@@ -242,6 +243,23 @@ _REACTION: dict[ActivityMark, str] = {
     "working": "eyes",
     "queued": "hourglass_flowing_sand",
 }
+
+
+def _granted_scopes(headers: Any) -> frozenset[str] | None:
+    """A token's scopes from the `x-oauth-scopes` header Slack sends with a
+    Web API answer, or None when it sent none."""
+    if not headers:
+        return None
+    for key, value in dict(headers).items():
+        if str(key).lower() == "x-oauth-scopes":
+            raw = value[0] if isinstance(value, list) and value else value
+            return frozenset(s.strip() for s in str(raw).split(",") if s.strip())
+    return None
+
+
+def _spaceless(text: str) -> str:
+    """`text` for matching a name: case folded, with every space dropped."""
+    return "".join(text.casefold().split())
 
 
 def _retry_after_seconds(error: SlackApiError) -> int:
@@ -551,6 +569,31 @@ def _prompt_button(prompt: DirectPrompt, position: int, label: str) -> dict[str,
     return button
 
 
+# Said, to the person alone, when a button press or a slash command reached
+# this app but could not be acted on. It says nothing of why: what went wrong
+# is in the server's log, and a reason shown here could carry what it must not.
+COULD_NOT_PROCESS = (
+    "Switch couldn't process that. Try again in a moment. If you were linking "
+    "your account, type `/link-account` with the code Switch Console shows you."
+)
+
+
+def _failure_without_message(error: BaseException) -> str:
+    """An exception's type and where it was raised, without its message.
+
+    Logged for a press or an account command that failed. Its message is left
+    out because it can carry what the person sent: a link code, a prompt's
+    token, or a database error quoting either as a bound parameter.
+    """
+    # Where each frame is, not its source line, which a test (or a line that
+    # builds a message) could quote the value in.
+    frames = " <- ".join(
+        f"{frame.filename}:{frame.lineno} in {frame.name}"
+        for frame in reversed(traceback.extract_tb(error.__traceback__))
+    )
+    return f"{type(error).__name__} at {frames}"
+
+
 # The ids Slack gives an app's bot, under which an app's posts with no user are
 # bridged. A person's id starts with U or W, but so does a bot user's.
 _SLACK_BOT_ID = re.compile(r"^B[A-Z0-9]+$")
@@ -654,6 +697,9 @@ class SlackAdapter(PlatformAdapter):
         self._bot_user_id: str = ""
         self._bot_id: str = ""
         self._team_id: str = ""
+        # The bot token's scopes as Slack listed them when the adapter
+        # started, or None when Slack did not say.
+        self._granted_scopes: frozenset[str] | None = None
         self._tenant_id: str | None = None
         self._user_cache: dict[str, SlackUser] = {}
         # Whether each Slack user seen in a channel's member list is a bot (an
@@ -767,6 +813,7 @@ class SlackAdapter(PlatformAdapter):
         # workspace id on an Enterprise Grid org. Agent group lookup uses
         # the authenticated team identity rather than the configured org.
         self._team_id = str(auth.get("team_id", ""))
+        self._granted_scopes = _granted_scopes(auth.headers)
         logger.info(
             "Slack adapter authenticated as %s (workspace %s)",
             auth.get("user", ""),
@@ -2160,17 +2207,46 @@ class SlackAdapter(PlatformAdapter):
             )
 
     @classmethod
+    def typed_command(
+        cls, name: str, argument: str, connection_config: Mapping[str, object]
+    ) -> str:
+        # Slack runs a slash command typed or pasted as the whole message, and
+        # passes its tail through as free text.
+        return f"/{name} {argument}"
+
+    @classmethod
     def link_code_instructions(
         cls, code: str, connection_config: Mapping[str, object]
     ) -> str:
         # A slash command reaches the app from any conversation, including a
         # person's message to themselves, and is answered only to them. The
         # typed form is for a workspace whose app predates the command.
-        return (
+        instructions = (
             f"Type `/link-account {code}` from that account anywhere in Slack: "
             "a message to yourself works, and only you see the reply. If Slack "
             f"doesn't know the command, post `!link-account {code}` in a "
             "channel Switch is in."
+        )
+        # An app the workspace made itself is only as complete as it was made,
+        # and only one server should hold its token. Either can leave a tap
+        # reaching nobody here, so both are named as possibilities.
+        if connection_config.get("event_delivery", "socket_mode") != "webhook":
+            instructions += (
+                " If tapping a number in Switch's message does nothing, one "
+                "possible cause is the Slack app's Interactivity being off: "
+                "whoever set up the app can turn it on by pasting this "
+                "connection's manifest on the app's App Manifest page. Another "
+                "is a second Switch server using the same app token."
+            )
+        return instructions
+
+    @classmethod
+    def unlink_account_instructions(
+        cls, name: str, connection_config: Mapping[str, object]
+    ) -> str:
+        return (
+            f"type `/unlink-account {name}` anywhere in Slack (a message to "
+            "yourself works)"
         )
 
     def adapt_icon_url(self, icon_url: str) -> str:
@@ -4044,6 +4120,7 @@ class SlackAdapter(PlatformAdapter):
             message = payload.get("message") or {}
             if card_ref is not None:
                 self._pressed_cards.setdefault(card_ref, []).append(message)
+            thread_ref = f"{channel_id}:{thread_ts}" if thread_ts else None
             try:
                 await self._on_interaction(
                     InboundInteraction(
@@ -4054,8 +4131,20 @@ class SlackAdapter(PlatformAdapter):
                         action_id=action_id,
                         value=value,
                         message_ref=message_ref,
-                        thread_ref=f"{channel_id}:{thread_ts}" if thread_ts else None,
+                        thread_ref=thread_ref,
                     )
+                )
+            except Exception as error:
+                # Slack never sends a press again, so a press that fails here
+                # is otherwise lost without a word to whoever made it.
+                logger.error(
+                    "Could not act on a button press by %s in %s: %s",
+                    user_id,
+                    channel_id,
+                    _failure_without_message(error),
+                )
+                await self.tell_actor(
+                    channel_id, user_id, user.name, thread_ref, COULD_NOT_PROCESS
                 )
             finally:
                 if card_ref is not None:
@@ -4331,18 +4420,29 @@ class SlackAdapter(PlatformAdapter):
             # was run. A visible "Running" post would show a link code to the
             # channel, and fails outright where the app is not a member.
             if self._on_command:
-                await self._on_command(
-                    InboundCommand(
-                        channel_id=channel_id,
-                        channel_type=channel_type,
-                        sender_id=user_id,
-                        sender_name=user.name,
-                        command=command,
-                        args=args,
-                        channel_name=channel_name,
-                        reply_ref=str(payload.get("response_url", "")) or None,
-                    )
+                inbound = InboundCommand(
+                    channel_id=channel_id,
+                    channel_type=channel_type,
+                    sender_id=user_id,
+                    sender_name=user.name,
+                    command=command,
+                    args=args,
+                    channel_name=channel_name,
+                    reply_ref=str(payload.get("response_url", "")) or None,
                 )
+                try:
+                    await self._on_command(inbound)
+                except Exception as error:
+                    # Slack never sends a slash command again, so one that
+                    # fails here is otherwise answered with nothing at all.
+                    logger.error(
+                        "Could not act on /%s from %s in %s: %s",
+                        command,
+                        user_id,
+                        channel_id,
+                        _failure_without_message(error),
+                    )
+                    await self.answer_command(inbound, COULD_NOT_PROCESS)
             return
 
         # Post the visible "Running …" message as the app and use it as the
@@ -4534,19 +4634,29 @@ class SlackAdapter(PlatformAdapter):
 
         return "\n".join(p.strip() for p in parts if str(p).strip())
 
+    def account_search_hint(self) -> str:
+        """Email matches only when the app may read addresses, which an app
+        made from Switch's manifest may not."""
+        if self._granted_scopes is not None and "users:read.email" in (
+            self._granted_scopes
+        ):
+            return "Your name, handle or email"
+        return "Your name or handle"
+
     async def search_directory_users(self, query: str) -> list[DirectoryUser]:
         """Find workspace members by handle, real name or email.
 
         Slack has no server-side user search, so this pages `users.list` and
-        filters locally. Deactivated accounts and bots are dropped — a bot is
-        not a person who can own an agent. `email` is only present when the
-        app holds the `users:read.email` scope; without it the field is simply
-        absent rather than the search failing.
+        filters locally, with spaces ignored on both sides so "M M" finds
+        "MM" and the other way round. Deactivated accounts and bots are
+        dropped — a bot is not a person who can own an agent. `email` is only
+        present when the app holds the `users:read.email` scope; without it
+        the field is simply absent rather than the search failing.
         """
         if not self._web_client:
             raise RuntimeError("Slack adapter is not started")
 
-        needle = query.strip().lower()
+        needle = _spaceless(query)
         if not needle:
             return []
 
@@ -4571,12 +4681,11 @@ class SlackAdapter(PlatformAdapter):
                 real_name = profile.get("real_name", "") or member.get("real_name", "")
                 display_name = profile.get("display_name", "") or real_name or handle
                 email = profile.get("email") or None
-                haystack = " ".join(
-                    part.lower()
+                if not any(
+                    needle in _spaceless(part)
                     for part in (handle, real_name, display_name, email or "")
                     if part
-                )
-                if needle not in haystack:
+                ):
                     continue
                 matches.append(
                     DirectoryUser(

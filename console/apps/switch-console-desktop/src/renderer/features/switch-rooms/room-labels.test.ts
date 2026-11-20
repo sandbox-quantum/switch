@@ -62,6 +62,7 @@ describe('addableBridgePeople', () => {
     externalUserId: `U-${username}`,
     linkedUserIds: linkedName ? [`id-${username}`] : [],
     linkedName,
+    firstSeenAt: null,
   });
 
   it('shows a linked person by their full name, with the username beside it', () => {
@@ -106,6 +107,7 @@ describe('linkedNamesByUsername', () => {
     externalUserId: `U-${username}-${linkedName}`,
     linkedUserIds: linkedName ? ['u'] : [],
     linkedName,
+    firstSeenAt: null,
   });
 
   it('names each linked username, and leaves out one nobody linked', () => {

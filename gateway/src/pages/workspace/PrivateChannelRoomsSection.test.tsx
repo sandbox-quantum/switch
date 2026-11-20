@@ -29,7 +29,7 @@ describe("PrivateChannelRoomsSection", () => {
 
     await screen.findByText(/132 Public rooms are on private channels/);
     const review = screen.getByRole("link", { name: "Review" });
-    expect(review.getAttribute("href")).toBe("/workspace/private-channel-rooms");
+    expect(review.getAttribute("href")).toBe("/settings/general/private-channel-rooms");
     expect(String(fetch.mock.calls[0][0])).toContain("/tenants/t1/private-channel-rooms/count");
   });
 
@@ -40,5 +40,15 @@ describe("PrivateChannelRoomsSection", () => {
     await waitFor(() => expect(fetch).toHaveBeenCalled());
     expect(screen.queryByText(/Public room/)).toBeNull();
     expect(screen.queryByRole("link", { name: "Review" })).toBeNull();
+  });
+
+  it("says so when the count can't be read, rather than hiding the warning", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ detail: "database unavailable" }), { status: 503 })),
+    );
+    show();
+
+    await screen.findByText("Couldn't check for Public rooms on private channels: database unavailable");
   });
 });

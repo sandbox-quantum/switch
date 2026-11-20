@@ -158,6 +158,22 @@ def owns(principal: Principal, owner_id: str | None) -> bool:
     return owner_id is not None and owner_id == principal.id
 
 
+def can_read_in_package(
+    principal: Principal, item: Authorizable, package_owner_id: str
+) -> bool:
+    """Whether a reference or document in a package is handed out, with what
+    is in it, to `principal`, who may read the package.
+
+    A package shares what its own owner put in it of theirs, private or not.
+    Anything else in it keeps its own rule (`can`'s read): someone else's
+    item, readable when it was added and private since, is not re-shared by
+    whoever owns the package, however widely they open the package.
+    """
+    return (item.owner_id is not None and item.owner_id == package_owner_id) or can(
+        principal, "read", item
+    )
+
+
 def can_manage(principal: Principal, owner_id: str | None) -> bool:
     """Owner-or-admin check for entities that have no visibility model.
 

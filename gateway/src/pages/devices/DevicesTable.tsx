@@ -1,6 +1,7 @@
 import CloudOutlined from "@mui/icons-material/CloudOutlined";
 import ComputerOutlined from "@mui/icons-material/ComputerOutlined";
 import TerminalOutlined from "@mui/icons-material/TerminalOutlined";
+import WarningAmberOutlined from "@mui/icons-material/WarningAmberOutlined";
 import { Box, Chip, Stack, Tooltip, Typography } from "@mui/material";
 import { type ReactNode, useMemo } from "react";
 import DataTable, { type FilterOption, type SelectFilter, type TableColumn } from "../../components/DataTable";
@@ -8,6 +9,7 @@ import RowActionsMenu, { type RowAction } from "../../components/RowActionsMenu"
 import type { DeviceType, WorkspaceDevice } from "../../data/management";
 import { EM_DASH, MONO_SX, absoluteTitle, formatRelative } from "../../theme/format";
 import type { CloudPresentation } from "./cloudMachine";
+import { connectionDetail, deviceProblems } from "./deviceHealth";
 
 /** A device as the table shows it. `cloud` is its owner's cloud machine as
  *  they see it, shown in place of online and offline; `workspace_name` is for
@@ -23,19 +25,16 @@ export const DEVICE_TYPES: Record<DeviceType, { label: string; icon: ReactNode }
   cloud: { label: "Cloud", icon: <CloudOutlined fontSize="small" /> },
 };
 
-const STATES: Record<WorkspaceDevice["state"], { label: string; color: "success" | "default"; detail: string }> = {
-  online: { label: "Online", color: "success", detail: "Connected to Switch now." },
-  offline: { label: "Offline", color: "default", detail: "Not connected to Switch now." },
-  unknown: {
-    label: "Never connected",
-    color: "default",
-    detail: "Has never connected to Switch. Start its controller with switch-agent-controller run.",
-  },
-  revoked: { label: "Removed", color: "default", detail: "Removed from Switch." },
+const STATES: Record<WorkspaceDevice["state"], { label: string; color: "success" | "default" }> = {
+  online: { label: "Online", color: "success" },
+  offline: { label: "Offline", color: "default" },
+  unknown: { label: "Never connected", color: "default" },
+  revoked: { label: "Removed", color: "default" },
 };
 
-/** The state the row's chip says, and what it says on hover. A cloud
- *  machine that is not ready says what it is doing instead. */
+/** The state the row's chip says, and what it says on hover: when it
+ *  connected, or when and why it went. A cloud machine that is not ready
+ *  says what it is doing instead. */
 export function deviceState(row: DeviceTableRow): { label: string; color: "success" | "warning" | "default"; detail: string } {
   if (row.cloud && row.cloud.label !== "Ready") {
     return {
@@ -44,37 +43,47 @@ export function deviceState(row: DeviceTableRow): { label: string; color: "succe
       detail: row.cloud.problem ?? `Your cloud device is ${row.cloud.label.toLowerCase()}.`,
     };
   }
-  return STATES[row.state];
+  return { ...STATES[row.state], detail: connectionDetail(row) };
 }
 
-export function agentsCell(row: WorkspaceDevice): string {
-  return row.agents_total === 0 ? "None" : `${row.agents_running} of ${row.agents_total} running`;
+/** How many agents are placed on it; how many of those run is on hover. */
+export function agentsRunning(row: WorkspaceDevice): string {
+  return `${row.agents_running} of ${row.agents_total} running`;
 }
 
 const byLabel = (a: FilterOption, b: FilterOption) => a.label.localeCompare(b.label);
+const NO_PLATFORM = "\u0000no-platform";
+
+function platformOf(row: WorkspaceDevice): string | null {
+  return row.platform ? `${row.platform.os} ${row.platform.arch}` : null;
+}
 
 /** Kept stable: a fresh array each render would rebuild the grid's columns. */
 const PINNED = ["actions"];
 const TABLE_CHROME = 108;
 const ROW = 56;
-const PAGE_SIZE = 10;
+const PAGE_SIZE = 25;
 
 /**
  * Devices, each with its owner when `showOwner`, and its workspace when
  * `showWorkspace`: Workspace › Devices shows one workspace's, and
  * Organization › Devices every workspace's. What each row offers is the
- * page's (`actionsFor`), from the row's own `can_*`.
+ * page's (`actionsFor`), from the row's own `can_*`. A device with something
+ * wrong (its controller off the release, a provider not signed in) says so
+ * beside its state; its details say the rest.
  */
 export default function DevicesTable({
   rows,
   showOwner,
   showWorkspace = false,
+  providerLabel,
   actionsFor,
   emptyState,
 }: {
   rows: DeviceTableRow[];
   showOwner: boolean;
   showWorkspace?: boolean;
+  providerLabel: (provider: string) => string;
   actionsFor: (row: DeviceTableRow) => RowAction[];
   emptyState: ReactNode;
 }) {
@@ -88,6 +97,10 @@ export default function DevicesTable({
     const states: FilterOption[] = [...new Set(rows.map((row) => deviceState(row).label))]
       .map((label) => ({ value: label, label }))
       .sort(byLabel);
+    const platforms: FilterOption[] = [
+      ...[...new Set(rows.flatMap((row) => platformOf(row) ?? []))].sort().map((label) => ({ value: label, label })),
+      ...(rows.some((row) => platformOf(row) === null) ? [{ value: NO_PLATFORM, label: "Not reported" }] : []),
+    ];
     const types: FilterOption[] = (Object.keys(DEVICE_TYPES) as DeviceType[])
       .filter((type) => rows.some((row) => row.type === type))
       .map((type) => ({ value: type, label: DEVICE_TYPES[type].label }));
@@ -95,7 +108,7 @@ export default function DevicesTable({
     return [
       {
         field: "name",
-        headerName: showOwner ? "Device and owner" : "Device",
+        headerName: "Device",
         flex: 1,
         minWidth: 180,
         // Its owner is under its name, so the column filters by owner.
@@ -126,15 +139,27 @@ export default function DevicesTable({
       {
         field: "state",
         headerName: "State",
-        width: 150,
+        width: 180,
         valueGetter: (_value, row) => deviceState(row).label,
         filter: { value: (row) => deviceState(row).label, options: states },
         renderCell: ({ row }) => {
           const state = deviceState(row);
+          const problems = deviceProblems(row, providerLabel);
           return (
-            <Tooltip title={state.detail}>
-              <Chip size="small" color={state.color} label={state.label} />
-            </Tooltip>
+            <Stack direction="row" spacing={0.75} sx={{ alignItems: "center", height: "100%" }}>
+              <Tooltip title={state.detail}>
+                <Chip size="small" color={state.color} label={state.label} />
+              </Tooltip>
+              {problems.length > 0 && (
+                <Tooltip title={`Needs attention: ${problems.join(" ")}`}>
+                  <WarningAmberOutlined
+                    fontSize="small"
+                    color="warning"
+                    titleAccess={`Needs attention: ${problems.join(" ")}`}
+                  />
+                </Tooltip>
+              )}
+            </Stack>
           );
         },
       },
@@ -156,14 +181,22 @@ export default function DevicesTable({
       {
         field: "agents_total",
         headerName: "Agents",
-        width: 140,
-        renderCell: ({ row }) => agentsCell(row),
+        width: 100,
+        type: "number",
+        align: "left",
+        headerAlign: "left",
+        renderCell: ({ row }) => (
+          <Tooltip title={agentsRunning(row)}>
+            <span>{row.agents_total}</span>
+          </Tooltip>
+        ),
       },
       {
         field: "platform",
         headerName: "Platform",
         width: 150,
-        valueGetter: (_value, row) => (row.platform ? `${row.platform.os} ${row.platform.arch}` : ""),
+        filter: { value: (row) => platformOf(row) ?? NO_PLATFORM, options: platforms },
+        valueGetter: (_value, row) => platformOf(row) ?? "",
         renderCell: ({ row }) =>
           row.platform ? (
             <Typography component="span" sx={MONO_SX}>
@@ -199,7 +232,7 @@ export default function DevicesTable({
         ),
       },
     ];
-  }, [rows, showOwner, showWorkspace, actionsFor]);
+  }, [rows, showOwner, showWorkspace, providerLabel, actionsFor]);
 
   const selectFilters = useMemo<SelectFilter[]>(
     () => [
@@ -207,6 +240,7 @@ export default function DevicesTable({
       ...(showOwner ? [{ field: "name", label: "Owner", allLabel: "All owners" }] : []),
       { field: "state", label: "State", allLabel: "All states" },
       { field: "type", label: "Type", allLabel: "All types" },
+      { field: "platform", label: "Platform", allLabel: "All platforms" },
     ],
     [showOwner, showWorkspace],
   );

@@ -93,6 +93,7 @@ resources:
     name: "ESC - {customer}"
     description: "Customer escalation: {customer} - {issue}. Cross-functional coordination for resolution."
     bridge: "{bridge}"
+    channel_type: channel_private
     agents: [escalation_coordinator, technical_investigator]
     users:
       - {if: "{bridge}", value: ["{$creator}"]}

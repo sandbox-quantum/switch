@@ -354,6 +354,8 @@ async def test_a_member_is_offered_the_visible_commands_and_no_hidden_one(
     assert listed.status_code == 200, listed.text
     commands = {each["name"]: each for each in listed.json()["commands"]}
     assert "retry" not in commands
+    # Not on a server without auto-route, as this one is.
+    assert "auto-route" not in commands
     assert commands["reset"]["usage"] == "!reset <target>"
     assert commands["help"]["usage"] == "!help"
     assert all(each["description"] for each in commands.values())

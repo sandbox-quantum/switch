@@ -24,6 +24,7 @@ vi.mock("../../data/AuthContext", () => ({
         organization_id: "o1",
       },
       invite_email_enabled: false,
+      can_manage_connector_apps: false,
     },
     capabilities: {
       isOperator: false,
@@ -32,6 +33,7 @@ vi.mock("../../data/AuthContext", () => ({
       inOrganization: true,
       canDeleteWorkspace: false,
       canManageDataProtection: false,
+      canManageConnectorApps: false,
       features: {},
     },
     refresh: () => auth.refresh(),
@@ -92,13 +94,13 @@ describe("WorkspaceUsersPage", () => {
     vi.unstubAllGlobals();
   });
 
-  it("shows a member the roster alone, and who to ask for an invitation", async () => {
+  it("shows a member the roster alone", async () => {
     auth.administers = false;
     const fetchMock = stubFetch();
     renderPage();
 
     expect(await screen.findByText("me@example.com")).toBeTruthy();
-    expect(screen.getByText(/Ask a workspace admin to invite someone/)).toBeTruthy();
+    expect(screen.getByText("Everyone in Acme.")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Invite users" })).toBeNull();
     expect(screen.queryByText("Invite links")).toBeNull();
     // A member is never asked for what only an admin may read.
@@ -114,7 +116,6 @@ describe("WorkspaceUsersPage", () => {
     expect(screen.getByRole("button", { name: "Invite users" })).toBeTruthy();
     expect(screen.getByText("Invite links")).toBeTruthy();
     expect(await screen.findByText("No active invite links")).toBeTruthy();
-    expect(screen.queryByText(/Ask a workspace admin/)).toBeNull();
   });
 
   it("after leaving, starts again on the next workspace and still says what happened", async () => {

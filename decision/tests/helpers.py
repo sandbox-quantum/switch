@@ -5,6 +5,7 @@ from switch_decision.config import Settings
 SECRET_TEXT = "zebra-quartz-7731 rollback the purple cluster"
 ROOM_RULES = "never-log-these-room-rules-4412"
 ANTHROPIC_KEY = "fake-key-0001"
+GEMINI_KEY = "fake-gemini-key-0001"
 
 BODY = {
     "room": {"name": "eng-secret-room", "instructions": ROOM_RULES},
@@ -16,7 +17,14 @@ BODY = {
     "recent": [{"sender": "tom", "text": f"earlier: {SECRET_TEXT}"}],
 }
 
-SECRETS = (SECRET_TEXT, "zebra-quartz", ROOM_RULES, ANTHROPIC_KEY, "eng-secret-room")
+SECRETS = (
+    SECRET_TEXT,
+    "zebra-quartz",
+    ROOM_RULES,
+    ANTHROPIC_KEY,
+    GEMINI_KEY,
+    "eng-secret-room",
+)
 
 
 def settings_for(**kw) -> Settings:

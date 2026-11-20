@@ -68,7 +68,7 @@ export function knownPasteMethods(
  *   ::1), and it is plain http to another host.
  * - `needs_public_url`: its sign-ins return only to the server, which has no
  *   public address (`GATEWAY_PUBLIC_URL`).
- * - `app_not_set_up`: its app is the operator's to set up, under Admin →
+ * - `app_not_set_up`: its app is the operator's to set up, under Settings →
  *   Connector apps, and isn't yet.
  * - `not_set_up`: nothing on this server connects it.
  * - `not_fully_set_up`: it can be connected but not granted to agents.

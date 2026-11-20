@@ -1,6 +1,11 @@
+import ArchiveOutlined from "@mui/icons-material/ArchiveOutlined";
+import EditOutlined from "@mui/icons-material/EditOutlined";
+import ManageAccountsOutlined from "@mui/icons-material/ManageAccountsOutlined";
 import MeetingRoomOutlined from "@mui/icons-material/MeetingRoomOutlined";
 import PeopleOutlined from "@mui/icons-material/PeopleOutlined";
 import SmartToyOutlined from "@mui/icons-material/SmartToyOutlined";
+import SwapHoriz from "@mui/icons-material/SwapHoriz";
+import UnarchiveOutlined from "@mui/icons-material/UnarchiveOutlined";
 import { Alert, Box, Chip, Stack, Tooltip, Typography } from "@mui/material";
 import type { ReactNode } from "react";
 import { useMemo, useState } from "react";
@@ -190,19 +195,36 @@ export default function WorkspacesTable({
     const rowActions = (row: OrganizationWorkspace): RowAction[] => {
       const actions: RowAction[] = [];
       if (row.id !== currentId) {
-        actions.push({ label: "Switch to workspace", onClick: () => void switchWorkspace(row.id) });
+        actions.push({
+          label: "Switch to workspace",
+          icon: <SwapHoriz fontSize="small" />,
+          onClick: () => void switchWorkspace(row.id),
+        });
       }
-      actions.push({ label: "Rename workspace", onClick: () => setPending({ kind: "rename", workspace: row }) });
-      actions.push({ label: "Manage admins", onClick: () => setPending({ kind: "admins", workspace: row }) });
+      actions.push({
+        label: "Rename workspace",
+        icon: <EditOutlined fontSize="small" />,
+        onClick: () => setPending({ kind: "rename", workspace: row }),
+      });
+      actions.push({
+        label: "Manage admins",
+        icon: <ManageAccountsOutlined fontSize="small" />,
+        onClick: () => setPending({ kind: "admins", workspace: row }),
+      });
       if (row.archived_at === null) {
         actions.push({
           label: "Archive workspace",
+          icon: <ArchiveOutlined fontSize="small" />,
           onClick: () => setPending({ kind: "archive", workspace: row }),
           destructive: true,
           disabledReason: row.can_archive ? null : row.archive_blocked_reason,
         });
       } else if (row.can_restore) {
-        actions.push({ label: "Restore workspace", onClick: () => void restore(row) });
+        actions.push({
+          label: "Restore workspace",
+          icon: <UnarchiveOutlined fontSize="small" />,
+          onClick: () => void restore(row),
+        });
       }
       return actions;
     };

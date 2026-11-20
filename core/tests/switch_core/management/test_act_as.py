@@ -50,6 +50,7 @@ from tests.switch_core.management.harness import (
     bearer,
     build_harness,
     cookies_for,
+    credential_key_id,
     definition,
     enroll_console,
     place_agent,
@@ -174,6 +175,7 @@ class TestTheAuthorizationMatrix:
             controller_id=controller.controller_id,
             owner_id=owner.id,
             tenant_id=TENANT_ZERO_ID,
+            key_id=await credential_key_id(harness, controller.credential),
         )
         assert captured["tenant_id"] == TENANT_ZERO_ID
         # A controller token never becomes an agent key's cached answer.
@@ -504,7 +506,7 @@ class TestOperationsTakeTheRoomFromTheHeader:
         async def _nothing(*_args: Any, **_kwargs: Any) -> Any:
             return []
 
-        async def _no_resources(_room_id: str) -> dict[str, Any]:
+        async def _no_resources(_agent_id: str, _room_id: str) -> dict[str, Any]:
             return {
                 "linked_rooms": [],
                 "reference_types": [],

@@ -1,16 +1,16 @@
 import AddLinkOutlined from "@mui/icons-material/AddLinkOutlined";
 import OpenInNewOutlined from "@mui/icons-material/OpenInNewOutlined";
 import ScheduleOutlined from "@mui/icons-material/ScheduleOutlined";
-import { Alert, Box, Button, Chip, CircularProgress, Divider, Snackbar, Stack, Typography } from "@mui/material";
+import { Alert, Box, Button, Chip, CircularProgress, Divider, Stack, Typography } from "@mui/material";
 import { Fragment, useEffect, useRef, useState } from "react";
 import ConfirmDialog from "../../components/ConfirmDialog";
 import BrandTile from "../../components/connectors/BrandTile";
 import InfoTip from "../../components/InfoTip";
+import SuccessSnackbar from "../../components/SuccessSnackbar";
 import { ApiError, type BridgeDetail, cancelLinkRequest, releaseBridgeIdentity } from "../../data/api";
 import { formatDate, platformLabel, sentenceCase } from "../../theme/format";
 import {
   type AccountLine,
-  accountHandle,
   accountsByApp,
   findableNote,
   statusColor,
@@ -176,7 +176,7 @@ export default function YourAccountsSection({
                     line,
                     others: lines
                       .filter((other) => other.id !== line.id && other.kind !== "pending")
-                      .map((other) => accountHandle(other.username)),
+                      .map((other) => other.name),
                   })
                 }
               />
@@ -210,6 +210,7 @@ export default function YourAccountsSection({
           try {
             await releaseBridgeIdentity(toUnlink.app.bridge_id, toUnlink.line.id);
             setFocusApp(toUnlink.app.bridge_id);
+            setNotice(`Unlinked ${toUnlink.line.name}.`);
           } finally {
             refresh();
           }
@@ -217,13 +218,7 @@ export default function YourAccountsSection({
         onClose={() => setToUnlink(null)}
       />
 
-      <Snackbar open={notice !== null} autoHideDuration={6000} onClose={() => setNotice(null)}>
-        {notice !== null ? (
-          <Alert severity="success" onClose={() => setNotice(null)}>
-            {notice}
-          </Alert>
-        ) : undefined}
-      </Snackbar>
+      <SuccessSnackbar message={notice} onClose={() => setNotice(null)} />
     </Box>
   );
 }
@@ -231,7 +226,7 @@ export default function YourAccountsSection({
 /** What unlinking costs, said for the case at hand: with another account
  * still linked in the same app, agents there go on recognising the person. */
 function unlinkText(app: BridgeDetail, line: AccountLine, others: string[]): string {
-  const handle = accountHandle(line.username);
+  const handle = line.name;
   return others.length === 0
     ? `${handle} in ${app.display_name} will stop being recognised as you. Agents there will treat your messages as coming from an unknown person until you link it again.`
     : `${handle} in ${app.display_name} will stop being recognised as you. You stay linked there as ${others.join(", ")}.`;
@@ -264,7 +259,7 @@ function AppAccounts({
   const unavailable = unavailableReason(app);
   const findable = findableNote(app);
   const counting = lines.some((line) => line.kind !== "pending");
-  // The bundled Mattermost is named after its platform, and "Mattermost ·
+  // An app named after its platform reads as the platform alone: "Mattermost ·
   // Mattermost" says nothing twice.
   const title = app.display_name === platform ? platform : `${platform} · ${app.display_name}`;
   const linkButton = useRef<HTMLButtonElement>(null);
@@ -374,7 +369,7 @@ function AccountRow({
   onCancel: () => void;
   onUnlink: () => void;
 }) {
-  const handle = accountHandle(line.username);
+  const handle = line.name;
   // Every row's buttons say whose they are: "Unlink" ten times over tells a
   // screen reader nothing.
   const whose = `${handle} in ${app.display_name}`;

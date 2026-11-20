@@ -111,6 +111,7 @@ async def changes_socket(
             user_store,
             caller.user_id,
             caller.session_version,
+            caller.session_id,
             caller.tenant_id,
         )
 

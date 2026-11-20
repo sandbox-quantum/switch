@@ -12,7 +12,7 @@ import {
 import { useState } from "react";
 import { createDocument } from "../../data/api";
 import { AccessSelect } from "../../components/AccessControls";
-import { type AccessLevel, fromAccessLevel } from "../../data/visibility";
+import { type AccessLevel, LISTED_RESOURCE_HELPERS, fromAccessLevel } from "../../data/visibility";
 
 interface Props {
   open: boolean;
@@ -109,7 +109,12 @@ export default function CreateDocumentDialog({ open, onClose, onCreated }: Props
             minRows={10}
             slotProps={{ input: { sx: { fontFamily: "monospace" } } }}
           />
-          <AccessSelect value={access} onChange={setAccess} disabled={submitting} />
+          <AccessSelect
+            value={access}
+            onChange={setAccess}
+            disabled={submitting}
+            helpers={LISTED_RESOURCE_HELPERS}
+          />
           {error && <Alert severity="error">{error}</Alert>}
         </Stack>
       </DialogContent>

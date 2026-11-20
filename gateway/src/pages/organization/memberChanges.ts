@@ -50,8 +50,8 @@ function takePendingChange(organizationId: string): MemberChange | null {
 }
 
 
-/** Making a change to an organization's members, the way both layouts' Users
- * do: where its members come from a directory that wants the admin's own
+/** Making a change to an organization's members, the way organization Users
+ * does: where its members come from a directory that wants the admin's own
  * sign-in first, the admin is sent there and the change made again, once, on
  * coming back; a change that already took something away says so first, and
  * offers to finish. `onChanged` runs after each change that went through, and

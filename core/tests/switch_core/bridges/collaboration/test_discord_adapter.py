@@ -8,7 +8,7 @@ import discord
 import pytest
 from discord.http import handle_message_parameters
 
-from switch_core.bridges.agent.commands import COMMANDS
+from switch_core.bridges.agent.commands import commands_for
 from switch_core.bridges.collaboration.adapter import MessagePartlySent
 from switch_core.bridges.collaboration.discord import adapter as adapter_module
 from switch_core.bridges.collaboration.discord import connection as connection_module
@@ -29,6 +29,7 @@ def _adapter() -> DiscordAdapter:
     adapter = DiscordAdapter(
         config=DiscordConnectionConfig(bot_token="token", guild_id=str(GUILD_ID))
     )
+    adapter.set_feature_flags({})
     adapter._connection._bot_user_id = BOT_USER_ID
     adapter.set_third_party_avatars(True)
     return adapter
@@ -1248,6 +1249,7 @@ def test_start_becomes_ready_then_stop_closes_client() -> None:
     adapter = DiscordAdapter(
         config=DiscordConnectionConfig(bot_token="token", guild_id=str(GUILD_ID))
     )
+    adapter.set_feature_flags({})
     fake = _FakeGatewayClient()
     fake._ready_event.set()  # ready as soon as start() waits
 
@@ -1267,8 +1269,9 @@ def test_start_becomes_ready_then_stop_closes_client() -> None:
             application_id, guild_id, payload = fake.http.bulk_upserts[0]
             assert application_id == fake.application_id
             assert guild_id == GUILD_ID
+            # A server without auto-route registers no `/auto-route`.
             assert {c["name"] for c in payload} == {
-                c.name for c in COMMANDS if not c.hidden and c.description
+                c.name for c in commands_for({}) if not c.hidden and c.description
             }
 
             await adapter.stop()
@@ -1283,6 +1286,7 @@ def test_start_raises_when_gateway_connection_fails() -> None:
     adapter = DiscordAdapter(
         config=DiscordConnectionConfig(bot_token="token", guild_id=str(GUILD_ID))
     )
+    adapter.set_feature_flags({})
     fake = _FakeGatewayClient()
     fake.connect_behavior = "raise"
     fake.connect_exc = RuntimeError("login failed")
@@ -1305,6 +1309,7 @@ def test_a_quiet_copy_logs_in_for_the_api_and_opens_no_socket() -> None:
     adapter = DiscordAdapter(
         config=DiscordConnectionConfig(bot_token="token", guild_id=str(GUILD_ID))
     )
+    adapter.set_feature_flags({})
     adapter.set_listening(False)
     fake = _FakeGatewayClient()
 
@@ -1327,6 +1332,7 @@ def test_start_times_out_when_never_ready_and_stops() -> None:
     adapter = DiscordAdapter(
         config=DiscordConnectionConfig(bot_token="token", guild_id=str(GUILD_ID))
     )
+    adapter.set_feature_flags({})
     fake = _FakeGatewayClient()  # hangs on connect, never becomes ready
 
     async def scenario() -> None:

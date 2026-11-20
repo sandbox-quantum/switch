@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Literal
 
 from switch_core.bridges.agent.commands import dispatch_admin_command
@@ -74,6 +75,7 @@ class CommandConsumer(Consumer[SystemActor]):
         frontend_base_url: str | None,
         follow_the_conversation_enabled: bool,
         decision_availability: DecisionAvailability,
+        feature_flags: Mapping[str, bool],
     ) -> None:
         super().__init__(actor=actor)
         self._agent_store = agent_store
@@ -99,6 +101,9 @@ class CommandConsumer(Consumer[SystemActor]):
         # Whether `!auto-route` means anything in a room: the feature flag,
         # and a decision backend for the room's workspace.
         self._decision_availability = decision_availability
+        # The deployment's feature flags: which commands exist here
+        # (`commands.commands_for`).
+        self.feature_flags = feature_flags
         self._frontend_base_url = (
             frontend_base_url.rstrip("/") if frontend_base_url else None
         )

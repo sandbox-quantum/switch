@@ -27,10 +27,9 @@ import {
 
 /**
  * The role matrix, end to end: for each role, a real account signs in and is
- * shown exactly what `gateway/src/routes/roleMatrix.ts` says, in whichever
- * layout the server runs (the lane runs once with `gateway_v2` off and once
- * with it on). Then the same person in two workspaces, and in two
- * organizations, switching with the app's own switcher.
+ * shown exactly what `gateway/src/routes/roleMatrix.ts` says. Then the same
+ * person in two workspaces, and in two organizations, switching with the
+ * app's own switcher.
  *
  * What a scenario checks beyond the matrix is every browser scenario's: a
  * page that renders but is broken, or makes a request the server refuses,
@@ -103,11 +102,11 @@ async function personaIn(
 
 /**
  * What making the scenario's people and things calls, and what the pages
- * they open read, for every role. Each was seen answered in a run of both
- * layouts; a route a page stops reading should come off.
+ * they open read, for every role. Each was seen answered in a run; a route a
+ * page stops reading should come off.
  */
 const EVERY_ROLE: readonly string[] = [
-  'POST /gateway/users',
+  'POST /gateway/auth/signup',
   'POST /gateway/organizations',
   'POST /gateway/references',
   'DELETE /gateway/references/{reference_id}',
@@ -183,7 +182,6 @@ const BY_ROLE: Record<Persona, readonly string[]> = {
     'GET /gateway/tenants/{tenant_id}/usage',
     'GET /gateway/tenants/{tenant_id}/invitations',
     'GET /gateway/connector-apps',
-    'GET /gateway/users',
   ],
 };
 
@@ -219,28 +217,26 @@ function personaScenario(persona: Persona): BrowserScenario {
 
 /**
  * What tells one role's view from another's: the rail, the settings menus,
- * every page that not everyone may open, and, in the new layout, whether the
- * switcher offers to invite people. `asPersona` is the role the person holds
+ * every page that not everyone may open, and whether the switcher offers to
+ * invite people. `asPersona` is the role the person holds
  * where they are now.
  */
 async function checkView(ui: GatewayUi, asPersona: Persona, where: string): Promise<string[]> {
   const wrong = [...(await checkRail(ui, asPersona)), ...(await checkSettingsMenus(ui, asPersona))];
   // Their paths name nothing, so there is nothing to fill in.
-  const sensitive = [...AREAS[ui.layout], ...PAGES[ui.layout]].filter(
+  const sensitive = [...AREAS, ...PAGES].filter(
     (row) => row.open.length < PERSONAS.length && !row.path.includes(':')
   );
   for (const { path } of sensitive) {
-    const problem = await openAndCompare(ui, path, landingOf(ui.layout, asPersona, path));
+    const problem = await openAndCompare(ui, path, landingOf(asPersona, path));
     if (problem !== null) wrong.push(problem);
   }
   // Back where the switcher is: organization settings show none.
   await ui.open(ui.landing);
-  if (ui.layout === 'v2') {
-    const invites = await ui.switcherOffersInvite();
-    const administers = asPersona !== 'member';
-    if (invites !== administers) {
-      wrong.push(`the switcher ${invites ? 'offers' : 'does not offer'} to invite people`);
-    }
+  const invites = await ui.switcherOffersInvite();
+  const administers = asPersona !== 'member';
+  if (invites !== administers) {
+    wrong.push(`the switcher ${invites ? 'offers' : 'does not offer'} to invite people`);
   }
   return wrong.map((line) => `${where}: ${line}`);
 }
@@ -252,7 +248,7 @@ async function checkView(ui: GatewayUi, asPersona: Persona, where: string): Prom
  */
 const twoWorkspaces: BrowserScenario = {
   header: roleMatrixHeader('role-matrix-two-workspaces', [
-    'POST /gateway/users',
+    'POST /gateway/auth/signup',
     'POST /gateway/organizations',
     'POST /gateway/organizations/current/workspaces',
     'POST /gateway/tenants/{tenant_id}/invitations',
@@ -291,7 +287,7 @@ const twoWorkspaces: BrowserScenario = {
  */
 const twoOrganizations: BrowserScenario = {
   header: roleMatrixHeader('role-matrix-two-organizations', [
-    'POST /gateway/users',
+    'POST /gateway/auth/signup',
     'POST /gateway/organizations',
     'POST /gateway/organizations/current/workspaces',
     'PATCH /gateway/organizations/current/members/{user_id}',
@@ -315,14 +311,12 @@ const twoOrganizations: BrowserScenario = {
     await ui.signInAs(ours.admin);
     expect(await ui.workspaceId()).toBe(ours.workspace.id);
     const wrong: string[] = [];
-    if (ui.layout === 'v2') {
-      const headings = await ui.switcherOrganizations();
-      for (const organization of [ours, theirs]) {
-        if (!headings.includes(organization.name)) {
-          wrong.push(
-            `the switcher has no heading for ${organization.name} (it has ${headings.join(', ') || 'none'})`
-          );
-        }
+    const headings = await ui.switcherOrganizations();
+    for (const organization of [ours, theirs]) {
+      if (!headings.includes(organization.name)) {
+        wrong.push(
+          `the switcher has no heading for ${organization.name} (it has ${headings.join(', ') || 'none'})`
+        );
       }
     }
     wrong.push(...(await checkView(ui, 'orgAdmin', ours.workspace.name)));

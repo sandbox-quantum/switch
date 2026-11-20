@@ -10,6 +10,7 @@ import {
   type ToolResult,
 } from '@sandboxaq/switch-agent-runtime/hosted';
 import type { HttpMcpServerSpec } from '../adapter';
+import type { DescribeTools } from './mcp-tool-descriptions';
 import type { Redactions } from './redaction';
 import { type ServiceGrant, serviceTokenAnswerSchema } from './service-access';
 import { redactServiceToken, type ServiceCredential } from './service-credential';
@@ -58,6 +59,8 @@ export async function startVendorServers(input: {
   callTimeoutMs: number;
   /** How the vendor is reached: `fetch`, but for tests. */
   fetch: typeof fetch;
+  /** How the session's CLI is told about the vendor's tools. */
+  describe: DescribeTools;
 }): Promise<VendorServers> {
   const specs: Record<string, HttpMcpServerSpec> = {};
   const closers: (() => Promise<void>)[] = [];
@@ -69,7 +72,7 @@ export async function startVendorServers(input: {
         const vendor = new VendorServer(grant.service, server, input);
         const bearer = randomBytes(32).toString('hex');
         const served = await serveMcpOverHttp(bearer, {
-          listTools: () => vendor.listTools(),
+          listTools: async () => input.describe(await vendor.listTools()),
           callTool: (name, args) => vendor.callTool(name, args),
         });
         closers.push(served.close);

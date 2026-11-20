@@ -61,6 +61,11 @@ class ReferenceStore:
         )
         return list(result.scalars().all())
 
+    async def list_all(self, session: AsyncSession) -> list[Reference]:
+        """Every reference in the bound tenant, whoever owns it."""
+        result = await session.execute(select(Reference))
+        return list(result.scalars().all())
+
     async def list_readable_with_owner_names(
         self,
         session: AsyncSession,

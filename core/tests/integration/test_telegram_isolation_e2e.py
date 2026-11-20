@@ -140,6 +140,7 @@ async def _world(harness: Harness) -> tuple[_World, MessagingInstallService]:
         webhook_url=f"{_ORIGIN}/messaging/telegram/events",
         webhook_secret=_SECRET,
         on_connected=attach,
+        feature_flags={},
     )
     await app_client.start()
     installers = MessagingInstallerRegistry()
