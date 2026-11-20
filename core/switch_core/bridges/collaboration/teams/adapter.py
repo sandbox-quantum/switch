@@ -1336,12 +1336,17 @@ class TeamsAdapter(PlatformAdapter):
             if not channel_id:
                 continue
             if sub.get("notificationUrl") == notification_url:
-                sub = await self._with_current_change_types(sub, resource, channel_id)
-                self._subscriptions[channel_id] = str(sub.get("id", ""))
                 team_id = self._team_from_resource(resource)
                 if team_id:
                     self._subscription_team[channel_id] = team_id
                 self._capture_wanted.add(channel_id)
+                current = await self._with_current_change_types(
+                    sub, resource, channel_id
+                )
+                if current is None:
+                    continue
+                sub = current
+                self._subscriptions[channel_id] = str(sub.get("id", ""))
                 expiry = _parse_graph_time(sub.get("expirationDateTime"))
                 if expiry is not None:
                     self._subscription_expiry[channel_id] = expiry
@@ -1368,15 +1373,26 @@ class TeamsAdapter(PlatformAdapter):
 
     async def _with_current_change_types(
         self, sub: dict[str, Any], resource: str, channel_id: str
-    ) -> dict[str, Any]:
+    ) -> dict[str, Any] | None:
         """The subscription to keep for a channel: `sub`, or a new one made in
-        its place when `sub` is not notified of everything this bridge follows.
+        its place when `sub` is not notified of everything this bridge follows;
+        None when the old one is gone and no new one could be made.
 
         Graph cannot change a subscription's change types, and one that is
         renewed never runs out, so a subscription made before deleted posts
-        were followed would never report one. The new one is made before the
-        old is deleted, so no post goes uncaptured between them; a post heard
-        through both carries the same message id and is kept once.
+        were followed would never report one. Graph allows one channel-message
+        subscription per app and channel, so the old one is deleted before the
+        new one is made. Nothing catches up on what the channel says between
+        the two: the Teams bridge has no backfill of channel messages, so a
+        post written, edited or deleted in that moment (a round trip to Graph)
+        reaches the room only if it mentions the bot, which Bot Framework
+        delivers on its own.
+
+        When the new one can't be made, the channel is left wanted and
+        without a subscription, logged as a capture failure: the repair loop
+        makes one as it does for any channel without capture. When the old
+        one can't be deleted, it is kept, notified of new and edited posts but
+        not deleted ones, and the next start tries again.
 
         A quiet copy keeps what it finds: the subscriptions are the holder's.
         """
@@ -1397,6 +1413,19 @@ class TeamsAdapter(PlatformAdapter):
             )
             return sub
         try:
+            await self._graph.delete_subscription(subscription_id=old_id)
+        except Exception as error:
+            logger.warning(
+                "Could not delete Teams subscription %s for channel %s to replace "
+                "it with one notified of deleted posts (%s); it is kept, and posts "
+                "deleted there stay in the room until the bridge next starts and "
+                "tries again",
+                old_id,
+                channel_id,
+                error,
+            )
+            return sub
+        try:
             replacement = await self._graph.create_subscription(
                 resource=resource,
                 notification_url=self._me.notification_url,
@@ -1407,26 +1436,12 @@ class TeamsAdapter(PlatformAdapter):
                 encryption_certificate_id=keyring.certificate_id,
             )
         except Exception as error:
-            logger.warning(
-                "Could not replace Teams subscription %s for channel %s, which is "
-                "not notified of deleted posts (%s); posts deleted there stay in "
-                "the room until the bridge next starts and tries again",
-                old_id,
+            self._note_capture_failure(
                 channel_id,
-                error,
+                f"deleted subscription {old_id} to replace it, then could not "
+                f"make the new one: {type(error).__name__}: {error}",
             )
-            return sub
-        try:
-            await self._graph.delete_subscription(subscription_id=old_id)
-        except Exception:
-            logger.warning(
-                "Failed to delete Teams subscription %s for channel %s after "
-                "replacing it; it delivers alongside the new one until it runs "
-                "out within the hour",
-                old_id,
-                channel_id,
-                exc_info=True,
-            )
+            return None
         logger.info(
             "Replaced Teams subscription %s for channel %s with %s, which is "
             "notified of deleted posts",

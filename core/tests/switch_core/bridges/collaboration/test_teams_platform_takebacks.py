@@ -280,14 +280,21 @@ def test_a_new_subscription_is_notified_of_deleted_posts() -> None:
     }
 
 
-def test_an_adopted_subscription_without_deletions_is_replaced_before_it_is_deleted() -> (
-    None
-):
+def _old_subscription(adapter: Any) -> dict[str, Any]:
+    return {
+        "id": "OLD",
+        "resource": f"teams/t/channels/{CHANNEL}/messages",
+        "notificationUrl": adapter._me.notification_url,
+        "changeType": "created,updated",
+    }
+
+
+def test_an_adopted_subscription_without_deletions_is_deleted_then_replaced() -> None:
     """Graph cannot add a change type to a subscription, and a renewed one never
-    runs out: one made before deletions were followed is replaced at start."""
+    runs out: one made before deletions were followed is replaced at start.
+    Graph allows one per app and channel, so the old one goes first."""
     key_pem, cert_pem, _ = _make_key_and_cert()
     adapter = _adapter(key_pem, cert_pem)
-    resource = f"teams/t/channels/{CHANNEL}/messages"
     order: list[str] = []
 
     class _Graph(_FakeGraph):
@@ -299,54 +306,70 @@ def test_an_adopted_subscription_without_deletions_is_replaced_before_it_is_dele
             order.append("delete")
             await super().delete_subscription(subscription_id=subscription_id)
 
-    fake = _Graph(
-        existing=[
-            {
-                "id": "OLD",
-                "resource": resource,
-                "notificationUrl": adapter._me.notification_url,
-                "changeType": "created,updated",
-            }
-        ]
-    )
+    fake = _Graph(existing=[_old_subscription(adapter)])
     adapter._graph = fake  # type: ignore[assignment]
 
     _run(adapter._adopt_existing_subscriptions())
 
-    assert order == ["create", "delete"]
-    assert fake.created[0]["resource"] == resource
+    assert order == ["delete", "create"]
+    assert fake.created[0]["resource"] == f"teams/t/channels/{CHANNEL}/messages"
     assert fake.deleted == ["OLD"]
     assert adapter._subscriptions == {CHANNEL: "SUB-1"}
 
 
-def test_an_old_subscription_that_cannot_be_replaced_is_kept(
+def test_a_replacement_refused_after_the_delete_is_an_error_and_retried(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The old subscription is gone, so the channel is left wanted and without
+    one, loudly, for the repair loop to make it."""
+    key_pem, cert_pem, _ = _make_key_and_cert()
+    adapter = _adapter(key_pem, cert_pem)
+    caplog.set_level("WARNING")
+    refuse = [True]
+
+    class _RefusingOnce(_FakeGraph):
+        async def create_subscription(self, **kwargs: Any) -> dict[str, Any]:
+            if refuse.pop() if refuse else False:
+                raise RuntimeError("refused")
+            return await super().create_subscription(**kwargs)
+
+    fake = _RefusingOnce(existing=[_old_subscription(adapter)])
+    adapter._graph = fake  # type: ignore[assignment]
+
+    _run(adapter._adopt_existing_subscriptions())
+
+    assert fake.deleted == ["OLD"]
+    assert adapter._subscriptions == {}
+    assert CHANNEL in adapter._capture_wanted
+    assert CHANNEL in adapter._capture_failures
+    errors = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert errors and "could not make the new one" in errors[0].getMessage()
+
+    _run(adapter._ensure_channel_subscription(CHANNEL))
+
+    assert adapter._subscriptions == {CHANNEL: "SUB-1"}
+    assert fake.created[-1]["resource"] == f"teams/t/channels/{CHANNEL}/messages"
+
+
+def test_an_old_subscription_that_cannot_be_deleted_is_kept(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     key_pem, cert_pem, _ = _make_key_and_cert()
     adapter = _adapter(key_pem, cert_pem)
     caplog.set_level("WARNING")
 
-    class _Refusing(_FakeGraph):
-        async def create_subscription(self, **kwargs: Any) -> dict[str, Any]:
+    class _Undeletable(_FakeGraph):
+        async def delete_subscription(self, *, subscription_id: str) -> None:
             raise RuntimeError("refused")
 
-    fake = _Refusing(
-        existing=[
-            {
-                "id": "OLD",
-                "resource": f"teams/t/channels/{CHANNEL}/messages",
-                "notificationUrl": adapter._me.notification_url,
-                "changeType": "created,updated",
-            }
-        ]
-    )
+    fake = _Undeletable(existing=[_old_subscription(adapter)])
     adapter._graph = fake  # type: ignore[assignment]
 
     _run(adapter._adopt_existing_subscriptions())
 
     assert adapter._subscriptions == {CHANNEL: "OLD"}
-    assert fake.deleted == []
-    assert "not notified of deleted posts" in caplog.text
+    assert fake.created == []
+    assert "Could not delete Teams subscription OLD" in caplog.text
 
 
 def test_a_quiet_copy_leaves_an_old_subscription_to_the_holder() -> None:
