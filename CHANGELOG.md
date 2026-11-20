@@ -61,6 +61,14 @@ version of their own to them without also giving them a release of their own.
   chart.
 
 #### Security
+- **Cloud machines install security updates daily and reboot within 7
+  days.** The machine image (`deploy/hosted/machine`) turns on
+  unattended-upgrades for Ubuntu's security updates, restarts updated
+  services itself except the agent controllers, agents and boot service, and
+  reboots once a reboot has been pending for 6 days, in the 07:00 UTC hour,
+  or at any hour after 7 days. The reboot ends the machine's agent sessions
+  without asking; its disks are kept and its controllers start again. Takes
+  effect for machines made from an image baked from this release.
 - **A new OpenCode agent is created with auto mode off.** OpenCode's auto mode
   has no review of its own and runs every command without asking, so a
   managed OpenCode agent created without saying whether it runs in auto mode,
