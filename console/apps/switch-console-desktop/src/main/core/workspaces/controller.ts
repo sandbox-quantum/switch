@@ -58,6 +58,7 @@ import {
   fetchRoomRoles,
   fetchRoomSchedules,
   fetchRooms,
+  fetchRoomsOfAgents,
   fetchTemplateDetail,
   fetchTemplateRuns,
   fetchTemplates,
@@ -89,6 +90,7 @@ import {
   removeServiceGrant,
   updateCanManageAgents,
   updateAgentDescription,
+  updateMidTurnDelivery,
   updateAgentDisplayName,
   renameAgent,
   updateAgentIcon,
@@ -585,7 +587,7 @@ export const workspacesController = createRPCController({
 
   listBridges: (workspaceId: string): Promise<RemoteBridge[]> =>
     withReachableWorkspaceSession(workspaceId, async (server) =>
-      withResolvedHomeUrls(server, await fetchBridges(server))
+      withResolvedHomeUrls(await fetchBridges(server))
     ),
 
   listBridgeTypes: (workspaceId: string): Promise<RemoteBridgeType[]> =>
@@ -1019,6 +1021,15 @@ export const workspacesController = createRPCController({
 
   listAgentRooms: (params: { workspaceId: string; agentId: string }): Promise<RemoteAgentRoom[]> =>
     withWorkspaceSession(params.workspaceId, (server) => fetchAgentRooms(server, params.agentId)),
+
+  /** Several agents' rooms in one read; null from a server that answers one agent at a time. */
+  listRoomsOfAgents: (params: {
+    workspaceId: string;
+    agentIds: string[];
+  }): Promise<Record<string, RemoteAgentRoom[]> | null> =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      fetchRoomsOfAgents(server, params.agentIds)
+    ),
 
   listRoomRoles: (params: { workspaceId: string; roomId: string }): Promise<RemoteRoomRole[]> =>
     withWorkspaceSession(params.workspaceId, (server) => fetchRoomRoles(server, params.roomId)),
@@ -1825,6 +1836,15 @@ export const workspacesController = createRPCController({
   }): Promise<RemoteAgentSummary> =>
     withWorkspaceSession(params.workspaceId, (server) =>
       updateAgentIcon(server, params.agentId, params.iconUrl)
+    ),
+
+  updateMidTurnDelivery: (params: {
+    workspaceId: string;
+    agentId: string;
+    mode: 'steer' | 'queue';
+  }): Promise<RemoteAgentSummary> =>
+    withWorkspaceSession(params.workspaceId, (server) =>
+      updateMidTurnDelivery(server, params.agentId, params.mode)
     ),
 
   /** Change an agent's description. Returns the agent as the server now holds it. */

@@ -121,6 +121,7 @@ resources:
     name: "{team} - Content Pipeline"
     description: "Content planning and production for {team}. From brief to publication."
     bridge: "{bridge}"
+    channel_type: channel_private
     agents: [content_strategist, writer_agent, editor_agent]
     users:
       - {if: "{bridge}", value: ["{$creator}"]}

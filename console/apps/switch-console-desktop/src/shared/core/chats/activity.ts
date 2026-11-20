@@ -62,6 +62,11 @@ export const chatActivityItemSchema = z.object({
   roomId: z.string().nullable(),
   threadId: z.string().nullable(),
   messageId: z.string().nullable(),
+  /**
+   * On a user message sent while another turn ran: `steered` into that turn,
+   * or `queued` behind it. Absent from a server that predates it.
+   */
+  delivery: z.enum(['steered', 'queued']).nullish(),
   occurredAt: z.string(),
   createdAt: z.string(),
   updatedAt: z.string(),

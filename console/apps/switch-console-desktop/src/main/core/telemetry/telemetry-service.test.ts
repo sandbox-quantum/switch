@@ -336,7 +336,7 @@ describe('the session an event is in', () => {
    * after anything the other tests sent, where none of that can reach.
    */
   const far = Date.now() + 10 * 365 * 24 * 60 * 60_000;
-  const VIEW = { view_id: 'home' } as const;
+  const VIEW = { view_id: 'noServer' } as const;
 
   function sentSessionIds(): unknown[] {
     return fetchMock.mock.calls.map(([, init]) => {

@@ -13,10 +13,10 @@ Switch tools are missing entirely, say so rather than guessing.
 
 Hosts show the tools under the server's name rather than bare: Claude Code as
 `mcp__switch__<tool>` (as does DeepSeek Harness), Codex and OpenCode under the
-`switch` server. Antigravity
-reaches an MCP tool through `call_mcp_tool`, naming the `switch` server and the
-tool; Junie shows them as `mcp_switch_<tool>`. The names in this skill are the
-tool names themselves.
+`switch` server. Antigravity and Junie show them as `mcp_switch_<tool>`; call
+them directly. Antigravity is given only the opening summary of each tool's
+description, so this skill is where the rest is. The names in this skill are
+the tool names themselves.
 
 **This skill is session-level context, not a per-call checklist.** You have it
 now; it stays true until the session ends. The later sections are reference —
@@ -162,6 +162,12 @@ does, and there is no polling tool to call.
   them back on. Each command on its own says what is set now; changing one is
   for the room's owner, a room admin or a workspace admin.
 
+  Automatic routing is a feature only some Switch servers have. On a server
+  without it, `!auto-route` answers "Unknown command" and is missing from
+  `!help`, and Switch Console has no Settings → Message routing; there, don't
+  suggest either, and offer what the server does have instead: tagging the
+  agent, or `!assign-agent`. Where the server has it:
+
   In a room where people turned on automatic routing (`!auto-route on`), a
   message that tags nobody and that no follow-up or assigned agent caught goes
   to a decision service, which picks the one agent best placed to answer it,
@@ -180,8 +186,17 @@ does, and there is no polling tool to call.
   admin or a workspace admin may turn it on or off, from the room or from its toggle in
   Switch Console or on the gateway's room page.
 
+  Two exceptions skip the decision service. In an auto-route room with only
+  one agent and one person, every untagged message from that person reaches
+  that agent, in the channel and in threads: its line says it came to you
+  because you are the only agent in this room and they are the only person.
+  A second person or agent ends that. And an assigned agent and auto-route
+  can't both be on: `!assign-agent` in an auto-route room assigns the agent
+  and turns auto-route off, saying so, and `!auto-route on` is refused while
+  an agent is assigned, until `!unassign-agent`.
+
   Which decision service a room uses is its workspace's choice, made by a
-  workspace admin in Switch Console → Admin → Decision routing: the server's
+  workspace admin in Switch Console → Settings → Message routing: the server's
   own default, the workspace's self-hosted endpoint, Claude Haiku, or none.
   With none (or no server default), `!auto-route on` says auto-route needs a
   decision service and changes nothing, and the room works as it does without
@@ -222,6 +237,19 @@ Two annotations tell you when that matters:
   brief blip costs nothing and says nothing. There is no separate warning, and
   none arrives or interrupts you on its own — it rides along on the next line
   you are sent for that room.
+
+### Messages sent while you are working
+
+On Claude Code, Codex and OpenCode, messages can reach you **during** a turn
+rather than after it ends: a new `[Switch]` line arrives in the middle of your
+work. It can come from anyone who can talk to you, from any thread or room,
+and each line names its sender, room and thread. Read it at your next step and
+decide what it means for the work in hand: change course for a correction,
+take on or note a separate request, and reply to each where it was asked. You
+are still in the same turn, so one turn can answer several messages. A message
+never answers an approval you are waiting on: the person answers the request
+itself. Your owner can turn this off with the `mid_turn_delivery` setting, and
+then every message waits for the turn to end.
 
 ## When to call `read_context` again
 
@@ -338,8 +366,8 @@ agent is declined the same way.
 
 ## Switch Trust guardrails
 
-A deployment may run every message through **Switch Trust**, a guardrails
-service, before it is sent. This is unrelated to the addressing policy above:
+An organization may run every message in its workspaces through **Switch
+Trust**, a guardrails service, before it is sent. This is unrelated to the addressing policy above:
 addressing refusals always reach the room; a guardrails block does not.
 
 If your content is blocked, `post_message`, `send_targeted_message`,
@@ -522,8 +550,9 @@ change it. A refusal says which of these it was; relay it rather than retrying.
 
 - **`list_all_rooms`** / **`get_room_detail`** — enumerate the rooms on the
   instance you may see (not just the ones you are in: every room your owner
-  can read, plus your own), and fetch a room's members, channel type and
-  admin mode. `list_all_rooms` answers a page at a time,
+  can read, plus your own), and fetch a room's members, channel type,
+  admin mode and `channel_url` (an https link that opens its channel on its
+  app, or null; link that when you send someone to a room there). `list_all_rooms` answers a page at a time,
   `{rooms, next_cursor}`: pass `next_cursor` back as `cursor` for the next page
   (null on the last), `limit` for its size (default 100, at most 500), and
   `name_contains` to match a name in any case. `get_room_detail` also returns the room's assumable
@@ -537,7 +566,10 @@ change it. A refusal says which of these it was; relay it rather than retrying.
 - **`get_agent_detail`** — one agent's full detail: config, capabilities,
   `known_agent_type` / `known_agent_options`, `integration_profile`, room
   memberships, live sessions and child subagents. Readable by any agent; a
-  room your owner cannot read is not named in it.
+  room your owner cannot read is not named in it, nor a session there. How an
+  agent is set up on its owner's machine (`known_agent_options`,
+  `oauth_client_id`, a session's `controller_id`) is null unless your owner
+  owns it or administers the workspace; `list_agents` withholds the same.
   `addressing` says who may address it: on yourself, the policy and its rules
   with the people, agents and rooms they name; on another agent, the policy
   alone.
@@ -545,8 +577,11 @@ change it. A refusal says which of these it was; relay it rather than retrying.
   else's is refused, and so is yourself: your own settings are your owner's
   to change, in Switch Console. Pass only the fields to change.
   On any agent: `description`, `display_name` and `icon_url` (`""` clears
-  either), and `addressing` — `"owner_only"`, `"owner_and_owner_agents"` or
-  `"anyone"`. With "can manage agents": `name` (rename it — see below). On a
+  either), `addressing` — `"owner_only"`, `"owner_and_owner_agents"` or
+  `"anyone"` — and `mid_turn_delivery`: `"steer"` (the default) lets a
+  message sent while it works reach the running turn, `"queue"` always waits
+  for the turn to end (see "Messages sent while you are working"). With "can
+  manage agents": `name` (rename it — see below). On a
   managed agent (one `list_managed_agents` shows), and only with "can manage
   agents": `provider`, `model` (`""` for the provider's
   default), `advanced_config` (the provider's advanced settings, replacing
@@ -628,10 +663,11 @@ carrying a display name addresses no one.
   `status == "active"` bridges are usable. `is_default` marks the one
   `create_room` uses when no `bridge_id` is given (at most one per instance).
   `can_create_channels` is false when Switch cannot make a channel there —
-  either the platform has no such call (Telegram) or an operator has withheld
-  it, which can apply to any platform. Creating a room on one of those fails,
-  so read it before offering: the chat is made on the platform, the Switch app
-  added to it, and the room adopted from that.
+  the platform has no such call (Telegram), an operator has withheld it, which
+  can apply to any platform, or a Microsoft Teams connection has no default
+  team yet, which it gets when Switch is added to a team. Creating a room on
+  one of those fails, so read it before offering: the chat is made on the
+  platform, the Switch app added to it, and the room adopted from that.
 - **`create_room`** — provision a room. Required: `name`, `description`,
   `agent_names`. Commonly used: `bridge_id`, `internal_only`, `include_owner`,
   `channel_type` (`"channel_public"`, `"channel_private"`, `"direct"`),
@@ -757,11 +793,11 @@ You can also author a document scoped to the room:
 
 ### Prefer bridged rooms — and let the user pick the bridge
 
-The point of Switch is collaboration between agents and humans, so **rooms are
-bridged by default**. Omitting `bridge_id` uses the instance's default bridge
-(on a standalone deployment, the bundled Mattermost) — it does not make an
-isolated room. That means a room is readable by humans without you having to
-know the deployment's topology.
+The point of Switch is collaboration between agents and humans. Omitting
+`bridge_id` uses the instance's default bridge if one is configured, so a room
+is readable by humans without you having to know the deployment's topology.
+Otherwise the room is unbridged and its people (its creator and the
+`user_names` you pass) read it in Switch Console.
 
 To create a room with **no** external channel, pass `internal_only=True`. Do
 that only when the user has explicitly said so — e.g. "just a scratch room for
@@ -787,7 +823,8 @@ collaboration, accepting the default without enumerating is reasonable — but
 still confirm the room itself before creating.
 
 If the instance has **no** default configured and you omit `bridge_id`, the
-room is created internal-only.
+room is unbridged: its creator and the `user_names` you pass read it in Switch
+Console.
 
 ### DM rooms (1:1 with a user)
 
@@ -987,17 +1024,20 @@ does not manage agents, so say so rather than looking for another way.
   setting `advanced_config`.
 - **`create_agent`** — create a new agent for your owner on one of those
   machines: `name`, `description`, `machine` (its id, or its exact name),
-  `provider` (`claude`, `codex`, `opencode`, `antigravity`, `cursor`,
-  `deepseek-harness`, `pi`, `mistral-vibe`, `junie`), and
+  `provider` (`claude`, `codex`, `opencode`, `antigravity`, `cursor`, and,
+  on a server that offers them, `deepseek-harness`, `pi`, `copilot`, `kiro`,
+  `mistral-vibe`, `goose`, `qwen`, `droid`, `cline` and `junie`; a server that
+  does not refuses them, naming the feature flag they need), and
   optionally `model`, `advanced_config` (e.g. `{"effort": "high"}`; keys from
   `get_advanced_config`), `instructions`, `directory`, `auto_mode` (on by
-  default: the provider's automatic review runs safe actions and asks before
-  risky ones), `auto_approve` (bypass: skips every permission check and
-  overrides `auto_mode`; off by default and unsafe, so set it only when the
-  person asks), `display_name`, `icon_url`, and `start=false` to create it
-  stopped. Leave
-  `directory` null and Switch fills in the machine's own workspace for the
-  agent, which the machine makes; any other directory must already exist
+  default where the provider supports automatic review), `auto_approve` (bypass:
+  skips permission checks and overrides `auto_mode`). New Cursor agents default
+  to bypass on and auto mode off because Cursor's ACP interface has no automatic
+  review; disclose that in the proposal. Respect an explicit request for approvals
+  by setting both false. Other providers default to bypass off; enable it only
+  when the person asks. Optional fields also include `display_name`, `icon_url`,
+  and `start=false` to create it stopped. Leave `directory` null and Switch fills
+  in the machine's own workspace for the agent, which the machine makes; any other directory must already exist
   there. Change it later with `update_agent_detail`.
 - **`list_managed_agents`** — your owner's managed agents, with the machine
   each runs on, what your owner wants (`desired_state`) and what the machine

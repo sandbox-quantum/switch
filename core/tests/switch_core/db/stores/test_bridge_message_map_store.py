@@ -163,12 +163,61 @@ class TestBridgeMessageMapStore:
                 bridge_id=bridge_id,
                 transport_event_id="$evt1",
                 external_post_id="post1",
+                further_post_ids=[],
             )
             await session.commit()
 
         async with session_factory() as session:
             posted = await store.get_by_external_post_id(session, bridge_id, "post1")
         assert posted is not None and posted.external_channel_id == "chan-2"
+        assert posted.further_post_ids is None
+
+
+class TestASplitMessage:
+    """Telegram splits a long message into several posts. A reply to any of
+    them is a reply to the one room message they carry."""
+
+    async def test_a_reply_to_its_last_part_finds_the_message(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        store = BridgeMessageMapStore()
+        async with session_factory() as session:
+            bridge_id = await _make_bridge(session)
+            assert await store.claim(
+                session,
+                bridge_id=bridge_id,
+                external_channel_id="-100",
+                transport_event_id="$answer",
+                unposted_after=timedelta(seconds=10),
+            )
+            await store.fill(
+                session,
+                bridge_id=bridge_id,
+                transport_event_id="$answer",
+                external_post_id="-100:501",
+                further_post_ids=["-100:502", "-100:503"],
+            )
+            await session.commit()
+
+        async with session_factory() as session:
+            found = [
+                await store.get_by_external_post_id(session, bridge_id, ref)
+                for ref in ("-100:501", "-100:502", "-100:503")
+            ]
+            elsewhere = await store.get_by_external_post_id(
+                session, bridge_id, "-100:504"
+            )
+            by_event = await store.get_by_transport_event_id(
+                session, bridge_id, "$answer"
+            )
+        assert [row.transport_event_id if row else None for row in found] == [
+            "$answer",
+            "$answer",
+            "$answer",
+        ]
+        assert elsewhere is None
+        # Edits and deletes still go to the first part.
+        assert by_event is not None and by_event.external_post_id == "-100:501"
 
 
 class TestCardAnswer:

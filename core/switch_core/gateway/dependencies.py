@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Callable
-from typing import Any
+from typing import Annotated, Any
 
+from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from switch_core.bridges.agent.protocol.agent_core import AgentCore
@@ -33,10 +34,12 @@ from switch_core.db.stores.template_store import TemplateStore
 from switch_core.db.stores.usage_store import UsageStore
 from switch_core.db.stores.user_store import UserStore
 from switch_core.gateway.invite_mail import InviteMailer
+from switch_core.organization_admin_notices import OrganizationAdminNotices
 from switch_core.organization_directory import OrganizationDirectory
 from switch_core.room_service import RoomService
 from switch_core.rooms_yaml import RoomYamlService
 from switch_core.telemetry import TelemetryService
+from switch_core.trust.connection_check import TrustConnectionCheck
 from switch_core.user_changes import LocalUserChanges
 
 _state: dict[str, Any] = {}
@@ -69,7 +72,8 @@ def init_dependencies(
     invite_mailer: InviteMailer | None,
     user_changes: LocalUserChanges,
     config: SwitchConfig,
-    trust_settings_changed: Callable[[], None] | None = None,
+    trust_connection_check: TrustConnectionCheck,
+    trust_settings_changed: Callable[[str], None] | None = None,
 ) -> None:
     _state["agent_store"] = agent_store
     _state["room_store"] = room_store
@@ -97,6 +101,7 @@ def init_dependencies(
     _state["user_changes"] = user_changes
     _state["config"] = config
     _state["trust_settings_changed"] = trust_settings_changed
+    _state["trust_connection_check"] = trust_connection_check
 
 
 async def get_session() -> AsyncIterator[AsyncSession]:
@@ -251,13 +256,17 @@ def get_config() -> SwitchConfig:
     return _state["config"]  # type: ignore[no-any-return]
 
 
-def trust_settings_changed() -> None:
-    """Tell every process the Switch Trust settings changed, once the change
-    has committed (`trust/signals.py`). Nothing is wired to hear it in a route
-    test."""
+def trust_settings_changed(organization_id: str) -> None:
+    """Tell every process the organization's Switch Trust settings changed,
+    once the change has committed (`trust/signals.py`). Nothing is wired to
+    hear it in a route test."""
     changed = _state.get("trust_settings_changed")
     if changed is not None:
-        changed()
+        changed(organization_id)
+
+
+def get_trust_connection_check() -> TrustConnectionCheck:
+    return _state["trust_connection_check"]  # type: ignore[no-any-return]
 
 
 def get_protocol() -> AgentCore:
@@ -296,6 +305,20 @@ def get_invite_mailer() -> InviteMailer | None:
     """None when no SMTP relay is configured: an addressed invitation is
     still minted, and the response says nothing was sent."""
     return _state["invite_mailer"]  # type: ignore[no-any-return]
+
+
+def get_organization_admin_notices(
+    session_factory: Annotated[Any, Depends(get_session_factory)],
+    mailer: Annotated[InviteMailer | None, Depends(get_invite_mailer)],
+    config: Annotated[SwitchConfig, Depends(get_config)],
+) -> OrganizationAdminNotices:
+    """E-mails to an organization's admins about who administers it, through
+    the relay invitations go through, linking to the dashboard."""
+    return OrganizationAdminNotices(
+        session_factory=session_factory,
+        mailer=mailer,
+        dashboard_base_url=config.dashboard_base_url,
+    )
 
 
 def get_install_service() -> MessagingInstallService | None:

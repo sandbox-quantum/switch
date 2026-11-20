@@ -1,5 +1,5 @@
 """Templates that come with Switch: served on every workspace from the
-package, the document chosen by the agent_management flag, never changed."""
+package, the managed document where a template has two, never changed."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ from switch_core.official_templates import (
     _SHIPPED,
     OfficialTemplate,
     current_revision,
+    document_in,
     official_template,
     official_templates,
     released_agent_fingerprints,
@@ -31,16 +32,10 @@ _PACKAGED = _REPO / "core" / "switch_core" / "official_templates"
 _PLAYBOOK = _PACKAGED / "switch-buddy" / "PLAYBOOK.md"
 
 
-def _agent_templates(
-    agent_management: bool, switch_buddy: bool
-) -> list[OfficialTemplate]:
+def _agent_templates(switch_buddy: bool) -> list[OfficialTemplate]:
     """The official agent templates, without the room templates (see
     test_official_room_templates)."""
-    return [
-        t
-        for t in official_templates(agent_management, switch_buddy)
-        if t.kind == "agent"
-    ]
+    return [t for t in official_templates(switch_buddy) if t.kind == "agent"]
 
 
 def test_the_switch_expert_copies_match_the_repository():
@@ -54,33 +49,24 @@ def test_the_switch_expert_copies_match_the_repository():
         )
 
 
-def test_the_flag_picks_the_document():
-    managed = official_template(
-        "official:switch-expert", agent_management=True, switch_buddy=False
-    )
-    console = official_template(
-        "official:switch-expert", agent_management=False, switch_buddy=False
-    )
-    assert managed is not None and console is not None
-    assert yaml.safe_load(managed.content)["version"] == 2
-    assert yaml.safe_load(console.content)["version"] == 1
+def test_the_server_serves_the_managed_document():
+    served = official_template("official:switch-expert", switch_buddy=False)
+    assert served is not None
+    assert yaml.safe_load(served.content)["version"] == 2
+    console = document_in(_PACKAGED / "switch-expert", agent_management=False)
+    assert yaml.safe_load(console)["version"] == 1
 
 
 def test_switch_expert_is_served_only_where_switch_buddy_is_not():
     """Buddy covers what the Switch expert does, so a server offers exactly
     one built-in assistant: buddy where it is served, the expert elsewhere."""
-    assert [t.id for t in _agent_templates(True, switch_buddy=True)] == [
+    assert [t.id for t in _agent_templates(switch_buddy=True)] == [
         "official:switch-buddy"
     ]
-    assert official_template("official:switch-expert", True, switch_buddy=True) is None
-    for agent_management, switch_buddy in (
-        (False, False),
-        (False, True),
-        (True, False),
-    ):
-        assert [t.id for t in _agent_templates(agent_management, switch_buddy)] == [
-            "official:switch-expert"
-        ]
+    assert official_template("official:switch-expert", switch_buddy=True) is None
+    assert [t.id for t in _agent_templates(switch_buddy=False)] == [
+        "official:switch-expert"
+    ]
 
 
 def test_switch_buddy_reads_the_published_docs_not_a_clone():
@@ -98,8 +84,8 @@ def test_switch_buddy_reads_the_published_docs_not_a_clone():
 
 
 def test_the_instructions_are_written_in_and_the_documents_are_clean():
-    for flag in (True, False):
-        for template in _agent_templates(flag, switch_buddy=True):
+    for switch_buddy in (True, False):
+        for template in _agent_templates(switch_buddy):
             data = yaml.safe_load(template.content)
             agent = (
                 next(iter(data["resources"].values()))
@@ -114,30 +100,26 @@ def test_the_instructions_are_written_in_and_the_documents_are_clean():
 def test_every_official_template_s_instructions_fit_the_server_limit():
     """The server refuses longer agent instructions, so an AGENT.md past it
     is a template nobody can create."""
-    for agent_management in (True, False):
-        for switch_buddy in (True, False):
-            for template in _agent_templates(agent_management, switch_buddy):
-                data = yaml.safe_load(template.content)
-                agents = (
-                    [r for r in data["resources"].values() if r["type"] == "agent"]
-                    if "resources" in data
-                    else [data["agent"]]
-                )
-                for agent in agents:
-                    # A template with a repo appends its note to the instructions.
-                    note = repo_note(agent["repo"]) if agent.get("repo") else ""
-                    size = len((agent["instructions"] + note).encode())
-                    assert size <= MAX_INSTRUCTIONS_BYTES, (template.id, size)
+    for switch_buddy in (True, False):
+        for template in _agent_templates(switch_buddy):
+            data = yaml.safe_load(template.content)
+            agents = (
+                [r for r in data["resources"].values() if r["type"] == "agent"]
+                if "resources" in data
+                else [data["agent"]]
+            )
+            for agent in agents:
+                # A template with a repo appends its note to the instructions.
+                note = repo_note(agent["repo"]) if agent.get("repo") else ""
+                size = len((agent["instructions"] + note).encode())
+                assert size <= MAX_INSTRUCTIONS_BYTES, (template.id, size)
 
 
-def test_switch_buddy_is_served_only_with_its_flag_and_agent_management():
-    for agent_management, switch_buddy in ((False, True), (True, False)):
-        assert [t.id for t in _agent_templates(agent_management, switch_buddy)] == [
-            "official:switch-expert"
-        ]
-    buddy = official_template(
-        "official:switch-buddy", agent_management=True, switch_buddy=True
-    )
+def test_switch_buddy_is_served_only_with_its_flag():
+    assert [t.id for t in _agent_templates(switch_buddy=False)] == [
+        "official:switch-expert"
+    ]
+    buddy = official_template("official:switch-buddy", switch_buddy=True)
     assert buddy is not None
     agent = yaml.safe_load(buddy.content)["resources"]["buddy"]
     assert agent["can_manage_agents"] is True
@@ -147,20 +129,13 @@ def test_switch_buddy_is_served_only_with_its_flag_and_agent_management():
 def test_only_switch_buddy_tells_a_person_not_to_run_it():
     """Switch Console makes each person's buddy itself, so a client greys Run
     on it; the expert is run like any other template."""
-    buddy = official_template(
-        "official:switch-buddy", agent_management=True, switch_buddy=True
-    )
+    buddy = official_template("official:switch-buddy", switch_buddy=True)
     assert buddy is not None
     assert buddy.run_blocked_reason == (
         "Switch Console sets up your switch-buddy for you."
     )
-    for agent_management in (False, True):
-        (expert,) = [
-            t
-            for t in official_templates(agent_management, switch_buddy=False)
-            if t.kind == "agent"
-        ]
-        assert expert.run_blocked_reason is None
+    (expert,) = _agent_templates(switch_buddy=False)
+    assert expert.run_blocked_reason is None
 
 
 def test_switch_buddy_puts_itself_in_the_rooms_it_creates():
@@ -182,11 +157,123 @@ def test_switch_buddy_describes_the_default_addressing():
     assert "A new agent answers only its owner" not in instructions
 
 
-def test_an_unknown_official_id_is_none():
+def _buddy_words() -> str:
+    return " ".join((_PACKAGED / "switch-buddy" / "AGENT.md").read_text().split())
+
+
+def _playbook_table(heading: str) -> dict[str, list[str]]:
+    """A playbook table's rows, by their first cell, as the comma-separated
+    names in the second."""
+    section = _PLAYBOOK.read_text().split(f"## {heading}", 1)[1].split("\n## ", 1)[0]
+    rows = [
+        [cell.strip() for cell in row.split("|")[1:3]]
+        for row in section.splitlines()
+        if row.startswith("| ") and "---" not in row and "Their answer" not in row
+    ]
+    return {
+        answer: [name.strip() for name in names.split(",")] for answer, names in rows
+    }
+
+
+def test_switch_buddy_asks_the_work_question_as_a_numbered_list_with_skip():
+    instructions = _buddy_words()
     assert (
-        official_template("official:nope", agent_management=True, switch_buddy=True)
-        is None
+        'one message, "What do you mostly work on?", listing Engineering, Product, '
+        'Design, Sales, Marketing, Other and "Skip for now", numbered, in that order. '
+        "Not a question form"
+    ) in instructions
+    assert "the work question is a form" not in instructions
+    assert "Do not repeat it as text." in instructions
+    assert 'ask the work question and run "Their first agent"' in instructions
+
+
+def test_switch_buddy_offers_skip_on_every_onboarding_step():
+    instructions = _buddy_words()
+    assert 'Every onboarding step has "Skip for now".' in instructions
+    assert '"No problem, you can come back to this any time."' in instructions
+    assert "Skip for now: the skip line, then stop suggesting" in instructions
+    assert "Open questions (their job" not in instructions
+    assert '"Want to connect your tools?"' in instructions
+    assert "ends with **Something else** and **Skip for now**" in instructions
+
+
+def test_switch_buddy_suggests_only_connectors_switch_has():
+    rows = _playbook_table("Onboarding connectors")
+    catalog = {
+        yaml.safe_load(path.read_text())["name"]
+        for path in (_PACKAGED.parent / "connections" / "catalog").glob("*/*.yaml")
+    }
+    names = {name for names in rows.values() for name in names}
+    assert set(rows) == {
+        "Engineering",
+        "Product",
+        "Design",
+        "Sales",
+        "Marketing",
+        "Other, or skipped",
+    }
+    assert names <= catalog, names - catalog
+
+
+def test_switch_buddy_suggests_only_room_templates_switch_ships():
+    rows = _playbook_table("Room templates by work")
+    catalogue = yaml.safe_load((_PACKAGED / "rooms" / "catalogue.yaml").read_text())
+    ids = {template for templates in rows.values() for template in templates}
+    assert len(rows) == 6 and all(len(templates) <= 3 for templates in rows.values())
+    assert {f"official:{slug}" for slug in catalogue} >= ids, ids
+
+
+def test_switch_buddy_offers_templates_for_a_new_room_and_confirms_first():
+    instructions = _buddy_words()
+    assert (
+        "Unless this chat already says what they work on, ask the work question first."
+        in instructions
     )
+    assert 'One form, "Start from a template?"' in instructions
+    assert 'plus "Start from scratch". None listed: leave the form out.' in instructions
+    assert (
+        "then confirm in one proposal (the room's name, the agents it adds, where it lives)"
+        in instructions
+    )
+    assert "`run_template` after a yes." in instructions
+
+
+def test_switch_buddy_knows_both_home_chips_and_template_rooms_are_private():
+    instructions = _buddy_words()
+    assert (
+        '"Create a new room" and "Create a room for my team" send just that'
+        in instructions
+    )
+    assert (
+        "or ran an official room template whose room came back private" in instructions
+    )
+
+
+def test_switch_buddy_never_loops_on_a_refused_room():
+    """A run refused for lack of "can manage agents" falls back to building the
+    room; one refused over their linked account offers linking or public, and
+    is never retried into the same refusal."""
+    instructions = _buddy_words()
+    assert "A refusal: say why, once, in plain words." in instructions
+    # Every linked-account refusal from a private channel ends with these words.
+    assert (
+        'One ending "or choose a public channel" is about their linked account'
+        in instructions
+    )
+    # run_template takes no channel_type: public is a room from scratch, never the template.
+    assert (
+        "or a public room from scratch (`create_room` with `channel_type` "
+        '"channel_public"). A template can\'t be made public: never offer that. '
+        "Never retry into the same refusal." in instructions
+    )
+    assert (
+        "Any other refusal of a template (you can't manage agents, say): go on as for "
+        '"Start from scratch".'
+    ) in instructions
+
+
+def test_an_unknown_official_id_is_none():
+    assert official_template("official:nope", switch_buddy=True) is None
 
 
 def test_a_release_records_a_revision_for_each_template_that_changed(
@@ -216,7 +303,7 @@ def test_a_release_records_a_revision_for_each_template_that_changed(
 
 
 def test_a_template_is_served_at_its_last_revision():
-    buddy = official_template("official:switch-buddy", True, switch_buddy=True)
+    buddy = official_template("official:switch-buddy", switch_buddy=True)
     assert buddy is not None
     assert buddy.version == revisions.recorded("switch-buddy")[-1]["revision"]
     assert buddy.version == current_revision("switch-buddy")
@@ -226,8 +313,8 @@ def test_what_a_revision_sets_on_its_agents_does_not_depend_on_who_runs_it():
     """Old agents are matched against the fingerprints of every revision,
     rendered with sample inputs; a person's own inputs must give the same."""
     for shipped in _SHIPPED:
-        document = official_template(f"official:{shipped.slug}", True, True) or (
-            official_template(f"official:{shipped.slug}", True, False)
+        document = official_template(f"official:{shipped.slug}", True) or (
+            official_template(f"official:{shipped.slug}", False)
         )
         assert document is not None
         sample = revisions.entry_for(_PACKAGED / shipped.slug)["agents"]
@@ -334,7 +421,7 @@ def test_switch_buddy_offers_choices_in_its_question_form():
     assert "use your host's question form" in text
     assert "`AskUserQuestion`" in text
     assert "one single-choice question per form" in text
-    assert "With no question form, list numbered options" in text
+    assert "or no question form: list numbered options" in text
     # Form answers are not consent to create: the proposal is its own form.
     assert "end with a separate proposal" in text
     assert "create only after explicit confirmation" in text
@@ -388,3 +475,62 @@ def test_switch_buddy_always_tells_telegram_users_to_reply_to_the_bot():
         "reply to a Switch bot message with the agent's exact name and their request"
         in text
     )
+
+
+def test_switch_buddy_links_pages_that_still_have_what_it_sends_people_for():
+    """Account linking and guardrails left the server's home for Settings and
+    Admin; a link to home leaves the person with nothing to click."""
+    texts = [
+        (_PACKAGED / "switch-buddy" / "AGENT.md").read_text(),
+        _PLAYBOOK.read_text(),
+    ]
+    for text in texts:
+        for line in text.splitlines():
+            if "switchdash://open/home" in line:
+                assert "the workspace at a glance" in line, line
+    joined = " ".join(" ".join(texts).split())
+    assert "switchdash://open/settings?tab=messaging-apps" in joined
+    assert "switchdash://open/admin?tab=switch-trust" in joined
+
+
+def test_switch_buddy_names_only_choices_the_connect_dialog_offers():
+    """The connect dialog shows "Use your own app instead" only beside an
+    official app to install; where people bring their own app, the form opens
+    straight away, so buddy must not send them looking for it."""
+    playbook = " ".join(_PLAYBOOK.read_text().split())
+    assert "Use your own app instead" not in playbook
+    assert "pick Slack under Messaging app" in playbook
+
+
+def test_switch_buddy_joins_and_links_the_room_a_template_makes():
+    """A template's room does not include buddy, so it adds itself before
+    asking the first question, and always hands the person a link."""
+    text = " ".join((_PACKAGED / "switch-buddy" / "AGENT.md").read_text().split())
+    assert "has a `kickoff` asks its agents for you: don't join it" in text
+    assert "add yourself with `invite_agent_to_room`" in text
+    assert "switchdash://open/room/<room-id>" in text
+    assert 'Never end the turn on "creating it now"' in text
+
+
+def test_switch_buddy_offers_something_else_and_asks_what_the_product_is():
+    text = " ".join((_PACKAGED / "switch-buddy" / "AGENT.md").read_text().split())
+    # Room suggestions and the agent fallback alike.
+    assert (
+        "Every list of suggestions, rooms or agents, ends with **Something else**"
+        in text
+    )
+    assert "ask for one line (what it is, who it's for)" in text
+    # The new room's link closes the reply, where it can't be missed.
+    assert "**[Open <room name> →](switchdash://open/room/<room-id>)**" in text
+    # Defaults are proposed in plain words, not the template's switch names.
+    assert 'never a parameter\'s name or "bypass" / "auto mode"' in text
+
+
+def test_switch_buddy_keeps_question_forms_within_four_options():
+    instructions = _buddy_words()
+    assert "A form takes at most four options per question" in instructions
+    assert "at most 25 options" not in instructions
+    assert (
+        "In a question form, Something else is the form's own typed answer, so the "
+        "form holds at most three suggestions and Skip for now, always as its last option."
+    ) in instructions

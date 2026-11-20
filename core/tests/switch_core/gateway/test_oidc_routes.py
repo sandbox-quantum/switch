@@ -1157,6 +1157,13 @@ class TestAuthConfigEndpoint:
         assert result.oidc_enabled is False
         assert result.password_login_enabled is False
 
+    @pytest.mark.parametrize("enabled", [False, True])
+    async def test_reports_test_account_reset_support(self, enabled: bool) -> None:
+        result = await auth_config(
+            config=_config(gateway_allow_test_account_reset=enabled)
+        )
+        assert result.test_account_reset_enabled is enabled
+
     async def test_reports_the_signup_mode(self) -> None:
         result = await auth_config(config=_config(gateway_signup_mode="invite_only"))
         assert result.signup_mode == "invite_only"

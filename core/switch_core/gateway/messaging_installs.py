@@ -134,7 +134,7 @@ def _require_installs(
 
 def _require_tenant_admin(is_admin: bool) -> None:
     if not is_admin:
-        raise HTTPException(status_code=403, detail="Tenant admin access required")
+        raise HTTPException(status_code=403, detail="Workspace admin access required")
 
 
 def _by_claim(service: MessagingInstallService, platform: str) -> bool:
@@ -294,6 +294,8 @@ async def list_installs(
 def _room_allows(principal: Principal, action: Action, room: Room | None) -> bool:
     """Whether a chat's room lets `principal` act on it; a chat with no room
     left (an ended one) has nothing private to show."""
+    if action == "read":
+        return room is None or room_policy.visible_from_outside(principal, room)
     return room is None or can(principal, action, room)
 
 
@@ -328,7 +330,7 @@ def _disconnect_refusal(
     tenant's again.
     """
     if not _installs_by_claim_or_gone(service, platform):
-        return None if principal.is_admin else "Tenant admin access required"
+        return None if principal.is_admin else "Workspace admin access required"
     if room is None:
         return (
             None

@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from switch_core.bridges.agent.protocol.types import (
+    SUBAGENTS_MAX,
     AgentEvent,
     AgentStatus,
     IntegrationProfile,
@@ -72,7 +73,7 @@ class RegisterKnownAgentBulkRequest(BaseModel):
     agent_type: str
     parent_agent_id: str
     options: dict[str, Any] = {}
-    subagents: list[BulkSubagentSpec]
+    subagents: list[BulkSubagentSpec] = Field(max_length=SUBAGENTS_MAX)
     overwrite: bool = False
 
 

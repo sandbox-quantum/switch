@@ -8,6 +8,7 @@ import uuid
 import httpx
 from sqlalchemy import func, select
 
+from switch_core.bridges.collaboration.models import BridgeOperationError
 from switch_core.db.models import (
     Agent,
     Client,
@@ -116,6 +117,33 @@ async def test_bridge_with_channel_creation_disabled_returns_422_chat_not_create
     assert response.status_code == 422
     assert _code(response) == "CHAT_NOT_CREATED"
     assert core.dm_calls == []
+    async with chats.factory() as session:
+        room_count = await session.scalar(
+            select(func.count()).select_from(Room).where(Room.bridge_id == bridge_id)
+        )
+    assert room_count == 0
+
+
+async def test_platform_refusing_the_private_channel_returns_502_with_its_reason(
+    chats: _Harness,
+) -> None:
+    agent = await chats.agent("helper", owner=chats.alice)
+    bridge_id, core = await _slack(chats, link=chats.alice)
+    reason = (
+        "Discord would not create channel #helper-alice-s (403, code 50013: "
+        "Missing Permissions). The Switch bot's role is missing Manage Channels."
+    )
+
+    async def refuse(**kwargs: str) -> str:
+        raise BridgeOperationError(reason)
+
+    core.adapter.create_dm_channel = refuse
+
+    response = await _create(chats, [agent], bridge_id)
+
+    assert response.status_code == 502, response.text
+    assert _code(response) == "CHAT_NOT_CREATED"
+    assert response.json()["detail"]["message"] == reason
     async with chats.factory() as session:
         room_count = await session.scalar(
             select(func.count()).select_from(Room).where(Room.bridge_id == bridge_id)

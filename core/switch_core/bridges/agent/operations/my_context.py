@@ -100,13 +100,13 @@ async def get_my_context() -> dict[str, Any]:
         workspace has it on. `unavailable_code` says why this server can't,
         one of "switched_off" (its operator turned it off), "needs_https" (it
         can't work on this server), "app_not_set_up" (its operator can set it
-        up under Admin → Connector apps in Switch Console),
+        up under Settings → Connector apps in Switch Console),
         "organization_app_unusable" (the app your organization saved for it
         can't be used), "not_set_up", "not_fully_set_up" or
         "key_never_expires" (it connects with a key that never expires,
         which Switch does not hand to agents).
         `workspace_enabled` is false where the workspace has it switched off,
-        which a workspace admin changes under Admin → Connectors in Switch
+        which a workspace admin changes under Settings → Connectors in Switch
         Console; until then nobody in it can connect it or give it to agents.
         `connection` is your owner's: "not_connected", "active",
         "needs_reauthorization" (including one made through an app this server
@@ -189,7 +189,7 @@ async def get_my_context() -> dict[str, Any]:
             if protocol.service_broker is None
             else await protocol.service_broker.workspace_disabled(session)
         )
-        bridges = await protocol.bridge_store.get_all(session)
+        bridges = await protocol.bridge_store.get_listed(session)
         services = await _services(
             session, protocol, connections, agents, grants, switched_off
         )

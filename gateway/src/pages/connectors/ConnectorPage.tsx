@@ -1,4 +1,6 @@
 import ArrowBack from "@mui/icons-material/ArrowBack";
+import BlockOutlined from "@mui/icons-material/BlockOutlined";
+import KeyOutlined from "@mui/icons-material/KeyOutlined";
 import OpenInNewOutlined from "@mui/icons-material/OpenInNewOutlined";
 import {
   Alert,
@@ -8,29 +10,35 @@ import {
   CircularProgress,
   Divider,
   Link,
-  Snackbar,
   Stack,
   TextField,
+  Tooltip,
   Typography,
 } from "@mui/material";
-import { type ReactNode, useCallback, useEffect, useState } from "react";
-import { Link as RouterLink, useLocation, useNavigate, useParams } from "react-router";
+import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { Link as RouterLink, useLocation, useNavigate, useParams, useSearchParams } from "react-router";
 import BrandTile from "../../components/connectors/BrandTile";
 import ConfirmDialog from "../../components/ConfirmDialog";
 import InfoTip from "../../components/InfoTip";
 import PageBanner from "../../components/PageBanner";
+import SuccessSnackbar from "../../components/SuccessSnackbar";
 import {
+  ApiError,
   type ConnectedPerson,
   type GitHubConnection,
   type ServiceAgent,
   type ServiceConnection,
   type ServiceInWorkspace,
   disconnectService,
+  dropSignIn,
   fetchGitHubConnection,
   fetchServiceAgents,
   fetchServiceConnections,
   fetchServiceInWorkspace,
+  fetchSignInOutcome,
+  loadAgents,
   revokeServiceConnection,
+  setWorkspaceService,
 } from "../../data/api";
 import { useAuth } from "../../data/AuthContext";
 import { formatDate } from "../../theme/format";
@@ -38,26 +46,29 @@ import ConnectorAgents from "./ConnectorAgents";
 import {
   CONSOLE_CONNECT_NOTE,
   accessLastsLabel,
+  brokenLine,
   connectWay,
   connectedAsLine,
+  disconnectDescription,
   isConnected,
+  isPasted,
   offNotice,
   personLine,
   revokeConfirmation,
   signInLabel,
+  signInOutcomeMessage,
 } from "./connectorProfile";
 import KeyDialog from "./KeyDialog";
+import PasteDialog from "./PasteDialog";
+import { type Back, takeBackAfterSignIn, useLeaveToSignIn } from "./signIn";
 
 /** Where the back button goes: the page that opened this one, when it said,
  * else the connector catalogue. */
-interface Back {
-  label: string;
-  to: string;
-}
+const CATALOGUE: Back = { label: "Connectors", to: "/connectors" };
 
-function backOf(state: unknown): Back {
+function backOf(state: unknown): Back | null {
   const back = (state as { back?: Back } | null)?.back;
-  return back && typeof back.to === "string" ? back : { label: "Connectors", to: "/connectors" };
+  return back && typeof back.to === "string" ? back : null;
 }
 
 function Fact({ label, quiet, children }: { label: string; quiet?: boolean; children: ReactNode }) {
@@ -81,8 +92,9 @@ function General({ connection }: { connection: ServiceConnection }) {
         <Fact label="Category">
           <Chip size="small" variant="outlined" label={connection.category} />
         </Fact>
-        <Fact label="Sign-in">{signInLabel(connection)}</Fact>
-        <Fact label="Agent access lasts">{accessLastsLabel(connection)}</Fact>
+        {/* How one not built yet signs in, and for how long, is not known. */}
+        {connection.enabled && <Fact label="Sign-in">{signInLabel(connection)}</Fact>}
+        {connection.enabled && <Fact label="Agent access lasts">{accessLastsLabel(connection)}</Fact>}
       </Box>
       {(connection.publisher || connection.links || connection.mcp_urls.length > 0) && (
         <Box
@@ -165,6 +177,9 @@ function Keys({ connection, onReplace }: { connection: ServiceConnection; onRepl
   );
 }
 
+/** Everyone else here connected to it, for a workspace admin. While the
+ * workspace has it off, every connection is suspended: kept, and of no use to
+ * an agent until it is turned back on. */
 function ConnectedPeople({
   connection,
   people,
@@ -176,6 +191,7 @@ function ConnectedPeople({
   workspaceName: string;
   onRevoke: (person: ConnectedPerson) => void;
 }) {
+  const suspended = !connection.workspace_enabled;
   const others = people.filter((person) => person.can_revoke);
   return (
     <Stack spacing={1} component="section" aria-label={`Connected in ${workspaceName}`}>
@@ -199,6 +215,7 @@ function ConnectedPeople({
                   <Typography variant="body2" sx={{ fontWeight: 500 }}>
                     {person.name}
                   </Typography>
+                  {suspended && <Chip size="small" label="Suspended" />}
                   {person.status !== "active" && (
                     <Chip size="small" color="warning" variant="outlined" label="Needs reconnecting" />
                   )}
@@ -225,15 +242,17 @@ function ConnectedPeople({
  * with Revoke. Opened from the catalogue and from Settings; Back returns to
  * whichever opened it.
  *
- * A key is pasted here. A sign-in at the vendor finishes in Switch Console,
- * which holds the listener the vendor sends people back to; the page says so
- * rather than offering a button that can't finish.
+ * A key is pasted here, and so is a token (or keys) in place of a sign-in
+ * that only Switch Console can finish. A sign-in at the vendor that returns to Switch
+ * leaves from here and comes back here with `?sign_in=<id>`, which the page
+ * reads to say how it ended. One that can only return to Switch Console's
+ * listener finishes there; the page says so rather than offering a button
+ * that can't finish.
  */
 export default function ConnectorPage() {
   const { connectorId = "" } = useParams();
   const location = useLocation();
   const navigate = useNavigate();
-  const back = backOf(location.state);
   const { session, capabilities } = useAuth();
   const meId = session?.user.id ?? "";
   const workspaceName = session?.tenant?.name ?? "this workspace";
@@ -242,6 +261,9 @@ export default function ConnectorPage() {
   const [connection, setConnection] = useState<ServiceConnection | null>(null);
   const [own, setOwn] = useState<ServiceAgent[]>([]);
   const [inWorkspace, setInWorkspace] = useState<ServiceInWorkspace | null>(null);
+  // Each agent's type, by id, for the agent cards: the connector's own lists
+  // name the agents but not what they are.
+  const [agentTypes, setAgentTypes] = useState<ReadonlyMap<string, string>>(new Map());
   // Whether the agents and the people connected were read: until they are,
   // or when reading them failed, neither list is drawn, so a failure never
   // reads as "nobody uses it".
@@ -253,8 +275,28 @@ export default function ConnectorPage() {
   const [toast, setToast] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [keyDialog, setKeyDialog] = useState<"add" | "replace" | null>(null);
+  const [pasteDialog, setPasteDialog] = useState<"add" | "replace" | null>(null);
   const [disconnecting, setDisconnecting] = useState(false);
   const [revoking, setRevoking] = useState<ConnectedPerson | null>(null);
+  const [turningOn, setTurningOn] = useState(false);
+  const { leaving, leave } = useLeaveToSignIn();
+  const [signInError, setSignInError] = useState<string | null>(null);
+  const [params, setParams] = useSearchParams();
+  const returnedFrom = params.get("sign_in");
+  // Back from the vendor's sign-in, the page arrives with no history state:
+  // where Back led was kept for the way back.
+  const [backAfterSignIn] = useState(() =>
+    returnedFrom !== null && backOf(location.state) === null ? takeBackAfterSignIn(connectorId) : null,
+  );
+  const opener = backOf(location.state) ?? backAfterSignIn;
+  const back = opener ?? CATALOGUE;
+  // The sign-in already read: its outcome is dropped once read, so reading
+  // it twice (a re-render, or React's development double effect) would say
+  // it had expired.
+  const read = useRef<string | null>(null);
+  // The connector shown now, for an outcome read for one the page has since
+  // moved on from, which then changes nothing.
+  const shown = useRef(connectorId);
 
   const load = useCallback(async () => {
     try {
@@ -265,12 +307,14 @@ export default function ConnectorPage() {
       }
       setConnection(found);
       if (!found.enabled) return;
-      const [agents, workspace] = await Promise.all([
+      const [agents, workspace, listed] = await Promise.all([
         fetchServiceAgents(connectorId),
         admin ? fetchServiceInWorkspace(connectorId) : Promise.resolve(null),
+        loadAgents(),
       ]);
       setOwn(agents);
       setInWorkspace(workspace);
+      setAgentTypes(new Map(listed.map((entry) => [entry.id, entry.connector_type])));
       setListsLoaded(true);
       if (connectorId === "github" && found.status === "active")
         fetchGitHubConnection().then(setGitHub, (err: unknown) =>
@@ -287,10 +331,76 @@ export default function ConnectorPage() {
     void load();
   }, [load]);
 
+  useEffect(() => {
+    shown.current = connectorId;
+  }, [connectorId]);
+
+  useEffect(() => {
+    // Read once this connector is, so what is said names it.
+    if (!returnedFrom || connection?.slug !== connectorId || read.current === returnedFrom) return;
+    read.current = returnedFrom;
+    const forId = connectorId;
+    const name = connection.name;
+    const stillHere = () => shown.current === forId;
+    fetchSignInOutcome(forId, returnedFrom)
+      .then((outcome) => {
+        if (stillHere()) {
+          const said = signInOutcomeMessage(outcome, name);
+          if (said.toast) setToast(said.toast);
+          setSignInError(said.error);
+          setNotice(outcome.warning);
+        }
+        return dropSignIn(forId, returnedFrom).catch((err: unknown) =>
+          // Left to expire on its own in minutes; nothing is lost.
+          console.warn("Could not drop the finished sign-in", err),
+        );
+      })
+      .catch((err: unknown) => {
+        if (!stillHere()) return;
+        setSignInError(
+          err instanceof ApiError && err.status === 410
+            ? `That ${name} sign-in has expired. Connect again.`
+            : err instanceof Error
+              ? err.message
+              : String(err),
+        );
+      })
+      .finally(() => {
+        if (!stillHere()) return;
+        void load();
+        const rest = new URLSearchParams(params);
+        rest.delete("sign_in");
+        setParams(rest, { replace: true, state: opener === null ? location.state : { ...location.state, back: opener } });
+      });
+  }, [returnedFrom, connectorId, connection, load, params, setParams, location.state, opener]);
+
+  const connect = () => {
+    setSignInError(null);
+    leave(connectorId, opener).catch((err: unknown) =>
+      setSignInError(err instanceof Error ? err.message : String(err)),
+    );
+  };
+
   const changed = (message: string | null, warning: string | null) => {
     if (message) setToast(message);
     setNotice(warning);
     void load();
+  };
+
+  // The page is read again either way, so a refusal shows against what is true now.
+  const turnOn = async (name: string) => {
+    setTurningOn(true);
+    let failure: string | null = null;
+    try {
+      const { warning } = await setWorkspaceService(connectorId, true);
+      setToast(`${name} is on in ${workspaceName}.`);
+      setNotice(warning);
+    } catch (err) {
+      failure = err instanceof Error ? err.message : String(err);
+    }
+    await load();
+    if (failure) setError(failure);
+    setTurningOn(false);
   };
 
   const backButton = (
@@ -322,8 +432,22 @@ export default function ConnectorPage() {
 
   const connectedAs = connectedAsLine(connection);
   const way = connectWay(connection);
-  const off = offNotice(connection, workspaceName);
+  // One not built yet is not off anywhere: there is nothing to turn on.
+  const off = connection.enabled ? offNotice(connection, workspaceName) : null;
   const connected = isConnected(connection);
+  // Why it can't be connected from here now, said on the greyed button in its
+  // place; null where it can, or where it isn't built yet.
+  const blocked =
+    !connection.enabled || connected || way !== null
+      ? null
+      : (off?.text ?? connection.unavailable_reason ?? "It can't be connected here.");
+  const keyBased = connection.auth_type === "api_key";
+  const broken = brokenLine(connection);
+  // What a pasted connection is replaced with: pasted the same way where
+  // that is still offered here, else the first way that is.
+  const replaceWith = isPasted(connection)
+    ? (connection.paste.find((way) => way.method === connection.method) ?? connection.paste[0] ?? null)
+    : null;
 
   return (
     <Stack spacing={4}>
@@ -338,7 +462,7 @@ export default function ConnectorPage() {
               </Typography>
               {!connection.enabled && <Chip size="small" label="Coming soon" />}
               {connection.enabled && !connection.workspace_enabled && (
-                <Chip size="small" label={`Off in ${workspaceName}`} />
+                <Chip size="small" icon={<BlockOutlined />} label={`Off in ${workspaceName}`} />
               )}
             </Stack>
             <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
@@ -349,18 +473,46 @@ export default function ConnectorPage() {
                 {connectedAs}
               </Typography>
             )}
-            {connected && connection.status !== "active" && (
+            {broken && (
               <Typography variant="body2" color="warning.main" sx={{ mt: 0.5 }}>
-                {connection.auth_type === "api_key"
-                  ? "Its key needs replacing before agents can use it again."
-                  : "It needs a fresh sign-in, from Switch Console, before agents can use it again."}
+                {broken}
               </Typography>
             )}
           </Box>
           <Stack direction="row" spacing={1} sx={{ flexShrink: 0, alignItems: "center" }}>
             {!connected && way === "key" && (
-              <Button variant="contained" onClick={() => setKeyDialog("add")}>
+              <Button variant="contained" startIcon={<KeyOutlined />} onClick={() => setKeyDialog("add")}>
                 Add keys
+              </Button>
+            )}
+            {blocked !== null && (
+              <Tooltip title={blocked}>
+                {/* A disabled button fires no events, so the tooltip listens on this. */}
+                <span>
+                  <Button variant="contained" disabled startIcon={keyBased ? <KeyOutlined /> : undefined}>
+                    {keyBased ? "Add keys" : "Connect"}
+                  </Button>
+                </span>
+              </Tooltip>
+            )}
+            {way === "web" && (!connected || broken) && (
+              <Button
+                variant={connected ? "outlined" : "contained"}
+                onClick={connect}
+                disabled={leaving !== null}
+                startIcon={leaving !== null ? <CircularProgress size={16} color="inherit" /> : undefined}
+              >
+                {connected ? "Reconnect" : "Connect"}
+              </Button>
+            )}
+            {!connected && way === "paste" && (
+              <Button variant="contained" onClick={() => setPasteDialog("add")}>
+                Connect
+              </Button>
+            )}
+            {connected && replaceWith && (
+              <Button variant={broken ? "contained" : "outlined"} onClick={() => setPasteDialog("replace")}>
+                {replaceWith.method === "token" ? "Replace token" : "Replace keys"}
               </Button>
             )}
             {!connected && way === "console" && (
@@ -386,19 +538,52 @@ export default function ConnectorPage() {
                 Organization settings
               </Button>
             ) : off.fixedIn === "workspace" && admin ? (
-              <Button component={RouterLink} to="/settings/connectors" size="small">
-                Workspace settings
+              <Button
+                size="small"
+                onClick={() => void turnOn(connection.name)}
+                disabled={turningOn}
+                startIcon={turningOn ? <CircularProgress size={16} color="inherit" /> : undefined}
+              >
+                Turn on
               </Button>
             ) : undefined
           }
         >
           {off.text}
+          {/* Everyone may read the workspace's connector settings, so someone
+              who can't change them is still pointed at where it is set. */}
+          {off.fixedIn === "workspace" && !admin && (
+            <>
+              {" "}
+              Set in{" "}
+              <Link component={RouterLink} to="/settings/connectors" color="inherit">
+                Settings › Connectors
+              </Link>
+              .
+            </>
+          )}
         </PageBanner>
       )}
       {connection.enabled && connection.workspace_enabled && connection.unavailable_reason && (
-        <PageBanner tone="warning">{connection.unavailable_reason}</PageBanner>
+        <PageBanner
+          tone="warning"
+          action={
+            connection.unavailable_code === "app_not_set_up" && capabilities.canManageConnectorApps ? (
+              <Button component={RouterLink} to={`/settings/org/connector-apps?set_up=${connection.slug}`} size="small">
+                Set up
+              </Button>
+            ) : undefined
+          }
+        >
+          {connection.unavailable_reason}
+        </PageBanner>
       )}
       {error && <Alert severity="error">{error}</Alert>}
+      {signInError && (
+        <Alert severity="error" onClose={() => setSignInError(null)}>
+          {signInError}
+        </Alert>
+      )}
       {notice && (
         <Alert severity="info" onClose={() => setNotice(null)}>
           {notice}
@@ -416,6 +601,7 @@ export default function ConnectorPage() {
           connection={connection}
           own={own}
           workspace={inWorkspace?.agents ?? null}
+          agentTypes={agentTypes}
           meId={meId}
           workspaceName={workspaceName}
           github={github}
@@ -440,14 +626,28 @@ export default function ConnectorPage() {
           onClose={() => setKeyDialog(null)}
           onSaved={(warning) => {
             setKeyDialog(null);
-            changed(keyDialog === "replace" ? "Keys replaced." : `${connection.name} is connected.`, warning);
+            changed(keyDialog === "replace" ? "Keys replaced." : `Connected ${connection.name}.`, warning);
+          }}
+        />
+      )}
+      {pasteDialog && (
+        <PasteDialog
+          connection={connection}
+          replacing={pasteDialog === "replace"}
+          onClose={() => setPasteDialog(null)}
+          onSaved={(warning) => {
+            setPasteDialog(null);
+            changed(pasteDialog === "replace" ? `${connection.name} is reconnected.` : `Connected ${connection.name}.`, warning);
           }}
         />
       )}
       <ConfirmDialog
         open={disconnecting}
         title={`Disconnect ${connection.name}?`}
-        description={`Your agents lose ${connection.name}: their grants on it are removed, and what was handed out to them is revoked.`}
+        description={disconnectDescription(
+          connection.name,
+          listsLoaded ? own.filter((agent) => agent.granted).length : null,
+        )}
         confirmLabel="Disconnect"
         tone="destructive"
         onConfirm={async () => {
@@ -469,7 +669,7 @@ export default function ConnectorPage() {
           onClose={() => setRevoking(null)}
         />
       )}
-      <Snackbar open={toast !== null} autoHideDuration={5000} onClose={() => setToast(null)} message={toast} />
+      <SuccessSnackbar message={toast} onClose={() => setToast(null)} />
     </Stack>
   );
 }

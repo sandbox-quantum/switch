@@ -32,6 +32,7 @@ from sqlalchemy import select
 from switch_core.attachments import parse_attachment_group
 from switch_core.authz import ORGANIZATION_ADMIN_TENANT_ROLE, TENANT_ADMIN_ROLES
 from switch_core.bridges.agent.commands import (
+    AGENT_GREETING_KEY,
     AGENT_GREETINGS,
     COMMANDS_BY_NAME,
     _addressed_by_name_or_role,
@@ -655,6 +656,7 @@ class AgentRecipient:
             self.agent.id,
             sender_role,
             notice,
+            mid_turn_delivery=self._mid_turn_delivery(),
             routed_reason=None,
             follow_up=None,
         )
@@ -712,6 +714,7 @@ class AgentRecipient:
                 self.agent.id,
                 sender_role,
                 notice,
+                mid_turn_delivery=self._mid_turn_delivery(),
                 routed_reason=None,
                 follow_up=_follow_up(decision),
             ),
@@ -807,6 +810,7 @@ class AgentRecipient:
                 self.agent.id,
                 sender_role,
                 notice,
+                mid_turn_delivery=self._mid_turn_delivery(),
                 routed_reason=reason,
                 follow_up=None,
             ),
@@ -1028,6 +1032,7 @@ class AgentRecipient:
                 ],
                 opening_message=opening,
                 sender_role=sender_role,
+                mid_turn_delivery=self._mid_turn_delivery(),
                 switch_notice=switch_notice,
                 follow_up=follow_up,
             )
@@ -1186,6 +1191,7 @@ class AgentRecipient:
             )
             return
         opening = opening_message_for(meta, self.agent.id)
+        extra_content: dict[str, object] | None = None
         if opening is not None:
             greeting = opening
         elif meta.console_chat:
@@ -1194,8 +1200,13 @@ class AgentRecipient:
             greeting = f"Hi! I'm {name} — how can I help?"
         else:
             greeting = random.choice(AGENT_GREETINGS).format(name=name)
+            extra_content = {AGENT_GREETING_KEY: True}
         await self.actor.send_message(
-            self._room.room_id, greeting, format="markdown", metered=False
+            self._room.room_id,
+            greeting,
+            format="markdown",
+            metered=False,
+            extra_content=extra_content,
         )
 
     # ── Commands ──────────────────────────────────────────────────────────────
@@ -1924,6 +1935,11 @@ class AgentRecipient:
         agent reads how it differs (`get_template_status`)."""
         return await self._notices.switch_notice(session, self.agent.id)
 
+    def _mid_turn_delivery(self) -> Literal["steer", "queue"]:
+        """The agent's setting for messages sent while it works, sent with
+        every message so a change applies to the next one."""
+        return "queue" if self.agent.mid_turn_delivery == "queue" else "steer"
+
     async def _sender_role(
         self, session: AsyncSession, sender: str, content: Mapping[str, object]
     ) -> str | None:
@@ -2003,6 +2019,7 @@ _FOLLOW_UPS: dict[ConversationRoute, FollowUp] = {
     ConversationRoute.THREAD_FOLLOW_UP: "thread_follow_up",
     ConversationRoute.CHANNEL_FOLLOW_UP: "channel_follow_up",
     ConversationRoute.MAIN_AGENT: "main_agent",
+    ConversationRoute.ONE_TO_ONE: "one_to_one",
 }
 
 
@@ -2021,6 +2038,7 @@ def _message_own_event(
     sender_role: str | None,
     switch_notice: str | None,
     *,
+    mid_turn_delivery: Literal["steer", "queue"],
     routed_reason: Literal["decided", "fallback"] | None,
     follow_up: FollowUp | None,
 ) -> Callable[[InboundEvent], OwnEvent]:
@@ -2049,6 +2067,7 @@ def _message_own_event(
             thread_id=thread_id,
             opening_message=opening_message_for(meta, agent_id),
             sender_role=sender_role,
+            mid_turn_delivery=mid_turn_delivery,
             switch_notice=switch_notice,
             routed_reason=routed_reason,
             follow_up=follow_up,

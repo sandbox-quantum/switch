@@ -34,6 +34,7 @@ import json
 import logging
 import re
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -50,6 +51,7 @@ from switch_core.organization_directory import (
     DirectoryUnavailable,
     MemberChange,
 )
+from switch_core.outbound import OutboundHostUnresolved, OutboundURLRefused
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +78,11 @@ SIGN_IN_FIRST = (
 # shared organization can be.
 MEMBER_ROLE_IN_WORKOS = "viewer"
 
+# The WorkOS roles Switch expects; any other is logged.
+_KNOWN_WORKOS_ROLES = frozenset(
+    {ORGANIZATION_ADMIN_ROLE, MEMBER_ROLE_IN_WORKOS, "admin", "editor"}
+)
+
 
 def customer_id_of(organization: dict[str, Any]) -> str | None:
     """The customer a WorkOS organization says it belongs to, or None if it
@@ -90,6 +97,21 @@ def switch_role(workos_role: str) -> str:
     here, since Switch adds no role of its own to a shared environment."""
     return (
         ORGANIZATION_ADMIN_ROLE if workos_role == ORGANIZATION_ADMIN_ROLE else "member"
+    )
+
+
+def _report_unrecognized_role(
+    membership_id: str | None, workos_organization_id: str, workos_role: str
+) -> None:
+    """Log a role Switch has no name for, so it can be found and corrected."""
+    if workos_role in _KNOWN_WORKOS_ROLES:
+        return
+    logger.warning(
+        "WorkOS membership %s of organization %s has role %r, "
+        "which Switch does not recognize; it is treated as a Member.",
+        membership_id,
+        workos_organization_id,
+        workos_role,
     )
 
 
@@ -158,6 +180,16 @@ class WorkOSDirectory:
             raise DirectoryUnavailable(
                 f"WorkOS could not be reached ({type(error).__name__})."
             ) from error
+        except OutboundHostUnresolved as error:
+            logger.error("WorkOS's host does not resolve: %s", error)
+            raise DirectoryUnavailable(
+                "WorkOS could not be reached (its host does not resolve)."
+            ) from error
+        except OutboundURLRefused as error:
+            logger.error("WorkOS is refused as a destination: %s", error)
+            raise DirectoryUnavailable(
+                "WorkOS could not be reached (its address is refused)."
+            ) from error
         if response.status_code != 200:
             detail = _refusal_detail(response)
             raise WorkOSRefused(
@@ -219,6 +251,7 @@ class WorkOSDirectory:
             slug = role.get("slug") if isinstance(role, dict) else None
             if not isinstance(organization_id, str) or not isinstance(slug, str):
                 raise _unreadable("a membership")
+            _report_unrecognized_role(membership.get("id"), organization_id, slug)
             memberships.append(
                 DirectoryMembership(
                     workos_organization_id=organization_id, role=switch_role(slug)
@@ -232,7 +265,11 @@ class WorkOSDirectory:
         """Switch's role for WorkOS user `subject`'s active membership of
         `workos_organization_id`, or None if they hold none."""
         membership = await self._active_membership(subject, workos_organization_id)
-        return None if membership is None else switch_role(membership[1])
+        if membership is None:
+            return None
+        membership_id, workos_role = membership
+        _report_unrecognized_role(membership_id, workos_organization_id, workos_role)
+        return switch_role(workos_role)
 
     async def _active_membership(
         self, subject: str, workos_organization_id: str
@@ -274,10 +311,10 @@ class WorkOSDirectory:
         return members
 
     async def events(
-        self, types: tuple[str, ...], *, after: str | None, range_start: str
+        self, types: tuple[str, ...], *, after: str | None, range_start: datetime
     ) -> list[dict[str, Any]]:
         """One page of events of `types`, oldest first: those after event
-        `after`, or from `range_start` (ISO 8601) when there is none yet.
+        `after`, or from `range_start` when there is none yet.
         Empty once there are no more. Each event is returned as WorkOS sent
         it, for the caller to skip one it can't read rather than lose the
         page. Raises `EventCursorRejected` when WorkOS refuses `after` or
@@ -290,7 +327,7 @@ class WorkOSDirectory:
         if after:
             params["after"] = after
         else:
-            params["range_start"] = range_start
+            params["range_start"] = _workos_time(range_start)
         try:
             page = await self._get("/events", params)
         except WorkOSRefused as error:
@@ -419,3 +456,13 @@ def _token_of(change: MemberChange) -> str:
     if change.access_token is None:
         raise DirectorySignInRequired(SIGN_IN_FIRST)
     return change.access_token
+
+
+def _workos_time(moment: datetime) -> str:
+    """`moment` as WorkOS reads a time: UTC, to the millisecond, ending in
+    `Z`. It refuses an offset such as `+00:00` as not ISO 8601."""
+    if moment.tzinfo is None or moment.utcoffset() is None:
+        raise ValueError(f"{moment!r} has no timezone, so it names no moment")
+    return (
+        moment.astimezone(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    )

@@ -67,7 +67,7 @@ const NO_SERVICE: DecisionSettings = {
     threshold: null,
     available: false,
     reason:
-      'Auto-route needs a decision service. A workspace admin can set one up in Switch Console → Admin → Decision routing.',
+      'Auto-route needs a decision service. A workspace admin can set one up in Switch Console → Settings → Message routing.',
   },
   serverDefault: { configured: false, endpoint: null, hasApiKey: false },
   options: { haikuAnthropic: false, haikuBedrock: false },

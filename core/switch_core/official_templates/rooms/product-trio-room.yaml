@@ -60,6 +60,7 @@ resources:
     name: "{project} - Product Trio"
     description: "Product trio collaboration for {project} - PM, designer, and tech lead working from discovery through delivery."
     bridge: "{bridge}"
+    channel_type: channel_private
     agents: [pm, designer, tech_lead]
     users:
       - {if: "{bridge}", value: ["{$creator}"]}

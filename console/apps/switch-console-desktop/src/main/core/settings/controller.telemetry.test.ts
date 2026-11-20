@@ -80,19 +80,16 @@ describe('changing a setting', () => {
     expect(h.trackEvent).not.toHaveBeenCalled();
   });
 
-  it.each(['telemetry', 'onboarding'] as const)(
-    'never reports %s, which the app writes as it goes',
-    async (key) => {
-      // Every read differs, so only leaving the key out keeps this quiet.
-      let reads = 0;
-      h.get.mockImplementation(async () => ({ enabled: false, askedAt: null, reads: ++reads }));
+  it('never reports telemetry, which the app writes as it goes', async () => {
+    // Every read differs, so only leaving the key out keeps this quiet.
+    let reads = 0;
+    h.get.mockImplementation(async () => ({ enabled: false, askedAt: null, reads: ++reads }));
 
-      await appSettingsController.update(key, { showChecklist: false } as never);
-      await settled();
+    await appSettingsController.update('telemetry', { enabled: false, askedAt: 1 } as never);
+    await settled();
 
-      expect(h.trackEvent.mock.calls.map(([name]) => name)).not.toContain('setting_changed');
-    }
-  );
+    expect(h.trackEvent.mock.calls.map(([name]) => name)).not.toContain('setting_changed');
+  });
 
   it('says nothing, and still saves, when the setting cannot be read back', async () => {
     h.get.mockResolvedValueOnce({ default: 'vscode' }).mockRejectedValueOnce(new Error('locked'));

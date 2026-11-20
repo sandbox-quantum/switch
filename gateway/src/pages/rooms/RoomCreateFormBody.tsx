@@ -33,6 +33,7 @@ import {
   useAgents,
   useBridges,
   useBridgeUsers,
+  useMyIdentities,
   useRoomAgentCandidates,
   useRoomGroups,
 } from "../../data/hooks";
@@ -49,11 +50,11 @@ type ChannelSource = "existing" | "new";
 
 export default function RoomCreateFormBody() {
   const navigate = useNavigate();
-  const { data: agents } = useAgents();
+  const { data: agents, error: agentsError } = useAgents();
   // Only the agents the server's invite rule lets the viewer put in a new room.
-  const { data: candidates } = useRoomAgentCandidates();
-  const { data: bridges } = useBridges();
-  const { data: groups } = useRoomGroups();
+  const { data: candidates, error: candidatesError } = useRoomAgentCandidates();
+  const { data: bridges, error: bridgesError } = useBridges();
+  const { data: groups, error: groupsError } = useRoomGroups();
   // Only a workspace admin may put a room in a group.
   const { canAdminTenant } = useAuth();
 
@@ -65,7 +66,10 @@ export default function RoomCreateFormBody() {
   const [externalChannelId, setExternalChannelId] = useState("");
   const [newChannelType, setNewChannelType] = useState<
     "channel_public" | "channel_private"
-  >("channel_public");
+  >("channel_private");
+  // Whether the person picked the channel type on this connection themselves.
+  const [channelTypeChosen, setChannelTypeChosen] = useState(false);
+  const { data: myIdentities } = useMyIdentities();
   const [agentIds, setAgentIds] = useState<string[]>([]);
   // Per-agent opt-in: ids of selected agents whose subagents to also add.
   const [includeSubagentsFor, setIncludeSubagentsFor] = useState<string[]>([]);
@@ -78,7 +82,22 @@ export default function RoomCreateFormBody() {
   const [groupId, setGroupId] = useState("");
   const [roles, setRoles] = useState<RoomRoleSpec[]>([]);
 
-  const { data: bridgeUsers } = useBridgeUsers(bridgeId || undefined);
+  const { data: bridgeUsers, error: bridgeUsersError } = useBridgeUsers(bridgeId || undefined);
+
+  // What the form could not load, said rather than offered as an empty
+  // choice: no agents, no messaging apps or no groups would read as there
+  // being none.
+  const loadErrors = (
+    [
+      ["the agents", agentsError],
+      ["which agents you may add", candidatesError],
+      ["the messaging apps", bridgesError],
+      ["the room groups", canAdminTenant ? groupsError : null],
+      // With no messaging app chosen there are no people to load, and the
+      // hook reports that as a failure.
+      ["the messaging app's people", bridgeId ? bridgeUsersError : null],
+    ] satisfies [string, string | null][]
+  ).filter((entry): entry is [string, string] => entry[1] !== null);
 
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -89,21 +108,22 @@ export default function RoomCreateFormBody() {
   // A room on a messaging app takes its access from its channel (the server
   // asks the platform about an existing one), so only a room with no channel
   // is asked; its owner or an admin can change it later in its settings.
-  const access: RoomAccessLevel = accessChoice ?? "public";
+  const access: RoomAccessLevel = accessChoice ?? "private";
 
   const selectedBridge = useMemo(
     () => (bridges ?? []).find((b) => b.bridge_id === bridgeId),
     [bridges, bridgeId],
   );
 
-  // True when this connection cannot be used to create a new channel, either
-  // because the platform has no such capability or because an admin has
-  // turned it off for this connection.
+  // True when this connection cannot be used to create a new channel: the
+  // platform has no such capability, an admin has turned it off for this
+  // connection, or the connection lacks something it needs first.
   const channelCreationBlocked =
     !!selectedBridge &&
     !(
       selectedBridge.channel_creation_supported &&
-      selectedBridge.channel_creation_enabled
+      selectedBridge.channel_creation_enabled &&
+      !selectedBridge.channel_creation_blocker
     );
 
   // A connection whose chats arrive only one way takes no channel id either,
@@ -117,9 +137,22 @@ export default function RoomCreateFormBody() {
     selectedBridge?.private_channel_needs_linked_account ?? false;
   const publicChannelAddsCreator =
     selectedBridge?.public_channel_adds_creator ?? false;
+  // Whether the person has a confirmed account linked on this connection;
+  // null while unknown.
+  const linkedHere =
+    !selectedBridge || myIdentities == null
+      ? null
+      : myIdentities.some((i) => i.bridge_id === bridgeId && i.verified);
+  // A new channel is private, but a private channel needs its creator's linked
+  // account: without one, and with no type picked, it is offered as public.
+  const pickedChannelType = channelTypeChosen
+    ? newChannelType
+    : linkedHere === false
+      ? "channel_public"
+      : "channel_private";
   // A private choice the chosen connection cannot make is sent as public.
   const effectiveChannelType = privateChannelsSupported
-    ? newChannelType
+    ? pickedChannelType
     : "channel_public";
 
   const channelCreationBlockedReason = useMemo(() => {
@@ -127,7 +160,10 @@ export default function RoomCreateFormBody() {
     if (!selectedBridge.channel_creation_supported) {
       return `${selectedBridge.display_name} cannot create channels from Switch. Create the channel on the platform, then add the app to it.`;
     }
-    return "Channel creation is turned off for this messaging app. An admin can turn it on in the workspace's messaging apps.";
+    if (!selectedBridge.channel_creation_enabled) {
+      return "Channel creation is turned off for this messaging app. An admin can turn it on in the workspace's messaging apps.";
+    }
+    return selectedBridge.channel_creation_blocker ?? null;
   }, [selectedBridge, channelCreationBlocked]);
 
   // If the user had "Create new channel" selected and then picks a bridge
@@ -219,7 +255,7 @@ export default function RoomCreateFormBody() {
           channelType = effectiveChannelType;
         }
       } else {
-        channelType = "channel_public";
+        channelType = access === "public" ? "channel_public" : "channel_private";
       }
 
       const room = await createRoom({
@@ -251,7 +287,7 @@ export default function RoomCreateFormBody() {
                   exclusive: r.exclusive,
                 }))
             : undefined,
-        ...(!hasBridge && accessChoice ? { read_visibility: accessChoice } : {}),
+        ...(!hasBridge ? { read_visibility: access } : {}),
       });
       navigate(`/rooms/${room.id}`);
     } catch (err) {
@@ -272,7 +308,7 @@ export default function RoomCreateFormBody() {
     joinEventListeners,
     bridgeId,
     userNames,
-    accessChoice,
+    access,
     groupId,
     roles,
     navigate,
@@ -281,6 +317,11 @@ export default function RoomCreateFormBody() {
   return (
     <Stack spacing={2}>
       {error && <Alert severity="error">{error}</Alert>}
+      {loadErrors.map(([what, message]) => (
+        <Alert key={what} severity="error">
+          Couldn't load {what}: {message}
+        </Alert>
+      ))}
       <TextField
         label="Name"
         value={name}
@@ -418,6 +459,7 @@ export default function RoomCreateFormBody() {
         value={bridgeId}
         onChange={(e) => {
           setBridgeId(e.target.value);
+          setChannelTypeChosen(false);
           if (!e.target.value) {
             setChannelSource("new");
             setExternalChannelId("");
@@ -478,11 +520,12 @@ export default function RoomCreateFormBody() {
               select
               label="Channel type"
               value={effectiveChannelType}
-              onChange={(e) =>
+              onChange={(e) => {
                 setNewChannelType(
                   e.target.value as "channel_public" | "channel_private",
-                )
-              }
+                );
+                setChannelTypeChosen(true);
+              }}
               fullWidth
               helperText={
                 effectiveChannelType === "channel_private" &&
@@ -491,6 +534,10 @@ export default function RoomCreateFormBody() {
                     ? `You become the channel's owner through your linked ${selectedBridge?.display_name ?? ""} account, so link one first.`
                     : `Switch adds you to the channel through your linked ${selectedBridge?.display_name ?? ""} account, so link one first.`
                   : effectiveChannelType === "channel_public" &&
+                      privateChannelsSupported &&
+                      linkedHere === false
+                    ? "Link your account to make it private, in Messaging apps."
+                    : effectiveChannelType === "channel_public" &&
                       publicChannelAddsCreator
                     ? `Switch adds you to the channel through your linked ${selectedBridge?.display_name ?? ""} account, if you have one.`
                     : undefined

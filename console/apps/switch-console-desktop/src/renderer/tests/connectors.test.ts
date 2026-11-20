@@ -18,6 +18,7 @@ import {
 } from '@renderer/features/connectors/connect-flow';
 import {
   type ConnectorViewer,
+  connectorAppSetUp,
   connectorCardState,
 } from '@renderer/features/connectors/connector-card-state';
 import {
@@ -72,6 +73,7 @@ import type {
   ConnectionCatalogEntry,
   ServicePasteMethod,
 } from '@shared/core/switch-servers/connection-catalog';
+import { connectorAppsPagePath } from '@shared/core/switch-servers/dashboard-pages';
 import { RpcError, serializeRpcError } from '@shared/lib/ipc/rpc-error';
 
 function entry(overrides: Partial<ConnectionCatalogEntry> = {}): ConnectionCatalogEntry {
@@ -107,7 +109,12 @@ function entry(overrides: Partial<ConnectionCatalogEntry> = {}): ConnectionCatal
   };
 }
 
-const MEMBER: ConnectorViewer = { operator: false, administers: false, onThisComputer: false };
+const MEMBER: ConnectorViewer = {
+  operator: false,
+  administers: false,
+  onThisComputer: false,
+  appSetUp: { by: 'operator' },
+};
 
 describe('the state a connector card shows', () => {
   it('shows each state on its own', () => {
@@ -167,6 +174,28 @@ describe('the state a connector card shows', () => {
     );
     // The server's reason wins over the workspace's switch.
     expect(connectorCardState(everything, MEMBER).kind).toBe('unavailable');
+    // An app to set up: workspace off wins, turn it on first.
+    expect(
+      connectorCardState(
+        entry({
+          unavailable_code: 'app_not_set_up',
+          unavailable_reason: 'Not set up.',
+          workspace_enabled: false,
+        }),
+        MEMBER
+      ).kind
+    ).toBe('workspace_off');
+    // Other server reasons still win over workspace off.
+    expect(
+      connectorCardState(
+        entry({
+          unavailable_code: 'needs_https',
+          unavailable_reason: 'Needs https.',
+          workspace_enabled: false,
+        }),
+        MEMBER
+      ).kind
+    ).toBe('unavailable');
     // Off in the workspace wins over a sign-in that needs renewing.
     expect(connectorCardState({ ...everything, unavailable_reason: null }, MEMBER).kind).toBe(
       'workspace_off'
@@ -179,8 +208,18 @@ describe('the state a connector card shows', () => {
 });
 
 describe('what each person is told about a connector that cannot be used', () => {
-  const OPERATOR: ConnectorViewer = { operator: true, administers: true, onThisComputer: false };
-  const ADMIN: ConnectorViewer = { operator: false, administers: true, onThisComputer: false };
+  const OPERATOR: ConnectorViewer = {
+    operator: true,
+    administers: true,
+    onThisComputer: false,
+    appSetUp: { by: 'viewer', at: 'settings' },
+  };
+  const ADMIN: ConnectorViewer = {
+    operator: false,
+    administers: true,
+    onThisComputer: false,
+    appSetUp: { by: 'operator' },
+  };
   const viewers = { operator: OPERATOR, admin: ADMIN, member: MEMBER };
   const notSetUp = entry({
     connectable: false,
@@ -233,6 +272,42 @@ describe('what each person is told about a connector that cannot be used', () =>
         kind: 'unavailable',
         label: 'Unavailable',
         detail: 'Ask whoever runs your Switch server to set it up.',
+        tone: 'muted',
+        fix: null,
+      });
+  });
+
+  it('offers Set up to whoever the server says may, operator or not', () => {
+    const orgAdmin: ConnectorViewer = {
+      ...ADMIN,
+      appSetUp: { by: 'viewer', at: 'organization-settings' },
+    };
+    expect(connectorCardState(notSetUp, orgAdmin)).toMatchObject({
+      kind: 'needs_setup',
+      fix: 'set_up',
+    });
+  });
+
+  it("sends anyone who may not set it up to their organization's admin, where its admins do", () => {
+    const where = {
+      'organization-settings':
+        'An admin of your organization sets it up in Organization settings › Connector apps.',
+      'old-layout': 'An admin of your organization sets it up in the dashboard, under Connectors.',
+    } as const;
+    for (const viewer of [ADMIN, MEMBER])
+      for (const [at, detail] of Object.entries(where) as [keyof typeof where, string][])
+        expect(
+          connectorCardState(notSetUp, { ...viewer, appSetUp: { by: 'organization-admin', at } })
+        ).toEqual({ kind: 'unavailable', label: 'Unavailable', detail, tone: 'muted', fix: null });
+  });
+
+  it('names the command to anyone the server says may not set it up on the web', () => {
+    for (const viewer of [ADMIN, MEMBER])
+      expect(connectorCardState(notSetUp, { ...viewer, appSetUp: { by: 'command' } })).toEqual({
+        kind: 'unavailable',
+        label: 'Unavailable',
+        detail:
+          'Whoever runs your Switch server sets up its app with the switch-connector-apps command, where Switch runs.',
         tone: 'muted',
         fix: null,
       });
@@ -331,8 +406,8 @@ describe('what each person is told about a connector that cannot be used', () =>
     expect(quick(github, OPERATOR)).toBeNull();
     expect(quick(entry({ workspace_enabled: false }), ADMIN)).toBe('turn_on');
     expect(quick(entry({ workspace_enabled: false }), MEMBER)).toBeNull();
-    // A server's reason still wins over the workspace's switch, fix and all.
-    expect(quick({ ...notSetUp, workspace_enabled: false }, OPERATOR)).toBe('set_up');
+    // An app to set up waits on the workspace's switch. Other server reasons win.
+    expect(quick({ ...notSetUp, workspace_enabled: false }, OPERATOR)).toBe('turn_on');
     expect(quick({ ...github, workspace_enabled: false }, ADMIN)).toBeNull();
   });
 
@@ -356,6 +431,82 @@ describe('what each person is told about a connector that cannot be used', () =>
     });
     expect(profileConnectAction(key)).toBeNull();
     expect(profileConnectAction({ ...key, status: 'connected' })).toBeNull();
+  });
+});
+
+describe('who sets up a connector app, and where', () => {
+  const setUp = (
+    operator: boolean,
+    servesDashboard: boolean,
+    gatewayV2: boolean,
+    canManage: boolean | null,
+    inDashboard: boolean | null = null
+  ) => connectorAppSetUp({ operator, servesDashboard, gatewayV2, canManage, inDashboard });
+
+  it("lets the server's answer decide, in either layout of the dashboard", () => {
+    for (const operator of [true, false]) {
+      for (const inDashboard of [true, false, null]) {
+        expect(setUp(operator, true, true, true, inDashboard)).toEqual({
+          by: 'viewer',
+          at: 'organization-settings',
+        });
+        expect(setUp(operator, true, false, true, inDashboard)).toEqual({
+          by: 'viewer',
+          at: 'old-layout',
+        });
+      }
+    }
+  });
+
+  it("sends anyone else to their organization's admin on a one-organization server", () => {
+    expect(setUp(false, true, true, false, true)).toEqual({
+      by: 'organization-admin',
+      at: 'organization-settings',
+    });
+    expect(setUp(false, true, false, false, true)).toEqual({
+      by: 'organization-admin',
+      at: 'old-layout',
+    });
+  });
+
+  it('names the command to anyone else on a server with several organizations', () => {
+    for (const gatewayV2 of [true, false]) {
+      expect(setUp(false, true, gatewayV2, false, false)).toEqual({ by: 'command' });
+    }
+  });
+
+  it('says what it said before to anyone else on a server that does not say where', () => {
+    expect(setUp(false, true, true, false, null)).toEqual({ by: 'command' });
+    expect(setUp(false, true, false, false, null)).toEqual({ by: 'operator' });
+  });
+
+  it('leaves it to the operator, under Platform or on the old page, on a server that does not say who may', () => {
+    expect(setUp(true, true, true, null)).toEqual({ by: 'viewer', at: 'platform' });
+    expect(setUp(false, true, true, null)).toEqual({ by: 'operator' });
+    expect(setUp(true, true, false, null)).toEqual({ by: 'viewer', at: 'old-layout' });
+    expect(setUp(false, true, false, null)).toEqual({ by: 'operator' });
+  });
+
+  it('leaves it to the operator in Admin without a dashboard, whatever the server says', () => {
+    for (const canManage of [true, false, null]) {
+      for (const inDashboard of [true, false, null]) {
+        for (const gatewayV2 of [true, false]) {
+          expect(setUp(true, false, gatewayV2, canManage, inDashboard)).toEqual({
+            by: 'viewer',
+            at: 'settings',
+          });
+          expect(setUp(false, false, gatewayV2, canManage, inDashboard)).toEqual({
+            by: 'operator',
+          });
+        }
+      }
+    }
+  });
+
+  it('opens each at the path the dashboard keeps it on', () => {
+    expect(connectorAppsPagePath('organization-settings')).toBe('settings/org/connector-apps');
+    expect(connectorAppsPagePath('platform')).toBe('platform/connectors');
+    expect(connectorAppsPagePath('old-layout')).toBe('connectors');
   });
 });
 
@@ -1253,31 +1404,21 @@ describe('with the service_connections flag off', () => {
     error: null,
   });
 
-  it('leaves Connectors out of the nav, and shows Admin when it has something for you', () => {
-    expect(workspaceNavViews({ serviceConnections: false, admin: false })).toEqual([
+  it('leaves Connectors out of the nav with the flag off, and never shows Admin', () => {
+    expect(workspaceNavViews({ serviceConnections: false })).toEqual([
       'server',
       'serverAgents',
       'serverRooms',
       'library',
       'templates',
     ]);
-    // Admin's messaging apps and Switch Trust do not need service connections.
-    expect(workspaceNavViews({ serviceConnections: false, admin: true })).toEqual([
-      'server',
-      'serverAgents',
-      'serverRooms',
-      'library',
-      'templates',
-      'admin',
-    ]);
-    expect(workspaceNavViews({ serviceConnections: true, admin: true })).toEqual([
+    expect(workspaceNavViews({ serviceConnections: true })).toEqual([
       'server',
       'serverAgents',
       'serverRooms',
       'library',
       'templates',
       'connectors',
-      'admin',
     ]);
   });
 

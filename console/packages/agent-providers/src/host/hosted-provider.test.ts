@@ -178,7 +178,33 @@ it('clears the Vertex AI variables when Claude is given another login', async ()
   expect(env).toEqual({ CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat-given' });
 });
 
-it('refuses a Vertex AI login for another provider than Claude, or one that is not valid', async () => {
+it('writes a Vertex AI login’s Google credential, and signs agy in with application-default credentials', async () => {
+  const env: Record<string, string> = { GEMINI_API_KEY: 'inherited', AGY_ADC_AUTH: 'false' };
+  const login = { ...vertex(AUTHORIZED_USER_FIXTURE), provider: 'antigravity' as const };
+  await materializeHostedProvider(root, env, login, '/home/u/.local/bin/agy');
+  const path = join(root, 'provider-home', 'google-credentials.json');
+  expect(env).toEqual({
+    AGY_ADC_AUTH: 'true',
+    GOOGLE_CLOUD_PROJECT: 'acme-ai',
+    GOOGLE_CLOUD_QUOTA_PROJECT: 'acme-ai',
+    GOOGLE_CLOUD_LOCATION: 'global',
+    GOOGLE_APPLICATION_CREDENTIALS: path,
+  });
+  expect(JSON.parse(await readFile(path, 'utf8'))).toEqual(AUTHORIZED_USER_FIXTURE);
+});
+
+it('refuses a Vertex AI login for the retired antigravity-acp runtime, which cannot use it', async () => {
+  await expect(
+    materializeHostedProvider(
+      root,
+      {},
+      { ...vertex(SERVICE_ACCOUNT_KEY_FIXTURE), provider: 'antigravity' },
+      '/home/u/.local/bin/antigravity-acp'
+    )
+  ).rejects.toThrow(/only with Google's agy CLI/);
+});
+
+it('refuses a Vertex AI login for another provider than Claude or Antigravity, or one that is not valid', async () => {
   await expect(
     materializeHostedProvider(
       root,

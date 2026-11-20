@@ -72,6 +72,7 @@ async def _client() -> TelegramAppClient:
         webhook_url="https://switch.example/messaging/telegram/events",
         webhook_secret="placeholder-secret",
         on_connected=_nothing,
+        feature_flags={},
     )
     await client.start()
     return client

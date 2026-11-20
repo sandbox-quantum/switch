@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from switch_core.db.models import TENANT_ZERO_ID, Tenant
 from switch_core.db.stores.decision_settings_store import DecisionSettingsStore
 from switch_core.decision.client import (
+    MAX_MODEL_LABELS,
     ContextMessage,
     Decided,
     DecisionAgent,
@@ -307,7 +308,7 @@ class TestTheServerDefault:
 
         assert isinstance(outcome, Unavailable)
         assert outcome.reason is not None
-        assert "Decision routing" in outcome.reason
+        assert "Message routing" in outcome.reason
 
     async def test_the_flag_off_is_unavailable(
         self,
@@ -867,7 +868,7 @@ class TestTheOutboundPolicy:
 
 class TestMetrics:
     """What an operator's collector receives for each decision: counts by
-    backend and outcome, failures by reason, and timings, with no room,
+    backend, model and outcome, failures by reason, and timings, with no room,
     agent or message in any attribute."""
 
     async def test_an_answer_with_an_agent(
@@ -880,16 +881,141 @@ class TestMetrics:
             await _decide(_client(session_factory, http, stub.url))
             readings = Readings(registry)
 
-        backend = "server_default"
+        series = {"backend": "server_default", "model": "clef-flash"}
+        assert readings.total(DECISION_REQUESTS.name, **series, outcome="agent") == 1
+        assert readings.count(DECISION_DURATION.name, **series) == 1
+        assert readings.count(DECISION_CONFIDENCE.name, **series) == 1
+        assert readings.count(DECISION_MODEL_TIME.name, **series) == 1
+        assert readings.total(DECISION_FAILURES.name) == 0
+        assert readings.attribute_values() <= {"server_default", "clef-flash", "agent"}
+
+    async def test_two_models_behind_the_server_default_are_told_apart(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        stub: _Stub,
+        http: httpx.AsyncClient,
+    ) -> None:
+        client = _client(session_factory, http, stub.url)
+
+        with recording_metrics() as registry:
+            stub.body = json.dumps({**_GOOD, "model": "strands-decider-E4B"}).encode()
+            await _decide(client)
+            stub.body = json.dumps(
+                {**_GOOD, "agent": None, "model": "gemini-decision-1"}
+            ).encode()
+            await _decide(client)
+            readings = Readings(registry)
+
+        def requests(model: str, outcome: str) -> float:
+            return readings.total(
+                DECISION_REQUESTS.name,
+                backend="server_default",
+                model=model,
+                outcome=outcome,
+            )
+
+        assert requests("strands-decider-E4B", "agent") == 1
+        assert requests("gemini-decision-1", "none") == 1
+        assert readings.total(DECISION_REQUESTS.name, backend="server_default") == 2
+        for model in ("strands-decider-E4B", "gemini-decision-1"):
+            assert readings.count(DECISION_CONFIDENCE.name, model=model) == 1
+
+    async def test_haiku_is_named_by_the_model_it_answered_with(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        stub: _Stub,
+        http: httpx.AsyncClient,
+    ) -> None:
+        await _save(
+            session_factory,
+            TENANT_ZERO_ID,
+            backend="haiku_anthropic",
+            api_key="fake-key-AwcA",
+        )
+        stub.body = json.dumps({**_GOOD, "model": "claude-haiku-5-5"}).encode()
+
+        with recording_metrics() as registry:
+            await _decide(_client(session_factory, http, stub.url))
+            readings = Readings(registry)
+
         assert (
-            readings.total(DECISION_REQUESTS.name, backend=backend, outcome="agent")
+            readings.total(
+                DECISION_REQUESTS.name,
+                backend="haiku_anthropic",
+                model="claude-haiku-5-5",
+                outcome="agent",
+            )
             == 1
         )
-        assert readings.count(DECISION_DURATION.name, backend=backend) == 1
-        assert readings.count(DECISION_CONFIDENCE.name, backend=backend) == 1
-        assert readings.count(DECISION_MODEL_TIME.name, backend=backend) == 1
-        assert readings.total(DECISION_FAILURES.name) == 0
-        assert readings.attribute_values() <= {backend, "agent"}
+
+    async def test_a_workspace_endpoints_model_name_is_not_kept(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        stub: _Stub,
+        other: _Stub,
+        http: httpx.AsyncClient,
+    ) -> None:
+        await _save(
+            session_factory, TENANT_ZERO_ID, backend="endpoint", endpoint=other.url
+        )
+        other.body = json.dumps({**_GOOD, "model": "acme-corp-private-1"}).encode()
+
+        with recording_metrics() as registry:
+            await _decide(_client(session_factory, http, stub.url))
+            readings = Readings(registry)
+
+        assert (
+            readings.total(
+                DECISION_REQUESTS.name,
+                backend="endpoint",
+                model="workspace_endpoint",
+                outcome="agent",
+            )
+            == 1
+        )
+        assert "acme-corp-private-1" not in readings.attribute_values()
+
+    @pytest.mark.parametrize(
+        "name", ["", "has spaces in it", "x" * 81, "-leading-dash", "naïve"]
+    )
+    async def test_a_model_name_that_is_not_plain_is_other(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        stub: _Stub,
+        http: httpx.AsyncClient,
+        name: str,
+    ) -> None:
+        stub.body = json.dumps({**_GOOD, "model": name}).encode()
+
+        with recording_metrics() as registry:
+            await _decide(_client(session_factory, http, stub.url))
+            readings = Readings(registry)
+
+        assert readings.total(DECISION_REQUESTS.name, model="other") == 1
+        if name:
+            assert name not in readings.attribute_values()
+
+    async def test_only_a_few_model_names_are_kept(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        stub: _Stub,
+        http: httpx.AsyncClient,
+    ) -> None:
+        client = _client(session_factory, http, stub.url)
+        names = [f"model-{n}" for n in range(MAX_MODEL_LABELS + 2)]
+
+        with recording_metrics() as registry:
+            for name in [*names, names[0]]:
+                stub.body = json.dumps({**_GOOD, "model": name}).encode()
+                await _decide(client)
+            readings = Readings(registry)
+
+        kept = names[:MAX_MODEL_LABELS]
+        for name in kept:
+            assert readings.total(DECISION_REQUESTS.name, model=name) == (
+                2 if name == names[0] else 1
+            )
+        assert readings.total(DECISION_REQUESTS.name, model="other") == 2
 
     async def test_an_answer_of_nobody(
         self,
@@ -936,9 +1062,15 @@ class TestMetrics:
             await _decide(_client(session_factory, http, stub.url))
             readings = Readings(registry)
 
-        assert readings.total(DECISION_REQUESTS.name, outcome="failed") == 1
-        assert readings.total(DECISION_FAILURES.name, reason="timeout") == 1
-        assert readings.count(DECISION_DURATION.name) == 1
+        assert (
+            readings.total(DECISION_REQUESTS.name, model="unknown", outcome="failed")
+            == 1
+        )
+        assert (
+            readings.total(DECISION_FAILURES.name, model="unknown", reason="timeout")
+            == 1
+        )
+        assert readings.count(DECISION_DURATION.name, model="unknown") == 1
         assert readings.total(DECISION_BACKEND_ERRORS.name) == 0
 
     async def test_a_name_that_was_not_a_candidate(
@@ -953,8 +1085,16 @@ class TestMetrics:
             await _decide(_client(session_factory, http, stub.url))
             readings = Readings(registry)
 
-        assert readings.total(DECISION_FAILURES.name, reason="bad_answer") == 1
-        assert readings.total(DECISION_REQUESTS.name, outcome="failed") == 1
+        assert (
+            readings.total(
+                DECISION_FAILURES.name, model="clef-flash", reason="bad_answer"
+            )
+            == 1
+        )
+        assert (
+            readings.total(DECISION_REQUESTS.name, model="clef-flash", outcome="failed")
+            == 1
+        )
         assert readings.count(DECISION_CONFIDENCE.name) == 0
 
     async def test_a_key_the_server_cannot_decrypt_is_not_timed(
@@ -979,7 +1119,10 @@ class TestMetrics:
 
         assert (
             readings.total(
-                DECISION_FAILURES.name, backend="endpoint", reason="key_unreadable"
+                DECISION_FAILURES.name,
+                backend="endpoint",
+                model="workspace_endpoint",
+                reason="key_unreadable",
             )
             == 1
         )
@@ -1028,7 +1171,10 @@ class TestBackendErrorKind:
         assert isinstance(outcome, Failed) and outcome.reason == "error_status"
         assert (
             readings.total(
-                DECISION_BACKEND_ERRORS.name, backend="server_default", kind=kind
+                DECISION_BACKEND_ERRORS.name,
+                backend="server_default",
+                model="unknown",
+                kind=kind,
             )
             == 1
         )

@@ -7,15 +7,17 @@ from urllib.parse import urlsplit
 from pydantic import (
     AfterValidator,
     BaseModel,
+    BeforeValidator,
     ConfigDict,
     Field,
     StringConstraints,
     field_validator,
     model_validator,
 )
+from pydantic_core import PydanticCustomError
 
 from switch_core.addressing import AddressingKind, AddressingPolicy
-from switch_core.bridges.agent.protocol.types import OverallStatus
+from switch_core.bridges.agent.protocol.types import SUBAGENTS_MAX, OverallStatus
 from switch_core.bridges.collaboration.models import (
     BridgeInstallLink,
     ChannelRetirement,
@@ -28,6 +30,8 @@ from switch_core.db.models import (
     MAX_MESSAGE_RETENTION_DAYS,
     UsageMetric,
 )
+from switch_core.names import Name, OneLineName, no_hidden_characters
+from switch_core.template_use_cases import USE_CASES, UseCase, is_use_case
 
 # ── Rooms ─────────────────────────────────────────────────────────────────────
 
@@ -86,6 +90,9 @@ class RoomSummary(BaseModel):
     read_visibility: str = "public"
     write_visibility: str = "public"
     created_at: str
+    # When the room last had a message, from any platform, as ISO 8601; null
+    # when it has had none. Switch Console orders its room lists by it.
+    last_message_at: str | None = None
     # True when the room is archived (hidden from the default active list).
     archived: bool = False
     # The caller owns the room, is in it (in Switch Console or through a
@@ -140,13 +147,18 @@ class RoomAutoRoute(BaseModel):
     the same one `!auto-route` sets; `available` whether it can act in the
     room (the server's flag and the workspace's decision backend), with
     `reason` saying why not and who can fix it; `fallback_agent` the id of
-    the room's triage agent, if any, and `fallback_agent_name` its name."""
+    the room's triage agent, if any, and `fallback_agent_name` its name;
+    `assigned_agent` and `assigned_agent_name` the room's assigned agent,
+    which gets every message first, so auto-route cannot be turned on, and
+    does not act, while it is set."""
 
     on: bool
     available: bool
     reason: str | None
     fallback_agent: str | None
     fallback_agent_name: str | None
+    assigned_agent: str | None
+    assigned_agent_name: str | None
 
 
 class RoomAutoRouteRequest(BaseModel):
@@ -207,11 +219,13 @@ class RoomDetail(RoomSummary):
     # when it has not seen one. A room not named after its channel can take
     # it with `POST /rooms/{id}/sync-name`.
     linked_channel_name: str | None = None
-    auto_route: RoomAutoRoute
+    # Null on a server with the `decision_routing` flag off, where rooms have
+    # no auto-route to show.
+    auto_route: RoomAutoRoute | None
 
 
 class RoomCreateRequest(BaseModel):
-    name: str
+    name: Name
     description: str
     instructions: str | None = None
     channel_type: str | None = None
@@ -239,7 +253,7 @@ class RoomCreateRequest(BaseModel):
 
 
 class RoomUpdateRequest(BaseModel):
-    name: str | None = None
+    name: Name | None = None
     description: str | None = None
     instructions: str | None = None
     admin_mode: bool | None = None
@@ -267,8 +281,19 @@ class RoomAgentUpdateRequest(BaseModel):
     receives_join_events: bool
 
 
+# The most rooms one bulk request may name. The request is answered once
+# every room is done, so its size is how long it runs.
+BULK_ROOMS_MAX = 200
+# Fewer to delete: each room is emptied one member at a time, and its
+# channel may be retired on its platform.
+BULK_DELETE_MAX = 25
+# The most people one request may add to or take out of a room: one
+# platform call each.
+ROOM_USERS_MAX = 200
+
+
 class RoomUsersRequest(BaseModel):
-    user_names: list[str]
+    user_names: list[str] = Field(max_length=ROOM_USERS_MAX)
 
 
 class RoomUsersRemoved(BaseModel):
@@ -291,7 +316,7 @@ class RoomObserveRequest(BaseModel):
 
 
 class BulkDeleteRequest(BaseModel):
-    room_ids: list[str]
+    room_ids: list[str] = Field(max_length=BULK_DELETE_MAX)
     # Also archive, delete or leave each room's platform channel, as its
     # platform allows. Off unless asked: deleting a room is often about taking
     # the agents out of a channel people keep using.
@@ -306,21 +331,31 @@ class RoomDeleteResponse(BaseModel):
     channel: RetireOutcome | None
 
 
+class BulkRoomRefusal(BaseModel):
+    """A room a bulk action left alone, and why: in the words the route for
+    that one room would refuse it with."""
+
+    room_id: str
+    reason: str
+
+
 class BulkDeleteResponse(BaseModel):
     deleted: int
     # Per deleted room id, what became of its platform channel. Rooms without
     # one are absent.
     channels: dict[str, RetireOutcome]
+    refused: list[BulkRoomRefusal]
 
 
 class BulkArchiveRequest(BaseModel):
-    room_ids: list[str]
+    room_ids: list[str] = Field(max_length=BULK_ROOMS_MAX)
     # True archives the rooms, False unarchives them.
     archived: bool
 
 
 class BulkArchiveResponse(BaseModel):
     updated: int
+    refused: list[BulkRoomRefusal]
 
 
 # ── Room groups ───────────────────────────────────────────────────────────────
@@ -338,7 +373,7 @@ class RoomGroupDetail(BaseModel):
 
 
 class RoomGroupCreateRequest(BaseModel):
-    name: str
+    name: Name
     description: str | None = None
     color: str | None = None
     parent_group_id: str | None = None
@@ -347,7 +382,7 @@ class RoomGroupCreateRequest(BaseModel):
 class RoomGroupAssignRequest(BaseModel):
     # Rooms to (re)assign into the group. Rooms already in another group are
     # moved; rooms already in this group are a no-op.
-    room_ids: list[str]
+    room_ids: list[str] = Field(max_length=BULK_ROOMS_MAX)
 
 
 class RoomGroupAssignResponse(BaseModel):
@@ -359,7 +394,7 @@ class RoomGroupUpdateRequest(BaseModel):
     # the request body, so callers can reparent to a group, reparent to top-level
     # (`null`), or leave the parent unchanged (omit the key entirely). The
     # endpoint distinguishes these via `model_fields_set`.
-    name: str | None = None
+    name: Name | None = None
     description: str | None = None
     color: str | None = None
     parent_group_id: str | None = None
@@ -403,6 +438,7 @@ class AgentSummary(BaseModel):
     # owner-restricted without fetching each one — the console warns about
     # exactly that, and per-agent reads would make it a request storm.
     addressing_policy: AddressingPolicy | None = None
+    mid_turn_delivery: Literal["steer", "queue"] = "steer"
 
 
 class AgentToolSummary(BaseModel):
@@ -429,6 +465,16 @@ class AgentRoomMembership(BaseModel):
     archived: bool
     status: str
     room_role: str | None
+    # Whether the agent has had a turn in this room: someone addressed it there
+    # and one of its sessions took the message up.
+    answered_here: bool
+
+
+class AgentRooms(BaseModel):
+    """One agent's rooms, as `GET /agents/{agent_id}` lists them in `rooms`."""
+
+    agent_id: str
+    rooms: list[AgentRoomMembership]
 
 
 class AgentSessionDetail(BaseModel):
@@ -480,7 +526,8 @@ class AgentCapabilities(BaseModel):
     """
 
     # Edit its icon, display name, description and who may address it, and
-    # delete it: its owner or a workspace admin.
+    # delete it: its owner or a workspace admin. Only its owner lets more
+    # people or agents address it (`can_widen_addressing`).
     can_manage: bool
     # Edit its options: `can_manage`, for an agent Switch Console runs from a
     # spec it knows. Any other agent has no options to edit.
@@ -534,6 +581,9 @@ class GatewayAgentDetail(AgentDetail, AgentCapabilities):
     # Its owner only, not an admin: turning on that it may manage its
     # owner's agents.
     can_change_manage_agents: bool
+    # Its owner only: letting more people or agents address it. Anyone with
+    # `can_manage` may narrow who can.
+    can_widen_addressing: bool
     # Granting it service access: its owner only, since a grant is made on
     # the owner's own connections, while service connections are switched on,
     # and for an agent Switch Console runs from a spec it knows, since nothing
@@ -582,6 +632,10 @@ class UpdateAddressingPolicyRequest(BaseModel):
     ``policy: null`` clears it — the agent becomes open to anyone again."""
 
     policy: AddressingPolicy | None = None
+
+
+class UpdateAgentMidTurnDeliveryRequest(BaseModel):
+    mid_turn_delivery: Literal["steer", "queue"]
 
 
 class UpdateAgentCanManageAgentsRequest(BaseModel):
@@ -720,7 +774,7 @@ class RegisterKnownSubagentsRequest(BaseModel):
     agent_type: str
     parent_agent_id: str
     options: dict[str, Any] = {}
-    subagents: list[BulkSubagentSpec]
+    subagents: list[BulkSubagentSpec] = Field(max_length=SUBAGENTS_MAX)
     overwrite: bool = False
 
 
@@ -786,12 +840,21 @@ class ApiKeyDetail(BaseModel):
     id: str
     label: str
     type: str
+    # The start of the key's hash, not of the key: a fingerprint to tell keys
+    # apart by, which gives away nothing of the secret to whoever reads it.
     key_prefix: str
     created_at: str
     expires_at: datetime | None
+    owner_id: str
+    owner_name: str
+    # The agent that signs in with it, by its name now: an agent key's label is
+    # the name it registered under. Null for any other key, and for an agent
+    # key whose agent is gone.
+    agent_id: str | None
+    agent_name: str | None
     # What the caller may do with it: reveal and copy it, their own only; and
-    # delete it, their own unless an agent still signs in with it
-    # (`authz.can_delete_api_key`).
+    # delete it, their own, or as an admin anyone's key for adding agents,
+    # unless an agent still signs in with it (`authz.can_delete_api_key`).
     can_reveal: bool
     can_delete: bool
 
@@ -851,6 +914,9 @@ class BridgeDetail(BaseModel):
     # switch you can flip, the second a disabled switch with a reason.
     channel_creation_supported: bool = True
     channel_creation_enabled: bool = True
+    # Why a new channel cannot be made here yet even so — a Teams connection
+    # with no default team — or None; said where a room would make one.
+    channel_creation_blocker: str | None = None
     # Whether a new room here can have a private channel, and whether that
     # channel needs the person asking to have linked their account on the
     # platform, through which Switch puts them in it (on Teams, as its owner).
@@ -873,12 +939,21 @@ class BridgeDetail(BaseModel):
     # nobody has used yet — a question worth not asking rather than asking
     # badly.
     directory_search_supported: bool = True
+    # What the account search can find a person by on this connection, as its
+    # field's placeholder ("Your name or handle"). Only what really matches:
+    # Slack offers email only when the app may read addresses.
+    directory_search_hint: str
     # Whether this connection receives its platform's events on an address of
     # its own, and that address — the one the operator gives the platform. The
     # address is None where the deployment has not set `MESSAGING_PUBLIC_URL`,
     # which is then what stands between this connection and its events.
     receives_webhooks: bool = False
     webhook_url: str | None = None
+    # The commands a person is told to type here, keyed by command name, as
+    # this platform spells them, with `{agent}` (an agent's name) and `{code}`
+    # (a link code) left for the client to fill in. Clients show these rather
+    # than keeping a per-platform list of their own.
+    commands: dict[str, str]
     # What the caller may do with it: change its settings, Teams placement
     # and confirmation rules, or delete it — a workspace admin. That chats
     # still connected through it must be disconnected first is answered when
@@ -942,7 +1017,7 @@ class BridgeCreateRequest(BaseModel):
     # for a platform that cannot, rather than storing a claim it cannot honour.
     channel_creation_enabled: bool = True
     # Registered by the deployment's own setup step rather than by a person.
-    # Set by the headless standalone bootstrap for the Mattermost it bundles,
+    # Set by a deployment's setup step for a connector it bundles,
     # so onboarding telemetry measures a person connecting their platform
     # rather than the deployment booting. Everyone else leaves it off.
     preconfigured: bool = False
@@ -1009,6 +1084,16 @@ class ExternalUserSummary(BaseModel):
     bridge_id: str
     external_user_id: str
     external_username: str
+    # When Switch first saw this account, so a client waiting for someone to
+    # say hello to the bot can tell a new arrival from the people it knew.
+    first_seen_at: str
+    # How to name the person, as the platform's adapter names them, and
+    # whether `external_username` is a handle of theirs. False where Switch
+    # made the handle up (a Telegram account with no username): show
+    # `display_name` alone, never `@external_username`. Left at the username
+    # where the bridge is not running to ask.
+    display_name: str | None = None
+    has_handle: bool = True
     # Everyone who has claimed this platform account. A list, not one user:
     # claiming is not exclusive, so an account shared by several Switch users
     # satisfies an owner rule for any of them.
@@ -1026,6 +1111,10 @@ class DirectoryUserSummary(BaseModel):
     username: str
     display_name: str
     email: str | None = None
+    # False where `username` is a handle Switch made up for a person the
+    # platform gave none (a Telegram account without a username): shown by
+    # `display_name` alone, never as `@username`.
+    has_handle: bool = True
     # Set when this person has already spoken on the bridge and so has an
     # ExternalUser row; claiming reuses it rather than creating a duplicate.
     known_external_user_id: str | None = None
@@ -1093,9 +1182,23 @@ class LinkedIdentity(BaseModel):
     bridge_type: str
     external_user_id: str
     external_username: str
+    # How to name the account: the person's name as the platform shows it,
+    # and whether `external_username` is a handle of theirs rather than one
+    # Switch made up (a Telegram account without a username), which is then
+    # never shown as `@external_username`.
+    external_display_name: str
+    has_handle: bool
     # False for a link made before accounts had to confirm them: it works,
     # and Console asks its owner to confirm it.
     verified: bool
+    # When the link started counting. Confirming an older link later leaves
+    # this where it was: the link counted all along.
+    linked_at: datetime
+    # Whether a request to confirm this older link is waiting for the account:
+    # a code issued, and neither used nor cancelled. The pending list leaves
+    # such requests out, so this is how a client confirming one sees it end
+    # without the link ending too (a wrong number tapped, say).
+    awaiting_confirmation: bool
 
 
 class PendingIdentity(BaseModel):
@@ -1111,6 +1214,9 @@ class PendingIdentity(BaseModel):
     bridge_type: str
     external_user_id: str
     external_username: str
+    # As on `LinkedIdentity`.
+    external_display_name: str
+    has_handle: bool
     # Who started it, when that was someone else (an admin); null when it was
     # the user themselves or the admin has since been deleted.
     requested_by_name: str | None
@@ -1204,24 +1310,6 @@ Email = Annotated[
 ]
 
 
-class OperatorUserResponse(UserResponse):
-    """An account as the deployment operator manages it. `can_delete`: not
-    their own, which they delete from their account settings, and not the
-    server's administrator account (`accounts.deletion.is_server_administrator`).
-    What else stands in the way is answered when it is asked."""
-
-    can_delete: bool
-
-
-class CreateUserRequest(BaseModel):
-    name: str
-    email: Email
-    password: Password
-    # Only the exact string "admin" grants operator rights (`require_admin`),
-    # so anything else would create an account claiming a role it lacks.
-    role: Literal["user", "admin"] = "user"
-
-
 class ChangePasswordRequest(BaseModel):
     current_password: str
     new_password: Password
@@ -1233,7 +1321,9 @@ class UpdateMeRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     name: Annotated[
-        str, StringConstraints(strip_whitespace=True, min_length=1, max_length=255)
+        str,
+        StringConstraints(strip_whitespace=True, min_length=1, max_length=255),
+        AfterValidator(no_hidden_characters),
     ]
 
 
@@ -1244,13 +1334,22 @@ class DeleteAccountRequest(BaseModel):
     email: str
 
 
+class AccountDeletionCheck(BaseModel):
+    """Whether `DELETE /auth/me` would go ahead now. `refusal` is the sentence
+    it would refuse with, saying what to do first, or None."""
+
+    refusal: str | None
+
+
 class SignupRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     email: Email
     password: Password
     display_name: (
         Annotated[
-            str, StringConstraints(strip_whitespace=True, min_length=1, max_length=255)
+            str,
+            StringConstraints(strip_whitespace=True, min_length=1, max_length=255),
+            AfterValidator(no_hidden_characters),
         ]
         | None
     ) = None
@@ -1281,6 +1380,54 @@ class TenantMembershipResponse(BaseModel):
     # None only for a workspace from before organizations that no migration
     # has given one yet.
     organization_id: str | None
+    # When the workspace was archived, None while it is not. Only its
+    # organization's `org_admin`s, and the operator, are told of one: nobody
+    # else may enter it (`workspace_archive.py`).
+    archived_at: str | None
+
+
+class OrganizationWorkspaceResponse(TenantMembershipResponse):
+    """One of the organization's workspaces, as its Workspaces page lists it:
+    when it was made, how many people, agents and rooms it has, each counted
+    as its own list counts them, and the names of its admins by membership.
+    The organization's `org_admin`s administer every workspace and are not
+    among them."""
+
+    created_at: str
+    users: int
+    agents: int
+    rooms: int
+    admins: list[str]
+    # Whether the caller may archive it now, and why not when they may not;
+    # restoring an archived one is any of the organization's admins'.
+    can_archive: bool
+    archive_blocked_reason: str | None
+    can_restore: bool
+
+
+class WorkspaceAdminsRequest(BaseModel):
+    """Who should be a workspace's admins among its members who are not its
+    organization's `org_admin`s; every other such member becomes a member."""
+
+    user_ids: list[str]
+
+
+class WorkspaceAdminsResponse(BaseModel):
+    """A workspace's admins by membership once chosen, by name, its
+    organization's `org_admin`s left out."""
+
+    id: str
+    name: str
+    admins: list[str]
+
+
+class WorkspaceArchiveResponse(BaseModel):
+    """A workspace archived or restored: when it was archived, None once
+    restored."""
+
+    id: str
+    name: str
+    archived_at: str | None
 
 
 class WorkspaceCountsResponse(BaseModel):
@@ -1291,16 +1438,6 @@ class WorkspaceCountsResponse(BaseModel):
     id: str
     users: int
     agents: int
-
-
-class OperatorWorkspaceResponse(BaseModel):
-    """One workspace on the server, as the platform operator's list shows it."""
-
-    id: str
-    slug: str
-    name: str
-    organization_id: str | None
-    organization_name: str | None
 
 
 class CurrentTenantResponse(TenantMembershipResponse):
@@ -1320,13 +1457,13 @@ class CurrentTenantResponse(TenantMembershipResponse):
 
 
 class TenantCreateRequest(BaseModel):
-    name: str
+    name: OneLineName
 
 
 class OrganizationCreateRequest(BaseModel):
-    name: str
+    name: OneLineName
     # The first workspace's name; the organization's when left out.
-    workspace_name: str | None = None
+    workspace_name: OneLineName | None = None
 
 
 class OrganizationSummary(BaseModel):
@@ -1336,6 +1473,14 @@ class OrganizationSummary(BaseModel):
     slug: str
     name: str
     role: str
+
+
+class OrganizationWithoutWorkspace(BaseModel):
+    """An organization the caller is still a member of, though in none of
+    its workspaces, which they may leave."""
+
+    id: str
+    name: str
 
 
 class CurrentOrganizationResponse(BaseModel):
@@ -1395,11 +1540,29 @@ class OrganizationCreateResponse(BaseModel):
 
 
 class WorkspaceCreateRequest(BaseModel):
-    name: str
+    name: OneLineName
 
 
 class TenantDeleteRequest(BaseModel):
     # The workspace's name, typed by the person deleting it.
+    name: str
+
+
+class TenantRenameRequest(BaseModel):
+    name: OneLineName
+
+
+class OrganizationRenameRequest(BaseModel):
+    name: OneLineName
+
+
+class OrganizationRenameResponse(BaseModel):
+    id: str
+    name: str
+
+
+class TenantRenameResponse(BaseModel):
+    id: str
     name: str
 
 
@@ -1442,6 +1605,16 @@ class SessionStateResponse(BaseModel):
     # Whether an invitation addressed to an e-mail is sent there, or only
     # minted for the admin to share.
     invite_email_enabled: bool
+    # Whether the caller may set up the deployment's connector apps
+    # (`gateway/connector_apps.py`): the platform operator, or an `org_admin`
+    # of the deployment's only organization (`auth.deployment_manager`).
+    can_manage_connector_apps: bool
+    # Whether those apps are set up in the dashboard by the admins of the
+    # deployment's organization, which has exactly one; with several, only
+    # the platform operator sets them up, with `switch-connector-apps`
+    # (`auth.connector_apps_in_dashboard`). Says, to someone who may not,
+    # whom to ask.
+    connector_apps_in_dashboard: bool
 
 
 MAX_INVITATION_USES = 100
@@ -1486,6 +1659,24 @@ class InvitationAcceptRequest(BaseModel):
     # browser history and `Referer` headers, and this one is a bearer
     # credential.
     token: str
+
+
+class InvitationAcceptResponse(TenantMembershipResponse):
+    """The workspace an accepted invitation is for, and the caller's standing
+    there. `already_member`: they were in it already with a role at least the
+    invitation's, so nothing changed and nothing was spent."""
+
+    already_member: bool
+
+
+class InvitationPreviewResponse(BaseModel):
+    """What an invitation is to, for the person about to accept it: nothing
+    beyond these three."""
+
+    workspace_name: str
+    # None only for a workspace from before organizations.
+    organization_name: str | None
+    role: str
 
 
 class AddressedInvitation(BaseModel):
@@ -1597,10 +1788,15 @@ class MemberDetail(BaseModel):
     via_organization: bool
     # What the caller may do with this member (`authz.can_change_workspace_member`):
     # an admin of the workspace, their own row included, never on an
-    # organization admin's. That the last admin stays and that someone still
-    # owning agents can't be removed is checked when it is asked.
+    # organization admin's; and not the workspace's last admin, nor making the
+    # registration service account an admin. That someone still owning agents
+    # can't be removed is checked when it is asked.
     can_change_role: bool
+    # Why not, set only when the caller administers the workspace and the
+    # flag beside it is false for one of the reasons above.
+    change_role_blocked_reason: str | None
     can_remove: bool
+    remove_blocked_reason: str | None
     # Whether the caller may hand them something they own: a member of the
     # workspace by their own membership, and not the caller.
     can_receive_transfer: bool
@@ -1625,6 +1821,23 @@ class MemberUpdateRequest(BaseModel):
     role: str
 
 
+class OrganizationMemberWorkspace(BaseModel):
+    """One of the organization's workspaces someone holds a membership in, and
+    their role there."""
+
+    id: str
+    name: str
+    role: str
+    archived: bool
+
+
+class OrganizationMemberAddRequest(BaseModel):
+    """Someone already in the organization, added to one of its workspaces."""
+
+    user_id: str
+    role: Literal["admin", "member"]
+
+
 class OrganizationMemberDetail(BaseModel):
     user_id: str
     name: str
@@ -1634,16 +1847,30 @@ class OrganizationMemberDetail(BaseModel):
     # What could not be revoked at a vendor when a demotion took away what
     # they held in workspaces they were in only as `org_admin`.
     warning: str | None
+    # The account agents added with the shared registration token are owned
+    # by: not a person, and never an admin of anything.
+    service_account: bool
     # What the caller may do with them, their own row included:
     # `can_change_role` for whoever passes the role route's gate, the
     # operator restoring an `org_admin` included;
     # `can_grant_org_admin` too, unless the organization's members come from
     # a directory Switch cannot change; `can_remove` for its `org_admin` only.
-    # The last `org_admin`, someone still in a workspace, and a directory that
-    # wants a sign-in first are answered when it is asked.
+    # Neither for the last `org_admin`, which the `_blocked_reason` beside
+    # each says. Someone still in a workspace, and a directory that wants a
+    # sign-in first, are answered when it is asked.
     can_change_role: bool
+    change_role_blocked_reason: str | None
     can_grant_org_admin: bool
     can_remove: bool
+    remove_blocked_reason: str | None
+
+
+class OrganizationMemberListEntry(OrganizationMemberDetail):
+    """`OrganizationMemberDetail`, with the organization's workspaces the
+    person holds a membership in, as the Users page lists them. An
+    `org_admin` in none is in the organization as a whole."""
+
+    workspaces: list[OrganizationMemberWorkspace]
 
 
 class OrganizationMemberUpdateRequest(BaseModel):
@@ -1664,6 +1891,7 @@ class AuthConfigResponse(BaseModel):
     # authenticated everywhere (CHOO-1865).
     password_login_enabled: bool
     signup_enabled: bool
+    test_account_reset_enabled: bool
     oidc_enabled: bool
     oidc_provider_label: str | None
     # The sign-in buttons for the OIDC provider (`id`, `label`); empty for one
@@ -1729,8 +1957,9 @@ class ReferenceDetail(BaseModel):
     type: str
     name: str
     description: str
-    instructions: str
-    value: dict[str, Any]
+    # Null when `can_read` is false: what is in it is withheld.
+    instructions: str | None
+    value: dict[str, Any] | None
     attached_rooms_count: int = 0
     # Of `attached_rooms_count`, rooms the caller may not read, which are
     # never named to them. Counted only for whoever may manage the resource
@@ -1741,13 +1970,16 @@ class ReferenceDetail(BaseModel):
     # Resolved server-side, unfiltered by the type's visibility: the caller can
     # already read the raw slug. Null when the slug resolves to no type at all.
     type_display_name: str | None = None
-    # What the caller may do with it (`switch_core.authz`). `can_read`: open
-    # it — its owner, an admin, or anyone when it is publicly readable. Every
-    # route returns only what the caller may read, except a package's or a
-    # room's list, which names a private item to everyone who may read the
-    # package or room. `can_edit`: change it — its owner, an admin, or anyone
-    # when it is publicly writable. `can_manage`: delete it, change who may see
-    # or edit it, transfer it — its owner or an admin.
+    # What the caller may do with it (`switch_core.authz`). `can_read`: what
+    # is in it came with it, and its own page opens for them — true wherever it
+    # is returned whole, false only where that is withheld. Its owner, an
+    # admin, and anyone when it is publicly readable read it; so does whoever
+    # may read a room it is attached to, or a package that shares it
+    # (`can_read_in_package`). Only a package's list withholds it: someone
+    # else's private item in it, which the package's owner cannot share.
+    # `can_edit`: change it — its owner, an admin, or anyone when it is
+    # publicly writable. `can_manage`: delete it, change who may see or edit
+    # it, transfer it — its owner or an admin.
     can_read: bool
     can_edit: bool
     can_manage: bool
@@ -1757,7 +1989,7 @@ class ReferenceCreateRequest(BaseModel):
     read_visibility: str = "private"
     write_visibility: str = "private"
     type: str
-    name: str
+    name: Name
     description: str
     instructions: str
     value: dict[str, Any]
@@ -1766,7 +1998,7 @@ class ReferenceCreateRequest(BaseModel):
 class ReferenceUpdateRequest(BaseModel):
     read_visibility: str | None = None
     write_visibility: str | None = None
-    name: str | None = None
+    name: Name | None = None
     description: str | None = None
     instructions: str | None = None
     value: dict[str, Any] | None = None
@@ -1798,7 +2030,8 @@ class ReferenceTypeInfo(BaseModel):
 
 
 class ReferenceTypeDetail(BaseModel):
-    """A stored reference type, for the management list. Never a built-in."""
+    """A stored reference type the caller may read, for the management list,
+    with what they may do to it. Never a built-in."""
 
     type: str
     display_name: str
@@ -1960,9 +2193,8 @@ class DocumentDetail(BaseModel):
     created_at: str
     # As on `ReferenceDetail`, and `can_transfer`, which `can_manage` gives.
     # Those three are false for a room's own document, which is changed and
-    # removed in its room, not through the library. `can_read` is whether the
-    # library opens it; the room routes say otherwise for a room's own document
-    # (`RoomDocumentDetail`).
+    # removed in its room, not through the library. A detail is always
+    # returned whole, so its `can_read` is true.
     can_read: bool
     can_edit: bool
     can_manage: bool
@@ -1975,10 +2207,9 @@ class DocumentDetail(BaseModel):
 
 
 class RoomDocumentDetail(DocumentDetail):
-    """A document as seen from a room it is in. Its `can_read` is true for a
-    room's own document, which the room opens for everyone who may read the
-    room; an attached library document keeps the library's rule, which says
-    whether its own page opens."""
+    """A document as seen from a room it is in: the room shares what is in
+    it, whether the room's own or attached, with everyone who may read the
+    room."""
 
     can_remove: bool
 
@@ -1991,7 +2222,8 @@ class DocumentSummary(BaseModel):
     write_visibility: str
     name: str
     description: str
-    instructions: str
+    # Null when `can_read` is false: what is in it is withheld.
+    instructions: str | None
     attached_rooms_count: int = 0
     # Of `attached_rooms_count`, rooms the caller may not read, which are
     # never named to them. Counted only for whoever may manage the resource
@@ -2011,7 +2243,7 @@ class DocumentSummary(BaseModel):
 
 
 class RoomDocumentSummary(DocumentSummary):
-    """A document as listed in a room it is in. `can_read` as on
+    """A document as listed in a room it is in, whole, as on
     `RoomDocumentDetail`."""
 
     can_remove: bool
@@ -2020,7 +2252,7 @@ class RoomDocumentSummary(DocumentSummary):
 class DocumentCreateRequest(BaseModel):
     read_visibility: str = "private"
     write_visibility: str = "private"
-    name: str
+    name: Name
     description: str
     instructions: str
     content: str
@@ -2029,7 +2261,7 @@ class DocumentCreateRequest(BaseModel):
 class DocumentUpdateRequest(BaseModel):
     read_visibility: str | None = None
     write_visibility: str | None = None
-    name: str | None = None
+    name: Name | None = None
     description: str | None = None
     instructions: str | None = None
     content: str | None = None
@@ -2061,10 +2293,9 @@ class PackageDetail(BaseModel):
     # (`gateway/resource_rooms.py`); for anyone else those rooms are left out.
     hidden_rooms_count: int = 0
     created_at: str
-    # Whether the caller may open the package. Every route returns only
-    # packages the caller may read, except a room's package list: a private
-    # package its owner attached is listed to every reader of the room, and the
-    # Gateway shows that one without a link.
+    # Whether the caller may open the package. Every route returns a package
+    # whole, and only to whoever may open it: those who may read it, and
+    # readers of a room it is attached to, which shares it.
     can_read: bool
     # As on `ReferenceDetail`.
     can_edit: bool
@@ -2074,7 +2305,7 @@ class PackageDetail(BaseModel):
 class PackageCreateRequest(BaseModel):
     read_visibility: str = "private"
     write_visibility: str = "private"
-    name: str
+    name: Name
     description: str
     instructions: str
 
@@ -2082,7 +2313,7 @@ class PackageCreateRequest(BaseModel):
 class PackageUpdateRequest(BaseModel):
     read_visibility: str | None = None
     write_visibility: str | None = None
-    name: str | None = None
+    name: Name | None = None
     description: str | None = None
     instructions: str | None = None
 
@@ -2121,6 +2352,12 @@ class TemplateSummary(BaseModel):
     name: str
     description: str
     kind: str
+    # What it is for (see `template_use_cases`); None when nobody said.
+    use_case: UseCase | None
+    # How many agents and rooms the document describes, conditional ones
+    # included; None for a document that does not parse.
+    agent_count: int | None
+    room_count: int | None
     read_visibility: str
     write_visibility: str
     # Comes with Switch: served by the server on every workspace, and changed
@@ -2135,8 +2372,9 @@ class TemplateSummary(BaseModel):
     # greyed Run; None when nothing stands in the way. Advice, not a refusal.
     run_blocked_reason: str | None
     # How many times it has been run in this workspace, by people and agents,
-    # since runs were first counted.
+    # since runs were first counted, and when last; None if never.
     run_count: int
+    last_run_at: datetime | None
     version: int
     size_bytes: int
     created_at: str
@@ -2150,6 +2388,9 @@ class TemplateDetail(TemplateSummary):
 class TemplateRunRecorded(BaseModel):
     template_id: str
     run_count: int
+    # False when a run of it was already counted for the caller a moment ago
+    # (`REPORTED_RUN_WINDOW`), so this report was not.
+    counted: bool
 
 
 # The document has its own budget (TEMPLATE_MAX_BYTES); these are the labels
@@ -2161,6 +2402,21 @@ TEMPLATE_DESCRIPTION_MAX = 2000
 TEMPLATE_KIND_MAX = 64
 
 
+def _known_use_case(value: object) -> object:
+    """Refuse a use case outside the list, naming the list: the type alone
+    would answer with a message that does not say which field it means."""
+    if value is not None and not is_use_case(value):
+        raise PydanticCustomError(
+            "unknown_use_case",
+            "'{value}' is not a use case. Use one of: {known}, or null for none.",
+            {"value": value, "known": ", ".join(USE_CASES)},
+        )
+    return value
+
+
+TemplateUseCase = Annotated[UseCase | None, BeforeValidator(_known_use_case)]
+
+
 class TemplateCreateRequest(BaseModel):
     # Same stance as the update request: a body naming a field this does not
     # have is a caller expecting something, and ignoring it silently answers
@@ -2170,6 +2426,7 @@ class TemplateCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=TEMPLATE_NAME_MAX)
     description: str = Field(default="", max_length=TEMPLATE_DESCRIPTION_MAX)
     kind: str = Field(default="room", min_length=1, max_length=TEMPLATE_KIND_MAX)
+    use_case: TemplateUseCase = None
     # Shared with the workspace and changed by the owner or an admin, unless said otherwise.
     read_visibility: str = "public"
     write_visibility: str = "private"
@@ -2183,6 +2440,8 @@ class TemplateUpdateRequest(BaseModel):
     description: str | None = Field(default=None, max_length=TEMPLATE_DESCRIPTION_MAX)
     kind: str | None = Field(default=None, min_length=1, max_length=TEMPLATE_KIND_MAX)
     content: str | None = Field(default=None, min_length=1)
+    # Sent as null to clear it; left out to leave it as it is.
+    use_case: TemplateUseCase = None
     read_visibility: str | None = None
     write_visibility: str | None = None
 
@@ -2384,68 +2643,45 @@ class DecisionTestResponse(BaseModel):
     error: DecisionTestError | None
 
 
-class TrustSettingsResponse(BaseModel):
-    """Switch Trust's one server-global settings row. The API key itself is
-    never returned — `has_api_key`/`api_key_last4` only confirm one is set,
-    the way the stored secret is surfaced everywhere else in the gateway."""
+class OrganizationGuardrailsResponse(BaseModel):
+    """The Switch Trust policy the organization connected, as its admins see
+    it: never the API key, only its last four characters, None when it can't
+    be read. `policy_name` is Switch Trust's name for the policy when it gave
+    one; `policy_url` where Switch Trust shows it, when Switch knows."""
 
-    endpoint: str
+    connected: bool
     policy_id: str | None
-    has_api_key: bool
+    policy_name: str | None
+    policy_url: str | None
     api_key_last4: str | None
-    enabled: bool
+    connected_by_name: str | None
+    connected_at: str | None
 
 
-class TrustSettingsUpdateRequest(BaseModel):
-    """`api_key` omitted (or null) leaves whatever key is already stored
-    untouched, so changing the endpoint or policy id doesn't force re-entering
-    the secret. Use `DELETE /trust-settings` to turn Switch Trust off.
+class WorkspaceGuardrails(BaseModel):
+    """The Switch Trust policy that checks the bound workspace's messages, as
+    anyone in it may read it: which policy, never the key it is checked with.
+    `policy_id` is null when nothing checks them; `policy_name` is Switch
+    Trust's name for it, when it gave one; `policy_url`, where the policy is
+    shown on Switch Trust, is null too when it is on an endpoint Switch
+    cannot link into."""
 
-    No `timeout_seconds` here: unlike the rest of Switch Trust's settings,
-    the check timeout is fixed at deploy time (`SwitchConfig.
-    switch_trust_timeout_seconds`), not admin-editable."""
-
-    endpoint: str
+    checking: bool
     policy_id: str | None
-    api_key: str | None = None
+    policy_name: str | None
+    policy_url: str | None
 
-    @model_validator(mode="after")
-    def _validate_endpoint(self) -> TrustSettingsUpdateRequest:
-        value = self.endpoint
-        if value != value.strip():
-            raise ValueError("endpoint has leading or trailing whitespace")
-        parts = urlsplit(value)
-        if parts.scheme not in ("http", "https"):
-            raise ValueError("endpoint must be an http(s) URL")
-        if not parts.netloc:
-            raise ValueError("endpoint must include a host")
-        if parts.path.strip("/"):
-            raise ValueError(
-                "endpoint is the service's base URL — /guardrails/check is "
-                "appended to it, so it must have no path of its own"
-            )
-        if parts.query or parts.fragment:
-            raise ValueError(
-                "endpoint must be a bare base URL: a query or fragment is "
-                "dropped when /guardrails/check is appended, so it would "
-                "silently never be sent"
-            )
-        return self
 
-    @model_validator(mode="after")
-    def _validate_api_key(self) -> TrustSettingsUpdateRequest:
-        if self.api_key is not None and not self.api_key.strip():
-            raise ValueError(
-                "api_key must not be blank; omit it to leave the stored key "
-                "unchanged, or use DELETE /trust-settings to turn Switch "
-                "Trust off"
-            )
-        return self
+class OrganizationGuardrailsConnectRequest(BaseModel):
+    """A policy and its API key, both from Switch Trust. Switch Trust's
+    address is not asked for: it is Switch's own."""
 
-    @field_validator("policy_id")
-    @classmethod
-    def _blank_policy_id_is_unset(cls, value: str | None) -> str | None:
-        return value.strip() if value and value.strip() else None
+    policy_id: Annotated[
+        str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)
+    ]
+    api_key: Annotated[
+        str, StringConstraints(strip_whitespace=True, min_length=1, max_length=1000)
+    ]
 
 
 # ── Feature flags ────────────────────────────────────────────────────────────
