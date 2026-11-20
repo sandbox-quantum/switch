@@ -683,6 +683,13 @@ class SwitchConfig(BaseSettings):
 
     server_host: str = "0.0.0.0"
     server_port: int = 8000
+    # The addresses whose `X-Forwarded-For` / `X-Forwarded-Proto` uvicorn
+    # believes: comma-separated IPs or CIDRs of the ingress or load balancer
+    # in front of this server. A request from anywhere else keeps its own
+    # connection address, which is what the access log, sign-in events and
+    # the refusal breaker report. The same variable uvicorn itself reads.
+    # `*` believes every caller, so anyone can claim any address.
+    forwarded_allow_ips: str = "127.0.0.1"
 
     # Where collaboration bridges take platform callbacks. Only a Mattermost
     # button press needs one today: the press is delivered by the Mattermost

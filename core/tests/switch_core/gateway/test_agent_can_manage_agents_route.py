@@ -12,10 +12,12 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 from pydantic import ValidationError
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from switch_core.bridges.agent.protocol.agent_connections import AgentConnectionRegistry
-from switch_core.db.models import Agent, User
+from switch_core.db.audit import AuditAction
+from switch_core.db.models import Agent, AuditEvent, User
 from switch_core.db.stores.agent_session_store import AgentSessionStore
 from switch_core.db.stores.agent_store import AgentStore
 from switch_core.db.stores.room_role_store import RoomRoleStore
@@ -82,6 +84,34 @@ async def test_the_owner_turns_it_on_and_off(
         detail = await _set(session, agent.id, owner, False)
         assert detail.can_manage_agents is False
         assert await _stored(session, agent.id) is False
+
+
+async def test_each_change_is_recorded_in_the_audit_log(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    async with session_factory() as session:
+        owner = await add_user(session, name="owner")
+        agent = await add_agent(session, name="helper", owner_id=owner.id)
+
+        await _set(session, agent.id, owner, True)
+        await _set(session, agent.id, owner, True)
+        await _set(session, agent.id, owner, False)
+
+        events = (
+            (
+                await session.execute(
+                    select(AuditEvent)
+                    .where(AuditEvent.target_id == agent.id)
+                    .order_by(AuditEvent.occurred_at)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert [(e.action, e.actor_user_id) for e in events] == [
+        (AuditAction.AGENT_MANAGEMENT_GRANTED, owner.id),
+        (AuditAction.AGENT_MANAGEMENT_REVOKED, owner.id),
+    ]
 
 
 @pytest.mark.parametrize("role", ["user", "admin"])

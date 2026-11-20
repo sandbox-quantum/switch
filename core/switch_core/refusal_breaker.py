@@ -38,6 +38,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from switch_core.observability.catalogue import HTTP_REFUSALS_THROTTLED
 from switch_core.observability.http import route_label
 from switch_core.observability.metrics import metrics
+from switch_core.security_events import SecuritySignal, log_security_event
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +56,7 @@ _TOKEN_EXCHANGE = re.compile(r"^/v1/management/controllers/[^/]+/token$")
 # else on this app reads FastAPI's `detail`.
 _MANAGEMENT_PREFIX = "/v1/management/"
 _RATE_LIMITED = "rate_limited"
+_CALLER_PREFIX = 12
 
 
 @dataclass
@@ -105,10 +107,16 @@ class RefusalBreaker:
 
         await self.app(scope, receive, capture)
         if statuses:
-            self._record(key, statuses[0], route_label(scope), method, path)
+            self._record(key, statuses[0], route_label(scope), method, path, scope)
 
     def _record(
-        self, key: tuple[str, str, str], status: int, route: str, method: str, path: str
+        self,
+        key: tuple[str, str, str],
+        status: int,
+        route: str,
+        method: str,
+        path: str,
+        scope: Scope,
     ) -> None:
         if status not in REFUSAL_STATUSES:
             self._tracked.pop(key, None)
@@ -119,7 +127,7 @@ class RefusalBreaker:
             # The one request let through after a wait was refused again.
             entry.cooldown_s = min(entry.cooldown_s * 2, MAX_COOLDOWN_S)
             entry.open_until = now + entry.cooldown_s
-            self._log_open(entry, method, path)
+            self._log_open(entry, method, path, key[0], scope)
             return
         if entry is None or entry.status != status or now - entry.first_at > WINDOW_S:
             entry = _Refusals(status=status, count=0, first_at=now, route=route)
@@ -129,11 +137,13 @@ class RefusalBreaker:
         if entry.count >= REFUSALS_TO_TRIP:
             entry.cooldown_s = INITIAL_COOLDOWN_S
             entry.open_until = now + entry.cooldown_s
-            self._log_open(entry, method, path)
+            self._log_open(entry, method, path, key[0], scope)
         while len(self._tracked) > MAX_TRACKED:
             self._tracked.popitem(last=False)
 
-    def _log_open(self, entry: _Refusals, method: str, path: str) -> None:
+    def _log_open(
+        self, entry: _Refusals, method: str, path: str, caller: str, scope: Scope
+    ) -> None:
         logger.warning(
             "%s %s was refused %d (%d times) by the same caller; answering it 429 for %d s",
             method,
@@ -141,6 +151,28 @@ class RefusalBreaker:
             entry.status,
             entry.count,
             entry.cooldown_s,
+        )
+        # Before authentication, so no tenant or account: the caller is a
+        # prefix of its hashed credential, enough to tell callers apart and
+        # too short to look the credential up by.
+        client = scope.get("client")
+        log_security_event(
+            SecuritySignal.REFUSAL_BREAKER_TRIPPED,
+            tenant_id=None,
+            actor_user_id=None,
+            target_type="route",
+            target_id=entry.route,
+            agent_id=None,
+            room_id=None,
+            details={
+                "method": method,
+                "path": path,
+                "status": entry.status,
+                "refusals": entry.count,
+                "cooldown_s": entry.cooldown_s,
+                "caller": caller[:_CALLER_PREFIX],
+                "client_ip": client[0] if client else None,
+            },
         )
 
 

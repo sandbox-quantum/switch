@@ -654,6 +654,7 @@ class AgentCore:
                     parent_agent_id=parent_agent_id,
                     tools=tool_specs,
                     models=model_specs,
+                    registration_path=registration_path,
                 )
                 logger.info("Re-registered agent: %s (%s)", name, agent_id)
             else:
@@ -679,6 +680,7 @@ class AgentCore:
                     tools=tool_specs,
                     models=model_specs,
                     addressing_policy=addressing_policy,
+                    registration_path=registration_path,
                 )
                 logger.info("Registered agent: %s (%s)", name, agent_id)
                 newly_registered = True
@@ -731,6 +733,7 @@ class AgentCore:
         tools: list[ToolSpec],
         models: list[ModelSpec],
         addressing_policy: AddressingPolicy | None,
+        registration_path: str,
     ) -> str:
         api_key_record = ApiKey(
             type="agent",
@@ -793,6 +796,21 @@ class AgentCore:
                 ),
             )
 
+        await record_audit_event(
+            session,
+            tenant_id=agent.tenant_id,
+            actor_user_id=owner_id,
+            action=AuditAction.AGENT_REGISTERED,
+            target_type="agent",
+            target_id=agent.id,
+            details={
+                "agent_name": name,
+                "agent_type": agent_type,
+                "connector_type": connector_type,
+                "registration_path": registration_path,
+                "parent_agent_id": parent_agent_id,
+            },
+        )
         await session.commit()
         self.client_lifecycle.start_client(client_record)
         self.client_lifecycle.announce(client_record.tenant_id, [client_record.id])
@@ -817,6 +835,7 @@ class AgentCore:
         parent_agent_id: str | None,
         tools: list[ToolSpec],
         models: list[ModelSpec],
+        registration_path: str,
     ) -> str:
         new_api_key_record = ApiKey(
             type="agent",
@@ -881,6 +900,20 @@ class AgentCore:
                 ),
             )
 
+        await record_audit_event(
+            session,
+            tenant_id=existing.tenant_id,
+            actor_user_id=owner_id,
+            action=AuditAction.AGENT_REREGISTERED,
+            target_type="agent",
+            target_id=existing.id,
+            details={
+                "agent_name": existing.name,
+                "agent_type": agent_type,
+                "connector_type": connector_type,
+                "registration_path": registration_path,
+            },
+        )
         await session.commit()
         self.api_key_cache.invalidate_agent(existing.id)
         if profile_changed:
@@ -1583,7 +1616,7 @@ class AgentCore:
                 room = await self._room_member_in(session, agent_id, room_id)
             ticket = access.ticket()
             covered = await self.budget_guard.require_within(
-                session, tenant_id=tenant_id, agent_id=agent_id
+                session, tenant_id=tenant_id, agent_id=agent_id, room_id=room_id
             )
         if not covered:
             access.put_unbudgeted(tenant_id, agent_id, ticket)
@@ -1774,6 +1807,7 @@ class AgentCore:
         content."""
         check = await check_message(
             self.trust_client,
+            self.session_factory,
             tenant_id=require_tenant_id(),
             role="assistant",
             content=content,
@@ -1823,6 +1857,7 @@ class AgentCore:
         body_check, card_check = await asyncio.gather(
             check_message(
                 self.trust_client,
+                self.session_factory,
                 tenant_id=tenant_id,
                 role="assistant",
                 content=content,
@@ -1830,6 +1865,7 @@ class AgentCore:
             ),
             check_message(
                 self.trust_client,
+                self.session_factory,
                 tenant_id=tenant_id,
                 role="assistant",
                 content=trust_text(ui),
@@ -2135,6 +2171,7 @@ class AgentCore:
         if await trust_is_active(self.trust_client, tenant_id):
             files_check_task = check_attachments(
                 self.trust_client,
+                self.session_factory,
                 tenant_id=tenant_id,
                 role="assistant",
                 files=files,
@@ -2144,6 +2181,7 @@ class AgentCore:
                 caption_check, files_check = await asyncio.gather(
                     check_message(
                         self.trust_client,
+                        self.session_factory,
                         tenant_id=tenant_id,
                         role="assistant",
                         content=caption_text,

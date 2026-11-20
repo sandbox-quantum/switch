@@ -9,6 +9,8 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
 
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
 from switch_core.bridges.collaboration.collaboration_core import CollaborationCore
 from switch_core.bridges.collaboration.models import Attachment, InboundMessage
 from switch_core.clients.admin_messages import AdminMessageType
@@ -99,7 +101,9 @@ async def _not_an_agent(_name: str) -> bool:
     return False
 
 
-def _bridge(trust_client: object) -> SimpleNamespace:
+def _bridge(
+    session_factory: async_sessionmaker[AsyncSession], trust_client: object
+) -> SimpleNamespace:
     human_actor = _FakeHumanActor()
     recorded: list[dict[str, str]] = []
 
@@ -120,6 +124,7 @@ def _bridge(trust_client: object) -> SimpleNamespace:
         _ensure_human_in_room=_ensure_human_in_room,
         _record_message_map=_record_message_map,
         _trust_client=trust_client,
+        _session_factory=session_factory,
         _room_tenant=AsyncMock(return_value="tenant-1"),
         human_actor=human_actor,
         recorded=recorded,
@@ -145,8 +150,10 @@ def _msg(content: str, *attachments: Attachment) -> InboundMessage:
 _IMAGE = Attachment(filename="cat.png", mimetype="image/png", data=b"\x89PNG")
 
 
-async def test_blocked_caption_with_an_image_relays_nothing() -> None:
-    bridge = _bridge(_ContentTrustClient())
+async def test_blocked_caption_with_an_image_relays_nothing(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    bridge = _bridge(session_factory, _ContentTrustClient())
 
     await CollaborationCore._handle_inbound_message(
         bridge, _msg("FORBIDDEN words", _IMAGE)
@@ -160,9 +167,11 @@ async def test_blocked_caption_with_an_image_relays_nothing() -> None:
     assert message_type == AdminMessageType.TRUST_BLOCKED.value
 
 
-async def test_text_file_with_blocked_content_relays_nothing() -> None:
+async def test_text_file_with_blocked_content_relays_nothing(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
     trust = _ContentTrustClient()
-    bridge = _bridge(trust)
+    bridge = _bridge(session_factory, trust)
     report = Attachment(
         filename="report.txt", mimetype="text/plain", data=b"FORBIDDEN data"
     )
@@ -183,8 +192,10 @@ async def test_text_file_with_blocked_content_relays_nothing() -> None:
     ]
 
 
-async def test_text_file_trust_would_redact_is_blocked_not_relayed() -> None:
-    bridge = _bridge(_ContentTrustClient())
+async def test_text_file_trust_would_redact_is_blocked_not_relayed(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    bridge = _bridge(session_factory, _ContentTrustClient())
     contacts = Attachment(
         filename="contacts.csv", mimetype="text/csv", data=b"alice@example.com"
     )
@@ -197,10 +208,12 @@ async def test_text_file_trust_would_redact_is_blocked_not_relayed() -> None:
     assert "cannot be redacted" in body
 
 
-async def test_image_is_relayed_without_a_note_or_a_notice() -> None:
+async def test_image_is_relayed_without_a_note_or_a_notice(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
     # Switch never reads an image's text, so a screenshot is relayed as it is:
     # telling its sender so on every post would only be noise.
-    bridge = _bridge(_ContentTrustClient())
+    bridge = _bridge(session_factory, _ContentTrustClient())
 
     await CollaborationCore._handle_inbound_message(bridge, _msg("look", _IMAGE))
 
@@ -210,10 +223,10 @@ async def test_image_is_relayed_without_a_note_or_a_notice() -> None:
     assert bridge._adapter.admin_messages == []
 
 
-async def test_unreadable_document_is_relayed_with_a_note_that_it_was_not_checked() -> (
-    None
-):
-    bridge = _bridge(_ContentTrustClient())
+async def test_unreadable_document_is_relayed_with_a_note_that_it_was_not_checked(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    bridge = _bridge(session_factory, _ContentTrustClient())
     scan = Attachment(
         filename="scan.pdf", mimetype="application/pdf", data=b"%PDF-1.4\x00garbage"
     )
@@ -229,8 +242,10 @@ async def test_unreadable_document_is_relayed_with_a_note_that_it_was_not_checke
     assert message_type == AdminMessageType.TRUST_ERRORED.value
 
 
-async def test_redacted_caption_becomes_the_redacted_text() -> None:
-    bridge = _bridge(_ContentTrustClient())
+async def test_redacted_caption_becomes_the_redacted_text(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    bridge = _bridge(session_factory, _ContentTrustClient())
     notes = Attachment(filename="notes.txt", mimetype="text/plain", data=b"fine")
 
     await CollaborationCore._handle_inbound_message(
@@ -243,9 +258,11 @@ async def test_redacted_caption_becomes_the_redacted_text() -> None:
     assert message_type == AdminMessageType.TRUST_REDACTED.value
 
 
-async def test_with_trust_off_files_are_relayed_unchanged_and_unread() -> None:
+async def test_with_trust_off_files_are_relayed_unchanged_and_unread(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
     trust = _ContentTrustClient(active=False)
-    bridge = _bridge(trust)
+    bridge = _bridge(session_factory, trust)
     report = Attachment(
         filename="report.txt", mimetype="text/plain", data=b"FORBIDDEN data"
     )
@@ -263,8 +280,10 @@ async def test_with_trust_off_files_are_relayed_unchanged_and_unread() -> None:
     assert bridge._adapter.admin_messages == []
 
 
-async def test_with_the_null_client_files_are_relayed_unchanged() -> None:
-    bridge = _bridge(NullTrustClient())
+async def test_with_the_null_client_files_are_relayed_unchanged(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    bridge = _bridge(session_factory, NullTrustClient())
 
     await CollaborationCore._handle_inbound_message(bridge, _msg("look", _IMAGE))
 

@@ -1815,7 +1815,10 @@ class AgentRecipient:
         if decision.allowed:
             try:
                 await self._budget_guard.require_within(
-                    session, tenant_id=self.tenant_id, agent_id=agent.id
+                    session,
+                    tenant_id=self.tenant_id,
+                    agent_id=agent.id,
+                    room_id=meta.room_id,
                 )
             except BudgetExceeded as exc:
                 refusal = str(exc)

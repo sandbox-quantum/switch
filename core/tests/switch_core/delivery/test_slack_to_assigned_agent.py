@@ -99,6 +99,7 @@ class SlackRoom:
             _repair_placeholder_username=_nothing,
             _maybe_guide_self_mention=_nothing,
             _trust_client=NullTrustClient(),
+            _session_factory=world.session_factory,
             _room_tenant=AsyncMock(return_value="tenant-1"),
         )
         return core

@@ -35,6 +35,7 @@ from switch_core.bridges.agent.protocol.agent_management import (
     NewManagedAgent,
 )
 from switch_core.connections.broker import CheckedGrant, ServiceBroker, ServiceError
+from switch_core.db.audit import AuditAction, record_audit_event
 from switch_core.db.models import Agent
 from switch_core.db.session_scope import tenant_session
 from switch_core.room_service import FIXED_MEMBERSHIP
@@ -570,6 +571,16 @@ class TemplateAgents:
                 addressing_policy=agent.addressing_policy,
                 can_manage_agents=agent.plan.can_manage_agents,
             )
+            if agent.plan.can_manage_agents:
+                await record_audit_event(
+                    session,
+                    tenant_id=tenant_id,
+                    actor_user_id=owner_id,
+                    action=AuditAction.AGENT_MANAGEMENT_GRANTED,
+                    target_type="agent",
+                    target_id=agent_id,
+                    details={"agent_name": agent.plan.name, "via": "template"},
+                )
             await session.commit()
         if not agent.grants:
             return
