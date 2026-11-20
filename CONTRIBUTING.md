@@ -9,6 +9,10 @@ opening an issue.
 
 ## Development setup
 
+New here? [Quickstart: from clone to first change](docs/contributing/quickstart.md)
+is the short path to a running Switch and an agent answering in a room, in about
+15 minutes. The rest of this section is the fuller reference.
+
 **Prerequisites:** [Docker](https://docs.docker.com/get-docker/),
 [uv](https://docs.astral.sh/uv/), and [just](https://github.com/casey/just)
 (`brew install just`).
