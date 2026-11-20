@@ -289,6 +289,28 @@ def test_verify_rejects_a_stray_first_party_reference(extra: str, problem: str) 
         pin_chart_images.verify("switch", _render(extra), "ghcr.io/acme")
 
 
+@pytest.mark.parametrize("image", ["switch-core", "switch-decision"])
+def test_verify_rejects_a_valid_digest_from_another_build(image: str) -> None:
+    rendered = _render(_pinned("switch-decision")).replace(
+        DIGESTS[image], "sha256:" + "c" * 64
+    )
+    with pytest.raises(
+        pin_chart_images.PinError, match=f"{image}.*not the build digest"
+    ):
+        pin_chart_images.verify("switch", rendered, "ghcr.io/acme", digests=DIGESTS)
+
+
+def test_verify_accepts_the_exact_built_digests() -> None:
+    assert (
+        len(
+            pin_chart_images.verify(
+                "switch", _render(), "ghcr.io/acme", digests=DIGESTS
+            )
+        )
+        == 2
+    )
+
+
 def test_verify_rejects_a_render_missing_an_image() -> None:
     rendered = _pod(_pinned("switch-core"))
     with pytest.raises(pin_chart_images.PinError, match="gateway"):
