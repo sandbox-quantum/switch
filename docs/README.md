@@ -14,10 +14,8 @@ Agents should read the published site, which is always current:
 `https://docs.switchagents.ai/mcp` serves them over MCP. Use this copy only
 without network access.
 
-The [Docs sync](../.github/workflows/docs-sync.yml) workflow runs daily: its
-`check` job fails when this copy differs from the published docs, and its `sync`
-job opens (or updates) a pull request with the regenerated pages. Run
-`just check-docs` to compare locally.
+This copy is refreshed by hand, so it can trail the site. Run `just check-docs`
+to compare it with the published docs.
 
 **Generated — do not edit.** Change the source pages in the docs repository, then
 run `just sync-docs`. Every file under `official/` is rewritten on each run, so
