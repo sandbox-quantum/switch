@@ -2064,7 +2064,7 @@
     {
       "definition": {
         "type": "timeseries",
-        "title": "Gateway requests turned away per second, by whose limit they hit (caller: 429, process: 503)",
+        "title": "Gateway requests turned away per second (caller: 429, process: 503)",
         "show_legend": true,
         "requests": [
           {
@@ -2079,7 +2079,55 @@
       "layout": {
         "x": 0,
         "y": 104,
-        "width": 12,
+        "width": 4,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Long-lived gateway streams held, by kind (chats feed, activity feed, change notices)",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.http.gateway_streams.open{$service,$flint_env,$version,!version:0.27.0} by {kind}",
+            "display_type": "line"
+          }
+        ]
+      },
+      "layout": {
+        "x": 4,
+        "y": 104,
+        "width": 4,
+        "height": 4
+      }
+    },
+    {
+      "definition": {
+        "type": "timeseries",
+        "title": "Gateway streams refused (caller: 429, process: 503) or closed for a newer one, per second",
+        "show_legend": true,
+        "requests": [
+          {
+            "q": "sum:switch.http.gateway_streams.turned_away{$service,$flint_env,$version,!version:0.27.0} by {reason}.as_rate()",
+            "display_type": "bars",
+            "style": {
+              "palette": "warm"
+            }
+          },
+          {
+            "q": "sum:switch.http.gateway_streams.closed_for_newer{$service,$flint_env,$version,!version:0.27.0} by {kind}.as_rate()",
+            "display_type": "bars",
+            "style": {
+              "palette": "cool"
+            }
+          }
+        ]
+      },
+      "layout": {
+        "x": 8,
+        "y": 104,
+        "width": 4,
         "height": 4
       }
     },
