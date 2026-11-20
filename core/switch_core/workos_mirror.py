@@ -89,7 +89,7 @@ from switch_core.observability.catalogue import (
     WORKOS_RECHECK_OLDEST_AGE,
 )
 from switch_core.observability.metrics import GaugeReading, metrics
-from switch_core.organization_issues import directory_organization_deleted
+from switch_core.organization_issues import workos_organization_deleted
 from switch_core.organization_mirror import MirrorDependencies, apply_from_directory
 from switch_core.ownership import Fence, OwnedKind, Ownership
 from switch_core.tenant_context import no_tenant
@@ -224,6 +224,12 @@ class WorkOSMirror:
         """Poll the events every `POLL_INTERVAL_SECONDS`, and check every
         organization when starting and every `CHECK_INTERVAL_SECONDS`, until
         the fence is lost."""
+        # What this process knew from an earlier hold may be stale by now;
+        # the full check `_run` starts with rebuilds it.
+        self._attempts = {}
+        self._recheck = {}
+        self._linked_now = None
+        self._linked_ids = set()
         self._running_since = self._clock()
         self._last_read_through = None
         self._last_full_check = None
@@ -522,9 +528,11 @@ class WorkOSMirror:
                         Organization.id == organization_id
                     )
                 )
-                deleted = await directory_organization_deleted(session, organization_id)
-            if workos_organization_id is not None and not deleted:
-                linked[organization_id] = workos_organization_id
+                if workos_organization_id is None or await workos_organization_deleted(
+                    session, organization_id, workos_organization_id
+                ):
+                    continue
+            linked[organization_id] = workos_organization_id
         if self._linked_now is not None:
             self._to_recheck(set(linked) - self._linked_ids)
         self._linked_now = linked

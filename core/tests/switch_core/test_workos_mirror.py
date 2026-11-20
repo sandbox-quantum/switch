@@ -697,6 +697,27 @@ class TestReporting:
 
         assert _gauges(running.mirror) == {}
 
+    async def test_a_hold_taken_again_starts_from_what_it_finds_then(
+        self, rls_harness: RLSHarness
+    ) -> None:
+        organization_id, _ = await _linked(rls_harness.owner)
+        workos = _WorkOS()
+        workos.fail_members = True
+        clock = _Clock(100.0)
+        running = await _mirror(rls_harness, workos, clock)
+        await running.check_once()
+        assert running.mirror._recheck == {organization_id: 100.0}
+        clock.now = 1000.0
+        task = asyncio.create_task(running.mirror.run(running.fence))
+        try:
+            await _until(lambda: len(workos.asked) >= 1)
+            assert running.mirror._recheck == {organization_id: 1000.0}
+            assert _gauges(running.mirror)["switch.workos.recheck.oldest_age"] == 0.0
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
     async def test_an_organization_waiting_in_the_recheck_keeps_when_it_started(
         self, rls_harness: RLSHarness
     ) -> None:

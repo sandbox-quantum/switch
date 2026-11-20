@@ -106,5 +106,10 @@ export function OrganizationAuditLogPage() {
   const { data: organization, error } = useOrganization();
   if (error) return <Alert severity="error">{error}</Alert>;
   if (organization === null) return <CircularProgress />;
-  return <OrganizationAuditSection organizationName={organization.name} />;
+  return (
+    <OrganizationAuditSection
+      organizationName={organization.name}
+      membersFromDirectory={organization.members_from_directory}
+    />
+  );
 }
