@@ -566,9 +566,9 @@ async def test_a_machine_in_retention_loses_its_disk_now_not_when_retention_ends
 async def test_a_machine_already_set_to_be_deleted_has_its_retention_ended(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
-    """A machine an earlier run set to be deleted, keeping its disk's
-    retention date: the controller never brings that date forward on its
-    own, so it is brought forward in a new revision."""
+    """A machine its owner deleted earlier, keeping its disk's retention
+    date: the controller never brings that date forward on its own, so it is
+    brought forward in a new revision that explicitly asks it to."""
     organization_id, (workspace,) = await _organization(session_factory, 1)
     alice = await _person(session_factory, "alice", [workspace], organization_id)
     async with tenant_session(session_factory, workspace) as session:
@@ -593,6 +593,8 @@ async def test_a_machine_already_set_to_be_deleted_has_its_retention_ended(
         assert machine is not None
         assert machine.retain_until is not None
         assert machine.retain_until <= datetime.now(UTC)
+        assert machine.expedite_deletion
+        assert machine_item(machine)["expedite_deletion"] is True
         assert machine.revision == 3, "only the first run needed a new revision"
 
 

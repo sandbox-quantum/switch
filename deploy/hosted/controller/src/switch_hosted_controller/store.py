@@ -253,7 +253,8 @@ class MachineStore:
         """Change the desired state, and with it the retention deadline.
 
         Once a machine is desired deleted its deadline only ever moves later, so
-        nothing can bring its volume deletion forward.
+        nothing can bring its volume deletion forward here; only an explicit
+        `expedite_deletion` can.
         """
         self._connection.execute("BEGIN IMMEDIATE")
         try:
@@ -300,6 +301,28 @@ class MachineStore:
                     machine_id,
                 ),
             )
+            self._connection.execute("COMMIT")
+            return self.get(machine_id)
+        except Exception:
+            if self._connection.in_transaction:
+                self._connection.execute("ROLLBACK")
+            raise
+
+    def expedite_deletion(self, machine_id: str, retain_until: datetime | None) -> Machine:
+        """Bring a deleted machine's retention deadline forward to `retain_until`,
+        when Core explicitly asks (an organization purge); never later.
+
+        The exception to `set_desired`'s never-earlier rule, honoured only for a
+        machine already desired deleted: no deadline means the volume goes now.
+        """
+        self._connection.execute("BEGIN IMMEDIATE")
+        try:
+            current = self._get_row(machine_id)
+            if current.desired_state is not DesiredState.DELETED:
+                raise StoreError("only a machine desired deleted can have its deletion expedited")
+            earlier = _earlier(current.retain_until, retain_until)
+            if earlier != current.retain_until:
+                self._update_retain_until(machine_id, earlier)
             self._connection.execute("COMMIT")
             return self.get(machine_id)
         except Exception:
@@ -636,6 +659,12 @@ def _later(stored: datetime | None, requested: datetime | None) -> datetime | No
     if requested is None:
         return stored
     return max(stored, requested)
+
+
+def _earlier(stored: datetime | None, requested: datetime | None) -> datetime | None:
+    if stored is None or requested is None:
+        return None
+    return min(stored, requested)
 
 
 def _timestamp(value: datetime | None) -> str | None:

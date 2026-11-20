@@ -583,6 +583,12 @@ class CloudMachine(Base):
     data_volume_id: Mapped[str | None] = mapped_column(Text)
     instance_id: Mapped[str | None] = mapped_column(Text)
     retain_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Set by an organization purge with `desired_state` deleted: the hosted
+    # controller takes `retain_until` even when it is earlier than the
+    # deadline it already holds, which it otherwise never brings forward.
+    expedite_deletion: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false"
+    )
     active_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     # The machine's disk and memory, and per workspace (keyed by its
     # `MachineWorkspace` id) when its controller last reported and how many

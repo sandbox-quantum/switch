@@ -16,8 +16,9 @@ account that belongs to nothing else. `switch-purge-organization`
   purge back until it is revoked or expires, as it holds back deleting a
   workspace.
 - **Cloud machines.** Each machine of an account the purge deletes is set to
-  be deleted with its disk's retention ended (`retain_until` now), and the
-  purge waits until the hosted controller reports it deleted, which it does
+  be deleted with its disk's retention ended (`retain_until` now, with
+  `expedite_deletion` so the controller takes the date even for a machine it
+  already holds as deleted with a later one), and the purge waits until the hosted controller reports it deleted, which it does
   only once the instance is terminated and the data volume is gone: deleting
   its rows first would leave both with nothing to tear them down. A machine
   whose owner keeps their account is not torn down; it only loses the
@@ -647,14 +648,21 @@ class OrganizationPurge:
                     continue
                 now = datetime.now(UTC)
                 # The hosted controller deletes the data volume only once
-                # `retain_until` has passed, and once a machine is to be
-                # deleted it never brings that date forward: the date has to
-                # be now in the same revision that deletes it.
-                if machine.desired_state != "deleted" or (
-                    machine.retain_until is not None and machine.retain_until > now
+                # `retain_until` has passed, and for a machine it already
+                # holds as deleted (its owner deleted it earlier, with
+                # retention) it never brings that date forward unless asked
+                # with `expedite_deletion`. A controller from before the flag
+                # ignores it and keeps the later date; Core cannot see the
+                # date a controller holds, so such a machine reads as still
+                # being torn down until that date passes.
+                if (
+                    machine.desired_state != "deleted"
+                    or not machine.expedite_deletion
+                    or (machine.retain_until is not None and machine.retain_until > now)
                 ):
                     machine.desired_state = "deleted"
                     machine.retain_until = now
+                    machine.expedite_deletion = True
                     bump_revision(machine, now)
                     logger.info(
                         "Set cloud machine %s to be deleted, disk included", machine_id

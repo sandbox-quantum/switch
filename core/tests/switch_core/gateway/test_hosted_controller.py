@@ -72,6 +72,7 @@ MACHINE_ITEM_KEYS = {
     "revision",
     "data_volume_id",
     "retain_until",
+    "expedite_deletion",
     "bundle_revision",
 }
 
@@ -375,6 +376,7 @@ async def test_machines_lists_every_live_machine_with_the_contract_keys(
         "revision": 1,
         "data_volume_id": None,
         "retain_until": None,
+        "expedite_deletion": False,
         "bundle_revision": 1,
     }
 
