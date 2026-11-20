@@ -7,8 +7,9 @@ import {
   codexHomeNotAbsolute,
   codexSourceHome,
   prepareCodexSessionHome,
-  withManagedCodexSandbox,
+  managedCodexSandbox,
 } from './home';
+import type { CodexSandboxMode } from './protocol';
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -27,6 +28,7 @@ it('isolates config, preserves rollouts and refreshed auth on resume, and protec
     sessionId: '../session',
     sourceHome,
     config: 'model = "test-model"',
+    defaultSandbox: null,
   };
   const { home, keyringLogin } = await prepareCodexSessionHome(input);
   expect(keyringLogin).toBe(false);
@@ -59,6 +61,7 @@ it('hands the session a keyring login when the source home has no auth.json', as
     sessionId: 'session',
     sourceHome: join(root, 'missing'),
     config: '',
+    defaultSandbox: null,
   });
   expect(keyringLogin).toBe(true);
   expect(await readdir(home)).not.toContain('auth.json');
@@ -70,7 +73,13 @@ it('leaves a copied login alone when the machine moves its own to the keyring', 
   const sourceHome = join(root, 'source');
   await mkdir(sourceHome);
   await writeFile(join(sourceHome, 'auth.json'), 'fixture-login');
-  const input = { root: join(root, 'sessions'), sessionId: 'session', sourceHome, config: '' };
+  const input = {
+    root: join(root, 'sessions'),
+    sessionId: 'session',
+    sourceHome,
+    config: '',
+    defaultSandbox: null,
+  };
   const { home } = await prepareCodexSessionHome(input);
   await rm(join(sourceHome, 'auth.json'));
   // Codex may still read the copy; the adapter decides once it has asked.
@@ -86,6 +95,7 @@ it('removes a Switch skill file an earlier build left in the session home', asyn
     sessionId: 'session',
     sourceHome: join(root, 'missing'),
     config: '',
+    defaultSandbox: null,
   };
   const { home } = await prepareCodexSessionHome(input);
   await mkdir(join(home, 'skills/switch'), { recursive: true });
@@ -105,6 +115,7 @@ it('links the user’s own Codex skills into a session home that has no skills f
     sessionId: 'session',
     sourceHome,
     config: '',
+    defaultSandbox: null,
   });
   expect(await readFile(join(home, 'skills', '.system', 'SKILL.md'), 'utf8')).toBe('system skill');
 });
@@ -123,28 +134,94 @@ describe('codexSourceHome', () => {
   });
 });
 
-describe('withManagedCodexSandbox', () => {
-  it('lets a managed agent write in its workspace, or anywhere when it bypasses permissions', () => {
-    expect(parse(withManagedCodexSandbox('web_search = true\n', 'approval-required'))).toEqual({
-      sandbox_mode: 'workspace-write',
-      web_search: true,
+describe('managedCodexSandbox', () => {
+  it('gives an agent that bypasses permissions full access, any other its workspace', () => {
+    expect(managedCodexSandbox('full-access')).toBe('danger-full-access');
+    expect(managedCodexSandbox('auto')).toBe('workspace-write');
+    expect(managedCodexSandbox('auto-accept-edits')).toBe('workspace-write');
+    expect(managedCodexSandbox('approval-required')).toBe('workspace-write');
+  });
+});
+
+describe('the session sandbox', () => {
+  async function sessionSandbox(input: {
+    host: string | null;
+    agent: string;
+    defaultSandbox: CodexSandboxMode | null;
+  }): Promise<unknown> {
+    const root = await mkdtemp(join(tmpdir(), 'codex-home-test-'));
+    roots.push(root);
+    const sourceHome = join(root, 'source');
+    await mkdir(sourceHome);
+    if (input.host !== null) await writeFile(join(sourceHome, 'config.toml'), input.host);
+    const { home } = await prepareCodexSessionHome({
+      root: join(root, 'sessions'),
+      sessionId: 'session',
+      sourceHome,
+      config: input.agent,
+      defaultSandbox: input.defaultSandbox,
     });
-    expect(parse(withManagedCodexSandbox('', 'full-access'))).toEqual({
-      sandbox_mode: 'danger-full-access',
-    });
+    return parse(await readFile(join(home, 'config.toml'), 'utf8')).sandbox_mode;
+  }
+
+  it.each(['full-access', 'auto', 'approval-required'] as const)(
+    'keeps a host set to read-only read-only in %s',
+    async (mode) => {
+      expect(
+        await sessionSandbox({
+          host: 'sandbox_mode = "read-only"\n',
+          agent: 'model = "m"\n',
+          defaultSandbox: managedCodexSandbox(mode),
+        })
+      ).toBe('read-only');
+    }
+  );
+
+  it('prefers the host’s sandbox to the agent’s', async () => {
+    expect(
+      await sessionSandbox({
+        host: 'sandbox_mode = "read-only"\n',
+        agent: 'sandbox_mode = "danger-full-access"\n',
+        defaultSandbox: 'danger-full-access',
+      })
+    ).toBe('read-only');
   });
 
-  it('keeps an agent in auto mode in its workspace sandbox', () => {
-    expect(parse(withManagedCodexSandbox('', 'auto'))).toEqual({ sandbox_mode: 'workspace-write' });
+  it('takes the agent’s sandbox when the host names none', async () => {
+    expect(
+      await sessionSandbox({
+        host: 'model = "m"\n',
+        agent: 'sandbox_mode = "read-only"\n',
+        defaultSandbox: 'danger-full-access',
+      })
+    ).toBe('read-only');
   });
 
-  it('keeps a sandbox the configuration already names', () => {
-    const config = 'sandbox_mode = "read-only"\n[mcp_servers.x]\ncommand = "x"\n';
-    expect(withManagedCodexSandbox(config, 'full-access')).toBe(config);
-  });
+  it.each([
+    ['full-access', 'danger-full-access'],
+    ['auto', 'workspace-write'],
+    ['approval-required', 'workspace-write'],
+  ] as const)(
+    'falls back to the runtime mode’s sandbox in %s on a host with no Codex configuration',
+    async (mode, expected) => {
+      expect(
+        await sessionSandbox({
+          host: null,
+          agent: 'model = "m"\n',
+          defaultSandbox: managedCodexSandbox(mode),
+        })
+      ).toBe(expected);
+      expect(
+        await sessionSandbox({
+          host: '[mcp_servers.x]\ncommand = "x"\n',
+          agent: '',
+          defaultSandbox: managedCodexSandbox(mode),
+        })
+      ).toBe(expected);
+    }
+  );
 
-  it('puts the sandbox before any table, where TOML reads it as top level', () => {
-    const merged = withManagedCodexSandbox('[mcp_servers.x]\ncommand = "x"\n', 'approval-required');
-    expect(parse(merged)).toMatchObject({ sandbox_mode: 'workspace-write' });
+  it('leaves Codex its own default when there is no default to apply', async () => {
+    expect(await sessionSandbox({ host: null, agent: '', defaultSandbox: null })).toBeUndefined();
   });
 });

@@ -7576,6 +7576,16 @@ tags; see RELEASING.md.
 
 ### [Unreleased]
 
+#### Security
+- **A managed Codex agent keeps the host's own Codex sandbox.** The
+  controller used to give every Codex session a sandbox of its own,
+  `danger-full-access` under Bypass permissions and `workspace-write`
+  otherwise, which replaced the `sandbox_mode` set in the host's
+  `~/.codex/config.toml`: a host set to `read-only` ran writable sessions.
+  The host's setting now wins, then the agent's, and only a host that names
+  none gets that default. Auto mode still narrows `danger-full-access` to
+  `workspace-write`, so Codex's own review still sees requests.
+
 #### Added
 - **Says which machine, OS account and data folder it runs from.**
   Enrolling, and every status report, carry `device_id`: a SHA-256 of the

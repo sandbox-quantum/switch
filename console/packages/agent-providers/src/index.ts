@@ -186,7 +186,7 @@ export {
   watcherHealthSchema,
 } from './host/watcher-tools';
 
-export { codexSourceHome, prepareCodexSessionHome, withManagedCodexSandbox } from './codex/home';
+export { codexSourceHome, prepareCodexSessionHome } from './codex/home';
 export { readSharedCredentials, sharedConfigSchema } from './host/shared-config';
 export type { SharedHostConfig } from './host/shared-config';
 
