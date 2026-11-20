@@ -34,12 +34,21 @@ NAME_PREFIX = "[Switch REPLACE-WITH-ENV] "
 SECURITY_SIGNALS = (
     re.compile(r"switch\.controller\.credential_refusals\b"),
     re.compile(r"switch\.auth\."),
-    re.compile(r"switch\.event:security\."),
+    # The security event stream (`core/switch_core/security_events.py`): its
+    # event names, alone or in a group (`@switch.event:(security.a OR ...)`),
+    # the fields only its lines carry, its details and its logger.
+    re.compile(r"switch\.event:\(?\s*security\."),
+    re.compile(r"switch\.(action|scope|actor_user_id|audit_event_id)\b"),
+    re.compile(r"security_details\."),
+    re.compile(r"switch_core\.security\b"),
 )
 
 PLACEHOLDER = re.compile(r"REPLACE-WITH-[A-Z0-9-]*[A-Z0-9]")
 # An @-mention in a message: Datadog notifies whatever it names.
 MENTION = re.compile(r"(?<![\w.+-])@[\w.+@/-]+")
+# A log facet's value in a message, `{{[@switch.agent_id].name}}`: Datadog
+# fills it in from the group that fired, and notifies nobody by it.
+FACET_VARIABLE = re.compile(r"\{\{\s*\[@[\w.]+\]\.name\s*\}\}")
 
 
 def problems_in(monitors: object) -> list[str]:
@@ -118,7 +127,7 @@ def problems_in(monitors: object) -> list[str]:
                 problems.append(
                     f"{label}: message must carry {HANDLE_PLACEHOLDER} exactly once, has it {count} times"
                 )
-            for mention in MENTION.findall(message):
+            for mention in MENTION.findall(FACET_VARIABLE.sub("", message)):
                 if mention != HANDLE_PLACEHOLDER:
                     problems.append(
                         f"{label}: message names {mention!r}; use {HANDLE_PLACEHOLDER} and let apply.sh route it"

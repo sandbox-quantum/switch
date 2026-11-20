@@ -67,6 +67,7 @@ from switch_core.gateway.auth import (
     session_still_enters,
 )
 from switch_core.gateway.dependencies import get_config, get_user_store
+from switch_core.security_events import SecuritySignal, log_security_event
 from switch_core.session_activity.listener import Change, RoomSubscription
 
 logger = logging.getLogger(__name__)
@@ -542,6 +543,16 @@ async def upload_attachment(
         filename=file.filename or "attachment",
         mimetype=file.content_type or "application/octet-stream",
     )
+    log_security_event(
+        SecuritySignal.ATTACHMENT_UPLOADED,
+        tenant_id=tenant_id,
+        actor_user_id=user.id,
+        target_type="room",
+        target_id=room_id,
+        agent_id=None,
+        room_id=room_id,
+        details={"media_uri": staged.uri, "size": staged.size},
+    )
     return StagedUploadResponse(
         upload_id=staged.upload_id,
         uri=staged.uri,
@@ -627,6 +638,16 @@ async def get_media(
     async with tenant_session(service.session_factory, tenant_id) as session:
         room, _ = await service.require_member(session, tenant_id, user, room_id)
         blob = await service.media(session, room, uri)
+    log_security_event(
+        SecuritySignal.ATTACHMENT_DOWNLOADED,
+        tenant_id=tenant_id,
+        actor_user_id=user.id,
+        target_type="room",
+        target_id=room_id,
+        agent_id=None,
+        room_id=room_id,
+        details={"media_uri": uri, "size": len(blob.data)},
+    )
     return Response(
         content=blob.data,
         media_type=blob.content_type or "application/octet-stream",

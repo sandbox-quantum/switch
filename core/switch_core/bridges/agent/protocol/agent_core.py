@@ -166,6 +166,7 @@ from switch_core.room_wide_mention import (
     reject_reserved_mention_name,
     room_wide_mention_content,
 )
+from switch_core.security_events import SecuritySignal, log_security_event
 from switch_core.sessions.attachments import normalise_mime_type
 from switch_core.telemetry import TelemetryService, emit_after_commit, emit_safely
 from switch_core.telemetry.ages import age_days
@@ -2228,6 +2229,16 @@ class AgentCore:
         try:
             for index, (data, filename, mimetype) in enumerate(files):
                 media_uri = await client.upload_media(data, mimetype, filename)
+                log_security_event(
+                    SecuritySignal.ATTACHMENT_UPLOADED,
+                    tenant_id=tenant_id,
+                    actor_user_id=None,
+                    target_type="room",
+                    target_id=room.id,
+                    agent_id=agent_id,
+                    room_id=room.id,
+                    details={"media_uri": media_uri, "size": len(data)},
+                )
                 msgtype = "m.image" if mimetype.startswith("image/") else "m.file"
                 event_id = await client.send_media(
                     room.transport_room_id,
@@ -3074,6 +3085,16 @@ class AgentCore:
             resp = await client.transport.download_media(media_uri)
         except TransportError as exc:
             raise ValueError(f"Failed to download media {media_uri}: {exc}") from exc
+        log_security_event(
+            SecuritySignal.ATTACHMENT_DOWNLOADED,
+            tenant_id=client.tenant_id,
+            actor_user_id=None,
+            target_type="room",
+            target_id=room_id,
+            agent_id=agent_id,
+            room_id=room_id,
+            details={"media_uri": media_uri, "size": len(resp.body)},
+        )
         return resp.body, resp.content_type or "", resp.filename
 
     # ── Events ───────────────────────────────────────────────────────────────

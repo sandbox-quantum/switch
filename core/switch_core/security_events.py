@@ -15,7 +15,9 @@ leaves no line, as it leaves no row. The pending lines ride on the session
 
 Some events have no transaction to ride on, or come too often for a row each:
 a sign-in that failed, a budget refusing a message, the refusal breaker
-tripping, a Switch Trust alert or error. Those are written at once
+tripping, a Switch Trust alert or error, and the access lines that
+per-actor detection counts (messages an agent posts, rooms it reads, files,
+service tokens). Those are written at once
 with `log_security_event`, and are marked `switch.scope` = `log` so a reader
 knows no audit row backs them.
 
@@ -65,6 +67,17 @@ class SecuritySignal(StrEnum):
     REFUSAL_BREAKER_TRIPPED = "refusal_breaker.tripped"
     # A Switch Trust verdict of `alerted` or `errored` (`trust/client.py`).
     TRUST_VERDICT = "trust.verdict"
+    # Access an agent or person has, logged so one actor's volume can be
+    # alerted on: a message an agent posted (`delivery/router.py`), a room
+    # timeline an agent read or the rooms it listed
+    # (`bridges/agent/operations/definitions.py`), a file stored or fetched,
+    # and a service token issued to an agent (`connections/broker.py`).
+    AGENT_MESSAGE_SENT = "agent.message_sent"
+    AGENT_ROOM_READ = "agent.room_read"
+    AGENT_ROOMS_LISTED = "agent.rooms_listed"
+    ATTACHMENT_UPLOADED = "attachment.uploaded"
+    ATTACHMENT_DOWNLOADED = "attachment.downloaded"
+    SERVICE_TOKEN_ISSUED = "service_token.issued"
 
 
 @dataclass(frozen=True)

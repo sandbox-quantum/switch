@@ -257,6 +257,32 @@ each:
   session of its own before anything is delivered: if it cannot be written,
   the send fails rather than going ahead unrecorded.
 
+And a few more record access, so that one actor's volume can be alerted on
+(the security detection rules in `deploy/observability/README.md`). They carry
+ids and counts only, never message text, file names or tokens, and write
+nothing to the database:
+
+- `security.agent.message_sent`: a message an agent posted, once its row
+  commits (`delivery/router.py`), with the message id and `kind` (`text` or
+  `file`). A person's message is not one. This is the busiest of them: one
+  line per agent message, which is bounded by the agents' own turns (the load
+  tests' busiest realistic step is one message per agent every 3 minutes, so
+  a thousand busy agents are about 5 lines a second). Metrics can't carry the
+  agent id and no access line names it (per-agent routes are kept out of the
+  access log), so this line is the only per-agent count there is.
+- `security.agent.room_read`: an agent reading a room's history
+  (`read_context`), with `connected` false for a room read without connecting
+  to it. One line per call, fewer than messages: an agent reads to catch up,
+  not for every event.
+- `security.agent.rooms_listed`: an agent listing rooms (`list_all_rooms`),
+  with how many rooms the page held. Never their names.
+- `security.attachment.uploaded` / `security.attachment.downloaded`: a file an
+  agent posted or fetched, or a person uploaded or fetched in Switch Console,
+  with the media handle and its size.
+- `security.service_token.issued`: a service token issued to an agent
+  (`connections/broker.py`), with the service and who asked (the agent's own
+  key or a controller). Tokens are cached for up to an hour, so this is rare.
+
 `client_ip`, like the address in the access log, is the request's client
 as uvicorn resolves it. switch-core believes `X-Forwarded-For` only from the
 addresses in `FORWARDED_ALLOW_IPS` (the Helm value
