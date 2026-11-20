@@ -539,10 +539,12 @@ class TestManagedAgents:
             "droid",
             "cline",
             "junie",
+            "grok-build",
         }
         assert providers["cursor"] == {"fields": []}
         assert providers["kiro"] == {"fields": []}
         assert providers["droid"] == {"fields": []}
+        assert providers["grok-build"] == {"fields": []}
         effort = next(
             field for field in providers["claude"]["fields"] if field["key"] == "effort"
         )
@@ -577,6 +579,7 @@ class TestManagedAgents:
             "droid",
             "cline",
             "junie",
+            "grok-build",
         ]
         assert providers[0]["label"] == "Claude Code"
         for entry in providers:

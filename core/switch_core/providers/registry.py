@@ -270,6 +270,7 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
         connector_type="Droid CLI",
     ),
     AgentProvider(
+    AgentProvider(
         id="cline",
         label="Cline CLI",
         sign_in_command="cline auth",
@@ -299,6 +300,13 @@ AGENT_PROVIDERS: tuple[AgentProvider, ...] = (
             ToolSpec(name="Glob", description="Finds files by pattern"),
             ToolSpec(name="WebSearch", description="Searches the web"),
         ),
+    ),
+    AgentProvider(
+        id="grok-build",
+        label="Grok Build",
+        sign_in_command="grok login",
+        connector_type="Grok Build CLI",
+    ),
     ),
 )
 
