@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { useLocation, useNavigate } from "react-router";
+import { useNavigate } from "react-router";
 import { useAuth } from "../../data/AuthContext";
 import { AGENT_MANAGEMENT, GATEWAY_ONBOARDING } from "../../data/featureFlags";
 import { fetchManagedAgents } from "../../data/management";
@@ -33,7 +33,6 @@ export function forgetGetStartedVisit(userId: string, tenantId: string): void {
 export default function CloudWarmUp() {
   const { user, session, capabilities } = useAuth();
   const navigate = useNavigate();
-  const { pathname } = useLocation();
   const on =
     capabilities.features[GATEWAY_ONBOARDING] === true &&
     capabilities.features[AGENT_MANAGEMENT] === true;
@@ -73,12 +72,6 @@ export default function CloudWarmUp() {
       }
     })();
   }, [on, userId, tenantId, navigate]);
-
-  // Getting there by any route counts as having been sent.
-  useEffect(() => {
-    if (on && userId !== null && tenantId !== null && pathname === GET_STARTED)
-      localStorage.setItem(sentKey(userId, tenantId), new Date().toISOString());
-  }, [on, userId, tenantId, pathname]);
 
   return null;
 }

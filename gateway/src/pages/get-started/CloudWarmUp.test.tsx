@@ -111,6 +111,13 @@ describe("CloudWarmUp", () => {
     await waitFor(() => expect(screen.getByTestId("where").textContent).toBe("/get-started"));
   });
 
+  it("doesn't count a visit where no cloud device could be had", async () => {
+    onboarding.fetchHostedMachines.mockResolvedValue({ available: false, machines: [] });
+    await renderAt("/get-started");
+    await waitFor(() => expect(onboarding.fetchHostedMachines).toHaveBeenCalled());
+    expect(localStorage.getItem("switch.get-started.sent:me:t1")).toBeNull();
+  });
+
   it("sends nobody twice", async () => {
     localStorage.setItem("switch.get-started.sent:me:t1", "2026-01-01");
     onboarding.fetchHostedMachines.mockResolvedValue({

@@ -1342,6 +1342,14 @@ class DeleteAccountRequest(BaseModel):
     email: str
 
 
+class StartOverResponse(BaseModel):
+    """`POST /auth/me/start-over`: `finished` once the account is wiped and
+    signed out; otherwise `waiting` says what it waits on, to ask again."""
+
+    finished: bool
+    waiting: str | None
+
+
 class AccountDeletionCheck(BaseModel):
     """Whether `DELETE /auth/me` would go ahead now. `refusal` is the sentence
     it would refuse with, saying what to do first, or None."""

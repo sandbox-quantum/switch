@@ -1686,6 +1686,18 @@ export async function resetTestAccount(email: string): Promise<void> {
   await jsonRequest("/auth/me/reset-test-account", "POST", { email });
 }
 
+/** Where wiping what a test account owns, keeping its login, has got to:
+ * `finished` once it is done and the browser signed out; otherwise `waiting`
+ * says what it waits on, and asking again carries on. */
+export interface StartOverProgress {
+  finished: boolean;
+  waiting: string | null;
+}
+
+export async function startOverTestAccount(email: string): Promise<StartOverProgress> {
+  return jsonRequest<StartOverProgress>("/auth/me/start-over", "POST", { email });
+}
+
 /** A sign-in link Switch Console handed this browser, as its page asks about
  * it before spending it. */
 export interface BrowserHandoffPeek {

@@ -10,7 +10,7 @@ import {
   fetchManagedAgents,
   managementError,
 } from "../../data/management";
-import { deleteAgent } from "../../data/api";
+import { deleteAgent, startOverTestAccount } from "../../data/api";
 import { webChatsClient } from "../chats/webChatClient";
 
 /**
@@ -254,16 +254,22 @@ export async function createBuddy(input: {
   throw new Error("Every name tried for switch-buddy is already taken in this workspace.");
 }
 
+/** How often a start over asks again while a cloud device is being removed, and for how long. */
+export const START_OVER_POLL_MS = 5_000;
+export const START_OVER_LIMIT_MS = 15 * 60_000;
+
 /**
- * Puts getting started back to its first page, for testing it again with the
- * same account on a test server: switch-buddy is deleted, every AI login given
- * to the cloud device is taken back, and the device is stopped, so the next
- * run starts it again from signing in.
+ * Puts getting started back to its very beginning, for testing it again with
+ * the same account on a test server: switch-buddy is deleted and every AI
+ * login given to the cloud device taken back, then the server wipes the
+ * workspaces only this person is in, with their agents and their cloud
+ * device, keeping the sign-in, and signs this browser out. Waits while the
+ * device is being removed, asking again until it is done.
  */
 export async function startOver(input: {
   buddyId: string | null;
   controller: Controller | null;
-  machine: CloudMachine | null;
+  email: string;
 }): Promise<void> {
   if (input.buddyId) await deleteAgent(input.buddyId);
   const controller = input.controller;
@@ -274,9 +280,16 @@ export async function startOver(input: {
           `/management/controllers/${encodeURIComponent(controller.id)}/provider-logins/${encodeURIComponent(status.provider)}`,
           { method: "DELETE" },
         );
-  const machine = input.machine;
-  if (machine && machine.desired_state === "running" && !machine.stopped_by_admin)
-    await cloudMachineLifecycle(machine.machine_id, "stop", machine.revision);
+  const until = Date.now() + START_OVER_LIMIT_MS;
+  for (;;) {
+    const progress = await startOverTestAccount(input.email);
+    if (progress.finished) return;
+    if (Date.now() >= until)
+      throw new Error(
+        "Your Switch Cloud is still being removed. Try Start over again in a few minutes.",
+      );
+    await new Promise((resolve) => setTimeout(resolve, START_OVER_POLL_MS));
+  }
 }
 
 /** The name the buddy's first chat goes by, as Console names it. */

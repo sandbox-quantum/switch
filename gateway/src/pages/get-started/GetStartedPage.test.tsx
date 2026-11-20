@@ -5,12 +5,12 @@ import type { CloudMachine, Controller, ManagedAgent } from "../../data/manageme
 import GetStartedPage from "./GetStartedPage";
 import type { CloudSnapshot } from "./useCloudDevice";
 
-const auth = vi.hoisted(() => ({ logout: vi.fn() }));
+const auth = vi.hoisted(() => ({ refresh: vi.fn() }));
 vi.mock("../../data/AuthContext", () => ({
   useAuth: () => ({
     user: { id: "me", name: "Ada Lovelace", email: "ada@example.com" },
     session: { tenant: { id: "t1" } },
-    logout: auth.logout,
+    refresh: auth.refresh,
   }),
 }));
 
@@ -291,10 +291,11 @@ describe("GetStartedPage", () => {
       expect(onboarding.startOver).toHaveBeenCalledWith({
         buddyId: "a1",
         controller: expect.objectContaining({ id: "c1" }),
-        machine: expect.objectContaining({ machine_id: "m1" }),
+        email: "ada@example.com",
       }),
     );
-    await waitFor(() => expect(auth.logout).toHaveBeenCalled());
+    // Signed out by the server; the session is read again to show it.
+    await waitFor(() => expect(auth.refresh).toHaveBeenCalled());
     // The next sign-in opens Get started again, as a first visit does.
     expect(localStorage.getItem("switch.get-started.sent:me:t1")).toBeNull();
   });

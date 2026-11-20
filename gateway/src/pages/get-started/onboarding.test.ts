@@ -6,6 +6,7 @@ import {
   loginOutcome,
   needsWaking,
   readyProvider,
+  START_OVER_POLL_MS,
   startOver,
   welcomeChat,
 } from "./onboarding";
@@ -156,13 +157,17 @@ describe("needsWaking", () => {
 });
 
 describe("startOver", () => {
-  it("deletes switch-buddy, takes back the device's AI logins and stops it", async () => {
+  it("deletes switch-buddy, takes back the device's AI logins, then has the server wipe the rest", async () => {
+    vi.useFakeTimers();
     const calls = answerFetch({
       "DELETE /agents/a1": [200, { ok: true }],
       "DELETE /management/controllers/c1/provider-logins/claude": [200, { ok: true }],
-      "POST /hosted-machines/m1/lifecycle": [200, { machine: {} }],
+      "POST /auth/me/start-over": [
+        [200, { finished: false, waiting: "being torn down" }],
+        [200, { finished: true, waiting: null }],
+      ],
     });
-    await startOver({
+    const done = startOver({
       buddyId: "a1",
       controller: {
         id: "c1",
@@ -173,19 +178,18 @@ describe("startOver", () => {
           ],
         },
       } as unknown as Controller,
-      machine: {
-        machine_id: "m1",
-        desired_state: "running",
-        stopped_by_admin: false,
-        revision: 3,
-      } as unknown as CloudMachine,
+      email: "ada@example.com",
     });
+    await vi.advanceTimersByTimeAsync(START_OVER_POLL_MS);
+    await done;
+    vi.useRealTimers();
     expect(calls.map((call) => `${call.method} ${call.path}`)).toEqual([
       "DELETE /agents/a1",
       "DELETE /management/controllers/c1/provider-logins/claude",
-      "POST /hosted-machines/m1/lifecycle",
+      "POST /auth/me/start-over",
+      "POST /auth/me/start-over",
     ]);
-    expect(calls[2]!.body).toEqual({ action: "stop", revision: 3 });
+    expect(calls[2]!.body).toEqual({ email: "ada@example.com" });
   });
 });
 

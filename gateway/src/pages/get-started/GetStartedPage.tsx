@@ -87,7 +87,7 @@ type Page =
  * here, in this page's memory alone, until then.
  */
 export default function GetStartedPage() {
-  const { user, session, logout } = useAuth();
+  const { user, session, refresh: refreshSession } = useAuth();
   const tenantId = session?.tenant?.id ?? null;
   const navigate = useNavigate();
   const { snapshot, error, refresh } = useCloudDevice();
@@ -137,14 +137,15 @@ export default function GetStartedPage() {
           onSkip={() => navigate("/")}
           testServer={testServer}
           onStartOver={async () => {
+            if (!user) return;
             await startOver({
               buddyId: buddy?.agent_id ?? null,
               controller: snapshot?.controller ?? null,
-              machine: snapshot?.machine ?? null,
+              email: user.email,
             });
-            // Signed out, so signing in again goes through getting started from the top.
-            if (user && tenantId) forgetGetStartedVisit(user.id, tenantId);
-            await logout();
+            // Signed out by the server: signing in again starts from the beginning.
+            if (tenantId) forgetGetStartedVisit(user.id, tenantId);
+            await refreshSession();
           }}
         />
       ) : page.kind === "provider" ? (
@@ -247,9 +248,6 @@ function MeetPage({
       Continue
     </Button>
   ) : null;
-  const somethingToReset =
-    existing !== null ||
-    (snapshot?.controller?.status?.providers ?? []).some((each) => each.auth_source === "sealed");
   const resetNow = () => {
     setResetting(true);
     setResetError(null);
@@ -265,7 +263,7 @@ function MeetPage({
     );
   };
   const footer =
-    testServer && somethingToReset ? (
+    testServer ? (
       <>
         {main}
         <Button variant="ghost" onClick={() => setConfirming(true)} disabled={resetting}>
@@ -313,9 +311,15 @@ function MeetPage({
       {confirming && (
         <div className="mx-auto flex max-w-[540px] flex-col items-center gap-3 rounded-xl border border-border bg-background p-4 text-center">
           <p className="text-sm text-foreground">
-            Start getting started over? switch-buddy is deleted, the AI sign-ins given to your
-            Switch Cloud are taken back, and it is stopped. For testing only.
+            Start getting started over? The workspaces only you are in are deleted, with
+            switch-buddy, your agents and your Switch Cloud, and you are signed out. You keep your
+            sign-in, so signing in again starts from the beginning. For testing only.
           </p>
+          {resetting && (
+            <p className="text-xs text-foreground-muted">
+              Removing your Switch Cloud can take a few minutes.
+            </p>
+          )}
           <div className="flex gap-2">
             <Button variant="outline" onClick={() => setConfirming(false)} disabled={resetting}>
               Cancel
