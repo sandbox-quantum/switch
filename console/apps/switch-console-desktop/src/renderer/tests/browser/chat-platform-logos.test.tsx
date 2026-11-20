@@ -15,7 +15,8 @@ vi.hoisted(() => {
   } as unknown as typeof window.electronAPI;
 });
 
-import { ChatMarkdown } from '@renderer/features/chats/ui/chat-markdown';
+import { ChatMarkdown } from '@switch-console/chat-ui/ui/chat-markdown';
+import { ConsoleChatHost } from '@renderer/features/chats/console-chat-host';
 import { buddyWelcomeMessage } from '@renderer/features/switch-buddy/buddy-welcome-message';
 import '@renderer/index.css';
 
@@ -33,7 +34,13 @@ async function render(markdown: string) {
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
-  await act(async () => root!.render(<ChatMarkdown>{markdown}</ChatMarkdown>));
+  await act(async () =>
+    root!.render(
+      <ConsoleChatHost>
+        <ChatMarkdown>{markdown}</ChatMarkdown>
+      </ConsoleChatHost>
+    )
+  );
   // Streamdown renders after a tick.
   await act(async () => new Promise((resolve) => setTimeout(resolve, 50)));
 }

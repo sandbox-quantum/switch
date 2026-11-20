@@ -1,6 +1,6 @@
+import { UnreadBadge } from '@switch-console/chat-ui/components/unread-badge';
 import { observer } from 'mobx-react-lite';
 import { Fragment } from 'react';
-import { UnreadBadge } from '@renderer/features/chats/components/unread-badge';
 import type { SessionStore } from '@renderer/features/sessions/stores/session-store';
 import { switchRoomsStore } from '@renderer/features/switch-servers/switch-rooms-store';
 import { useListedRoomsInActiveScope } from '@renderer/features/switch-servers/use-listed-rooms';
