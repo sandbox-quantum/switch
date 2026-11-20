@@ -10,12 +10,17 @@ sidebar did it by accident, reading every agent at once (switch #1983); a
 client could do it on purpose.
 
 This middleware lets at most `limit` gateway requests run at once in this
-process, which leaves the rest of the pool to the process's own work, and at
-most `per_caller` of them for any one caller, so one caller cannot take the
-share everyone's requests run in. A request past either waits its turn, in
-order, for up to `WAIT_S`. Past that it is answered at once: 429 when its
-caller has too many running, 503 when the process does. Long-lived streams
-are not counted: they hold no connection while they wait for news.
+process, which leaves the rest of the pool to the process's own work. Each
+caller may always run `share` of them. While no other caller is waiting, one
+may run more, up to `burst`, so a caller alone on the process isn't slowed
+for nothing; `burst` stays well under `limit`, so a caller that arrives finds
+a turn free rather than waiting behind requests already running. A turn that
+comes free goes to the waiting caller with the fewest running, the earliest
+of them first, so a caller that just arrived goes ahead of one already
+running many. A request waits for up to `WAIT_S`. Past that it is answered at
+once: 429 when its caller had its share running, 503 when the process was
+full. Long-lived streams are not counted: they hold no connection while they
+wait for news.
 
 A read (GET or HEAD) also runs under a statement timeout
 (`db/statement_timeout.py`), which every session it opens gets. A read that
@@ -45,8 +50,7 @@ import json
 import logging
 import secrets
 import time
-from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from starlette.requests import HTTPConnection
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
@@ -78,53 +82,105 @@ _READS = frozenset({"GET", "HEAD"})
 
 
 @dataclass(eq=False)
-class _Line:
-    """`slots` turns, handed out in the order they were asked for."""
+class _Waiter:
+    caller: str
+    turn: asyncio.Future[None]
 
-    slots: int
-    running: int = 0
-    waiting: deque[asyncio.Future[None]] = field(default_factory=deque)
 
-    async def take(self, wait_s: float) -> bool:
+class _Turns:
+    """The process's `limit` turns, shared between callers as the module says."""
+
+    def __init__(self, limit: int, share: int, burst: int) -> None:
+        self.limit = limit
+        self.share = share
+        self.burst = max(share, burst)
+        self.running_total = 0
+        self.running: dict[str, int] = {}
+        # In the order they arrived.
+        self.waiting: list[_Waiter] = []
+
+    def _may_run(self, caller: str) -> bool:
+        if self.running_total >= self.limit:
+            return False
+        running = self.running.get(caller, 0)
+        if running < self.share:
+            return True
+        if running >= self.burst:
+            return False
+        return all(w.caller == caller for w in self.waiting)
+
+    def _start(self, caller: str) -> None:
+        self.running_total += 1
+        self.running[caller] = self.running.get(caller, 0) + 1
+
+    def _hand_out(self) -> None:
+        """Give free turns to waiters: fewest running first, then earliest."""
+        self.waiting = [w for w in self.waiting if not w.turn.done()]
+        while self.waiting:
+            ready = [
+                (self.running.get(w.caller, 0), n, w)
+                for n, w in enumerate(self.waiting)
+                if self._may_run(w.caller)
+            ]
+            if not ready:
+                return
+            _, _, chosen = min(ready, key=lambda r: (r[0], r[1]))
+            self.waiting.remove(chosen)
+            self._start(chosen.caller)
+            chosen.turn.set_result(None)
+
+    async def take(self, caller: str, wait_s: float) -> bool:
         """Take a turn, waiting up to `wait_s` for one. False when none came."""
-        if self.running < self.slots and not self.waiting:
-            self.running += 1
+        if not self.waiting and self._may_run(caller):
+            self._start(caller)
+            return True
+        waiter = _Waiter(caller, asyncio.get_running_loop().create_future())
+        self.waiting.append(waiter)
+        self._hand_out()
+        if waiter.turn.done():
             return True
         if wait_s <= 0:
+            self._withdraw(waiter)
             return False
-        turn = asyncio.get_running_loop().create_future()
-        self.waiting.append(turn)
         try:
             async with asyncio.timeout(wait_s):
-                await turn
+                await waiter.turn
         except TimeoutError:
-            if turn.done() and not turn.cancelled():
+            if waiter.turn.done() and not waiter.turn.cancelled():
                 # Handed a turn as the wait ran out: it is this request's.
                 return True
-            with contextlib.suppress(ValueError):
-                self.waiting.remove(turn)
+            self._withdraw(waiter)
             return False
         except asyncio.CancelledError:
-            if turn.done() and not turn.cancelled():
+            if waiter.turn.done() and not waiter.turn.cancelled():
                 # Handed a turn as the request went away: the next one has it.
-                self.give_back()
+                self.give_back(caller)
             else:
-                with contextlib.suppress(ValueError):
-                    self.waiting.remove(turn)
+                self._withdraw(waiter)
             raise
         return True
 
-    def give_back(self) -> None:
-        while self.waiting:
-            turn = self.waiting.popleft()
-            if not turn.done():
-                turn.set_result(None)
-                return
-        self.running -= 1
+    def _withdraw(self, waiter: _Waiter) -> None:
+        with contextlib.suppress(ValueError):
+            self.waiting.remove(waiter)
+        # One caller fewer waiting can let another run past its share.
+        self._hand_out()
+
+    def give_back(self, caller: str) -> None:
+        self.running_total -= 1
+        left = self.running[caller] - 1
+        if left:
+            self.running[caller] = left
+        else:
+            del self.running[caller]
+        self._hand_out()
+
+    def at_share(self, caller: str) -> bool:
+        return self.running.get(caller, 0) >= self.share
 
     @property
     def idle(self) -> bool:
-        return self.running == 0 and not self.waiting
+        return self.running_total == 0 and not self.waiting
 
 
 async def writes_on_get() -> None:
@@ -152,6 +208,7 @@ class GatewayAdmission:
         limit: int,
         per_caller: int,
         read_timeout: str,
+        caller_burst: int | None = None,
         keyring: Keyring,
         controller_token: str | None = None,
     ) -> None:
@@ -163,8 +220,7 @@ class GatewayAdmission:
         self._controller_auth = (
             f"Bearer {controller_token}".encode() if controller_token else None
         )
-        self._process = _Line(limit)
-        self._callers: dict[str, _Line] = {}
+        self._turns = _Turns(limit, per_caller, caller_burst or per_caller)
         self._named: dict[str, float] = {}
 
     def caller(self, scope: Scope) -> str:
@@ -188,28 +244,14 @@ class GatewayAdmission:
             await self.app(scope, receive, send)
             return
         caller = self.caller(scope)
-        started = time.monotonic()
-        line = self._callers.get(caller)
-        if line is None:
-            line = self._callers[caller] = _Line(self.per_caller)
+        if not await self._turns.take(caller, WAIT_S):
+            reason = "caller" if self._turns.at_share(caller) else "process"
+            await self._turn_away(scope, send, caller, reason)
+            return
         try:
-            if not await line.take(WAIT_S):
-                await self._turn_away(scope, send, caller, "caller")
-                return
-            try:
-                left = WAIT_S - (time.monotonic() - started)
-                if not await self._process.take(left):
-                    await self._turn_away(scope, send, caller, "process")
-                    return
-                try:
-                    await self._serve(scope, receive, send)
-                finally:
-                    self._process.give_back()
-            finally:
-                line.give_back()
+            await self._serve(scope, receive, send)
         finally:
-            if line.idle and self._callers.get(caller) is line:
-                del self._callers[caller]
+            self._turns.give_back(caller)
 
     async def _serve(self, scope: Scope, receive: Receive, send: Send) -> None:
         started = False

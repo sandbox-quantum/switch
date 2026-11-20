@@ -252,6 +252,7 @@ def create_gateway_app(
         GatewayAdmission,
         limit=config.gateway_requests_at_once,
         per_caller=config.gateway_requests_per_caller,
+        caller_burst=config.gateway_requests_per_caller_burst,
         read_timeout=config.gateway_read_statement_timeout,
         keyring=config.keyring,
         # The only bearer token a gateway route takes (`hosted_controller.py`).

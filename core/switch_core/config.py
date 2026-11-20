@@ -947,6 +947,11 @@ class SwitchConfig(BaseSettings):
     # time; one from before `GET /gateway/agents/rooms` sends one per agent,
     # which queue.
     gateway_requests_per_caller: int = Field(default=8, ge=1)
+    # While no other caller is waiting, one may run more than its share, up to
+    # this share of the gateway's requests at once (`gateway_requests_at_once`),
+    # so a caller alone on a process isn't slowed for nothing. Well under 1, so
+    # a caller that arrives still finds a turn free: 0.5 of 30 is 15.
+    gateway_caller_burst_share: float = Field(default=0.5, gt=0, le=1)
     # The longest one statement of a gateway read (GET or HEAD) may run, a
     # Postgres interval. A read that slow is a bug or someone loading the
     # database on purpose, and its client gave up well before: the tailnet's
@@ -1618,6 +1623,14 @@ class SwitchConfig(BaseSettings):
         """Gateway requests a process runs at once (`gateway_pool_share`)."""
         pool = self.db_pool_size + self.db_max_overflow
         return max(1, int(pool * self.gateway_pool_share))
+
+    @property
+    def gateway_requests_per_caller_burst(self) -> int:
+        """The most one caller may run while nobody else is waiting."""
+        return max(
+            self.gateway_requests_per_caller,
+            int(self.gateway_requests_at_once * self.gateway_caller_burst_share),
+        )
 
     @model_validator(mode="after")
     def _validate_github_app(self) -> "SwitchConfig":

@@ -56,3 +56,13 @@ def test_the_read_timeout_takes_a_postgres_interval(value: str) -> None:
 def test_a_read_timeout_that_is_not_an_interval_is_refused() -> None:
     with pytest.raises(ValueError, match="GATEWAY_READ_STATEMENT_TIMEOUT"):
         _config(gateway_read_statement_timeout="ten seconds")
+
+
+def test_a_caller_alone_may_run_half_the_gateways_requests() -> None:
+    config = _config()
+    assert config.gateway_requests_at_once == 30
+    assert config.gateway_requests_per_caller_burst == 15
+    # Never below the share every caller gets anyway.
+    assert (
+        _config(gateway_caller_burst_share=0.1).gateway_requests_per_caller_burst == 8
+    )
