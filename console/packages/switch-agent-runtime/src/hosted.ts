@@ -403,6 +403,8 @@ export function sanitiseName(name: string): string {
   return name.replace(/[^a-zA-Z0-9._-]/g, '_') || 'attachment';
 }
 
+const MAX_ATTACHMENT_BYTES = 100 * 1024 * 1024; // 100 MiB
+
 /**
  * Fetch an attachment's bytes from the agent bridge (which proxies the Matrix
  * media repo) and write them to a file under `mediaDir`. Throws on error.
@@ -421,7 +423,7 @@ export async function fetchMediaToFile(
   destName: string
 ): Promise<string> {
   const url =
-    `${identity.endpoint}/agents/${identity.agentId}/rooms/${roomId}/media` +
+    `${identity.endpoint}/agents/${identity.agentId}/rooms/${encodeURIComponent(roomId)}/media` +
     `?mxc=${encodeURIComponent(mxc)}`;
   const resp = await fetch(url, {
     headers: { Authorization: `Bearer ${identity.token}` },
@@ -429,11 +431,22 @@ export async function fetchMediaToFile(
   if (!resp.ok) {
     throw new Error(`HTTP ${resp.status}: ${await resp.text()}`);
   }
+  const lengthHeader = resp.headers.get('content-length');
+  if (lengthHeader && Number(lengthHeader) > MAX_ATTACHMENT_BYTES) {
+    throw new Error(`Attachment too large: ${lengthHeader} bytes exceeds ${MAX_ATTACHMENT_BYTES}`);
+  }
   const bytes = Buffer.from(await resp.arrayBuffer());
+  if (bytes.length > MAX_ATTACHMENT_BYTES) {
+    throw new Error(`Attachment too large: ${bytes.length} bytes exceeds ${MAX_ATTACHMENT_BYTES}`);
+  }
   fs.mkdirSync(mediaDir, { recursive: true, mode: 0o700 });
   if (process.platform !== 'win32' && (fs.statSync(mediaDir).mode & 0o077) !== 0)
     fs.chmodSync(mediaDir, 0o700);
-  const dest = path.join(mediaDir, destName);
+  const resolvedMedia = path.resolve(mediaDir);
+  const dest = path.join(resolvedMedia, destName);
+  if (!dest.startsWith(resolvedMedia + path.sep) && dest !== resolvedMedia) {
+    throw new Error(`Destination escapes media directory: ${destName}`);
+  }
   const partial = `${dest}.${randomUUID()}.partial`;
   const fd = fs.openSync(partial, 'wx', 0o600);
   let written: fs.Stats;
@@ -693,7 +706,7 @@ async function sendAttachmentTool(
   const { identity } = ctx;
   try {
     const resp = await fetch(
-      `${identity.endpoint}/agents/${identity.agentId}/rooms/${roomId}/media`,
+      `${identity.endpoint}/agents/${identity.agentId}/rooms/${encodeURIComponent(roomId)}/media`,
       {
         method: 'POST',
         headers: { Authorization: `Bearer ${identity.token}` },
