@@ -692,10 +692,17 @@ pnpm run test
   because the install runner's shell may be either PowerShell or cmd.exe, and
   each would expand one of them before `powershell -c` ran.
 - An auto-approving Codex session launches with `-c approval_policy="never"` and
-  nothing else. The sandbox is deliberately **not** overridden: "Bypass
-  permissions" promises unattended approvals, not unattended filesystem and
-  network access, so the user's own `sandbox_mode` from `~/.codex/config.toml`
-  stands. See `packages/plugins/src/agents/impl/codex/index.ts`.
+  nothing else. "Bypass permissions" promises unattended approvals, not
+  unattended filesystem and network access, so the user's own `sandbox_mode`
+  from the host's `~/.codex/config.toml` stands in every mode. See
+  `packages/plugins/src/agents/impl/codex/index.ts`. A session the agent
+  controller starts (`execution.defaultCodexSandbox`) takes the host's
+  `sandbox_mode` first, then the agent's, and only when neither names one a
+  default from its runtime mode — `danger-full-access` under Bypass,
+  `workspace-write` otherwise — so a cloud machine with no Codex config is not
+  left read-only (`prepareCodexSessionHome`, `managedCodexSandbox`). Auto mode
+  then tightens `danger-full-access` to `workspace-write` (`sandboxFor`), so its
+  automatic review still sees requests. Console's own sessions get no default.
 - App updates in dev: the update service is inert outside packaged builds, so the
   "update available" UI cannot be exercised by `pnpm run dev` alone. Set
   `SWITCHDASH_FAKE_UPDATE` to replay the lifecycle against a simulated release —
