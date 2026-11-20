@@ -53,6 +53,7 @@ function keyed(status: ConnectionCatalogEntry['status']): ConnectionCatalogEntry
     token_lifetime: 3600,
     agent_access_note: null,
     loopback_ports: null,
+    loopback_callback_path: null,
     sign_in_choices: null,
     paste: [],
     method: null,
