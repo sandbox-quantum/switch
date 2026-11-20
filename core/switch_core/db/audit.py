@@ -249,6 +249,10 @@ class ServerAuditAction(StrEnum):
     # names no account it can trust, and a row per attempt would let anyone
     # grow this table at will.
     USER_SIGNED_IN = "user.signed_in"
+    # An account suspended or let back in (`accounts/suspension.py`), by
+    # whoever did it; `details.reason` says why.
+    USER_SUSPENDED = "user.suspended"
+    USER_UNSUSPENDED = "user.unsuspended"
 
 
 def request_actor() -> tuple[str | None, str | None]:
@@ -262,10 +266,6 @@ def request_actor() -> tuple[str | None, str | None]:
     """
     context = current_log_context()
     return context.user_id, context.agent_id
-    # An account suspended or let back in (`accounts/suspension.py`), by
-    # whoever did it; `details.reason` says why.
-    USER_SUSPENDED = "user.suspended"
-    USER_UNSUSPENDED = "user.unsuspended"
 
 
 async def record_audit_event(

@@ -12,7 +12,7 @@ Expand only: a release from before this revision reads none of the columns,
 and only stops refusing what this one suspends.
 
 Revision ID: a3f9c2d71e08
-Revises: f3a9c1d7e2b4
+Revises: a3f9c1e7d205
 Create Date: 2026-11-17 12:00:00.000000
 
 """
@@ -23,7 +23,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "a3f9c2d71e08"
-down_revision: str | None = "f3a9c1d7e2b4"
+down_revision: str | None = "a3f9c1e7d205"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 expand_only: bool = True

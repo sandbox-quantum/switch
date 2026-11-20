@@ -2905,6 +2905,8 @@ class RoomFreezeResult(BaseModel):
     # Why the room could not be told it was frozen or unfrozen, or null when
     # it was. The change holds either way.
     notice_error: str | None
+
+
 # ── Suspension and key rotation ──────────────────────────────────────────────
 
 
