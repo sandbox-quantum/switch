@@ -359,7 +359,11 @@ Nothing waits for the customer to empty anything first.
    its vendor with the tokens issued on it, and each cloud machine of an
    account the purge deletes is set to be deleted with its disk's retention
    ended (`retain_until` set to now), so the hosted controller deletes the
-   data volume at once rather than after `HOSTED_DISK_RETENTION_DAYS`. While
+   data volume at once rather than after `HOSTED_DISK_RETENTION_DAYS`. A
+   machine its owner had already deleted keeps a later date at the
+   controller, which never brings a deleted machine's date forward on its
+   own; the purge sends `expedite_deletion` with it, the one request it
+   honours to take an earlier date. While
    a machine is still being torn down or a token is still live at its
    vendor, the purge says so, deletes nothing and exits 3; the same command,
    run again, carries on. The controller reports a machine `deleted` only
