@@ -4270,6 +4270,15 @@ class SlackAdapter(PlatformAdapter):
             return
         await self.report_message_deleted(channel_id, f"{channel_id}:{deleted_ts}")
 
+    def _is_own_post(self, message: dict[str, object]) -> bool:
+        """Whether the bridge's own bot wrote `message` (loop prevention).
+        Third-party apps' posts carry a `bot_id` too and are still bridged:
+        only this bridge's bot, matched on user id or `bot_id`, is its own."""
+        return bool(
+            (self._bot_user_id and message.get("user") == self._bot_user_id)
+            or (self._bot_id and message.get("bot_id") == self._bot_id)
+        )
+
     async def _handle_message_changed(self, event: dict[str, object]) -> None:
         """A post changed in Slack. Slack reports a link unfurling, a file or a
         thread reply being added as a change too; only a change to its words is
@@ -4285,6 +4294,8 @@ class SlackAdapter(PlatformAdapter):
         message_ref = f"{channel_id}:{message['ts']}"
         if message.get("subtype") == "tombstone":
             await self.report_message_deleted(channel_id, message_ref)
+            return
+        if self._is_own_post(message):
             return
         text = self._post_text(message)
         previous = event.get("previous_message")
@@ -4308,12 +4319,7 @@ class SlackAdapter(PlatformAdapter):
             )
 
     async def _handle_message_event(self, event: dict[str, object]) -> None:
-        # Skip only our own posts (loop prevention). Messages from third-party
-        # apps/bots carry a bot_id too, but we still bridge those — only the
-        # bridge's own bot (matched on user id or bot_id) is dropped.
-        if event.get("user") == self._bot_user_id or (
-            self._bot_id and event.get("bot_id") == self._bot_id
-        ):
+        if self._is_own_post(event):
             return
         subtype = event.get("subtype")
         if subtype and subtype not in self._ALLOWED_SUBTYPES:

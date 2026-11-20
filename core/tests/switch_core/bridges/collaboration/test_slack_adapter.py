@@ -471,6 +471,36 @@ def test_an_edited_app_post_is_read_from_its_blocks_like_a_new_one() -> None:
     ]
 
 
+def test_the_bridges_own_edits_are_not_reported() -> None:
+    """Every streamed or plan-block `chat.update` of the bridge's own post comes
+    back as `message_changed`; none of it is a person's edit."""
+    adapter = _adapter()
+    adapter._bot_user_id = "UBOT"
+    adapter._bot_id = "BSELF"
+    takebacks = _Takebacks(adapter)
+
+    for ts, author in (("400.4", {"user": "UBOT"}), ("400.5", {"bot_id": "BSELF"})):
+        _dispatch(
+            adapter,
+            {
+                "type": "message",
+                "subtype": "message_changed",
+                "channel": "C123",
+                "ts": "401.1",
+                "message": {"type": "message", **author, "ts": ts, "text": "more"},
+                "previous_message": {
+                    "type": "message",
+                    **author,
+                    "ts": ts,
+                    "text": "some",
+                },
+            },
+        )
+
+    assert takebacks.edited == []
+    assert takebacks.deleted == []
+
+
 def test_a_link_unfurling_is_not_an_edit() -> None:
     adapter = _adapter()
     takebacks = _Takebacks(adapter)
