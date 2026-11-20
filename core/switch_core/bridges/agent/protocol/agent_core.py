@@ -3488,16 +3488,20 @@ class AgentCore:
         room_id: str,
         user_names: list[str],
     ) -> list[str]:
-        """Add human users to a bridged room. Requires room membership (or owner/admin).
-
-        The room must already be bridged; each name is resolved against the
-        room's bridge, added to its external channel, and joined to the
-        room. Returns the names that could not be resolved on the bridge (these
-        were skipped); an empty list means every requested user was added.
-        """
+        """Add people to a room and return names that did not resolve or join."""
         async with self.session_factory() as session:
-            require_membership_changeable_from_outside(
-                await self._require_room_roster_change(session, agent_id, room_id)
+            room, manages = await self._require_room_roster_change(
+                session, agent_id, room_id
+            )
+            require_membership_changeable_from_outside(room)
+            if room.bridge_id is None and not manages:
+                raise PermissionError(
+                    "Only the room's owner or a workspace admin can add "
+                    "people to a room without a messaging app."
+                )
+        if room.bridge_id is None:
+            return await self.room_service.chats.join_people(
+                room.tenant_id, room_id, user_names=user_names, user_ids=[]
             )
         try:
             return await self.room_service.add_users_to_room(room_id, user_names)
@@ -3795,8 +3799,8 @@ class AgentCore:
 
     async def _require_room_roster_change(
         self, session: AsyncSession, agent_id: str, room_id: str
-    ) -> Room:
-        """Authorize changing a room's roster (inviting agents, adding users).
+    ) -> tuple[Room, bool]:
+        """Authorize changing a room's roster, and say whether the caller manages it.
 
         Changing WHO is in a room must not be granted by a public
         ``write_visibility``: that would let any agent add itself to any
@@ -3811,11 +3815,11 @@ class AgentCore:
         if room is None:
             raise ValueError(f"Room not found: {room_id}")
         if owner_is_admin or (room.owner_id is not None and room.owner_id == owner_id):
-            return room
+            return room, True
         member_ids = await self.room_store.get_agent_ids(session, room_id)
         if agent_id not in member_ids:
             raise PermissionError("Not authorized to change this room's membership")
-        return room
+        return room, False
 
     # ── Room roles ──────────────────────────────────────────────────────────
 
