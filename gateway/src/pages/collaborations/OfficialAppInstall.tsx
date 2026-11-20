@@ -85,8 +85,8 @@ export default function OfficialAppInstall({
           <Typography variant="body2">Waiting for {name}…</Typography>
         </Stack>
         <Typography variant="body2" color="text.secondary">
-          Approve the Switch app in the tab that opened. The connection appears here as soon as{" "}
-          {name} confirms it.
+          Approve the Switch app in the tab that opened. This moves on as soon as {name} confirms
+          it.
         </Typography>
         <Link
           component="button"
