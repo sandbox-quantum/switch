@@ -1482,7 +1482,7 @@ async def run(config: SwitchConfig, process_id: str) -> bool:
     # here from outside nor reachable without a cookie they do not have.
     if install_service is not None:
         agent_bridge_app.include_router(
-            create_messaging_install_router(install_service),
+            create_messaging_install_router(install_service, config.frontend_base_url),
             tags=["messaging-installs"],
         )
     agent_bridge_app.include_router(

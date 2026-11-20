@@ -1551,12 +1551,27 @@
       "flags": []
     },
     {
+      "route": "POST /gateway/messaging-apps/{platform}/cancel",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "POST /gateway/messaging-apps/{platform}/claim",
       "auth": "session",
       "flags": []
     },
     {
+      "route": "POST /gateway/messaging-apps/{platform}/connect",
+      "auth": "session",
+      "flags": []
+    },
+    {
       "route": "POST /gateway/messaging-apps/{platform}/install",
+      "auth": "session",
+      "flags": []
+    },
+    {
+      "route": "POST /gateway/messaging-apps/{platform}/pending",
       "auth": "session",
       "flags": []
     },

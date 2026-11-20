@@ -32,11 +32,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from switch_core import room_policy
 from switch_core.authz import Action, Principal, can
 from switch_core.bridges.collaboration.install import MessagingInstallError
-from switch_core.bridges.collaboration.install_service import MessagingInstallService
+from switch_core.bridges.collaboration.install_confirmation import InstallTicketError
+from switch_core.bridges.collaboration.install_service import (
+    InstallPlatformMismatch,
+    MessagingInstallService,
+)
 from switch_core.db.audit import AuditAction, record_audit_event
 from switch_core.db.models import MessagingInstall, Room, User, require_tenant_id
 from switch_core.db.stores.messaging_install_store import (
+    MessagingInstallClaimedError,
     MessagingInstallNotFound,
+    MessagingInstallStateError,
 )
 from switch_core.gateway.auth import get_current_user, get_tenant_is_admin
 from switch_core.gateway.dependencies import get_install_service, get_session
@@ -247,6 +253,132 @@ async def begin_install(
     await session.commit()
     logger.info("Started a %s install for user %s", platform, user.id)
     return InstallStart(authorize_url=authorize_url)
+
+
+class PendingTicket(BaseModel):
+    ticket: str
+
+
+class FinishTicket(BaseModel):
+    ticket: str
+    # The person said Connect to what the page showed them. Not needed when
+    # they started the install themselves.
+    confirmed: bool
+
+
+class PendingInstallView(BaseModel):
+    """What an install the platform approved would connect, for the
+    dashboard's finishing page."""
+
+    platform: str
+    workspace_name: str
+    external_workspace_id: str
+    organisation: str
+    requested_by: str
+    started_by_you: bool
+
+
+class FinishedInstall(BaseModel):
+    bridge_id: str | None
+
+
+_TICKET_REFUSED = (
+    "This install is not one Switch recognises, or it has expired. Start the "
+    "install again from Switch."
+)
+
+
+@router.post("/{platform}/pending")
+async def pending_install(
+    platform: str,
+    body: PendingTicket,
+    service: Annotated[MessagingInstallService | None, Depends(get_install_service)],
+    user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
+) -> PendingInstallView:
+    """What the sealed confirmation the install callback handed the dashboard
+    would connect, and whether the caller is who started it. The ticket is
+    the proof, as on the callback's own page, for the person who started the
+    install or a workspace admin; reading it changes nothing."""
+    try:
+        pending = await _require_installs(service).pending(
+            platform=platform, ticket=body.ticket
+        )
+    except (InstallTicketError, InstallPlatformMismatch):
+        raise HTTPException(status_code=400, detail=_TICKET_REFUSED) from None
+    if pending.requested_by_user_id != user.id:
+        _require_tenant_admin(is_admin)
+    return PendingInstallView(
+        platform=pending.platform,
+        workspace_name=pending.workspace_name,
+        external_workspace_id=pending.external_workspace_id,
+        organisation=pending.organisation,
+        requested_by=pending.requested_by,
+        started_by_you=pending.requested_by_user_id == user.id,
+    )
+
+
+@router.post("/{platform}/connect")
+async def connect_install(
+    platform: str,
+    body: FinishTicket,
+    service: Annotated[MessagingInstallService | None, Depends(get_install_service)],
+    user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
+) -> FinishedInstall:
+    """Connect what the platform approved. At once for the account that
+    started the install, signed in in the browser that comes back with it;
+    anyone else has to have been shown what it connects and said Connect
+    (`confirmed`), as on the callback's page, so a forwarded install link
+    can't connect someone's workspace to another organization unseen."""
+    installs = _require_installs(service)
+    try:
+        pending = await installs.pending(platform=platform, ticket=body.ticket)
+        if pending.requested_by_user_id != user.id:
+            _require_tenant_admin(is_admin)
+        if pending.requested_by_user_id != user.id and not body.confirmed:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Someone else started this install. Check where it connects "
+                    "before connecting it."
+                ),
+            )
+        install = await installs.confirm(platform=platform, ticket=body.ticket)
+    except (InstallTicketError, InstallPlatformMismatch):
+        raise HTTPException(status_code=400, detail=_TICKET_REFUSED) from None
+    except (MessagingInstallStateError, MessagingInstallClaimedError) as failure:
+        raise HTTPException(status_code=409, detail=str(failure)) from None
+    except MessagingInstallError as failure:
+        raise HTTPException(status_code=400, detail=str(failure)) from None
+    logger.info("User %s connected a %s install from the dashboard", user.id, platform)
+    return FinishedInstall(bridge_id=install.bridge_id)
+
+
+@router.post("/{platform}/cancel")
+async def cancel_install(
+    platform: str,
+    body: PendingTicket,
+    service: Annotated[MessagingInstallService | None, Depends(get_install_service)],
+    user: Annotated[User, Depends(get_current_user)],
+    is_admin: Annotated[bool, Depends(get_tenant_is_admin)],
+) -> dict[str, bool]:
+    """Connect nothing, and give the platform its access back, as Cancel on
+    the callback's page does."""
+    installs = _require_installs(service)
+    try:
+        pending = await installs.pending(platform=platform, ticket=body.ticket)
+        if pending.requested_by_user_id != user.id:
+            _require_tenant_admin(is_admin)
+        await installs.cancel(platform=platform, ticket=body.ticket)
+    except (InstallTicketError, InstallPlatformMismatch):
+        raise HTTPException(status_code=400, detail=_TICKET_REFUSED) from None
+    except MessagingInstallStateError as failure:
+        raise HTTPException(status_code=409, detail=str(failure)) from None
+    except MessagingInstallError as failure:
+        raise HTTPException(status_code=502, detail=str(failure)) from None
+    logger.info("User %s cancelled a %s install from the dashboard", user.id, platform)
+    return {"ok": True}
 
 
 @router.get("/installs")

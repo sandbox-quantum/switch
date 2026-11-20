@@ -1,7 +1,6 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import RegisterMessagingAppDialog from "./RegisterMessagingAppDialog";
-import { INSTALL_POLL_INTERVAL_MS } from "./OfficialAppInstall";
 
 const api = vi.hoisted(() => ({
   createBridge: vi.fn(),
@@ -60,23 +59,11 @@ describe("RegisterMessagingAppDialog", () => {
     expect(await screen.findByLabelText(/Display name/)).toBeTruthy();
   });
 
-  it("opens the consent page in a new tab and hands over the connection once it appears", async () => {
-    const tab = { location: { href: "" }, close: vi.fn() };
-    vi.spyOn(window, "open").mockReturnValue(tab as unknown as Window);
-    api.fetchBridges
-      .mockResolvedValueOnce([{ bridge_id: "old", bridge_type: "slack" }])
-      .mockResolvedValue([
-        { bridge_id: "old", bridge_type: "slack" },
-        { bridge_id: "new", bridge_type: "slack" },
-      ]);
-    api.beginAppInstall.mockResolvedValue("https://slack.example/authorize");
-    const { onSuccess } = renderDialog("slack");
+  it("sends the tab to the consent page, to come back here once connected", async () => {
+    api.beginAppInstall.mockRejectedValue(new Error("Slack isn't set up here."));
+    renderDialog("slack");
     fireEvent.click(await screen.findByRole("button", { name: "Add to Slack" }));
-    expect(await screen.findByText("Waiting for Slack…")).toBeTruthy();
-    expect(tab.location.href).toBe("https://slack.example/authorize");
-    await waitFor(
-      () => expect(onSuccess).toHaveBeenCalledWith({ bridge_id: "new", bridge_type: "slack" }),
-      { timeout: INSTALL_POLL_INTERVAL_MS + 2000 },
-    );
+    expect(await screen.findByText("Slack isn't set up here.")).toBeTruthy();
+    expect(api.beginAppInstall).toHaveBeenCalledWith("slack");
   });
 });

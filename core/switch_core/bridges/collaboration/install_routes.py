@@ -11,13 +11,14 @@ the leg the outside world reaches. `/gateway` is not routed here from the
 public load balancer at all, and it would not help if it were — it is
 cookie-authenticated and this caller has no cookie of ours.
 
-**The reply is a page, not a redirect.** Sending the browser on to the gateway
-would work today, when the person installing is an operator who can reach it,
-and would break the moment the same flow is offered to a customer who cannot:
-the gateway is on a private hostname and the callback is not. So the outcome is
-rendered here, in one self-contained page, on the origin the browser already
-reached. It is deliberately plain; when there is a place to send people, this
-becomes a redirect and the page becomes its fallback.
+**The callback hands the browser back to the dashboard where there is one.**
+With `frontend_base_url` set, a redeemed install is sent on to the dashboard's
+finishing page, the sealed confirmation in the URL's fragment (never sent to a
+server, nor in a Referer). There the person's own session decides: the same
+account that started the install connects it at once, and anyone else is asked
+first, as the page here asks. Without a dashboard to send people to (one on a
+private hostname the callback cannot assume), the outcome is rendered here, in
+one self-contained page, on the origin the browser already reached.
 
 The event routes answer nobody who reads English, so they answer in status
 codes and say the rest in the log.
@@ -30,9 +31,15 @@ import functools
 import html
 import logging
 from typing import Annotated, Any, Literal
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, BackgroundTasks, Form, Query, Request, Response
-from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse
+from starlette.responses import (
+    HTMLResponse,
+    JSONResponse,
+    PlainTextResponse,
+    RedirectResponse,
+)
 
 from switch_core.bridges.collaboration.install import (
     PUBLIC_PATH_PREFIX,
@@ -176,8 +183,22 @@ def _confirmation_page(pending: PendingInstall) -> HTMLResponse:
     )
 
 
+# Where the dashboard finishes an install it started (`gateway/src`'s route).
+DASHBOARD_FINISH_PATH = "/messaging-apps/finish"
+
+
+def _to_dashboard(dashboard_url: str, pending: PendingInstall) -> RedirectResponse:
+    fragment = urlencode({"platform": pending.platform, "ticket": pending.ticket})
+    return RedirectResponse(
+        f"{dashboard_url.rstrip('/')}{DASHBOARD_FINISH_PATH}#{fragment}",
+        status_code=303,
+        headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"},
+    )
+
+
 def create_messaging_install_router(
     service: MessagingInstallService,
+    dashboard_url: str | None,
 ) -> APIRouter:
     """Build the public install routes over one already-configured service.
 
@@ -187,14 +208,14 @@ def create_messaging_install_router(
     """
     router = APIRouter(prefix=PUBLIC_PATH_PREFIX)
 
-    @router.get("/{platform}/oauth/callback")
+    @router.get("/{platform}/oauth/callback", response_model=None)
     async def oauth_callback(
         platform: str,
         code: str | None = Query(default=None),
         state: str | None = Query(default=None),
         error: str | None = Query(default=None),
         error_description: str | None = Query(default=None),
-    ) -> HTMLResponse:
+    ) -> HTMLResponse | RedirectResponse:
         # The platform's own refusal, which is usually the customer deciding
         # not to install after all. Nothing went wrong here and nothing was
         # written; saying so is the whole handling.
@@ -257,6 +278,8 @@ def create_messaging_install_router(
                 status=400,
             )
 
+        if dashboard_url is not None:
+            return _to_dashboard(dashboard_url, pending)
         return _confirmation_page(pending)
 
     @router.post("/{platform}/oauth/confirm")

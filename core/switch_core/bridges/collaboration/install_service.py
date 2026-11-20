@@ -247,6 +247,9 @@ class PendingInstall:
     external_workspace_id: str
     organisation: str
     requested_by: str
+    # The account that started the install; None for a ticket sealed before it
+    # was recorded.
+    requested_by_user_id: str | None
     ticket: str
 
 
@@ -450,18 +453,9 @@ class MessagingInstallService:
             except BridgeClaimConflict as exc:
                 raise MessagingInstallClaimedError(str(exc)) from exc
 
-            async with tenant_session(
-                self._session_factory, state.tenant_id
-            ) as session:
-                tenant = await session.get(Tenant, state.tenant_id)
-                requester = await session.get(User, burnt.created_by_user_id)
-                if tenant is None or requester is None:
-                    raise RuntimeError(
-                        f"install state {state.state_id} names a tenant or user "
-                        "that no longer exists"
-                    )
-                organisation = tenant.name
-                requested_by = requester.email
+            organisation, requested_by = await self._who_asked(
+                state.tenant_id, state.state_id, burnt.created_by_user_id
+            )
 
         return PendingInstall(
             platform=platform,
@@ -469,16 +463,64 @@ class MessagingInstallService:
             external_workspace_id=grant.external_workspace_id,
             organisation=organisation,
             requested_by=requested_by,
+            requested_by_user_id=burnt.created_by_user_id,
             ticket=seal(
                 InstallTicket(
                     tenant_id=state.tenant_id,
                     state_id=state.state_id,
                     platform=platform,
                     grant=grant,
+                    requested_by_user_id=burnt.created_by_user_id,
                 ),
                 keyring=self._keyring,
             ),
         )
+
+    async def pending(self, *, platform: str, ticket: str) -> PendingInstall:
+        """What a sealed confirmation `ticket` would connect, as the
+        confirmation page shows it, for the dashboard to show or decide on.
+        Raises `InstallTicketError` for one this deployment did not issue or
+        that has expired."""
+        opened = self._open(platform, ticket)
+        with tenant_scope(opened.tenant_id):
+            if opened.requested_by_user_id is None:
+                async with tenant_session(
+                    self._session_factory, opened.tenant_id
+                ) as session:
+                    tenant = await session.get(Tenant, opened.tenant_id)
+                if tenant is None:
+                    raise RuntimeError(
+                        f"install state {opened.state_id} names a tenant that "
+                        "no longer exists"
+                    )
+                organisation, requested_by = tenant.name, "someone in Switch"
+            else:
+                organisation, requested_by = await self._who_asked(
+                    opened.tenant_id, opened.state_id, opened.requested_by_user_id
+                )
+        return PendingInstall(
+            platform=platform,
+            workspace_name=opened.grant.workspace_name,
+            external_workspace_id=opened.grant.external_workspace_id,
+            organisation=organisation,
+            requested_by=requested_by,
+            requested_by_user_id=opened.requested_by_user_id,
+            ticket=ticket,
+        )
+
+    async def _who_asked(
+        self, tenant_id: str, state_id: str, user_id: str
+    ) -> tuple[str, str]:
+        """The name of the workspace an install is for, and the email of who
+        started it."""
+        async with tenant_session(self._session_factory, tenant_id) as session:
+            tenant = await session.get(Tenant, tenant_id)
+            requester = await session.get(User, user_id)
+        if tenant is None or requester is None:
+            raise RuntimeError(
+                f"install state {state_id} names a tenant or user that no longer exists"
+            )
+        return tenant.name, requester.email
 
     async def confirm(self, *, platform: str, ticket: str) -> MessagingInstall:
         """The approver chose Connect: claim the workspace and build its bridge."""

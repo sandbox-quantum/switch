@@ -179,15 +179,6 @@ export default function RegisterMessagingAppDialog({
     onClose,
   ]);
 
-  const installed = useCallback(
-    (bridge: BridgeDetail) => {
-      onSuccess(bridge);
-      reset();
-      onClose();
-    },
-    [onSuccess, reset, onClose],
-  );
-
   const startClaim = async (platform: string) => {
     setClaimError(null);
     try {
@@ -209,7 +200,7 @@ export default function RegisterMessagingAppDialog({
               ) : (
                 <>
                   {installable.map((platform) => (
-                    <OfficialAppInstall key={platform} platform={platform} onInstalled={installed} />
+                    <OfficialAppInstall key={platform} platform={platform} />
                   ))}
                   {claimable.map((each) => (
                     <Stack key={each.platform} spacing={1} alignItems="flex-start">

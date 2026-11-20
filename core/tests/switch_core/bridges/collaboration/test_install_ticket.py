@@ -29,6 +29,7 @@ def test_a_ticket_opens_to_what_was_sealed() -> None:
             scopes=["ChannelMessage.Read.All"],
             platform_data={"catalog_app_id": "app-1"},
         ),
+        requested_by_user_id="user-1",
     )
 
     assert (
@@ -58,4 +59,6 @@ def test_a_ticket_sealed_before_platform_data_existed_still_opens() -> None:
     opened = open_ticket(token, keyring=TEST_KEYRING)
 
     assert opened.grant.platform_data == {}
+    # Nor who started it: the dashboard then asks before connecting.
+    assert opened.requested_by_user_id is None
     assert opened.grant.bot_token == "bot-token-placeholder"

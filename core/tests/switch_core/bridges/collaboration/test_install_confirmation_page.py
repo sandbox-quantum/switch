@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import html
 import re
+from urllib.parse import parse_qs, urlsplit
 
 import httpx
 import pytest
@@ -27,7 +28,7 @@ pytestmark = pytest.mark.no_ambient_tenant
 
 def _client(service: object) -> httpx.AsyncClient:
     app = FastAPI()
-    app.include_router(create_messaging_install_router(service))  # type: ignore[arg-type]
+    app.include_router(create_messaging_install_router(service, None))  # type: ignore[arg-type]
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=_ORIGIN)
 
 
@@ -169,4 +170,42 @@ async def test_a_forged_ticket_is_refused(rls_harness: RLSHarness) -> None:
         )
 
     assert response.status_code == 400
+    assert fixture.lifecycle.registered == []
+
+
+async def test_with_a_dashboard_the_callback_hands_the_install_to_it(
+    rls_harness: RLSHarness,
+) -> None:
+    """The sealed confirmation rides in the fragment, which no server sees
+    and no Referer carries; nothing is connected until the dashboard says."""
+    fixture = await _fixture(rls_harness)
+    state = await _begin(rls_harness.restricted, fixture, fixture.tenant_a)
+    app = FastAPI()
+    app.include_router(
+        create_messaging_install_router(fixture.service, "https://switch.example.com/")
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url=_ORIGIN
+    ) as client:
+        response = await client.get(
+            "/messaging/slack/oauth/callback",
+            params={"code": "the-code", "state": state},
+        )
+
+    assert response.status_code == 303
+    target = urlsplit(response.headers["location"])
+    assert (target.scheme, target.netloc, target.path) == (
+        "https",
+        "switch.example.com",
+        "/messaging-apps/finish",
+    )
+    assert target.query == ""
+    handed = parse_qs(target.fragment)
+    assert handed["platform"] == ["slack"]
+    pending = await fixture.service.pending(
+        platform="slack", ticket=handed["ticket"][0]
+    )
+    assert pending.requested_by_user_id == fixture.user_id
+    assert pending.organisation
+    assert response.headers["referrer-policy"] == "no-referrer"
     assert fixture.lifecycle.registered == []

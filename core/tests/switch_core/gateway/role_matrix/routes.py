@@ -1100,6 +1100,17 @@ ROUTES: dict[str, Case] = {
     "POST /gateway/messaging-apps/{platform}/install": post(
         f"{G}/messaging-apps/slack/install", admins()
     ),
+    **{
+        f"POST /gateway/messaging-apps/{{platform}}/{step}": Case(
+            Ask("POST", f"{G}/messaging-apps/slack/{step}"),
+            anyone(ok=422),
+            why=(
+                "Finishing an install: refused without the sealed confirmation "
+                "the install callback hands the dashboard."
+            ),
+        )
+        for step in ("pending", "connect", "cancel")
+    },
     "GET /gateway/messaging-apps/installs": get(
         f"{G}/messaging-apps/installs", anyone()
     ),

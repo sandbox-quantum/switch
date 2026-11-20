@@ -72,6 +72,7 @@ export const PAGES: readonly MatrixPage[] = [
   page("/overview", EVERYONE),
   page("/ecosystem", EVERYONE),
   page("/get-started", EVERYONE),
+  page("/messaging-apps/finish", EVERYONE),
   page("/chats", EVERYONE),
   page("/chats/agents/:agentId", EVERYONE),
   page("/chats/rooms/:roomId", EVERYONE),

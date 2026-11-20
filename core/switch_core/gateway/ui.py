@@ -81,6 +81,8 @@ PAGE_PATHS: tuple[str, ...] = (
     "/organization",
     # Behind `gateway_onboarding`.
     "/get-started",
+    # Where the install callback hands an install of Switch's own app back.
+    "/messaging-apps/finish",
     "/overview",
     "/templates",
     "/templates/{id}",

@@ -45,6 +45,10 @@ class InstallTicket:
     state_id: str
     platform: str
     grant: InstallGrant
+    # Who started the install, so the dashboard can connect it without asking
+    # again when the same person brings it back. None in a ticket sealed
+    # before it was recorded: that one is always asked about.
+    requested_by_user_id: str | None
 
 
 def _fernet(key: bytes) -> Fernet:
@@ -62,6 +66,7 @@ def seal(ticket: InstallTicket, *, keyring: Keyring) -> str:
             "tok": ticket.grant.bot_token,
             "scopes": ticket.grant.scopes,
             "pd": dict(ticket.grant.platform_data),
+            "uid": ticket.requested_by_user_id,
         },
         separators=(",", ":"),
     )
@@ -96,4 +101,5 @@ def open_ticket(token: str, *, keyring: Keyring) -> InstallTicket:
             # a confirmation page left open across that deploy still carries.
             platform_data=decoded.get("pd", {}),
         ),
+        requested_by_user_id=decoded.get("uid"),
     )

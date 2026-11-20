@@ -157,7 +157,7 @@ async def _world(harness: Harness) -> tuple[_World, MessagingInstallService]:
         keyring=TEST_KEYRING,
     )
     app = FastAPI()
-    app.include_router(create_messaging_install_router(service))
+    app.include_router(create_messaging_install_router(service, None))
     client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url=_ORIGIN)
     return _World(harness, bot, client), service
 

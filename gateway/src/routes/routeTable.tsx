@@ -57,6 +57,7 @@ import GroupsPage from "../pages/rooms/GroupsPage";
 import RoomDetailPage from "../pages/rooms/RoomDetailPage";
 import RoomScopedDocumentView from "../pages/rooms/RoomScopedDocumentView";
 import RoomsGraphPage from "../pages/rooms/RoomsGraphPage";
+import FinishInstallPage from "../pages/messaging-apps/FinishInstallPage";
 import RoomsPage from "../pages/rooms/RoomsPage";
 import TemplatesPage from "../pages/templates/TemplatesPage";
 import PrivateChannelRoomsPage from "../pages/workspace/PrivateChannelRoomsPage";
@@ -193,6 +194,7 @@ export const ROUTES: readonly AppRoute[] = [
 
   page("/ecosystem", everyone, <EcosystemGraphPage />),
   page("/get-started", allOf(gatewayOnboarding, agentManagement), getStarted),
+  page("/messaging-apps/finish", everyone, <FinishInstallPage />),
   page("/chats", gatewayChats, chats),
   page("/chats/agents/:agentId", gatewayChats, chats),
   page("/chats/rooms/:roomId", gatewayChats, chats),

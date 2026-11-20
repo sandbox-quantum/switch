@@ -304,7 +304,7 @@ async def _fixture(harness: RLSHarness) -> _Fixture:
     )
 
     app = FastAPI()
-    app.include_router(create_messaging_install_router(fixture.service))
+    app.include_router(create_messaging_install_router(fixture.service, None))
     fixture.client = httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url=_ORIGIN
     )

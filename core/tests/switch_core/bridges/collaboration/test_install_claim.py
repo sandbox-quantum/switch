@@ -935,7 +935,7 @@ class TestTheRoute:
 
     async def _client(self, fixture: _Fixture) -> httpx.AsyncClient:
         app = FastAPI()
-        app.include_router(create_messaging_install_router(fixture.service))
+        app.include_router(create_messaging_install_router(fixture.service, None))
         return httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url=_ORIGIN
         )
@@ -1117,7 +1117,7 @@ class TestTheSharedConnection:
 
     async def _client(self, fixture: _Fixture) -> httpx.AsyncClient:
         app = FastAPI()
-        app.include_router(create_messaging_install_router(fixture.service))
+        app.include_router(create_messaging_install_router(fixture.service, None))
         return httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url=_ORIGIN
         )
@@ -1276,7 +1276,7 @@ class TestMigration:
 
     async def _post(self, fixture: _Fixture, body: dict[str, Any]) -> int:
         app = FastAPI()
-        app.include_router(create_messaging_install_router(fixture.service))
+        app.include_router(create_messaging_install_router(fixture.service, None))
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url=_ORIGIN
         ) as client:
@@ -1340,7 +1340,7 @@ class TestUnownedChats:
         install(registry)
         try:
             app = FastAPI()
-            app.include_router(create_messaging_install_router(fixture.service))
+            app.include_router(create_messaging_install_router(fixture.service, None))
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app), base_url=_ORIGIN
             ) as client:
@@ -1370,7 +1370,7 @@ class TestRefusedClaims:
 
     async def _post(self, fixture: _Fixture, body: dict[str, Any]) -> int:
         app = FastAPI()
-        app.include_router(create_messaging_install_router(fixture.service))
+        app.include_router(create_messaging_install_router(fixture.service, None))
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url=_ORIGIN
         ) as client:
@@ -1483,7 +1483,7 @@ class TestABridgeStillStarting:
 
     async def _post(self, fixture: _Fixture, body: dict[str, Any]) -> int:
         app = FastAPI()
-        app.include_router(create_messaging_install_router(fixture.service))
+        app.include_router(create_messaging_install_router(fixture.service, None))
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url=_ORIGIN
         ) as client:

@@ -457,7 +457,7 @@ class TestTheRoute:
             keyring=None,  # type: ignore[arg-type]
         )
         app = FastAPI()
-        app.include_router(create_messaging_install_router(service))
+        app.include_router(create_messaging_install_router(service, None))
         return httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="https://switch.example"
         )

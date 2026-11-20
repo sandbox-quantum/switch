@@ -1596,6 +1596,33 @@ export async function beginAppInstall(platform: string): Promise<string> {
   return res.authorize_url;
 }
 
+/** What an install the platform approved would connect, as the dashboard's
+ * finishing page shows it. `started_by_you` lets it connect without asking. */
+export interface PendingInstall {
+  platform: string;
+  workspace_name: string;
+  external_workspace_id: string;
+  organisation: string;
+  requested_by: string;
+  started_by_you: boolean;
+}
+
+export async function fetchPendingInstall(platform: string, ticket: string): Promise<PendingInstall> {
+  return jsonRequest<PendingInstall>(`/messaging-apps/${platform}/pending`, "POST", { ticket });
+}
+
+export async function connectInstall(
+  platform: string,
+  ticket: string,
+  confirmed: boolean,
+): Promise<{ bridge_id: string | null }> {
+  return jsonRequest(`/messaging-apps/${platform}/connect`, "POST", { ticket, confirmed });
+}
+
+export async function cancelInstall(platform: string, ticket: string): Promise<void> {
+  await jsonRequest(`/messaging-apps/${platform}/cancel`, "POST", { ticket });
+}
+
 // A link that adds the bot to a group and connects it, and the bare code a
 // channel admin posts as `/connect <code>` instead, after adding the bot by
 // `bot_handle`. The link and code work once, for ten minutes.
