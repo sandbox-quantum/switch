@@ -9,6 +9,9 @@ opening an issue.
 
 ## Development setup
 
+For a step-by-step walkthrough from a clean machine to seeing an agent reply
+in a room, see [Contributor quickstart](docs/contributing/quickstart.md).
+
 **Prerequisites:** [Docker](https://docs.docker.com/get-docker/),
 [uv](https://docs.astral.sh/uv/), and [just](https://github.com/casey/just)
 (`brew install just`).
