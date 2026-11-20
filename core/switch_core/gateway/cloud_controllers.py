@@ -22,7 +22,6 @@ from typing import Any, Literal, Protocol
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from switch_core.db.audit import ServerAuditAction, record_server_audit_event
 from switch_core.db.models import (
     AgentController,
     AgentControllerEnrollmentCode,
@@ -55,8 +54,11 @@ from switch_core.observability.hosted import (
     reports_memory,
 )
 from switch_core.telemetry import emit_after_commit
-from switch_core.tenant_context import no_tenant
-from switch_core.visibility.box_provision import provision_times, revived_at
+from switch_core.visibility.box_provision import (
+    provision_times,
+    record_controllers_revoked,
+    revived_at,
+)
 
 # How recent the machine's last status report must be for its silence to count
 # as idle rather than as a machine that stopped reporting.
@@ -840,24 +842,12 @@ async def forget_missing_box(
     transaction commits after: if it fails, the revokes stand, which fails
     safe (the next report finds a revoked controller and the machine goes to
     error, for the owner's Retry)."""
-    controllers = [w for w in workspaces if w.controller_id is not None]
-    with no_tenant():
-        async with factory() as audit:
-            await record_server_audit_event(
-                audit,
-                actor_user_id=None,
-                action=ServerAuditAction.HOSTED_BOX_CONTROLLERS_REVOKED,
-                target_type="cloud_machine",
-                target_id=machine.id,
-                details={
-                    "machine_id": machine.id,
-                    "reason": "box_missing",
-                    "by": by,
-                    "revision": machine.revision,
-                    "controllers": len(controllers),
-                },
-            )
-            await audit.commit()
+    await record_controllers_revoked(
+        factory,
+        machine,
+        by=by,
+        controllers=sum(1 for w in workspaces if w.controller_id is not None),
+    )
     try:
         enrollment: CloudEnrollment | None = cloud_enrollment()
     except CloudEnrollmentUnavailable:

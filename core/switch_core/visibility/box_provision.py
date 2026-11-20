@@ -336,6 +336,38 @@ async def removal_pending(session: AsyncSession, machine_id: str) -> bool:
     return latest == ServerAuditAction.HOSTED_BOX_TO_REMOVE.value
 
 
+async def record_controllers_revoked(
+    session_factory: async_sessionmaker[AsyncSession],
+    machine: CloudMachine,
+    *,
+    by: Literal["re_ask", "retry"],
+    controllers: int,
+) -> None:
+    """Write and commit, in a transaction of its own, the
+    `hosted.box_controllers_revoked` entry for a missing box whose workspace
+    controllers are about to be revoked (`cloud_controllers.forget_missing_box`):
+    the machine, the reason, re-ask or Retry, its revision and how many. Called
+    before any revoke, so none is ever unrecorded. `server_audit_events`
+    carries no tenant, so nothing is bound."""
+    with no_tenant():
+        async with session_factory() as session:
+            await record_server_audit_event(
+                session,
+                actor_user_id=None,
+                action=ServerAuditAction.HOSTED_BOX_CONTROLLERS_REVOKED,
+                target_type="cloud_machine",
+                target_id=machine.id,
+                details={
+                    "machine_id": machine.id,
+                    "reason": BOX_MISSING,
+                    "by": by,
+                    "revision": machine.revision,
+                    "controllers": controllers,
+                },
+            )
+            await session.commit()
+
+
 def box_missing_error(
     session: AsyncSession, machine: CloudMachine, now: datetime
 ) -> None:
