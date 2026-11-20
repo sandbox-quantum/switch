@@ -76,6 +76,18 @@ RedirectMode = Literal["loopback", "core"]
 # authorization request is Core's to set.
 AuthorizationParam = Literal["access_type", "include_granted_scopes"]
 
+# What a client check reads from the vendor's answer to a made-up code: one
+# that accepts the client, or one that refuses it.
+CLIENT_CHECK_ANSWERS = frozenset(
+    {
+        "invalid_grant",
+        "invalid_client",
+        "invalid_client_id",
+        "unauthorized_client",
+        "redirect_uri_mismatch",
+    }
+)
+
 
 FIELD_NAME_PATTERN = r"^[a-z][a-z0-9_]{0,31}$"
 HEADER_NAME_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
@@ -179,9 +191,20 @@ class OAuthClient(BaseModel):
     tokens passed through to agents, and does not say they may keep working.
     Only for an entry that passes its token through.
 
+    `revocation_redirects`: the vendor answers a revocation it has carried out
+    with a redirect, as Salesforce's does: a 302 to the token's own instance,
+    with the token in the query. Switch takes it as done and never follows
+    it, so the token is not sent again in a URL.
+
     `unchecked`: what a static client's operator must see to themselves,
     because asking the vendor about the client cannot show it; said with every
     check that passes.
+
+    `check_inconclusive`: the errors a vendor answers the made-up code with
+    whatever the client, so they show nothing about it, as Salesforce answers
+    `unknown_error`. Checking the client then saves it without calling it
+    verified, and leaves it to the first sign-in. A clear refusal still fails
+    the check, and is never listed here.
 
     `loopback_ports`: the only ports Switch Console's listener may use, for a
     vendor that matches a loopback redirect exactly, port included; without
@@ -223,7 +246,11 @@ class OAuthClient(BaseModel):
     remove_access: str | None = Field(default=None, min_length=1, max_length=400)
     revocation_ends_grant: bool = False
     revocation_ends_tokens: bool = False
+    revocation_redirects: bool = False
     unchecked: str | None = Field(default=None, min_length=1, max_length=400)
+    check_inconclusive: (
+        list[Annotated[str, Field(pattern=r"^[a-z_]{1,64}$")]] | None
+    ) = Field(default=None, min_length=1)
     choices: list[ApiKeyField] = Field(default_factory=list, max_length=4)
 
     @model_validator(mode="after")
@@ -267,6 +294,12 @@ class OAuthClient(BaseModel):
                 "revocation_discovered takes the revocation endpoint from the "
                 "discovered metadata, so neither it nor the others are named"
             )
+        if self.revocation_redirects and (
+            self.revocation_url is None and not self.revocation_discovered
+        ):
+            raise ValueError(
+                "revocation_redirects is for a vendor Switch revokes sign-ins at"
+            )
         if (self.revocation_ends_grant or self.revocation_ends_tokens) and (
             self.revocation_url is None and not self.revocation_discovered
         ):
@@ -276,6 +309,19 @@ class OAuthClient(BaseModel):
             )
         if self.unchecked is not None and self.registration != "static":
             raise ValueError("unchecked is for a static client, which is checked")
+        if self.check_inconclusive is not None:
+            if self.unchecked is None:
+                raise ValueError(
+                    "check_inconclusive needs unchecked: what the operator "
+                    "confirms with the first sign-in"
+                )
+            if set(self.check_inconclusive) & CLIENT_CHECK_ANSWERS:
+                raise ValueError(
+                    "check_inconclusive lists an answer the check reads: "
+                    + ", ".join(
+                        sorted(set(self.check_inconclusive) & CLIENT_CHECK_ANSWERS)
+                    )
+                )
         if (
             self.revocation_url is None
             and not self.revocation_discovered
@@ -753,17 +799,23 @@ class ConsentMarkers(BaseModel):
 
 class ConnectionAccess(BaseModel):
     """What each level reaches, and, where the scopes cannot say which one a
-    sign-in was given, the markers that do (`consent`)."""
+    sign-in was given, the markers that do (`consent`).
+
+    An entry offers a read level, a write level, or both. A write level alone
+    is for an OAuth vendor whose scopes cannot make a sign-in read-only: every
+    connection to it is then write, and nothing calls it read."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-    read: LevelAccess
+    read: LevelAccess | None = None
     write: LevelAccess | None = None
     unscoped: bool = False
     consent: ConsentMarkers | None = None
 
     @model_validator(mode="after")
     def _scopes_match_consent(self) -> "ConnectionAccess":
-        levels = [self.read, *([self.write] if self.write is not None else [])]
+        levels = [level for level in (self.read, self.write) if level is not None]
+        if not levels:
+            raise ValueError("access names a read level, a write level or both")
         if self.unscoped:
             if self.write is None or any(level.scopes != [] for level in levels):
                 raise ValueError("unscoped access needs empty read and write scopes")
@@ -865,10 +917,16 @@ class ConnectionDefinition(BaseModel):
         if self.access is not None and self.access.consent is not None:
             if self.adapter != "oauth":
                 raise ValueError("only an oauth entry reads its consent from markers")
-            if self.access.write is None:
+            if self.access.read is None or self.access.write is None:
                 raise ValueError(
                     "consent markers tell read from write: the entry names both levels"
                 )
+        if (
+            self.access is not None
+            and self.access.read is None
+            and self.adapter != "oauth"
+        ):
+            raise ValueError("only an oauth entry offers a write level alone")
         if self.adapter == "github":
             self._check_github()
         elif self.adapter == "oauth":
@@ -921,7 +979,9 @@ class ConnectionDefinition(BaseModel):
             if profile.access.unscoped:
                 raise ValueError(f"access profile {name} cannot be unscoped")
             # A grant keeps its level when the server changes profile.
-            if (profile.access.write is None) != (self.access.write is None):
+            if (profile.access.read is None) != (self.access.read is None) or (
+                profile.access.write is None
+            ) != (self.access.write is None):
                 raise ValueError(
                     f"access profile {name} must name the levels the entry does"
                 )

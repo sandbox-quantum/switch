@@ -55,6 +55,7 @@ export interface SecretField {
 const GOOGLE = "google-workspace";
 const AIRTABLE = "airtable";
 const GITLAB = "gitlab";
+const SALESFORCE = "salesforce";
 
 export function vendorName(app: Pick<ConnectorApp, "slug" | "kind" | "name">): string {
   if (app.kind === "github_app") return "GitHub";
@@ -331,6 +332,43 @@ export function setupInstructions(
         items: [],
       },
     ];
+  if (app.slug === SALESFORCE)
+    return [
+      {
+        text: "In Salesforce Setup, type MCP in Quick Find, open the MCP page it finds, and enable SObject Mutations. Leave SObject All and SObject Deletes off: they delete records.",
+        copy: [],
+        link: null,
+        items: [],
+      },
+      {
+        text: "In Setup, type external client in Quick Find, open External Client App Manager, and choose New External Client App. Connected Apps don't work with Salesforce's hosted MCP.",
+        copy: [],
+        link: null,
+        items: [],
+      },
+      {
+        text: "Under API (Enable OAuth Settings), tick Enable OAuth.",
+        copy: [],
+        link: null,
+        items: [],
+      },
+      redirectStep(
+        "In Callback URL, enter this:",
+        app.redirect_uris,
+      ),
+      {
+        text: "Under OAuth Scopes, add exactly these:",
+        copy: [],
+        link: null,
+        items: scopeRows(app.scopes),
+      },
+      {
+        text: "Under Security, tick Require Proof Key for Code Exchange, Require Secret for Web Server Flow, and Issue JSON Web Token (JWT)-based access tokens for named users. Create the app, then copy the Consumer Key and Consumer Secret from its Settings. It can take 30 minutes to start working.",
+        copy: [],
+        link: null,
+        items: [],
+      },
+    ];
   if (app.slug === AIRTABLE)
     return [
       {
@@ -515,6 +553,7 @@ const HELM_VALUES: Record<string, string> = {
   [GOOGLE]: "switchCore.googleWorkspaceClientSecret",
   [AIRTABLE]: "switchCore.airtableClientSecret",
   [GITLAB]: "switchCore.gitlabClientSecret",
+  [SALESFORCE]: "switchCore.salesforceClientSecret",
 };
 
 /** Moving off configuration: copy in, remove the configuration, restart. */

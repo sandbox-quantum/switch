@@ -250,6 +250,24 @@ def test_airtable_is_set_up_by_its_operators_own_client() -> None:
     assert adapter._client.client.client_id == "c"
 
 
+def test_salesforce_is_set_up_by_its_operators_own_app() -> None:
+    assert "salesforce" not in build_adapters(
+        CATALOG, github_app=None, oauth_clients={}, http=HTTP, registration=REG
+    )
+    adapters = build_adapters(
+        CATALOG,
+        github_app=None,
+        oauth_clients={
+            "salesforce": OAuthClientCredentials("c", "SYNTHETIC", authentication=None)
+        },
+        http=HTTP,
+        registration=REG,
+    )
+    adapter = adapters["salesforce"]
+    assert isinstance(adapter, OAuthAdapter)
+    assert isinstance(adapter._client, StaticClient)
+
+
 def test_a_static_oauth_client_gets_the_generic_adapter(tmp_path: Path) -> None:
     adapters = build_adapters(
         _catalog(tmp_path, STATIC),

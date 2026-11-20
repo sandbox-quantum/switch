@@ -810,6 +810,14 @@ entry has no access profiles, and no access profile can be unscoped. Entries
 without the opt-in still need non-empty scopes. Core does not enforce a
 narrower level through the listed tools.
 
+An OAuth entry may offer a `write` level and no `read` level, for a vendor
+whose scopes cannot make a sign-in read-only (Salesforce's `mcp_api`). Every
+sign-in asks for the write scopes, and one that comes back with fewer is
+refused rather than recorded as Read, so nothing calls such a connection
+read-only. Consent markers and the other adapters still need a read level, an
+access profile names the same levels as its entry, and every entry offers at
+least one.
+
 Neither feature enables a connector. Each connector supplies its own verified
 identity mapping, evidence comments, skill, tests and live acceptance.
 
@@ -1153,6 +1161,37 @@ Built from sign-ins against sentry.io with a test organization:
 To connect: Settings, Connections in Switch Console, then Sentry. Nothing
 needs configuring on the server. To roll back, add `sentry` to
 `DISABLED_SERVICES`, or set the entry's `enabled: false`.
+## Salesforce
+
+- Hosted MCP servers take no dynamic registration and no Connected App: a
+  Salesforce admin creates an External Client App and enables the SObject
+  Mutations server, and each server's operator saves the app
+  (`registration: static`, `SALESFORCE_CLIENT_CONFIG_PATH`, Helm
+  `switchCore.salesforceClientSecret`); see
+  [`salesforce-setup.md`](../old/salesforce-setup.md).
+- Sign-ins return to Core's own callback (`redirect: [core]`), as Google's and
+  Airtable's do, so the server needs `GATEWAY_PUBLIC_URL`. Salesforce matches
+  the callback URL exactly.
+- The MCP server's 401 names no metadata, and `login.salesforce.com` serves only
+  OpenID configuration, so the entry names the endpoints from it: authorize,
+  token, revoke and userinfo, PKCE S256, `client_secret_post` and
+  `client_secret_basic`.
+- One server, SObject Mutations: create, read, update and query, with no delete
+  tool. Not SObject All or SObject Deletes. `mcp_api` reaches whatever the
+  enabled server does, so no scope makes a sign-in read-only: one level, read and
+  write, labelled so, as agreed on the issue.
+- Checking the app: Salesforce answers a made-up code with `unknown_error`
+  whatever the secret or callback URL, and a consumer key it does not know with
+  `invalid_client_id`. The entry lists `unknown_error` in `check_inconclusive`,
+  so Check and save stores the app unchecked and the first sign-in checks it; a
+  clear refusal still fails.
+- Disconnecting: Salesforce answers a revocation it carried out with a 302 to
+  the org's own instance, the token in the query. `revocation_redirects` takes
+  it as done without following it.
+
+To connect: Settings, Connections in Switch Console, then Salesforce. To roll
+back, add `salesforce` to `DISABLED_SERVICES`, set the entry's `enabled: false`,
+or remove its app.
 
 ## Not yet
 

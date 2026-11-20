@@ -1387,6 +1387,8 @@ class OAuthAdapter:
             return True
         if response.status_code == 400 and "invalid_token" in response.text:
             return False
+        if self._oauth.revocation_redirects and response.is_redirect:
+            return True
         raise ServiceAdapterError(
             f"{self._name} refused to revoke the sign-in (HTTP {response.status_code})."
         )

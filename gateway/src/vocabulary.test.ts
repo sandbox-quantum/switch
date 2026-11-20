@@ -40,6 +40,8 @@ const ALLOWED = [
   "its connection stopped responding",
   // The controller's own command-line flag.
   "--server",
+  // The name of a Salesforce app setting an operator has to tick.
+  "Require Secret for Web Server Flow",
 ];
 
 /** Text a person could read: JSX text, and string and template literals.
