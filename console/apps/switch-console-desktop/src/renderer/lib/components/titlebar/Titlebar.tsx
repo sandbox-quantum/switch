@@ -29,8 +29,8 @@ export function Titlebar({
         // top bar sits above the panel and holds both when the sidebar is
         // collapsed (see `WorkspaceTopBar`).
         // Linux draws its own controls flush to the right corner (no native
-        // frame); everywhere else keep the normal right padding.
-        isLinux ? 'pr-0' : 'pr-[18px]',
+        // frame). Elsewhere 4px, plus the right slot's mr-1, matches the 8px left inset.
+        isLinux ? 'pr-0' : 'pr-1',
         className
       )}
     >
