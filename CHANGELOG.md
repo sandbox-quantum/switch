@@ -94,6 +94,13 @@ version of their own to them without also giving them a release of their own.
   workspace that chose its backend gets that backend alone. Off unless set.
 
 #### Changed
+- **A deleted workspace's audit history is purged without the schema owner's
+  credentials.** The two-year purge now runs on the ordinary runtime
+  connection through a database function owned by the schema owner, so the
+  serving process no longer needs `DB_OWNER_USER` and `DB_OWNER_PASSWORD` for
+  it; the runtime role still cannot delete audit rows itself. switch-core
+  refuses to start if the function is missing or the runtime role may not
+  execute it.
 - **Member changes that also apply in Switch Trust ask first.** On an
   organization whose members come from WorkOS and whose changes are sent
   there, making someone Org Admin, making an Org Admin a Viewer, and removing
