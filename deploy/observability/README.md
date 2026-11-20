@@ -206,34 +206,19 @@ The application key needs monitor and dashboard write access. `dashboard.json`
 and `multi-pod-dashboard.json` are not touched by it; import those by hand with
 `POST /api/v1/dashboard` if a deployment doesn't have them yet.
 
-### From CI
+### Applying to a deployment
 
-Nobody needs to run `apply.sh` by hand for the main deployment.
-`.github/workflows/observability-apply.yml` runs it on every push to `main`
-that touches this directory, so what alerts is what was reviewed. Running the
-workflow by hand defaults to a dry run, which prints every route and changes
-nothing. On pull requests, PR CI's "Morning report" job runs
-`check_monitors.py` and `test_monitors.py`; neither needs a secret.
+Monitors belong to a deployment, not to this repository. Each one is scoped to
+one deployment's `service`, its handles are that deployment's on-call, and its
+queries read signals that only the switch-core version it runs emits. So the
+deployment's own tooling runs `apply.sh`, from the Switch version it deploys,
+when it promotes that version, with its own Datadog keys, `SERVICE`, `ENV` and
+handles. Applying from `main` here would alert on signals a deployment's pinned
+version may not emit yet.
 
-The apply job runs in the `observability-prod` GitHub environment. An admin
-creates it, limits it to the `main` branch (and adds required reviewers if
-applies should wait for a person), and sets:
-
-| Name | Kind | What |
-| --- | --- | --- |
-| `DD_API_KEY` | secret | Datadog API key |
-| `DD_APP_KEY` | secret | Datadog application key with monitor and dashboard write access |
-| `NOTIFY` | secret | Ops handle(s) |
-| `NOTIFY_SECURITY` | secret | Security channel handle(s) |
-| `NOTIFY_SECURITY_PAGE` | secret | Security pager handle(s) |
-| `OBSERVABILITY_SERVICE` | variable | `SERVICE`: the deployment's `SERVICE_NAME` |
-| `OBSERVABILITY_ENV` | variable | `ENV`: the deployment's short name |
-| `ALLOW_DEFAULT_SERVICE` | variable | `1` only if that deployment keeps `switch-core` |
-| `DD_SITE` | variable | Datadog site, if not `datadoghq.com` |
-
-The handles are secrets, not variables, so they are masked in the run's logs,
-which anyone can read in this public repository. Until the environment has
-all of them, the job fails on its first missing one, and says which.
+What this repository checks needs no secret. On pull requests, PR CI's
+"Morning report" job runs `check_monitors.py` and `test_monitors.py`, so a
+monitor that would be refused at apply time is refused at review.
 
 `hosted-dashboard.json` is the hosted agents board for whoever is on call: the
 hosted alerts, then the main dashboard's hosted charts in reading order (a test

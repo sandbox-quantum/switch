@@ -116,11 +116,10 @@ jobs:
               - *shared
               - 'decision/**'
             # The morning report, tested with its own dependencies, not core's,
-            # and the monitors' checks, which the apply workflow relies on.
+            # and the monitors' checks, which apply.sh relies on.
             observability:
               - *shared
               - 'deploy/observability/**'
-              - '.github/workflows/observability-apply.yml'
             console:
               - *shared
               - 'console/**'
@@ -320,7 +319,7 @@ jobs:
           enable-cache: true
 
       # Needs no secrets: priorities, tags, security routing and placeholders.
-      # observability-apply.yml applies the same file to Datadog after merge.
+      # A deployment's own tooling applies the same file with apply.sh.
       - name: Check monitors.json
         working-directory: deploy/observability
         run: python3 check_monitors.py monitors.json
