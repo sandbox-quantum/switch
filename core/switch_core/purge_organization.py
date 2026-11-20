@@ -7,15 +7,17 @@ holds for it, when its owner asks (`accounts/organization_purge.py`).
   purges it. `REFERENCE` says which request this answers (a ticket or
   similar reference) and is kept in the server's audit log.
 
-`ORGANIZATION` is its id, slug or WorkOS organization id. Once Switch's
-side is done it takes the organization out of WorkOS and has Switch Trust
-delete what it holds (`accounts/purge_elsewhere.py`).
+`ORGANIZATION` is its id, slug or WorkOS organization id. Before it
+deletes anything it has Switch Trust delete what it holds, and once
+Switch's side is done it takes the organization out of WorkOS
+(`accounts/purge_elsewhere.py`).
 
 Exit codes:
 
 - `0`: done, in Switch and outside it.
 - `1`: refused, or something failed (an account, a WorkOS or Switch Trust
-  call). Run the same command again to retry.
+  call). Run the same command again to retry. A Switch Trust deletion that
+  fails stops the run before anything in Switch is deleted.
 - `3`: waiting for something outside Switch (a cloud machine being torn
   down, a service token its vendor has not yet revoked); nothing deleted
   yet. Run the same command again later.
@@ -23,7 +25,7 @@ Exit codes:
   the WorkOS organization, users or memberships, when the server has no
   `WORKOS_API_KEY`; or the Switch Trust sessions, on a run resumed after an
   earlier one deleted the organization and with it its Switch Trust
-  settings.
+  settings, which this tool can then no longer delete.
 
 Run it where switch-core runs, with the same configuration: it revokes
 messaging apps and service sign-ins, and calls WorkOS with the server's own
@@ -48,7 +50,11 @@ from switch_core.accounts.organization_purge import (
     PurgePlan,
     PurgeRefused,
 )
-from switch_core.accounts.purge_elsewhere import ElsewhereOutcome, PurgeElsewhere
+from switch_core.accounts.purge_elsewhere import (
+    ElsewhereOutcome,
+    PurgeElsewhere,
+    TrustErasure,
+)
 from switch_core.accounts.workos_offboarding import (
     WorkOSError,
     WorkOSOffboarding,
@@ -310,29 +316,49 @@ def _print_outcome(
                     f"{_account_of(plan, user_id)} in the organization: Switch "
                     "still uses the user"
                 )
-    if elsewhere.trust_settings_gone:
+    _print_trust(plan, elsewhere.trust)
+    print(f"\n{BACKUPS_NOTE}")
+    if outcome.failed_accounts or elsewhere.failed:
+        print("\nRun the same command again to retry what failed.")
+
+
+def _print_trust(plan: PurgePlan, trust: TrustErasure) -> None:
+    if trust.settings_gone:
         print(
-            "  Switch Trust: NOT CLEANED. An earlier run deleted the "
-            "organization with its Switch Trust settings, so nothing could be "
-            "sent there. If it connected a policy, ask Switch Trust to delete "
-            f"its {len(plan.trust_sessions)} room session(s), recorded in "
-            "organization.purge_started."
+            "  Switch Trust: NOT CLEANED, and this tool can no longer clean it. "
+            "An earlier run deleted the organization with its Switch Trust "
+            "settings, so there is nothing left to send a deletion with. If it "
+            "connected a policy, ask Switch Trust to delete these "
+            f"{len(trust.left_by_hand)} room session(s):"
         )
-    elif not elsewhere.trust_configured:
+        for session_id in trust.left_by_hand:
+            print(f"    - {session_id}")
+    elif not trust.configured:
         print(
             "  Switch Trust: the organization connected no policy, so no "
             "message of it was sent there and nothing is to delete."
         )
     else:
-        print(
-            f"  Switch Trust: {elsewhere.trust_deleted} of "
-            f"{len(plan.trust_sessions)} room session(s) deleted."
+        earlier = (
+            f" ({trust.deleted_earlier} by an earlier run)"
+            if trust.deleted_earlier
+            else ""
         )
-        for session_id, error in elsewhere.trust_failed:
+        print(
+            f"  Switch Trust: {trust.deleted + trust.deleted_earlier} of "
+            f"{len(plan.trust_sessions)} room session(s) deleted{earlier}."
+        )
+        for session_id, error in trust.failed:
             print(f"  ERROR: Switch Trust session {session_id}: {error}")
-    print(f"\n{BACKUPS_NOTE}")
-    if outcome.failed_accounts or elsewhere.failed:
-        print("\nRun the same command again to retry what failed.")
+
+
+def _print_trust_stopped(plan: PurgePlan, trust: TrustErasure) -> None:
+    print("\nSwitch Trust did not delete everything; nothing in Switch is deleted:")
+    _print_trust(plan, trust)
+    print(
+        "Run the same command again to retry. The organization's Switch Trust "
+        "settings are kept until every deletion there has gone through."
+    )
 
 
 async def _print_dry_run_elsewhere(
@@ -357,20 +383,49 @@ async def _print_dry_run_elsewhere(
             print(f"  - user {user_id}{_account_of(plan, user_id)}")
     if trust_configured:
         print(
-            f"\nSwitch Trust: delete what it holds for {len(plan.trust_sessions)} "
-            "room session(s), with the organization's own policy settings."
+            "\nSwitch Trust: before anything in Switch is deleted, delete what it "
+            f"holds for {len(plan.trust_sessions)} room session(s), with the "
+            "organization's own policy settings. If any deletion fails, nothing "
+            "in Switch is deleted and the purge exits 1."
         )
     elif plan.resuming and plan.trust_sessions:
         print(
             "\nSwitch Trust: the organization's settings went with it in an "
-            f"earlier run; its {len(plan.trust_sessions)} room session(s) will "
-            "be listed to have deleted there by hand, and the purge exits 4."
+            "earlier run, so this tool can no longer delete anything there. Of "
+            f"its {len(plan.trust_sessions)} room session(s), any an earlier "
+            "run did not delete there will be listed for a person to have "
+            "deleted, and the purge exits 4."
         )
     else:
         print(
             "\nSwitch Trust: the organization connected no policy; nothing to delete."
         )
     print(f"\n{BACKUPS_NOTE}")
+
+
+async def execute(
+    purge: OrganizationPurge, elsewhere: PurgeElsewhere, plan: PurgePlan, request: str
+) -> int:
+    """Purge what `plan` found, print the receipt, and return the exit code.
+
+    Switch Trust is erased after everything the purge waits on is done and
+    before anything is deleted, while the organization's settings to erase
+    with are still there; a Trust deletion that fails stops the run there.
+    Raises `PurgeRefused` as `OrganizationPurge.run` does."""
+    outcome = await purge.prepare(plan, request)
+    if outcome.waiting:
+        _print_outcome(plan, outcome, None)
+        return EXIT_WAITING
+    trust = await elsewhere.erase_at_trust(plan, request)
+    if trust.failed:
+        _print_trust_stopped(plan, trust)
+        return 1
+    outcome = await purge.delete(plan, request, outcome)
+    elsewhere_outcome = await elsewhere.run(plan, request, trust)
+    _print_outcome(plan, outcome, elsewhere_outcome)
+    if outcome.failed_accounts or elsewhere_outcome.failed:
+        return 1
+    return EXIT_LEFT_BY_HAND if elsewhere_outcome.left_by_hand else 0
 
 
 async def _run(config: SwitchConfig, arguments: argparse.Namespace) -> int:
@@ -442,7 +497,7 @@ async def _run(config: SwitchConfig, arguments: argparse.Namespace) -> int:
                 plan = await purge.plan(await purge.find(arguments.organization))
                 _print_plan(plan)
                 # Read before the purge: the organization's Switch Trust
-                # settings go with its rows.
+                # settings go with its rows, so Trust is erased before them.
                 elsewhere = PurgeElsewhere(
                     session_factory=session_factory,
                     workos=WorkOSOffboarding(
@@ -461,7 +516,7 @@ async def _run(config: SwitchConfig, arguments: argparse.Namespace) -> int:
                         "\nNothing changed. Add --execute --request REFERENCE to purge."
                     )
                     return 1 if plan.refusals else 0
-                outcome = await purge.run(plan, arguments.request)
+                return await execute(purge, elsewhere, plan, arguments.request)
             except PurgeRefused as refused:
                 print(f"\nRefused: {refused}", file=sys.stderr)
                 return 1
@@ -471,14 +526,6 @@ async def _run(config: SwitchConfig, arguments: argparse.Namespace) -> int:
                     file=sys.stderr,
                 )
                 return 1
-            if not outcome.finished:
-                _print_outcome(plan, outcome, None)
-                return EXIT_WAITING
-            elsewhere_outcome = await elsewhere.run(plan, arguments.request)
-            _print_outcome(plan, outcome, elsewhere_outcome)
-            if outcome.failed_accounts or elsewhere_outcome.failed:
-                return 1
-            return EXIT_LEFT_BY_HAND if elsewhere_outcome.left_by_hand else 0
     finally:
         # Sends the signals that tell the running servers what went.
         await announcer.stop()

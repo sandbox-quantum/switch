@@ -43,6 +43,7 @@ from switch_core.db.session_scope import tenant_session
 from switch_core.db.stores.message_store import MessageStore
 from switch_core.gateway.hosted_controller import machine_item
 from switch_core.keys import Keyring
+from switch_core.purge_organization import BACKUPS_NOTE, execute
 from switch_core.trust.client import HttpTrustClient
 from tests.switch_core.accounts.test_account_deletion import ADMIN_EMAIL, _agent
 from tests.switch_core.accounts.test_workos_offboarding import FakeWorkOS
@@ -646,7 +647,7 @@ async def _room_ids(
         )
 
 
-async def test_after_the_purge_workos_and_switch_trust_are_cleaned_and_recorded(
+async def test_switch_trust_and_workos_are_cleaned_around_the_purge_and_recorded(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     organization_id, (first, second) = await _organization(session_factory, 2)
@@ -677,19 +678,17 @@ async def test_after_the_purge_workos_and_switch_trust_are_cleaned_and_recorded(
     assert preview is not None and preview.users_deleted == ["user_alice"]
     assert workos.deleted == []
 
-    assert (await purge.run(plan, "TICKET-8")).finished
-    outcome = await elsewhere.run(plan, "TICKET-8")
+    assert await execute(purge, elsewhere, plan, "TICKET-8") == 0
 
-    assert not outcome.failed and not outcome.left_by_hand
-    assert outcome.workos is not None
     # Alice's account went, and nothing else has her user; Bob keeps his
     # account, so only his membership goes.
-    assert outcome.workos.users_deleted == ["user_alice"]
-    assert outcome.workos.users_kept == {"user_bob": "Switch still uses this user"}
+    assert "user_alice" not in workos.users
     assert "user_bob" in workos.users and workos.memberships == {}
-    assert outcome.workos.organization_deleted
-    assert sorted(trust.deleted) == rooms and outcome.trust_deleted == len(rooms)
-
+    assert sorted(trust.deleted) == rooms
+    assert (
+        await _count(session_factory, Organization, Organization.id == organization_id)
+        == 0
+    )
     records = {
         action: details
         for action, details in (await _server_audit(session_factory)).values()
@@ -701,13 +700,59 @@ async def test_after_the_purge_workos_and_switch_trust_are_cleaned_and_recorded(
     assert records["organization.purge_started"]["trust_sessions"] == rooms
 
 
-async def test_a_resumed_purge_still_cleans_what_deleted_workspaces_left_outside(
+async def test_a_switch_trust_failure_stops_the_purge_before_anything_is_deleted(
+    session_factory: async_sessionmaker[AsyncSession],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The organization's Switch Trust settings go with its rows, so Trust is
+    erased first; one deletion that fails leaves everything in place for the
+    next run to retry with them."""
+    organization_id, (workspace,) = await _organization(session_factory, 1)
+    frank = await _person(session_factory, "frank", [workspace], organization_id)
+    await _fill(session_factory, workspace, frank)
+    rooms = await _room_ids(session_factory, workspace)
+    trust = _Trust()
+    trust.fail_once.update(rooms)
+    purge, _, _ = _purge(session_factory)
+    elsewhere = _elsewhere(session_factory, FakeWorkOS(), trust)
+
+    code = await execute(
+        purge, elsewhere, await purge.plan(organization_id), "TICKET-12"
+    )
+
+    assert code == 1
+    out = capsys.readouterr().out
+    assert "nothing in Switch is deleted" in out
+    assert f"ERROR: Switch Trust session {rooms[0]}" in out
+    assert (
+        await _count(session_factory, Organization, Organization.id == organization_id)
+        == 1
+    )
+    assert await _count(session_factory, Tenant, Tenant.id == workspace) == 1
+    assert await _count(session_factory, User, User.id == frank) == 1
+    assert await _room_ids(session_factory, workspace) == rooms
+
+    code = await execute(
+        purge, elsewhere, await purge.plan(organization_id), "TICKET-12"
+    )
+
+    assert code == 0
+    assert trust.deleted == rooms
+    assert (
+        await _count(session_factory, Organization, Organization.id == organization_id)
+        == 0
+    )
+    assert await _count(session_factory, User, User.id == frank) == 0
+
+
+async def test_a_resumed_purge_erases_at_trust_what_deleted_workspaces_left(
     session_factory: async_sessionmaker[AsyncSession],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The first workspace is deleted, then the run fails. The rerun finds
-    its rooms and its people's WorkOS users only in the run's record, and a
-    Switch Trust deletion that fails is retried by the run after."""
+    """The first workspace is deleted, then the run fails before the
+    organization's rows go. The rerun finds that workspace's rooms and its
+    people's WorkOS users only in the run's record, and still has the
+    organization's Switch Trust settings to erase them with."""
     organization_id, workspaces = await _organization(session_factory, 2)
     first, second = sorted(workspaces)
     carol = await _person(session_factory, "carol", [first], None)
@@ -716,7 +761,6 @@ async def test_a_resumed_purge_still_cleans_what_deleted_workspaces_left_outside
     workos = FakeWorkOS()
     workos.users.add("user_carol")
     trust = _Trust()
-    trust.fail_once.update(rooms)
     purge, _, _ = _purge(session_factory)
     elsewhere = _elsewhere(session_factory, workos, trust)
     real = organization_purge.purge_workspace
@@ -732,26 +776,22 @@ async def test_a_resumed_purge_still_cleans_what_deleted_workspaces_left_outside
     monkeypatch.setattr(organization_purge, "purge_workspace", real)
 
     plan = await purge.plan(organization_id)
+    assert not plan.resuming
     assert plan.trust_sessions == rooms
     assert plan.workos_users == {"user_carol": carol}
-    assert (await purge.run(plan, "TICKET-9")).finished
-    failed = await elsewhere.run(plan, "TICKET-9")
 
-    assert failed.failed and [s for s, _ in failed.trust_failed] == rooms
-    assert failed.workos is not None and failed.workos.users_deleted == ["user_carol"]
-
-    again = await elsewhere.run(await purge.plan(organization_id), "TICKET-9")
-
-    assert not again.failed
-    assert trust.deleted == rooms and again.trust_deleted == len(rooms)
+    assert await execute(purge, elsewhere, plan, "TICKET-9") == 0
+    assert trust.deleted == rooms
+    assert "user_carol" not in workos.users
 
 
 async def test_a_run_resumed_after_the_organization_went_lists_trust_sessions_by_hand(
     session_factory: async_sessionmaker[AsyncSession],
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """The organization's Switch Trust settings go with its rows, so a later
-    run has none to delete with and says so rather than reporting nothing
-    to do."""
+    """Once the organization's rows are gone, its Switch Trust settings are
+    too: a later run can't erase there, says so without promising a retry,
+    and lists the room ids for a person."""
     organization_id, (workspace,) = await _organization(session_factory, 1)
     erin = await _person(session_factory, "erin", [workspace], organization_id)
     await _fill(session_factory, workspace, erin)
@@ -761,12 +801,17 @@ async def test_a_run_resumed_after_the_organization_went_lists_trust_sessions_by
 
     plan = await purge.plan(organization_id)
     assert plan.resuming and plan.trust_sessions == rooms
-    outcome = await _elsewhere(session_factory, FakeWorkOS(), None).run(
-        plan, "TICKET-11"
+    code = await execute(
+        purge, _elsewhere(session_factory, FakeWorkOS(), None), plan, "TICKET-11"
     )
 
-    assert outcome.trust_settings_gone and outcome.left_by_hand
-    assert not outcome.trust_configured and not outcome.failed
+    assert code == 4
+    out = capsys.readouterr().out
+    assert "this tool can no longer clean it" in out
+    for room_id in rooms:
+        assert f"    - {room_id}" in out
+    trust_section = out.split("Switch Trust: NOT CLEANED")[1].split(BACKUPS_NOTE)[0]
+    assert "again" not in trust_section and "retry" not in trust_section
     records = [
         details
         for action, details in (await _server_audit(session_factory)).values()
@@ -775,8 +820,41 @@ async def test_a_run_resumed_after_the_organization_went_lists_trust_sessions_by
     assert records[-1]["settings_gone"] is True
 
 
-async def test_without_a_workos_key_the_purge_lists_what_is_left_there(
+async def test_a_run_resumed_after_trust_was_erased_and_the_organization_went_is_done(
     session_factory: async_sessionmaker[AsyncSession],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A run that erased at Switch Trust and deleted the organization, then
+    stopped before its accounts were all done: the rerun has no settings,
+    but nothing is left at Switch Trust either."""
+    organization_id, (workspace,) = await _organization(session_factory, 1)
+    gina = await _person(session_factory, "gina", [workspace], organization_id)
+    await _fill(session_factory, workspace, gina)
+    rooms = await _room_ids(session_factory, workspace)
+    trust = _Trust()
+    purge, _, _ = _purge(session_factory)
+    first = _elsewhere(session_factory, FakeWorkOS(), trust)
+    assert await execute(purge, first, await purge.plan(organization_id), "T-13") == 0
+    capsys.readouterr()
+
+    plan = await purge.plan(organization_id)
+    assert plan.resuming
+    code = await execute(
+        purge, _elsewhere(session_factory, FakeWorkOS(), None), plan, "T-13"
+    )
+
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "NOT CLEANED" not in out
+    assert (
+        f"Switch Trust: {len(rooms)} of {len(rooms)} room session(s) deleted "
+        f"({len(rooms)} by an earlier run)."
+    ) in out
+
+
+async def test_without_a_workos_key_or_trust_settings_the_purge_goes_ahead_and_says_so(
+    session_factory: async_sessionmaker[AsyncSession],
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     organization_id, (workspace,) = await _organization(session_factory, 1)
     await _person(session_factory, "dave", [workspace], organization_id)
@@ -784,14 +862,15 @@ async def test_without_a_workos_key_the_purge_lists_what_is_left_there(
     elsewhere = _elsewhere(session_factory, None, None)
 
     plan = await purge.plan(organization_id)
-    assert (await purge.run(plan, "TICKET-10")).finished
-    outcome = await elsewhere.run(plan, "TICKET-10")
+    assert await execute(purge, elsewhere, plan, "TICKET-10") == 4
 
-    assert outcome.workos is None and outcome.left_by_hand
-    assert outcome.workos_leftover is not None
-    assert outcome.workos_leftover.organization == f"org_{organization_id}"
-    assert outcome.workos_leftover.users == ["user_dave"]
-    assert not outcome.trust_configured and not outcome.failed
+    assert (
+        await _count(session_factory, Organization, Organization.id == organization_id)
+        == 0
+    )
+    out = capsys.readouterr().out
+    assert "WorkOS: NOT CLEANED" in out and "user user_dave" in out
+    assert "Switch Trust: the organization connected no policy" in out
     records = {
         action: details
         for action, details in (await _server_audit(session_factory)).values()

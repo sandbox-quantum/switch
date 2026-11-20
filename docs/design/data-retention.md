@@ -369,19 +369,37 @@ Nothing waits for the customer to empty anything first.
    (`organization.purge_started`), naming the accounts it is to delete, the
    WorkOS users of the people involved, and every room id of every workspace,
    so a resumed run can still clean up outside after the rows are gone.
-3. **Every workspace**, in its own transaction, with everything in it. Just
+3. **Switch Trust**, which keeps the messages it checked under the room
+   they were sent in (`x-agent-session-id`). When the organization connected
+   a Switch Trust policy, each room of each workspace is sent for deletion
+   with that policy's endpoint and key, the credentials its checks used.
+   Those settings are deleted with the organization's rows, so this happens
+   before any row goes: if any deletion fails, the purge stops here with
+   nothing in Switch deleted and exits 1, and the same command, run again,
+   retries it. A run resumed after an earlier one deleted the organization has
+   no settings left: the rooms an earlier run recorded deleting there
+   (`organization.purge_trust`) are done, and for any other the tool can no
+   longer delete anything there, so it lists those room ids for a person to
+   have deleted and exits 4. The deletion call,
+   `DELETE {endpoint}/guardrails/sessions/{room id}` with 404 meaning
+   nothing is held, is provisional: Switch Trust has not published a
+   deletion API yet, and `HttpTrustClient.delete_session` is the one place
+   to change when it does. Rooms deleted before the purge are not sent, as
+   their ids are gone. An organization with no policy sent nothing there,
+   and the outcome says so.
+4. **Every workspace**, in its own transaction, with everything in it. Just
    before, its live messaging installs are ended as disconnecting them does
    (Slack's bot token revoked, a Teams organization withdrawn from, a Telegram
    chat left). After, the processes running its agents, clients, bridges and
    machines are told: agents' connections close and their cached keys go at
    once, as when an agent is deleted.
-4. **The organization's own rows**, except its audit log, which outlives it
+5. **The organization's own rows**, except its audit log, which outlives it
    as a workspace's does. The server's audit log records the purge.
-5. **Every account that belonged to nothing else**: no membership of another
+6. **Every account that belonged to nothing else**: no membership of another
    workspace or organization and no rows left in one. Others keep their
    account and lose only what was here; the server's administrator account is
    always kept. Each deletion, or failure, is recorded on its own.
-6. **WorkOS**, with the server's `WORKOS_API_KEY`
+7. **WorkOS**, with the server's `WORKOS_API_KEY`
    (`accounts/workos_offboarding.py`). The WorkOS environment may be shared
    with other products, so only what Switch alone had there goes. Each
    person's membership of the organization's WorkOS organization is removed,
@@ -392,32 +410,17 @@ Nothing waits for the customer to empty anything first.
    when nobody is left in it in any status and it has no SSO connection or
    directory. Without the key nothing at WorkOS changes: the command lists
    the organization, users and memberships to remove there and exits 4.
-7. **Switch Trust**, which keeps the messages it checked under the room
-   they were sent in (`x-agent-session-id`). When the organization connected
-   a Switch Trust policy, each room of each purged workspace is sent for
-   deletion with that policy's endpoint and key, the credentials its checks
-   used. Those settings are deleted with the organization's rows, so they
-   are read before the purge starts; a run resumed after an earlier one
-   deleted the organization has none, lists the rooms to delete there by
-   hand and exits 4. The deletion call,
-   `DELETE {endpoint}/guardrails/sessions/{room id}` with 404 meaning
-   nothing is held, is provisional: Switch Trust has not published a
-   deletion API yet, and `HttpTrustClient.delete_session` is the one place
-   to change when it does. Rooms deleted before the purge are not sent, as
-   their ids are gone. An organization with no policy sent nothing there,
-   and the outcome says so.
-
-Steps 6 and 7 run on every run once Switch's side is done, the resumed ones
-included, and each records what it did (`organization.purge_workos`,
-`organization.purge_trust`). Every deletion there treats 404 as done, so a
-failure is retried by running the command again.
+Steps 3 and 7 run on every run, the resumed ones included, and each
+records what it did (`organization.purge_trust`, `organization.purge_workos`).
+Every deletion there treats 404 as done, so a failure is retried by running
+the command again.
 
 The command ends with a receipt: the accounts deleted, the service sign-ins
 revoked, the messaging installs ended, the cloud machines deleted, what was
 done at WorkOS and Switch Trust, and that backups still hold the
 organization for up to 37 days (below). Exit codes: `0` done, `1` refused or
 something failed (run again), `3` waiting outside Switch (run again later),
-`4` done but WorkOS left for a person to clean up.
+`4` done but WorkOS or Switch Trust left for a person to clean up.
 
 A run that stops part-way is finished by running the command again. The
 record of each started run brings back the accounts found through workspaces
