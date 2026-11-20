@@ -127,10 +127,13 @@ type InstallCommandError =
     }
   | { type: 'process-open-failed'; message: string };
 
+/** The install command for the person to run themselves, and where. */
+export type RunYourself = { command: string; where: 'a PowerShell window' | 'a terminal' };
+
 export type AgentInstallError =
   | { type: 'unknown-dependency'; id: string }
   | { type: 'no-install-command'; id: string }
-  | InstallCommandError
+  | (InstallCommandError & { runYourself?: RunYourself })
   | { type: 'not-detected-after-install'; id: string };
 
 export type AgentUpdateError =

@@ -5,7 +5,9 @@ import type { InstallCommandError, InstallCommandSpec } from '@switch-console/co
 import { resolveExecFileSpawn } from '@switch-console/core/exec';
 import { err, ok, type Result } from '@switch-console/shared';
 import type { ResolvedShellProfile } from '@main/core/terminal-shell/types';
+import { log } from '@main/lib/logger';
 import { ensureUserBinDirsInPath } from '@main/utils/userEnv';
+import { runOutsideConsole } from './windows-install-launch';
 
 export type InstallCommandRunner<TData = void, TError = InstallCommandError> = (
   command: InstallCommandSpec
@@ -111,18 +113,22 @@ export function classifyInstallCommandFailure({
   };
 }
 
+function resolveInstallSpawn(command: InstallCommandSpec, shellProfile: ResolvedShellProfile) {
+  return resolveExecFileSpawn({
+    command: typeof command === 'string' ? shellProfile.executable : command.command,
+    args: typeof command === 'string' ? [...shellProfile.commandArgs, command] : command.args,
+    platform: process.platform,
+    env: process.env,
+    fileExists: existsSync,
+  });
+}
+
 export async function runLocalInstallCommand(
   command: InstallCommandSpec,
   shellProfile: ResolvedShellProfile
 ): Promise<Result<void, InstallCommandError>> {
   return new Promise((resolve) => {
-    const spec = resolveExecFileSpawn({
-      command: typeof command === 'string' ? shellProfile.executable : command.command,
-      args: typeof command === 'string' ? [...shellProfile.commandArgs, command] : command.args,
-      platform: process.platform,
-      env: process.env,
-      fileExists: existsSync,
-    });
+    const spec = resolveInstallSpawn(command, shellProfile);
     const child = spawn(spec.command, spec.args, {
       cwd: os.homedir(),
       env: process.env,
@@ -149,8 +155,49 @@ export async function runLocalInstallCommand(
   });
 }
 
+/**
+ * On Windows, runs the command outside Switch Console's process tree
+ * (`windows-install-launch.ts`), where installers that create junctions work;
+ * when Windows cannot start it that way, runs it as Console's child, and says so.
+ */
+async function runWindowsInstallCommand(
+  command: InstallCommandSpec,
+  shellProfile: ResolvedShellProfile
+): Promise<Result<void, InstallCommandError>> {
+  const spec = resolveInstallSpawn(command, shellProfile);
+  const launch = await runOutsideConsole({
+    executable: spec.command,
+    args: spec.args,
+    verbatim: spec.windowsVerbatimArguments,
+    cwd: os.homedir(),
+  });
+  switch (launch.kind) {
+    case 'not-launched':
+      log.warn(
+        '[InstallRunner] Could not start the install outside Switch Console; running it directly, where installers that create junctions can fail',
+        { reason: launch.reason }
+      );
+      return runLocalInstallCommand(command, shellProfile);
+    case 'start-failed':
+      return err({ type: 'process-open-failed', message: launch.message });
+    case 'ran':
+      if (launch.exitCode === 0) {
+        ensureUserBinDirsInPath();
+        return ok();
+      }
+      return err(
+        classifyInstallCommandFailure({ exitCode: launch.exitCode, output: launch.output })
+      );
+  }
+}
+
 export function createLocalInstallCommandRunner(
   resolveShellProfile: ShellProfileResolver
 ): InstallCommandRunner {
-  return async (command) => runLocalInstallCommand(command, await resolveShellProfile());
+  return async (command) => {
+    const shellProfile = await resolveShellProfile();
+    return process.platform === 'win32'
+      ? runWindowsInstallCommand(command, shellProfile)
+      : runLocalInstallCommand(command, shellProfile);
+  };
 }

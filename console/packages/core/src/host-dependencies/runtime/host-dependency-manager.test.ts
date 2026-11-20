@@ -181,6 +181,10 @@ describe('HostDependencyManager install', () => {
       '[HostDependencyManager] Failed to install codex: Install command failed.',
       { type: 'command-failed', exitCode: 1, output }
     );
+    expect(result).toMatchObject({
+      success: false,
+      error: { runYourself: { command: 'npm install -g @openai/codex', where: 'a terminal' } },
+    });
   });
 
   it('returns an error result for unknown dependency ids', async () => {

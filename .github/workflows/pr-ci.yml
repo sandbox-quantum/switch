@@ -442,9 +442,9 @@ jobs:
         if: ${{ !cancelled() }}
         run: pnpm --filter @switch-console/agent-controller run test
 
-      - name: Test Console's embedded controller and Windows launching
+      - name: Test Console's embedded controller, Windows launching and installs
         if: ${{ !cancelled() }}
-        run: pnpm --filter @switch-console/desktop exec vitest run --project node src/main/core/embedded-controller src/main/core/execution-context
+        run: pnpm --filter @switch-console/desktop exec vitest run --project node src/main/core/embedded-controller src/main/core/execution-context src/main/core/dependencies/windows-install-launch.test.ts
 
       # The local-server bundle's gateway step, which runs npm through a shell on Windows.
       - name: Build the local server's gateway pages
